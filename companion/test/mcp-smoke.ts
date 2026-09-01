@@ -37,6 +37,10 @@ try {
   const names = tools.map((tool: any) => tool.name).sort();
   if (JSON.stringify(names) !== JSON.stringify(expected)) throw new Error(`tool mismatch: ${names}`);
   if (/agent_id|companion|background|image|lua|console/i.test(JSON.stringify(tools))) throw new Error("forbidden schema/content exposed");
+  const tooManySteps = Array.from({ length: 26 }, (_, x) => ({ x, y: 0, name: "transport-belt" }));
+  const rejectedPlan = await request("tools/call", { name: "build_plan", arguments: { steps: tooManySteps } });
+  const rejectedText = rejectedPlan.result?.content?.[0]?.text ?? "";
+  if (!rejectedPlan.result?.isError || /Offline:/.test(rejectedText)) throw new Error(`26-step plan reached runtime instead of input rejection: ${rejectedText}`);
   const status = await request("tools/call", { name: "connect_status", arguments: {} });
   const text = status.result?.content?.[0]?.text ?? "";
   if (!text.startsWith("Offline:") || !text.includes("factorio-codex setup")) throw new Error(`offline status not actionable: ${text}`);

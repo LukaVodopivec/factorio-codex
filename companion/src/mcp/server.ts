@@ -25,6 +25,13 @@ export const toolPayloads = {
   buildPlan: (steps: Array<{ x: number; y: number; name: string; [key: string]: unknown }>, rest: Record<string, unknown>) => ({ ...rest, steps: steps.map(({ x, y, name, ...step }) => ({ ...step, item: name, position: { x, y } })) }),
 };
 
+export async function connectStatus(b: Bridge) {
+  const ping: any = await b.call("ping");
+  if (ping.companion_dead) return result("Connected, but Codex is dead. This interface never auto-respawns.", true);
+  if (!ping.companion_exists && !ping.companion_ever_created) await b.call("spawn_companion", { name: "Codex" });
+  return result({ status: "connected", app_version: "0.7.0", protocol_version: ping.protocol_version, mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick });
+}
+
 export async function runMcpServer(opts: RconSettings): Promise<void> {
   const server = new McpServer({ name: "factorio-codex", version: "0.7.0" }, { instructions: "Control one physical Factorio character named Codex. Observe locally, then use honest path/reach/inventory/crafting actions." });
   let connection: { rcon: RconClient; bridge: Bridge } | undefined;
@@ -51,10 +58,7 @@ export async function runMcpServer(opts: RconSettings): Promise<void> {
 
   server.registerTool("connect_status", { description: "Validate config, RCON, mod, app and protocol; create Codex only if this save never had one.", inputSchema: z.object({}) }, async () => {
     try {
-      const b = await bridge(); const ping: any = await b.call("ping");
-      if (ping.companion_dead) return result("Connected, but Codex is dead. This interface never auto-respawns.", true);
-      if (!ping.companion_exists && !ping.companion_ever_created) await b.call("spawn_companion", { name: "Codex" });
-      return result({ status: "connected", app_version: "0.7.0", protocol_version: ping.protocol_version, mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick });
+      return await connectStatus(await bridge());
     } catch (error) { return result(`Offline: ${error instanceof Error ? error.message : String(error)}`, false); }
   });
   server.registerTool("observe_local", { description: "Current deterministic local text observation centered on Codex.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15) }) }, async ({ radius }) => rpc("observe_local", { radius }));

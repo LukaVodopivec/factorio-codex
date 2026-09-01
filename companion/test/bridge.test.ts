@@ -61,7 +61,7 @@ describe("Bridge.enqueueAndWait", () => {
   });
   it("resolves with the detail when the task finishes", async () => {
     let polls = 0;
-    const { rcon } = fakeRcon((cmd) => {
+    const { rcon, exec } = fakeRcon((cmd) => {
       if (cmd.includes('"enqueue"')) return ok({ task_id: 7 });
       polls++;
       return polls < 3
@@ -72,6 +72,8 @@ describe("Bridge.enqueueAndWait", () => {
     await expect(
       bridge.enqueueAndWait({ type: "walk_to", target: { x: 1, y: 2 } }, { pollMs: 1 }),
     ).resolves.toBe("arrived at (1.0, 2.0)");
+    expect(exec.mock.calls[0][0]).toContain('\\"task\\"');
+    expect(exec.mock.calls[0][0]).not.toContain("replace");
   });
 
   it("rejects when the task fails", async () => {

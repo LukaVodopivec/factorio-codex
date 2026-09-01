@@ -109,9 +109,6 @@ function M.enqueue(params)
     error("unknown task type: " .. tostring(type(task) == "table" and task.type or task))
   end
   companion.require_companion()
-  if params.replace then
-    cancel_lane()
-  end
   local t = storage.tasks
   task.id = t.next_id
   t.next_id = t.next_id + 1

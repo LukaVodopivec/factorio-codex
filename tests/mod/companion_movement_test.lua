@@ -10,4 +10,6 @@ local body = { valid = true }; storage.companions = { Codex = { entity = body } 
 check(math.abs(body.character_running_speed_modifier - 0.6) < 0.000001, "movement modifier applies to Codex")
 storage.companions.Codex.entity = { valid = false }
 check(companion.get() == nil and companion.record() ~= nil, "death persists without auto-respawn")
+local respawned, respawn_error = pcall(companion.spawn, {})
+check(not respawned and tostring(respawn_error):match("never respawns") ~= nil, "persistent death tombstone refuses respawn")
 os.exit(failures == 0 and 0 or 1)

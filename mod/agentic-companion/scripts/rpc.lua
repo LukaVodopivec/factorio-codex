@@ -2,7 +2,7 @@
 -- Params arrive as a JSON string; the response is printed to the RCON
 -- connection as a {ok, data|error} JSON envelope. Envelopes larger than
 -- CHUNK_SIZE are stored in storage.rpc_outbox and streamed back to the
--- companion part by part via get_chunk.
+-- app part by part via get_chunk.
 local companion = require("scripts.companion")
 
 local M = {}

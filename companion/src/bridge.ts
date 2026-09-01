@@ -13,7 +13,6 @@ export function escapeLuaString(s: string): string {
 }
 
 export interface EnqueueOptions {
-  replace?: boolean;
   timeoutMs?: number;
   pollMs?: number;
 }
@@ -87,10 +86,7 @@ export class Bridge {
   /** Enqueues a task and polls until it reaches a terminal state.
    *  Resolves with the human-readable detail; rejects (ModError) on failure. */
   async enqueueAndWait(task: Task, opts: EnqueueOptions = {}): Promise<string> {
-    const { task_id } = await this.call<{ task_id: number }>("enqueue", {
-      task,
-      replace: opts.replace ?? false,
-    });
+    const { task_id } = await this.call<{ task_id: number }>("enqueue", { task });
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
     const pollMs = opts.pollMs ?? 500;
     const deadline = Date.now() + timeoutMs;

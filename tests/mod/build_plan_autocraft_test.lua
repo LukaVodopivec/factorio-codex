@@ -52,5 +52,20 @@ build_plan.start({ auto_craft = false, steps = {
 } })
 check(next(crafted) == nil, "build_plan: auto-crafting can be disabled")
 
+local too_many = {}
+for i = 1, 26 do too_many[i] = { item = "transport-belt", position = { x = i, y = 0 } } end
+local accepted, limit_error = pcall(build_plan.start, { steps = too_many })
+check(not accepted and tostring(limit_error):match("at most 25 steps") ~= nil,
+  "build_plan: Lua rejects more than 25 steps")
+
+local fail_fast = { auto_craft = false, steps = {
+  { item = "missing-item", position = { x = 0, y = 0 } },
+  { item = "transport-belt", position = { x = 1, y = 0 } },
+} }
+build_plan.start(fail_fast)
+local failure = build_plan.tick(fail_fast)
+check(fail_fast.stop_on_error == true and failure and failure.status == "failed" and fail_fast._index == 2,
+  "build_plan: omitted stop_on_error fails at the first bad step")
+
 print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

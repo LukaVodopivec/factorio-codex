@@ -28,7 +28,7 @@ rpc.register("describe_prototype", spatial.describe_prototype)
 rpc.register("enqueue", tasks.enqueue)
 rpc.register("get_task", tasks.get)
 rpc.register("cancel", tasks.cancel)
--- get_chunk and echo are registered inside rpc.lua itself.
+-- get_chunk is registered inside rpc.lua itself.
 
 remote.add_interface("agentic", {
   rpc = function(method, params_json)

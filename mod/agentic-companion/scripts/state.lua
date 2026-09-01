@@ -4,32 +4,25 @@ local M = {}
 -- All fields any module needs MUST be declared here (single owner of the schema).
 function M.init()
 
-  -- Tasks: one lane (queue + active) per companion.
+  -- Tasks: one fixed lane (queue + active) for the sole Codex body.
   storage.tasks = storage.tasks or {}
   storage.tasks.next_id = storage.tasks.next_id or 1
   storage.tasks.records = storage.tasks.records or {}
-  storage.tasks.by_companion = storage.tasks.by_companion or {}
   -- chain id -> failure tick: late enqueues of a failed plan cancel instantly
   storage.tasks.failed_chains = storage.tasks.failed_chains or {}
-  if storage.tasks.queue or storage.tasks.active then
-    -- migrate the pre-multi-companion single lane
-    storage.tasks.by_companion["Codex"] = {
-      queue = storage.tasks.queue or {},
-      active = storage.tasks.active,
-    }
-    storage.tasks.queue, storage.tasks.active = nil, nil
-  end
+  storage.tasks.lane = storage.tasks.lane
+    or (storage.tasks.by_companion and storage.tasks.by_companion["Codex"])
+    or { queue = storage.tasks.queue or {}, active = storage.tasks.active }
+  storage.tasks.lane.queue = storage.tasks.lane.queue or {}
+  storage.tasks.by_companion, storage.tasks.queue, storage.tasks.active = nil, nil, nil
 
-  -- Companions: named registry; migrate the old single-companion record.
-  storage.companions = storage.companions or {}
-  if storage.companion then
-    if storage.companion.entity then
-      storage.companions["Codex"] = storage.companion
-    end
-    storage.companion = nil
-  end
+  -- v0.7 briefly stored the sole body in a named registry. Collapse that
+  -- released save shape back to the retained single-body record.
+  storage.companion = storage.companion
+    or (storage.companions and storage.companions["Codex"])
+  storage.companions = nil
 
-  -- pathfinder bookkeeping: request id -> {name, task_id} (see actions/walk.lua)
+  -- pathfinder bookkeeping: request id -> {task_id} (see actions/walk.lua)
   storage.path_requests = {}
   -- chunked RPC responses: { next_id, by_id = { [id] = { parts = {...}, created_tick } } }
   storage.rpc_outbox = storage.rpc_outbox or { next_id = 1, by_id = {} }

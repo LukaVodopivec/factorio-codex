@@ -3,27 +3,12 @@
 local M = {}
 
 M.DEFAULT = "Codex"
-local MAX_COMPANIONS = 1
 local MOVEMENT_SPEED_SETTING = "agentic-companion-movement-speed"
 local DEFAULT_MOVEMENT_SPEED = 1.6
-
-local PALETTE = {
-  { r = 0.30, g = 0.79, b = 0.69, a = 1 }, -- teal
-  { r = 0.90, g = 0.62, b = 0.20, a = 1 }, -- amber
-  { r = 0.66, g = 0.55, b = 0.96, a = 1 }, -- violet
-  { r = 0.86, g = 0.42, b = 0.55, a = 1 }, -- rose
-}
+local COLOR = { r = 0.30, g = 0.79, b = 0.69, a = 1 }
 
 local LABEL_OFFSET = { 0, -2.9 }
 local MAP_TAG_MOVE_SQ = 9
-
-function M.set_context() end
-function M.context() return M.DEFAULT end
-
-local function records()
-  storage.companions = storage.companions or {}
-  return storage.companions
-end
 
 -- Keep the speed bonus scoped to companion bodies. A force-level modifier
 -- would also accelerate human players, while LuaControl's modifier is local
@@ -39,9 +24,8 @@ local function apply_speed_to(ent)
 end
 
 function M.apply_movement_speed()
-  for _, rec in pairs(records()) do
-    apply_speed_to(rec.entity)
-  end
+  local rec = storage.companion
+  apply_speed_to(rec and rec.entity)
 end
 
 function M.on_runtime_setting_changed(event)
@@ -50,61 +34,35 @@ function M.on_runtime_setting_changed(event)
   end
 end
 
-function M.names()
-  local out = {}
-  for name in pairs(records()) do
-    out[#out + 1] = name
-  end
-  table.sort(out)
-  return out
-end
-
-function M.get(name)
-  local rec = records()[name or M.context()]
+function M.get()
+  local rec = storage.companion
   local ent = rec and rec.entity
   if ent and ent.valid then return ent end
   return nil
 end
 
-function M.record(name)
-  return records()[name or M.context()]
+function M.record()
+  return storage.companion
 end
 
-function M.require_companion(name)
-  local ent = M.get(name)
+function M.require_companion()
+  local ent = M.get()
   if not ent then
-    local who = name or M.context()
-    error("companion '" .. who .. "' does not exist — call spawn_companion"
-      .. (who ~= M.DEFAULT and ' with {"name":"' .. who .. '"}' or "") .. " first")
+    error("companion 'Codex' does not exist — call spawn_companion first")
   end
   return ent
 end
 
-local function count_companions()
-  local n = 0
-  for _ in pairs(records()) do n = n + 1 end
-  return n
-end
-
-local function color_for(name)
-  local idx = 1
-  local sorted = M.names()
-  for i, n in ipairs(sorted) do
-    if n == name then idx = i break end
-  end
-  return PALETTE[(idx - 1) % #PALETTE + 1]
-end
-
 -- Floating name tag that follows the character; self-healed periodically.
-local function attach_label(rec, name, ent)
+local function attach_label(rec, ent)
   pcall(function()
     if rec.label and rec.label.valid then rec.label.destroy() end
   end)
   rec.label = nil
   local args = {
-    text = name,
+    text = M.DEFAULT,
     surface = ent.surface,
-    color = color_for(name),
+    color = COLOR,
     scale = 1.4,
     alignment = "center",
     scale_with_zoom = true,
@@ -123,10 +81,11 @@ local function attach_label(rec, name, ent)
   if ok and obj then rec.label = obj end
 end
 
--- Map/minimap markers for every companion; chart tags can't move, so re-pin
--- after drifting. Runs on_nth_tick (wired in control.lua) — must never raise.
+-- The map/minimap marker can't move, so re-pin it after the body drifts.
+-- Runs on_nth_tick (wired in control.lua) and must never raise.
 function M.update_map_tag()
-  for name, rec in pairs(records()) do
+  local rec = storage.companion
+  if rec then
     local ent = rec.entity
     local alive = ent and ent.valid
     local tag = rec.map_tag
@@ -139,7 +98,7 @@ function M.update_map_tag()
     else
       local label_valid = false
       pcall(function() label_valid = rec.label and rec.label.valid end)
-      if not label_valid then attach_label(rec, name, ent) end
+      if not label_valid then attach_label(rec, ent) end
 
       local keep = false
       if tag_valid then
@@ -153,7 +112,7 @@ function M.update_map_tag()
         pcall(function()
           rec.map_tag = ent.force.add_chart_tag(ent.surface, {
             position = ent.position,
-            text = name,
+            text = M.DEFAULT,
             icon = { type = "virtual", name = "signal-A" },
           })
         end)
@@ -165,9 +124,8 @@ end
 
 function M.spawn(params)
   local name = M.DEFAULT
-  if #name > 20 then error("companion names must be 20 characters or fewer") end
 
-  local existing = M.get(name)
+  local existing = M.get()
   if existing then
     apply_speed_to(existing)
     return {
@@ -178,10 +136,7 @@ function M.spawn(params)
       movement_speed = M.movement_speed_multiplier(),
     }
   end
-  if records()[name] and not M.get(name) then error("Codex died; this interface never respawns") end
-  if not records()[name] and count_companions() >= MAX_COMPANIONS then
-    error("max " .. MAX_COMPANIONS .. " companions — currently: " .. table.concat(M.names(), ", "))
-  end
+  if storage.companion and not M.get() then error("Codex died; this interface never respawns") end
 
   local surface, anchor, force
   local player
@@ -211,13 +166,13 @@ function M.spawn(params)
   })
   if not ent then error("failed to create companion character") end
 
-  local rec = records()[name] or {}
-  records()[name] = rec
+  local rec = {}
+  storage.companion = rec
   rec.entity = ent
   rec.unit_number = ent.unit_number
-  ent.color = color_for(name)
+  ent.color = COLOR
   apply_speed_to(ent)
-  attach_label(rec, name, ent)
+  attach_label(rec, ent)
   M.update_map_tag()
 
   return {

@@ -28,11 +28,10 @@ local runners = {
 
 -- The retained storage shape has one fixed lane for the sole Codex body.
 local function lane()
-  local lanes = storage.tasks.by_companion
-  local l = lanes[companion.DEFAULT]
+  local l = storage.tasks.lane
   if not l then
     l = { queue = {}, active = nil }
-    lanes[companion.DEFAULT] = l
+    storage.tasks.lane = l
   end
   return l
 end

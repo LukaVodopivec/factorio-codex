@@ -1,5 +1,5 @@
 -- Protocol-v5 local perception: observe_local (ASCII tile grid), can_place
--- (dry-run placement check with blocker naming), find_buildable_area (nearest
+-- (dry-run placement check with blocker naming),
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
 local companion = require("scripts.companion")
@@ -9,10 +9,6 @@ local M = {}
 local SCAN_DEFAULT_RADIUS = 15
 local SCAN_MIN_RADIUS = 5
 local SCAN_MAX_RADIUS = 30
-local AREA_DEFAULT_DISTANCE = 50
-local AREA_MAX_DISTANCE = 100
-local AREA_MAX_SIDE = 100
-local AREA_RING_STEP = 2
 local DESCRIBE_MAX_NAMES = 10
 
 local UPPER_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -417,98 +413,6 @@ function M.can_place(params)
   end
 
   return can_place_one(c, surface, params.item, params.position, params.direction)
-end
-
--- ------------------------------------------------------- find_buildable_area
-
--- Offsets on the square ring of Chebyshev radius d, in AREA_RING_STEP steps.
-local function ring_offsets(d)
-  if d == 0 then return { { 0, 0 } } end
-  local offsets = {}
-  for x = -d, d, AREA_RING_STEP do
-    offsets[#offsets + 1] = { x, -d }
-    offsets[#offsets + 1] = { x, d }
-  end
-  for y = -d + AREA_RING_STEP, d - AREA_RING_STEP, AREA_RING_STEP do
-    offsets[#offsets + 1] = { -d, y }
-    offsets[#offsets + 1] = { d, y }
-  end
-  return offsets
-end
-
-function M.find_buildable_area(params)
-  local c = companion.require_companion()
-  local surface = c.surface
-
-  local width = math.floor(tonumber(params.width) or 0)
-  local height = math.floor(tonumber(params.height) or 0)
-  if width < 1 or height < 1 then
-    error("find_buildable_area requires width and height (whole tile counts, at least 1)")
-  end
-  if width > AREA_MAX_SIDE or height > AREA_MAX_SIDE then
-    error(string.format(
-      "that rectangle is huge — keep width and height at %d tiles or less", AREA_MAX_SIDE))
-  end
-  local near = require_position(params.near, "find_buildable_area requires near = {x, y}")
-  local max_distance = math.floor(tonumber(params.max_distance) or AREA_DEFAULT_DISTANCE)
-  max_distance = math.max(0, math.min(max_distance, AREA_MAX_DISTANCE))
-
-  -- Candidate rectangles are centered on `near`, then shifted in expanding
-  -- rings. Water is memoized per tile since neighboring candidates overlap.
-  local base_x = math.floor(near.x) - math.floor(width / 2)
-  local base_y = math.floor(near.y) - math.floor(height / 2)
-
-  local water_memo = {}
-  local function memo_water(x, y)
-    local key = x .. "," .. y
-    local v = water_memo[key]
-    if v == nil then
-      v = is_water_at(surface, x, y)
-      water_memo[key] = v
-    end
-    return v
-  end
-
-  -- Returns the tree count when the rect works, nil when it doesn't.
-  local function try_spot(tlx, tly)
-    local trees = 0
-    local found = surface.find_entities_filtered({
-      area = { { tlx, tly }, { tlx + width, tly + height } },
-    })
-    for _, e in ipairs(found) do
-      if e.valid and e ~= c then
-        if e.type == "tree" then
-          trees = trees + 1
-        else
-          return nil
-        end
-      end
-    end
-    for ty = tly, tly + height - 1 do
-      for tx = tlx, tlx + width - 1 do
-        if memo_water(tx, ty) then return nil end
-      end
-    end
-    return trees
-  end
-
-  for d = 0, max_distance, AREA_RING_STEP do
-    for _, off in ipairs(ring_offsets(d)) do
-      local tlx, tly = base_x + off[1], base_y + off[2]
-      local trees = try_spot(tlx, tly)
-      if trees then
-        return {
-          center = { x = tlx + width / 2, y = tly + height / 2 },
-          top_left = { x = tlx, y = tly },
-          trees_in_area = trees,
-        }
-      end
-    end
-  end
-
-  error(string.format(
-    "no free %dx%d spot within %d tiles of (%.0f, %.0f) — try a smaller size or another area",
-    width, height, max_distance, near.x, near.y))
 end
 
 -- -------------------------------------------------------- describe_prototype

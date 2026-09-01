@@ -28,7 +28,8 @@ package.loaded["scripts.companion"] = {
   require_companion = function() return character end,
   get = function() return character end,
 }
-package.loaded["scripts.actions.approach"] = { ensure = function() return nil end }
+local approach_stub = { ensure = function() return nil end }
+package.loaded["scripts.actions.approach"] = approach_stub
 _G.prototypes = { item = {} }
 
 local build_plan = require("scripts.actions.build_plan")
@@ -66,6 +67,25 @@ build_plan.start(fail_fast)
 local failure = build_plan.tick(fail_fast)
 check(fail_fast.stop_on_error == true and failure and failure.status == "failed" and fail_fast._index == 2,
   "build_plan: omitted stop_on_error fails at the first bad step")
+
+local placed_name
+inventory["transport-belt"] = 1
+character.build_distance = 6
+character.surface = {
+  can_place_entity = function(args) placed_name = args.name return true end,
+  create_entity = function(args) return { valid = true, name = args.name, type = "transport-belt" } end,
+}
+character.remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count end
+approach_stub.ensure = function() return "ok" end
+_G.defines = { build_check_type = { manual = 1 } }
+prototypes.item["transport-belt"] = { place_result = { name = "transport-belt" } }
+local retained_contract = { auto_craft = false, steps = {
+  { item = "transport-belt", entity = "forbidden-blueprint-override", position = { x = 4, y = 5 } },
+} }
+build_plan.start(retained_contract)
+local placed = build_plan.tick(retained_contract)
+check(placed and placed.status == "done" and placed_name == "transport-belt",
+  "build_plan: placement always uses the item's place_result and ignores removed entity overrides")
 
 print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

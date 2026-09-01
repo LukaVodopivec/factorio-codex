@@ -1,17 +1,34 @@
-# Agentic-Factorio agent guidance
+# Factorio Codex Agent Guide
 
-## Multi-agent Factorio gameplay
+## Project contract
 
-Apply this section only when the user asks to play/control Factorio and the `factorio` MCP tools are available. It does not apply to ordinary repository development.
+- Lifecycle state: active
+- Lifecycle class: personal-tool
+- Repository owner: The owner
+- Human developers: The owner only
+- Engineering mode: agent-only
+- Human code review: never
+- Human decision scope: product outcomes and hard-authority effects only
+- Project goal: Let one Codex TUI control one physically embodied Factorio
+  character through deterministic, text-only local perception and honest game
+  mechanics.
+- Non-goals: Image perception, agent-facing Lua or console execution, built-in
+  model loops, game-chat control, multiple controllable bodies, multi-agent
+  orchestration, hosted services, teleportation, or free resources.
+- Replacement trigger: Retire or consolidate this repository when a simpler
+  maintained native Factorio/Codex interface provides the same constrained
+  behavior.
 
-- For a single short job, play directly; delegation overhead is not justified.
-- For two or more genuinely independent gameplay jobs, act as coordinator: use `register_factorio_agent` with role `coordinator`, submit a dependency graph with `coordinate_submit_jobs`, then delegate jobs to native client subagents using the project `factorio-worker` agent.
-- Only the coordinator reads player chat or calls `say`. Workers claim one job, lease one in-game companion, reserve spatial write areas, pass `agent_id` and `companion` to actions, report completion, and release everything.
-- Use `wait_for_agent_events` in coordinated mode. Do not have multiple agents call legacy `wait_for_chat`.
-- Keep dependent actions on one worker/companion. Parallelize only independent jobs.
-- The in-game companion crew and native client subagents are different layers: every worker controls at most one leased companion at a time.
-- For broad goals, do one shared reconnaissance pass, then submit waves of at most three jobs. Every job must be a 2-5 minute closed milestone with an exact area, inputs, output, and observable definition of done.
-- Match the nearest companion to each site and never plan a 128+ tile walk. Stop persistent duties before assigning project work.
-- A construction job is not complete after crafting, placing, or hand-feeding one machine. It must verify a closed loop producing or buffering output.
-- `wait_for_agent_events` wakes on broker job transitions. Replan immediately after `job_done`/`job_failed`; wait only when no decision or ready work remains.
-- If a native subagent fails to start, retry once, then use `coordinate_takeover_job` and execute the ready job in the coordinator instead of leaving it idle.
+## Engineering rules
+
+- Preserve one active path: Codex project MCP to the Node RCON bridge to the
+  Factorio mod.
+- Prefer deletion and the smallest repair to the retained upstream path.
+- Keep movement, reach, inventory, crafting, placement, and time constraints
+  observable and covered by tests.
+- Never expose images, raw Lua, arbitrary console commands, credentials, or
+  hidden global-map state through MCP.
+- Use Node 22 and Factorio 2.0.x. Run the proportional offline suite before
+  publication; live gameplay validation requires an installed Factorio game.
+- Complete private-repository changes on clean, pushed `main` with exact
+  remote-SHA readback.

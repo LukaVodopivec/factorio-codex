@@ -8,7 +8,7 @@
 - Human developers: The owner only
 - Engineering mode: agent-only
 - Human code review: never
-- Human decision scope: product outcomes and hard-authority effects only
+- Human decision boundary: product outcomes and hard-authority effects only
 - Project goal: Let one Codex TUI control one physically embodied Factorio
   character through deterministic, text-only local perception and honest game
   mechanics.

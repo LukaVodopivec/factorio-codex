@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
-import { connectStatus, normalizeObservation, result, toolPayloads } from "../src/mcp/server.js";
+import { connectStatus, normalizeObservation, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
 describe("public MCP to Lua DTO mappings", () => {
   it("returns matching plain text and structured content for a populated observation", () => {
     const value = {
@@ -23,8 +23,9 @@ describe("public MCP to Lua DTO mappings", () => {
   it("maps every coordinate action to the retained Lua DTO", () => {
     expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } }); // walk_to and mine
     expect(toolPayloads.place({ x: 1, y: 2, name: "furnace", direction: 4 })).toEqual({ item: "furnace", position: { x: 1, y: 2 }, direction: 4 });
-    expect(toolPayloads.transfer({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
-    expect(toolPayloads.transfer({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } });
+    expect(toolPayloads.insert({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
+    expect(toolPayloads.extract({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
+    expect(toolPayloads.extract({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 }, all: true });
     expect(toolPayloads.recipe({ x: 1, y: 2, recipe: "gear" })).toEqual({ target: { x: 1, y: 2 }, recipe: "gear" });
     expect(toolPayloads.rotate({ x: 1, y: 2, direction: 12 })).toEqual({ target: { x: 1, y: 2 }, direction: 12 });
   });
@@ -33,6 +34,65 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(toolPayloads.placement({ x: 1, y: 2, name: "belt", direction: 4 })).toEqual({ item: "belt", position: { x: 1, y: 2 }, direction: 4 });
     expect(toolPayloads.canPlace([{ x: 1, y: 2, name: "belt" }])).toEqual({ placements: [{ item: "belt", position: { x: 1, y: 2 } }] });
     expect(toolPayloads.buildPlan([{ x: 1, y: 2, name: "belt", recipe: "x" }], { stop_on_error: true })).toEqual({ stop_on_error: true, steps: [{ item: "belt", position: { x: 1, y: 2 }, recipe: "x" }] });
+  });
+});
+
+describe("registered MCP handler parity with Lua v5", () => {
+  it("invokes handlers with exact RPC and task payloads", async () => {
+    const handlers: Record<string, (args: any) => Promise<unknown>> = {};
+    const schemas: Record<string, any> = {};
+    const call = vi.fn(async (method: string) => method === "ping"
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.7.0", factorio_version: "2.0.0", tick: 1 }
+      : method === "observe_local" ? { entities: [], resource_patches: [] } : { ok: method });
+    const enqueueAndWait = vi.fn(async (task: unknown) => ({ task }));
+    registerMcpTools({
+      registerTool(name: string, config: any, handler: (args: any) => Promise<unknown>) {
+        schemas[name] = config.inputSchema;
+        handlers[name] = handler;
+      },
+    }, async () => ({ call, enqueueAndWait } as unknown as Bridge));
+
+    await handlers.connect_status({});
+    expect(call).toHaveBeenLastCalledWith("ping");
+    await handlers.observe_local({ radius: 15 });
+    expect(call).toHaveBeenLastCalledWith("observe_local", { radius: 15 });
+    await handlers.describe_prototype({ names: ["transport-belt"] });
+    expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"] });
+    expect(schemas.describe_prototype.safeParse({ names: Array(11).fill("x") }).success).toBe(false);
+
+    await handlers.extract_items({ x: 1, y: 2 });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "extract", target: { x: 1, y: 2 }, all: true });
+    await handlers.extract_items({ x: 1, y: 2, items: { coal: 3 } });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "extract", target: { x: 1, y: 2 }, items: { coal: 3 } });
+
+    await handlers.rotate_entity({ x: 3, y: 4, direction: 12 });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "rotate", target: { x: 3, y: 4 }, direction: 12 });
+    expect(schemas.rotate_entity.shape.direction).toBeDefined();
+    expect(schemas.rotate_entity.shape.reverse).toBeUndefined();
+
+    await handlers.inspect_entity({ positions: [{ x: 5, y: 6 }] });
+    expect(call).toHaveBeenLastCalledWith("inspect", { targets: [{ x: 5, y: 6 }] });
+    await handlers.can_place({ placements: [{ x: 7, y: 8, name: "transport-belt", direction: 4 }] });
+    expect(call).toHaveBeenLastCalledWith("can_place", { placements: [{ item: "transport-belt", position: { x: 7, y: 8 }, direction: 4 }] });
+    await handlers.walk_to({ x: 9, y: 10 });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "walk_to", target: { x: 9, y: 10 } });
+    await handlers.mine({ x: 11, y: 12 });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 } });
+    await handlers.place_entity({ x: 13, y: 14, name: "stone-furnace", direction: 8 });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "place", item: "stone-furnace", position: { x: 13, y: 14 }, direction: 8 });
+    await handlers.craft_items({ recipe: "iron-gear-wheel", count: 2 });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "craft", recipe: "iron-gear-wheel", count: 2 });
+    await handlers.insert_items({ x: 15, y: 16, items: { coal: 2 } });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "insert", target: { x: 15, y: 16 }, items: { coal: 2 } });
+    await handlers.set_recipe({ x: 17, y: 18, recipe: "iron-gear-wheel" });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "set_recipe", target: { x: 17, y: 18 }, recipe: "iron-gear-wheel" });
+    await handlers.build_plan({ steps: [{ x: 19, y: 20, name: "transport-belt" }], auto_craft: true, stop_on_error: true });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true, steps: [{ item: "transport-belt", position: { x: 19, y: 20 } }] });
+    await handlers.start_research({ technology: "automation" });
+    expect(call).toHaveBeenLastCalledWith("start_research", { technology: "automation" });
+    await handlers.stop({});
+    expect(call).toHaveBeenLastCalledWith("cancel", { all: true });
+    expect(Object.keys(handlers)).toHaveLength(16);
   });
 });
 

@@ -30,7 +30,8 @@ export function normalizeObservation(value: unknown): Record<string, unknown> {
 export const toolPayloads = {
   target: (value: { x: number; y: number }) => ({ target: value }),
   place: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
-  transfer: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y } }) : ({ target: { x, y }, items: values }),
+  insert: ({ x, y, items: values }: { x: number; y: number; items: Record<string, number> }) => ({ target: { x, y }, items: values }),
+  extract: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y }, all: true }) : ({ target: { x, y }, items: values }),
   recipe: ({ x, y, recipe }: { x: number; y: number; recipe: string }) => ({ target: { x, y }, recipe }),
   rotate: ({ x, y, direction }: { x: number; y: number; direction?: number }) => ({ target: { x, y }, direction }),
   inspect: (positions: Array<{ x: number; y: number }>) => ({ targets: positions }),
@@ -46,21 +47,13 @@ export async function connectStatus(b: Bridge) {
   return result({ status: "connected", app_version: "0.7.0", protocol_version: ping.protocol_version, mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick });
 }
 
-export async function runMcpServer(opts: RconSettings): Promise<void> {
-  const server = new McpServer({ name: "factorio-codex", version: "0.7.0" }, { instructions: "Control one physical Factorio character named Codex. Observe locally, then use honest path/reach/inventory/crafting actions." });
-  let connection: { rcon: RconClient; bridge: Bridge } | undefined;
-  const bridge = async () => {
-    if (!opts.password) throw new Error("setup has not been completed; run `factorio-codex setup`");
-    if (connection?.rcon.connected) return connection.bridge;
-    const rcon = new RconClient(opts);
-    await rcon.connect();
-    const b = new Bridge(rcon);
-    await b.unlock();
-    assertProtocolCompatibility(await b.call("ping"));
-    connection = { rcon, bridge: b };
-    rcon.on("close", () => { connection = undefined; });
-    return b;
-  };
+type ToolRegistrar = {
+  registerTool(name: string, config: unknown, handler: (args: any) => Promise<unknown>): unknown;
+};
+
+/** Register the complete public surface against an injectable bridge provider.
+ *  Tests use the same handlers with a fake Bridge to prove the exact Lua DTOs. */
+export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Bridge>): void {
   const rpc = async (method: any, params: unknown = {}) => {
     try { return result(await (await bridge()).call(method, params)); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
@@ -80,19 +73,37 @@ export async function runMcpServer(opts: RconSettings): Promise<void> {
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
   server.registerTool("inspect_entity", { description: "Inspect entities at up to 16 positions within 30 tiles.", inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => rpc("inspect", toolPayloads.inspect(positions)));
-  server.registerTool("describe_prototype", { description: "Describe exact item, entity or recipe prototypes.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(24) }) }, async (p) => rpc("describe_prototype", p));
+  server.registerTool("describe_prototype", { description: "Describe exact item, entity or recipe prototypes.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10) }) }, async (p) => rpc("describe_prototype", p));
   server.registerTool("can_place", { description: "Check up to 24 placements within 30 tiles without side effects.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().optional() })).min(1).max(24) }) }, async ({ placements }) => rpc("can_place", toolPayloads.canPlace(placements)));
   server.registerTool("walk_to", { description: "Walk physically to an exact position.", inputSchema: position }, async (p) => task("walk_to", toolPayloads.target(p)));
   server.registerTool("mine", { description: "Mine the entity at this exact visible position; no by-name discovery.", inputSchema: position }, async (p) => task("mine", toolPayloads.target(p)));
   server.registerTool("place_entity", { description: "Place an inventory item at an exact reachable position.", inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional() }) }, async (p) => task("place", toolPayloads.place(p)));
   server.registerTool("craft_items", { description: "Queue legitimate Factorio hand crafting and wait for ticks.", inputSchema: z.object({ recipe: z.string(), count: z.number().int().positive() }) }, async (p) => task("craft", p));
-  server.registerTool("insert_items", { description: "Insert carried items into a reachable entity.", inputSchema: position.extend({ items }) }, async (p) => task("insert", toolPayloads.transfer(p)));
-  server.registerTool("extract_items", { description: "Extract available items from a reachable entity.", inputSchema: position.extend({ items: items.optional() }) }, async (p) => task("extract", toolPayloads.transfer(p)));
+  server.registerTool("insert_items", { description: "Insert carried items into a reachable entity.", inputSchema: position.extend({ items }) }, async (p) => task("insert", toolPayloads.insert(p)));
+  server.registerTool("extract_items", { description: "Extract named items, or everything when items is omitted, from a reachable entity.", inputSchema: position.extend({ items: items.optional() }) }, async (p) => task("extract", toolPayloads.extract(p)));
   server.registerTool("set_recipe", { description: "Set a reachable crafting machine recipe.", inputSchema: position.extend({ recipe: z.string() }) }, async (p) => task("set_recipe", toolPayloads.recipe(p)));
   server.registerTool("rotate_entity", { description: "Rotate a reachable entity once, or set an explicit Factorio direction (0-15).", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p) => task("rotate", toolPayloads.rotate(p)));
   server.registerTool("build_plan", { description: "Build up to 25 sequential steps; auto-craft is legitimate and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }) => task("build_plan", toolPayloads.buildPlan(steps, rest)));
   server.registerTool("start_research", { description: "Start an unlocked technology using the force's real research queue.", inputSchema: z.object({ technology: z.string() }) }, async (p) => rpc("start_research", p));
   server.registerTool("stop", { description: "Cancel active and queued work after a TUI interruption.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true }));
   void actionNames;
+}
+
+export async function runMcpServer(opts: RconSettings): Promise<void> {
+  const server = new McpServer({ name: "factorio-codex", version: "0.7.0" }, { instructions: "Control one physical Factorio character named Codex. Observe locally, then use honest path/reach/inventory/crafting actions." });
+  let connection: { rcon: RconClient; bridge: Bridge } | undefined;
+  const bridge = async () => {
+    if (!opts.password) throw new Error("setup has not been completed; run `factorio-codex setup`");
+    if (connection?.rcon.connected) return connection.bridge;
+    const rcon = new RconClient(opts);
+    await rcon.connect();
+    const b = new Bridge(rcon);
+    await b.unlock();
+    assertProtocolCompatibility(await b.call("ping"));
+    connection = { rcon, bridge: b };
+    rcon.on("close", () => { connection = undefined; });
+    return b;
+  };
+  registerMcpTools(server as unknown as ToolRegistrar, bridge);
   await server.connect(new StdioServerTransport());
 }

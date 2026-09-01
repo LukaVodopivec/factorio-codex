@@ -39,6 +39,10 @@ try {
   if (/agent_id|companion|background|image|lua|console/i.test(JSON.stringify(tools))) throw new Error("forbidden schema/content exposed");
   const rotateSchema = tools.find((tool: any) => tool.name === "rotate_entity")?.inputSchema?.properties ?? {};
   if (!rotateSchema.direction || rotateSchema.reverse) throw new Error("rotate_entity must expose Lua direction, never reverse");
+  const describeSchema = tools.find((tool: any) => tool.name === "describe_prototype")?.inputSchema?.properties ?? {};
+  if (describeSchema.names?.maxItems !== 10) throw new Error("describe_prototype must match Lua's 10-name cap");
+  const extractSchema = tools.find((tool: any) => tool.name === "extract_items")?.inputSchema ?? {};
+  if ((extractSchema.required ?? []).includes("items")) throw new Error("extract_items must allow omitted items for all=true extraction");
   const planSchema = tools.find((tool: any) => tool.name === "build_plan")?.inputSchema?.properties ?? {};
   if (planSchema.stop_on_error?.default !== true || planSchema.steps?.maxItems !== 25) throw new Error("build_plan must default fail-fast and cap steps at 25");
   const tooManySteps = Array.from({ length: 26 }, (_, x) => ({ x, y: 0, name: "transport-belt" }));
@@ -49,7 +53,7 @@ try {
   const text = status.result?.content?.[0]?.text ?? "";
   if (!text.startsWith("Offline:") || !text.includes("factorio-codex setup")) throw new Error(`offline status not actionable: ${text}`);
   if (stderr.trim()) throw new Error(`unexpected pre-init/offline stderr: ${stderr}`);
-  console.log("PASS initialize, exact 16 tools, forbidden-schema scan, actionable offline status");
+  console.log("PASS initialize, exact 16 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
 } finally {
   child.kill();
   fs.rmSync(home, { recursive: true, force: true });

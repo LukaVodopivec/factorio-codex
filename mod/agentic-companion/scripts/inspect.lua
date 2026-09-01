@@ -128,13 +128,16 @@ local function collect_fluids(e, out)
   if fluids then out.fluids = fluids end
 end
 
-local function locate(params)
+local function locate(params, c)
   if params.unit_number ~= nil then
     local n = tonumber(params.unit_number)
     local e = n and game.get_entity_by_unit_number(n)
     if not (e and e.valid) then
       error("no entity with unit_number " .. tostring(params.unit_number)
         .. " — it may have been removed or mined")
+    end
+    if e.surface ~= c.surface or distance(c.position, e.position) > 30 then
+      error("inspect targets must be on Codex's surface and within 30 tiles")
     end
     return e
   end
@@ -145,18 +148,8 @@ local function locate(params)
   end
   local target = { x = tonumber(pos.x), y = tonumber(pos.y) }
 
-  local c = companion.get()
-  local surface
-  if c then
-    if distance(c.position, target) > 30 then error("inspect positions must be within 30 tiles of Codex") end
-    surface = c.surface
-  else
-    local player = game.connected_players[1]
-    if not player then
-      error("no companion and no connected players — call spawn_companion first")
-    end
-    surface = player.surface
-  end
+  if distance(c.position, target) > 30 then error("inspect positions must be within 30 tiles of Codex") end
+  local surface = c.surface
 
   -- Preference order: buildings/machines > resources > characters. A chest
   -- standing on an ore tile must resolve to the chest, not the ore under it.
@@ -184,8 +177,8 @@ local function locate(params)
   return entity
 end
 
-local function inspect_one(params)
-  local e = locate(params)
+local function inspect_one(params, c)
+  local e = locate(params, c)
 
   local out = {
     name = e.name,
@@ -240,6 +233,7 @@ local MAX_TARGETS = 16
 -- inspects up to MAX_TARGETS entities in ONE call — reading machines one at
 -- a time costs the brain a full round of thinking per machine.
 function M.inspect(params)
+  local c = companion.require_companion()
   if type(params.targets) == "table" then
     if #params.targets == 0 then
       error("targets must be a non-empty array of {x, y}")
@@ -249,7 +243,7 @@ function M.inspect(params)
     end
     local out = {}
     for i, t in ipairs(params.targets) do
-      local ok, res = pcall(inspect_one, { position = t })
+      local ok, res = pcall(inspect_one, { position = t }, c)
       if ok then
         out[i] = res
       else
@@ -261,7 +255,7 @@ function M.inspect(params)
     end
     return { entities = out }
   end
-  return inspect_one(params)
+  return inspect_one(params, c)
 end
 
 return M

@@ -14,15 +14,17 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(output.structuredContent).toEqual(value);
     expect(output.content[0].text).toContain('"resource_patches"');
   });
-  it("maps coordinate actions explicitly", () => {
-    expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } });
+  it("maps every coordinate action to the retained Lua DTO", () => {
+    expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } }); // walk_to and mine
     expect(toolPayloads.place({ x: 1, y: 2, name: "furnace", direction: 4 })).toEqual({ item: "furnace", position: { x: 1, y: 2 }, direction: 4 });
     expect(toolPayloads.transfer({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
+    expect(toolPayloads.transfer({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } });
     expect(toolPayloads.recipe({ x: 1, y: 2, recipe: "gear" })).toEqual({ target: { x: 1, y: 2 }, recipe: "gear" });
-    expect(toolPayloads.rotate({ x: 1, y: 2, reverse: true })).toEqual({ target: { x: 1, y: 2 }, reverse: true });
+    expect(toolPayloads.rotate({ x: 1, y: 2, direction: 12 })).toEqual({ target: { x: 1, y: 2 }, direction: 12 });
   });
   it("maps batches explicitly", () => {
     expect(toolPayloads.inspect([{ x: 1, y: 2 }])).toEqual({ targets: [{ x: 1, y: 2 }] });
+    expect(toolPayloads.placement({ x: 1, y: 2, name: "belt", direction: 4 })).toEqual({ item: "belt", position: { x: 1, y: 2 }, direction: 4 });
     expect(toolPayloads.canPlace([{ x: 1, y: 2, name: "belt" }])).toEqual({ placements: [{ item: "belt", position: { x: 1, y: 2 } }] });
     expect(toolPayloads.buildPlan([{ x: 1, y: 2, name: "belt", recipe: "x" }], { stop_on_error: true })).toEqual({ stop_on_error: true, steps: [{ item: "belt", position: { x: 1, y: 2 }, recipe: "x" }] });
   });

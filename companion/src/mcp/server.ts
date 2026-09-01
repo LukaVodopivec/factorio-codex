@@ -14,6 +14,19 @@ export function result(value: unknown, isError = false) {
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   return { content: [{ type: "text" as const, text }], structuredContent: typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined, isError };
 }
+
+export function normalizeObservation(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("observe_local returned an invalid object");
+  const observation = value as Record<string, unknown>;
+  const arrayField = (name: "entities" | "resource_patches") => {
+    const field = observation[name];
+    if (Array.isArray(field)) return field;
+    if (field && typeof field === "object" && Object.keys(field as Record<string, unknown>).length === 0) return [];
+    throw new Error(`observe_local returned invalid ${name}`);
+  };
+  return { ...observation, entities: arrayField("entities"), resource_patches: arrayField("resource_patches") };
+}
+
 export const toolPayloads = {
   target: (value: { x: number; y: number }) => ({ target: value }),
   place: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
@@ -62,7 +75,10 @@ export async function runMcpServer(opts: RconSettings): Promise<void> {
       return await connectStatus(await bridge());
     } catch (error) { return result(`Offline: ${error instanceof Error ? error.message : String(error)}`, false); }
   });
-  server.registerTool("observe_local", { description: "Current deterministic local text observation centered on Codex.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15) }) }, async ({ radius }) => rpc("observe_local", { radius }));
+  server.registerTool("observe_local", { description: "Current deterministic local text observation centered on Codex.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15) }) }, async ({ radius }) => {
+    try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius }))); }
+    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+  });
   server.registerTool("inspect_entity", { description: "Inspect entities at up to 16 positions within 30 tiles.", inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => rpc("inspect", toolPayloads.inspect(positions)));
   server.registerTool("describe_prototype", { description: "Describe exact item, entity or recipe prototypes.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(24) }) }, async (p) => rpc("describe_prototype", p));
   server.registerTool("can_place", { description: "Check up to 24 placements within 30 tiles without side effects.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().optional() })).min(1).max(24) }) }, async ({ placements }) => rpc("can_place", toolPayloads.canPlace(placements)));

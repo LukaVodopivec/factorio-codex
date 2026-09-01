@@ -1,18 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
-import { connectStatus, result, toolPayloads } from "../src/mcp/server.js";
+import { connectStatus, normalizeObservation, result, toolPayloads } from "../src/mcp/server.js";
 describe("public MCP to Lua DTO mappings", () => {
-  it("returns matching plain text and structured content", () => {
+  it("returns matching plain text and structured content for a populated observation", () => {
     const value = {
       tick: 1,
       character: { position: { x: 0, y: 0 }, inventory: { "iron-plate": 3 } },
       grid: { origin: { x: -1, y: -1 }, rows: ["...", ".@.", "..."], legend: { "@": "you" } },
+      entities: [{ name: "furnace" }],
       resource_patches: [{ name: "iron-ore", entity_count: 2, total_amount: 300, center: { x: 5.5, y: 0 } }],
     };
-    const output = result(value);
+    const output = result(normalizeObservation(value));
     expect(JSON.parse(output.content[0].text)).toEqual(value);
-    expect(output.structuredContent).toEqual(value);
+    expect(JSON.parse(output.content[0].text)).toEqual(output.structuredContent);
     expect(output.content[0].text).toContain('"resource_patches"');
+  });
+  it("normalizes Lua empty tables to arrays before rendering text and structure", () => {
+    const output = result(normalizeObservation({ tick: 2, entities: {}, resource_patches: {} }));
+    expect(output.structuredContent).toEqual({ tick: 2, entities: [], resource_patches: [] });
+    expect(JSON.parse(output.content[0].text)).toEqual(output.structuredContent);
   });
   it("maps every coordinate action to the retained Lua DTO", () => {
     expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } }); // walk_to and mine

@@ -1,5 +1,5 @@
 -- inspect: detailed view of ONE entity, located by map position (1.5-tile
--- search, non-characters preferred) or by unit_number (see docs/PROTOCOL.md).
+-- search, non-characters preferred) or by unit_number.
 local companion = require("scripts.companion")
 
 local M = {}

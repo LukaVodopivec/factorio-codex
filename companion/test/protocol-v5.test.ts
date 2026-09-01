@@ -1,12 +1,19 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 
 describe("bridge protocol v5", () => {
   it("has the expected version and retained methods", () => {
     expect(PROTOCOL_VERSION).toBe(5);
-    expect(RPC_METHODS).toContain("observe_local");
-    expect(RPC_METHODS).toContain("enqueue");
-    expect(RPC_METHODS).not.toContain("take_screenshot");
+    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "describe_prototype", "enqueue", "get_task", "cancel", "get_chunk"]);
+  });
+  it("matches the exact Lua registrations", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const sources = ["mod/agentic-companion/control.lua", "mod/agentic-companion/scripts/rpc.lua"].map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
+    const registered = [...sources.matchAll(/(?:rpc|M)\.register\("([^"]+)"/g)].map((match) => match[1]).sort();
+    expect(registered).toEqual([...RPC_METHODS].sort());
   });
   it("validates normal, error, and chunk envelopes", () => {
     expect(parseRpcEnvelope('{"ok":true,"data":{"tick":1}}')).toMatchObject({ ok: true });

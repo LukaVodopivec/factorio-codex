@@ -1,8 +1,5 @@
--- Companion registry: up to MAX_COMPANIONS named characters ("AI" is the
--- default). A transient per-call context selects which companion the current
--- RPC/task acts on: rpc.lua sets it from params.companion, tasks.lua sets it
--- per lane before each tick. Existing single-companion code keeps calling
--- get()/require_companion() unchanged.
+-- The sole persistent physical body. The retained record survives death so
+-- connect_status can distinguish never-created from dead without respawning.
 local M = {}
 
 M.DEFAULT = "Codex"
@@ -20,16 +17,8 @@ local PALETTE = {
 local LABEL_OFFSET = { 0, -2.9 }
 local MAP_TAG_MOVE_SQ = 9
 
--- Transient (NOT storage-safe, deliberately): valid only within one call/tick.
-local current_name = nil
-
-function M.set_context(name)
-  current_name = (type(name) == "string" and name ~= "") and name or nil
-end
-
-function M.context()
-  return current_name or M.DEFAULT
-end
+function M.set_context() end
+function M.context() return M.DEFAULT end
 
 local function records()
   storage.companions = storage.companions or {}
@@ -173,9 +162,6 @@ function M.update_map_tag()
   end
 end
 
--- Issue/refresh the default companion's starter blueprint books. Runs
--- on_nth_tick (wired in control.lua) so a save loaded with regenerated
--- blueprint data picks the books up without a respawn — must never raise.
 
 function M.spawn(params)
   local name = M.DEFAULT

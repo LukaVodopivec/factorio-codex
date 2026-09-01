@@ -1,4 +1,4 @@
-// Typed wrapper over RCON → remote.call("agentic","rpc",...) (see docs/PROTOCOL.md).
+// Typed wrapper over RCON → remote.call("agentic","rpc",...).
 import { RconClient } from "./rcon.js";
 import type { ChunkedEnvelope, GetTaskResult, Task } from "./types.js";
 import { parseRpcEnvelope, type RpcMethod } from "./protocol/contract.js";
@@ -19,6 +19,7 @@ export interface EnqueueOptions {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+export const DEFAULT_TASK_TIMEOUT_MS = 570_000;
 
 export class Bridge {
   constructor(private readonly rcon: RconClient) {}
@@ -90,7 +91,7 @@ export class Bridge {
       task,
       replace: opts.replace ?? false,
     });
-    const timeoutMs = opts.timeoutMs ?? 120_000;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
     const pollMs = opts.pollMs ?? 500;
     const deadline = Date.now() + timeoutMs;
 

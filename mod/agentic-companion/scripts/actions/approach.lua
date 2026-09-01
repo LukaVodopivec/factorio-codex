@@ -1,5 +1,5 @@
 -- Shared "walk within reach first" phase for every action task with a map
--- target (see docs/PROTOCOL.md "Tasks"). Sub-state lives under task._approach.
+-- target. Sub-state lives under task._approach.
 local walk = require("scripts.actions.walk")
 
 local M = {}

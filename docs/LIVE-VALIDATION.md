@@ -1,7 +1,8 @@
 # Live validation
 
-Factorio was unavailable during the offline release verification. Run this on
-a machine with Factorio 2.0.x installed:
+Factorio was unavailable during the offline release verification. On a fresh
+machine, first launch Factorio 2.0.x once and exit so its user-data directory
+and `config/config.ini` exist. Then:
 
 1. `nvm use 22 && npm ci && npm run build && node companion/dist/cli.js setup`
 2. Restart Factorio, enable **Factorio Codex Companion**, and host a dedicated

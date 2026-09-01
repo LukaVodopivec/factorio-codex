@@ -1,5 +1,5 @@
--- build_plan: place many entities in one task (docs/PROTOCOL.md "Building at
--- scale"). Walks within build reach of each step, places the item, then
+-- build_plan: place many entities in one task. Walks within build reach of
+-- each step, places the item, then
 -- optionally sets a recipe and inserts starter items — mirroring the exact
 -- validation rules of the single-step place/set_recipe/insert actions
 -- (scripts/actions/build.lua, scripts/actions/transfer.lua). A failed step is
@@ -294,7 +294,7 @@ function M.tick(task)
   if reached ~= "ok" then return nil end
 
   -- step.entity overrides the item's place_result: one item can place several
-  -- entities (the rail item also places curved segments — blueprint builds
+  -- entities (the rail item also places curved segments — large builds
   -- must create the exact entity the print recorded).
   local entity_name = step.entity or place_result.name
   if step.entity and not prototypes.entity[step.entity] then

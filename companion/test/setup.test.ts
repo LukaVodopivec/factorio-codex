@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { patchRconConfig } from "../src/setup/configini.js";
 import { setupTransaction } from "../src/setup/transaction.js";
+import { installMod } from "../src/setup/installMod.js";
 
 const dirs: string[] = [];
 const tempDir = () => {
@@ -51,5 +52,15 @@ describe("patchRconConfig", () => {
     expect(once).toContain("local-rcon-password=secret\r\n");
     expect(patchRconConfig(file, { port: 19015, password: "secret" }).changed).toBe(false);
     expect(fs.readFileSync(file, "utf8")).toBe(once);
+  });
+});
+
+describe("mod installation", () => {
+  it("installs the retained repository mod and enables it", () => {
+    const mods = path.join(tempDir(), "mods");
+    const installed = installMod(mods);
+    expect(installed.copied).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(installed.dest, "info.json"), "utf8"))).toMatchObject({ name: "agentic-companion", version: "0.7.0" });
+    expect(JSON.parse(fs.readFileSync(path.join(mods, "mod-list.json"), "utf8")).mods).toContainEqual({ name: "agentic-companion", enabled: true });
   });
 });

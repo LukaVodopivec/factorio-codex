@@ -13,7 +13,8 @@
     "test:mcp": "npm run test:mcp -w companion",
     "typecheck": "npm run typecheck -w companion",
     "package:mod": "bash scripts/package-mod.sh",
-    "test:mod": "lua tests/mod/tasks_chain_test.lua && lua tests/mod/companion_movement_test.lua && lua tests/mod/build_plan_autocraft_test.lua"
+    "test:mod": "lua5.4 tests/mod/tasks_chain_test.lua && lua5.4 tests/mod/companion_movement_test.lua && lua5.4 tests/mod/build_plan_autocraft_test.lua && lua5.4 tests/mod/observe_local_test.lua && lua5.4 tests/mod/exact_mining_test.lua && lua5.4 tests/mod/control_load_test.lua",
+    "test:package": "bash scripts/package-mod.sh --verify"
   },
   "engines": {
     "node": ">=22"

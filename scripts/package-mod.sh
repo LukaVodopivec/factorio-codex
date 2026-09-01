@@ -29,3 +29,16 @@ rm -f "$ZIP_PATH"
 (cd "$STAGE_DIR" && zip -qr "$ZIP_PATH" "$NAME")
 
 echo "Packaged $ZIP_PATH"
+
+if [ "${1:-}" = "--verify" ]; then
+  test "$VERSION" = "0.7.0"
+  entries="$(unzip -Z1 "$ZIP_PATH")"
+  test "$(printf '%s\n' "$entries" | sed -n '1p')" = "$NAME/"
+  printf '%s\n' "$entries" | grep -Fx "$NAME/info.json" >/dev/null
+  if printf '%s\n' "$entries" | grep -Ev "^$NAME/" >/dev/null; then
+    echo "Archive contains a path outside $NAME/" >&2
+    exit 1
+  fi
+  test "$(unzip -p "$ZIP_PATH" "$NAME/info.json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" = "0.7.0"
+  echo "Verified $ZIP_PATH layout and version"
+fi

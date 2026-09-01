@@ -17,7 +17,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install Lua
+      - name: Install Lua 5.4
         run: sudo apt-get update && sudo apt-get install -y lua5.4
       - run: npm ci
       - run: npm ls --all
@@ -26,5 +26,5 @@ jobs:
       - run: npm test
       - run: npm run test:mcp
       - run: npm run test:mcp:built -w companion
-      - name: Verify mod package
-        run: npm run package:mod
+      - name: Verify mod package layout and version
+        run: npm run test:package

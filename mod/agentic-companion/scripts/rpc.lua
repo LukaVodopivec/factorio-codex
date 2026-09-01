@@ -1,4 +1,4 @@
--- Single RPC entry point for the companion app (see docs/PROTOCOL.md).
+-- Single RPC entry point for the companion app.
 -- Params arrive as a JSON string; the response is printed to the RCON
 -- connection as a {ok, data|error} JSON envelope. Envelopes larger than
 -- CHUNK_SIZE are stored in storage.rpc_outbox and streamed back to the
@@ -67,11 +67,7 @@ function M.dispatch(method, params_json)
     end
     params = decoded
   end
-  -- Which companion this call acts on (default "AI"); handlers and the code
-  -- they call read it through companion.context()/get().
-  companion.set_context(params.companion)
   local ok, result = pcall(handler, params)
-  companion.set_context(nil)
   if ok then
     respond({ ok = true, data = result or {} }, method == "get_chunk")
   else
@@ -95,11 +91,6 @@ M.register("get_chunk", function(params)
       .. " parts; there is no part " .. tostring(params.part))
   end
   return { data = data }
-end)
-
-M.register("echo", function(params)
-  local size = math.floor(math.min(tonumber(params.size) or 0, 200000))
-  return { data = string.rep("x", math.max(size, 0)) }
 end)
 
 return M

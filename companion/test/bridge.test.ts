@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Bridge, escapeLuaString, ModError } from "../src/bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, escapeLuaString, ModError } from "../src/bridge.js";
 import type { RconClient } from "../src/rcon.js";
 
 function fakeRcon(execImpl: (cmd: string) => Promise<string>): {
@@ -56,6 +56,9 @@ describe("Bridge.call", () => {
 });
 
 describe("Bridge.enqueueAndWait", () => {
+  it("allows long physical plans below the 600-second MCP ceiling", () => {
+    expect(DEFAULT_TASK_TIMEOUT_MS).toBe(570_000);
+  });
   it("resolves with the detail when the task finishes", async () => {
     let polls = 0;
     const { rcon } = fakeRcon((cmd) => {

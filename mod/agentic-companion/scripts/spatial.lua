@@ -149,13 +149,22 @@ function M.scan_area(params)
     end
   end
 
-  -- Entity pass: one scan over the whole box; each entity paints its center
-  -- tile only (multi-tile buildings therefore look smaller than they are).
+  -- Entity pass: paint complete selection/collision footprints.
   local enemy_force = game.forces.enemy
   local entities = surface.find_entities_filtered({
     area = { { ox, oy }, { ox + size, oy + size } },
   })
-  local details, patches_by_name = {}, {}
+  -- Factorio does not promise entity iteration order. Pre-assign dynamic
+  -- glyphs from lexical entity names so repeated observations are identical.
+  local resource_names, building_names, seen_resource, seen_building = {}, {}, {}, {}
+  for _, e in ipairs(entities) do
+    if e.valid and e.type == "resource" and not seen_resource[e.name] then seen_resource[e.name] = true; resource_names[#resource_names + 1] = e.name
+    elseif e.valid and e.force == c.force and e ~= c and e.type ~= "character" and not seen_building[e.name] then seen_building[e.name] = true; building_names[#building_names + 1] = e.name end
+  end
+  table.sort(resource_names); table.sort(building_names)
+  for _, name in ipairs(resource_names) do letter_for(name, resource_letters, UPPER_LETTERS) end
+  for _, name in ipairs(building_names) do letter_for(name, building_letters, LOWER_LETTERS) end
+  local details, resources_by_name = {}, {}
   for _, e in ipairs(entities) do
     if e.valid then
       local col = math.floor(e.position.x) - ox + 1
@@ -187,8 +196,9 @@ function M.scan_area(params)
             local rr, cc = py - oy + 1, px - ox + 1
             if rr >= 1 and rr <= size and cc >= 1 and cc <= size and p > prio[rr][cc] then chars[rr][cc], prio[rr][cc] = ch, p end
           end end
-          details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, bounds = { left_top = { x = x1, y = y1 }, right_bottom = { x = x2, y = y2 } }, footprint = { width = x2 - x1, height = y2 - y1 } }
-          if e.type == "resource" then local patch = patches_by_name[e.name] or { name = e.name, entity_count = 0, total_amount = 0, sx = 0, sy = 0 }; patches_by_name[e.name] = patch; patch.entity_count = patch.entity_count + 1; patch.total_amount = patch.total_amount + (e.amount or 0); patch.sx = patch.sx + e.position.x; patch.sy = patch.sy + e.position.y end
+          local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y
+          details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, bounds = { left_top = { x = x1, y = y1 }, right_bottom = { x = x2, y = y2 } }, footprint = { width = x2 - x1, height = y2 - y1 }, _distance = ddx * ddx + ddy * ddy }
+          if e.type == "resource" then resources_by_name[e.name] = resources_by_name[e.name] or {}; resources_by_name[e.name][#resources_by_name[e.name] + 1] = e end
         end
       end
     end
@@ -199,9 +209,25 @@ function M.scan_area(params)
     grid[row] = table.concat(chars[row])
   end
 
-  table.sort(details, function(a, b) return a.position.y < b.position.y or (a.position.y == b.position.y and (a.position.x < b.position.x or (a.position.x == b.position.x and a.name < b.name))) end)
+  table.sort(details, function(a, b) return a._distance < b._distance or (a._distance == b._distance and (a.position.y < b.position.y or (a.position.y == b.position.y and (a.position.x < b.position.x or (a.position.x == b.position.x and a.name < b.name))))) end)
   local omitted = math.max(0, #details - 256); while #details > 256 do table.remove(details) end
-  local patches = {}; for _, p in pairs(patches_by_name) do p.center = { x = p.sx / p.entity_count, y = p.sy / p.entity_count }; local dx, dy = p.center.x - c.position.x, p.center.y - c.position.y; p.distance = math.sqrt(dx * dx + dy * dy); p.sx, p.sy = nil, nil; patches[#patches + 1] = p end; table.sort(patches, function(a, b) return a.distance < b.distance end)
+  table.sort(details, function(a, b) return a.position.y < b.position.y or (a.position.y == b.position.y and (a.position.x < b.position.x or (a.position.x == b.position.x and a.name < b.name))) end)
+  for _, detail in ipairs(details) do detail._distance = nil end
+  local patches = {}
+  for name, resources in pairs(resources_by_name) do
+    local visited = {}
+    for start = 1, #resources do if not visited[start] then
+      local queue, head, count, amount, sx, sy = { start }, 1, 0, 0, 0, 0; visited[start] = true
+      while head <= #queue do
+        local index = queue[head]; head = head + 1; local e = resources[index]
+        count, amount, sx, sy = count + 1, amount + (e.amount or 0), sx + e.position.x, sy + e.position.y
+        for other = 1, #resources do if not visited[other] then local o = resources[other]; if math.abs(e.position.x - o.position.x) <= 1.1 and math.abs(e.position.y - o.position.y) <= 1.1 then visited[other] = true; queue[#queue + 1] = other end end end
+      end
+      local center = { x = sx / count, y = sy / count }; local dx, dy = center.x - c.position.x, center.y - c.position.y
+      patches[#patches + 1] = { name = name, entity_count = count, total_amount = amount, center = center, distance = math.sqrt(dx * dx + dy * dy) }
+    end end
+  end
+  table.sort(patches, function(a, b) return a.distance < b.distance or (a.distance == b.distance and a.name < b.name) end)
   local inventory = {}; for _, item in ipairs(c.get_main_inventory().get_contents()) do inventory[item.name] = (inventory[item.name] or 0) + item.count end
   return { tick = game.tick, radius = radius, character = { position = { x = c.position.x, y = c.position.y }, health = c.health, inventory = inventory, active_task = require("scripts.tasks").active_summary(), reach_distance = c.reach_distance, build_distance = c.build_distance }, grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend, coordinate_rule = "rows north-to-south; columns west-to-east; x=origin.x+column, y=origin.y+row" }, entities = details, resource_patches = patches, omitted_entities = omitted }
 end

@@ -11,7 +11,7 @@ local approach = require("scripts.actions.approach")
 
 local M = {}
 
-local MAX_STEPS = 100
+local MAX_STEPS = 25
 local MAX_FAILURES_LISTED = 5
 
 -- ------------------------------------------------------------- validation
@@ -105,7 +105,7 @@ function M.start(task)
   end
   task._waiting_for_crafts = task._auto_crafted > 0
 
-  task.stop_on_error = task.stop_on_error == true
+  task.stop_on_error = task.stop_on_error ~= false
   task._index = 1
   task._placed = 0
   task._results = {}

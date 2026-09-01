@@ -1,32 +1,16 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /** Executable manifest shared by runtime validation and conformance tests. */
 export const RPC_METHODS = [
   "ping",
-  "echo",
   "spawn_companion",
-  "get_chat",
-  "say",
-  "get_state",
-  "check_inventory",
+  "observe_local",
   "inspect",
-  "analyze_factory",
   "start_research",
-  "equip",
-  "scan_area",
   "can_place",
-  "find_buildable_area",
   "describe_prototype",
-  "import_blueprint",
-  "list_blueprints",
-  "read_blueprint",
-  "take_screenshot",
-  "exit_vehicle",
-  "list_trains",
-  "set_train_schedule",
-  "get_events",
   "enqueue",
   "get_task",
   "cancel",

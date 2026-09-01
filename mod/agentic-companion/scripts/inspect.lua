@@ -148,6 +148,7 @@ local function locate(params)
   local c = companion.get()
   local surface
   if c then
+    if distance(c.position, target) > 30 then error("inspect positions must be within 30 tiles of Codex") end
     surface = c.surface
   else
     local player = game.connected_players[1]

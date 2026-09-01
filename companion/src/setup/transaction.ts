@@ -13,7 +13,7 @@ interface Snapshot {
  * the first mutation and restored if any later step fails.
  */
 export function setupTransaction<T>(targets: string[], operation: () => T): T {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agentic-factorio-setup-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-setup-"));
   const snapshots: Snapshot[] = [];
   try {
     for (const [index, target] of [...new Set(targets)].entries()) {

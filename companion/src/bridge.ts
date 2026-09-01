@@ -2,7 +2,6 @@
 import { RconClient } from "./rcon.js";
 import type { ChunkedEnvelope, GetTaskResult, Task } from "./types.js";
 import { parseRpcEnvelope, type RpcMethod } from "./protocol/contract.js";
-import { recordRpc } from "./telemetry.js";
 
 export class ModError extends Error {}
 
@@ -25,15 +24,7 @@ export class Bridge {
   constructor(private readonly rcon: RconClient) {}
 
   async call<T>(method: RpcMethod, params?: unknown): Promise<T> {
-    const started = performance.now();
-    let succeeded = false;
-    try {
-      const result = await this.callUnchecked<T>(method, params);
-      succeeded = true;
-      return result;
-    } finally {
-      recordRpc(method, performance.now() - started, succeeded);
-    }
+    return this.callUnchecked<T>(method, params);
   }
 
   private async callUnchecked<T>(method: RpcMethod, params?: unknown): Promise<T> {
@@ -78,14 +69,6 @@ export class Bridge {
   /** A view of this bridge that acts as the named companion: every call gets
    *  `companion` merged into its params (the mod routes on it). Prototype
    *  chain keeps enqueueAndWait/unlock working through the overridden call. */
-  scoped(companion: string): Bridge {
-    const parent = this;
-    const child = Object.create(parent) as Bridge;
-    child.call = <T>(method: RpcMethod, params?: unknown): Promise<T> =>
-      parent.call<T>(method, { ...((params as Record<string, unknown>) ?? {}), companion });
-    return child;
-  }
-
   /** Factorio requires the first Lua command of a session to be repeated as an
    *  "this disables achievements" confirmation, and returns nothing until then.
    *  Send a harmless ping up to twice to get past it. Call once after connect. */

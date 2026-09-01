@@ -20,11 +20,11 @@ jobs:
       - name: Install Lua
         run: sudo apt-get update && sudo apt-get install -y lua5.4
       - run: npm ci
+      - run: npm ls --all
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
       - run: npm run test:mcp
-      - name: Verify generated blueprints are committed
-        run: npm run blueprints:build && git diff --exit-code
+      - run: npm run test:mcp:built -w companion
       - name: Verify mod package
         run: npm run package:mod

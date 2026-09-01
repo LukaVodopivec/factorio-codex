@@ -1,11 +1,11 @@
 {
-  "name": "agentic-factorio",
-  "version": "0.5.0",
+  "name": "factorio-codex",
+  "version": "0.7.0",
   "description": "AI companion for your Factorio world \u2014 bring Claude, GPT or any LLM into your game",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "agentic-factorio": "dist/cli.js"
+    "factorio-codex": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -19,15 +19,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:mcp": "MCP_SMOKE_OFFLINE=1 tsx test/mcp-smoke.ts",
-    "play": "tsx src/cli.ts play"
+    "test:mcp:built": "MCP_ENTRY=dist/cli.js MCP_SMOKE_OFFLINE=1 tsx test/mcp-smoke.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.14",
-    "@ai-sdk/openai": "^4.0.13",
     "@clack/prompts": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openrouter/ai-sdk-provider": "^3.0.0",
-    "ai": "^7.0.26",
     "picocolors": "^1.1.1",
     "zod": "^4.4.3"
   },

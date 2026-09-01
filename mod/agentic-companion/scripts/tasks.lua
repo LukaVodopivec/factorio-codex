@@ -2,18 +2,12 @@
 -- on_tick (always registered, early-exit when idle); the companion app polls
 -- get_task for completion.
 local companion = require("scripts.companion")
-local events = require("scripts.events")
 local walk = require("scripts.actions.walk")
-local follow = require("scripts.actions.follow")
 local mine = require("scripts.actions.mine")
 local build = require("scripts.actions.build")
 local craft = require("scripts.actions.craft")
 local transfer = require("scripts.actions.transfer")
-local refuel = require("scripts.actions.refuel")
-local drive = require("scripts.actions.drive")
 local build_plan = require("scripts.actions.build_plan")
-local deconstruct = require("scripts.actions.deconstruct")
-local fight = require("scripts.actions.fight")
 
 local M = {}
 
@@ -22,7 +16,6 @@ local PRUNE_INTERVAL_TICKS = 3600
 
 local runners = {
   walk_to = walk,
-  follow_player = follow,
   mine = mine,
   place = build.place,
   rotate = build.rotate,
@@ -30,14 +23,7 @@ local runners = {
   craft = craft,
   insert = transfer.insert,
   extract = transfer.extract,
-  deliver = transfer.deliver,
-  keep_fueled = refuel,
-  drive_to = drive,
-  defend_area = require("scripts.actions.defend"),
   build_plan = build_plan,
-  build_blueprint = require("scripts.actions.build_blueprint"),
-  deconstruct = deconstruct,
-  fight = fight,
 }
 
 -- One lane (queue + active) per companion; tasks in different lanes run in
@@ -101,23 +87,6 @@ local function finish(task, status, detail)
     l2.queue = kept
   end
 
-  -- Background tasks aren't awaited by anyone — report their outcome as a
-  -- push event so the brain hears about it. (Awaited tasks already report
-  -- through get_task polling; cancellations stay silent.) `quiet` suppresses
-  -- the success event — run_plan marks every step but the last quiet, so a
-  -- whole plan wakes the brain once. Failures always report.
-  if task.background then
-    pcall(function()
-      local who = task.companion or companion.DEFAULT
-      if status == "done" and not task.quiet then
-        events.push("task_done", who .. " finished: " .. (detail or "done"),
-          { companion = who, task_id = task.id })
-      elseif status == "failed" then
-        events.push("task_failed", who .. "'s task FAILED: " .. (detail or "no detail"),
-          { companion = who, task_id = task.id })
-      end
-    end)
-  end
 end
 
 local function cancel_lane(name)
@@ -152,8 +121,6 @@ function M.enqueue(params)
   t.next_id = t.next_id + 1
   task.status = "queued"
   task.companion = name
-  task.background = params.background == true
-  task.quiet = params.quiet == true
   if params.chain ~= nil then task.chain = tostring(params.chain) end
 
   -- Late arrival of an already-failed plan: cancel silently right here (the

@@ -155,6 +155,7 @@ function M.scan_area(params)
   local entities = surface.find_entities_filtered({
     area = { { ox, oy }, { ox + size, oy + size } },
   })
+  local details, patches_by_name = {}, {}
   for _, e in ipairs(entities) do
     if e.valid then
       local col = math.floor(e.position.x) - ox + 1
@@ -178,8 +179,16 @@ function M.scan_area(params)
         elseif e.type == "cliff" then
           ch, p = "c", PRIORITY.cliff
         end
-        if ch and p > prio[row][col] then
-          chars[row][col], prio[row][col] = ch, p
+        local box = e.selection_box or e.bounding_box
+        local x1, y1, x2, y2 = math.floor(e.position.x), math.floor(e.position.y), math.floor(e.position.x) + 1, math.floor(e.position.y) + 1
+        if box then x1, y1, x2, y2 = math.floor(box.left_top.x), math.floor(box.left_top.y), math.ceil(box.right_bottom.x), math.ceil(box.right_bottom.y) end
+        if ch then
+          for py = y1, y2 - 1 do for px = x1, x2 - 1 do
+            local rr, cc = py - oy + 1, px - ox + 1
+            if rr >= 1 and rr <= size and cc >= 1 and cc <= size and p > prio[rr][cc] then chars[rr][cc], prio[rr][cc] = ch, p end
+          end end
+          details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, bounds = { left_top = { x = x1, y = y1 }, right_bottom = { x = x2, y = y2 } }, footprint = { width = x2 - x1, height = y2 - y1 } }
+          if e.type == "resource" then local patch = patches_by_name[e.name] or { name = e.name, entity_count = 0, total_amount = 0, sx = 0, sy = 0 }; patches_by_name[e.name] = patch; patch.entity_count = patch.entity_count + 1; patch.total_amount = patch.total_amount + (e.amount or 0); patch.sx = patch.sx + e.position.x; patch.sy = patch.sy + e.position.y end
         end
       end
     end
@@ -190,15 +199,11 @@ function M.scan_area(params)
     grid[row] = table.concat(chars[row])
   end
 
-  return {
-    origin = { x = ox, y = oy },
-    width = size,
-    height = size,
-    grid = grid,
-    legend = legend,
-    note = "tile at grid[row][col] = map (origin.x+col, origin.y+row); rows run north to south."
-      .. " Entity symbols mark their center tile only — multi-tile buildings cover more ground than shown.",
-  }
+  table.sort(details, function(a, b) return a.position.y < b.position.y or (a.position.y == b.position.y and (a.position.x < b.position.x or (a.position.x == b.position.x and a.name < b.name))) end)
+  local omitted = math.max(0, #details - 256); while #details > 256 do table.remove(details) end
+  local patches = {}; for _, p in pairs(patches_by_name) do p.center = { x = p.sx / p.entity_count, y = p.sy / p.entity_count }; local dx, dy = p.center.x - c.position.x, p.center.y - c.position.y; p.distance = math.sqrt(dx * dx + dy * dy); p.sx, p.sy = nil, nil; patches[#patches + 1] = p end; table.sort(patches, function(a, b) return a.distance < b.distance end)
+  local inventory = {}; for _, item in ipairs(c.get_main_inventory().get_contents()) do inventory[item.name] = (inventory[item.name] or 0) + item.count end
+  return { tick = game.tick, radius = radius, character = { position = { x = c.position.x, y = c.position.y }, health = c.health, inventory = inventory, active_task = require("scripts.tasks").active_summary(), reach_distance = c.reach_distance, build_distance = c.build_distance }, grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend, coordinate_rule = "rows north-to-south; columns west-to-east; x=origin.x+column, y=origin.y+row" }, entities = details, resource_patches = patches, omitted_entities = omitted }
 end
 
 -- --------------------------------------------------------------- can_place
@@ -233,6 +238,8 @@ local function can_place_one(c, surface, item, position, direction)
     error("can_place requires item = <item name>")
   end
   local pos = require_position(position, "can_place requires position = {x, y}")
+  local dx, dy = pos.x - c.position.x, pos.y - c.position.y
+  if math.sqrt(dx * dx + dy * dy) > 30 then error("can_place positions must be within 30 tiles of Codex") end
   direction = math.floor(tonumber(direction) or 0) % 16
 
   local item_proto = prototypes.item[item]

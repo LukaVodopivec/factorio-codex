@@ -7,7 +7,7 @@ import { setupTransaction } from "../src/setup/transaction.js";
 
 const dirs: string[] = [];
 const tempDir = () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentic-factorio-setup-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-setup-test-"));
   dirs.push(dir);
   return dir;
 };
@@ -46,10 +46,10 @@ describe("patchRconConfig", () => {
   it("is idempotent and preserves CRLF", () => {
     const file = path.join(tempDir(), "config.ini");
     fs.writeFileSync(file, "[other]\r\n; local-rcon-socket=old\r\n");
-    expect(patchRconConfig(file, { port: 27015, password: "secret" }).changed).toBe(true);
+    expect(patchRconConfig(file, { port: 19015, password: "secret" }).changed).toBe(true);
     const once = fs.readFileSync(file, "utf8");
     expect(once).toContain("local-rcon-password=secret\r\n");
-    expect(patchRconConfig(file, { port: 27015, password: "secret" }).changed).toBe(false);
+    expect(patchRconConfig(file, { port: 19015, password: "secret" }).changed).toBe(false);
     expect(fs.readFileSync(file, "utf8")).toBe(once);
   });
 });

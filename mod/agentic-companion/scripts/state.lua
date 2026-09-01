@@ -3,7 +3,6 @@ local M = {}
 -- Initializes/migrates the storage schema. Safe to call repeatedly.
 -- All fields any module needs MUST be declared here (single owner of the schema).
 function M.init()
-  storage.chat = storage.chat or { messages = {}, next_id = 1 }
 
   -- Tasks: one lane (queue + active) per companion.
   storage.tasks = storage.tasks or {}
@@ -14,7 +13,7 @@ function M.init()
   storage.tasks.failed_chains = storage.tasks.failed_chains or {}
   if storage.tasks.queue or storage.tasks.active then
     -- migrate the pre-multi-companion single lane
-    storage.tasks.by_companion["AI"] = {
+    storage.tasks.by_companion["Codex"] = {
       queue = storage.tasks.queue or {},
       active = storage.tasks.active,
     }
@@ -25,7 +24,7 @@ function M.init()
   storage.companions = storage.companions or {}
   if storage.companion then
     if storage.companion.entity then
-      storage.companions["AI"] = storage.companion
+      storage.companions["Codex"] = storage.companion
     end
     storage.companion = nil
   end
@@ -34,8 +33,6 @@ function M.init()
   storage.path_requests = {}
   -- chunked RPC responses: { next_id, by_id = { [id] = { parts = {...}, created_tick } } }
   storage.rpc_outbox = storage.rpc_outbox or { next_id = 1, by_id = {} }
-  -- push events for the brain (see scripts/events.lua): ring buffer like chat
-  storage.events = storage.events or { list = {}, next_id = 1 }
 end
 
 return M

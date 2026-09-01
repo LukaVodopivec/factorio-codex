@@ -49,6 +49,8 @@ package.loaded["scripts.tasks"] = { active_summary = function() return nil end }
 _G.game = { tick = 123, forces = { enemy = enemy_force } }
 local observation = require("scripts.spatial").observe_local({ radius = 15 })
 check(observation.tick == 123 and observation.radius == 15, "observation includes current tick and radius")
+local ignored_center = require("scripts.spatial").observe_local({ radius = 15, center = { x = 1000, y = 1000 } })
+check(ignored_center.grid.origin.x == -15 and ignored_center.grid.origin.y == -15, "observation always centers on Codex and ignores arbitrary center input")
 check(observation.character.inventory["iron-plate"] == 3, "observation includes character inventory")
 check(observation.grid.rows[15]:sub(15, 16) == "aa" and observation.grid.rows[16]:sub(15, 16) == "a@", "full 2x2 footprint is painted beneath higher-priority Codex")
 check(observation.grid.legend.a == "a-machine" and observation.grid.legend.b == "edge-machine", "building glyphs are assigned lexically")

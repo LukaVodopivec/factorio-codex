@@ -128,10 +128,6 @@ function M.observe_local(params)
   radius = math.max(SCAN_MIN_RADIUS, math.min(radius, SCAN_MAX_RADIUS))
 
   local center = c.position
-  if params.center ~= nil then
-    center = require_position(params.center, "observe_local center must be {x, y}")
-  end
-
   local ox = math.floor(center.x) - radius
   local oy = math.floor(center.y) - radius
   local size = radius * 2 + 1

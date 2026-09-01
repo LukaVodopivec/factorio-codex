@@ -43,7 +43,7 @@ export const toolPayloads = {
 export async function connectStatus(b: Bridge) {
   const ping: any = await b.call("ping");
   if (ping.companion_dead) return result("Connected, but Codex is dead. This interface never auto-respawns.", true);
-  if (!ping.companion_exists && !ping.companion_ever_created) await b.call("spawn_companion", { name: "Codex" });
+  if (!ping.companion_exists && !ping.companion_ever_created) await b.call("spawn_companion", {});
   return result({ status: "connected", app_version: "0.7.0", protocol_version: ping.protocol_version, mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick });
 }
 

@@ -111,7 +111,7 @@ describe("connect_status body lifecycle", () => {
       : { name: "Codex" });
     const output = await connectStatus({ call } as unknown as Bridge);
     expect(output.isError).toBe(false);
-    expect(call).toHaveBeenNthCalledWith(2, "spawn_companion", { name: "Codex" });
+    expect(call).toHaveBeenNthCalledWith(2, "spawn_companion", {});
     expect(call).toHaveBeenCalledTimes(2);
   });
 });

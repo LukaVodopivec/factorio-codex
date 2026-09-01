@@ -25,7 +25,7 @@ local surface = {
 }
 entity.surface = surface
 _G.defines = { inventory = {}, entity_status = {} }
-_G.game = { get_entity_by_unit_number = function() return entity end, connected_players = { { surface = surface, position = { x = 1000, y = 1000 } } } }
+_G.game = { connected_players = { { surface = surface, position = { x = 1000, y = 1000 } } } }
 
 local inspect = require("scripts.inspect")
 
@@ -48,9 +48,5 @@ entity.position = { x = 30.000001, y = 0 }
 local beyond, beyond_error = pcall(inspect.inspect, { position = entity.position })
 check(not beyond and tostring(beyond_error):match("within 30 tiles") ~= nil,
   "inspection rejects a target beyond 30 tiles by epsilon")
-
-local far_unit, far_unit_error = pcall(inspect.inspect, { unit_number = 42 })
-check(not far_unit and tostring(far_unit_error):match("within 30 tiles") ~= nil,
-  "unit-number inspection obeys the same Codex range boundary")
 
 os.exit(failures == 0 and 0 or 1)

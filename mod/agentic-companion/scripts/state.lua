@@ -10,17 +10,8 @@ function M.init()
   storage.tasks.records = storage.tasks.records or {}
   -- chain id -> failure tick: late enqueues of a failed plan cancel instantly
   storage.tasks.failed_chains = storage.tasks.failed_chains or {}
-  storage.tasks.lane = storage.tasks.lane
-    or (storage.tasks.by_companion and storage.tasks.by_companion["Codex"])
-    or { queue = storage.tasks.queue or {}, active = storage.tasks.active }
+  storage.tasks.lane = storage.tasks.lane or { queue = {}, active = nil }
   storage.tasks.lane.queue = storage.tasks.lane.queue or {}
-  storage.tasks.by_companion, storage.tasks.queue, storage.tasks.active = nil, nil, nil
-
-  -- v0.7 briefly stored the sole body in a named registry. Collapse that
-  -- released save shape back to the retained single-body record.
-  storage.companion = storage.companion
-    or (storage.companions and storage.companions["Codex"])
-  storage.companions = nil
 
   -- pathfinder bookkeeping: request id -> {task_id} (see actions/walk.lua)
   storage.path_requests = {}

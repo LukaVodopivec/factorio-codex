@@ -47,8 +47,18 @@ local function stop_body()
   end
 end
 
--- finish() runs with the companion context already set to the task's owner.
+local function cancel_task_crafting(task)
+  if task.type ~= "craft" and task.type ~= "build_plan" then return end
+  local c = companion.get()
+  if not c then return end
+  local queue = c.crafting_queue or {}
+  for index = #queue, 1, -1 do
+    c.cancel_crafting({ index = index, count = queue[index].count })
+  end
+end
+
 local function finish(task, status, detail)
+  if status == "cancelled" then cancel_task_crafting(task) end
   storage.tasks.records[task.id] = {
     status = status,
     detail = detail or "",

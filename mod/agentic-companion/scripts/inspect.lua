@@ -1,5 +1,5 @@
--- inspect: detailed view of ONE entity, located by map position (1.5-tile
--- search, non-characters preferred) or by unit_number.
+-- inspect: detailed view of an entity at an exact local map position
+-- (1.5-tile search, non-characters preferred).
 local companion = require("scripts.companion")
 
 local M = {}
@@ -129,22 +129,9 @@ local function collect_fluids(e, out)
 end
 
 local function locate(params, c)
-  if params.unit_number ~= nil then
-    local n = tonumber(params.unit_number)
-    local e = n and game.get_entity_by_unit_number(n)
-    if not (e and e.valid) then
-      error("no entity with unit_number " .. tostring(params.unit_number)
-        .. " — it may have been removed or mined")
-    end
-    if e.surface ~= c.surface or distance(c.position, e.position) > 30 then
-      error("inspect targets must be on Codex's surface and within 30 tiles")
-    end
-    return e
-  end
-
   local pos = params.position
   if type(pos) ~= "table" or tonumber(pos.x) == nil or tonumber(pos.y) == nil then
-    error("inspect needs either a position {x, y} or a unit_number")
+    error("inspect requires position = {x, y}")
   end
   local target = { x = tonumber(pos.x), y = tonumber(pos.y) }
 
@@ -229,7 +216,7 @@ end
 
 local MAX_TARGETS = 16
 
--- Single entity ({position}/{unit_number}) or batched: targets = [{x,y},...]
+-- Single entity ({position}) or batched: targets = [{x,y},...]
 -- inspects up to MAX_TARGETS entities in ONE call — reading machines one at
 -- a time costs the brain a full round of thinking per machine.
 function M.inspect(params)

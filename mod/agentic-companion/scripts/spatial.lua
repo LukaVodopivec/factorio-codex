@@ -1,4 +1,4 @@
--- Spatial perception (introduced in protocol v3): scan_area (ASCII tile grid), can_place
+-- Protocol-v5 local perception: observe_local (ASCII tile grid), can_place
 -- (dry-run placement check with blocker naming), find_buildable_area (nearest
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
@@ -79,7 +79,7 @@ local function sorted_keys(dict)
   return keys
 end
 
--- --------------------------------------------------------------- scan_area
+-- ----------------------------------------------------------- observe_local
 
 -- Higher paints over lower when several things share a tile.
 local PRIORITY = {
@@ -87,7 +87,7 @@ local PRIORITY = {
   resource = 5, building = 6, enemy = 7, player = 8, companion = 9,
 }
 
-function M.scan_area(params)
+function M.observe_local(params)
   local c = companion.require_companion()
   local surface = c.surface
 
@@ -96,7 +96,7 @@ function M.scan_area(params)
 
   local center = c.position
   if params.center ~= nil then
-    center = require_position(params.center, "scan_area center must be {x, y}")
+    center = require_position(params.center, "observe_local center must be {x, y}")
   end
 
   local ox = math.floor(center.x) - radius

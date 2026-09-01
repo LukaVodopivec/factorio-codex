@@ -3,10 +3,16 @@ import type { Bridge } from "../src/bridge.js";
 import { connectStatus, result, toolPayloads } from "../src/mcp/server.js";
 describe("public MCP to Lua DTO mappings", () => {
   it("returns matching plain text and structured content", () => {
-    const value = { tick: 1, grid: { rows: ["@"] } };
+    const value = {
+      tick: 1,
+      character: { position: { x: 0, y: 0 }, inventory: { "iron-plate": 3 } },
+      grid: { origin: { x: -1, y: -1 }, rows: ["...", ".@.", "..."], legend: { "@": "you" } },
+      resource_patches: [{ name: "iron-ore", entity_count: 2, total_amount: 300, center: { x: 5.5, y: 0 } }],
+    };
     const output = result(value);
     expect(JSON.parse(output.content[0].text)).toEqual(value);
     expect(output.structuredContent).toEqual(value);
+    expect(output.content[0].text).toContain('"resource_patches"');
   });
   it("maps coordinate actions explicitly", () => {
     expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } });

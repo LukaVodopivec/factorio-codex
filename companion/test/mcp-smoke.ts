@@ -49,4 +49,5 @@ try {
 } finally {
   child.kill();
   fs.rmSync(home, { recursive: true, force: true });
+  if (fs.existsSync(home)) throw new Error(`temporary HOME cleanup failed`);
 }

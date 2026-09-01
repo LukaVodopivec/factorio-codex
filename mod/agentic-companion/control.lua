@@ -20,7 +20,7 @@ rpc.register("ping", function()
   }
 end)
 rpc.register("spawn_companion", companion.spawn)
-rpc.register("observe_local", spatial.scan_area)
+rpc.register("observe_local", spatial.observe_local)
 rpc.register("inspect", inspect.inspect)
 rpc.register("start_research", research.start_research)
 rpc.register("can_place", spatial.can_place)

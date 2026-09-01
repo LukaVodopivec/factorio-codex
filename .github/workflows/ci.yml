@@ -26,5 +26,7 @@ jobs:
       - run: npm test
       - run: npm run test:mcp
       - run: npm run test:mcp:built -w companion
+      - name: Verify self-contained npm package setup
+        run: npm run test:npm-package
       - name: Verify mod package layout and version
         run: npm run test:package

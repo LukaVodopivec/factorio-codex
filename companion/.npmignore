@@ -1,0 +1,3 @@
+# Package contents are selected by package.json files. Keep this package-local
+# file so the repository-level dist/assets development ignores do not hide the
+# explicitly allowlisted built CLI and bundled Factorio mod from npm pack.

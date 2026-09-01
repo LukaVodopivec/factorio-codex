@@ -58,6 +58,8 @@ describe("Bridge.call", () => {
 describe("Bridge.enqueueAndWait", () => {
   it("allows long physical plans below the 600-second MCP ceiling", () => {
     expect(DEFAULT_TASK_TIMEOUT_MS).toBe(570_000);
+    expect(DEFAULT_TASK_TIMEOUT_MS).toBeGreaterThan(540_000);
+    expect(DEFAULT_TASK_TIMEOUT_MS).toBeLessThan(600_000);
   });
   it("resolves with the detail when the task finishes", async () => {
     let polls = 0;

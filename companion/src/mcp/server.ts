@@ -89,21 +89,58 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
   void actionNames;
 }
 
-export async function runMcpServer(opts: RconSettings): Promise<void> {
-  const server = new McpServer({ name: "factorio-codex", version: "0.7.0" }, { instructions: "Control one physical Factorio character named Codex. Observe locally, then use honest path/reach/inventory/crafting actions." });
-  let connection: { rcon: RconClient; bridge: Bridge } | undefined;
-  const bridge = async () => {
+type Connection = { rcon: RconClient; bridge: Bridge };
+type RconFactory = (opts: RconSettings) => RconClient;
+
+/** Lazy, singleflight RCON handshake shared by every MCP handler. */
+export function createBridgeProvider(
+  opts: RconSettings,
+  createRcon: RconFactory = (settings) => new RconClient(settings),
+): () => Promise<Bridge> {
+  let connection: Connection | undefined;
+  let connecting: Promise<Bridge> | undefined;
+
+  return async () => {
     if (!opts.password) throw new Error("setup has not been completed; run `factorio-codex setup`");
     if (connection?.rcon.connected) return connection.bridge;
-    const rcon = new RconClient(opts);
-    await rcon.connect();
-    const b = new Bridge(rcon);
-    await b.unlock();
-    assertProtocolCompatibility(await b.call("ping"));
-    connection = { rcon, bridge: b };
-    rcon.on("close", () => { connection = undefined; });
-    return b;
+    if (connecting) return connecting;
+
+    if (connection) {
+      const stale = connection;
+      connection = undefined;
+      stale.rcon.close();
+    }
+
+    const attempt = (async () => {
+      const rcon = createRcon(opts);
+      try {
+        await rcon.connect();
+        const bridge = new Bridge(rcon);
+        await bridge.unlock();
+        assertProtocolCompatibility(await bridge.call("ping"));
+        const owned = { rcon, bridge };
+        connection = owned;
+        rcon.on("close", () => {
+          if (connection === owned) connection = undefined;
+        });
+        return bridge;
+      } catch (error) {
+        rcon.close();
+        throw error;
+      }
+    })();
+    connecting = attempt;
+    attempt.then(
+      () => { if (connecting === attempt) connecting = undefined; },
+      () => { if (connecting === attempt) connecting = undefined; },
+    );
+    return attempt;
   };
+}
+
+export async function runMcpServer(opts: RconSettings): Promise<void> {
+  const server = new McpServer({ name: "factorio-codex", version: "0.7.0" }, { instructions: "Control one physical Factorio character named Codex. Observe locally, then use honest path/reach/inventory/crafting actions." });
+  const bridge = createBridgeProvider(opts);
   registerMcpTools(server as unknown as ToolRegistrar, bridge);
   await server.connect(new StdioServerTransport());
 }

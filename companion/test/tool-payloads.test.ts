@@ -109,7 +109,7 @@ describe("connect_status body lifecycle", () => {
 
   it("rejects a stale mod before reporting connected", async () => {
     const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.6.0" });
-    await expect(connectStatus({ call } as unknown as Bridge)).rejects.toThrow("mod version mismatch");
+    await expect(connectStatus({ call } as unknown as Bridge)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.7.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 

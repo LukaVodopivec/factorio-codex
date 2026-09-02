@@ -1,5 +1,7 @@
 # Live validation
 
+This runbook validates release **0.7.0**.
+
 Factorio was unavailable during the offline release verification. On a fresh
 machine:
 

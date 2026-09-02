@@ -49,4 +49,8 @@ local beyond, beyond_error = pcall(inspect.inspect, { position = entity.position
 check(not beyond and tostring(beyond_error):match("within 30 tiles") ~= nil,
   "inspection rejects a target beyond 30 tiles by epsilon")
 
+local batch = inspect.inspect({ targets = { { x = 0, y = 30.000001 } } })
+check(batch.entities[1].error:match("within 30 tiles") ~= nil,
+  "batched public inspection reports an over-range target as a physical rejection")
+
 os.exit(failures == 0 and 0 or 1)

@@ -77,6 +77,8 @@ describe("exact local configuration", () => {
       lock.packages.companion.version,
       companionVersion(),
     ]).toEqual(Array(7).fill("0.7.0"));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.7.0**");
+    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.7.0**");
   });
   it("keeps visible locale title and description aligned with one-body mod metadata", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");

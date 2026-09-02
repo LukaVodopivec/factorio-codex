@@ -27,8 +27,13 @@ describe("bridge protocol v5", () => {
       "mod/agentic-companion/scripts/spatial.lua",
       "mod/agentic-companion/scripts/actions/transfer.lua",
     ].map(read).join("\n");
-    expect(all).not.toMatch(/params\.companion|by_companion|storage\.companions|set_context|MAX_COMPANIONS|palette|tasks\.lane|failed_chains|params\.chain|task\.chain|find_buildable_area|params(?:\.center|\[\s*["']center["']\s*\])|near_player|path_requests|M\.DEFAULT|M\.deliver|deliver_target|register\(["']echo["']/);
-    expect(read("mod/agentic-companion/scripts/inspect.lua")).not.toMatch(/unit_number|get_entity_by_unit_number|connected_players/);
+    expect(all).not.toMatch(/params\.companion|by_companion|storage\.companions|set_context|MAX_COMPANIONS|palette|failed_chains|params\.chain|task\.chain|find_buildable_area|params(?:\.center|\[\s*["']center["']\s*\])|near_player|path_requests|M\.DEFAULT|M\.deliver|deliver_target|register\(["']echo["']/);
+    expect(read("mod/agentic-companion/scripts/state.lua")).toMatch(/storage\.tasks\s*=\s*\{\s*lane\s*=/s);
+    expect(read("mod/agentic-companion/scripts/tasks.lua")).not.toMatch(/storage\.tasks\.(?:queue|active|records|next_id)/);
+    expect(read("mod/agentic-companion/scripts/spatial.lua")).not.toMatch(/return can_place_one\(c, surface, params\.item/);
+    const inspectSource = read("mod/agentic-companion/scripts/inspect.lua");
+    expect(inspectSource).not.toMatch(/unit_number|get_entity_by_unit_number|connected_players|params\.position|return inspect_one\(params/);
+    expect(inspectSource).toMatch(/return \{ entities = out \}/);
     expect(read("mod/agentic-companion/scripts/research.lua")).not.toMatch(/companion\.get|game\.forces\.player|connected_players/);
     expect(read("mod/agentic-companion/scripts/research.lua")).toMatch(/companion\.require_companion\(\)\.force/);
     expect(read("mod/agentic-companion/scripts/actions/mine.lua")).not.toMatch(/task\.resource|resource_name|find_entity_near|radius|\.mine\s*\(/);

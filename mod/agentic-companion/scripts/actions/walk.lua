@@ -62,7 +62,7 @@ end
 -- Pop the pathfinder result stashed on the sole active task, but only if it
 -- answers this walker's request.
 local function take_path_result(state, task_id)
-  local task = storage.tasks.active
+  local task = storage.tasks.lane.active
   if not task or task.id ~= task_id then return nil end
   local result = task._path_result
   if not result or result.id ~= state.request_id then return nil end
@@ -187,7 +187,7 @@ function M.on_path_finished(event)
   local entry = storage.path_request
   if not entry or entry.id ~= event.id then return end
   storage.path_request = nil
-  local task = storage.tasks.active
+  local task = storage.tasks.lane.active
   if not task or task.id ~= entry.task_id then return end
   local waypoints
   if event.path then

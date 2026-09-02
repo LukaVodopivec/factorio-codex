@@ -2,7 +2,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { packageRoot } from "../config.js";
 import { atomicWriteFile } from "./atomic.js";
 
 const MOD_NAME = "agentic-companion";
@@ -12,13 +11,10 @@ interface ModListEntry {
   enabled: boolean;
 }
 
-/** Where the mod source lives: (a) bundled npm assets, (b) monorepo layout
- *  relative to the compiled dist/cli.js, (c) monorepo layout when running
- *  from src/ via tsx. */
+/** Repository-local mod source relative to compiled dist/cli.js or src/. */
 function findModSource(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.join(packageRoot(), "assets", MOD_NAME),
     path.resolve(moduleDir, "../../mod", MOD_NAME),
     path.resolve(moduleDir, "../../../mod", MOD_NAME),
   ];
@@ -30,7 +26,7 @@ function findModSource(): string {
     }
   }
   throw new Error(
-    `cannot find the ${MOD_NAME} mod files (looked in: ${candidates.join(", ")}) — is the package installed correctly?`,
+    `cannot find the repository-local ${MOD_NAME} mod files (looked in: ${candidates.join(", ")})`,
   );
 }
 

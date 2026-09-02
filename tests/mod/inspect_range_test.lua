@@ -30,9 +30,9 @@ _G.game = { connected_players = { { surface = surface, position = { x = 1000, y 
 local inspect = require("scripts.inspect")
 
 body = nil
-local pre_spawn, pre_spawn_error = pcall(inspect.inspect, { targets = { { x = 0, y = 0 } } })
+local pre_spawn, pre_spawn_error = pcall(inspect.inspect, {})
 check(not pre_spawn and tostring(pre_spawn_error):match("does not exist") ~= nil,
-  "pre-spawn inspection requires the Codex body even when a player is connected")
+  "pre-spawn inspection requires the Codex body before validating targets")
 
 body = { valid = false, position = { x = 0, y = 0 }, surface = surface }
 local dead, dead_error = pcall(inspect.inspect, { targets = { { x = 0, y = 0 } } })
@@ -41,16 +41,31 @@ check(not dead and tostring(dead_error):match("does not exist") ~= nil,
 
 body = { valid = true, position = { x = 0, y = 0 }, surface = surface }
 entity.position = { x = 30, y = 0 }
-local at_limit, at_limit_result = pcall(inspect.inspect, { position = entity.position })
-check(at_limit and at_limit_result.name == "stone-furnace", "inspection accepts an exact 30.0-tile target")
+local at_limit, at_limit_result = pcall(inspect.inspect, { targets = { entity.position } })
+check(at_limit and at_limit_result.entities[1].name == "stone-furnace",
+  "batched inspection accepts an exact 30.0-tile target")
 
 entity.position = { x = 30.000001, y = 0 }
-local beyond, beyond_error = pcall(inspect.inspect, { position = entity.position })
-check(not beyond and tostring(beyond_error):match("within 30 tiles") ~= nil,
-  "inspection rejects a target beyond 30 tiles by epsilon")
+local beyond = inspect.inspect({ targets = { entity.position } })
+check(beyond.entities[1].error:match("within 30 tiles") ~= nil,
+  "batched inspection rejects a target beyond 30 tiles by epsilon")
 
 local batch = inspect.inspect({ targets = { { x = 0, y = 30.000001 } } })
 check(batch.entities[1].error:match("within 30 tiles") ~= nil,
   "batched public inspection reports an over-range target as a physical rejection")
+
+local single, single_error = pcall(inspect.inspect, { position = { x = 0, y = 0 } })
+check(not single and tostring(single_error):match("targets must be a non%-empty array") ~= nil,
+  "removed single-target inspection shape is rejected")
+
+local empty, empty_error = pcall(inspect.inspect, { targets = {} })
+check(not empty and tostring(empty_error):match("targets must be a non%-empty array") ~= nil,
+  "inspection rejects an empty targets array")
+
+local too_many = {}
+for i = 1, 17 do too_many[i] = { x = 0, y = 0 } end
+local oversized, oversized_error = pcall(inspect.inspect, { targets = too_many })
+check(not oversized and tostring(oversized_error):match("at most 16 targets") ~= nil,
+  "inspection rejects more than 16 targets")
 
 os.exit(failures == 0 and 0 or 1)

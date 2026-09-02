@@ -26,6 +26,10 @@ local runners = {
   build_plan = build_plan,
 }
 
+local function lane()
+  return storage.tasks.lane
+end
+
 local function stop_body()
   local c = companion.get()
   if c then
@@ -49,12 +53,12 @@ end
 
 local function finish(task, status, detail)
   if status == "cancelled" then cancel_task_crafting(task) end
-  storage.tasks.records[task.id] = {
+  lane().records[task.id] = {
     status = status,
     detail = detail or "",
     finished_tick = game.tick,
   }
-  local tasks = storage.tasks
+  local tasks = lane()
   if tasks.active and tasks.active.id == task.id then
     tasks.active = nil
   end
@@ -62,10 +66,10 @@ local function finish(task, status, detail)
 end
 
 local function cancel_all()
-  local tasks = storage.tasks
+  local tasks = lane()
   local n = 0
   for _, q in ipairs(tasks.queue) do
-    storage.tasks.records[q.id] = { status = "cancelled", detail = "", finished_tick = game.tick }
+    tasks.records[q.id] = { status = "cancelled", detail = "", finished_tick = game.tick }
     n = n + 1
   end
   tasks.queue = {}
@@ -82,7 +86,7 @@ function M.enqueue(params)
     error("unknown task type: " .. tostring(type(task) == "table" and task.type or task))
   end
   companion.require_companion()
-  local t = storage.tasks
+  local t = lane()
   task.id = t.next_id
   t.next_id = t.next_id + 1
   task.status = "queued"
@@ -93,14 +97,14 @@ end
 function M.get(params)
   local id = tonumber(params.task_id)
   if not id then error("get_task requires task_id") end
-  local tasks = storage.tasks
+  local tasks = lane()
   if tasks.active and tasks.active.id == id then
     return { status = "running", detail = "" }
   end
   for _, q in ipairs(tasks.queue) do
     if q.id == id then return { status = "queued", detail = "" } end
   end
-  local rec = storage.tasks.records[id]
+  local rec = tasks.records[id]
   if rec then return { status = rec.status, detail = rec.detail } end
   error("unknown task_id: " .. id)
 end
@@ -112,7 +116,7 @@ function M.cancel(params)
   else
     local id = tonumber(params.task_id)
     if not id then error("cancel requires task_id or all=true") end
-    local tasks = storage.tasks
+    local tasks = lane()
     if tasks.active and tasks.active.id == id then
       finish(tasks.active, "cancelled", "")
       n = 1
@@ -120,7 +124,7 @@ function M.cancel(params)
       for i, q in ipairs(tasks.queue) do
         if q.id == id then
           table.remove(tasks.queue, i)
-          storage.tasks.records[id] = { status = "cancelled", detail = "", finished_tick = game.tick }
+          tasks.records[id] = { status = "cancelled", detail = "", finished_tick = game.tick }
           n = 1
           break
         end
@@ -132,17 +136,17 @@ end
 
 -- Serializable summary of Codex's active task for observe_local.
 function M.active_summary()
-  local a = storage.tasks.active
+  local a = lane().active
   if not a then return nil end
   return { id = a.id, type = a.type, status = "running" }
 end
 
 function M.queue_length()
-  return #storage.tasks.queue
+  return #lane().queue
 end
 
 local function prune_records()
-  local t = storage.tasks
+  local t = lane()
   for id, rec in pairs(t.records) do
     if game.tick - rec.finished_tick > RECORD_TTL_TICKS then
       t.records[id] = nil
@@ -176,7 +180,7 @@ function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then
     prune_records()
   end
-  local tasks = storage.tasks
+  local tasks = lane()
   if tasks.active or #tasks.queue > 0 then
     step_task_queue(tasks)
   end

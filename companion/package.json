@@ -8,14 +8,12 @@
   "bin": {
     "factorio-codex": "dist/cli.js"
   },
-  "files": ["dist", "assets"],
+  "files": ["dist"],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsup src/cli.ts src/setup/installMod.ts --format esm --clean",
-    "prepack": "npm run build && node scripts/package-assets.mjs stage",
-    "postpack": "node scripts/package-assets.mjs clean",
+    "build": "tsup src/cli.ts --format esm --clean",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:mcp": "MCP_SMOKE_OFFLINE=1 tsx test/mcp-smoke.ts",

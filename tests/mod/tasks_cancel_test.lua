@@ -35,16 +35,16 @@ _G.game = { tick = 1 }; _G.defines = { shooting = { not_shooting = 0 } }
 local tasks = require("scripts.tasks")
 
 local function check_crafting_stop(task_type)
-  _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+  _G.storage = { tasks = { lane = { next_id = 1, records = {}, queue = {}, active = nil } } }
   local first = tasks.enqueue({ task = { type = task_type } })
   tasks.on_tick()
   local second = tasks.enqueue({ task = { type = "mine" } })
-  local task_state = storage.tasks
+  local task_state = storage.tasks.lane
   check(first.task_id == 1 and second.task_id == 2 and task_state.active.id == 1 and task_state.queue[1].id == 2,
     task_type .. " remains active while a later action queues")
   local stopped = tasks.cancel({ all = true })
   check(stopped.cancelled == 2, "stop cancels active " .. task_type .. " and queued action")
-  check(storage.tasks.records[1].status == "cancelled" and storage.tasks.records[2].status == "cancelled",
+  check(storage.tasks.lane.records[1].status == "cancelled" and storage.tasks.lane.records[2].status == "cancelled",
     task_type .. " and queued action cancellation remains observable")
   check(body.crafting_queue_size == 0, "stop empties Factorio crafting begun by " .. task_type)
 end
@@ -53,10 +53,10 @@ check_crafting_stop("craft")
 check_crafting_stop("build_plan")
 check(cancelled_crafts == 2, "both crafting task types invoke physical queue cancellation")
 
-_G.storage = { tasks = { next_id = 2, records = {}, queue = {}, active = { id = 1, type = "mine" } } }
+_G.storage = { tasks = { lane = { next_id = 2, records = {}, queue = {}, active = { id = 1, type = "mine" } } } }
 body.mining_state = { mining = true, position = { x = 4, y = 5 } }
 local stopped_mining = tasks.cancel({ task_id = 1 })
 check(stopped_mining.cancelled == 1 and body.mining_state.mining == false,
   "cancelling the active mine stops LuaControl mining immediately")
-check(storage.tasks.records[1].status == "cancelled", "mine cancellation remains observable")
+check(storage.tasks.lane.records[1].status == "cancelled", "mine cancellation remains observable")
 os.exit(failures == 0 and 0 or 1)

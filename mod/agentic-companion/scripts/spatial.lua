@@ -418,38 +418,31 @@ end
 
 local MAX_PLACEMENTS = 24
 
--- Single check ({item, position, direction}) or batched: placements =
--- [{item?, position = {x,y}, direction?}, ...] checks up to MAX_PLACEMENTS
--- spots in ONE call (item falls back to the top-level one). Spot-checking a
--- build one tile at a time costs the brain a full think per tile.
+-- placements = [{item, position = {x,y}, direction?}, ...] checks up to
+-- MAX_PLACEMENTS spots in one call.
 function M.can_place(params)
   local c = companion.require_companion()
   local surface = c.surface
 
-  if type(params.placements) == "table" then
-    if #params.placements == 0 then
-      error("placements must be a non-empty array")
-    end
-    if #params.placements > MAX_PLACEMENTS then
-      error("can_place takes at most " .. MAX_PLACEMENTS .. " placements per call — split the list")
-    end
-    local out = {}
-    for i, p in ipairs(params.placements) do
-      local ok, res = pcall(can_place_one, c, surface,
-        p.item or params.item, p.position, p.direction)
-      if not ok then
-        res = { can_place = false, reason = tostring(res):gsub("^.-:%d+:%s*", "") }
-      end
-      res.position = {
-        x = tonumber(type(p.position) == "table" and p.position.x or nil),
-        y = tonumber(type(p.position) == "table" and p.position.y or nil),
-      }
-      out[i] = res
-    end
-    return { results = out }
+  if type(params.placements) ~= "table" or #params.placements == 0 then
+    error("placements must be a non-empty array")
   end
-
-  return can_place_one(c, surface, params.item, params.position, params.direction)
+  if #params.placements > MAX_PLACEMENTS then
+    error("can_place takes at most " .. MAX_PLACEMENTS .. " placements per call — split the list")
+  end
+  local out = {}
+  for i, p in ipairs(params.placements) do
+    local ok, res = pcall(can_place_one, c, surface, p.item, p.position, p.direction)
+    if not ok then
+      res = { can_place = false, reason = tostring(res):gsub("^.-:%d+:%s*", "") }
+    end
+    res.position = {
+      x = tonumber(type(p.position) == "table" and p.position.x or nil),
+      y = tonumber(type(p.position) == "table" and p.position.y or nil),
+    }
+    out[i] = res
+  end
+  return { results = out }
 end
 
 -- -------------------------------------------------------- describe_prototype

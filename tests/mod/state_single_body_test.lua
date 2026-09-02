@@ -8,19 +8,31 @@ local function check(ok, name)
 end
 
 local body_record = { entity = { valid = false } }
-local queued = { { id = 2, type = "mine" } }
-_G.storage = { companion = body_record, tasks = { next_id = 3, records = {}, queue = queued, active = { id = 1, type = "walk_to" } } }
+local legacy_queue = { { id = 99, type = "mine" } }
+_G.storage = {
+  companion = body_record,
+  companions = { Old = { entity = { valid = true } } },
+  tasks = { next_id = 100, records = {}, queue = legacy_queue, active = { id = 98 } },
+}
 
 require("scripts.state").init()
 check(storage.companion == body_record, "initialization retains one persistent body record")
-check(storage.tasks.active.id == 1 and storage.tasks.queue == queued,
-  "initialization retains the sole active task and queue")
+check(storage.tasks.lane.next_id == 1 and #storage.tasks.lane.queue == 0
+  and storage.tasks.lane.active == nil,
+  "initialization does not read or convert legacy task fields")
 local task_keys = {}; for key in pairs(storage.tasks) do task_keys[#task_keys + 1] = key end; table.sort(task_keys)
-check(table.concat(task_keys, ",") == "active,next_id,queue,records", "task storage has only the fresh single-body shape")
+check(table.concat(task_keys, ",") == "lane", "task storage exposes only the sole fresh lane")
+check(storage.companion == body_record and storage.companion ~= storage.companions.Old,
+  "initialization never converts the legacy companion registry")
 check(storage.path_request == nil and storage.path_requests == nil,
   "path routing has one optional request slot rather than per-body maps")
 
+local lane = storage.tasks.lane
+lane.active = { id = 1, type = "walk_to" }
+lane.queue[1] = { id = 2, type = "mine" }
 require("scripts.state").init()
-check(storage.companion == body_record and storage.tasks.queue == queued, "single-body storage initialization is idempotent")
+check(storage.companion == body_record and storage.tasks.lane == lane
+  and storage.tasks.lane.active.id == 1 and storage.tasks.lane.queue[1].id == 2,
+  "fresh single-lane initialization is idempotent")
 
 os.exit(failures == 0 and 0 or 1)

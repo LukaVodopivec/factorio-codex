@@ -19,14 +19,17 @@ _G.prototypes = { item = {
 }, entity = {}, recipe = {} }
 
 local spatial = require("scripts.spatial")
-local accepted = spatial.can_place({ item = "transport-belt", position = { x = 30, y = 0 } })
-check(accepted.can_place == true and checks == 1, "can_place accepts the exact 30-tile boundary")
+local accepted = spatial.can_place({ placements = {
+  { item = "transport-belt", position = { x = 30, y = 0 } },
+} })
+check(accepted.results[1].can_place == true and checks == 1,
+  "can_place placements accept the exact 30-tile boundary")
 
 local beyond, beyond_error = pcall(spatial.can_place, {
   item = "transport-belt", position = { x = 30.000001, y = 0 },
 })
-check(not beyond and tostring(beyond_error):match("within 30 tiles") ~= nil and checks == 1,
-  "can_place rejects a single position beyond 30 tiles before querying the surface")
+check(not beyond and tostring(beyond_error):match("placements must be a non%-empty array") ~= nil and checks == 1,
+  "can_place rejects the removed single-item fallback before querying the surface")
 
 local batch = spatial.can_place({ placements = {
   { item = "transport-belt", position = { x = 0, y = 30.000001 } },

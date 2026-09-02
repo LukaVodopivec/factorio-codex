@@ -8,6 +8,5 @@ dist/
 !mod/**/*.zip
 .scratch/
 coverage/
-companion/assets/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock

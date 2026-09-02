@@ -128,10 +128,9 @@ local function collect_fluids(e, out)
   if fluids then out.fluids = fluids end
 end
 
-local function locate(params, c)
-  local pos = params.position
+local function locate(pos, c)
   if type(pos) ~= "table" or tonumber(pos.x) == nil or tonumber(pos.y) == nil then
-    error("inspect requires position = {x, y}")
+    error("inspect targets must contain {x, y}")
   end
   local target = { x = tonumber(pos.x), y = tonumber(pos.y) }
 
@@ -164,8 +163,8 @@ local function locate(params, c)
   return entity
 end
 
-local function inspect_one(params, c)
-  local e = locate(params, c)
+local function inspect_one(position, c)
+  local e = locate(position, c)
 
   local out = {
     name = e.name,
@@ -216,33 +215,34 @@ end
 
 local MAX_TARGETS = 16
 
--- Single entity ({position}) or batched: targets = [{x,y},...]
--- inspects up to MAX_TARGETS entities in ONE call — reading machines one at
--- a time costs the brain a full round of thinking per machine.
+-- Inspect up to MAX_TARGETS entities in ONE call — reading machines one at a
+-- time costs the brain a full round of thinking per machine.
 function M.inspect(params)
   local c = companion.require_companion()
-  if type(params.targets) == "table" then
-    if #params.targets == 0 then
-      error("targets must be a non-empty array of {x, y}")
-    end
-    if #params.targets > MAX_TARGETS then
-      error("inspect takes at most " .. MAX_TARGETS .. " targets per call — split the list")
-    end
-    local out = {}
-    for i, t in ipairs(params.targets) do
-      local ok, res = pcall(inspect_one, { position = t }, c)
-      if ok then
-        out[i] = res
-      else
-        out[i] = {
-          error = tostring(res):gsub("^.-:%d+:%s*", ""),
-          position = { x = tonumber(t.x), y = tonumber(t.y) },
-        }
-      end
-    end
-    return { entities = out }
+  local targets = type(params) == "table" and params.targets or nil
+  if type(targets) ~= "table" or #targets == 0 then
+    error("targets must be a non-empty array of {x, y}")
   end
-  return inspect_one(params, c)
+  if #targets > MAX_TARGETS then
+    error("inspect takes at most " .. MAX_TARGETS .. " targets per call — split the list")
+  end
+  local out = {}
+  for i, target in ipairs(targets) do
+    local ok, res = pcall(inspect_one, target, c)
+    if ok then
+      out[i] = res
+    else
+      local position = nil
+      if type(target) == "table" then
+        position = { x = tonumber(target.x), y = tonumber(target.y) }
+      end
+      out[i] = {
+        error = tostring(res):gsub("^.-:%d+:%s*", ""),
+        position = position,
+      }
+    end
+  end
+  return { entities = out }
 end
 
 return M

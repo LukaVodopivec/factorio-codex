@@ -8,10 +8,9 @@
   ],
   "scripts": {
     "build": "npm run build -w companion",
-    "test": "npm run test:unit && npm run test:mod && npm run test:npm-package && npm run test:package",
+    "test": "npm run test:unit && npm run test:mod && npm run test:package",
     "test:unit": "npm run test -w companion",
     "test:mcp": "npm run test:mcp -w companion",
-    "test:npm-package": "node scripts/test-npm-package.mjs",
     "typecheck": "npm run typecheck -w companion",
     "package:mod": "bash scripts/package-mod.sh",
     "test:mod": "lua5.4 tests/mod/state_single_body_test.lua && lua5.4 tests/mod/tasks_cancel_test.lua && lua5.4 tests/mod/companion_movement_test.lua && lua5.4 tests/mod/build_plan_autocraft_test.lua && lua5.4 tests/mod/observe_local_test.lua && lua5.4 tests/mod/spatial_range_test.lua && lua5.4 tests/mod/physical_constraints_test.lua && lua5.4 tests/mod/entity_reach_test.lua && lua5.4 tests/mod/exact_mining_test.lua && lua5.4 tests/mod/inspect_range_test.lua && lua5.4 tests/mod/research_body_test.lua && lua5.4 tests/mod/extract_items_test.lua && npx tsx companion/test/extract-lua-contract.ts && lua5.4 tests/mod/control_load_test.lua",

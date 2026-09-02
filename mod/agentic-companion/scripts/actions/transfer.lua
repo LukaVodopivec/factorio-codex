@@ -188,6 +188,8 @@ local function extract_items(task, c, e)
     elseif kept > 0 then
       local why = kept < removed and "my inventory is full" or "that's all it had"
       taken[#taken + 1] = string.format("%d of %d %s (%s)", kept, it.count, it.name, why)
+    elseif removed > 0 then
+      problems[#problems + 1] = "my inventory is full"
     else
       problems[#problems + 1] = "it has no " .. it.name
     end

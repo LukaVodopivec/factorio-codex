@@ -9,8 +9,9 @@ end
 
 local body = { valid = true, reach_distance = 6, received = {} }
 function body.insert(stack)
-  body.received[stack.name] = (body.received[stack.name] or 0) + stack.count
-  return stack.count
+  local inserted = math.min(stack.count, body.capacity or stack.count)
+  body.received[stack.name] = (body.received[stack.name] or 0) + inserted
+  return inserted
 end
 
 local contents = { coal = 7, stone = 3 }
@@ -64,6 +65,25 @@ extract.start(named_task)
 local named_result = extract.tick(named_task)
 check(named_result.status == "done" and body.received.coal == 2 and contents.coal == 3,
   "named extraction moves only the requested exact count")
+
+contents.coal = 0
+body.received.coal = 0
+local empty_task = { target = { x = 1, y = 2 }, items = { coal = 2 } }
+extract.start(empty_task)
+local empty_result = extract.tick(empty_task)
+check(empty_result.status == "failed" and empty_result.detail:match("it has no coal") ~= nil,
+  "named extraction reports an empty source honestly")
+
+contents.coal = 5
+body.capacity = 0
+local full_task = { target = { x = 1, y = 2 }, items = { coal = 2 } }
+extract.start(full_task)
+local full_result = extract.tick(full_task)
+check(full_result.status == "failed" and full_result.detail:match("my inventory is full") ~= nil,
+  "named extraction distinguishes a full Codex inventory from an empty source")
+check(contents.coal == 5 and (body.received.coal or 0) == 0,
+  "failed full-inventory extraction restores every removed source item")
+body.capacity = nil
 
 local missing, missing_error = pcall(extract.start, { target = { x = 1, y = 2 } })
 check(not missing and tostring(missing_error):match("requires items") ~= nil,

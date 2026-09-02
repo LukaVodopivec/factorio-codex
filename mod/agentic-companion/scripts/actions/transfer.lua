@@ -68,6 +68,10 @@ function M.insert.tick(task)
   local e = approach.find_entity_near(c, task.target)
   if not e then return no_entity(task, "insert into") end
 
+  local entity_reached = approach.ensure_entity(task, c, e)
+  if type(entity_reached) == "table" then return entity_reached end
+  if entity_reached ~= "ok" then return nil end
+
   local moved, problems, total = {}, {}, 0
   for _, it in ipairs(task._items) do
     local have = c.get_item_count(it.name)
@@ -217,6 +221,10 @@ function M.extract.tick(task)
 
   local e = approach.find_entity_near(c, task.target)
   if not e then return no_entity(task, "extract from") end
+
+  local entity_reached = approach.ensure_entity(task, c, e)
+  if type(entity_reached) == "table" then return entity_reached end
+  if entity_reached ~= "ok" then return nil end
 
   if task._all then
     return extract_all(task, c, e)

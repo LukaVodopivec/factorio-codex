@@ -42,6 +42,7 @@ local target_entity = { name = "transport-belt", direction = 0 }
 local approach = {
   ensure = function(_, _, _, reach) captured_reach = reach return approach_result end,
   find_entity_near = function() return target_entity end,
+  ensure_entity = function() return "ok" end,
 }
 package.loaded["scripts.actions.approach"] = approach
 

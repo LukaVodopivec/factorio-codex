@@ -46,6 +46,7 @@ package.loaded["scripts.companion"] = {
 package.loaded["scripts.actions.approach"] = {
   ensure = function() return "ok" end,
   find_entity_near = function() return entity end,
+  ensure_entity = function() return "ok" end,
 }
 _G.prototypes = { item = { coal = {}, stone = {} } }
 _G.defines = { inventory = { chest = 1 } }

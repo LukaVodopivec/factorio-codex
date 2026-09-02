@@ -57,4 +57,24 @@ function M.find_entity_near(c, pos, radius)
   return best
 end
 
+-- Factorio owns the final reach decision for entity mutations. A caller
+-- coordinate can be within reach while the entity selected around it is not.
+-- Walk toward that exact entity with a small margin, then ask Factorio again.
+function M.ensure_entity(task, c, e)
+  if not e.valid then
+    return { status = "failed", detail = "the selected entity is gone" }
+  end
+  if c.can_reach_entity(e) then return "ok" end
+
+  local reached = M.ensure(task, c, e.position, math.max(c.reach_distance - 0.5, 0.5))
+  if reached ~= "ok" then return reached end
+  if not e.valid then
+    return { status = "failed", detail = "the selected entity is gone" }
+  end
+  if not c.can_reach_entity(e) then
+    return { status = "failed", detail = "couldn't get within physical reach of the " .. e.name }
+  end
+  return "ok"
+end
+
 return M

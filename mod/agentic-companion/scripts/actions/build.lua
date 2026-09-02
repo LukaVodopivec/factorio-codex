@@ -150,6 +150,10 @@ function M.rotate.tick(task)
     }
   end
 
+  local entity_reached = approach.ensure_entity(task, c, e)
+  if type(entity_reached) == "table" then return entity_reached end
+  if entity_reached ~= "ok" then return nil end
+
   if task.direction then
     local ok = pcall(function() e.direction = task.direction end)
     if not ok or e.direction ~= task.direction then
@@ -198,6 +202,9 @@ function M.set_recipe.tick(task)
       detail = string.format("nothing at (%.1f, %.1f) to set a recipe on", task.target.x, task.target.y),
     }
   end
+  local entity_reached = approach.ensure_entity(task, c, e)
+  if type(entity_reached) == "table" then return entity_reached end
+  if entity_reached ~= "ok" then return nil end
   if e.type ~= "assembling-machine" then
     if e.type == "furnace" then
       return {

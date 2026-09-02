@@ -1,9 +1,8 @@
 # Live validation
 
-This runbook validates release **0.8.0**.
-
-Factorio was unavailable during the offline release verification. On a fresh
-machine:
+This runbook validates release **0.8.0**. Offline release verification was
+followed by a successful September 2026 live run on Linux Factorio 2.0.77 with
+app/mod 0.8.0. On a fresh machine:
 
 1. Launch Factorio 2.0.x once, reach the main menu, and exit. This must happen
    before setup so the user-data directory and `config/config.ini` exist.
@@ -40,6 +39,40 @@ and failure. Concurrency removes thinking idle time, not physical walking time.
 Do not add a second body, raw Lua/console, teleport, hidden map, free resources,
 or a second RCON path. `stop` is emergency cancellation only.
 
+Use the current public schema shown by `tools/list`. In particular,
+`inspect_entity` accepts `positions`; the removed `targets` input must fail
+before runtime. Keep the same previously `AVAILABLE` persistent pilot across
+packets. A fresh Luna-low or Luna-medium child can produce an empty bootstrap
+turn; treat that as a platform residual and fall back to a previously available
+connected child without bypassing repository ownership or adding an action
+writer.
+
+## Verified 0.8.0 live result
+
+- `doctor` passed the complete config, authenticated RCON, protocol, and mod
+  checks on Linux Factorio 2.0.77. `connect_status` reported app/mod 0.8.0.
+- One `connect_status` call took 109 ms and one radius-30 `observe_local` call
+  took 244 ms, 352 ms together. The initial structured state was position
+  `(37.5859375, -63.4765625)`, stone 4, and iron plate 2.
+- One three-step `run_plan` took 24.392 seconds and completed 3/3: mine coal 5
+  at `(37.5, -63.5)`, walk to `(43.5, -68.5)`, and mine iron ore 5 at
+  `(43.5, -70.5)`. Its final observation reported position
+  `(42.671875, -68.1171875)` and inventory coal 5, stone 4, iron ore 5, and
+  iron plate 2.
+- `inspect_entity` with `positions: [{x: 31, y: -56}]` took 2.114 seconds and
+  reported a healthy stone furnace with status `no_ingredients` and coal 1 in
+  its fuel inventory. A packet using obsolete `targets` was rejected by the
+  schema before runtime.
+- One smelting `run_plan` took 19.458 seconds and completed 3/3: insert iron ore
+  5, wait for five iron plates in output, and extract iron plate 5. Its final
+  observation reported position `(37.62890625, -63.37109375)` and inventory
+  coal 5, stone 4, and iron plate 7.
+
+Each plan was one bounded milestone packet and exactly one MCP call. The pilot
+used the plan's final observation without a redundant read. These are completed
+live results, not a claim of ongoing gameplay. Gameplay used no screenshots,
+raw console, Lua, cheats, or teleportation.
+
 ## Observed two-machine setup
 
 The following was verified during the September 2026 live run. Treat the LAN
@@ -57,7 +90,8 @@ addresses as runtime inputs, not permanent configuration: confirm them with
   do not change router DHCP settings for this validation.
 - The couch install needs the same `agentic-companion_0.8.0.zip` in
   `%APPDATA%\\Factorio\\mods` and an enabled `agentic-companion` entry in
-  `%APPDATA%\\Factorio\\mods\\mod-list.json` before joining.
+  `%APPDATA%\\Factorio\\mods\\mod-list.json` before joining. The verified couch
+  ZIP matched the server archive hash, was enabled, and joined successfully.
 - The server's RCON remains private and local: `127.0.0.1:19015`. It is not
   the address the couch client uses.
 
@@ -65,7 +99,15 @@ After changing the repository build or mod, run setup again, confirm both
 Factorio config files are mode `0600`, restart the dedicated server, and then
 reconnect the couch client. A client left in Factorio's
 `WaitingForUserToSaveOrQuitAfterServerLeft` state must be exited or its
-Factorio process closed before Steam will launch a fresh connection.
+Factorio process closed before Steam will launch a fresh connection. Wait for
+`factorio.exe` to exit completely before replacing the ZIP: Windows briefly
+retained a lock on the old archive during the verified rollout.
+
+An ordinary SSH `Start-Process` did not place Steam in the interactive console
+session. The verified fallback used one limited, interactive, one-shot
+Scheduled Task to launch Steam, then removed that task. Without screenshots,
+confirm that the Factorio client process has `SessionId 1` and that its log
+reaches `InGame`.
 
 ## Viewer-only couch session
 
@@ -86,6 +128,10 @@ reporting that it typed the command, or other visual-only evidence, is not
 sufficient evidence because keyboard focus and open GUI panels can make those
 signals misleading. This is an administrator/cheat command and disables
 achievements for the save.
+
+The verified couch identity was `lukiPukiSmuki`: the server reported
+`spectator=true character=false`. After Codex moved through physical MCP play,
+the server measured the spectator camera at distance `0.00` from Codex.
 
 With the current mod loaded, every connected spectator camera follows the sole
 Codex body automatically. Codex itself still walks physically; only the

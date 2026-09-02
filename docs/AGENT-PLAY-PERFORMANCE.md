@@ -6,8 +6,8 @@ Codex body, one task lane, and honest Factorio mechanics.
 ## Recorded baseline and operating model
 
 The accepted one-shot live baseline required **22 MCP calls** for the initial
-mine/craft/place/fuel/inspect milestone. This is the comparison baseline, not a
-claim that the 0.8.0 path has already been live-validated.
+mine/craft/place/fuel/inspect milestone. The September 2026 live run verified
+the retained 0.8.0 path against Linux Factorio 2.0.77 with app/mod 0.8.0.
 
 Use one persistent Sol-medium strategist and one persistent Luna-low pilot.
 Sol batches reads and sends bounded milestones. Luna is the sole ordinary
@@ -18,8 +18,27 @@ crafting, or any other game tick.
 For each live benchmark, record the release SHA, milestone, MCP call count,
 wall time, Factorio tick delta, completed/failed plan steps, final position and
 inventory, and any `MCP_GAP`. Compare the same fresh-save milestone against the
-22-call baseline. Do not report a speedup until the parent completes the
-post-publication live run.
+22-call baseline. These measurements document completed bounded packets; they
+do not imply continuing autonomous gameplay.
+
+## Verified 0.8.0 structured timings
+
+All gameplay perception and action below used the Factorio MCP text surface.
+No screenshot, raw console, Lua, cheat, teleport, second body, or second task
+lane was used.
+
+| Milestone | MCP calls | Elapsed | Verified result |
+| --- | ---: | ---: | --- |
+| Initial connection and local state | 2 | 352 ms | `connect_status` took 109 ms and one radius-30 `observe_local` took 244 ms. Codex began at `(37.5859375, -63.4765625)` with stone 4 and iron plate 2. |
+| Resource packet | 1 | 24.392 s | One `run_plan` completed 3/3: mine coal 5 at `(37.5, -63.5)`, walk to `(43.5, -68.5)`, then mine iron ore 5 at `(43.5, -70.5)`. The final observation reported `(42.671875, -68.1171875)` with coal 5, stone 4, iron ore 5, and iron plate 2. |
+| Furnace inspection | 1 | 2.114 s | `inspect_entity` with `positions: [{x: 31, y: -56}]` found a healthy stone furnace, `no_ingredients`, with coal 1 in fuel. An earlier packet using removed `targets` was correctly rejected by the public schema before runtime. |
+| Smelting packet | 1 | 19.458 s | One `run_plan` completed 3/3: insert iron ore 5, wait up to 60 seconds for five output plates, then extract iron plate 5. The final observation reported `(37.62890625, -63.37109375)` with coal 5, stone 4, and iron plate 7. |
+
+The pilot consumed each `run_plan.observation` as the authoritative final state
+and made no redundant observe or inspect call after either packet. Keep one
+persistent pilot for successive packets. A fresh Luna-low or Luna-medium child
+may produce an empty bootstrap turn; reuse a previously `AVAILABLE` connected
+child and never bypass repository ownership or create another action writer.
 
 ## Durable discovery rule
 

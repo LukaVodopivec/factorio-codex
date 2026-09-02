@@ -36,13 +36,13 @@ check(not empty and tostring(empty_error):match("placements must be a non%-empty
   and checks == 1,
   "can_place rejects an empty placements array before querying the surface")
 
-local inherited = spatial.can_place({
+local inherited, inherited_error = pcall(spatial.can_place, {
   item = "transport-belt",
   placements = { { position = { x = 0, y = 0 } } },
 })
-check(inherited.results[1].can_place == false
-  and inherited.results[1].reason:match("requires item") ~= nil and checks == 1,
-  "each placement requires its own item and cannot inherit a top-level fallback")
+check(not inherited and tostring(inherited_error):match("placements%[1%]%.item must be an item name") ~= nil
+  and checks == 1,
+  "can_place rejects top-level item inheritance before querying the surface")
 
 local too_many = {}
 for i = 1, 25 do

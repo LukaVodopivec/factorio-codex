@@ -430,6 +430,11 @@ function M.can_place(params)
   if #params.placements > MAX_PLACEMENTS then
     error("can_place takes at most " .. MAX_PLACEMENTS .. " placements per call — split the list")
   end
+  for i, p in ipairs(params.placements) do
+    if type(p) ~= "table" or type(p.item) ~= "string" then
+      error("placements[" .. i .. "].item must be an item name")
+    end
+  end
   local out = {}
   for i, p in ipairs(params.placements) do
     local ok, res = pcall(can_place_one, c, surface, p.item, p.position, p.direction)

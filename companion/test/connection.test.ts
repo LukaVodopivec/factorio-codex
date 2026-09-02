@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Bridge, ModError } from "../src/bridge.js";
+import { configPath, diagnoseConfig, saveConfig } from "../src/config.js";
 import { createBridgeProvider } from "../src/mcp/server.js";
 import type { RconClient } from "../src/rcon.js";
 
@@ -19,9 +23,38 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-afterEach(() => vi.restoreAllMocks());
+const homes: string[] = [];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  homes.splice(0).forEach((home) => fs.rmSync(home, { recursive: true, force: true }));
+});
 
 describe("lazy MCP bridge connection", () => {
+  it("recovers in-process when setup creates a valid config after offline startup", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-lazy-config-test-"));
+    homes.push(home);
+    vi.stubEnv("HOME", home);
+    const rcon = new FakeRcon();
+    const factory = vi.fn(() => rcon as unknown as RconClient);
+    vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 5, mod_version: "0.7.0" });
+    const getBridge = createBridgeProvider(diagnoseConfig, factory);
+
+    await expect(getBridge()).rejects.toThrow("configuration is missing");
+    expect(factory).not.toHaveBeenCalled();
+
+    const factorioUserDir = path.join(home, "factorio");
+    fs.mkdirSync(factorioUserDir);
+    saveConfig({ factorioUserDir, rcon: settings });
+    expect(fs.statSync(configPath()).mode & 0o777).toBe(0o600);
+
+    await expect(getBridge()).resolves.toBeInstanceOf(Bridge);
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory).toHaveBeenCalledWith(settings);
+  });
+
   it("singleflights concurrent first calls onto one RCON handshake", async () => {
     const ready = deferred();
     const rcon = new FakeRcon();

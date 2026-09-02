@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { diagnoseConfig, resolveSettings } from "./config.js";
+import { resolveSettings } from "./config.js";
 import { runDoctor } from "./doctor.js";
 import { runMcpServer } from "./mcp/server.js";
 import { runWizard } from "./setup/wizard.js";
@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   if (values.help || !command) { console.log(HELP); return; }
   if (command === "setup") return runWizard();
   if (command === "doctor") return runDoctor(resolveSettings(), { json: values.json });
-  if (command === "mcp") return runMcpServer(diagnoseConfig);
+  if (command === "mcp") return runMcpServer();
   console.error(`Unknown command: ${command}\n${HELP}`);
   process.exitCode = 1;
 }

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { Bridge } from "../bridge.js";
 import { RconClient } from "../rcon.js";
 import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../compatibility.js";
-import { companionVersion, type ConfigDiagnostic, type RconSettings } from "../config.js";
+import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -147,7 +147,7 @@ export function createBridgeProvider(
   };
 }
 
-export async function runMcpServer(configDiagnostic: () => ConfigDiagnostic): Promise<void> {
+export async function runMcpServer(configDiagnostic: () => ConfigDiagnostic = diagnoseConfig): Promise<void> {
   const server = new McpServer({ name: "factorio-codex", version: "0.7.0" }, { instructions: "Control one physical Factorio character named Codex. Observe locally, then use honest path/reach/inventory/crafting actions." });
   const bridge = createBridgeProvider(configDiagnostic);
   registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic);

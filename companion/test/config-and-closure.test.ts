@@ -179,6 +179,8 @@ describe("exact local configuration", () => {
     expect(liveValidation).toMatch(/Optional couch UI navigation layer/);
     expect(liveValidation).toMatch(/non-game couch UI, administration, or[\s\S]*reconnection steps that SSH cannot perform/);
     expect(liveValidation).toMatch(/gameplay pilot remains MCP-text-only[\s\S]*Screenshot capability must never be used for Factorio[\s\S]*perception or play/i);
+    expect(liveValidation).toContain("%APPDATA%\\\\Factorio\\\\mods\\\\mod-list.json");
+    expect(liveValidation).not.toContain("%APPDATA%\\\\Factorio\\\\mod-list.json");
   });
 });
 

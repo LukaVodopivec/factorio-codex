@@ -56,7 +56,7 @@ addresses as runtime inputs, not permanent configuration: confirm them with
   do not change router DHCP settings for this validation.
 - The couch install needs the same `agentic-companion_0.8.0.zip` in
   `%APPDATA%\\Factorio\\mods` and an enabled `agentic-companion` entry in
-  `%APPDATA%\\Factorio\\mod-list.json` before joining.
+  `%APPDATA%\\Factorio\\mods\\mod-list.json` before joining.
 - The server's RCON remains private and local: `127.0.0.1:19015`. It is not
   the address the couch client uses.
 

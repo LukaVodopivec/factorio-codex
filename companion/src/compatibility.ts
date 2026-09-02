@@ -23,9 +23,13 @@ export function assertConnectionCompatibility(settings: RconSettings, ping?: Pin
     throw new Error(`RCON must use ${EXPECTED_RCON_HOST}:${EXPECTED_RCON_PORT}; run setup again`);
   }
   if (ping) {
-    assertProtocolCompatibility(ping);
-    if (!valid.mod) {
-      throw new Error(`mod version mismatch: mod v${ping.mod_version ?? "unknown"}, app v${appVersion ?? "unknown"} — reinstall the matching mod and restart Factorio`);
-    }
+    assertRuntimeCompatibility(ping, appVersion);
+  }
+}
+
+export function assertRuntimeCompatibility(ping: PingIdentity, appVersion?: string): void {
+  assertProtocolCompatibility(ping);
+  if (ping.mod_version !== appVersion) {
+    throw new Error(`mod version mismatch: mod v${ping.mod_version ?? "unknown"}, app v${appVersion ?? "unknown"} — reinstall the matching mod and restart Factorio`);
   }
 }

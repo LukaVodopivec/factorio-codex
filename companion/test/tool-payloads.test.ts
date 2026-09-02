@@ -100,10 +100,16 @@ describe("registered MCP handler parity with Lua v5", () => {
 
 describe("connect_status body lifecycle", () => {
   it("reports a persistent death without calling spawn", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: true, companion_exists: false, companion_ever_created: true });
+    const call = vi.fn().mockResolvedValue({ companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 5, mod_version: "0.7.0" });
     const output = await connectStatus({ call } as unknown as Bridge);
     expect(output.isError).toBe(true);
     expect(output.content[0].text).toMatch(/dead.*never auto-respawns/i);
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a stale mod before reporting connected", async () => {
+    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.6.0" });
+    await expect(connectStatus({ call } as unknown as Bridge)).rejects.toThrow("mod version mismatch");
     expect(call).toHaveBeenCalledTimes(1);
   });
 

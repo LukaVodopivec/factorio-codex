@@ -9,8 +9,7 @@ function M.start_research(params)
     error('start_research needs a technology name, e.g. {"technology": "logistics"}')
   end
 
-  local c = companion.get()
-  local force = c and c.force or game.forces.player
+  local force = companion.require_companion().force
 
   local ok, tech = pcall(function() return force.technologies[name] end)
   if not ok or not tech then

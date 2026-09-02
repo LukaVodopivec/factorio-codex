@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { Bridge } from "../bridge.js";
 import { RconClient } from "../rcon.js";
-import { assertConnectionCompatibility } from "../compatibility.js";
+import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../compatibility.js";
 import { companionVersion, type RconSettings } from "../config.js";
 
 const position = z.object({ x: z.number(), y: z.number() });
@@ -42,6 +42,7 @@ export const toolPayloads = {
 
 export async function connectStatus(b: Bridge) {
   const ping: any = await b.call("ping");
+  assertRuntimeCompatibility(ping, companionVersion());
   if (ping.companion_dead) return result("Connected, but Codex is dead. This interface never auto-respawns.", true);
   if (!ping.companion_exists && !ping.companion_ever_created) await b.call("spawn_companion", {});
   return result({ status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version, mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick });

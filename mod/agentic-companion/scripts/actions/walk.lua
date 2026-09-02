@@ -9,9 +9,10 @@ local M = {}
 local WAYPOINT_RADIUS_SQ = 0.25 -- advance to the next waypoint within 0.5 tiles
 local STUCK_CHECK_TICKS = 60
 local STUCK_EPSILON_SQ = 0.01 -- moved less than 0.1 tiles in a check window = stuck
-local PATH_WAIT_TICKS = 90 -- ~1.5s without a pathfinder answer → straight-line fallback
+local PATH_WAIT_TICKS = 90
 local RETRY_DELAY_TICKS = 30
 local MAX_RETRIES = 3
+local MAX_RECOVERIES = 1
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
 local OCTANT_RATIO = 0.41421356
@@ -59,6 +60,26 @@ local function request_path(state, c, task_id)
   state.last_pos = nil
 end
 
+local function stop(c)
+  c.walking_state = { walking = false }
+end
+
+local function fail(c, code, detail)
+  stop(c)
+  return { failed = code .. ": " .. detail }
+end
+
+local function retry_or_fail(state, c, code, detail)
+  state.retries = state.retries + 1
+  if state.retries > MAX_RETRIES then
+    return fail(c, code, detail .. string.format(" after %d native path attempts", state.retries))
+  end
+  state.phase = "retry_wait"
+  state.retry_at = game.tick + RETRY_DELAY_TICKS
+  stop(c)
+  return nil
+end
+
 -- Pop the pathfinder result stashed on the sole active task, but only if it
 -- answers this walker's request.
 local function take_path_result(state, task_id)
@@ -84,7 +105,7 @@ function M.begin(state, c, target, arrive_within)
   state.arrive_within = math.max(tonumber(arrive_within) or 1.0, 0.1)
   state.phase = "request"
   state.retries = 0
-  state.repathed = false
+  state.recoveries = 0
 end
 
 -- Advance the walker one tick. Returns nil while moving, "arrived" once within
@@ -93,7 +114,7 @@ function M.step(state, c, task_id)
   local pos = c.position
 
   if dist_sq(pos, state.target) <= state.arrive_within * state.arrive_within then
-    c.walking_state = { walking = false }
+    stop(c)
     return "arrived"
   end
 
@@ -105,15 +126,12 @@ function M.step(state, c, task_id)
     local result = take_path_result(state, task_id)
     if result then
       if result.try_again_later then
-        state.retries = state.retries + 1
-        if state.retries > MAX_RETRIES then
-          state.phase = "straight" -- pathfinder too busy; just head there
-        else
-          state.phase = "retry_wait"
-          state.retry_at = game.tick + RETRY_DELAY_TICKS
-        end
+        local failed = retry_or_fail(state, c, "PATH_TRANSIENT",
+          "Factorio's pathfinder remained temporarily unavailable")
+        if failed then return failed end
       elseif not result.path or #result.path == 0 then
-        state.phase = "straight" -- no path found: straight-line fallback
+        return fail(c, "PATH_NOT_FOUND", string.format(
+          "Factorio found no character path to (%.1f, %.1f)", state.target.x, state.target.y))
       else
         state.path = result.path
         state.waypoint = 1
@@ -122,9 +140,10 @@ function M.step(state, c, task_id)
     elseif game.tick - state.request_tick > PATH_WAIT_TICKS then
       local pending = storage.path_request
       if pending and pending.id == state.request_id then storage.path_request = nil end
-      state.phase = "straight"
+      return fail(c, "PATH_TIMEOUT", string.format(
+        "no native path result arrived within %d ticks", PATH_WAIT_TICKS))
     else
-      c.walking_state = { walking = false }
+      stop(c)
       return nil
     end
   end
@@ -133,11 +152,11 @@ function M.step(state, c, task_id)
     if game.tick >= state.retry_at then
       request_path(state, c, task_id)
     end
-    c.walking_state = { walking = false }
+    stop(c)
     return nil
   end
 
-  -- following/straight: pick this tick's goal
+  -- Follow only waypoints returned by Factorio's native pathfinder.
   local goal
   if state.phase == "following" then
     local path = state.path
@@ -145,13 +164,18 @@ function M.step(state, c, task_id)
       state.waypoint = state.waypoint + 1
     end
     if state.waypoint > #path then
-      state.phase = "straight" -- path spent; close the last stretch directly
-      goal = state.target
+      state.path = nil
+      if state.recoveries >= MAX_RECOVERIES then
+        return fail(c, "PATH_INCOMPLETE", string.format(
+          "native path ended %.1f tiles short of the target", math.sqrt(dist_sq(pos, state.target))))
+      end
+      state.recoveries = state.recoveries + 1
+      request_path(state, c, task_id)
+      stop(c)
+      return nil
     else
       goal = path[state.waypoint]
     end
-  else
-    goal = state.target
   end
 
   if not state.last_check_tick then
@@ -159,19 +183,16 @@ function M.step(state, c, task_id)
     state.last_pos = { x = pos.x, y = pos.y }
   elseif game.tick - state.last_check_tick >= STUCK_CHECK_TICKS then
     if dist_sq(pos, state.last_pos) < STUCK_EPSILON_SQ then
-      if not state.repathed then
-        state.repathed = true
+      if state.recoveries < MAX_RECOVERIES then
+        state.recoveries = state.recoveries + 1
         state.path = nil
         request_path(state, c, task_id)
-        c.walking_state = { walking = false }
+        stop(c)
         return nil
       end
-      c.walking_state = { walking = false }
-      return {
-        failed = string.format(
+      return fail(c, "PATH_STALLED", string.format(
           "got stuck at (%.1f, %.1f), still %.1f tiles from the target — water, cliffs or buildings may be in the way",
-          pos.x, pos.y, math.sqrt(dist_sq(pos, state.target))),
-      }
+          pos.x, pos.y, math.sqrt(dist_sq(pos, state.target))))
     end
     state.last_check_tick = game.tick
     state.last_pos = { x = pos.x, y = pos.y }

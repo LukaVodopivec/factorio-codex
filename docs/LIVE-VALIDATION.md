@@ -56,6 +56,14 @@ has no character HUD or inventory. Do not add a raw Lua/console or cheat path
 to the Codex mod. Until spectator mode is visibly confirmed, leave the couch
 player stationary and use the map view only.
 
+In the tested desktop client, open the Factorio console with `/` (the alternate
+`~` key may be focus-sensitive), then enter
+`/c game.player.set_controller{type=defines.controllers.spectator}` and press
+Enter. This is an administrator/cheat command and disables achievements for the
+save; verify success visually by the disappearance of the character HUD and
+inventory. If the command is rejected, promote the couch account through an
+existing server administrator first.
+
 ## Live results and known failure signatures
 
 - `doctor --json` is the quickest preflight: it should report exact config

@@ -164,18 +164,38 @@ local function extract_all(task, c, e)
     return { status = "failed", detail = "the " .. e.name .. " is empty — nothing to take" }
   end
 
-  local taken, total = {}, 0
-  for name, count in pairs(sums) do
-    local kept = pull(c, inv, true, name, count)
-    if kept > 0 then
-      taken[#taken + 1] = string.format("%d %s", kept, name)
-      total = total + kept
+  local names = {}
+  for name in pairs(sums) do names[#names + 1] = name end
+  table.sort(names)
+
+  local moved = {}
+  local function restore_moved()
+    for i = #moved, 1, -1 do
+      local stack = moved[i]
+      local removed = c.remove_item(stack)
+      local restored = removed > 0 and inv.insert({ name = stack.name, count = removed }) or 0
+      if removed ~= stack.count or restored ~= removed then
+        error("full extraction could not restore the source inventory")
+      end
     end
   end
-  if total == 0 then
-    return { status = "failed", detail = "couldn't take anything from the " .. e.name .. " — my inventory is full" }
+
+  local taken = {}
+  for _, name in ipairs(names) do
+    local count = sums[name]
+    local kept = pull(c, inv, true, name, count)
+    if kept > 0 then
+      moved[#moved + 1] = { name = name, count = kept }
+      taken[#taken + 1] = string.format("%d %s", kept, name)
+    end
+    if kept < count then
+      restore_moved()
+      return {
+        status = "failed",
+        detail = "couldn't empty the " .. e.name .. " — my inventory lacks room for every output; nothing was taken",
+      }
+    end
   end
-  table.sort(taken)
   return {
     status = "done",
     detail = string.format("took %s from the %s", table.concat(taken, ", "), e.name),

@@ -24,7 +24,7 @@ end
 -- the entity's products. Fail before starting the mining state instead of
 -- waiting until the bridge timeout or bypassing the character with scripted
 -- entity mining.
-local function character_accepts_products(c, e)
+local function character_accepts_products(inv, e)
   local required = {}
   local products = e.prototype.mineable_properties.products or {}
   for _, product in ipairs(products) do
@@ -34,9 +34,34 @@ local function character_accepts_products(c, e)
       required[product.name] = (required[product.name] or 0) + math.max(1, math.ceil(count))
     end
   end
-  for name, count in pairs(required) do
-    if not c.can_insert({ name = name, count = count }) then return false end
+  local names = {}
+  for name in pairs(required) do names[#names + 1] = name end
+  table.sort(names)
+
+  -- LuaControl.can_insert only means that some of a stack fits, and separate
+  -- queries can double-count shared empty slots. Stage every product in the
+  -- real inventory synchronously, then remove it again before mining starts.
+  -- This gives Factorio ownership of stack sizes, filters, and aggregate slot
+  -- allocation without creating an observable item or advancing game time.
+  local staged = {}
+  local function restore()
+    for i = #staged, 1, -1 do
+      local stack = staged[i]
+      local removed = inv.remove(stack)
+      if removed ~= stack.count then
+        error("mining capacity preflight could not restore Codex inventory")
+      end
+    end
   end
+  for _, name in ipairs(names) do
+    local inserted = inv.insert({ name = name, count = required[name] })
+    if inserted > 0 then staged[#staged + 1] = { name = name, count = inserted } end
+    if inserted < required[name] then
+      restore()
+      return false
+    end
+  end
+  restore()
   return true
 end
 
@@ -66,7 +91,7 @@ function M.tick(task)
     if reached ~= "ok" then return nil end
     local inv = c.get_main_inventory()
     if not inv then return { status = "failed", detail = "the Codex character has no inventory" } end
-    if not character_accepts_products(c, e) then
+    if not character_accepts_products(inv, e) then
       return { status = "failed", detail = "cannot mine " .. e.name .. " — Codex inventory is full" }
     end
     task._target_amount = entity_amount(e)

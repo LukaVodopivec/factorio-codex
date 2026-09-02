@@ -13,7 +13,8 @@ end
 -- `reach` tiles, nil while still walking, or {status="failed", detail=...}.
 function M.ensure(task, c, target_pos, reach)
   if dist_sq(c.position, target_pos) <= reach * reach then
-    if task._approach then
+    local active = task._approach
+    if active and active.target.x == target_pos.x and active.target.y == target_pos.y then
       task._approach = nil
       c.walking_state = { walking = false }
     end

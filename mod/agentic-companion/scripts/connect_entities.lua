@@ -31,8 +31,14 @@ end
 
 local function supports(kind, entity)
   if kind == "belt" then return BELT[entity.type] == true end
-  if kind == "pipe" then return PIPE[entity.type] == true end
-  return entity.type == "electric-pole"
+  if kind == "pipe" then
+    if PIPE[entity.type] then return true end
+    local ok, count = pcall(function() return #entity.fluidbox end)
+    return ok and count > 0
+  end
+  if entity.type == "electric-pole" then return true end
+  local ok, source = pcall(function() return entity.prototype.electric_energy_source_prototype end)
+  return ok and source ~= nil
 end
 
 local function direction(a, b)
@@ -59,12 +65,18 @@ local function can_place(c, proto, pos, direction_value)
   })
 end
 
-local function grid_route(c, item_name, proto, from, to, max_length, kind, from_entity)
+local function grid_route(c, item_name, proto, from, to, max_length, kind, from_entity, include_from, include_to)
   local dx, dy = to.x - from.x, to.y - from.y
   if math.abs(dx - math.floor(dx + 0.5)) > 0.001 or math.abs(dy - math.floor(dy + 0.5)) > 0.001 then
     error(kind .. " endpoints must lie on the same one-tile placement grid")
   end
-  local queue, head = { { position = from, path = {} } }, 1
+  local initial = {}
+  if include_from then
+    if not can_place(c, proto, from, 0) then error("physical " .. kind .. " route is blocked at its source connection") end
+    initial[1] = { name = item_name, x = from.x, y = from.y }
+  end
+  if #initial > max_length then error(kind .. " route exceeds max_length at its source connection") end
+  local queue, head = { { position = from, path = initial } }, 1
   local seen = { [key(from)] = true }
   local deltas = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
   while head <= #queue do
@@ -80,6 +92,11 @@ local function grid_route(c, item_name, proto, from, to, max_length, kind, from_
           local reaches_goal = math.abs(next_position.x - to.x) < 0.001 and math.abs(next_position.y - to.y) < 0.001
           local next_path = {}; for i, step in ipairs(current.path) do next_path[i] = step end
           if reaches_goal then
+            if include_to then
+              if #next_path >= max_length then goto continue_neighbor end
+              if not can_place(c, proto, to, 0) then goto continue_neighbor end
+              next_path[#next_path + 1] = { name = item_name, x = to.x, y = to.y }
+            end
             for index, step in ipairs(next_path) do
               local following = next_path[index + 1] and { x = next_path[index + 1].x, y = next_path[index + 1].y } or to
               step.direction = kind == "belt" and direction(step, following) or nil
@@ -95,38 +112,124 @@ local function grid_route(c, item_name, proto, from, to, max_length, kind, from_
           end
         end
       end
+      ::continue_neighbor::
     end
   end
   error("no charted physical " .. kind .. " route fits max_length and current placement constraints")
 end
 
+local function pipe_terminals(entity)
+  if PIPE[entity.type] then return { { position = entity.position, existing = true } } end
+  local terminals = {}
+  local ok_count, count = pcall(function() return #entity.fluidbox end)
+  if not ok_count then return terminals end
+  for index = 1, count do
+    local ok, connections = pcall(function() return entity.fluidbox.get_pipe_connections(index) end)
+    if ok then
+      for _, connection in ipairs(connections or {}) do
+        if connection.target_position and connection.connection_type ~= "linked" then
+          terminals[#terminals + 1] = { position = connection.target_position, existing = false }
+        end
+      end
+    end
+  end
+  table.sort(terminals, function(a, b)
+    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+    return a.position.x < b.position.x
+  end)
+  return terminals
+end
+
+local function pipe_route(c, item_name, proto, from_entity, to_entity, max_length)
+  local best
+  for _, from_terminal in ipairs(pipe_terminals(from_entity)) do
+    for _, to_terminal in ipairs(pipe_terminals(to_entity)) do
+      local ok, route = pcall(grid_route, c, item_name, proto, from_terminal.position, to_terminal.position,
+        max_length, "pipe", from_entity, not from_terminal.existing, not to_terminal.existing)
+      if ok and (not best or #route < #best) then best = route end
+    end
+  end
+  if not best then error("no charted physical pipe route fits endpoint connections, max_length, and current placement constraints") end
+  return best
+end
+
+local function entity_box(entity)
+  return entity.bounding_box or entity.selection_box or {
+    left_top = { x = entity.position.x - 0.1, y = entity.position.y - 0.1 },
+    right_bottom = { x = entity.position.x + 0.1, y = entity.position.y + 0.1 },
+  }
+end
+
+local function terminal_pole(c, item_name, proto, entity)
+  if entity.type == "electric-pole" then
+    local reach = tonumber(entity.prototype and entity.prototype.maximum_wire_distance)
+    if not reach then error("power pole endpoint does not expose wire reach") end
+    return { position = entity.position, reach = reach, step = nil }
+  end
+  local supply = tonumber(proto.supply_area_distance)
+  local reach = tonumber(proto.maximum_wire_distance)
+  if not supply or not reach then error("power route prototype must expose supply area and wire reach") end
+  local box, candidates = entity_box(entity), {}
+  local min_x, max_x = math.floor(box.left_top.x - supply), math.ceil(box.right_bottom.x + supply)
+  local min_y, max_y = math.floor(box.left_top.y - supply), math.ceil(box.right_bottom.y + supply)
+  for y = min_y, max_y do
+    for x = min_x, max_x do
+      local pos = { x = x + 0.5, y = y + 0.5 }
+      local dx = math.max(box.left_top.x - pos.x, 0, pos.x - box.right_bottom.x)
+      local dy = math.max(box.left_top.y - pos.y, 0, pos.y - box.right_bottom.y)
+      if dx <= supply and dy <= supply and can_place(c, proto, pos, 0) then
+        local px, py = pos.x - entity.position.x, pos.y - entity.position.y
+        candidates[#candidates + 1] = { position = pos, distance = px * px + py * py }
+      end
+    end
+  end
+  table.sort(candidates, function(a, b)
+    if a.distance ~= b.distance then return a.distance < b.distance end
+    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+    return a.position.x < b.position.x
+  end)
+  if not candidates[1] then error("no charted physical pole placement covers an exact power endpoint") end
+  local pos = candidates[1].position
+  return { position = pos, reach = reach, step = { name = item_name, x = pos.x, y = pos.y } }
+end
+
 local function power_route(c, item_name, proto, from, to, from_entity, to_entity, max_length)
   local new_reach = tonumber(proto.maximum_wire_distance)
-  local from_reach = tonumber(from_entity.prototype and from_entity.prototype.maximum_wire_distance)
-  local to_reach = tonumber(to_entity.prototype and to_entity.prototype.maximum_wire_distance)
-  if not new_reach or not from_reach or not to_reach then error("power endpoints and prototype must expose wire reach") end
+  if not new_reach then error("power route prototype must expose wire reach") end
+  local from_terminal = terminal_pole(c, item_name, proto, from_entity)
+  local to_terminal = terminal_pole(c, item_name, proto, to_entity)
+  local from_reach, to_reach = from_terminal.reach, to_terminal.reach
+  from, to = from_terminal.position, to_terminal.position
+  local steps = {}
+  if from_terminal.step then steps[#steps + 1] = from_terminal.step end
+  local terminal_count = (from_terminal.step and 1 or 0) + (to_terminal.step and 1 or 0)
+  if terminal_count > max_length then error("power endpoint coverage needs more poles than max_length") end
   local dx, dy = to.x - from.x, to.y - from.y
   local distance = math.sqrt(dx * dx + dy * dy)
-  if distance <= math.min(from_reach, to_reach) then return {} end
+  if distance <= math.min(from_reach, to_reach) then
+    if to_terminal.step then steps[#steps + 1] = to_terminal.step end
+    return steps
+  end
   local spacing = math.min(new_reach, from_reach, to_reach)
   local segments = math.ceil(distance / spacing)
   local count = segments - 1
-  if count > max_length then error("power route needs " .. count .. " poles, beyond max_length") end
-  local steps = {}
+  if count + terminal_count > max_length then error("power route needs " .. (count + terminal_count) .. " poles, beyond max_length") end
+  local previous = from
   for index = 1, count do
     local fraction = index / segments
     local pos = { x = math.floor(from.x + dx * fraction) + 0.5, y = math.floor(from.y + dy * fraction) + 0.5 }
     if not can_place(c, proto, pos, 0) then error(string.format("power route is blocked at (%.1f, %.1f)", pos.x, pos.y)) end
-    local previous = index == 1 and from or { x = steps[index - 1].x, y = steps[index - 1].y }
     local gap_x, gap_y = pos.x - previous.x, pos.y - previous.y
     if math.sqrt(gap_x * gap_x + gap_y * gap_y) > spacing then error("power route cannot satisfy physical wire reach on the placement grid") end
-    steps[index] = { name = item_name, x = pos.x, y = pos.y }
+    steps[#steps + 1] = { name = item_name, x = pos.x, y = pos.y }
+    previous = pos
   end
-  local last = steps[#steps] and { x = steps[#steps].x, y = steps[#steps].y } or from
+  local last = previous
   local last_dx, last_dy = to.x - last.x, to.y - last.y
   if math.sqrt(last_dx * last_dx + last_dy * last_dy) > math.min(new_reach, to_reach) then
     error("power route cannot satisfy final physical wire reach")
   end
+  if to_terminal.step then steps[#steps + 1] = to_terminal.step end
   return steps
 end
 
@@ -151,7 +254,8 @@ function M.connect_entities(params)
   if not supports(kind, from_entity) or not supports(kind, to_entity) then error("both exact endpoints must support " .. kind .. " connections") end
   local steps
   if kind == "power" then steps = power_route(c, params.prototype, proto, from, to, from_entity, to_entity, max_length)
-  else steps = grid_route(c, params.prototype, proto, from, to, max_length, kind, from_entity) end
+  elseif kind == "pipe" then steps = pipe_route(c, params.prototype, proto, from_entity, to_entity, max_length)
+  else steps = grid_route(c, params.prototype, proto, from, to, max_length, kind, from_entity, false, false) end
   return { kind = kind, prototype = params.prototype, from = from, to = to, length = #steps, steps = steps, physical = true, ghosts = false }
 end
 

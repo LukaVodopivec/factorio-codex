@@ -95,6 +95,16 @@ describe("shared gameplay run contract", () => {
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
   });
 
+  it("teaches a state-driven learning loop without a disguised opening route", () => {
+    for (const text of [skill, master, pilot, specialist, knowledge]) {
+      for (const phrase of ["authoritative state", "current bottleneck", "falsifiable hypothesis", "measurable effect", "safe action", "retain", "revise", "discard", "provenance", "uncertainty"])
+        expect(text.toLowerCase()).toContain(phrase);
+      expect(text).toMatch(/opening script[\s\S]*fixed build order[\s\S]*named route/i);
+      expect(text).not.toMatch(/first (?:mine|craft|build|place)[^\n]{0,120}then/i);
+      expect(text).not.toMatch(/(?:at|by) minute \d+/i);
+    }
+  });
+
   it("preserves deterministic stale invalidation productive overlap and boundaries", () => {
     for (const text of [skill, ...prompts]) {
       expect(text).toMatch(/deterministic MCP (?:state and tool results|tools|evidence)/i);

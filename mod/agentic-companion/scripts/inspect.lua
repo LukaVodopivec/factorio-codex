@@ -200,6 +200,22 @@ local function inspect_one(position, c)
     out.energy = math.floor(energy)
   end
 
+  local ok_burner, burner = pcall(function() return e.burner end)
+  if ok_burner and burner then
+    local facts = {}
+    local ok_remaining, remaining = pcall(function() return burner.remaining_burning_fuel end)
+    if ok_remaining and type(remaining) == "number" then facts.remaining_burning_fuel = remaining end
+    local ok_current, current = pcall(function() return burner.currently_burning end)
+    if ok_current and current then
+      facts.currently_burning = current.name
+      local ok_value, value = pcall(function() return current.fuel_value end)
+      if ok_value and type(value) == "number" then facts.current_fuel_value = value end
+    end
+    local ok_effectivity, effectivity = pcall(function() return burner.effectivity end)
+    if ok_effectivity and type(effectivity) == "number" then facts.effectivity = effectivity end
+    if next(facts) ~= nil then out.burner = facts end
+  end
+
   local electrical = {}
   local function electrical_number(key, read)
     local ok, value = pcall(read)

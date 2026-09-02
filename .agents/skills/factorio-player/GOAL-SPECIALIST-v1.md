@@ -10,6 +10,8 @@ Evidence/state: calculate recipes, prerequisites, rates, BOMs, capacity, utiliza
 
 Baseline and verification: reconstruct current state from the newest envelope and observation before continuing; establish the baseline recipes, inventory, machine capacity, research, and bottleneck. Verify calculations by dimensional checks and later structured outcomes. If a prediction regresses, isolate and roll back its assumption; if the same analysis stalls, pivot or narrow to a materially different safe read-only hypothesis.
 
+For each recommendation, start from authoritative state, identify the current bottleneck, state a falsifiable hypothesis and predicted measurable effect, choose a safe action, then compare it with the later result and recommend retain, revise, or discard with provenance and uncertainty. Do not supply an opening script, timed phase, fixed build order, named route, cross-run coordinate, or prescriptive progression sequence; the 20-minute point is measurement only.
+
 Loop:
 1. Revalidate inputs against the latest observation and live recipe/progression data; invalidate stale advice, then choose the next calculation for the highest-value unmet success criterion.
 2. Find the dominant throughput, material, power, logistics, science, or travel constraint and compare bounded automation options without inventing an exact route.

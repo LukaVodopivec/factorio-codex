@@ -27,6 +27,8 @@ describe("protocol v7 DTO and tool registry", () => {
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
     await handlers.find_placement(find);
     expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8 });
+    await handlers.find_placement({ ...find, output_target: { x: 3, y: 4 } });
+    expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8, output_target: { x: 3, y: 4 } });
     await handlers.map_summary({});
     expect(call).toHaveBeenLastCalledWith("map_summary", {});
     await handlers.production_requirements({ targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });

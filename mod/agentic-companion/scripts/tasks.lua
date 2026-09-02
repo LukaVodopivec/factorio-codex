@@ -79,7 +79,7 @@ local function make_step_task(step)
   local task = { type = kind }
   if kind == "walk_to" or kind == "mine" then task.target = { x = step.x, y = step.y }; task.count = step.count end
   if kind == "place" then task.item, task.position, task.direction = step.name, { x = step.x, y = step.y }, step.direction end
-  if kind == "craft" then task.recipe, task.count, task.wait_for_completion = step.recipe, step.count, step.wait_for_completion end
+  if kind == "craft" then task.recipe, task.count, task.wait_for_completion = step.recipe, step.crafts, step.wait_for_completion end
   if kind == "insert" then task.target, task.items = { x = step.x, y = step.y }, step.items end
   if kind == "extract" then task.target, task.items, task.all = { x = step.x, y = step.y }, step.items, step.items == nil end
   if kind == "set_recipe" then task.target, task.recipe = { x = step.x, y = step.y }, step.recipe end
@@ -158,18 +158,26 @@ function M.get(params)
 end
 function M.cancel(params)
   local tasks, n = storage.tasks, 0
+  local function record_cancelled_step(plan)
+    if plan.type == "plan" and plan.current_task then
+      local step = plan.steps[plan.current_step]
+      plan.outcomes[#plan.outcomes + 1] = {
+        step = plan.current_step, action = step.action,
+        status = "cancelled", error = "cancelled",
+      }
+      plan.current_task = nil
+    end
+  end
   if params.all then
     for _, queued in ipairs(tasks.queue) do
+      record_cancelled_step(queued)
       if queued.type == "plan" then queued.status, queued.finished_tick = "cancelled", game.tick end
       tasks.records[queued.id] = { status = "cancelled", detail = "", finished_tick = game.tick, plan = queued.type == "plan" and queued or nil }
       n = n + 1
     end
     tasks.queue = {}
     if tasks.active then
-      if tasks.active.type == "plan" and tasks.active.current_task then
-        local step = tasks.active.steps[tasks.active.current_step]
-        tasks.active.outcomes[#tasks.active.outcomes + 1] = { step = tasks.active.current_step, action = step.action, status = "cancelled", error = "cancelled" }
-      end
+      record_cancelled_step(tasks.active)
       finish(tasks.active, "cancelled", ""); n = n + 1
     end
     cancel_crafting()
@@ -178,14 +186,12 @@ function M.cancel(params)
   local id = tonumber(params.task_id or params.plan_id)
   if not id then error("cancel requires task_id, plan_id, or all=true") end
   if tasks.active and tasks.active.id == id then
-    if tasks.active.type == "plan" and tasks.active.current_task then
-      local step = tasks.active.steps[tasks.active.current_step]
-      tasks.active.outcomes[#tasks.active.outcomes + 1] = { step = tasks.active.current_step, action = step.action, status = "cancelled", error = "cancelled" }
-    end
+    record_cancelled_step(tasks.active)
     finish(tasks.active, "cancelled", ""); return { cancelled = 1 }
   end
   for i, queued in ipairs(tasks.queue) do if queued.id == id then
     table.remove(tasks.queue, i)
+    record_cancelled_step(queued)
     if queued.type == "plan" then queued.status, queued.finished_tick = "cancelled", game.tick end
     tasks.records[id] = { status = "cancelled", detail = "", finished_tick = game.tick, plan = queued.type == "plan" and queued or nil }
     return { cancelled = 1 }
@@ -243,6 +249,16 @@ local function tick_plan(plan)
   local step, ok, result = plan.steps[plan.current_step]
   if step.action == "wait_for_item" then ok, result = pcall(wait_for_item, plan, step)
   else ok, result = pcall(runners[plan.current_task.type].tick, plan.current_task) end
+  if ok and step.action == "wait_for_item" and result == nil then
+    -- A read-only condition must not occupy the physical body while an
+    -- independent action is ready. Park this plan at the tail of the same FIFO;
+    -- its elapsed timeout and current step remain intact.
+    plan.status = "waiting"
+    storage.tasks.active = nil
+    storage.tasks.queue[#storage.tasks.queue + 1] = plan
+    stop_body()
+    return
+  end
   if not ok then finish_step(plan, { status = "failed", detail = tostring(result) }) elseif result then finish_step(plan, result) end
 end
 local function predecessor_status(id)
@@ -256,11 +272,20 @@ local function dispatch(tasks)
   if not task then
     if #tasks.queue == 0 then return end
     task = tasks.queue[1]
-    if task.type == "plan" and task.after_plan_id and predecessor_status(task.after_plan_id) ~= "completed" then
-      table.remove(tasks.queue, 1); task.status = "cancelled"
-      finish(task, "cancelled", "predecessor plan did not complete successfully"); return
+    if task.type == "plan" and task.after_plan_id then
+      local status = predecessor_status(task.after_plan_id)
+      if status ~= "completed" then
+        table.remove(tasks.queue, 1)
+        if status == "queued" or status == "running" or status == "waiting" then
+          tasks.queue[#tasks.queue + 1] = task
+        else
+          task.status = "cancelled"
+          finish(task, "cancelled", "predecessor plan did not complete successfully")
+        end
+        return
+      end
     end
-    table.remove(tasks.queue, 1); task.status, task.started_tick, tasks.active = "running", game.tick, task
+    table.remove(tasks.queue, 1); task.status, task.started_tick, tasks.active = "running", task.started_tick or game.tick, task
     if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", tostring(err)); return end end
   end
   if task.type == "plan" then tick_plan(task); return end

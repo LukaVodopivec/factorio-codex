@@ -10,6 +10,8 @@ Evidence/state: each post-observation ledger revision contains schema version, e
 
 Baseline and verification: reconstruct current state from the newest observation and reports before continuing; establish the baseline phase, inventory, capacity, research, bottleneck, and tick. Verify each plan against its terminal observation and the milestone against later-tick structured checks. If a previously working path regresses, isolate it and roll back the assumption or plan; if the same approach stalls, pivot or narrow to a materially different safe hypothesis.
 
+For every strategic choice, observe authoritative state, identify the current bottleneck, form a falsifiable hypothesis, predict a measurable effect, choose a safe action, compare prediction with outcome, and retain, revise, or discard the lesson with provenance and uncertainty. Never replace this loop with an opening script, timed phase, fixed build order, named route, map coordinate, or prescriptive progression sequence; `GO+20m` is measurement only.
+
 Loop:
 1. Read the newest authoritative observation and specialist analysis; invalidate stale state and advice unless revalidated, then choose the next best action for the highest-value unmet success criterion.
 2. Diagnose the dominant constraint across materials, capacity, utilization, logistics, power, science, reach, and travel. After bootstrap, approve a manual mining/crafting batch only with its exact net deficit after carried stock, machine buffers/output and WIP; exact machine unlock or fuel consumer and uptime bought; payback in named item/time units with break-even; and numeric stop. Automate bulk extraction, smelting, intermediates, logistics, and science.

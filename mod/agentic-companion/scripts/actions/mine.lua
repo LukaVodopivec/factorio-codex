@@ -2,7 +2,7 @@
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local M = {}
-local MINABLE_TYPES = { "resource", "tree", "simple-entity" }
+local NATURAL_MINABLE_TYPES = { resource = true, tree = true, ["simple-entity"] = true }
 
 local function occupies(e, target)
   local box = e.selection_box or e.bounding_box
@@ -109,10 +109,13 @@ function M.start(task)
   if type(target) ~= "table" or type(target.x) ~= "number" or type(target.y) ~= "number" then error("mine requires target = {x, y}") end
   local count = tonumber(task.count) or 1
   if count ~= math.floor(count) or count < 1 or count > 200 then error("mine count must be an integer from 1 to 200") end
-  local candidates = c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } }, type = MINABLE_TYPES })
+  local candidates = c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } } })
   local found
   for _, e in ipairs(candidates) do
-    if e.valid and e.prototype.mineable_properties.minable and occupies(e, target) then
+    local physically_allowed = NATURAL_MINABLE_TYPES[e.type]
+      or (e.force == c.force and e.type ~= "character")
+    local mineable = e.prototype and e.prototype.mineable_properties
+    if e.valid and physically_allowed and mineable and mineable.minable and occupies(e, target) then
       if found then error("more than one minable entity occupies that coordinate; observe again and choose an unambiguous point") end
       found = e
     end

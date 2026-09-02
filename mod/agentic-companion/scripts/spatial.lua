@@ -532,10 +532,41 @@ local function describe_entity(ent, item_name)
   if burner then
     ok, v = pcall(function() return burner.fuel_categories end)
     if ok then out.fuel_categories = sorted_keys(v) end
+    ok, v = pcall(function() return burner.effectivity end)
+    if ok and type(v) == "number" then out.burner_effectivity = v end
+    ok, v = pcall(function() return burner.fuel_inventory_size end)
+    if ok and type(v) == "number" then out.fuel_inventory_size = v end
   end
 
   ok, v = pcall(function() return ent.mining_speed end)
   if ok and type(v) == "number" then out.mining_speed = v end
+  ok, v = pcall(function() return ent.crafting_speed end)
+  if ok and type(v) == "number" then out.crafting_speed = v end
+  ok, v = pcall(function() return ent.max_energy_usage end)
+  if ok and type(v) == "number" then out.max_energy_usage = v end
+  ok, v = pcall(function() return ent.max_energy_production end)
+  if ok and type(v) == "number" then out.max_energy_production = v end
+
+  ok, v = pcall(function() return ent.mineable_properties end)
+  if ok and type(v) == "table" then
+    if type(v.mining_time) == "number" then out.mining_time = v.mining_time end
+    local products = {}
+    for _, product in ipairs(v.products or {}) do
+      if product.name then
+        products[product.name] = (products[product.name] or 0)
+          + (tonumber(product.amount) or tonumber(product.amount_max) or tonumber(product.amount_min) or 1)
+      end
+    end
+    if next(products) ~= nil then out.mining_products = products end
+  end
+
+  local fuel_item = prototypes.item[item_name or ent.name]
+  if fuel_item then
+    ok, v = pcall(function() return fuel_item.fuel_value end)
+    if ok and type(v) == "number" and v > 0 then out.fuel_value = v end
+    ok, v = pcall(function() return fuel_item.fuel_category end)
+    if ok and type(v) == "string" then out.fuel_category = v end
+  end
 
   ok, v = pcall(function() return ent.crafting_categories end)
   if ok then out.crafting_categories = sorted_keys(v) end

@@ -17,9 +17,13 @@ end
 local exact = minable("iron-ore", "resource", 0, 100)
 local adjacent = minable("copper-ore", "resource", 1, 100)
 local tree = minable("tree-01", "tree", 3, nil)
+local player_force = {}
+local machine = minable("burner-mining-drill", "mining-drill", 5, nil)
+machine.force = player_force
 _G.prototypes = { item = {
   ["iron-ore"] = { stack_size = 2 }, ["copper-ore"] = { stack_size = 2 },
   stone = { stack_size = 2 }, ["tree-01"] = { stack_size = 2 },
+  ["burner-mining-drill"] = { stack_size = 2 },
 } }
 local inventory = {}
 local capacity_checks = 0
@@ -61,9 +65,10 @@ local function engine_insert(name, count)
   end
   check(count == 0, "fixture engine gain fits the preflighted inventory")
 end
-local candidates = { adjacent, exact, tree }
+local candidates = { adjacent, exact, tree, machine }
 local body = {
   valid = true, position = { x = 0, y = 0 }, resource_reach_distance = 3,
+  force = player_force,
   mining_state = { mining = false }, selected = nil,
   can_insert = function() error("partial LuaControl.can_insert must not decide complete-cycle capacity") end,
   get_main_inventory = function() return inventory end,
@@ -217,4 +222,15 @@ local invalid_count = pcall(mine.start, { target = { x = 0, y = 0 }, count = 201
 check(not invalid_count, "Lua enforces the public mine count cap")
 local by_name = pcall(mine.start, { resource = "iron-ore", count = 10 })
 check(not by_name, "by-name resource discovery is rejected")
+
+machine.valid = true
+body.resource_reach_distance = 8
+engine_gain = 1
+configure_capacity(2)
+local recovery = { target = { x = 5, y = 0 }, count = 1 }; mine.start(recovery)
+local recovered = run(recovery, 10)
+check(recovered and recovered.status == "done" and not machine.valid
+  and inventory_total() == 1 and scripted_mine_calls == 0,
+  "exact player-owned machine recovery uses physical LuaControl mining and returns its item")
+
 os.exit(failures == 0 and 0 or 1)

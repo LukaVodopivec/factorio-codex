@@ -1,6 +1,7 @@
 export const toolPayloads = {
   target: (value: { x: number; y: number }) => ({ target: value }),
   mine: ({ x, y, count }: { x: number; y: number; count?: number }) => ({ target: { x, y }, count }),
+  craft: ({ recipe, crafts, wait_for_completion }: { recipe: string; crafts: number; wait_for_completion?: boolean }) => ({ recipe, count: crafts, ...(wait_for_completion === undefined ? {} : { wait_for_completion }) }),
   place: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
   insert: ({ x, y, items: values }: { x: number; y: number; items: Record<string, number> }) => ({ target: { x, y }, items: values }),
   extract: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y }, all: true }) : ({ target: { x, y }, items: values }),
@@ -10,7 +11,7 @@ export const toolPayloads = {
   placement: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
   canPlace: (placements: Array<{ x: number; y: number; name: string; direction?: number }>) => ({ placements: placements.map((placement) => toolPayloads.placement(placement)) }),
   buildPlan: (steps: Array<{ x: number; y: number; name: string; [key: string]: unknown }>, rest: Record<string, unknown>) => ({ ...rest, steps: steps.map(({ x, y, name, ...step }) => ({ ...step, item: name, position: { x, y } })) }),
-  findPlacement: ({ item, preferred, radius, directions, limit }: { item: string; preferred: { x: number; y: number }; radius: number; directions: number[]; limit: number }) => ({ item, preferred, radius, directions, limit }),
+  findPlacement: ({ item, preferred, radius, directions, limit, output_target }: { item: string; preferred: { x: number; y: number }; radius: number; directions: number[]; limit: number; output_target?: { x: number; y: number } }) => ({ item, preferred, radius, directions, limit, ...(output_target ? { output_target } : {}) }),
   productionRequirements: ({ targets, recipe_choices }: { targets: Record<string, number>; recipe_choices?: Record<string, string> }) => ({ targets, recipe_choices }),
   connectEntities: ({ kind, prototype, from, to, max_length }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number }) => ({ kind, prototype, from, to, max_length }),
 };

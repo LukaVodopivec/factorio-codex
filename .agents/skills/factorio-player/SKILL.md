@@ -68,6 +68,15 @@ deterministic MCP state and tool results before the ledger or prose. Carry only
 the grounded current plan and one queued successor; invalidate stale state and
 keep safe productive work overlapping.
 
+Every strategic choice follows the same state-driven learning loop: observe
+authoritative state; identify the current bottleneck; form a falsifiable hypothesis;
+predict one measurable effect; choose a safe action; compare the
+predicted and actual results; then retain, revise, or discard the lesson with
+provenance and uncertainty. This is not an opening script: never encode a timed
+phase, fixed build order, named route, map coordinate, or prescriptive
+progression sequence. The 20-minute point measures the resulting play and does
+not choose its strategy.
+
 - Use the topology and model/effort assignment selected by completed benchmark
   results; do not assume a Sol/Luna winner. In a split topology, one strategist
   owns phase, success, and one actually queued successor, one persistent pilot is the

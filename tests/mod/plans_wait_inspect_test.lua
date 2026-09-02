@@ -32,8 +32,8 @@ local tasks = require("scripts.tasks")
 local queued = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2,
   inventory = "output", item = "iron-plate", count = 2, timeout_seconds = 3 } } })
 game.tick = 1; tasks.on_tick()
-check(tasks.plan_status({ plan_id = queued.plan_id }).status == "running",
-  "real wait path remains running before the requested count exists")
+check(tasks.plan_status({ plan_id = queued.plan_id }).status == "waiting",
+  "real wait path parks without occupying the body before the requested count exists")
 output_count = 2; game.tick = 2; tasks.on_tick()
 local terminal = tasks.plan_status({ plan_id = queued.plan_id })
 check(terminal.status == "completed" and terminal.completed_steps == 1

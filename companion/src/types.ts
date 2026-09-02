@@ -4,8 +4,13 @@ export interface Position { x: number; y: number }
 export interface PlacementCandidate {
   item: string; entity: string; position: Position; direction: number;
   distance: number; distance_from_codex: number; terrain: "land" | "shoreline" | "offshore";
+  output_position?: Position;
 }
-export interface PlacementSearchResult { item: string; entity: string; preferred: Position; candidates: PlacementCandidate[] }
+export interface PlacementSearchResult {
+  item: string; entity: string; preferred: Position;
+  output_target?: { name: string; position: Position };
+  candidates: PlacementCandidate[];
+}
 export interface MapSummary {
   tick: number; charted_chunks: number;
   resources: Array<{ name: string; entity_count: number; total_amount: number; nearest: Position; observed_tick: number }>;

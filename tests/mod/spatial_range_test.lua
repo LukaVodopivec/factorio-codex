@@ -18,7 +18,14 @@ _G.prototypes = { item = {
     left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 },
   } } },
   gear = { place_result = { name = "gear-entity", collision_box = { left_top = { x = 0, y = 0 }, right_bottom = { x = 1, y = 1 } } } },
-}, entity = {}, recipe = {
+  coal = { fuel_value = 4000000, fuel_category = "chemical" },
+}, entity = {
+  ["burner-mining-drill"] = { name = "burner-mining-drill", tile_width = 2, tile_height = 2,
+    vector_to_place_result = { x = 0, y = -1 }, burner_prototype = { fuel_categories = { chemical = true }, effectivity = 0.8, fuel_inventory_size = 1 },
+    mining_speed = 0.25, max_energy_usage = 2500 },
+  coal = { name = "coal", mineable_properties = { minable = true, mining_time = 1,
+    products = { { name = "coal", amount = 1 } } } },
+}, recipe = {
   gear = { name = "gear", ingredients = { { name = "iron-plate", amount = 2 } }, products = { { name = "gear", amount = 1 } }, energy = 0.5, category = "crafting" },
 } }
 body.force.recipes.gear = { enabled = true }
@@ -85,5 +92,14 @@ check(recipe["recipe:gear"].kind == "recipe" and recipe["recipe:gear"].ingredien
   "describe_prototype exposes recipe/entity and preserves auto resolution")
 local bad_kind_ok = pcall(spatial.describe_prototype, { names = { "gear" }, kind = "item" })
 check(not bad_kind_ok, "describe_prototype rejects kinds outside auto entity recipe")
+local rates = spatial.describe_prototype({ names = { "burner-mining-drill", "coal" }, kind = "entity" })
+check(rates["entity:burner-mining-drill"].mining_speed == 0.25
+  and rates["entity:burner-mining-drill"].max_energy_usage == 2500
+  and rates["entity:burner-mining-drill"].burner_effectivity == 0.8
+  and rates["entity:burner-mining-drill"].fuel_inventory_size == 1
+  and rates["entity:coal"].mining_time == 1
+  and rates["entity:coal"].mining_products.coal == 1
+  and rates["entity:coal"].fuel_value == 4000000,
+  "prototype facts expose exact mining, energy, and fuel-budget inputs")
 
 os.exit(failures == 0 and 0 or 1)

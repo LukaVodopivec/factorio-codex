@@ -17,3 +17,10 @@ observation, referenced-entity mutation, or route failure.
 Revalidate stale knowledge against current structured game state before using
 it. This file defines the versioned contract; it is not a place to persist
 save-specific observations.
+
+Learn through a general state-driven loop: observe authoritative state,
+identify the current bottleneck, form a falsifiable hypothesis, predict a
+measurable effect, choose a safe action, compare predicted and actual results,
+then retain, revise, or discard the lesson with provenance and uncertainty.
+Never turn a retained lesson into an opening script, elapsed-time milestone,
+fixed build order, named route, or prescriptive progression sequence.

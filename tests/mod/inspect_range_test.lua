@@ -19,6 +19,7 @@ local entity = {
   valid = true, name = "stone-furnace", type = "furnace", direction = 0,
   position = { x = 30, y = 0 }, electric_network_id = 17, energy = 2400,
   power_usage = 90, power_production = 0,
+  burner = { remaining_burning_fuel = 1250, currently_burning = { name = "coal", fuel_value = 4000 }, effectivity = 0.8 },
   prototype = { electric_energy_source_prototype = {
     buffer_capacity = 5000, input_flow_limit = 120, output_flow_limit = 0,
   } },
@@ -56,6 +57,10 @@ check(at_limit and type(at_limit_result.entities) == "table"
   and at_limit_result.entities[1].electrical.network_id == 17
   and at_limit_result.entities[1].electrical.energy == 2400
   and at_limit_result.entities[1].electrical.buffer_capacity == 5000
+  and at_limit_result.entities[1].burner.remaining_burning_fuel == 1250
+  and at_limit_result.entities[1].burner.currently_burning == "coal"
+  and at_limit_result.entities[1].burner.current_fuel_value == 4000
+  and at_limit_result.entities[1].burner.effectivity == 0.8
   and at_limit_result.name == nil and at_limit_result.position == nil,
   "batched inspection accepts an exact target and reports electrical network, energy, and limits")
 

@@ -118,7 +118,7 @@ inventory["iron-plate"], body.crafting_queue_size = 2, 0
 local nonblocking = { recipe = "iron-gear-wheel", count = 1, wait_for_completion = false }
 craft.start(nonblocking)
 local accepted = craft.tick(nonblocking)
-check(accepted.status == "done" and accepted.detail:match("accepted 1x iron%-gear%-wheel") ~= nil
+check(accepted.status == "done" and accepted.detail:match("accepted 1 recipe crafts of iron%-gear%-wheel") ~= nil
   and body.crafting_queue_size == 1, "nonblocking crafting returns only after Factorio accepts the real queue")
 
 os.exit(failures == 0 and 0 or 1)

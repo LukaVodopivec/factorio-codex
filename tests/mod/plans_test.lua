@@ -39,6 +39,17 @@ game.tick = 12; tasks.on_tick(); tasks.cancel({ plan_id = interrupted.plan_id })
 local interrupted_status = tasks.plan_status({ plan_id = interrupted.plan_id })
 check(interrupted_status.status == "cancelled" and interrupted_status.outcomes[1].status == "cancelled",
   "active plan cancellation records the interrupted step")
+inspected = 0
+local parked = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 99 } } })
+local useful = tasks.queue_plan({ steps = { { action = "walk_to", x = 7, y = 7 } } })
+game.tick = 13; tasks.on_tick()
+check(tasks.plan_status({ plan_id = parked.plan_id }).status == "waiting",
+  "unsatisfied read-only wait parks at the tail of the same FIFO")
+game.tick = 14; tasks.on_tick()
+check(tasks.plan_status({ plan_id = useful.plan_id }).status == "completed"
+  and tasks.plan_status({ plan_id = parked.plan_id }).status == "waiting",
+  "parked read-only wait does not monopolize the physical body while useful work exists")
+tasks.cancel({ plan_id = parked.plan_id })
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1
 check(tasks.cancel({ all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")
 os.exit(failures == 0 and 0 or 1)

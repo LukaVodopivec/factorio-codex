@@ -89,11 +89,14 @@ describe("registered MCP handler parity with Lua v7", () => {
     await handlers.mine({ x: 11, y: 12, count: 4 });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 4 });
     expect(schemas.mine.safeParse({ x: 0, y: 0 }).data.count).toBe(1);
+    expect(schemas.mine.safeParse({ x: 0, y: 0, count: 2 }).success).toBe(true);
     expect(schemas.mine.safeParse({ x: 0, y: 0, count: 201 }).success).toBe(false);
     await handlers.place_entity({ x: 13, y: 14, name: "stone-furnace", direction: 8 });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "place", item: "stone-furnace", position: { x: 13, y: 14 }, direction: 8 });
-    await handlers.craft_items({ recipe: "iron-gear-wheel", count: 2 });
+    await handlers.craft_items({ recipe: "iron-gear-wheel", crafts: 2 });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "craft", recipe: "iron-gear-wheel", count: 2 });
+    expect(schemas.craft_items.safeParse({ recipe: "iron-gear-wheel", count: 2 }).success).toBe(false);
+    expect(schemas.craft_items.safeParse({ recipe: "iron-gear-wheel", crafts: 2, manual_batch: {} }).success).toBe(false);
     await handlers.insert_items({ x: 15, y: 16, items: { coal: 2 } });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "insert", target: { x: 15, y: 16 }, items: { coal: 2 } });
     await handlers.set_recipe({ x: 17, y: 18, recipe: "iron-gear-wheel" });

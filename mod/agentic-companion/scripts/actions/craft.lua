@@ -42,11 +42,13 @@ function M.start(task)
     error("recipe " .. task.recipe .. " isn't unlocked yet — research it first")
   end
 
-  local product_names, before = {}, {}
+  local product_names, before, products_per_craft = {}, {}, {}
   for _, p in ipairs(r.products or {}) do
     if p.type == "item" then
       product_names[#product_names + 1] = p.name
       before[p.name] = c.get_item_count(p.name)
+      local amount = tonumber(p.amount) or tonumber(p.amount_max) or tonumber(p.amount_min) or 1
+      products_per_craft[p.name] = (products_per_craft[p.name] or 0) + amount
     end
   end
 
@@ -69,6 +71,7 @@ function M.start(task)
     note = note,
     product_names = product_names,
     products_before = before,
+    products_per_craft = products_per_craft,
     next_poll = game.tick + POLL_TICKS,
   }
 end
@@ -80,9 +83,15 @@ function M.tick(task)
   end
   local s = task._craft
   if task.wait_for_completion == false then
+    local expected = {}
+    for name, amount in pairs(s.products_per_craft) do
+      expected[#expected + 1] = string.format("%g %s", amount * s.started, name)
+    end
+    table.sort(expected)
     return {
       status = "done",
-      detail = string.format("accepted %dx %s into Factorio's hand-crafting queue%s", s.started, task.recipe, s.note),
+      detail = string.format("accepted %d recipe crafts of %s into Factorio's hand-crafting queue; expected outputs: %s%s",
+        s.started, task.recipe, table.concat(expected, ", "), s.note),
     }
   end
   if game.tick < s.next_poll then return nil end
@@ -98,7 +107,7 @@ function M.tick(task)
   end
   return {
     status = "done",
-    detail = string.format("crafted %dx %s%s%s", s.started, task.recipe,
+    detail = string.format("completed %d recipe crafts of %s%s%s", s.started, task.recipe,
       #parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or "", s.note),
   }
 end

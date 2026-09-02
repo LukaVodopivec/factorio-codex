@@ -39,6 +39,11 @@ successor is queued. Reject or replace stale state when revision, source tick,
 or save identity regresses or disagrees with live structured state. The pilot
 is the sole ordinary MCP writer and authority for the latest observation; the
 master alone converts its report into the next atomic ledger revision.
+The master coalesces superseded reports for the same run by newest source tick
+and writes one revision for the current decision, not one revision per stale
+report. A plan ID and its envelope execute at most once. The first decision
+cycle uses one authoritative diagnostic packet and does not repeat equivalent
+diagnostics unless action, contradiction, or staleness changes the evidence.
 
 The exact top-level keys are `schema_version`, `run`, `revision`, `source_tick`,
 `phase`, `success`, `capacity`, `utilization`, `bottleneck`, `current_plan`,
@@ -80,6 +85,13 @@ When an exact factor is not observable, a bounded falsifiable experiment is
 allowed: state the uncertainty, predicted measurable effect, safe bound, and
 numeric stop before acting. Never substitute copied layouts, tutorials, or
 online sequences for live evidence.
+Each decision envelope is bounded by its current goal and carries that
+hypothesis, expected effect, safe bounds, numeric stops, and locally adaptive
+fallbacks. Within those bounds the pilot keeps acting without per-action
+approval, reports material batch terminals or failures, consumes the
+`run_plan` terminal observation, and never repeats an executed plan ID. Invoke
+the specialist on demand; one attributed evidence memo per request is enough,
+and a newer run/tick memo supersedes an older one.
 
 - Use the topology and model/effort assignment selected by completed benchmark
   results; do not assume a Sol/Luna winner. In a split topology, one strategist

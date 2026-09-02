@@ -11,6 +11,8 @@ const master = read("GOAL-MASTER-v1.md");
 const pilot = read("GOAL-PILOT-v1.md");
 const specialist = read("GOAL-SPECIALIST-v1.md");
 const knowledge = read("PLAYER-KNOWLEDGE-v1.md");
+const performance = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
+const roleGuidance = performance.match(/For role coordination,[\s\S]*?(?=\n## Peaceful rocket benchmark)/)?.[0] ?? "";
 const prompts = [master, pilot, specialist];
 const allInstructions = [skill, ...prompts, knowledge].join("\n");
 const ledgerPath = "/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json";
@@ -103,6 +105,22 @@ describe("shared gameplay run contract", () => {
       expect(text).not.toMatch(/first (?:mine|craft|build|place)[^\n]{0,120}then/i);
       expect(text).not.toMatch(/(?:at|by) minute \d+/i);
     }
+  });
+
+  it("coalesces reports into bounded single-use decision envelopes", () => {
+    expect(master).toMatch(/coalesce pilot reports and specialist memos by newest source\s+tick/i);
+    expect(master).toMatch(/Superseded reports do not cause ledger rewrites/i);
+    expect(master).toMatch(/first decision from one authoritative diagnostic packet/i);
+    expect(master).toMatch(/bounded goal-conditioned envelope[\s\S]*safe bounds[\s\S]*numeric\s+stops[\s\S]*locally adaptive fallbacks/i);
+    expect(master).toMatch(/never issue the same plan ID or envelope twice/i);
+    expect(pilot).toMatch(/each master envelope and plan ID as single-use/i);
+    expect(pilot).toMatch(/without\s+per-action approval[\s\S]*never repeat an executed envelope or plan ID/i);
+    expect(pilot).toMatch(/`run_plan` terminal observation[\s\S]*material batch terminals or failures/i);
+    expect(specialist).toMatch(/on demand[\s\S]*one attributed,\s+coalescible evidence memo per master request/i);
+    expect(roleGuidance).toMatch(/coalesces superseded reports[\s\S]*never reissues an executed plan ID/i);
+    expect(roleGuidance).toMatch(/bounded goal-conditioned envelope[\s\S]*numeric\s+stops[\s\S]*locally adaptive fallbacks/i);
+    expect(roleGuidance).toMatch(/general learning-loop rules/i);
+    expect(roleGuidance).not.toMatch(/first (?:mine|craft|build|place)[^\n]{0,120}then|(?:at|by) minute \d+/i);
   });
 
   it("preserves deterministic stale invalidation productive overlap and boundaries", () => {

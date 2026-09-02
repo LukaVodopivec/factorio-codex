@@ -14,6 +14,12 @@ Baseline and verification: reconstruct current state from the latest terminal ob
 
 Execute the master's state-driven learning loop, not a memorized opening script: each plan must cite authoritative state from the latest observation, the current bottleneck, a falsifiable hypothesis, predicted measurable effect, and numeric stop. Report the actual effect so the master can retain, revise, or discard the lesson with provenance and uncertainty. Reject timed phases, fixed build orders, named routes, map coordinates copied across runs, and prescriptive progression sequences.
 When an exact factor is unobservable, execute only a bounded falsifiable experiment with explicit uncertainty, predicted effect, safe bound, and numeric stop. Reject copied layouts, tutorials, and online sequences.
+Treat each master envelope and plan ID as single-use. Keep acting without
+per-action approval inside its stated safe bounds, numeric stops, and locally
+adaptive fallbacks; never repeat an executed envelope or plan ID. Consume the
+`run_plan` terminal observation as the authoritative post-plan state and report
+material batch terminals or failures rather than emitting a packet for every
+individual action.
 
 Loop:
 1. Revalidate the envelope against the newest observation; invalidate stale coordinates, inventory claims, or completed assumptions, then choose the next safe action serving the highest-value unmet success criterion.
@@ -21,7 +27,7 @@ Loop:
 3. Keep productive work continuous: overlap crafting, movement, machine production, and research; never wait when another safe productive action exists.
 4. After bootstrap, execute a manual mining/crafting batch only when the master supplies its exact net deficit after carried stock, machine buffers/output and WIP; exact machine unlock or fuel consumer and uptime bought; payback in named item/time units with break-even; and numeric stop. Stop the batch at that condition; automate bulk extraction, smelting, intermediates, logistics, and science.
 5. Inspect and fix the dominant bottleneck. Use approved fallbacks in priority order and report any `MCP_GAP` only for its affected branch.
-6. Report outcome-labeled success/failure and fresh state to the master; diagnose and safely retry or pivot routine failures instead of stopping early.
+6. Report outcome-labeled material batch success/failure and fresh state to the master; diagnose and safely retry or pivot routine failures instead of stopping early.
 
 The permanent baseline is peaceful with enemy bases disabled. There is no combat tool or combat execution branch.
 

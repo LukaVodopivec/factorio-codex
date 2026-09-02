@@ -291,6 +291,9 @@ local function tick_plan(plan)
     local step = plan.steps[plan.current_step]
     plan.current_task = step.action == "wait_for_item" and { type = "wait_for_item" } or make_step_task(step)
     if step.action ~= "wait_for_item" then
+      -- Async action events are delivered to the one active queue entry. Give
+      -- the nested runner its owning plan ID so it uses that same mailbox.
+      plan.current_task.id = plan.id
       local ok, err = pcall(runners[plan.current_task.type].start, plan.current_task)
       if not ok then finish_step(plan, { status = "failed", detail = tostring(err) }); return end
     end

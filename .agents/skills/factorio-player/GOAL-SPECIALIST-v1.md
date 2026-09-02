@@ -14,6 +14,10 @@ Baseline and verification: reconstruct current state from the newest envelope an
 
 For each recommendation, start from authoritative state, identify the current bottleneck, state a falsifiable hypothesis and predicted measurable effect, choose a safe action, then compare it with the later result and recommend retain, revise, or discard with provenance and uncertainty. Do not supply an opening script, timed phase, fixed build order, named route, cross-run coordinate, or prescriptive progression sequence; the 20-minute point is measurement only.
 When an exact factor is unobservable, recommend only a bounded falsifiable experiment with explicit uncertainty, predicted effect, safe bound, and numeric stop. Reject copied layouts, tutorials, and online sequences.
+Work on demand, not as a continuous reporting loop. Send one attributed,
+coalescible evidence memo per master request; key it to the exact run and newest
+source tick, and send another only when a material new observation changes the
+analysis. A newer memo supersedes an older one.
 
 Loop:
 1. Revalidate inputs against the latest observation and live recipe/progression data; invalidate stale advice, then choose the next calculation for the highest-value unmet success criterion.

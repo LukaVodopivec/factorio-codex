@@ -1,15 +1,15 @@
 # Agent play performance
 
-Release 0.12.1 adds deterministic placement, map, production, and connection
-queries while preserving one physical
-Codex body, one task lane, and honest Factorio mechanics.
+Release 0.12.2 routes native path-completion events into nested plan actions
+and preserves deterministic placement, map, production, and connection queries,
+one physical Codex body, one task lane, and honest Factorio mechanics.
 
 ## Recorded baseline and operating model
 
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.12.1 validation.
+0.12.2 validation.
 
 The operating topology and model/effort choice remain benchmark candidates;
 do not predeclare a winner. In every multi-session candidate, the strategist
@@ -93,6 +93,20 @@ The retained design is deliberately smaller: MCP synchronously sequences
 or immediately queues plans, Lua composes the existing physical task runners,
 and every terminal plan path attempts one compact local observation.
 
+For role coordination, the master coalesces superseded reports by run and
+newest source tick, writes one ledger revision for the current decision, and
+never reissues an executed plan ID. The first decision uses one authoritative
+diagnostic packet; equivalent diagnostics repeat only after action,
+contradiction, or staleness. Each bounded goal-conditioned envelope states a
+falsifiable hypothesis, predicted measurable effect, safe bounds, numeric
+stops, and locally adaptive fallbacks so the pilot can keep acting without
+per-action approval. The pilot consumes each `run_plan` terminal observation,
+reports material batch terminals or failures, and never repeats an executed
+envelope. The specialist is on-demand and returns one run/tick-keyed,
+coalescible evidence memo per request. These are general learning-loop rules,
+not a timed opening, fixed build order, named route, map coordinates, tutorial,
+copied layout, online sequence, or gameplay-specific action chain.
+
 ## Peaceful rocket benchmark
 
 This is a documentation and results protocol, not runtime machinery. Do not add
@@ -116,7 +130,7 @@ count, final compact observation, and any `MCP_GAP`. Verify
 Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
-observations, recipe disambiguation, progression, protocol v9, version 0.12.1,
+observations, recipe disambiguation, progression, protocol v9, version 0.12.2,
 and exactly 24 tools. Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -166,4 +180,4 @@ relabel the immutable snapshot.
 Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast
 setting. Append the completed result below with exact baseline/release hashes;
-do not present historical timings as 0.12.1 benchmark results.
+do not present historical timings as 0.12.2 benchmark results.

@@ -7,14 +7,24 @@ Read first: `SKILL.md`, `PLAYER-KNOWLEDGE-v1.md`, and the exact ledger passed by
 Shared-run ownership: the parent creates the `0700` directory and initializes revision `0` of the single `0600` `operations.json` with null source tick/observation; after that handoff, you are its sole host-ledger writer. Rewrite it atomically through a `0600` adjacent temporary file and rename, then verify the final file remains `0600`; each revision is exactly prior plus one and preserves the parent-owned `run` object byte-for-byte. The pilot and specialist never write the ledger; incorporate their direct reports only after revalidating deterministic MCP evidence. Do not create another run file, append log, watcher, broker, database, orchestrator, or coordination process. Coordinates are ephemeral ledger state only: remove affected coordinates after reset, contradictory observation, referenced-entity mutation, or route failure, and never copy them into durable knowledge. A tick rollback, reset, or save-identity mismatch ends this ledger and requires a fresh parent-created run ID/file.
 
 Evidence/state: each post-observation ledger revision contains schema version, exact run/save identity, monotonic revision and source tick, global goal, phase, measurable success, latest pilot observation, capacity and utilization, dominant bottleneck, current plan, exactly one actually queued successor with returned plan ID, predecessor ID/preconditions and `plan_status` confirmation or the reason none is queued, current/next BOM, fallbacks, assumptions, and outcome-labeled lessons. Keep GO/deadline/collection timing, the immutable 20-minute label/vector, and later terminal evidence inside `outcome`. Reject any report whose revision, source tick, or save identity regresses or contradicts live state.
+For the same run, coalesce pilot reports and specialist memos by newest source
+tick. Superseded reports do not cause ledger rewrites; write one monotonic
+revision for the current decision. Mark a plan ID consumed when issued and
+terminal when reported, and never issue the same plan ID or envelope twice.
 
 Baseline and verification: reconstruct current state from the newest observation and reports before continuing; establish the baseline phase, inventory, capacity, research, bottleneck, and tick. Verify each plan against its terminal observation and the milestone against later-tick structured checks. If a previously working path regresses, isolate it and roll back the assumption or plan; if the same approach stalls, pivot or narrow to a materially different safe hypothesis.
 
 For every strategic choice, observe authoritative state, identify the current bottleneck, form a falsifiable hypothesis, predict a measurable effect, choose a safe action, compare prediction with outcome, and retain, revise, or discard the lesson with provenance and uncertainty. Never replace this loop with an opening script, timed phase, fixed build order, named route, map coordinate, or prescriptive progression sequence; `GO+20m` is measurement only.
 If an exact factor is unobservable, allow a bounded falsifiable experiment with explicit uncertainty, predicted effect, safe bound, and numeric stop. Reject copied layouts, tutorials, and online sequences.
+Make the first decision from one authoritative diagnostic packet. Do not ask
+for repeated equivalent diagnostic packets until an action, contradiction, or
+staleness can change the evidence. Issue a bounded goal-conditioned envelope
+containing the falsifiable hypothesis, predicted effect, safe bounds, numeric
+stops, and locally adaptive fallbacks; within it the pilot acts continuously
+without per-action approval.
 
 Loop:
-1. Read the newest authoritative observation and specialist analysis; invalidate stale state and advice unless revalidated, then choose the next best action for the highest-value unmet success criterion.
+1. Read the newest authoritative observation and, when requested, one coalescible specialist evidence memo; invalidate stale state and advice unless revalidated, then choose the next best action for the highest-value unmet success criterion.
 2. Diagnose the dominant constraint across materials, capacity, utilization, logistics, power, science, reach, and travel. After bootstrap, approve a manual mining/crafting batch only with its exact net deficit after carried stock, machine buffers/output and WIP; exact machine unlock or fuel consumer and uptime bought; payback in named item/time units with break-even; and numeric stop. Automate bulk extraction, smelting, intermediates, logistics, and science.
 3. Send the pilot one grounded current plan and ensure exactly one successor is actually queued through `queue_plan` with predecessor/preconditions, or record the concrete reason no safe successor can be queued. Overlap crafting, movement, production, and research; never wait when another safe productive action exists.
 4. Compare later-tick outcomes with predicted success. Label successes and failures, explain deviations, and replan mid-run when evidence changes.

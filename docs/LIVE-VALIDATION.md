@@ -115,3 +115,40 @@ current-release result.
 - The observed couch launch reached `InGame` and the server logged the join.
   A successful network join alone does not prove spectator mode; verify the
   controller in the Factorio UI as described above.
+
+## Optional couch UI navigation layer
+
+For semantic Windows UI navigation, the couch PC was tested with
+[CursorTouch Windows-MCP 0.8.5](https://pypi.org/project/windows-mcp/0.8.5/).
+This is an optional fallback for non-game couch UI, administration, or
+reconnection steps that SSH cannot perform. It does not control Factorio
+through the Codex MCP server. The gameplay pilot remains MCP-text-only:
+Windows-MCP's Screenshot capability must never be used for Factorio
+perception or play.
+
+The tested deployment details are:
+
+- Python 3.12 and `windows-mcp==0.8.5` installed for the Windows user.
+- A per-user Scheduled Task named `windows-mcp-server`, running at logon with
+  limited (non-elevated) privileges.
+- Streamable HTTP bound only to `127.0.0.1:8000`; never expose this listener
+  directly on the LAN. If remote use is needed, carry it through the existing
+  authenticated SSH connection with a local port forward.
+- Telemetry disabled with `ANONYMIZED_TELEMETRY=false` and an empty
+  `POSTHOG_API_KEY`.
+- The launcher passes this explicit UI-only allowlist:
+  `Screenshot,Snapshot,Click,Type,Scroll,Move,Shortcut,Wait,WaitFor,DisplayInventory,App`.
+  PowerShell, FileSystem, Registry, Process, Clipboard, Scrape, Notification,
+  MultiSelect, and MultiEdit are excluded. Screenshot remains unavailable to
+  the Factorio gameplay pilot regardless of this UI administration allowlist.
+
+The installer rewrites `~/.windows-mcp/start-server.cmd`; apply the allowlist
+to that launcher after installation and restart only the `windows-mcp-server`
+task. If using `config.toml`, write it as UTF-8 without a BOM: Windows
+PowerShell's default UTF-8 writer can otherwise cause `Invalid statement` at
+startup. Verify with a local MCP `initialize`/`tools/list` request and confirm
+exactly 11 tools before adding the server to a client.
+
+The tested endpoint reported Windows-MCP 4.0.1 internally even though the
+installed package was 0.8.5; use the package version for pinning and retain
+the scheduled-task launcher as the source of the effective runtime options.

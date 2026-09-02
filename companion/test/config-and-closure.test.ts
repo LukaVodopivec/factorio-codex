@@ -176,6 +176,9 @@ describe("exact local configuration", () => {
     expect(skill).not.toMatch(/finish every packet with `observe_local`/i);
     expect(liveValidation).toMatch(/Prior-release 0\.7\.0 live evidence/);
     expect(liveValidation).toMatch(/historical 0\.7\.0 evidence[\s\S]*not live validation of[\s\S]*0\.8\.0/);
+    expect(liveValidation).toMatch(/Optional couch UI navigation layer/);
+    expect(liveValidation).toMatch(/non-game couch UI, administration, or[\s\S]*reconnection steps that SSH cannot perform/);
+    expect(liveValidation).toMatch(/gameplay pilot remains MCP-text-only[\s\S]*Screenshot capability must never be used for Factorio[\s\S]*perception or play/i);
   });
 });
 

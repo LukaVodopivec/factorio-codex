@@ -48,7 +48,7 @@ local function malformed(step)
 end
 
 function M.start(task)
-  local c = companion.require_companion()
+  companion.require_companion()
   if type(task.steps) ~= "table" or #task.steps == 0 then
     error('build_plan requires steps = a non-empty array like [{"item":"transport-belt","position":{"x":1,"y":2}}]')
   end
@@ -76,37 +76,51 @@ function M.start(task)
     end
   end
 
-  -- Construction intent implies permission to prepare the placeable items.
-  -- Queue missing, enabled hand-craft recipes once up front so the brain does
-  -- not need a craft call for every drill, inserter or belt. Factorio's normal
-  -- crafting queue handles craftable intermediates; anything unavailable is
-  -- still reported precisely by the placement phase.
   task.auto_craft = task.auto_craft ~= false
   task._auto_crafted = 0
-  if task.auto_craft then
-    local needed = {}
-    for _, step in ipairs(task.steps) do
-      needed[step.item] = (needed[step.item] or 0) + 1
-    end
-    local names = {}
-    for name in pairs(needed) do names[#names + 1] = name end
-    table.sort(names)
-    for _, name in ipairs(names) do
-      local missing = needed[name] - c.get_item_count(name)
-      local recipe = c.force.recipes[name]
-      if missing > 0 and recipe and recipe.enabled then
-        local started = c.begin_crafting({ count = missing, recipe = recipe.name or name })
-        task._auto_crafted = task._auto_crafted + started
-      end
-    end
-  end
-  task._waiting_for_crafts = task._auto_crafted > 0
+  task._waiting_for_crafts = false
+  task._craft_attempted = nil
 
   task.stop_on_error = task.stop_on_error ~= false
   task._index = 1
   task._placed = 0
   task._results = {}
   task._failures = {}
+end
+
+-- Deterministic number of the requested item produced by one recipe craft.
+-- Probabilistic/ranged products fall back to one so auto-craft never assumes
+-- an uncertain yield that could leave the current step unprepared.
+local function output_per_craft(recipe, item_name)
+  for _, product in ipairs(recipe.products or {}) do
+    if product.type == "item" and product.name == item_name then
+      if type(product.amount) == "number" and product.amount > 0 then
+        return product.amount
+      end
+      if type(product.amount_min) == "number" and product.amount_min > 0
+          and product.amount_min == product.amount_max then
+        return product.amount_min
+      end
+      return 1
+    end
+  end
+  return 1
+end
+
+-- Prepare only the current step. Returns true when a real crafting queue entry
+-- started and the plan must wait before attempting placement.
+local function start_current_craft(task, c, step)
+  local missing = math.max(1 - c.get_item_count(step.item), 0)
+  local recipe = c.force.recipes[step.item]
+  task._craft_attempted = task._index
+  if missing == 0 or not recipe or not recipe.enabled then return false end
+
+  local count = math.ceil(missing / output_per_craft(recipe, step.item))
+  local started = c.begin_crafting({ count = count, recipe = recipe.name or step.item })
+  if started <= 0 then return false end
+  task._auto_crafted = task._auto_crafted + started
+  task._waiting_for_crafts = true
+  return true
 end
 
 -- ------------------------------------------------------------ step pieces
@@ -217,7 +231,7 @@ end
 local function summary(task)
   local s = string.format("placed %d/%d", task._placed, #task.steps)
   if task._auto_crafted > 0 then
-    s = s .. string.format(" (prepared %d missing building item%s)",
+    s = s .. string.format(" (ran %d preparation craft%s)",
       task._auto_crafted, task._auto_crafted == 1 and "" or "s")
   end
   local f = task._failures
@@ -284,6 +298,11 @@ function M.tick(task)
   local place_result = proto.place_result
   if not place_result then
     return advance(task, false, step.item .. " is not a placeable item")
+  end
+  if c.get_item_count(step.item) == 0 and task.auto_craft
+      and task._craft_attempted ~= task._index
+      and start_current_craft(task, c, step) then
+    return nil
   end
   if c.get_item_count(step.item) == 0 then
     return advance(task, false, "I don't have any " .. step.item .. " left in my inventory")

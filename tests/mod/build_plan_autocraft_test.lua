@@ -8,42 +8,67 @@ local function check(cond, what)
 end
 
 local crafted = {}
-local inventory = { ["transport-belt"] = 1 }
+local inventory = { ["transport-belt"] = 0 }
+local placed_count = 0
 local character
 character = {
   crafting_queue_size = 0,
   force = { recipes = {
-    ["transport-belt"] = { name = "transport-belt", enabled = true },
-    ["burner-mining-drill"] = { name = "burner-mining-drill", enabled = true },
+    ["transport-belt"] = { name = "transport-belt", enabled = true,
+      products = { { type = "item", name = "transport-belt", amount = 2 } } },
+    ["burner-mining-drill"] = { name = "burner-mining-drill", enabled = true,
+      products = { { type = "item", name = "burner-mining-drill", amount = 1 } } },
   } },
   get_item_count = function(name) return inventory[name] or 0 end,
   begin_crafting = function(args)
-    crafted[args.recipe] = args.count
+    crafted[args.recipe] = (crafted[args.recipe] or 0) + args.count
     character.crafting_queue_size = character.crafting_queue_size + args.count
     return args.count
   end,
+  build_distance = 6,
+  surface = {
+    can_place_entity = function() return true end,
+    create_entity = function(args)
+      placed_count = placed_count + 1
+      return { valid = true, name = args.name, type = "transport-belt" }
+    end,
+  },
+  remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count end,
 }
 
 package.loaded["scripts.companion"] = {
   require_companion = function() return character end,
   get = function() return character end,
 }
-local approach_stub = { ensure = function() return nil end }
+local approach_stub = { ensure = function() return "ok" end }
 package.loaded["scripts.actions.approach"] = approach_stub
-_G.prototypes = { item = {} }
+_G.prototypes = { item = {
+  ["transport-belt"] = { place_result = { name = "transport-belt" } },
+  ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill" } },
+} }
+_G.defines = { build_check_type = { manual = 1 } }
 
 local build_plan = require("scripts.actions.build_plan")
 local task = { steps = {
   { item = "transport-belt", position = { x = 0, y = 0 } },
   { item = "transport-belt", position = { x = 1, y = 0 } },
-  { item = "transport-belt", position = { x = 2, y = 0 } },
-  { item = "burner-mining-drill", position = { x = 3, y = 0 } },
 } }
 build_plan.start(task)
-check(crafted["transport-belt"] == 2 and crafted["burner-mining-drill"] == 1,
-  "build_plan: crafts exactly the missing placeable items")
-check(task._waiting_for_crafts == true and task._auto_crafted == 3,
-  "build_plan: construction waits for its preparation queue")
+check(next(crafted) == nil and task._auto_crafted == 0,
+  "build_plan: does not pre-craft future steps during start")
+check(build_plan.tick(task) == nil and crafted["transport-belt"] == 1
+  and task._waiting_for_crafts == true and placed_count == 0,
+  "build_plan: one two-output recipe craft satisfies two missing belts")
+check(build_plan.tick(task) == nil and placed_count == 0,
+  "build_plan: construction waits for the real crafting queue")
+inventory["transport-belt"] = 2
+character.crafting_queue_size = 0
+check(build_plan.tick(task) == nil and placed_count == 1 and inventory["transport-belt"] == 1,
+  "build_plan: places the current step only after crafting completes")
+local two_belts = build_plan.tick(task)
+check(two_belts and two_belts.status == "done" and placed_count == 2
+  and inventory["transport-belt"] == 0 and crafted["transport-belt"] == 1,
+  "build_plan: reuses multi-output surplus without another craft")
 
 crafted = {}
 character.crafting_queue_size = 0
@@ -59,14 +84,19 @@ local accepted, limit_error = pcall(build_plan.start, { steps = too_many })
 check(not accepted and tostring(limit_error):match("at most 25 steps") ~= nil,
   "build_plan: Lua rejects more than 25 steps")
 
-local fail_fast = { auto_craft = false, steps = {
-  { item = "missing-item", position = { x = 0, y = 0 } },
-  { item = "transport-belt", position = { x = 1, y = 0 } },
+inventory["transport-belt"] = 1
+local create_entity = character.surface.create_entity
+character.surface.create_entity = function() return nil end
+local fail_fast = { steps = {
+  { item = "transport-belt", position = { x = 0, y = 0 } },
+  { item = "burner-mining-drill", position = { x = 1, y = 0 } },
 } }
 build_plan.start(fail_fast)
 local failure = build_plan.tick(fail_fast)
-check(fail_fast.stop_on_error == true and failure and failure.status == "failed" and fail_fast._index == 2,
-  "build_plan: omitted stop_on_error fails at the first bad step")
+check(fail_fast.stop_on_error == true and failure and failure.status == "failed"
+  and fail_fast._index == 2 and crafted["burner-mining-drill"] == nil,
+  "build_plan: first placement failure prevents every later-step craft side effect")
+character.surface.create_entity = create_entity
 
 local placed_name
 inventory["transport-belt"] = 1
@@ -76,9 +106,6 @@ character.surface = {
   create_entity = function(args) return { valid = true, name = args.name, type = "transport-belt" } end,
 }
 character.remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count end
-approach_stub.ensure = function() return "ok" end
-_G.defines = { build_check_type = { manual = 1 } }
-prototypes.item["transport-belt"] = { place_result = { name = "transport-belt" } }
 local retained_contract = { auto_craft = false, steps = {
   { item = "transport-belt", entity = "forbidden-blueprint-override", position = { x = 4, y = 5 } },
 } }

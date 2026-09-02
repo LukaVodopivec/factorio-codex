@@ -13,9 +13,11 @@ local function occupies(e, target)
   return math.floor(e.position.x) == math.floor(target.x) and math.floor(e.position.y) == math.floor(target.y)
 end
 
-local function op_ticks(c, e)
-  local mining_time = e.prototype.mineable_properties.mining_time or 1
-  return math.max(10, math.ceil(mining_time * 60 / (1 + c.force.manual_mining_speed_modifier)))
+local function entity_amount(e)
+  if not (e and e.valid) then return nil end
+  local ok, amount = pcall(function() return e.amount end)
+  if ok and type(amount) == "number" then return amount end
+  return nil
 end
 
 function M.start(task)
@@ -31,25 +33,38 @@ function M.start(task)
     end
   end
   if not found then error(string.format("nothing minable occupies exact coordinate (%.1f, %.1f)", target.x, target.y)) end
-  task._entity, task._entity_name, task._remaining = found, found.name, op_ticks(c, found)
+  task._entity, task._entity_name = found, found.name
 end
 
 function M.tick(task)
   local c, e = companion.get(), task._entity
   if not c then return { status = "failed", detail = "the Codex character is gone" } end
-  if not (e and e.valid) then return { status = "failed", detail = "the exact target was removed before mining completed" } end
-  local reached = approach.ensure(task, c, e.position, c.resource_reach_distance)
-  if type(reached) == "table" then return reached end
-  if reached ~= "ok" then return nil end
-  c.mining_state = { mining = true, position = e.position }
-  task._remaining = task._remaining - 1
-  if task._remaining > 0 then return nil end
+  if not task._mining_started then
+    if not (e and e.valid) then return { status = "failed", detail = "the exact target was removed before mining started" } end
+    local reached = approach.ensure(task, c, e.position, c.resource_reach_distance)
+    if type(reached) == "table" then return reached end
+    if reached ~= "ok" then return nil end
+    local inv = c.get_main_inventory()
+    if not inv then return { status = "failed", detail = "the Codex character has no inventory" } end
+    task._target_amount = entity_amount(e)
+    task._inventory_before = inv.get_item_count()
+    task._mining_started = true
+    c.mining_state = { mining = true, position = e.position }
+    return nil
+  end
+
+  local current_amount = entity_amount(e)
+  local target_changed = not (e and e.valid)
+    or (task._target_amount ~= nil and current_amount ~= nil and current_amount < task._target_amount)
+  if not target_changed then return nil end
+
   c.mining_state = { mining = false }
-  local inv, before = c.get_main_inventory(), c.get_main_inventory().get_item_count()
-  local exhausted = e.mine({ inventory = inv, raise_destroyed = true })
-  local gained = inv.get_item_count() - before
-  if gained <= 0 then return { status = "failed", detail = "could not mine exact target — inventory full or no product" } end
-  return { status = "done", detail = string.format("mined %s at exact coordinate (+%d items)%s", task._entity_name, gained, exhausted and " — exhausted" or "") }
+  local inv = c.get_main_inventory()
+  local gained = inv and (inv.get_item_count() - task._inventory_before) or 0
+  if gained <= 0 then
+    return { status = "failed", detail = "the exact target changed without mined items reaching Codex inventory" }
+  end
+  return { status = "done", detail = string.format("mined %s at exact coordinate (+%d items)", task._entity_name, gained) }
 end
 
 return M

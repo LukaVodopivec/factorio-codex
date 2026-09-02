@@ -52,4 +52,11 @@ end
 check_crafting_stop("craft")
 check_crafting_stop("build_plan")
 check(cancelled_crafts == 2, "both crafting task types invoke physical queue cancellation")
+
+_G.storage = { tasks = { next_id = 2, records = {}, queue = {}, active = { id = 1, type = "mine" } } }
+body.mining_state = { mining = true, position = { x = 4, y = 5 } }
+local stopped_mining = tasks.cancel({ task_id = 1 })
+check(stopped_mining.cancelled == 1 and body.mining_state.mining == false,
+  "cancelling the active mine stops LuaControl mining immediately")
+check(storage.tasks.records[1].status == "cancelled", "mine cancellation remains observable")
 os.exit(failures == 0 and 0 or 1)

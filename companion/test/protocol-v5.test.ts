@@ -31,7 +31,7 @@ describe("bridge protocol v5", () => {
     expect(read("mod/agentic-companion/scripts/inspect.lua")).not.toMatch(/unit_number|get_entity_by_unit_number|connected_players/);
     expect(read("mod/agentic-companion/scripts/research.lua")).not.toMatch(/companion\.get|game\.forces\.player|connected_players/);
     expect(read("mod/agentic-companion/scripts/research.lua")).toMatch(/companion\.require_companion\(\)\.force/);
-    expect(read("mod/agentic-companion/scripts/actions/mine.lua")).not.toMatch(/task\.resource|resource_name|find_entity_near|radius/);
+    expect(read("mod/agentic-companion/scripts/actions/mine.lua")).not.toMatch(/task\.resource|resource_name|find_entity_near|radius|\.mine\s*\(/);
     expect(read("mod/agentic-companion/scripts/actions/build_plan.lua")).not.toMatch(/step\.entity/);
   });
   it("validates normal, error, and chunk envelopes", () => {

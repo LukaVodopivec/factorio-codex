@@ -89,26 +89,24 @@ function M.start(task)
   task._failures = {}
 end
 
--- Deterministic number of the requested item produced by one recipe craft.
--- Auto-craft refuses recipes whose requested product is absent or variable;
--- guessing would queue the wrong physical work and misreport preparation.
+-- Conservative number of the requested item produced by one recipe craft.
+-- A matching uncertain product counts as one conservative output. A recipe
+-- with no matching item product is not the requested item's recipe at all and
+-- must never be auto-crafted under that item key.
 local function output_per_craft(recipe, item_name)
   local found, total = false, 0
   for _, product in ipairs(recipe.products or {}) do
     if product.type == "item" and product.name == item_name then
       found = true
-      if product.probability ~= nil and product.probability ~= 1 then
-        return nil, "recipe " .. (recipe.name or "<unknown>")
-          .. " produces " .. item_name .. " probabilistically, so auto-craft cannot prepare it exactly"
-      end
       local amount = product.amount
       if amount == nil and type(product.amount_min) == "number"
           and product.amount_min == product.amount_max then
         amount = product.amount_min
       end
-      if type(amount) ~= "number" or amount <= 0 then
-        return nil, "recipe " .. (recipe.name or "<unknown>")
-          .. " has a non-deterministic " .. item_name .. " output, so auto-craft cannot prepare it exactly"
+      if product.probability ~= nil and product.probability ~= 1 then
+        amount = 1
+      elseif type(amount) ~= "number" or amount <= 0 then
+        amount = 1
       end
       total = total + amount
     end

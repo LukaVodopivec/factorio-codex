@@ -23,6 +23,8 @@ character = {
       products = { { type = "item", name = "burner-mining-drill", amount = 1 } } },
     ["misleading-machine"] = { name = "misleading-machine", enabled = true,
       products = { { type = "item", name = "iron-plate", amount = 1 } } },
+    ["uncertain-machine"] = { name = "uncertain-machine", enabled = true,
+      products = { { type = "item", name = "uncertain-machine", amount = 3, probability = 0.5 } } },
   } },
   get_item_count = function(name) return inventory[name] or 0 end,
   begin_crafting = function(args)
@@ -64,6 +66,7 @@ _G.prototypes = { item = {
   ["transport-belt"] = { place_result = { name = "transport-belt" } },
   ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill" } },
   ["misleading-machine"] = { place_result = { name = "misleading-machine" } },
+  ["uncertain-machine"] = { place_result = { name = "uncertain-machine" } },
 } }
 _G.defines = { build_check_type = { manual = 1 } }
 
@@ -98,6 +101,15 @@ check(wrong_product_failure and wrong_product_failure.status == "failed"
   and wrong_product_failure.detail:match("does not produce requested item misleading%-machine")
   and crafted["misleading-machine"] == nil,
   "build_plan: refuses a recipe that does not produce the requested item")
+
+local uncertain_product = { steps = {
+  { item = "uncertain-machine", position = { x = 0, y = 0 } },
+} }
+build_plan.start(uncertain_product)
+local uncertain_wait = build_plan.tick(uncertain_product)
+check(uncertain_wait == nil and uncertain_product._waiting_for_crafts == true
+  and crafted["uncertain-machine"] == 1,
+  "build_plan: matching uncertain item product uses a conservative yield of one")
 
 crafted = {}
 character.crafting_queue_size = 0

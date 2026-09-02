@@ -42,7 +42,11 @@ end
 function M.map_summary(_params)
   local c = companion.require_companion()
   local chunks = {}
-  for chunk in c.force.get_charted_chunks(c.surface) do chunks[#chunks + 1] = { x = chunk.x, y = chunk.y } end
+  for chunk in c.surface.get_chunks() do
+    if c.force.is_chunk_charted(c.surface, chunk) then
+      chunks[#chunks + 1] = { x = chunk.x, y = chunk.y }
+    end
+  end
   table.sort(chunks, function(a, b) return a.y == b.y and a.x < b.x or a.y < b.y end)
 
   local resources_by_name, landmarks, seen_landmark, seen_resource, water_edges, seen_edge = {}, {}, {}, {}, {}, {}

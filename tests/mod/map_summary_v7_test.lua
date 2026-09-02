@@ -8,12 +8,15 @@ local resources = {
   { valid = true, name = "copper-ore", type = "resource", amount = 999, position = { x = 33, y = 1 } },
 }
 local force = {
-  get_charted_chunks = function() local done = false; return function() if done then return nil end; done = true; return { x = 0, y = 0 } end end,
   is_chunk_charted = function(_, chunk) return chunk.x == 0 and chunk.y == 0 end,
 }
 local machine = { valid = true, name = "assembling-machine-1", type = "assembling-machine", position = { x = 5, y = 5 }, direction = 4, status = 1, get_recipe = function() return { name = "gear" } end }
 local body = { position = { x = 0, y = 0 }, force = force }
 local surface = {
+  get_chunks = function()
+    local chunks, index = { { x = 1, y = 0 }, { x = 0, y = 0 } }, 0
+    return function() index = index + 1; return chunks[index] end
+  end,
   get_tile = function(x) return { collides_with = function(layer) return (layer == "water_tile" or layer == "player") and x >= 16 end } end,
   find_entities_filtered = function(filter) if filter.type == "resource" then return resources end; return { machine, body } end,
 }
@@ -31,4 +34,5 @@ check(#summary.factory_landmarks == 1 and summary.factory_landmarks[1].status ==
   and summary.factory_landmarks[1].recipe == "gear" and summary.factory_landmarks[1].observed_tick == 777,
   "factory landmarks include machine facts and observation ticks without characters or ghosts")
 check(force.chart == nil and surface.request_to_generate_chunks == nil, "summary exposes no terrain generation path")
+check(force.get_charted_chunks == nil, "summary uses the Factorio 2.0 surface iterator and force chart filter")
 os.exit(failures == 0 and 0 or 1)

@@ -87,5 +87,24 @@ local placed = build_plan.tick(retained_contract)
 check(placed and placed.status == "done" and placed_name == "transport-belt",
   "build_plan: placement always uses the item's place_result and ignores removed entity overrides")
 
+inventory["assembling-machine-1"] = 1
+character.force.recipes["iron-gear-wheel"] = { name = "iron-gear-wheel", enabled = true }
+prototypes.item["assembling-machine-1"] = { place_result = { name = "assembling-machine-1" } }
+character.surface.create_entity = function(args)
+  return {
+    valid = true, name = args.name, type = "assembling-machine",
+    set_recipe = function() return {} end,
+    get_recipe = function() return nil end,
+  }
+end
+local incompatible_plan = { auto_craft = false, steps = {
+  { item = "assembling-machine-1", position = { x = 6, y = 0 }, recipe = "iron-gear-wheel" },
+} }
+build_plan.start(incompatible_plan)
+local incompatible = build_plan.tick(incompatible_plan)
+check(incompatible and incompatible.status == "failed"
+  and incompatible.detail:match("probably can't craft it") ~= nil,
+  "build_plan: rejects a non-throwing incompatible machine recipe")
+
 print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

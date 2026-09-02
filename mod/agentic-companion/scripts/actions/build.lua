@@ -234,6 +234,14 @@ function M.set_recipe.tick(task)
       end
     end
   end
+  local read_ok, assigned = pcall(e.get_recipe)
+  if not read_ok or not assigned or assigned.name ~= task.recipe then
+    return {
+      status = "failed",
+      detail = string.format("couldn't set %s on the %s — that machine probably can't craft it",
+        task.recipe, e.name),
+    }
+  end
   return {
     status = "done",
     detail = string.format("set %s's recipe to %s%s", e.name, task.recipe,

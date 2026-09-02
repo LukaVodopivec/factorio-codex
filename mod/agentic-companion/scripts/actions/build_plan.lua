@@ -168,6 +168,11 @@ local function apply_recipe(c, e, recipe_name)
       end
     end
   end
+  local read_ok, assigned = pcall(e.get_recipe)
+  if not read_ok or not assigned or assigned.name ~= recipe_name then
+    return string.format("couldn't set recipe %s on the %s — that machine probably can't craft it",
+      recipe_name, e.name)
+  end
   return nil
 end
 

@@ -83,6 +83,17 @@ local recipe = {
   products = { { type = "item", name = "iron-gear-wheel" } },
 }
 body.force.recipes["iron-gear-wheel"] = recipe
+target_entity = {
+  valid = true, name = "assembling-machine-1", type = "assembling-machine",
+  set_recipe = function() return {} end,
+  get_recipe = function() return nil end,
+}
+local incompatible_recipe = { target = { x = 1, y = 0 }, recipe = "iron-gear-wheel" }
+build.set_recipe.start(incompatible_recipe)
+local incompatible_result = build.set_recipe.tick(incompatible_recipe)
+check(incompatible_result.status == "failed" and incompatible_result.detail:match("probably can't craft it") ~= nil,
+  "set_recipe rejects a non-throwing incompatible machine")
+
 body.crafting_queue_size = 0
 body.begin_crafting = function()
   inventory["iron-plate"] = 0

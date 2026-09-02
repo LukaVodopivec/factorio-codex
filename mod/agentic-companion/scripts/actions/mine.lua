@@ -96,6 +96,14 @@ function M.tick(task)
     end
     task._target_amount = entity_amount(e)
     task._inventory_before = inv.get_item_count()
+    -- mining_state targets the control's selected entity; the position alone
+    -- does not select one for a script-created character. Select through the
+    -- physical LuaControl API and refuse to mine a different overlapping
+    -- entity.
+    c.update_selected_entity(e.position)
+    if c.selected ~= e then
+      return { status = "failed", detail = "could not select the exact mining target" }
+    end
     task._mining_started = true
     c.mining_state = { mining = true, position = e.position }
     return nil

@@ -38,6 +38,7 @@ local inventory = {
 local body = {
   valid = true, position = { x = 0, y = 0 }, resource_reach_distance = 3,
   mining_state = { mining = false },
+  selected = nil,
   can_insert = function() error("partial LuaControl.can_insert must not decide complete-cycle capacity") end,
   get_main_inventory = function() return inventory end,
   surface = { find_entities_filtered = function(filter)
@@ -45,10 +46,33 @@ local body = {
     return { adjacent, exact }
   end },
 }
+body.update_selected_entity = function(position)
+  body.selected = nil
+  for _, entity in ipairs({ adjacent, exact }) do
+    if entity.valid and entity.position.x == position.x and entity.position.y == position.y then
+      body.selected = entity
+      return
+    end
+  end
+end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end }
 _G.game = { tick = 100 }
 local mine = require("scripts.actions.mine")
+local mining_progress = 0
+local function advance_game_tick()
+  game.tick = game.tick + 1
+  -- Model Factorio's physical entity-mining contract: mining_state only makes
+  -- progress against the control's selected entity. Accepting the state write
+  -- without a selection reproduces the live indefinite-running failure.
+  if body.mining_state.mining and body.selected == exact and exact.valid then
+    mining_progress = mining_progress + 1
+    if mining_progress == 3 then
+      exact.amount = exact.amount - 1
+      inventory_counts["iron-ore"] = (inventory_counts["iron-ore"] or 0) + 2
+    end
+  end
+end
 exact.prototype.mineable_properties.products = {
   { type = "item", name = "iron-ore", amount = 2 },
 }
@@ -80,15 +104,16 @@ local task = { target = { x = 0, y = 0 } }; mine.start(task)
 check(task._entity_name == "iron-ore", "mining selects only the entity occupying the exact coordinate")
 local first_tick = mine.tick(task)
 check(first_tick == nil and body.mining_state.mining == true and inventory_total() == 0
-  and body.mining_state.position.x == exact.position.x,
-  "complete-capacity preflight restores its staged products before physical mining starts")
-game.tick = game.tick + 1
+  and body.mining_state.position.x == exact.position.x and body.selected == exact,
+  "physical mining selects the exact target after restoring capacity-preflight products")
+advance_game_tick()
 local second_tick = mine.tick(task)
-check(second_tick == nil and game.tick == 101 and exact.amount == 100 and inventory_total() == 0,
-  "mining remains active while real game time passes")
-game.tick = game.tick + 1
-exact.amount = 99
-inventory_counts["iron-ore"] = 2
+advance_game_tick()
+local third_tick = mine.tick(task)
+check(second_tick == nil and third_tick == nil and game.tick == 102
+  and exact.amount == 100 and inventory_total() == 0,
+  "selected physical mining remains active while a real mining cycle advances")
+advance_game_tick()
 local completed = mine.tick(task)
 check(completed and completed.status == "done" and completed.detail:match("%+2 items") ~= nil,
   "one real mining cycle reports the actual inventory gain")

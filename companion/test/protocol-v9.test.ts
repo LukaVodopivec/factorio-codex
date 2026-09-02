@@ -6,15 +6,15 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v8 DTO and tool registry", () => {
-  it("declares v8 and the exact accepted RPC additions", () => {
-    expect(PROTOCOL_VERSION).toBe(8);
-    expect(MCP_SERVER_VERSION).toBe("0.11.0");
+describe("protocol v9 DTO and tool registry", () => {
+  it("declares v9 and the exact accepted RPC additions", () => {
+    expect(PROTOCOL_VERSION).toBe(9);
+    expect(MCP_SERVER_VERSION).toBe("0.12.0");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
 
-  it("registers exactly 24 tools and forwards exact v8 payloads", async () => {
+  it("registers exactly 24 tools and forwards exact v9 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -58,7 +58,7 @@ describe("protocol v8 DTO and tool registry", () => {
     expect(toolPayloads.productionRequirements({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } })).toEqual({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } });
   });
 
-  it("normalizes Lua empty tables at every v8 array boundary", () => {
+  it("normalizes Lua empty tables at every v9 array boundary", () => {
     expect(normalizePlacementSearch({ candidates: {} }).candidates).toEqual([]);
     expect(normalizeMapSummary({ resources: {}, water_edges: {}, factory_landmarks: {} })).toMatchObject({ resources: [], water_edges: [], factory_landmarks: [] });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);

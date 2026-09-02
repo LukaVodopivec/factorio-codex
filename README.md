@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.11.0**.
+Current release: **0.12.0**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the

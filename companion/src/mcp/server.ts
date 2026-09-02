@@ -10,7 +10,7 @@ import { executeRunPlan, queuePlanSchema, runPlanSchema, type RunPlanResult } fr
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.11.0";
+export const MCP_SERVER_VERSION = "0.12.0";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -98,7 +98,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
   server.registerTool("walk_to", { description: "Scout or relocate by walking physically to an exact position; positional actions already auto-approach.", inputSchema: position }, async (p) => task("walk_to", toolPayloads.target(p)));
-  server.registerTool("mine", { description: "Auto-approach and physically mine 1–200 cycles from one natural resource, or recover one exact player-owned minable entity; no by-name discovery.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1) }).strict() }, async (p) => task("mine", toolPayloads.mine(p)));
+  server.registerTool("mine", { description: "Auto-approach and physically mine an exact target. target_kind=natural is the default for resources, trees and rocks; target_kind=owned explicitly recovers one empty player-owned minable entity. No implicit overlap priority or by-name discovery.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).default("natural") }).strict() }, async (p) => task("mine", toolPayloads.mine(p)));
   server.registerTool("place_entity", { description: "Auto-approach and place an inventory item at an exact position; output_target requires Factorio to bind that exact recipient.", inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), output_target: position.strict().optional() }).strict() }, async (p) => task("place", toolPayloads.place(p)));
   const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict();
   server.registerTool("craft_items", { description: "Queue an exact number of legitimate Factorio recipe crafts (not output items); reports expected or actual product-item counts.", inputSchema: craftInput }, async (p) => task("craft", toolPayloads.craft(p)));

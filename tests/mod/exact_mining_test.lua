@@ -240,19 +240,36 @@ machine.valid = true
 body.resource_reach_distance = 8
 engine_gain = 1
 configure_capacity(2)
-local recovery = { target = { x = 5, y = 0 }, count = 1 }; mine.start(recovery)
+local filled_before_mining = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(filled_before_mining)
+machine_inventory_empty = false
+local filled_before_result = mine.tick(filled_before_mining)
+check(filled_before_result and filled_before_result.status == "failed" and not body.mining_state.mining
+  and machine.valid and covered_resource.amount == 100,
+  "owned recovery rechecks inventory after start and before physical mining")
+machine_inventory_empty = true
+local filled_during_mining = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(filled_during_mining)
+check(mine.tick(filled_during_mining) == nil and body.mining_state.mining,
+  "owned recovery starts only while the entity remains empty")
+machine_fluids = { water = 1 }
+local filled_during_result = mine.tick(filled_during_mining)
+check(filled_during_result and filled_during_result.status == "failed" and not body.mining_state.mining
+  and machine.valid and covered_resource.amount == 100,
+  "owned recovery stops if fluid contents appear during physical mining")
+machine_fluids = {}
+local recovery = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(recovery)
 local recovered = run(recovery, 10)
 check(recovered and recovered.status == "done" and not machine.valid
   and covered_resource.valid and covered_resource.amount == 100
+  and adjacent.valid and adjacent.amount == 100
   and inventory_total() == 1 and scripted_mine_calls == 0,
-  "exact player-owned machine recovery wins over underlying ore and uses physical LuaControl mining")
+  "explicit player-owned machine recovery leaves underlying and adjacent ore untouched and uses physical LuaControl mining")
 
 machine.valid, machine_inventory_empty = true, false
-local occupied, occupied_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1 })
+local occupied, occupied_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" })
 check(not occupied and tostring(occupied_error):match("nonempty inventories or fluids") ~= nil,
   "player-owned recovery fails closed for nonempty inventories")
 machine_inventory_empty, machine_fluids = true, { water = 1 }
-local wet, wet_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1 })
+local wet, wet_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" })
 check(not wet and tostring(wet_error):match("nonempty inventories or fluids") ~= nil,
   "player-owned recovery fails closed for nonempty fluids")
 machine_fluids = {}
@@ -261,5 +278,11 @@ configure_capacity(4)
 local overlap_resource = { target = { x = 5, y = 0 }, count = 2 }; mine.start(overlap_resource)
 check(overlap_resource._entity == covered_resource and machine.valid and covered_resource.amount == 100,
   "multiple mining cycles require the overlapping natural resource rather than selecting the machine")
+local implicit = { target = { x = 5, y = 0 }, count = 1 }; mine.start(implicit)
+check(implicit._entity == covered_resource,
+  "default mining keeps the exact natural target and never implicitly prioritizes an overlapping machine")
+local repeated_owned, repeated_owned_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 2, target_kind = "owned" })
+check(not repeated_owned and tostring(repeated_owned_error):match("exactly one physical mining cycle") ~= nil,
+  "explicit player-owned recovery permits exactly one physical cycle")
 
 os.exit(failures == 0 and 0 or 1)

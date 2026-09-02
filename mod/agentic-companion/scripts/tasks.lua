@@ -77,7 +77,10 @@ local function make_step_task(step)
   local kind = ACTIONS[step.action]
   if not kind then error("unknown plan action: " .. tostring(step.action)) end
   local task = { type = kind }
-  if kind == "walk_to" or kind == "mine" then task.target = { x = step.x, y = step.y }; task.count = step.count end
+  if kind == "walk_to" or kind == "mine" then
+    task.target = { x = step.x, y = step.y }; task.count = step.count
+    if kind == "mine" then task.target_kind = step.target_kind end
+  end
   if kind == "place" then
     task.item, task.position, task.direction = step.name, { x = step.x, y = step.y }, step.direction
     task.output_target = step.output_target

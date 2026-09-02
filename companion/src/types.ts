@@ -41,6 +41,6 @@ export interface PlanProblem { step?: number; action?: string; entity?: string; 
 export interface PlanDiagnostics { route: PlanProblem[]; machines: PlanProblem[] }
 export type Task =
   | { type: "walk_to"; target: { x: number; y: number } }
-  | { type: "mine"; target: { x: number; y: number }; count?: number }
+  | { type: "mine"; target: { x: number; y: number }; count?: number; target_kind?: "natural" | "owned" }
   | { type: "place" | "rotate" | "set_recipe" | "insert" | "extract" | "craft"; [key: string]: unknown }
   | { type: "build_plan"; steps: unknown[]; auto_craft?: boolean; stop_on_error?: boolean };

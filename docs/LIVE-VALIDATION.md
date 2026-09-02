@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.11.0**. Prior live evidence remains historical
-until the fresh 0.11.0 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.12.0**. Prior live evidence remains historical
+until the fresh 0.12.0 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -151,7 +151,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.11.0 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.12.0 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -174,14 +174,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.11.0. They
+The successful observations below were collected before release 0.12.0. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.11.0. Complete the fresh run above after installing 0.11.0 before recording a
+0.12.0. Complete the fresh run above after installing 0.12.0 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.11.0 run must instead report protocol v8 and mod/app 0.11.0.
+  0.8.0. A 0.12.0 run must instead report protocol v9 and mod/app 0.12.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

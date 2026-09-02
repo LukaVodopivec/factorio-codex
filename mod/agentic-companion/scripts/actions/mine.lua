@@ -140,6 +140,13 @@ function M.start(task)
   if type(target) ~= "table" or type(target.x) ~= "number" or type(target.y) ~= "number" then error("mine requires target = {x, y}") end
   local count = tonumber(task.count) or 1
   if count ~= math.floor(count) or count < 1 or count > 200 then error("mine count must be an integer from 1 to 200") end
+  local target_kind = task.target_kind or "natural"
+  if target_kind ~= "natural" and target_kind ~= "owned" then
+    error("mine target_kind must be natural or owned")
+  end
+  if target_kind == "owned" and count ~= 1 then
+    error("mine target_kind=owned requires exactly one physical mining cycle")
+  end
   local candidates = c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } } })
   local natural, owned
   for _, e in ipairs(candidates) do
@@ -156,16 +163,17 @@ function M.start(task)
       end
     end
   end
-  -- A placed mining drill normally overlaps the resource beneath it. At the
-  -- exact requested coordinate, prefer the recoverable player-owned entity;
-  -- otherwise physical pickup would be impossible precisely where needed.
-  local found = count > 1 and natural or (owned or natural)
-  if not found then error(string.format("nothing minable occupies exact coordinate (%.1f, %.1f)", target.x, target.y)) end
+  -- Never infer overlap priority. Natural mining is the unchanged default;
+  -- recovering an overlapping machine is an explicit one-cycle operation.
+  local found
+  if target_kind == "owned" then found = owned else found = natural end
+  if not found then error(string.format("no %s minable entity occupies exact coordinate (%.1f, %.1f)", target_kind, target.x, target.y)) end
   if count > 1 and found.type ~= "resource" then error("mine count greater than 1 is only valid for resources") end
   if found == owned and not recoverable_empty(found) then
     error("refusing to recover a player-owned entity with nonempty inventories or fluids")
   end
   task._entity, task._entity_name = found, found.name
+  task._target_kind = target_kind
   task._expected_items = expected_item_names(found)
   task._requested, task._completed, task._actual_gain = count, 0, 0
 end
@@ -189,6 +197,10 @@ function M.tick(task)
     local reached = approach.ensure(task, c, e.position, c.resource_reach_distance)
     if type(reached) == "table" then return reached end
     if reached ~= "ok" then return nil end
+    if task._target_kind == "owned" and not recoverable_empty(e) then
+      c.mining_state = { mining = false }
+      return partial_failure(task, "refusing to recover a player-owned entity that gained inventory or fluid contents")
+    end
     local inv = c.get_main_inventory()
     if not inv then return { status = "failed", detail = "the Codex character has no inventory" } end
     if not character_accepts_products(inv, e) then
@@ -212,6 +224,10 @@ function M.tick(task)
     return nil
   end
 
+  if task._target_kind == "owned" and e and e.valid and not recoverable_empty(e) then
+    c.mining_state = { mining = false }
+    return partial_failure(task, "refusing to continue recovery after the player-owned entity gained inventory or fluid contents")
+  end
   local current_amount = entity_amount(e)
   local target_changed = not (e and e.valid)
     or (task._target_amount ~= nil and current_amount ~= nil and current_amount < task._target_amount)

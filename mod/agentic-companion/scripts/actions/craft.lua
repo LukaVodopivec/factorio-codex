@@ -29,9 +29,10 @@ function M.start(task)
   if type(task.recipe) ~= "string" then
     error("craft requires recipe = <recipe name>")
   end
-  local count = math.floor(tonumber(task.count) or 1)
-  if count < 1 then count = 1 end
-  if count > MAX_COUNT then count = MAX_COUNT end
+  local count = tonumber(task.count)
+  if not count or count % 1 ~= 0 or count < 1 or count > MAX_COUNT then
+    error("craft crafts must be an integer from 1 to 100")
+  end
   task.count = count
 
   local r = c.force.recipes[task.recipe]
@@ -47,8 +48,11 @@ function M.start(task)
     if p.type == "item" then
       product_names[#product_names + 1] = p.name
       before[p.name] = c.get_item_count(p.name)
-      local amount = tonumber(p.amount) or tonumber(p.amount_max) or tonumber(p.amount_min) or 1
-      products_per_craft[p.name] = (products_per_craft[p.name] or 0) + amount
+      local amount = tonumber(p.amount)
+      if amount == nil and p.amount_min == p.amount_max then amount = tonumber(p.amount_min) end
+      if amount ~= nil and (p.probability == nil or p.probability == 1) then
+        products_per_craft[p.name] = (products_per_craft[p.name] or 0) + amount
+      end
     end
   end
 
@@ -86,6 +90,9 @@ function M.tick(task)
     local expected = {}
     for name, amount in pairs(s.products_per_craft) do
       expected[#expected + 1] = string.format("%g %s", amount * s.started, name)
+    end
+    for _, name in ipairs(s.product_names) do
+      if s.products_per_craft[name] == nil then expected[#expected + 1] = "variable " .. name end
     end
     table.sort(expected)
     return {

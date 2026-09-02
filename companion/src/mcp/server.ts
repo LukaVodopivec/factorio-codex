@@ -10,7 +10,7 @@ import { executeRunPlan, queuePlanSchema, runPlanSchema, type RunPlanResult } fr
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.10.0";
+export const MCP_SERVER_VERSION = "0.11.0";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -68,7 +68,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions)))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
-  server.registerTool("describe_prototype", { description: "Batch-describe up to 10 exact prototypes; kind=auto preserves automatic item/entity/recipe resolution.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
+  server.registerTool("describe_prototype", { description: "Batch-describe up to 10 exact item, entity, or recipe prototypes; kind=auto resolves placeable items as entities, then genuine items, then recipes.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
   server.registerTool("progression_status", { description: "Read research progression from Codex's live force.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
   server.registerTool("can_place", { description: "Batch-check up to 24 identified placements within 30 tiles without side effects; every result retains the requested item, position, direction and rejection reason.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
@@ -82,7 +82,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", {}))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
-  server.registerTool("production_requirements", { description: "Expand one or more targets through the unlocked deterministic production DAG into recipe counts, raw inputs, products, categories and crafting time; recipe_choices resolves genuine multi-recipe ambiguity.", inputSchema: z.object({ targets: z.record(z.string(), z.number().int().positive()).refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 16, "targets must contain 1-16 entries"), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
+  server.registerTool("production_requirements", { description: "Expand target item/fluid units through the unlocked deterministic production DAG into recipe executions, per-execution units, raw/product units, categories and seconds at crafting speed 1; recipe_choices resolves genuine multi-recipe ambiguity.", inputSchema: z.object({ targets: z.record(z.string(), z.number().int().positive()).refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 16, "targets must contain 1-16 entries"), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
     try { return result(normalizeProductionRequirements(await (await bridge()).call("production_requirements", toolPayloads.productionRequirements(p)))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
@@ -99,14 +99,14 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
   });
   server.registerTool("walk_to", { description: "Scout or relocate by walking physically to an exact position; positional actions already auto-approach.", inputSchema: position }, async (p) => task("walk_to", toolPayloads.target(p)));
   server.registerTool("mine", { description: "Auto-approach and physically mine 1–200 cycles from one natural resource, or recover one exact player-owned minable entity; no by-name discovery.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1) }).strict() }, async (p) => task("mine", toolPayloads.mine(p)));
-  server.registerTool("place_entity", { description: "Auto-approach and place an inventory item at an exact position.", inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional() }) }, async (p) => task("place", toolPayloads.place(p)));
-  const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().positive(), wait_for_completion: z.boolean().default(true) }).strict();
+  server.registerTool("place_entity", { description: "Auto-approach and place an inventory item at an exact position; output_target requires Factorio to bind that exact recipient.", inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), output_target: position.strict().optional() }).strict() }, async (p) => task("place", toolPayloads.place(p)));
+  const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict();
   server.registerTool("craft_items", { description: "Queue an exact number of legitimate Factorio recipe crafts (not output items); reports expected or actual product-item counts.", inputSchema: craftInput }, async (p) => task("craft", toolPayloads.craft(p)));
   server.registerTool("insert_items", { description: "Auto-approach and insert carried items into an exact-position entity.", inputSchema: position.extend({ items }) }, async (p) => task("insert", toolPayloads.insert(p)));
   server.registerTool("extract_items", { description: "Auto-approach and extract named items, or everything when items is omitted, from an exact-position entity.", inputSchema: position.extend({ items: items.optional() }) }, async (p) => task("extract", toolPayloads.extract(p)));
   server.registerTool("set_recipe", { description: "Auto-approach and set an exact-position crafting machine recipe.", inputSchema: position.extend({ recipe: z.string() }) }, async (p) => task("set_recipe", toolPayloads.recipe(p)));
   server.registerTool("rotate_entity", { description: "Auto-approach and rotate an exact-position entity once, or set Factorio direction 0–15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p) => task("rotate", toolPayloads.rotate(p)));
-  server.registerTool("build_plan", { description: "Build layouts of up to 25 sequential placements; auto-craft is legitimate and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }) => task("build_plan", toolPayloads.buildPlan(steps, rest)));
+  server.registerTool("build_plan", { description: "Build layouts of up to 25 sequential placements; optional output_target verifies Factorio's exact recipient; auto-craft is legitimate and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), output_target: position.strict().optional(), recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }) => task("build_plan", toolPayloads.buildPlan(steps, rest)));
   server.registerTool("queue_plan", { description: "Immediately queue one contiguous 1-25-step physical plan, optionally after a successful predecessor.", inputSchema: queuePlanSchema }, async (input) => rpc("queue_plan", queuePlanSchema.parse(input)));
   server.registerTool("plan_status", { description: "Read a queued, running, or terminal plan with step outcomes and terminal observation.", inputSchema: z.object({ plan_id: z.number().int().positive() }) }, async (p) => {
     try {

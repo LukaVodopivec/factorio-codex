@@ -19,8 +19,8 @@ local entity = {
   valid = true, name = "stone-furnace", type = "furnace", direction = 0,
   position = { x = 30, y = 0 }, electric_network_id = 17, energy = 2400,
   power_usage = 90, power_production = 0,
-  burner = { remaining_burning_fuel = 1250, currently_burning = { name = "coal", fuel_value = 4000 }, effectivity = 0.8 },
-  prototype = { electric_energy_source_prototype = {
+  burner = { remaining_burning_fuel = 1250, currently_burning = { name = "coal", fuel_value = 4000 } },
+  prototype = { burner_prototype = { effectivity = 0.8 }, electric_energy_source_prototype = {
     buffer_capacity = 5000, input_flow_limit = 120, output_flow_limit = 0,
   } },
 }

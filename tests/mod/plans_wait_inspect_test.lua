@@ -35,6 +35,9 @@ game.tick = 1; tasks.on_tick()
 check(tasks.plan_status({ plan_id = queued.plan_id }).status == "waiting",
   "real wait path parks without occupying the body before the requested count exists")
 output_count = 2; game.tick = 2; tasks.on_tick()
+check(tasks.plan_status({ plan_id = queued.plan_id }).status == "waiting",
+  "parked wait does not re-inspect before its deterministic next_check_tick")
+game.tick = 31; tasks.on_tick()
 local terminal = tasks.plan_status({ plan_id = queued.plan_id })
 check(terminal.status == "completed" and terminal.completed_steps == 1
   and terminal.outcomes[1].status == "completed"

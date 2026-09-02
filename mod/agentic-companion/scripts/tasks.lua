@@ -78,7 +78,10 @@ local function make_step_task(step)
   if not kind then error("unknown plan action: " .. tostring(step.action)) end
   local task = { type = kind }
   if kind == "walk_to" or kind == "mine" then task.target = { x = step.x, y = step.y }; task.count = step.count end
-  if kind == "place" then task.item, task.position, task.direction = step.name, { x = step.x, y = step.y }, step.direction end
+  if kind == "place" then
+    task.item, task.position, task.direction = step.name, { x = step.x, y = step.y }, step.direction
+    task.output_target = step.output_target
+  end
   if kind == "craft" then task.recipe, task.count, task.wait_for_completion = step.recipe, step.crafts, step.wait_for_completion end
   if kind == "insert" then task.target, task.items = { x = step.x, y = step.y }, step.items end
   if kind == "extract" then task.target, task.items, task.all = { x = step.x, y = step.y }, step.items, step.items == nil end
@@ -92,6 +95,13 @@ function M.queue_plan(params)
   for i, step in ipairs(params.steps) do
     if type(step) ~= "table" or (step.action ~= "wait_for_item" and not ACTIONS[step.action]) then
       error("unknown plan action at step " .. i .. ": " .. tostring(type(step) == "table" and step.action or step))
+    end
+    if step.action == "craft_items" then
+      if step.count ~= nil then error("queue_plan craft_items step " .. i .. " uses removed field count; use crafts") end
+      local crafts = tonumber(step.crafts)
+      if not crafts or crafts % 1 ~= 0 or crafts < 1 or crafts > 100 then
+        error("queue_plan craft_items step " .. i .. " requires crafts as an integer from 1 to 100")
+      end
     end
   end
   local predecessor = params.after_plan_id and tonumber(params.after_plan_id) or nil
@@ -108,7 +118,8 @@ local function plan_payload(plan)
   local c = companion.get()
   local diagnostics
   if plan.current_task then
-    diagnostics = { action = plan.steps[plan.current_step] and plan.steps[plan.current_step].action }
+    diagnostics = { action = plan.steps[plan.current_step] and plan.steps[plan.current_step].action,
+      next_check_tick = plan.next_check_tick }
     local walker = plan.current_task._walk
       or (plan.current_task._approach and plan.current_task._approach.walk)
       or plan.current_task.walker
@@ -221,15 +232,26 @@ local function finish_step(plan, result)
 end
 local function wait_for_item(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
+  local timeout_ticks = math.floor((tonumber(step.timeout_seconds) or 120) * 60)
+  if game.tick - plan.wait_started_tick >= timeout_ticks then
+    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    return { status = "failed", detail = "timed out waiting for " .. step.count .. " " .. step.item .. " in " .. step.inventory }
+  end
+  local c = companion.require_companion()
+  local dx, dy = c.position.x - step.x, c.position.y - step.y
+  if dx * dx + dy * dy > 900 then
+    plan.next_check_tick = game.tick + 30
+    return nil
+  end
   local response = inspect.inspect({ targets = { { x = step.x, y = step.y } } })
   local entity = response.entities and response.entities[1]
   if not entity or entity.error then return { status = "failed", detail = entity and entity.error or "inspect returned no entity" } end
   local found = entity.inventories and entity.inventories[step.inventory] and entity.inventories[step.inventory][step.item] or 0
-  if found >= step.count then plan.wait_started_tick = nil; return { status = "done", detail = step.inventory .. " has " .. found .. " " .. step.item } end
-  if game.tick - plan.wait_started_tick >= math.floor((tonumber(step.timeout_seconds) or 120) * 60) then
-    plan.wait_started_tick = nil
-    return { status = "failed", detail = "timed out waiting for " .. step.count .. " " .. step.item .. " in " .. step.inventory }
+  if found >= step.count then
+    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    return { status = "done", detail = step.inventory .. " has " .. found .. " " .. step.item }
   end
+  plan.next_check_tick = game.tick + 30
 end
 local function tick_plan(plan)
   if game.tick - plan.started_tick >= PLAN_BUDGET_TICKS then
@@ -271,21 +293,28 @@ local function dispatch(tasks)
   local task = tasks.active
   if not task then
     if #tasks.queue == 0 then return end
-    task = tasks.queue[1]
-    if task.type == "plan" and task.after_plan_id then
-      local status = predecessor_status(task.after_plan_id)
-      if status ~= "completed" then
-        table.remove(tasks.queue, 1)
-        if status == "queued" or status == "running" or status == "waiting" then
-          tasks.queue[#tasks.queue + 1] = task
-        else
-          task.status = "cancelled"
-          finish(task, "cancelled", "predecessor plan did not complete successfully")
+    local attempts = #tasks.queue
+    for _ = 1, attempts do
+      local candidate = table.remove(tasks.queue, 1)
+      local parked = candidate.type == "plan" and candidate.status == "waiting"
+        and candidate.next_check_tick and game.tick < candidate.next_check_tick
+      local predecessor_blocked = false
+      if candidate.type == "plan" and candidate.after_plan_id then
+        local status = predecessor_status(candidate.after_plan_id)
+        if status ~= "completed" then
+          if status == "queued" or status == "running" or status == "waiting" then
+            predecessor_blocked = true
+          else
+            candidate.status = "cancelled"
+            finish(candidate, "cancelled", "predecessor plan did not complete successfully")
+          end
         end
-        return
       end
+      if parked or predecessor_blocked then tasks.queue[#tasks.queue + 1] = candidate
+      elseif candidate.status ~= "cancelled" then task = candidate; break end
     end
-    table.remove(tasks.queue, 1); task.status, task.started_tick, tasks.active = "running", task.started_tick or game.tick, task
+    if not task then return end
+    task.status, task.started_tick, tasks.active = "running", task.started_tick or game.tick, task
     if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", tostring(err)); return end end
   end
   if task.type == "plan" then tick_plan(task); return end

@@ -31,7 +31,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.10.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.11.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -41,9 +41,7 @@ try {
   if (!rotateSchema.direction || rotateSchema.reverse) throw new Error("rotate_entity must expose Lua direction, never reverse");
   const describeSchema = tools.find((tool: any) => tool.name === "describe_prototype")?.inputSchema?.properties ?? {};
   if (describeSchema.names?.maxItems !== 10) throw new Error("describe_prototype must match Lua's 10-name cap");
-  if (JSON.stringify(describeSchema.kind?.enum) !== JSON.stringify(["auto", "entity", "recipe"]) || describeSchema.kind?.default !== "auto") throw new Error("describe_prototype must expose kind auto|entity|recipe with auto default");
-  const rejectedKind = await request("tools/call", { name: "describe_prototype", arguments: { names: ["transport-belt"], kind: "item" } });
-  if (!rejectedKind.result?.isError) throw new Error("describe_prototype accepted removed item kind");
+  if (JSON.stringify(describeSchema.kind?.enum) !== JSON.stringify(["auto", "entity", "recipe", "item"]) || describeSchema.kind?.default !== "auto") throw new Error("describe_prototype must expose kind auto|entity|recipe|item with auto default");
   const extractSchema = tools.find((tool: any) => tool.name === "extract_items")?.inputSchema ?? {};
   if ((extractSchema.required ?? []).includes("items")) throw new Error("extract_items must allow omitted items for all=true extraction");
   const planSchema = tools.find((tool: any) => tool.name === "build_plan")?.inputSchema?.properties ?? {};

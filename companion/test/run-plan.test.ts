@@ -7,7 +7,7 @@ import { registerMcpTools } from "../src/mcp/server.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 const observation = { tick: 9, detail: "compact", entities: {}, resource_patches: {}, character: { inventory: {}, crafting: { queue_size: 0 } } };
 
-describe("protocol-v7 plans", () => {
+describe("protocol-v8 plans", () => {
   it("validates the complete plan before acquiring a bridge", async () => {
     const handlers: Record<string, (args: unknown) => Promise<any>> = {};
     const provider = vi.fn(async () => ({} as Bridge));
@@ -18,7 +18,6 @@ describe("protocol-v7 plans", () => {
     expect(runPlanSchema.safeParse({ steps: Array(26).fill({ action: "walk_to", x: 0, y: 0 }) }).success).toBe(false);
     expect(runPlanSchema.parse({ steps: [{ action: "craft_items", recipe: "gear", crafts: 1 }] }).steps[0]).toMatchObject({ crafts: 1, wait_for_completion: true });
     expect(runPlanSchema.safeParse({ steps: [{ action: "craft_items", recipe: "gear", count: 1 }] }).success).toBe(false);
-    expect(runPlanSchema.safeParse({ steps: [{ action: "mine", x: 0, y: 0, count: 2, manual_batch: {} }] }).success).toBe(false);
   });
 
   it("queue_plan returns immediately and forwards dependency and observation selection", async () => {

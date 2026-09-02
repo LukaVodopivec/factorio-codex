@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.10.0 adds deterministic placement, map, production, and connection
+Release 0.11.0 adds deterministic placement, map, production, and connection
 queries while preserving one physical
 Codex body, one task lane, and honest Factorio mechanics.
 
@@ -9,7 +9,7 @@ Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.10.0 validation.
+0.11.0 validation.
 
 The operating topology and model/effort choice remain benchmark candidates;
 do not predeclare a winner. In every multi-session candidate, the strategist
@@ -116,7 +116,7 @@ count, final compact observation, and any `MCP_GAP`. Verify
 Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
-observations, recipe disambiguation, progression, protocol v7, version 0.10.0,
+observations, recipe disambiguation, progression, protocol v8, version 0.11.0,
 and exactly 24 tools. Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -166,4 +166,4 @@ relabel the immutable snapshot.
 Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast
 setting. Append the completed result below with exact baseline/release hashes;
-do not present historical timings as 0.10.0 benchmark results.
+do not present historical timings as 0.11.0 benchmark results.

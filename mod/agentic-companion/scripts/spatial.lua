@@ -1,4 +1,4 @@
--- Protocol-v7 local perception: compact by default; full adds the ASCII grid.
+-- Protocol-v8 local perception: compact by default; full adds the ASCII grid.
 -- (dry-run placement check with blocker naming),
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
@@ -540,11 +540,11 @@ local function describe_entity(ent, item_name)
 
   ok, v = pcall(function() return ent.mining_speed end)
   if ok and type(v) == "number" then out.mining_speed = v end
-  ok, v = pcall(function() return ent.crafting_speed end)
+  ok, v = pcall(function() return ent.get_crafting_speed() end)
   if ok and type(v) == "number" then out.crafting_speed = v end
-  ok, v = pcall(function() return ent.max_energy_usage end)
+  ok, v = pcall(function() return ent.get_max_energy_usage() end)
   if ok and type(v) == "number" then out.max_energy_usage = v end
-  ok, v = pcall(function() return ent.max_energy_production end)
+  ok, v = pcall(function() return ent.get_max_energy_production() end)
   if ok and type(v) == "number" then out.max_energy_production = v end
 
   ok, v = pcall(function() return ent.mineable_properties end)
@@ -553,8 +553,11 @@ local function describe_entity(ent, item_name)
     local products = {}
     for _, product in ipairs(v.products or {}) do
       if product.name then
-        products[product.name] = (products[product.name] or 0)
-          + (tonumber(product.amount) or tonumber(product.amount_max) or tonumber(product.amount_min) or 1)
+        local amount = tonumber(product.amount)
+        if amount == nil and product.amount_min == product.amount_max then amount = tonumber(product.amount_min) end
+        if amount ~= nil and (product.probability == nil or product.probability == 1) then
+          products[product.name] = (products[product.name] or 0) + amount
+        end
       end
     end
     if next(products) ~= nil then out.mining_products = products end
@@ -610,7 +613,11 @@ local function describe_recipe(rec, force)
   end
   for _, p in ipairs(rec.products or {}) do
     if p.name then
-      products[p.name] = (products[p.name] or 0) + (p.amount or p.amount_max or 1)
+      local amount = tonumber(p.amount)
+      if amount == nil and p.amount_min == p.amount_max then amount = tonumber(p.amount_min) end
+      if amount ~= nil and (p.probability == nil or p.probability == 1) then
+        products[p.name] = (products[p.name] or 0) + amount
+      end
     end
   end
   local force_recipe = force.recipes[rec.name]
@@ -624,6 +631,17 @@ local function describe_recipe(rec, force)
   }
 end
 
+local function describe_item(item)
+  local out = { kind = "item", item = item.name, stack_size = item.stack_size }
+  local ok, value = pcall(function() return item.fuel_value end)
+  if ok and type(value) == "number" and value > 0 then out.fuel_value = value end
+  ok, value = pcall(function() return item.fuel_category end)
+  if ok and type(value) == "string" then out.fuel_category = value end
+  ok, value = pcall(function() return item.place_result end)
+  if ok and value then out.place_result = value.name end
+  return out
+end
+
 function M.describe_prototype(params)
   local names = params.names
   local kind = params.kind or "auto"
@@ -635,8 +653,8 @@ function M.describe_prototype(params)
       "describe_prototype takes at most %d names per call — split the list and call again",
       DESCRIBE_MAX_NAMES))
   end
-  if kind ~= "auto" and kind ~= "entity" and kind ~= "recipe" then
-    error("describe_prototype kind must be auto, entity, or recipe")
+  if kind ~= "auto" and kind ~= "entity" and kind ~= "recipe" and kind ~= "item" then
+    error("describe_prototype kind must be auto, entity, recipe, or item")
   end
 
   local force = companion.require_companion().force
@@ -649,6 +667,8 @@ function M.describe_prototype(params)
       local key = kind ~= "auto" and (kind .. ":" .. name) or name
       if kind == "recipe" and prototypes.recipe[name] then
         out[key] = describe_recipe(prototypes.recipe[name], force)
+      elseif kind == "item" and item then
+        out[key] = describe_item(item)
       elseif kind == "entity" and prototypes.entity[name] then
         out[key] = describe_entity(prototypes.entity[name], nil)
       elseif kind == "entity" and placed then
@@ -657,6 +677,8 @@ function M.describe_prototype(params)
         out[key] = describe_entity(placed, name)
       elseif kind == "auto" and prototypes.entity[name] then
         out[key] = describe_entity(prototypes.entity[name], nil)
+      elseif kind == "auto" and item then
+        out[key] = describe_item(item)
       elseif kind == "auto" and prototypes.recipe[name] then
         out[key] = describe_recipe(prototypes.recipe[name], force)
       else

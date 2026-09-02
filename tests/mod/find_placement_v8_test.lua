@@ -18,7 +18,10 @@ local surface = {
 local recipient = { valid = true, name = "stone-furnace", type = "furnace", force = force,
   position = { x = 5.5, y = 1.5 }, unit_number = 9,
   selection_box = { left_top = { x = 5, y = 1 }, right_bottom = { x = 6, y = 2 } } }
-surface.find_entities_filtered = function() return { recipient } end
+local pole = { valid = true, name = "small-electric-pole", type = "electric-pole", force = force,
+  position = { x = 5.5, y = 1.5 }, selection_box = recipient.selection_box }
+local target_matches = { recipient }
+surface.find_entities_filtered = function() return target_matches end
 local body = { position = { x = 1.5, y = 1.5 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
 _G.defines = { build_check_type = { manual = 1 } }
@@ -51,4 +54,14 @@ for _, candidate in ipairs(aligned.candidates) do
     and candidate.output_position.y >= 1 and candidate.output_position.y < 2,
     "every returned direction deposits inside the requested recipient")
 end
+target_matches = { pole }
+local invalid, invalid_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
+  radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })
+check(not invalid and tostring(invalid_error):match("cannot receive placed output") ~= nil,
+  "output target rejects an invalid pole recipient")
+target_matches = { recipient, pole }
+local ambiguous, ambiguous_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
+  radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })
+check(not ambiguous and tostring(ambiguous_error):match("ambiguous") ~= nil,
+  "output target rejects every multiple match")
 os.exit(failures == 0 and 0 or 1)

@@ -24,3 +24,7 @@ measurable effect, choose a safe action, compare predicted and actual results,
 then retain, revise, or discard the lesson with provenance and uncertainty.
 Never turn a retained lesson into an opening script, elapsed-time milestone,
 fixed build order, named route, or prescriptive progression sequence.
+When an exact factor is unobservable, retain only the result of a bounded
+falsifiable experiment with its uncertainty, predicted effect, safe bound,
+numeric stop, and observed outcome. Never copy layouts, tutorials, or online
+sequences.

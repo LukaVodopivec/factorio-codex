@@ -1,5 +1,6 @@
 -- Deterministic, side-effect-free placement search over already charted terrain.
 local companion = require("scripts.companion")
+local output_targets = require("scripts.output_target")
 
 local M = {}
 
@@ -70,49 +71,12 @@ local function snapped(value, tiles)
   return math.floor(value - offset + 0.5) + offset
 end
 
-local function distance_sq(a, b)
-  local dx, dy = a.x - b.x, a.y - b.y
-  return dx * dx + dy * dy
-end
-
-local function contains(box, point)
-  return box and point.x >= box.left_top.x and point.x < box.right_bottom.x
-    and point.y >= box.left_top.y and point.y < box.right_bottom.y
-end
-
 local function rotate(offset, direction)
   if direction == 0 then return { x = offset.x, y = offset.y } end
   if direction == 4 then return { x = -offset.y, y = offset.x } end
   if direction == 8 then return { x = -offset.x, y = -offset.y } end
   if direction == 12 then return { x = offset.y, y = -offset.x } end
   return nil
-end
-
-local function resolve_output_target(c, requested)
-  local target = position(requested, "find_placement output_target")
-  if distance_sq(c.position, target) > 900 then error("find_placement output_target must be within 30 tiles of Codex") end
-  if not charted(c.force, c.surface, target) then error("find_placement output_target must be force-charted") end
-  local matches = {}
-  for _, entity in ipairs(c.surface.find_entities_filtered({ position = target, radius = 1.5 })) do
-    if entity.valid and entity.force == c.force and entity.type ~= "character" and entity.type ~= "resource"
-      and (contains(entity.selection_box, target) or contains(entity.bounding_box, target)) then
-      matches[#matches + 1] = entity
-    end
-  end
-  table.sort(matches, function(a, b)
-    local ad, bd = distance_sq(a.position, target), distance_sq(b.position, target)
-    if ad ~= bd then return ad < bd end
-    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
-    if a.name ~= b.name then return a.name < b.name end
-    return (tonumber(a.unit_number) or -1) < (tonumber(b.unit_number) or -1)
-  end)
-  if #matches == 0 then error("find_placement output_target does not identify a player-owned recipient") end
-  if #matches > 1 and distance_sq(matches[1].position, target) == distance_sq(matches[2].position, target) then
-    error("find_placement output_target is ambiguous")
-  end
-  local entity = matches[1]
-  return { entity = entity, identity = { name = entity.name, position = { x = entity.position.x, y = entity.position.y } } }
 end
 
 function M.find_placement(params)
@@ -140,7 +104,7 @@ function M.find_placement(params)
 
   local output_target, drop_offset
   if params.output_target ~= nil then
-    output_target = resolve_output_target(c, params.output_target)
+    output_target = output_targets.resolve(c, params.output_target, "find_placement output_target")
     local ok, raw = pcall(function() return proto.vector_to_place_result end)
     if ok and raw then drop_offset = position(raw, "placement output offset") end
     if not drop_offset then error(params.item .. " has no deterministic output offset") end
@@ -164,8 +128,7 @@ function M.find_placement(params)
             local area = footprint(proto, pos, direction)
             local output_offset = drop_offset and rotate(drop_offset, direction) or nil
             local output_position = output_offset and { x = x + output_offset.x, y = y + output_offset.y } or nil
-            local output_matches = not output_target or contains(output_target.entity.selection_box, output_position)
-              or contains(output_target.entity.bounding_box, output_position)
+            local output_matches = not output_target or output_targets.contains(output_target.entity, output_position)
             if output_matches and footprint_charted(c.force, c.surface, area) and c.surface.can_place_entity({
               name = proto.name, position = pos, direction = direction, force = c.force,
               build_check_type = defines.build_check_type.manual,

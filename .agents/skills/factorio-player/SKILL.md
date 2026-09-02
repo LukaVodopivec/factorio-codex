@@ -76,6 +76,10 @@ provenance and uncertainty. This is not an opening script: never encode a timed
 phase, fixed build order, named route, map coordinate, or prescriptive
 progression sequence. The 20-minute point measures the resulting play and does
 not choose its strategy.
+When an exact factor is not observable, a bounded falsifiable experiment is
+allowed: state the uncertainty, predicted measurable effect, safe bound, and
+numeric stop before acting. Never substitute copied layouts, tutorials, or
+online sequences for live evidence.
 
 - Use the topology and model/effort assignment selected by completed benchmark
   results; do not assume a Sol/Luna winner. In a split topology, one strategist

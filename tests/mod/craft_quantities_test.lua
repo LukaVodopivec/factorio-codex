@@ -25,4 +25,18 @@ local done = craft.tick(task)
 check(done and done.status == "done" and done.detail:match("2 recipe crafts")
   and done.detail:match("%+4 transport%-belt"),
   "craft result distinguishes recipe crafts from actual output item count")
+local missing_count_ok = pcall(craft.start, { recipe = "transport-belt" })
+check(not missing_count_ok, "craft rejects a missing recipe execution count")
+for _, invalid in ipairs({ 0, 1.5, 101 }) do
+  local ok = pcall(craft.start, { recipe = "transport-belt", count = invalid })
+  check(not ok, "craft rejects missing, noninteger, and out-of-range recipe execution counts")
+end
+recipe.products = { { type = "item", name = "transport-belt", amount_min = 1, amount_max = 3 } }
+inventory["iron-plate"] = 3
+local variable = { recipe = "transport-belt", count = 1, wait_for_completion = false }
+craft.start(variable)
+local accepted = craft.tick(variable)
+check(accepted and accepted.detail:match("variable transport%-belt")
+  and not accepted.detail:match("expected outputs: 3 transport%-belt"),
+  "craft never reports amount_min or amount_max as an exact output")
 os.exit(failures == 0 and 0 or 1)

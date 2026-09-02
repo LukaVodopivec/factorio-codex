@@ -106,8 +106,8 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "mod", ok: false, detail: expect.stringMatching(/RPC unavailable: (unlock|ping) failed/), fix: expect.stringContaining("install and enable") }));
   });
   it.each([
-    { ping: { protocol_version: 6, mod_version: "0.10.0" }, failedCheck: "protocol" },
-    { ping: { protocol_version: 7, mod_version: "0.6.0" }, failedCheck: "mod" },
+    { ping: { protocol_version: 6, mod_version: "0.11.0" }, failedCheck: "protocol" },
+    { ping: { protocol_version: 8, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
@@ -125,7 +125,7 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
     expect(connect).not.toHaveBeenCalled();
   });
-  it("keeps root, package, lockfile, runtime, mod, and docs at 0.10.0", () => {
+  it("keeps root, package, lockfile, runtime, mod, and docs at 0.11.0", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const read = (relative: string) => JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
     const lock = read("package-lock.json");
@@ -137,16 +137,16 @@ describe("exact local configuration", () => {
       lock.packages[""].version,
       lock.packages.companion.version,
       companionVersion(),
-    ]).toEqual(Array(7).fill("0.10.0"));
-    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.10.0**");
-    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.10.0**");
+    ]).toEqual(Array(7).fill("0.11.0"));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.11.0**");
+    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.11.0**");
   });
   it("keeps visible locale title and description aligned with one-body mod metadata", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const info = JSON.parse(fs.readFileSync(path.join(root, "mod/agentic-companion/info.json"), "utf8"));
     const locale = fs.readFileSync(path.join(root, "mod/agentic-companion/locale/en/agentic-companion.cfg"), "utf8");
     const values = [...locale.matchAll(/^agentic-companion=(.+)$/gm)].map((match) => match[1]);
-    expect(info).toMatchObject({ version: "0.10.0", title: "Factorio Codex Companion" });
+    expect(info).toMatchObject({ version: "0.11.0", title: "Factorio Codex Companion" });
     expect(values).toEqual([info.title, info.description]);
     expect(locale).not.toMatch(/movement.speed|multiplier/i);
     expect(locale).not.toMatch(/Agentic Companion|AI companion|companions|characters|vehicles/i);
@@ -231,10 +231,14 @@ describe("exact local configuration", () => {
     expect(specialist).toMatch(/strictly read-only/i);
     expect(specialist).toMatch(/recipes, prerequisites, rates, BOMs, capacity, utilization, automation payback[\s\S]*relative layouts/i);
     expect(specialist).toMatch(/assumptions, provenance, uncertainty/i);
+    expect(specialist).toContain("`observe_local`, `inspect_entity`, `describe_prototype`, `progression_status`, `can_place`, `find_placement`, `map_summary`, `production_requirements`, and `plan_status`");
+    expect(specialist).toMatch(/`connect_entities` is mutating[\s\S]*pilot-only/i);
     for (const text of [skill, master, pilot, specialist]) {
       expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
       expect(text).toMatch(/no screenshots|never (?:invoke|use) screenshots/i);
       expect(text).toMatch(/raw Lua\/console/i);
+      expect(text).toMatch(/bounded falsifiable experiment[\s\S]*uncertainty[\s\S]*predicted[\s\S]*safe bound[\s\S]*numeric stop/i);
+      expect(text).toMatch(/copied layouts[\s\S]*tutorials[\s\S]*online sequences/i);
     }
     for (const text of [skill, master, pilot]) {
       expect(text).toMatch(/After bootstrap[\s\S]*manual mining(?:\s+or\s+crafting|\/crafting) batch|After bootstrap[\s\S]*manual mining\/crafting batch/i);

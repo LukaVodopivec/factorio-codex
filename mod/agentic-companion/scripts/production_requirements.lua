@@ -90,31 +90,41 @@ function M.production_requirements(params)
     if node and node.recipe ~= recipe.name then error("inconsistent recipe choice for " .. product) end
     if not node then
       node = {
-        item = product, required = 0, recipe = recipe.name, crafts = 0, output = output,
-        category = recipe.category or "crafting", time = tonumber(recipe.energy) or 0,
-        ingredients = ingredients_of(recipe), products = products,
+        item = product, required_units = 0, recipe = recipe.name, recipe_executions = 0,
+        output_units_per_execution = output,
+        category = recipe.category or "crafting",
+        craft_time_seconds_per_execution = tonumber(recipe.energy) or 0,
+        ingredient_units_per_execution = ingredients_of(recipe),
+        product_units_per_execution = products,
       }
       nodes_by_item[product] = node
     end
-    local old_crafts = node.crafts
-    node.required = node.required + count
-    node.crafts = math.ceil(node.required / output)
-    local added_crafts = node.crafts - old_crafts
+    local old_crafts = node.recipe_executions
+    node.required_units = node.required_units + count
+    node.recipe_executions = math.ceil(node.required_units / output)
+    local added_crafts = node.recipe_executions - old_crafts
     if added_crafts == 0 then return end
     visiting[product] = true
-    for ingredient, per_craft in pairs(node.ingredients) do require_item(ingredient, per_craft * added_crafts) end
+    for ingredient, per_craft in pairs(node.ingredient_units_per_execution) do require_item(ingredient, per_craft * added_crafts) end
     visiting[product] = nil
-    for name, per_craft in pairs(node.products) do all_products[name] = (all_products[name] or 0) + per_craft * added_crafts end
+    for name, per_craft in pairs(node.product_units_per_execution) do all_products[name] = (all_products[name] or 0) + per_craft * added_crafts end
   end
 
   for _, target in ipairs(target_names) do require_item(target, tonumber(targets[target])) end
   local nodes, total_time = {}, 0
   for _, node in pairs(nodes_by_item) do
-    total_time = total_time + node.time * node.crafts
+    total_time = total_time + node.craft_time_seconds_per_execution * node.recipe_executions
     nodes[#nodes + 1] = node
   end
   table.sort(nodes, function(a, b) return a.item == b.item and a.recipe < b.recipe or a.item < b.item end)
-  return { targets = targets, nodes = nodes, raw = raw, products = all_products, total_time = total_time }
+  return {
+    units = {
+      targets = "item_or_fluid_units", raw = "item_or_fluid_units",
+      products = "item_or_fluid_units", time = "seconds_at_crafting_speed_1",
+    },
+    targets = targets, nodes = nodes, raw = raw, products = all_products,
+    total_craft_time_seconds_at_speed_1 = total_time,
+  }
 end
 
 return M

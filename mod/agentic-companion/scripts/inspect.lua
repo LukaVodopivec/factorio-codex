@@ -211,7 +211,7 @@ local function inspect_one(position, c)
       local ok_value, value = pcall(function() return current.fuel_value end)
       if ok_value and type(value) == "number" then facts.current_fuel_value = value end
     end
-    local ok_effectivity, effectivity = pcall(function() return burner.effectivity end)
+    local ok_effectivity, effectivity = pcall(function() return e.prototype.burner_prototype.effectivity end)
     if ok_effectivity and type(effectivity) == "number" then facts.effectivity = effectivity end
     if next(facts) ~= nil then out.burner = facts end
   end

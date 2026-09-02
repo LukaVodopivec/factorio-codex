@@ -40,12 +40,12 @@ describe("public MCP to Lua DTO mappings", () => {
   });
 });
 
-describe("registered MCP handler parity with Lua v7", () => {
+describe("registered MCP handler parity with Lua v8", () => {
   it("invokes handlers with exact RPC and task payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 7, mod_version: "0.10.0", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 8, mod_version: "0.11.0", factorio_version: "2.0.0", tick: 1 }
       : method === "observe_local" ? { entities: [], resource_patches: [] } : { ok: method });
     const enqueueAndWait = vi.fn(async (task: unknown) => ({ task }));
     registerMcpTools({
@@ -66,7 +66,7 @@ describe("registered MCP handler parity with Lua v7", () => {
     expect(schemas.describe_prototype.safeParse({ names: ["transport-belt"] }).data.kind).toBe("auto");
     await handlers.describe_prototype({ names: ["transport-belt"], kind: "entity" });
     expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"], kind: "entity" });
-    expect(schemas.describe_prototype.safeParse({ names: ["x"], kind: "item" }).success).toBe(false);
+    expect(schemas.describe_prototype.safeParse({ names: ["x"], kind: "item" }).success).toBe(true);
     expect(schemas.describe_prototype.safeParse({ names: Array(10).fill("x") }).success).toBe(true);
     expect(schemas.describe_prototype.safeParse({ names: Array(11).fill("x") }).success).toBe(false);
 
@@ -96,7 +96,6 @@ describe("registered MCP handler parity with Lua v7", () => {
     await handlers.craft_items({ recipe: "iron-gear-wheel", crafts: 2 });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "craft", recipe: "iron-gear-wheel", count: 2 });
     expect(schemas.craft_items.safeParse({ recipe: "iron-gear-wheel", count: 2 }).success).toBe(false);
-    expect(schemas.craft_items.safeParse({ recipe: "iron-gear-wheel", crafts: 2, manual_batch: {} }).success).toBe(false);
     await handlers.insert_items({ x: 15, y: 16, items: { coal: 2 } });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "insert", target: { x: 15, y: 16 }, items: { coal: 2 } });
     await handlers.set_recipe({ x: 17, y: 18, recipe: "iron-gear-wheel" });
@@ -116,8 +115,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 7, mod_version: "0.10.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 7, mod_version: "0.10.0", tick: 2 })
+        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 8, mod_version: "0.11.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 8, mod_version: "0.11.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -126,8 +125,8 @@ describe("connect_status body lifecycle", () => {
   });
 
   it("rejects a stale mod before reporting connected", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 7, mod_version: "0.6.0" });
-    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.10.0");
+    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 8, mod_version: "0.6.0" });
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.11.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
@@ -135,8 +134,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 7, mod_version: "0.10.0", factorio_version: "2.0.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 7, mod_version: "0.10.0", factorio_version: "2.0.0", tick: 2 })
+        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 8, mod_version: "0.11.0", factorio_version: "2.0.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 8, mod_version: "0.11.0", factorio_version: "2.0.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -146,7 +145,7 @@ describe("connect_status body lifecycle", () => {
 
   it("surfaces the bind-only no-player error without retrying or creating", async () => {
     const call = vi.fn()
-      .mockResolvedValueOnce({ protocol_version: 7, mod_version: "0.10.0", companion_exists: false, companion_ever_created: false, companion_dead: false })
+      .mockResolvedValueOnce({ protocol_version: 8, mod_version: "0.11.0", companion_exists: false, companion_ever_created: false, companion_dead: false })
       .mockRejectedValueOnce(new Error("native player 'Codex' is not connected with a living character"));
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("native player 'Codex' is not connected");
     expect(call.mock.calls).toEqual([["ping"], ["spawn_companion", {}]]);

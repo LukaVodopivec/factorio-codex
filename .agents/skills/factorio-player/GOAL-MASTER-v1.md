@@ -11,6 +11,7 @@ Evidence/state: each post-observation ledger revision contains schema version, e
 Baseline and verification: reconstruct current state from the newest observation and reports before continuing; establish the baseline phase, inventory, capacity, research, bottleneck, and tick. Verify each plan against its terminal observation and the milestone against later-tick structured checks. If a previously working path regresses, isolate it and roll back the assumption or plan; if the same approach stalls, pivot or narrow to a materially different safe hypothesis.
 
 For every strategic choice, observe authoritative state, identify the current bottleneck, form a falsifiable hypothesis, predict a measurable effect, choose a safe action, compare prediction with outcome, and retain, revise, or discard the lesson with provenance and uncertainty. Never replace this loop with an opening script, timed phase, fixed build order, named route, map coordinate, or prescriptive progression sequence; `GO+20m` is measurement only.
+If an exact factor is unobservable, allow a bounded falsifiable experiment with explicit uncertainty, predicted effect, safe bound, and numeric stop. Reject copied layouts, tutorials, and online sequences.
 
 Loop:
 1. Read the newest authoritative observation and specialist analysis; invalidate stale state and advice unless revalidated, then choose the next best action for the highest-value unmet success criterion.

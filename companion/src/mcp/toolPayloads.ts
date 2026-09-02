@@ -2,7 +2,7 @@ export const toolPayloads = {
   target: (value: { x: number; y: number }) => ({ target: value }),
   mine: ({ x, y, count }: { x: number; y: number; count?: number }) => ({ target: { x, y }, count }),
   craft: ({ recipe, crafts, wait_for_completion }: { recipe: string; crafts: number; wait_for_completion?: boolean }) => ({ recipe, count: crafts, ...(wait_for_completion === undefined ? {} : { wait_for_completion }) }),
-  place: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
+  place: ({ x, y, name, direction, output_target }: { x: number; y: number; name: string; direction?: number; output_target?: { x: number; y: number } }) => ({ item: name, position: { x, y }, direction, ...(output_target ? { output_target } : {}) }),
   insert: ({ x, y, items: values }: { x: number; y: number; items: Record<string, number> }) => ({ target: { x, y }, items: values }),
   extract: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y }, all: true }) : ({ target: { x, y }, items: values }),
   recipe: ({ x, y, recipe }: { x: number; y: number; recipe: string }) => ({ target: { x, y }, recipe }),

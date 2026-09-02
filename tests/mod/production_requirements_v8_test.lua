@@ -18,8 +18,12 @@ local ambiguous, ambiguity = pcall(production.production_requirements, { targets
 check(not ambiguous and tostring(ambiguity):match("ambiguous production route") ~= nil, "multiple unlocked producers require an explicit recipe choice")
 local result = production.production_requirements({ targets = { widget = 3, gear = 1 }, recipe_choices = { widget = "widget-a" } })
 check(#result.nodes == 2 and result.nodes[1].item == "gear" and result.nodes[2].item == "widget", "DAG nodes are deterministically sorted")
-check(result.nodes[1].crafts == 3 and result.nodes[2].crafts == 2 and result.raw["iron-plate"] == 6
-  and result.products.widget == 4 and result.total_time == 3.5 and result.targets.gear == 1,
+check(result.nodes[1].recipe_executions == 3 and result.nodes[2].recipe_executions == 2
+  and result.nodes[1].required_units == 3 and result.nodes[2].output_units_per_execution == 2
+  and result.nodes[1].ingredient_units_per_execution["iron-plate"] == 2
+  and result.raw["iron-plate"] == 6 and result.products.widget == 4
+  and result.total_craft_time_seconds_at_speed_1 == 3.5 and result.targets.gear == 1
+  and result.units.targets == "item_or_fluid_units" and result.units.time == "seconds_at_crafting_speed_1",
   "multiple targets aggregate craft counts, raw inputs, products, categories and time")
 local progressed, progress_error = pcall(production.production_requirements, { targets = { future = 1 } })
 check(not progressed and tostring(progress_error):match("no progression route") ~= nil, "locked-only products refuse a nonexistent progression route")

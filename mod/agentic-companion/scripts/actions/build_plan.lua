@@ -8,6 +8,7 @@
 -- half-done.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
+local output_targets = require("scripts.output_target")
 
 local M = {}
 
@@ -30,6 +31,12 @@ local function malformed(step)
   end
   if step.direction ~= nil and type(step.direction) ~= "number" then
     return "direction must be a number (16-way: 0=N, 4=E, 8=S, 12=W)"
+  end
+  if step.output_target ~= nil then
+    local target = step.output_target
+    if type(target) ~= "table" or type(target.x) ~= "number" or type(target.y) ~= "number" then
+      return "output_target must be {x, y} with numeric coordinates"
+    end
   end
   if step.recipe ~= nil and type(step.recipe) ~= "string" then
     return "recipe must be a recipe name string"
@@ -65,6 +72,10 @@ function M.start(task)
 
   for _, step in ipairs(task.steps) do
     step.direction = math.floor(tonumber(step.direction) or 0) % 16
+    if step.output_target ~= nil then
+      step._output_target = output_targets.resolve(companion.require_companion(), step.output_target,
+        "build_plan output_target")
+    end
     if step.insert ~= nil then
       -- {"coal":10} → sorted {name, count} list for deterministic messages.
       local list = {}
@@ -365,6 +376,15 @@ function M.tick(task)
 
   local entity_name = place_result.name
 
+  local expected_output
+  if step._output_target then
+    local current = output_targets.resolve(c, step.output_target, "build_plan output_target")
+    if current.entity ~= step._output_target.entity then
+      return advance(task, false, "output_target changed before placement; observe again")
+    end
+    expected_output = current.entity
+  end
+
   local can_place = c.surface.can_place_entity({
     name = entity_name,
     position = step.position,
@@ -391,6 +411,11 @@ function M.tick(task)
   end
   c.remove_item({ name = step.item, count = 1 })
   task._placed = task._placed + 1
+  if expected_output and not output_targets.verify_drop_target(built, expected_output) then
+    return advance(task, false, string.format(
+      "placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",
+      step.item, built.position.x, built.position.y))
+  end
   task._built = built
   return finish_placed_step(task, c, step, built)
 end

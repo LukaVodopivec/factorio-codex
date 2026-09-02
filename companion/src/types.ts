@@ -18,12 +18,14 @@ export interface MapSummary {
   factory_landmarks: Array<{ name: string; type: string; position: Position; direction?: number; status?: string; recipe?: string; observed_tick: number }>;
 }
 export interface ProductionRequirementNode {
-  item: string; required: number; recipe: string; crafts: number; output: number;
-  category: string; time: number; ingredients: Record<string, number>; products: Record<string, number>;
+  item: string; required_units: number; recipe: string; recipe_executions: number;
+  output_units_per_execution: number; category: string; craft_time_seconds_per_execution: number;
+  ingredient_units_per_execution: Record<string, number>; product_units_per_execution: Record<string, number>;
 }
 export interface ProductionRequirements {
+  units: { targets: "item_or_fluid_units"; raw: "item_or_fluid_units"; products: "item_or_fluid_units"; time: "seconds_at_crafting_speed_1" };
   targets: Record<string, number>; nodes: ProductionRequirementNode[];
-  raw: Record<string, number>; products: Record<string, number>; total_time: number;
+  raw: Record<string, number>; products: Record<string, number>; total_craft_time_seconds_at_speed_1: number;
 }
 export interface PhysicalRoute {
   kind: "belt" | "pipe" | "power"; prototype: string; from: Position; to: Position;

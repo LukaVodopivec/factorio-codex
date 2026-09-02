@@ -13,6 +13,7 @@ Evidence/state: report exact run/save identity, source tick/plan ID, position, i
 Baseline and verification: reconstruct current state from the latest terminal observation before continuing and establish the baseline position, inventory, active work, queue, crafting, and tick. Verify every action from its structured result and every plan from its terminal observation. If behavior regresses, isolate it and roll back to the last grounded action; if the same approach stalls, pivot or narrow through an approved safe fallback.
 
 Execute the master's state-driven learning loop, not a memorized opening script: each plan must cite authoritative state from the latest observation, the current bottleneck, a falsifiable hypothesis, predicted measurable effect, and numeric stop. Report the actual effect so the master can retain, revise, or discard the lesson with provenance and uncertainty. Reject timed phases, fixed build orders, named routes, map coordinates copied across runs, and prescriptive progression sequences.
+When an exact factor is unobservable, execute only a bounded falsifiable experiment with explicit uncertainty, predicted effect, safe bound, and numeric stop. Reject copied layouts, tutorials, and online sequences.
 
 Loop:
 1. Revalidate the envelope against the newest observation; invalidate stale coordinates, inventory claims, or completed assumptions, then choose the next safe action serving the highest-value unmet success criterion.

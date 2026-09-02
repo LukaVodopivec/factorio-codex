@@ -4,6 +4,37 @@ local approach = require("scripts.actions.approach")
 local M = {}
 local NATURAL_MINABLE_TYPES = { resource = true, tree = true, ["simple-entity"] = true }
 
+local function table_empty(value)
+  if type(value) ~= "table" then return true end
+  return next(value) == nil
+end
+
+local function recoverable_empty(e)
+  local seen = {}
+  for _, inventory_id in pairs(defines.inventory or {}) do
+    if type(inventory_id) == "number" and not seen[inventory_id] then
+      seen[inventory_id] = true
+      local ok, inv = pcall(e.get_inventory, inventory_id)
+      if ok and inv and not inv.is_empty() then return false end
+    end
+  end
+  local ok, fluids = pcall(e.get_fluid_contents)
+  if ok and not table_empty(fluids) then return false end
+  return true
+end
+
+local function expected_item_names(e)
+  local names, seen = {}, {}
+  for _, product in ipairs(e.prototype.mineable_properties.products or {}) do
+    if (product.type == nil or product.type == "item") and product.name and not seen[product.name] then
+      seen[product.name] = true
+      names[#names + 1] = product.name
+    end
+  end
+  table.sort(names)
+  return names
+end
+
 local function occupies(e, target)
   local box = e.selection_box or e.bounding_box
   if box then
@@ -110,19 +141,32 @@ function M.start(task)
   local count = tonumber(task.count) or 1
   if count ~= math.floor(count) or count < 1 or count > 200 then error("mine count must be an integer from 1 to 200") end
   local candidates = c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } } })
-  local found
+  local natural, owned
   for _, e in ipairs(candidates) do
-    local physically_allowed = NATURAL_MINABLE_TYPES[e.type]
-      or (e.force == c.force and e.type ~= "character")
+    local is_owned = e.force == c.force and e.type ~= "character" and not NATURAL_MINABLE_TYPES[e.type]
     local mineable = e.prototype and e.prototype.mineable_properties
-    if e.valid and physically_allowed and mineable and mineable.minable and occupies(e, target) then
-      if found then error("more than one minable entity occupies that coordinate; observe again and choose an unambiguous point") end
-      found = e
+    if e.valid and (NATURAL_MINABLE_TYPES[e.type] or is_owned)
+      and mineable and mineable.minable and occupies(e, target) then
+      if is_owned then
+        if owned then error("more than one minable entity of the same priority occupies that coordinate; observe again and choose an unambiguous point") end
+        owned = e
+      else
+        if natural then error("more than one minable entity of the same priority occupies that coordinate; observe again and choose an unambiguous point") end
+        natural = e
+      end
     end
   end
+  -- A placed mining drill normally overlaps the resource beneath it. At the
+  -- exact requested coordinate, prefer the recoverable player-owned entity;
+  -- otherwise physical pickup would be impossible precisely where needed.
+  local found = count > 1 and natural or (owned or natural)
   if not found then error(string.format("nothing minable occupies exact coordinate (%.1f, %.1f)", target.x, target.y)) end
   if count > 1 and found.type ~= "resource" then error("mine count greater than 1 is only valid for resources") end
+  if found == owned and not recoverable_empty(found) then
+    error("refusing to recover a player-owned entity with nonempty inventories or fluids")
+  end
   task._entity, task._entity_name = found, found.name
+  task._expected_items = expected_item_names(found)
   task._requested, task._completed, task._actual_gain = count, 0, 0
 end
 
@@ -151,7 +195,10 @@ function M.tick(task)
       return partial_failure(task, "Codex inventory is full")
     end
     task._target_amount = entity_amount(e)
-    task._inventory_before = inv.get_item_count()
+    task._inventory_before = {}
+    for _, name in ipairs(task._expected_items) do
+      task._inventory_before[name] = inv.get_item_count(name)
+    end
     -- mining_state targets the control's selected entity; the position alone
     -- does not select one for a script-created character. Select through the
     -- physical LuaControl API and refuse to mine a different overlapping
@@ -183,7 +230,12 @@ function M.tick(task)
 
   c.mining_state = { mining = false }
   local inv = c.get_main_inventory()
-  local gained = inv and (inv.get_item_count() - task._inventory_before) or 0
+  local gained = 0
+  if inv then
+    for _, name in ipairs(task._expected_items) do
+      gained = gained + math.max(0, inv.get_item_count(name) - (task._inventory_before[name] or 0))
+    end
+  end
   if gained <= 0 then
     return partial_failure(task, "the exact target changed without mined items reaching Codex inventory")
   end

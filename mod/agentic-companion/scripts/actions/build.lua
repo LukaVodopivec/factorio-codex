@@ -2,6 +2,7 @@
 -- first (build_distance for place, reach_distance otherwise).
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
+local output_targets = require("scripts.output_target")
 
 local M = {}
 
@@ -70,6 +71,9 @@ function M.place.start(task)
   end
   task.direction = math.floor(tonumber(task.direction) or 0) % 16
   task._entity_name = result.name
+  if task.output_target ~= nil then
+    task._output_target = output_targets.resolve(c, task.output_target, "place output_target")
+  end
 end
 
 function M.place.tick(task)
@@ -82,6 +86,15 @@ function M.place.tick(task)
 
   if c.get_item_count(task.item) == 0 then
     return { status = "failed", detail = "I no longer have any " .. task.item .. " in my inventory" }
+  end
+
+  local expected_output
+  if task._output_target then
+    local current = output_targets.resolve(c, task.output_target, "place output_target")
+    if current.entity ~= task._output_target.entity then
+      return { status = "failed", detail = "place output_target changed before placement; observe again" }
+    end
+    expected_output = current.entity
   end
 
   local can_place = c.surface.can_place_entity({
@@ -114,6 +127,13 @@ function M.place.tick(task)
     }
   end
   c.remove_item({ name = task.item, count = 1 })
+  if expected_output and not output_targets.verify_drop_target(built, expected_output) then
+    return {
+      status = "failed",
+      detail = string.format("placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",
+        task.item, built.position.x, built.position.y),
+    }
+  end
   return {
     status = "done",
     detail = string.format("placed %s at (%.1f, %.1f)%s",

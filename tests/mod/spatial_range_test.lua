@@ -19,10 +19,15 @@ _G.prototypes = { item = {
   } } },
   gear = { place_result = { name = "gear-entity", collision_box = { left_top = { x = 0, y = 0 }, right_bottom = { x = 1, y = 1 } } } },
   coal = { fuel_value = 4000000, fuel_category = "chemical" },
+  wood = { name = "wood", stack_size = 100, fuel_value = 2000000, fuel_category = "chemical" },
+  ["solid-fuel"] = { name = "solid-fuel", stack_size = 50, fuel_value = 12000000, fuel_category = "chemical" },
+  ["rocket-fuel"] = { name = "rocket-fuel", stack_size = 10, fuel_value = 100000000, fuel_category = "chemical" },
 }, entity = {
   ["burner-mining-drill"] = { name = "burner-mining-drill", tile_width = 2, tile_height = 2,
     vector_to_place_result = { x = 0, y = -1 }, burner_prototype = { fuel_categories = { chemical = true }, effectivity = 0.8, fuel_inventory_size = 1 },
-    mining_speed = 0.25, max_energy_usage = 2500 },
+    mining_speed = 0.25, get_crafting_speed = function() return 0.5 end,
+    get_max_energy_usage = function() return 2500 end,
+    get_max_energy_production = function() return 0 end },
   coal = { name = "coal", mineable_properties = { minable = true, mining_time = 1,
     products = { { name = "coal", amount = 1 } } } },
 }, recipe = {
@@ -90,11 +95,16 @@ local automatic = spatial.describe_prototype({ names = { "gear" }, kind = "auto"
 check(recipe["recipe:gear"].kind == "recipe" and recipe["recipe:gear"].ingredients["iron-plate"] == 2
   and entity["entity:gear"].kind == "entity" and automatic.gear.kind == "entity",
   "describe_prototype exposes recipe/entity and preserves auto resolution")
-local bad_kind_ok = pcall(spatial.describe_prototype, { names = { "gear" }, kind = "item" })
-check(not bad_kind_ok, "describe_prototype rejects kinds outside auto entity recipe")
+local fuels = spatial.describe_prototype({ names = { "wood", "solid-fuel", "rocket-fuel" }, kind = "item" })
+local automatic_fuel = spatial.describe_prototype({ names = { "solid-fuel" }, kind = "auto" })
+check(fuels["item:wood"].kind == "item" and fuels["item:wood"].fuel_value == 2000000
+  and fuels["item:solid-fuel"].fuel_value == 12000000
+  and fuels["item:rocket-fuel"].stack_size == 10 and automatic_fuel["solid-fuel"].kind == "item",
+  "describe_prototype resolves genuine fuel items explicitly and through auto fallback")
 local rates = spatial.describe_prototype({ names = { "burner-mining-drill", "coal" }, kind = "entity" })
 check(rates["entity:burner-mining-drill"].mining_speed == 0.25
   and rates["entity:burner-mining-drill"].max_energy_usage == 2500
+  and rates["entity:burner-mining-drill"].crafting_speed == 0.5
   and rates["entity:burner-mining-drill"].burner_effectivity == 0.8
   and rates["entity:burner-mining-drill"].fuel_inventory_size == 1
   and rates["entity:coal"].mining_time == 1

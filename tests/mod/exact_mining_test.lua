@@ -20,6 +20,11 @@ local tree = minable("tree-01", "tree", 3, nil)
 local player_force = {}
 local machine = minable("burner-mining-drill", "mining-drill", 5, nil)
 machine.force = player_force
+local machine_inventory_empty = true
+local machine_fluids = {}
+machine.get_inventory = function() return { is_empty = function() return machine_inventory_empty end } end
+machine.get_fluid_contents = function() return machine_fluids end
+local covered_resource = minable("iron-ore", "resource", 5, 100)
 _G.prototypes = { item = {
   ["iron-ore"] = { stack_size = 2 }, ["copper-ore"] = { stack_size = 2 },
   stone = { stack_size = 2 }, ["tree-01"] = { stack_size = 2 },
@@ -28,9 +33,11 @@ _G.prototypes = { item = {
 local inventory = {}
 local capacity_checks = 0
 local slot_filters = {}
-local function inventory_total()
+local function inventory_total(name)
   local total = 0
-  for _, stack in ipairs(inventory) do if stack.valid_for_read then total = total + stack.count end end
+  for _, stack in ipairs(inventory) do
+    if stack.valid_for_read and (name == nil or stack.name == name) then total = total + stack.count end
+  end
   return total
 end
 inventory.get_item_count = inventory_total
@@ -65,7 +72,7 @@ local function engine_insert(name, count)
   end
   check(count == 0, "fixture engine gain fits the preflighted inventory")
 end
-local candidates = { adjacent, exact, tree, machine }
+local candidates = { adjacent, exact, tree, covered_resource, machine }
 local body = {
   valid = true, position = { x = 0, y = 0 }, resource_reach_distance = 3,
   force = player_force,
@@ -80,11 +87,17 @@ local body = {
 body.update_selected_entity = function(position)
   body.selected = nil
   for _, entity in ipairs(candidates) do
+    if entity.valid and entity.force == body.force and entity.position.x == position.x and entity.position.y == position.y then
+      body.selected = entity; return
+    end
+  end
+  for _, entity in ipairs(candidates) do
     if entity.valid and entity.position.x == position.x and entity.position.y == position.y then body.selected = entity; return end
   end
 end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end }
+_G.defines = { inventory = { chest = 1, fuel = 2 } }
 _G.game = { tick = 100 }
 local mine = require("scripts.actions.mine")
 local mining_progress = 0
@@ -230,7 +243,23 @@ configure_capacity(2)
 local recovery = { target = { x = 5, y = 0 }, count = 1 }; mine.start(recovery)
 local recovered = run(recovery, 10)
 check(recovered and recovered.status == "done" and not machine.valid
+  and covered_resource.valid and covered_resource.amount == 100
   and inventory_total() == 1 and scripted_mine_calls == 0,
-  "exact player-owned machine recovery uses physical LuaControl mining and returns its item")
+  "exact player-owned machine recovery wins over underlying ore and uses physical LuaControl mining")
+
+machine.valid, machine_inventory_empty = true, false
+local occupied, occupied_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1 })
+check(not occupied and tostring(occupied_error):match("nonempty inventories or fluids") ~= nil,
+  "player-owned recovery fails closed for nonempty inventories")
+machine_inventory_empty, machine_fluids = true, { water = 1 }
+local wet, wet_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1 })
+check(not wet and tostring(wet_error):match("nonempty inventories or fluids") ~= nil,
+  "player-owned recovery fails closed for nonempty fluids")
+machine_fluids = {}
+covered_resource.valid, covered_resource.amount = true, 100
+configure_capacity(4)
+local overlap_resource = { target = { x = 5, y = 0 }, count = 2 }; mine.start(overlap_resource)
+check(overlap_resource._entity == covered_resource and machine.valid and covered_resource.amount == 100,
+  "multiple mining cycles require the overlapping natural resource rather than selecting the machine")
 
 os.exit(failures == 0 and 0 or 1)

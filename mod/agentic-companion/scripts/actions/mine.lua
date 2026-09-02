@@ -20,6 +20,23 @@ local function entity_amount(e)
   return nil
 end
 
+local function quality_name(quality)
+  if type(quality) == "string" then return quality end
+  if quality == nil then return nil end
+  local ok, name = pcall(function() return quality.name end)
+  if ok and type(name) == "string" then return name end
+  return nil
+end
+
+local function normal_filter_name(filter)
+  if type(filter) == "string" then return filter end
+  if type(filter) ~= "table" or type(filter.name) ~= "string" then return nil end
+  if filter.quality == nil then return filter.name end
+  if quality_name(filter.quality) ~= "normal" then return nil end
+  if filter.comparator == nil or filter.comparator == "=" then return filter.name end
+  return nil
+end
+
 -- Physical character mining cannot complete when its inventory cannot accept
 -- the entity's products. Fail before starting the mining state instead of
 -- waiting until the bridge timeout or bypassing the character with scripted
@@ -52,12 +69,15 @@ local function character_accepts_products(inv, e)
     local ok_filter, filter = pcall(function() return inv.get_filter(index) end)
     if not ok_filter then filter = nil end
     if stack and stack.valid_for_read then
-      if required[stack.name] then
+      if required[stack.name] and quality_name(stack.quality) == "normal" then
         local stack_size = tonumber(stack.prototype and stack.prototype.stack_size) or stack.count
         available[stack.name] = (available[stack.name] or 0) + math.max(0, stack_size - stack.count)
       end
     elseif filter then
-      filtered_empty[filter] = (filtered_empty[filter] or 0) + 1
+      local filter_name = normal_filter_name(filter)
+      if filter_name then
+        filtered_empty[filter_name] = (filtered_empty[filter_name] or 0) + 1
+      end
     else
       shared_empty[#shared_empty + 1] = index
     end

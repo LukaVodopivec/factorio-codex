@@ -23,6 +23,7 @@ _G.prototypes = { item = {
 } }
 local inventory = {}
 local capacity_checks = 0
+local slot_filters = {}
 local function inventory_total()
   local total = 0
   for _, stack in ipairs(inventory) do if stack.valid_for_read then total = total + stack.count end end
@@ -30,13 +31,17 @@ local function inventory_total()
 end
 inventory.get_item_count = inventory_total
 inventory.get_bar = function() capacity_checks = capacity_checks + 1; return #inventory + 1 end
-inventory.get_filter = function() return nil end
+inventory.get_filter = function(index) return slot_filters[index] end
 local function configure_capacity(capacity)
   for index = #inventory, 1, -1 do inventory[index] = nil end
+  slot_filters = {}
   local full_slots, remainder = math.floor(capacity / 2), capacity % 2
   for _ = 1, full_slots do inventory[#inventory + 1] = { valid_for_read = false } end
   if remainder > 0 then
-    inventory[#inventory + 1] = { valid_for_read = true, name = "iron-ore", count = 1, prototype = prototypes.item["iron-ore"] }
+    inventory[#inventory + 1] = {
+      valid_for_read = true, name = "iron-ore", count = 1,
+      prototype = prototypes.item["iron-ore"], quality = { name = "normal" },
+    }
   end
 end
 local function engine_insert(name, count)
@@ -49,7 +54,8 @@ local function engine_insert(name, count)
   for _, stack in ipairs(inventory) do
     if count > 0 and not stack.valid_for_read then
       local added = math.min(count, prototypes.item[name].stack_size)
-      stack.valid_for_read, stack.name, stack.count, stack.prototype = true, name, added, prototypes.item[name]
+      stack.valid_for_read, stack.name, stack.count, stack.prototype, stack.quality =
+        true, name, added, prototypes.item[name], { name = "normal" }
       count = count - added
     end
   end
@@ -131,6 +137,31 @@ local aggregate_task = { target = { x = 0, y = 0 } }; mine.start(aggregate_task)
 local aggregate = mine.tick(aggregate_task)
 check(aggregate and aggregate.status == "failed" and inventory_total() == 1 and body.mining_state.mining == false,
   "mining aggregates different products against shared inventory capacity")
+
+reset_resource(100)
+exact.prototype.mineable_properties.products = { { type = "item", name = "iron-ore", amount = 2 } }
+configure_capacity(2)
+slot_filters[1] = { name = "iron-ore", quality = "normal" }
+local table_filter_task = { target = { x = 0, y = 0 } }; mine.start(table_filter_task)
+check(mine.tick(table_filter_task) == nil and body.mining_state.mining,
+  "mining counts a normal-quality table ItemFilter as available capacity")
+
+reset_resource(100)
+configure_capacity(2)
+slot_filters[1] = { name = "iron-ore", quality = "uncommon" }
+local quality_filter_task = { target = { x = 0, y = 0 } }; mine.start(quality_filter_task)
+local quality_filter = mine.tick(quality_filter_task)
+check(quality_filter and quality_filter.status == "failed" and body.mining_state.mining == false,
+  "mining does not count a table ItemFilter that rejects normal quality")
+
+reset_resource(100)
+exact.prototype.mineable_properties.products = { { type = "item", name = "iron-ore", amount = 1 } }
+configure_capacity(1)
+inventory[1].quality = { name = "uncommon" }
+local quality_stack_task = { target = { x = 0, y = 0 } }; mine.start(quality_stack_task)
+local quality_stack = mine.tick(quality_stack_task)
+check(quality_stack and quality_stack.status == "failed" and body.mining_state.mining == false,
+  "mining does not count free space in a non-normal-quality item stack")
 
 reset_resource(100)
 exact.prototype.mineable_properties.products = { { type = "item", name = "iron-ore", amount = 1 } }

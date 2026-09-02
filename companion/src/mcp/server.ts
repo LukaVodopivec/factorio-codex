@@ -8,8 +8,6 @@ import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSetti
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
-const actionNames = ["walk_to", "mine", "place_entity", "craft_items", "insert_items", "extract_items", "set_recipe", "rotate_entity", "build_plan"] as const;
-
 export function result(value: unknown, isError = false) {
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   return { content: [{ type: "text" as const, text }], structuredContent: typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined, isError };
@@ -90,7 +88,6 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
   server.registerTool("build_plan", { description: "Build up to 25 sequential steps; auto-craft is legitimate and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }) => task("build_plan", toolPayloads.buildPlan(steps, rest)));
   server.registerTool("start_research", { description: "Start an unlocked technology using the force's real research queue.", inputSchema: z.object({ technology: z.string() }) }, async (p) => rpc("start_research", p));
   server.registerTool("stop", { description: "Cancel active and queued work after a TUI interruption.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true }));
-  void actionNames;
 }
 
 type Connection = { rcon: RconClient; bridge: Bridge };

@@ -53,6 +53,7 @@ try {
   if (mineSchema.count?.default !== 1 || mineSchema.count?.maximum !== 200) throw new Error("mine must expose count 1-200 default 1");
   const runPlanSchema = tools.find((tool: any) => tool.name === "run_plan")?.inputSchema ?? {};
   if (runPlanSchema.properties?.steps?.maxItems !== 25 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-25 steps");
+  if (runPlanSchema.properties?.final_observation_radius?.default !== 15 || runPlanSchema.properties?.observation_radius) throw new Error("run_plan must expose only final_observation_radius");
   if (/build_plan|start_research|stop|sleep|by_name/.test(JSON.stringify(runPlanSchema))) throw new Error("run_plan exposes a forbidden nested step");
   const status = await request("tools/call", { name: "connect_status", arguments: {} });
   const text = status.result?.content?.[0]?.text ?? "";

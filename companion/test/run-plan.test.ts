@@ -27,6 +27,8 @@ describe("run_plan", () => {
     expect(runPlanSchema.safeParse({ steps: [{ action: "build_plan", steps: [] }] }).success).toBe(false);
     expect(runPlanSchema.safeParse({ steps: [{ action: "start_research", technology: "automation" }] }).success).toBe(false);
     expect(runPlanSchema.safeParse({ steps: [{ action: "stop" }] }).success).toBe(false);
+    expect(runPlanSchema.safeParse({ steps: [{ action: "walk_to", x: 0, y: 0 }], observation_radius: 20 }).success).toBe(false);
+    expect(runPlanSchema.parse({ steps: [{ action: "walk_to", x: 0, y: 0 }], final_observation_radius: 20 }).final_observation_radius).toBe(20);
   });
 
   it("acquires one provider and returns compact text identical to structured content", async () => {
@@ -36,7 +38,11 @@ describe("run_plan", () => {
     const output = await handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] });
     expect(provider).toHaveBeenCalledTimes(1);
     expect(output.content[0].text).toBe(JSON.stringify(output.structuredContent));
-    expect(output.structuredContent).toMatchObject({ status: "completed", completed_steps: 1 });
+    expect(output.structuredContent).toMatchObject({
+      status: "completed",
+      completed_steps: 1,
+      outcomes: [{ step: 1, action: "walk_to", status: "completed", result: "walk_to done" }],
+    });
   });
 
   it("maps existing action paths in order, uses one deadline, and observes once", async () => {
@@ -49,7 +55,7 @@ describe("run_plan", () => {
         tasks.push(task); deadlines.push(opts?.deadlineMs ?? -1); now += 10; return `${task.type} ok`;
       }),
     } as Partial<Bridge>);
-    const parsed = runPlanSchema.parse({ steps: [
+    const parsed = runPlanSchema.parse({ final_observation_radius: 23, steps: [
       { action: "walk_to", x: 1, y: 2 },
       { action: "mine", x: 3, y: 4, count: 2 },
       { action: "place_entity", x: 5, y: 6, name: "stone-furnace", direction: 8 },
@@ -74,7 +80,9 @@ describe("run_plan", () => {
     ]);
     expect(new Set(deadlines)).toEqual(new Set([571_000]));
     expect(result.observation).toEqual({ ...observation, entities: [], resource_patches: [] });
+    expect(result.outcomes.every((outcome) => outcome.status === "completed" && "result" in outcome)).toBe(true);
     expect(vi.mocked(bridge.call)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(bridge.call)).toHaveBeenLastCalledWith("observe_local", { radius: 23 });
   });
 
   it("polls wait_for_item through inspect without mutation", async () => {
@@ -107,7 +115,12 @@ describe("run_plan", () => {
       { action: "mine", x: 1, y: 1, count: 2 },
       { action: "craft_items", recipe: "stone-furnace", count: 1 },
     ] }));
-    expect(result).toMatchObject({ status: "failed", completed_steps: 0, failed_step: { step: 1, action: "mine", error: "resource exhausted" } });
+    expect(result).toMatchObject({
+      status: "failed",
+      completed_steps: 0,
+      outcomes: [{ step: 1, action: "mine", status: "failed", error: "resource exhausted" }],
+      failed_step: { step: 1, action: "mine", error: "resource exhausted" },
+    });
     expect(enqueueAndWait).toHaveBeenCalledTimes(1);
     expect(vi.mocked(bridge.call)).toHaveBeenCalledWith("observe_local", { radius: 15 });
   });
@@ -124,6 +137,10 @@ describe("run_plan", () => {
     expect(result).toMatchObject({
       status: "failed",
       completed_steps: 1,
+      outcomes: [
+        { step: 1, action: "walk_to", status: "completed", result: "walked" },
+        { step: 2, action: "mine", status: "failed", error: "run_plan exceeded its 570-second deadline" },
+      ],
       failed_step: { step: 2, action: "mine", error: "run_plan exceeded its 570-second deadline" },
     });
     expect(enqueueAndWait).toHaveBeenCalledTimes(1);
@@ -138,7 +155,16 @@ describe("run_plan", () => {
     const result = await executeRunPlan(bridge, runPlanSchema.parse({ steps: [
       { action: "walk_to", x: 1, y: 1 }, { action: "mine", x: 2, y: 2 },
     ] }), controller.signal);
-    expect(result).toMatchObject({ status: "cancelled", completed_steps: 1, failed_step: { step: 2, action: "mine" }, observation_error: "observation unavailable" });
+    expect(result).toMatchObject({
+      status: "cancelled",
+      completed_steps: 1,
+      outcomes: [
+        { step: 1, action: "walk_to", status: "completed", result: "walked" },
+        { step: 2, action: "mine", status: "cancelled", error: "run_plan was cancelled" },
+      ],
+      failed_step: { step: 2, action: "mine" },
+      observation_error: "observation unavailable",
+    });
     expect(enqueueAndWait).toHaveBeenCalledTimes(1);
   });
 
@@ -154,5 +180,18 @@ describe("run_plan", () => {
     expect(result.failed_step?.error).toMatch(/timed out/);
     expect(now).toBe(1_000);
     expect(call).toHaveBeenLastCalledWith("observe_local", { radius: 15 });
+  });
+
+  it("fails a fully executed plan when its mandatory final observation fails", async () => {
+    const call = vi.fn(async () => { throw new Error("final observation unavailable"); });
+    const result = await executeRunPlan(bridgeWith({ call } as Partial<Bridge>), runPlanSchema.parse({
+      steps: [{ action: "walk_to", x: 1, y: 2 }],
+    }));
+    expect(result).toEqual({
+      status: "failed",
+      completed_steps: 1,
+      outcomes: [{ step: 1, action: "walk_to", status: "completed", result: "walk_to done" }],
+      observation_error: "final observation unavailable",
+    });
   });
 });

@@ -73,7 +73,15 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
       return result(outcome, outcome.status !== "completed");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const outcome: RunPlanResult = { status: extra?.signal?.aborted ? "cancelled" : "failed", completed_steps: 0, outcomes: [], failed_step: { step: 1, action: parsed.steps[0]!.action, error: message }, observation_error: message };
+      const status = extra?.signal?.aborted ? "cancelled" : "failed";
+      const action = parsed.steps[0]!.action;
+      const outcome: RunPlanResult = {
+        status,
+        completed_steps: 0,
+        outcomes: [{ step: 1, action, status, error: message }],
+        failed_step: { step: 1, action, error: message },
+        observation_error: message,
+      };
       return result(outcome, true);
     }
   });

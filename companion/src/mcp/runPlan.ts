@@ -25,17 +25,15 @@ const step = z.discriminatedUnion("action", [
 
 export const runPlanSchema = z.object({
   steps: z.array(step).min(1).max(25),
-  observation_radius: z.number().int().min(5).max(30).default(15),
+  final_observation_radius: z.number().int().min(5).max(30).default(15),
 }).strict();
 
 export type RunPlanInput = z.infer<typeof runPlanSchema>;
 type PlanStep = RunPlanInput["steps"][number];
 
-export interface PlanOutcome {
-  step: number;
-  action: PlanStep["action"];
-  detail: string;
-}
+export type PlanOutcome =
+  | { step: number; action: PlanStep["action"]; status: "completed"; result: string }
+  | { step: number; action: PlanStep["action"]; status: "failed" | "cancelled"; error: string };
 
 export interface RunPlanResult {
   status: "completed" | "failed" | "cancelled";
@@ -118,24 +116,29 @@ export async function executeRunPlan(
       const detail = current.action === "wait_for_item"
         ? await waitForItem(bridge, current, deadline, signal, clock)
         : await bridge.enqueueAndWait(taskFor(current), { deadlineMs: deadline, signal, clock });
-      outcomes.push({ step: index + 1, action: current.action, detail });
+      outcomes.push({ step: index + 1, action: current.action, status: "completed", result: detail });
     }
     terminal = { status: "completed", completed_steps: outcomes.length, outcomes };
   } catch (error) {
     const next = input.steps[outcomes.length];
+    const attemptedStep = outcomes.length + 1;
     const cancelled = signal?.aborted || /cancelled/i.test(errorText(error));
+    const status = cancelled ? "cancelled" : "failed";
+    const message = errorText(error);
+    if (next) outcomes.push({ step: attemptedStep, action: next.action, status, error: message });
     terminal = {
-      status: cancelled ? "cancelled" : "failed",
-      completed_steps: outcomes.length,
+      status,
+      completed_steps: attemptedStep - 1,
       outcomes,
-      ...(next ? { failed_step: { step: outcomes.length + 1, action: next.action, error: errorText(error) } } : {}),
+      ...(next ? { failed_step: { step: attemptedStep, action: next.action, error: message } } : {}),
     };
   }
 
   try {
-    terminal.observation = normalizeObservation(await bridge.call("observe_local", { radius: input.observation_radius }));
+    terminal.observation = normalizeObservation(await bridge.call("observe_local", { radius: input.final_observation_radius }));
   } catch (error) {
     terminal.observation_error = errorText(error);
+    if (terminal.status === "completed") terminal.status = "failed";
   }
   return terminal;
 }

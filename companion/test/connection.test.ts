@@ -73,6 +73,30 @@ describe("lazy MCP bridge connection", () => {
     expect(a).toBe(b);
   });
 
+  it("reuses one connected Bridge across 25 sequential handler-style acquisitions", async () => {
+    const rcon = new FakeRcon();
+    const factory = vi.fn(() => rcon as unknown as RconClient);
+    const unlock = vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
+    const call = vi.spyOn(Bridge.prototype, "call").mockResolvedValue({
+      protocol_version: 5,
+      mod_version: "0.8.0",
+    });
+    const getBridge = createBridgeProvider(settings, factory);
+
+    const acquired: Bridge[] = [];
+    for (let index = 0; index < 25; index += 1) {
+      acquired.push(await getBridge());
+    }
+
+    expect(acquired).toHaveLength(25);
+    expect(acquired.every((bridge) => bridge === acquired[0])).toBe(true);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(rcon.connect).toHaveBeenCalledTimes(1);
+    expect(unlock).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith("ping");
+  });
+
   it("ignores a stale socket close after a replacement becomes healthy", async () => {
     const first = new FakeRcon();
     const second = new FakeRcon();

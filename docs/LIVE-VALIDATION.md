@@ -1,9 +1,13 @@
 # Live validation
 
 This runbook validates release **0.10.0**. Prior live evidence remains historical
-until the fresh 0.10.0 run is recorded. The Linux workstation is permanently
-headless: run only the dedicated server, Node bridge, and agent there. Both
-visual Factorio processes run on the couch PC.
+until the fresh 0.10.0 run is recorded. The Linux workstation has no dedicated
+GPU and is permanently headless: run only the dedicated server, Node bridge,
+and agent tooling there. Never start a Factorio GUI/client or any other visual
+GUI workload on that workstation during rollout, validation, or a benchmark.
+Both visual Factorio processes run exclusively on the couch PC. The
+`scripts/launch-native-client.ps1` entrypoint is couch-only; the repository does
+not provide a Linux visual client launcher.
 
 1. On the couch PC, install the full standalone Factorio 2.0.x build under
    `%LOCALAPPDATA%\factorio-codex\standalone`, or pass its executable as
@@ -41,6 +45,11 @@ visual Factorio processes run on the couch PC.
    Never use console commands, editor mode, spawned items, or teleporting.
 
 ## Two-session pilot contract
+
+The same permanent machine boundary applies to every W1C run: the dedicated
+server and agent sessions run on the headless workstation, while the exact
+`Codex` client and the characterless spectator/follower run only on the couch
+PC. Do not launch a local GUI as a recovery or benchmark shortcut.
 
 Use the topology and model/effort assignment selected by completed benchmark
 results; do not assume a Sol/Luna winner. In a split topology, one strategist

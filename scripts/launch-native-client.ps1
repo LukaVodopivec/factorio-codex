@@ -5,6 +5,8 @@ param(
   [switch]$PrepareOnly
 )
 
+# Couch-PC-only visual launcher. The server-and-agent workstation has no
+# dedicated GPU and must never run a Factorio GUI or client.
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 if (-not (Test-Path -LiteralPath $FactorioBinary -PathType Leaf)) {

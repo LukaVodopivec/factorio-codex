@@ -202,21 +202,20 @@ describe("exact local configuration", () => {
       expect(normalizedKnowledge).toContain(forbidden);
   });
 
-  it("ships an isolated low-resource native Codex client launcher", () => {
+  it("ships only the couch-PC native Codex client launcher", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-    const launcher = fs.readFileSync(path.join(root, "scripts/launch-native-client.sh"), "utf8");
-    expect(launcher).toMatch(/XDG_STATE_HOME[\s\S]*factorio-codex\/native-client/);
-    expect(launcher).toMatch(/service-username[^\n]*Codex/);
-    expect(launcher).toMatch(/standalone[\s\S]*service-username[^\n]*Codex[\s\S]*--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--disable-audio/);
-    expect(launcher).toMatch(/Steam Factorio build replaces the isolated Codex identity/);
-    expect(launcher).toContain("--prepare-only");
-    expect(fs.statSync(path.join(root, "scripts/launch-native-client.sh")).mode & 0o111).not.toBe(0);
-    expect(launcher).not.toMatch(/\.factorio\/config|\.factorio\/mods/);
+    expect(fs.existsSync(path.join(root, "scripts/launch-native-client.sh"))).toBe(false);
     const couchLauncher = fs.readFileSync(path.join(root, "scripts/launch-native-client.ps1"), "utf8");
+    expect(couchLauncher).toMatch(/Couch-PC-only visual launcher/);
+    expect(couchLauncher).toMatch(/server-and-agent workstation has no[\s\S]*dedicated GPU[\s\S]*must never run a Factorio GUI or client/);
     expect(couchLauncher).toMatch(/LOCALAPPDATA[\s\S]*factorio-codex\\native-client/);
     expect(couchLauncher).toMatch(/service-username.*Codex/);
     expect(couchLauncher).toMatch(/Steam Factorio build replaces the isolated Codex identity/);
     expect(couchLauncher).toMatch(/--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--disable-audio/);
+    const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+    const liveValidation = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");
+    expect(readme).toMatch(/no dedicated GPU[\s\S]*permanently[\s\S]*headless[\s\S]*All visual workloads run on the couch PC/);
+    expect(liveValidation).toMatch(/no dedicated[\s\S]*GPU[\s\S]*permanently headless[\s\S]*Both visual Factorio processes run exclusively on the couch PC/);
   });
 
   it("keeps W1C prompts automation-first, adaptive, and authority-separated", () => {

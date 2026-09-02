@@ -23,14 +23,18 @@ npm run build
 node companion/dist/cli.js setup
 ```
 
-Keep the server-and-agent workstation headless. On the couch PC, install the
-full standalone Factorio build under `%LOCALAPPDATA%\factorio-codex\standalone`
-and run `scripts/launch-native-client.ps1 -Address <server:port>` to connect its
-isolated low-resource client as the real player named `Codex`. Then connect the
+The server-and-agent workstation has no dedicated GPU and is permanently
+headless. Run only the dedicated server, Node bridge, and agent tooling there;
+never start a Factorio GUI/client or any other visual GUI workload on it during
+rollout, validation, or benchmarks. All visual workloads run on the couch PC.
+There, install the full standalone Factorio build under
+`%LOCALAPPDATA%\factorio-codex\standalone` and run the couch-only
+`scripts/launch-native-client.ps1 -Address <server:port>` to connect its isolated
+low-resource client as the real player named `Codex`. Then connect the separate
 normal couch Factorio client as the characterless spectator/follower. The
 native launcher rejects the Steam build because Steam replaces the isolated
-LAN identity with the account identity. The Bash launcher is for an equivalent
-visual Linux client host, never the dedicated server workstation.
+LAN identity with the account identity. There is intentionally no Linux visual
+client launcher in this repository.
 The mod never creates a standalone fallback character. Run
 `node companion/dist/cli.js doctor`, then start `codex` at this root. The
 committed project config starts MCP automatically. Begin with

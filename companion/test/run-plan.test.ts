@@ -31,18 +31,59 @@ describe("run_plan", () => {
     expect(runPlanSchema.parse({ steps: [{ action: "walk_to", x: 0, y: 0 }], final_observation_radius: 20 }).final_observation_radius).toBe(20);
   });
 
-  it("acquires one provider and returns compact text identical to structured content", async () => {
+  it("runs valid mapped steps in order through one registered-handler provider", async () => {
     const handlers: Record<string, (args: unknown, extra?: { signal?: AbortSignal }) => Promise<any>> = {};
-    const provider = vi.fn(async () => bridgeWith());
+    const enqueueAndWait = vi.fn(async (task: { type: string }) => `${task.type} done`);
+    const call = vi.fn(async (method: string) => method === "observe_local" ? observation : {});
+    const provider = vi.fn(async () => bridgeWith({ enqueueAndWait, call } as Partial<Bridge>));
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, provider, validConfig);
-    const output = await handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] });
+    const output = await handlers.run_plan!({ final_observation_radius: 21, steps: [
+      { action: "walk_to", x: 1, y: 2 },
+      { action: "mine", x: 3, y: 4, count: 2 },
+    ] });
     expect(provider).toHaveBeenCalledTimes(1);
+    expect(enqueueAndWait.mock.calls.map(([task]) => task)).toEqual([
+      { type: "walk_to", target: { x: 1, y: 2 } },
+      { type: "mine", target: { x: 3, y: 4 }, count: 2 },
+    ]);
+    expect(call).toHaveBeenCalledWith("observe_local", { radius: 21 });
+    expect(output.isError).toBe(false);
     expect(output.content[0].text).toBe(JSON.stringify(output.structuredContent));
     expect(output.structuredContent).toMatchObject({
       status: "completed",
-      completed_steps: 1,
-      outcomes: [{ step: 1, action: "walk_to", status: "completed", result: "walk_to done" }],
+      completed_steps: 2,
+      outcomes: [
+        { step: 1, action: "walk_to", status: "completed", result: "walk_to done" },
+        { step: 2, action: "mine", status: "completed", result: "mine done" },
+      ],
     });
+  });
+
+  it("sets registered-handler isError for action and final-observation failures", async () => {
+    const cases = [
+      {
+        bridge: bridgeWith({ enqueueAndWait: vi.fn(async () => { throw new Error("physical failure"); }) } as Partial<Bridge>),
+        completedSteps: 0,
+        errorField: "failed_step",
+      },
+      {
+        bridge: bridgeWith({ call: vi.fn(async () => { throw new Error("final observation failure"); }) } as Partial<Bridge>),
+        completedSteps: 1,
+        errorField: "observation_error",
+      },
+    ];
+    for (const scenario of cases) {
+      const handlers: Record<string, (args: unknown) => Promise<any>> = {};
+      const provider = vi.fn(async () => scenario.bridge);
+      registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, provider, validConfig);
+      const output = await handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] });
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(output.isError).toBe(true);
+      expect(output.structuredContent.status).toBe("failed");
+      expect(output.structuredContent.completed_steps).toBe(scenario.completedSteps);
+      expect(output.structuredContent[scenario.errorField]).toBeDefined();
+      expect(output.content[0].text).toBe(JSON.stringify(output.structuredContent));
+    }
   });
 
   it("maps existing action paths in order, uses one deadline, and observes once", async () => {

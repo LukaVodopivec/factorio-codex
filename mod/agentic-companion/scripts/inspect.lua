@@ -157,7 +157,7 @@ local function locate(pos, c)
   local entity = best or best_res or best_char
   if not entity then
     error(string.format(
-      "nothing to inspect within %.1f tiles of (%.1f, %.1f) — check the position or look_around first",
+      "nothing to inspect within %.1f tiles of (%.1f, %.1f) — check the position or call observe_local first",
       SEARCH_RADIUS, target.x, target.y))
   end
   return entity

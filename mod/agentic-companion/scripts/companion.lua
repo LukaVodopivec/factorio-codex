@@ -48,7 +48,7 @@ end
 function M.require_companion()
   local ent = M.get()
   if not ent then
-    error("companion 'Codex' does not exist — call spawn_companion first")
+    error("companion 'Codex' does not exist — call connect_status first")
   end
   return ent
 end

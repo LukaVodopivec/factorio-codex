@@ -58,6 +58,15 @@ describe("bridge protocol v5", () => {
       "scripts/test-npm-package.mjs",
     ]) expect(fs.existsSync(path.join(root, removed)), removed).toBe(false);
   });
+  it("guides users only through public fresh-v5 tool names", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const companionSource = fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/companion.lua"), "utf8");
+    const inspectSource = fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/inspect.lua"), "utf8");
+    expect(companionSource).toContain("call connect_status first");
+    expect(companionSource).not.toContain("call spawn_companion");
+    expect(inspectSource).toContain("call observe_local first");
+    expect(inspectSource).not.toMatch(/look_around|scan_area|find_buildable_area/);
+  });
   it("validates normal, error, and chunk envelopes", () => {
     expect(parseRpcEnvelope('{"ok":true,"data":{"tick":1}}')).toMatchObject({ ok: true });
     expect(parseRpcEnvelope('{"ok":false,"error":"nope"}')).toEqual({ ok: false, error: "nope" });

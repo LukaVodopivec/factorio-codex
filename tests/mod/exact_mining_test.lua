@@ -171,10 +171,13 @@ check(mine.tick(lost_selection_task) == nil and body.mining_state.mining,
   "physical mining starts before the lost-selection fixture")
 body.selected = nil
 local lost_selection = mine.tick(lost_selection_task)
-check(lost_selection and lost_selection.status == "failed"
-  and lost_selection.detail:match("requested 2 cycles, completed 0, actual gain 0 items") ~= nil
-  and lost_selection.detail:match("lost selection") ~= nil and body.mining_state.mining == false,
-  "in-flight selection loss stops mining immediately with partial progress")
+check(lost_selection == nil and body.selected == exact and body.mining_state.mining,
+  "in-flight native-client selection loss reselects only the resolved exact target")
+body.selected = nil
+local recovered_selection = run(lost_selection_task, 10)
+check(recovered_selection and recovered_selection.status == "done"
+  and lost_selection_task._completed == 2 and exact.amount == 98,
+  "physical mining completes while native client input repeatedly clears selection")
 
 reset_resource(100)
 configure_capacity(6)

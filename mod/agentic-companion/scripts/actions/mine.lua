@@ -165,11 +165,18 @@ function M.tick(task)
   local current_amount = entity_amount(e)
   local target_changed = not (e and e.valid)
     or (task._target_amount ~= nil and current_amount ~= nil and current_amount < task._target_amount)
-  if not target_changed and c.selected ~= e then
-    c.mining_state = { mining = false }
-    return partial_failure(task, "lost selection of the exact mining target")
+  if not target_changed then
+    -- A real connected client can clear LuaPlayer.selected from its native
+    -- input state between ticks. Reassert the already-resolved exact entity
+    -- and physical mining state; never resolve or switch to a nearby target.
+    if c.selected ~= e then c.update_selected_entity(e.position) end
+    if c.selected ~= e then
+      c.mining_state = { mining = false }
+      return partial_failure(task, "could not reselect the exact mining target")
+    end
+    c.mining_state = { mining = true, position = e.position }
+    return nil
   end
-  if not target_changed then return nil end
 
   c.mining_state = { mining = false }
   local inv = c.get_main_inventory()

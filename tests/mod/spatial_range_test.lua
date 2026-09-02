@@ -31,6 +31,11 @@ local beyond, beyond_error = pcall(spatial.can_place, {
 check(not beyond and tostring(beyond_error):match("placements must be a non%-empty array") ~= nil and checks == 1,
   "can_place rejects the removed single-item fallback before querying the surface")
 
+local empty, empty_error = pcall(spatial.can_place, { placements = {} })
+check(not empty and tostring(empty_error):match("placements must be a non%-empty array") ~= nil
+  and checks == 1,
+  "can_place rejects an empty placements array before querying the surface")
+
 local inherited = spatial.can_place({
   item = "transport-belt",
   placements = { { position = { x = 0, y = 0 } } },
@@ -38,6 +43,15 @@ local inherited = spatial.can_place({
 check(inherited.results[1].can_place == false
   and inherited.results[1].reason:match("requires item") ~= nil and checks == 1,
   "each placement requires its own item and cannot inherit a top-level fallback")
+
+local too_many = {}
+for i = 1, 25 do
+  too_many[i] = { item = "transport-belt", position = { x = 0, y = 0 } }
+end
+local oversized, oversized_error = pcall(spatial.can_place, { placements = too_many })
+check(not oversized and tostring(oversized_error):match("at most 24 placements") ~= nil
+  and checks == 1,
+  "can_place rejects more than 24 placements before querying the surface")
 
 local batch = spatial.can_place({ placements = {
   { item = "transport-belt", position = { x = 0, y = 30.000001 } },

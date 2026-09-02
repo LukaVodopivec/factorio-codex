@@ -44,8 +44,10 @@ check(not dead and tostring(dead_error):match("does not exist") ~= nil,
 body = { valid = true, position = { x = 0, y = 0 }, surface = surface }
 entity.position = { x = 30, y = 0 }
 local at_limit, at_limit_result = pcall(inspect.inspect, { targets = { entity.position } })
-check(at_limit and at_limit_result.entities[1].name == "stone-furnace",
-  "batched inspection accepts an exact 30.0-tile target")
+check(at_limit and type(at_limit_result.entities) == "table"
+  and at_limit_result.entities[1].name == "stone-furnace"
+  and at_limit_result.name == nil and at_limit_result.position == nil,
+  "batched inspection accepts an exact 30.0-tile target and returns only the batch shape")
 
 entity.position = { x = 30.000001, y = 0 }
 local beyond = inspect.inspect({ targets = { entity.position } })

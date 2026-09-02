@@ -424,7 +424,7 @@ function M.can_place(params)
   local c = companion.require_companion()
   local surface = c.surface
 
-  if type(params.placements) ~= "table" or #params.placements == 0 then
+  if type(params) ~= "table" or type(params.placements) ~= "table" or #params.placements == 0 then
     error("placements must be a non-empty array")
   end
   if #params.placements > MAX_PLACEMENTS then

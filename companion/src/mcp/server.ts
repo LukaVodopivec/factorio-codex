@@ -4,7 +4,7 @@ import { z } from "zod";
 import { Bridge } from "../bridge.js";
 import { RconClient } from "../rcon.js";
 import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../compatibility.js";
-import { companionVersion, type RconSettings } from "../config.js";
+import { companionVersion, type ConfigDiagnostic, type RconSettings } from "../config.js";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -40,7 +40,10 @@ export const toolPayloads = {
   buildPlan: (steps: Array<{ x: number; y: number; name: string; [key: string]: unknown }>, rest: Record<string, unknown>) => ({ ...rest, steps: steps.map(({ x, y, name, ...step }) => ({ ...step, item: name, position: { x, y } })) }),
 };
 
-export async function connectStatus(b: Bridge) {
+export async function connectStatus(bridge: () => Promise<Bridge>, configDiagnostic: () => ConfigDiagnostic) {
+  const diagnostic = configDiagnostic();
+  if (!diagnostic.ok) return result(`Offline: ${diagnostic.error}`, false);
+  const b = await bridge();
   const ping: any = await b.call("ping");
   assertRuntimeCompatibility(ping, companionVersion());
   if (ping.companion_dead) return result("Connected, but Codex is dead. This interface never auto-respawns.", true);
@@ -54,7 +57,7 @@ type ToolRegistrar = {
 
 /** Register the complete public surface against an injectable bridge provider.
  *  Tests use the same handlers with a fake Bridge to prove the exact Lua DTOs. */
-export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Bridge>): void {
+export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Bridge>, configDiagnostic: () => ConfigDiagnostic): void {
   const rpc = async (method: any, params: unknown = {}) => {
     try { return result(await (await bridge()).call(method, params)); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
@@ -66,7 +69,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
 
   server.registerTool("connect_status", { description: "Validate config, RCON, mod, app and protocol; create Codex only if this save never had one.", inputSchema: z.object({}) }, async () => {
     try {
-      return await connectStatus(await bridge());
+      return await connectStatus(bridge, configDiagnostic);
     } catch (error) { return result(`Offline: ${error instanceof Error ? error.message : String(error)}`, false); }
   });
   server.registerTool("observe_local", { description: "Current deterministic local text observation centered on Codex.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15) }) }, async ({ radius }) => {
@@ -92,16 +95,20 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
 
 type Connection = { rcon: RconClient; bridge: Bridge };
 type RconFactory = (opts: RconSettings) => RconClient;
+type ConnectionSettings = RconSettings | (() => ConfigDiagnostic);
 
 /** Lazy, singleflight RCON handshake shared by every MCP handler. */
 export function createBridgeProvider(
-  opts: RconSettings,
+  settings: ConnectionSettings,
   createRcon: RconFactory = (settings) => new RconClient(settings),
 ): () => Promise<Bridge> {
   let connection: Connection | undefined;
   let connecting: Promise<Bridge> | undefined;
 
   return async () => {
+    const diagnostic = typeof settings === "function" ? settings() : undefined;
+    if (diagnostic && !diagnostic.ok) throw new Error(diagnostic.error);
+    const opts = diagnostic ? diagnostic.config.rcon : settings as RconSettings;
     assertConnectionCompatibility(opts);
     if (!opts.password) throw new Error("setup has not been completed; run `factorio-codex setup`");
     if (connection?.rcon.connected) return connection.bridge;
@@ -140,9 +147,9 @@ export function createBridgeProvider(
   };
 }
 
-export async function runMcpServer(opts: RconSettings): Promise<void> {
+export async function runMcpServer(configDiagnostic: () => ConfigDiagnostic): Promise<void> {
   const server = new McpServer({ name: "factorio-codex", version: "0.7.0" }, { instructions: "Control one physical Factorio character named Codex. Observe locally, then use honest path/reach/inventory/crafting actions." });
-  const bridge = createBridgeProvider(opts);
-  registerMcpTools(server as unknown as ToolRegistrar, bridge);
+  const bridge = createBridgeProvider(configDiagnostic);
+  registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic);
   await server.connect(new StdioServerTransport());
 }

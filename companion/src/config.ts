@@ -7,6 +7,7 @@ import { atomicWriteFile } from "./setup/atomic.js";
 export interface RconSettings { host: string; port: number; password: string }
 export interface AppConfig { factorioUserDir: string; rcon: RconSettings }
 export interface Settings { rcon: RconSettings }
+export type ConfigDiagnostic = { ok: true; config: AppConfig } | { ok: false; error: string };
 export const configDir = () => path.join(os.homedir(), ".config", "factorio-codex");
 export const configPath = () => path.join(configDir(), "config.json");
 function exactConfig(value: unknown): value is AppConfig {
@@ -19,6 +20,19 @@ function exactConfig(value: unknown): value is AppConfig {
 }
 function readRawConfig(): unknown { try { return JSON.parse(fs.readFileSync(configPath(), "utf8")); } catch { return null; } }
 export function loadConfig(): AppConfig | null { const value = readRawConfig(); return exactConfig(value) ? value : null; }
+export function diagnoseConfig(): ConfigDiagnostic {
+  if (!fs.existsSync(configPath())) return { ok: false, error: "configuration is missing; run `factorio-codex setup`" };
+  const config = loadConfig();
+  if (!config) return { ok: false, error: "configuration is invalid; run `factorio-codex setup`" };
+  const mode = fs.statSync(configPath()).mode & 0o777;
+  if (mode !== 0o600) return { ok: false, error: `configuration mode is ${mode.toString(8)}; expected 600; run setup again` };
+  try {
+    if (!fs.statSync(config.factorioUserDir).isDirectory()) throw new Error("not a directory");
+  } catch {
+    return { ok: false, error: "configured Factorio user-data directory is missing; launch Factorio once, then run setup again" };
+  }
+  return { ok: true, config };
+}
 export function existingRconPassword(): string | undefined { const value = readRawConfig() as { rcon?: { password?: unknown } } | null; return typeof value?.rcon?.password === "string" && value.rcon.password.length > 0 ? value.rcon.password : undefined; }
 export function saveConfig(config: AppConfig): void { fs.mkdirSync(configDir(), { recursive: true }); atomicWriteFile(configPath(), `${JSON.stringify(config, null, 2)}\n`, 0o600); }
 export function resolveSettings(): Settings { const cfg = loadConfig(); return { rcon: cfg?.rcon ?? { host: "127.0.0.1", port: 19015, password: "" } }; }

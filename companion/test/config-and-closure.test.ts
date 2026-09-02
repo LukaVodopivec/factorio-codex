@@ -3,8 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { companionVersion, configPath, existingRconPassword, loadConfig, saveConfig } from "../src/config.js";
+import type { Bridge } from "../src/bridge.js";
+import { companionVersion, configPath, diagnoseConfig, existingRconPassword, loadConfig, saveConfig } from "../src/config.js";
 import { collectDoctorReport } from "../src/doctor.js";
+import { connectStatus } from "../src/mcp/server.js";
 import { RconClient } from "../src/rcon.js";
 
 const homes: string[] = [];
@@ -15,6 +17,14 @@ function isolatedHome(): string {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); homes.splice(0).forEach((home) => fs.rmSync(home, { recursive: true, force: true })); });
 
 describe("exact local configuration", () => {
+  async function expectConnectConfigError(pattern: RegExp) {
+    const bridge = vi.fn(async () => ({ call: vi.fn() } as unknown as Bridge));
+    const output = await connectStatus(bridge, diagnoseConfig);
+    expect(output.isError).toBe(false);
+    expect(output.content[0].text).toMatch(pattern);
+    expect(bridge).not.toHaveBeenCalled();
+  }
+
   it("persists only the accepted keys with mode 0600", () => {
     const home = isolatedHome(); const userDir = path.join(home, "factorio"); fs.mkdirSync(userDir);
     saveConfig({ factorioUserDir: userDir, rcon: { host: "127.0.0.1", port: 19015, password: "top-secret" } });
@@ -46,6 +56,26 @@ describe("exact local configuration", () => {
     expect(rendered).not.toMatch(/provider|brain|telemetry|api.?key/i);
     expect(rendered).not.toContain("[redacted]");
     expect(report.checks).toEqual([expect.objectContaining({ name: "config", ok: false })]);
+  });
+  it("connect_status reports a missing config before creating RCON", async () => {
+    isolatedHome();
+    await expectConnectConfigError(/Offline: configuration is missing.*factorio-codex setup/);
+  });
+  it("connect_status reports an invalid exact config before creating RCON", async () => {
+    isolatedHome(); fs.mkdirSync(path.dirname(configPath()), { recursive: true });
+    fs.writeFileSync(configPath(), JSON.stringify({ factorioUserDir: "/factorio", rcon: { host: "localhost" } }));
+    await expectConnectConfigError(/Offline: configuration is invalid.*factorio-codex setup/);
+  });
+  it("connect_status reports a missing Factorio user-data directory before creating RCON", async () => {
+    const home = isolatedHome();
+    saveConfig({ factorioUserDir: path.join(home, "absent-factorio"), rcon: { host: "127.0.0.1", port: 19015, password: "secret" } });
+    await expectConnectConfigError(/Offline: configured Factorio user-data directory is missing.*launch Factorio once.*setup again/);
+  });
+  it("connect_status reports a non-0600 config before creating RCON", async () => {
+    const home = isolatedHome(); const userDir = path.join(home, "factorio"); fs.mkdirSync(userDir);
+    saveConfig({ factorioUserDir: userDir, rcon: { host: "127.0.0.1", port: 19015, password: "secret" } });
+    fs.chmodSync(configPath(), 0o644);
+    await expectConnectConfigError(/Offline: configuration mode is 644; expected 600; run setup again/);
   });
   it("redacts a configured password from doctor text and JSON failures", async () => {
     const home = isolatedHome(); const userDir = path.join(home, "factorio"); fs.mkdirSync(userDir);

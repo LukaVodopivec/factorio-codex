@@ -1,6 +1,5 @@
-import fs from "node:fs";
 import { Bridge } from "./bridge.js";
-import { companionVersion, configPath, loadConfig, type Settings } from "./config.js";
+import { companionVersion, diagnoseConfig, type Settings } from "./config.js";
 import { EXPECTED_RCON_HOST, EXPECTED_RCON_PORT, connectionCompatibility } from "./compatibility.js";
 import { PROTOCOL_VERSION } from "./protocol/contract.js";
 import { RconClient } from "./rcon.js";
@@ -8,11 +7,11 @@ import { RconClient } from "./rcon.js";
 export interface DoctorCheck { name: string; ok: boolean; detail: string; fix?: string }
 export interface DoctorReport { ok: boolean; app_version: string; rcon: { host: string; port: number; password_configured: boolean }; checks: DoctorCheck[] }
 export async function collectDoctorReport(settings: Settings): Promise<DoctorReport> {
-  const checks: DoctorCheck[] = []; const cfg = loadConfig();
-  const mode = (() => { try { return fs.statSync(configPath()).mode & 0o777; } catch { return 0; } })();
-  const userDirOk = cfg ? (() => { try { return fs.statSync(cfg.factorioUserDir).isDirectory(); } catch { return false; } })() : false;
-  checks.push(cfg ? { name: "config", ok: mode === 0o600 && userDirOk, detail: mode !== 0o600 ? `config mode ${mode.toString(8)}; expected 600` : userDirOk ? "exact shape, mode 0600, Factorio user-data directory exists" : "Factorio user-data directory is missing", fix: mode === 0o600 && userDirOk ? undefined : "run setup again" } : { name: "config", ok: false, detail: "missing or invalid exact config", fix: "run `factorio-codex setup`" });
-  if (!cfg) return finish();
+  const checks: DoctorCheck[] = []; const diagnostic = diagnoseConfig();
+  checks.push(diagnostic.ok
+    ? { name: "config", ok: true, detail: "exact shape, mode 0600, Factorio user-data directory exists" }
+    : { name: "config", ok: false, detail: diagnostic.error, fix: diagnostic.error.includes("launch Factorio") ? "launch Factorio once, then run setup again" : "run `factorio-codex setup`" });
+  if (!diagnostic.ok) return finish();
   const endpoint = connectionCompatibility(settings.rcon);
   checks.push(endpoint.endpoint ? { name: "rcon-config", ok: true, detail: `${EXPECTED_RCON_HOST}:${EXPECTED_RCON_PORT}` } : { name: "rcon-config", ok: false, detail: `must be ${EXPECTED_RCON_HOST}:${EXPECTED_RCON_PORT}`, fix: "run setup again" });
   if (!endpoint.endpoint) return finish();

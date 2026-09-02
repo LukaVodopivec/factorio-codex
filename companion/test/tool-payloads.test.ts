@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
 import { connectStatus, normalizeObservation, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
+const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 describe("public MCP to Lua DTO mappings", () => {
   it("returns matching plain text and structured content for a populated observation", () => {
     const value = {
@@ -50,7 +51,7 @@ describe("registered MCP handler parity with Lua v5", () => {
         schemas[name] = config.inputSchema;
         handlers[name] = handler;
       },
-    }, async () => ({ call, enqueueAndWait } as unknown as Bridge));
+    }, async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
 
     await handlers.connect_status({});
     expect(call).toHaveBeenLastCalledWith("ping");
@@ -101,7 +102,7 @@ describe("registered MCP handler parity with Lua v5", () => {
 describe("connect_status body lifecycle", () => {
   it("reports a persistent death without calling spawn", async () => {
     const call = vi.fn().mockResolvedValue({ companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 5, mod_version: "0.7.0" });
-    const output = await connectStatus({ call } as unknown as Bridge);
+    const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(true);
     expect(output.content[0].text).toMatch(/dead.*never auto-respawns/i);
     expect(call).toHaveBeenCalledTimes(1);
@@ -109,7 +110,7 @@ describe("connect_status body lifecycle", () => {
 
   it("rejects a stale mod before reporting connected", async () => {
     const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.6.0" });
-    await expect(connectStatus({ call } as unknown as Bridge)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.7.0");
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.7.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
@@ -117,7 +118,7 @@ describe("connect_status body lifecycle", () => {
     const call = vi.fn(async (method: string) => method === "ping"
       ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 5, mod_version: "0.7.0", factorio_version: "2.0.0", tick: 1 }
       : { name: "Codex" });
-    const output = await connectStatus({ call } as unknown as Bridge);
+    const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
     expect(call).toHaveBeenNthCalledWith(2, "spawn_companion", {});
     expect(call).toHaveBeenCalledTimes(2);

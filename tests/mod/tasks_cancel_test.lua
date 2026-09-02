@@ -17,7 +17,7 @@ body = {
     cancelled_crafts = cancelled_crafts + 1
   end,
 }
-package.loaded["scripts.companion"] = { DEFAULT = "Codex", require_companion = function() return body end, get = function() return body end }
+package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 local runner = { start = function() end, tick = function() return nil end }
 runner.place, runner.rotate, runner.set_recipe = runner, runner, runner
 runner.insert, runner.extract = runner, runner

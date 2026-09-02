@@ -17,6 +17,8 @@ check(storage.tasks.active.id == 1 and storage.tasks.queue == queued,
   "initialization retains the sole active task and queue")
 local task_keys = {}; for key in pairs(storage.tasks) do task_keys[#task_keys + 1] = key end; table.sort(task_keys)
 check(table.concat(task_keys, ",") == "active,next_id,queue,records", "task storage has only the fresh single-body shape")
+check(storage.path_request == nil and storage.path_requests == nil,
+  "path routing has one optional request slot rather than per-body maps")
 
 require("scripts.state").init()
 check(storage.companion == body_record and storage.tasks.queue == queued, "single-body storage initialization is idempotent")

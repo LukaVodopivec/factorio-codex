@@ -2,7 +2,7 @@
 -- connect_status can distinguish never-created from dead without respawning.
 local M = {}
 
-M.DEFAULT = "Codex"
+local CODEX_LABEL = "Codex"
 local MOVEMENT_SPEED_SETTING = "agentic-companion-movement-speed"
 local DEFAULT_MOVEMENT_SPEED = 1.6
 local COLOR = { r = 0.30, g = 0.79, b = 0.69, a = 1 }
@@ -60,7 +60,7 @@ local function attach_label(rec, ent)
   end)
   rec.label = nil
   local args = {
-    text = M.DEFAULT,
+    text = CODEX_LABEL,
     surface = ent.surface,
     color = COLOR,
     scale = 1.4,
@@ -112,7 +112,7 @@ function M.update_map_tag()
         pcall(function()
           rec.map_tag = ent.force.add_chart_tag(ent.surface, {
             position = ent.position,
-            text = M.DEFAULT,
+            text = CODEX_LABEL,
             icon = { type = "virtual", name = "signal-A" },
           })
         end)
@@ -122,30 +122,18 @@ function M.update_map_tag()
 end
 
 
-function M.spawn(params)
-  local name = M.DEFAULT
-
+function M.spawn()
   local existing = M.get()
   if existing then
     apply_speed_to(existing)
     return {
-      name = name,
       position = { x = existing.position.x, y = existing.position.y },
-      unit_number = existing.unit_number,
-      already_existed = true,
-      movement_speed = M.movement_speed_multiplier(),
     }
   end
   if storage.companion and not M.get() then error("Codex died; this interface never respawns") end
 
   local surface, anchor, force
-  local player
-  if params.near_player then
-    player = game.get_player(params.near_player)
-    if not player then error("no such player: " .. tostring(params.near_player)) end
-  else
-    player = game.connected_players[1]
-  end
+  local player = game.connected_players[1]
   if player then
     surface, anchor, force = player.surface, player.position, player.force
   else
@@ -169,18 +157,13 @@ function M.spawn(params)
   local rec = {}
   storage.companion = rec
   rec.entity = ent
-  rec.unit_number = ent.unit_number
   ent.color = COLOR
   apply_speed_to(ent)
   attach_label(rec, ent)
   M.update_map_tag()
 
   return {
-    name = name,
     position = { x = pos.x, y = pos.y },
-    unit_number = ent.unit_number,
-    already_existed = false,
-    movement_speed = M.movement_speed_multiplier(),
   }
 end
 

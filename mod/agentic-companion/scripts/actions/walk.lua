@@ -1,7 +1,7 @@
 -- walk_to + reusable pathfinder walker. Other actions embed the walker via
 -- M.begin/M.step (plain-data state, storage-safe). Pathfinder results arrive
 -- through on_script_path_request_finished → M.on_path_finished (wired in
--- control.lua); storage.path_requests maps request id → task id.
+-- control.lua); storage.path_request belongs to the sole active task.
 local companion = require("scripts.companion")
 
 local M = {}
@@ -51,7 +51,7 @@ local function request_path(state, c, task_id)
     path_resolution_modifier = 0,
     pathfind_flags = { cache = false, prefer_straight_paths = true },
   })
-  storage.path_requests[id] = { task_id = task_id }
+  storage.path_request = { id = id, task_id = task_id }
   state.request_id = id
   state.request_tick = game.tick
   state.phase = "waiting"
@@ -120,7 +120,8 @@ function M.step(state, c, task_id)
         state.phase = "following"
       end
     elseif game.tick - state.request_tick > PATH_WAIT_TICKS then
-      storage.path_requests[state.request_id] = nil
+      local pending = storage.path_request
+      if pending and pending.id == state.request_id then storage.path_request = nil end
       state.phase = "straight"
     else
       c.walking_state = { walking = false }
@@ -183,9 +184,9 @@ end
 
 -- Wired in control.lua to defines.events.on_script_path_request_finished.
 function M.on_path_finished(event)
-  local entry = storage.path_requests[event.id]
-  if not entry then return end
-  storage.path_requests[event.id] = nil
+  local entry = storage.path_request
+  if not entry or entry.id ~= event.id then return end
+  storage.path_request = nil
   local task = storage.tasks.active
   if not task or task.id ~= entry.task_id then return end
   local waypoints

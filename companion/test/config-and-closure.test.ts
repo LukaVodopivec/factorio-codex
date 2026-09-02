@@ -251,6 +251,30 @@ describe("exact local configuration", () => {
     expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
   });
 
+  it("keeps every durable gameplay prompt semantic and route-free", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const files = [
+      "SKILL.md", "GOAL-MASTER-v1.md", "GOAL-PILOT-v1.md",
+      "GOAL-SPECIALIST-v1.md", "PLAYER-KNOWLEDGE-v1.md",
+    ];
+    const texts = files.map((file) => fs.readFileSync(path.join(root, ".agents/skills/factorio-player", file), "utf8"));
+    for (const text of texts) {
+      for (const concept of ["observ", "bottleneck", "falsifiable hypothesis", "predicted", "actual", "retain", "revise", "discard", "provenance", "uncertainty"])
+        expect(text.toLowerCase()).toContain(concept);
+      for (const rejected of [/(?:timed\s+phase|elapsed-time\s+milestone)/i, /fixed\s+build\s+order/i, /named\s+route/i, /(?:map|cross-run|world)\s+coordinate/i, /prescriptive\s+progression\s+sequence/i])
+        expect(text).toMatch(rejected);
+      for (const rejected of [/cop(?:y|ied) layouts/i, /tutorials/i, /online\s+(?:build\s+)?sequences/i])
+        expect(text).toMatch(rejected);
+      expect(text).not.toMatch(/\b(?:first|start by)\s+(?:mine|craft|place|build|research)\b/i);
+      expect(text).not.toMatch(/\bthen\s+(?:mine|craft|place|build|research)\b/i);
+      expect(text).not.toMatch(/\b(?:at|by|after)\s+(?:minute\s*)?\d+\s*(?:m|min|minutes?)?\s*[,,:-]?\s*(?:mine|craft|place|build|research)\b/i);
+      expect(text).not.toMatch(/\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/);
+    }
+    for (const text of texts.slice(0, 2)) {
+      expect(text).toMatch(/observe[\s\S]*bottleneck[\s\S]*falsifiable hypothesis[\s\S]*predict[\s\S]*safe action[\s\S]*compare[\s\S]*retain[\s\S]*revise[\s\S]*discard/i);
+    }
+  });
+
   it("documents the W1C research basis as principles rather than a route", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const performance = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");

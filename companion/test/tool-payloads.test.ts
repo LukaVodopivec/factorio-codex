@@ -58,6 +58,7 @@ describe("registered MCP handler parity with Lua v5", () => {
     await handlers.observe_local({ radius: 15, center: { x: 999, y: 999 } });
     expect(call).toHaveBeenLastCalledWith("observe_local", { radius: 15 });
     expect(schemas.observe_local.shape.center).toBeUndefined();
+    expect(schemas.observe_local.safeParse({ radius: 15, center: { x: 999, y: 999 } }).data).toEqual({ radius: 15 });
     await handlers.describe_prototype({ names: ["transport-belt"] });
     expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"] });
     expect(schemas.describe_prototype.safeParse({ names: Array(10).fill("x") }).success).toBe(true);

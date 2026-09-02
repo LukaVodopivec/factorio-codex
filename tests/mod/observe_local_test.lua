@@ -73,6 +73,11 @@ _G.prototypes = { entity = {
 local observation = require("scripts.spatial").observe_local({ radius = 15 })
 check(observation.tick == 123 and observation.radius == 15, "observation includes current tick and radius")
 check(observation.grid.origin.x == -15 and observation.grid.origin.y == -15, "observation is centered on sole Codex character")
+local injected_center = require("scripts.spatial").observe_local({ radius = 15, center = { x = 999, y = -999 } })
+check(injected_center.grid.origin.x == observation.grid.origin.x
+  and injected_center.grid.origin.y == observation.grid.origin.y
+  and canonical(injected_center) == canonical(observation),
+  "caller center is ignored and origin derives solely from Codex")
 check(observation.character.inventory["iron-plate"] == 3, "observation includes character inventory")
 check(observation.grid.rows[15]:sub(15, 16) == "aa" and observation.grid.rows[16]:sub(15, 16) == "a@", "full 2x2 footprint is painted beneath higher-priority Codex")
 check(observation.grid.rows[15]:sub(15, 15) == "a", "equal-priority overlap deterministically paints the lexical-name glyph")

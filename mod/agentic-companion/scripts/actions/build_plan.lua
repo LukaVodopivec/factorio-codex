@@ -80,6 +80,7 @@ function M.start(task)
   task._auto_crafted = 0
   task._waiting_for_crafts = false
   task._craft_attempted = nil
+  task._built = nil
 
   task.stop_on_error = task.stop_on_error ~= false
   task._index = 1
@@ -273,6 +274,40 @@ local function advance(task, ok, why)
   return nil
 end
 
+-- Finish optional interactions on an entity that was already placed. Building
+-- uses build_distance; recipe/inventory mutations use Factorio's authoritative
+-- entity-reach check through the shared physical approach state machine.
+local function finish_placed_step(task, c, step, built)
+  if step.recipe or step._insert then
+    local reached = approach.ensure_entity(task, c, built)
+    if type(reached) == "table" then
+      task._built = nil
+      return advance(task, false, string.format("placed the %s, but %s", step.item, reached.detail))
+    end
+    if reached ~= "ok" then return nil end
+  end
+
+  local issues = {}
+  if not built.valid then
+    issues[#issues + 1] = "the placed entity vanished immediately (another mod removed it?)"
+  else
+    if step.recipe then
+      local why = apply_recipe(c, built, step.recipe)
+      if why then issues[#issues + 1] = why end
+    end
+    if step._insert then
+      local problems = insert_items(c, built, step._insert)
+      for _, problem in ipairs(problems) do issues[#issues + 1] = problem end
+    end
+  end
+  task._built = nil
+  if #issues > 0 then
+    return advance(task, false, string.format("placed the %s, but %s",
+      step.item, table.concat(issues, "; ")))
+  end
+  return advance(task, true)
+end
+
 -- ------------------------------------------------------------------- tick
 
 function M.tick(task)
@@ -288,6 +323,7 @@ function M.tick(task)
 
   local step = task.steps[task._index]
   if not step then return finished(task) end
+  if task._built then return finish_placed_step(task, c, step, task._built) end
 
   -- Checks that walking can never fix (mirrors place.start, which also runs
   -- before any walking): unknown item, unplaceable item, none in inventory.
@@ -342,26 +378,8 @@ function M.tick(task)
   end
   c.remove_item({ name = step.item, count = 1 })
   task._placed = task._placed + 1
-
-  -- Optional follow-ups on the entity we just placed.
-  local issues = {}
-  if not built.valid then
-    issues[#issues + 1] = "the placed entity vanished immediately (another mod removed it?)"
-  else
-    if step.recipe then
-      local why = apply_recipe(c, built, step.recipe)
-      if why then issues[#issues + 1] = why end
-    end
-    if step._insert then
-      local problems = insert_items(c, built, step._insert)
-      for _, p in ipairs(problems) do issues[#issues + 1] = p end
-    end
-  end
-  if #issues > 0 then
-    return advance(task, false, string.format("placed the %s, but %s",
-      step.item, table.concat(issues, "; ")))
-  end
-  return advance(task, true)
+  task._built = built
+  return finish_placed_step(task, c, step, built)
 end
 
 return M

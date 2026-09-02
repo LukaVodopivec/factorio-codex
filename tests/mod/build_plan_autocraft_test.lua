@@ -10,6 +10,9 @@ end
 local crafted = {}
 local inventory = { ["transport-belt"] = 0 }
 local placed_count = 0
+local followup_reachable = true
+local followup_failure = false
+local followup_reach_checks = 0
 local character
 character = {
   crafting_queue_size = 0,
@@ -34,13 +37,26 @@ character = {
     end,
   },
   remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count end,
+  can_reach_entity = function()
+    followup_reach_checks = followup_reach_checks + 1
+    return followup_reachable
+  end,
 }
 
 package.loaded["scripts.companion"] = {
   require_companion = function() return character end,
   get = function() return character end,
 }
-local approach_stub = { ensure = function() return "ok" end }
+local approach_stub = {
+  ensure = function() return "ok" end,
+  ensure_entity = function(_, c, built)
+    if c.can_reach_entity(built) then return "ok" end
+    if followup_failure then
+      return { status = "failed", detail = "couldn't get within physical reach of the " .. built.name }
+    end
+    return nil
+  end,
+}
 package.loaded["scripts.actions.approach"] = approach_stub
 _G.prototypes = { item = {
   ["transport-belt"] = { place_result = { name = "transport-belt" } },
@@ -132,6 +148,57 @@ local incompatible = build_plan.tick(incompatible_plan)
 check(incompatible and incompatible.status == "failed"
   and incompatible.detail:match("probably can't craft it") ~= nil,
   "build_plan: rejects a non-throwing incompatible machine recipe")
+
+-- Placement is legal at build reach, but recipe/insert follow-ups must wait
+-- for the newly created entity to become physically interactable.
+inventory["assembling-machine-1"] = 1
+inventory.coal = 1
+prototypes.item.coal = {}
+local followup_creates, recipe_mutations, insert_mutations = 0, 0, 0
+local built_followup
+character.surface.create_entity = function(args)
+  followup_creates = followup_creates + 1
+  built_followup = {
+    valid = true, name = args.name, type = "assembling-machine",
+    set_recipe = function() recipe_mutations = recipe_mutations + 1 return {} end,
+    get_recipe = function() return { name = "iron-gear-wheel" } end,
+    insert = function(stack) insert_mutations = insert_mutations + 1 return stack.count end,
+  }
+  return built_followup
+end
+followup_reachable = false
+local reach_before = followup_reach_checks
+local followup_plan = { auto_craft = false, steps = {
+  { item = "assembling-machine-1", position = { x = 6, y = 0 },
+    recipe = "iron-gear-wheel", insert = { coal = 1 } },
+} }
+build_plan.start(followup_plan)
+local waiting = build_plan.tick(followup_plan)
+check(waiting == nil and followup_plan._built == built_followup
+  and followup_creates == 1 and recipe_mutations == 0 and insert_mutations == 0
+  and followup_reach_checks == reach_before + 1,
+  "build_plan: placed follow-ups wait for Codex can_reach_entity before mutation")
+followup_reachable = true
+local followed_up = build_plan.tick(followup_plan)
+check(followed_up and followed_up.status == "done" and followup_creates == 1
+  and recipe_mutations == 1 and insert_mutations == 1
+  and followup_reach_checks == reach_before + 2,
+  "build_plan: reachable follow-ups mutate the already placed entity exactly once")
+
+inventory["assembling-machine-1"] = 1
+inventory.coal = 1
+followup_reachable = false
+followup_failure = true
+local unreachable_plan = { auto_craft = false, steps = {
+  { item = "assembling-machine-1", position = { x = 6, y = 0 },
+    recipe = "iron-gear-wheel", insert = { coal = 1 } },
+} }
+build_plan.start(unreachable_plan)
+local unreachable = build_plan.tick(unreachable_plan)
+check(unreachable and unreachable.status == "failed"
+  and unreachable.detail:match("placed the assembling%-machine%-1, but couldn't get within physical reach")
+  and recipe_mutations == 1 and insert_mutations == 1,
+  "build_plan: unreachable placed follow-ups fail honestly before either mutation")
 
 print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

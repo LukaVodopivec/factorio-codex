@@ -7,5 +7,5 @@
   "dependencies": [
     "base >= 2.0"
   ],
-  "description": "A physically embodied Factorio character controlled by Codex through a text-only local RCON bridge."
+  "description": "One physical Factorio character named Codex, controlled through a text-only local RCON bridge."
 }

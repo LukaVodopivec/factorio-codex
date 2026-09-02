@@ -78,6 +78,17 @@ describe("exact local configuration", () => {
       companionVersion(),
     ]).toEqual(Array(7).fill("0.7.0"));
   });
+  it("keeps visible locale title and description aligned with one-body mod metadata", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const info = JSON.parse(fs.readFileSync(path.join(root, "mod/agentic-companion/info.json"), "utf8"));
+    const locale = fs.readFileSync(path.join(root, "mod/agentic-companion/locale/en/agentic-companion.cfg"), "utf8");
+    const values = [...locale.matchAll(/^agentic-companion=(.+)$/gm)].map((match) => match[1]);
+    expect(info).toMatchObject({ version: "0.7.0", title: "Factorio Codex Companion" });
+    expect(values).toEqual([info.title, info.description]);
+    expect(locale).toContain("agentic-companion-movement-speed=Codex movement speed");
+    expect(locale).toContain("sole Codex character");
+    expect(locale).not.toMatch(/Agentic Companion|AI companion|companions|characters|vehicles/i);
+  });
 });
 
 describe("Lua dependency closure", () => {

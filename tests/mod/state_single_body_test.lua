@@ -8,24 +8,25 @@ local function check(ok, name)
 end
 
 local body_record = { entity = { valid = false } }
-_G.storage = { companion = body_record }
+local queued = { { id = 2, type = "mine" } }
+_G.storage = {
+  companion = body_record,
+  tasks = { next_id = 3, records = {}, queue = queued, active = { id = 1, type = "walk_to" } },
+}
 
 require("scripts.state").init()
 check(storage.companion == body_record, "initialization retains one persistent body record")
-check(storage.tasks.lane.next_id == 1 and #storage.tasks.lane.queue == 0
-  and storage.tasks.lane.active == nil,
-  "initialization creates the fresh single task lane")
+check(storage.tasks.next_id == 3 and storage.tasks.active.id == 1 and storage.tasks.queue == queued,
+  "initialization retains the flat active task and queue")
 local task_keys = {}; for key in pairs(storage.tasks) do task_keys[#task_keys + 1] = key end; table.sort(task_keys)
-check(table.concat(task_keys, ",") == "lane", "task storage exposes only the sole fresh lane")
+check(table.concat(task_keys, ",") == "active,next_id,queue,records",
+  "task storage exposes only the flat fresh-v5 shape")
 check(storage.path_request == nil and storage.path_requests == nil,
   "path routing has one optional request slot rather than per-body maps")
 
-local lane = storage.tasks.lane
-lane.active = { id = 1, type = "walk_to" }
-lane.queue[1] = { id = 2, type = "mine" }
 require("scripts.state").init()
-check(storage.companion == body_record and storage.tasks.lane == lane
-  and storage.tasks.lane.active.id == 1 and storage.tasks.lane.queue[1].id == 2,
-  "fresh single-lane initialization is idempotent")
+check(storage.companion == body_record and storage.tasks.active.id == 1
+  and storage.tasks.queue == queued and storage.tasks.queue[1].id == 2,
+  "flat single-body initialization is idempotent")
 
 os.exit(failures == 0 and 0 or 1)

@@ -118,7 +118,7 @@ check(crafted.status == "done" and crafted.detail:match("%+1 iron%-gear%-wheel")
 package.loaded["scripts.actions.walk"] = nil
 local walk = require("scripts.actions.walk")
 local walk_task = { id = 7, target = { x = 20, y = 0 } }
-_G.storage = { tasks = { lane = { active = walk_task } }, path_request = nil }
+_G.storage = { tasks = { active = walk_task }, path_request = nil }
 game.tick = 0
 walk.start(walk_task)
 check(walk.tick(walk_task) == nil and storage.path_request.task_id == 7 and body.walking_state.walking == false,

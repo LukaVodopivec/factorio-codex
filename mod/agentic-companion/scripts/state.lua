@@ -3,14 +3,15 @@ local M = {}
 -- Initializes the fresh v5 storage schema. Safe to call repeatedly.
 -- All fields any module needs MUST be declared here (single owner of the schema).
 function M.init()
-  -- Tasks: one lane for the sole Codex body. Repeated initialization retains
-  -- the current fresh-v5 lane.
-  local lane = storage.tasks and storage.tasks.lane
-  storage.tasks = { lane = lane or {
-    next_id = 1,
-    records = {},
-    queue = {},
-  } }
+  -- Tasks: one flat queue and one optional active task for the sole Codex
+  -- body. Rebuild only the canonical fresh-v5 shape while retaining its data.
+  local tasks = storage.tasks or {}
+  storage.tasks = {
+    next_id = tasks.next_id or 1,
+    records = tasks.records or {},
+    queue = tasks.queue or {},
+    active = tasks.active,
+  }
 
   -- At most one path request exists because only the sole active task runs.
   storage.path_request = nil

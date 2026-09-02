@@ -135,6 +135,18 @@ check(aggregate and aggregate.status == "failed" and inventory_total() == 1 and 
 reset_resource(100)
 exact.prototype.mineable_properties.products = { { type = "item", name = "iron-ore", amount = 1 } }
 configure_capacity(6)
+local lost_selection_task = { target = { x = 0, y = 0 }, count = 2 }; mine.start(lost_selection_task)
+check(mine.tick(lost_selection_task) == nil and body.mining_state.mining,
+  "physical mining starts before the lost-selection fixture")
+body.selected = nil
+local lost_selection = mine.tick(lost_selection_task)
+check(lost_selection and lost_selection.status == "failed"
+  and lost_selection.detail:match("requested 2 cycles, completed 0, actual gain 0 items") ~= nil
+  and lost_selection.detail:match("lost selection") ~= nil and body.mining_state.mining == false,
+  "in-flight selection loss stops mining immediately with partial progress")
+
+reset_resource(100)
+configure_capacity(6)
 local repeated = { target = { x = 0, y = 0 }, count = 3 }; mine.start(repeated)
 local completed = run(repeated, 20)
 check(completed and completed.status == "done" and repeated._completed == 3 and exact.amount == 97,

@@ -92,12 +92,12 @@ describe("Bridge.enqueueAndWait", () => {
     expect(DEFAULT_TASK_TIMEOUT_MS).toBeGreaterThan(540_000);
     expect(DEFAULT_TASK_TIMEOUT_MS).toBeLessThan(600_000);
   });
-  it("resolves with the detail when the task finishes", async () => {
+  it("settles at 500ms after 100/200 throughout a long-running task", async () => {
     let polls = 0;
     const { rcon, exec } = fakeRcon((cmd) => {
       if (cmd.includes('"enqueue"')) return ok({ task_id: 7 });
       polls++;
-      return polls < 5
+      return polls < 8
         ? ok({ status: "running", detail: "" })
         : ok({ status: "done", detail: "arrived at (1.0, 2.0)" });
     });
@@ -106,7 +106,7 @@ describe("Bridge.enqueueAndWait", () => {
     await expect(
       bridge.enqueueAndWait({ type: "walk_to", target: { x: 1, y: 2 } }, { clock: time.clock }),
     ).resolves.toBe("arrived at (1.0, 2.0)");
-    expect(time.sleeps).toEqual([100, 200, 500, 500, 500]);
+    expect(time.sleeps).toEqual([100, 200, 500, 500, 500, 500, 500, 500]);
     expect(exec.mock.calls[0][0]).toContain('\\"task\\"');
     expect(exec.mock.calls[0][0]).not.toContain("replace");
   });

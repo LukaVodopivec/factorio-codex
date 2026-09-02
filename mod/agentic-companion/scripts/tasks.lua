@@ -39,10 +39,10 @@ local function observe_terminal(plan)
   local ok, value = pcall(observer, { radius = plan.final_observation_radius, detail = plan.observation_detail })
   if ok then plan.observation = value else plan.observation_error = tostring(value) end
 end
-local function finish(task, status, detail)
+local function finish(task, status, detail, preserve_body)
   if status == "cancelled" and task_crafts(task) then cancel_crafting() end
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
-  stop_body()
+  if not preserve_body then stop_body() end
   if task.type == "plan" then
     task.status = status == "done" and "completed" or status
     task.finished_tick = game.tick
@@ -233,12 +233,17 @@ local function finish_step(plan, result)
   plan.completed_steps = plan.current_step
   if plan.completed_steps == #plan.steps then finish(plan, "done", "") end
 end
+local function wait_timeout_ticks(step)
+  return math.floor((tonumber(step.timeout_seconds) or 120) * 60)
+end
+local function wait_timeout_detail(step)
+  return "timed out waiting for " .. step.count .. " " .. step.item .. " in " .. step.inventory
+end
 local function wait_for_item(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
-  local timeout_ticks = math.floor((tonumber(step.timeout_seconds) or 120) * 60)
-  if game.tick - plan.wait_started_tick >= timeout_ticks then
+  if game.tick - plan.wait_started_tick >= wait_timeout_ticks(step) then
     plan.wait_started_tick, plan.next_check_tick = nil, nil
-    return { status = "failed", detail = "timed out waiting for " .. step.count .. " " .. step.item .. " in " .. step.inventory }
+    return { status = "failed", detail = wait_timeout_detail(step) }
   end
   local c = companion.require_companion()
   local dx, dy = c.position.x - step.x, c.position.y - step.y
@@ -255,6 +260,25 @@ local function wait_for_item(plan, step)
     return { status = "done", detail = step.inventory .. " has " .. found .. " " .. step.item }
   end
   plan.next_check_tick = game.tick + 30
+end
+local function expire_parked_waits(tasks)
+  for index = #tasks.queue, 1, -1 do
+    local plan = tasks.queue[index]
+    local step = plan.type == "plan" and plan.status == "waiting" and plan.steps[plan.current_step] or nil
+    if step and step.action == "wait_for_item" and plan.wait_started_tick
+      and game.tick - plan.wait_started_tick >= wait_timeout_ticks(step) then
+      table.remove(tasks.queue, index)
+      local detail = wait_timeout_detail(step)
+      plan.outcomes[#plan.outcomes + 1] = {
+        step = plan.current_step, action = step.action, status = "failed", error = detail,
+      }
+      plan.current_task = nil
+      plan.wait_started_tick, plan.next_check_tick = nil, nil
+      -- This queued plan owns no physical state. Finalize only its record; an
+      -- unrelated active action keeps the sole body and FIFO lane unchanged.
+      finish(plan, "failed", detail, true)
+    end
+  end
 end
 local function tick_plan(plan)
   if game.tick - plan.started_tick >= PLAN_BUDGET_TICKS then
@@ -326,6 +350,7 @@ local function dispatch(tasks)
 end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end
+  expire_parked_waits(storage.tasks)
   if storage.tasks.active or #storage.tasks.queue > 0 then dispatch(storage.tasks) end
 end
 return M

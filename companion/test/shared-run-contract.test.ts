@@ -44,8 +44,10 @@ describe("shared gameplay run contract", () => {
     for (const field of ["id", "release_sha", "baseline_save_sha256", "save_identity", "created_at"])
       expect(skill).toContain(`\`${field}\``);
     expect(skill).toMatch(/`outcome` object/i);
-    for (const field of ["GO UTC/monotonic/tick", "deadline", "collection UTC/monotonic/tick", "latency", "`PASS_AT_20M`", "`MISS_AT_20M`", "throughput", "rocket/terminal evidence"])
+    for (const field of ["GO UTC/monotonic/tick", "deadline", "collection UTC/monotonic/tick", "latency", "`SNAPSHOT_AT_20M`", "progress vector", "throughput", "rocket/terminal evidence"])
       expect(skill).toContain(field);
+    expect(skill).toMatch(/20-minute snapshot is not a binary success gate/i);
+    expect(allInstructions).not.toMatch(/PASS_AT_20M|MISS_AT_20M/);
     expect(master).toMatch(/Rewrite it atomically through (?:a `0600` )?adjacent temporary file and rename/i);
     expect(master).toMatch(/`0600` adjacent temporary file[\s\S]*verify the final file remains `0600`/i);
     expect(allInstructions).not.toMatch(/file watching|filesystem watcher|message broker|sqlite|postgres|mysql/i);

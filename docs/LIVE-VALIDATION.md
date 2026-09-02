@@ -63,12 +63,12 @@ tactical coaching.
 Record `GO` as UTC time, monotonic time, and Factorio tick immediately before
 the first gameplay decision/action. At `GO+1200s`, take the first structured
 observation at or after the deadline and before another ordinary action; record
-collection latency and an immutable `PASS_AT_20M` or `MISS_AT_20M` label with
+collection latency and an immutable `SNAPSHOT_AT_20M` progress vector with
 the complete throughput vector from `AGENT-PLAY-PERFORMANCE.md`. Drain the lane
 at the last safe boundary before the checkpoint and do not queue a successor
-that could start across the deadline. A pass requires structured success
-completion at or before the deadline, never during collection latency. This is a
-checkpoint, not a stop: do not reset or restart the server or either client.
+that could start across the deadline. Work completed during collection latency
+remains visible but must not be attributed to the deadline; the snapshot is not
+a binary success gate. This is a checkpoint, not a stop: do not reset or restart the server or either client.
 Continue the same save, run, roles, body, writer, and lane to later-tick
 structured proof of a legitimately paid rocket launch or an honest terminal
 failure after relevant safe fallbacks.

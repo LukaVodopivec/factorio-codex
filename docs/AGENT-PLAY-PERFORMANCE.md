@@ -93,7 +93,7 @@ The retained design is deliberately smaller: MCP synchronously sequences
 or immediately queues plans, Lua composes the existing physical task runners,
 and every terminal plan path attempts one compact local observation.
 
-## Peaceful steam milestone benchmark
+## Peaceful rocket benchmark
 
 This is a documentation and results protocol, not runtime machinery. Do not add
 a harness, telemetry, reset automation, benchmark endpoint, couch automation,
@@ -108,10 +108,11 @@ per trial. Record the baseline hash and verify every copy has the same hash
 before use. Each trial starts from a fresh copy and fresh model conversations;
 run only one trial at a time.
 
-Success is a coal-fired steam plant powering a working electric mining drill,
-with at least one mined ore delivered and later-tick structured proof, within
-20 minutes of `GO`. Record wall time, start/end ticks, all plan IDs and
-outcomes, MCP call count, final compact observation, and any `MCP_GAP`. Verify
+The run goal is a legitimately paid rocket launch with later-tick structured
+proof. The 20-minute mark is an instructions-only throughput and
+resource-processing snapshot, not a steam-power milestone or binary success
+gate. Record wall time, start/end ticks, all plan IDs and outcomes, MCP call
+count, final compact observation, and any `MCP_GAP`. Verify
 Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
@@ -141,9 +142,10 @@ the deadline and before the next ordinary action. Record the deadline,
 collection time, collection latency, and tick; never backdate the sample or
 grant grace. Before the checkpoint window, record a concrete no-successor
 reason and drain the FIFO lane at the last safe boundary so an automatically
-queued plan cannot start across the deadline. Label `PASS_AT_20M` only when
-structured success evidence completed at or before the deadline; completion
-during collection latency is `MISS_AT_20M`. Permanently record that label and:
+queued plan cannot start across the deadline. Permanently label the first
+eligible sample `SNAPSHOT_AT_20M`; it records the progress vector without a
+pass/fail judgment. Work completed during collection latency remains visible
+in the observation but must not be attributed to the deadline. Record:
 
 - carried and factory inventory;
 - exact hand-mined totals and hand-craft counts/time;
@@ -159,7 +161,7 @@ The 20-minute result is a non-terminal checkpoint. Continue the same run ID,
 baseline copy/save, frozen roles, Codex body, ordinary writer, and FIFO lane
 until later-tick structured proof of a legitimately paid rocket launch or an
 honest terminal failure after relevant safe fallbacks. Never reset, retry, or
-relabel a miss.
+relabel the immutable snapshot.
 
 Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast

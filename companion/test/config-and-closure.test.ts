@@ -268,12 +268,14 @@ describe("exact local configuration", () => {
     expect(performance).toMatch(/Record `GO` as one UTC wall-clock timestamp[\s\S]*monotonic-clock instant[\s\S]*Factorio tick/i);
     expect(performance).toMatch(/`GO\+1200s` \(`GO\+20m`\)[\s\S]*first structured observation at or after[\s\S]*before the next ordinary action/i);
     expect(performance).toMatch(/never backdate[\s\S]*grant grace/i);
-    expect(performance).toMatch(/`PASS_AT_20M`[\s\S]*`MISS_AT_20M`/i);
+    expect(performance).toMatch(/`SNAPSHOT_AT_20M`[\s\S]*progress vector[\s\S]*without a\s+pass\/fail judgment/i);
     expect(performance).toMatch(/drain the FIFO lane[\s\S]*queued plan cannot start across the deadline/i);
-    expect(performance).toMatch(/`PASS_AT_20M` only when[\s\S]*at or before the deadline[\s\S]*collection latency is `MISS_AT_20M`/i);
+    expect(performance).toMatch(/work completed during collection latency[\s\S]*must not be attributed to the deadline/i);
     for (const field of ["carried and factory inventory", "hand-mined totals", "hand-craft counts/time", "capacity", "utilization", "automated extraction", "research, power", "work in progress", "inter-plan timing", "dominant bottleneck", "queued expansion"])
       expect(performance.toLowerCase()).toContain(field);
     expect(performance).toMatch(/20-minute result is a non-terminal checkpoint[\s\S]*same run ID[\s\S]*legitimately paid rocket launch[\s\S]*honest terminal failure/i);
+    expect(performance).toMatch(/run goal is a legitimately paid rocket launch[\s\S]*20-minute mark is an instructions-only throughput and[\s\S]*resource-processing snapshot[\s\S]*not a steam-power milestone or binary success\s+gate/i);
+    expect(joined).not.toMatch(/PASS_AT_20M|MISS_AT_20M|Success is a coal-fired steam plant/i);
     expect(performance).toMatch(/no human tactical coaching or prompt\s+amendment/i);
     expect(performance).not.toContain("do not imply continuing autonomous gameplay");
     expect(performance).not.toMatch(/\| W[123] —/);

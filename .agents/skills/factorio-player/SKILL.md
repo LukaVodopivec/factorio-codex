@@ -46,8 +46,10 @@ The exact top-level keys are `schema_version`, `run`, `revision`, `source_tick`,
 `latest_observation`, `decisions`, `specialist_advice`, `invalidations`, and
 `outcome`. The `outcome` object also owns Candidate B timing and benchmark
 state: GO UTC/monotonic/tick, deadline, collection UTC/monotonic/tick and
-latency, immutable `PASS_AT_20M` or `MISS_AT_20M`, the complete throughput
-snapshot, later rocket/terminal evidence, and elapsed wall/game time.
+latency, immutable `SNAPSHOT_AT_20M` progress vector, the complete throughput
+snapshot, later rocket/terminal evidence, and elapsed wall/game time. The
+20-minute snapshot is not a binary success gate; only the legitimate rocket
+goal determines run success.
 Parent-owned immutable `run` metadata contains `id`, `release_sha`,
 `baseline_save_sha256`, `save_identity`, `created_at`, and the three role
 model/effort assignments. The parent writes revision `0` with both

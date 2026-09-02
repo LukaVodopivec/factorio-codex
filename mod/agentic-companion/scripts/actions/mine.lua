@@ -147,6 +147,9 @@ function M.start(task)
   if target_kind == "owned" and count ~= 1 then
     error("mine target_kind=owned requires exactly one physical mining cycle")
   end
+  if target_kind == "owned" and (tonumber(c.crafting_queue_size) or 0) > 0 then
+    error("refusing to recover a player-owned entity while Codex has active hand-crafting")
+  end
   local candidates = c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } } })
   local natural, owned
   for _, e in ipairs(candidates) do
@@ -189,6 +192,10 @@ end
 function M.tick(task)
   local c, e = companion.get(), task._entity
   if not c then return partial_failure(task, "the Codex character is gone") end
+  if task._target_kind == "owned" and (tonumber(c.crafting_queue_size) or 0) > 0 then
+    c.mining_state = { mining = false }
+    return partial_failure(task, "refusing owned recovery while Codex has active hand-crafting")
+  end
   if not task._mining_started then
     if not (e and e.valid) then
       if task._completed > 0 then return partial_failure(task, "the initially selected resource was exhausted") end

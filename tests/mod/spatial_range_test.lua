@@ -30,6 +30,10 @@ _G.prototypes = { item = {
     get_max_energy_production = function() return 0 end },
   coal = { name = "coal", mineable_properties = { minable = true, mining_time = 1,
     products = { { name = "coal", amount = 1 } } } },
+  ["variable-ore"] = { name = "variable-ore", mineable_properties = { minable = true, mining_time = 2,
+    products = { { name = "variable-chunk", amount_min = 1, amount_max = 3 } } } },
+  ["chance-ore"] = { name = "chance-ore", mineable_properties = { minable = true, mining_time = 3,
+    products = { { name = "chance-chunk", amount = 2, probability = 0.5 } } } },
 }, recipe = {
   gear = { name = "gear", ingredients = { { name = "iron-plate", amount = 2 } }, products = { { name = "gear", amount = 1 } }, energy = 0.5, category = "crafting" },
 } }
@@ -111,5 +115,11 @@ check(rates["entity:burner-mining-drill"].mining_speed == 0.25
   and rates["entity:coal"].mining_products.coal == 1
   and rates["entity:coal"].fuel_value == 4000000,
   "prototype facts expose exact mining, energy, and fuel-budget inputs")
+local uncertain_mining = spatial.describe_prototype({ names = { "variable-ore", "chance-ore" }, kind = "entity" })
+check(uncertain_mining["entity:variable-ore"].mining_time == 2
+  and uncertain_mining["entity:variable-ore"].mining_products == nil
+  and uncertain_mining["entity:chance-ore"].mining_time == 3
+  and uncertain_mining["entity:chance-ore"].mining_products == nil,
+  "describe_entity omits variable and probabilistic mining quantities from exact product facts")
 
 os.exit(failures == 0 and 0 or 1)

@@ -76,7 +76,7 @@ local candidates = { adjacent, exact, tree, covered_resource, machine }
 local body = {
   valid = true, position = { x = 0, y = 0 }, resource_reach_distance = 3,
   force = player_force,
-  mining_state = { mining = false }, selected = nil,
+  mining_state = { mining = false }, selected = nil, crafting_queue_size = 0,
   can_insert = function() error("partial LuaControl.can_insert must not decide complete-cycle capacity") end,
   get_main_inventory = function() return inventory end,
   surface = { find_entities_filtered = function(filter)
@@ -239,6 +239,31 @@ check(not by_name, "by-name resource discovery is rejected")
 machine.valid = true
 body.resource_reach_distance = 8
 engine_gain = 1
+configure_capacity(2)
+body.crafting_queue_size = 1
+local crafting_recovery, crafting_recovery_error = pcall(mine.start,
+  { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" })
+check(not crafting_recovery and tostring(crafting_recovery_error):match("active hand%-crafting") ~= nil
+  and machine.valid and covered_resource.amount == 100,
+  "owned recovery refuses a concurrent nonblocking handcraft before mining")
+local crafting_natural = { target = { x = 5, y = 0 }, count = 1 }; mine.start(crafting_natural)
+check(crafting_natural._entity == covered_resource,
+  "concurrent handcrafting does not change natural resource selection at an overlap")
+body.crafting_queue_size = 0
+local crafting_mid_recovery = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(crafting_mid_recovery)
+check(mine.tick(crafting_mid_recovery) == nil and body.mining_state.mining,
+  "owned recovery starts with no handcraft in progress")
+body.crafting_queue_size = 1
+machine.valid, body.selected = false, nil
+engine_insert("burner-mining-drill", 1)
+local crafting_mid_result = mine.tick(crafting_mid_recovery)
+check(crafting_mid_result and crafting_mid_result.status == "failed"
+  and crafting_mid_result.detail:match("active hand%-crafting") ~= nil
+  and crafting_mid_recovery._completed == 0 and crafting_mid_recovery._actual_gain == 0
+  and not body.mining_state.mining and not machine.valid
+  and covered_resource.amount == 100 and adjacent.amount == 100,
+  "owned recovery fails closed when a same-product handcraft overlaps the physical cycle")
+body.crafting_queue_size, machine.valid = 0, true
 configure_capacity(2)
 local filled_before_mining = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(filled_before_mining)
 machine_inventory_empty = false

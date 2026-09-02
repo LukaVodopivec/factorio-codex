@@ -45,6 +45,14 @@ describe("exact local configuration", () => {
     expect(JSON.stringify(report)).not.toContain(secret);
     expect(report.checks.find((check) => check.name === "rcon")?.detail).toContain("[redacted]");
   });
+  it("doctor reuses exact endpoint validation and never connects to a remote or wrong port", async () => {
+    const home = isolatedHome(); const userDir = path.join(home, "factorio"); fs.mkdirSync(userDir);
+    saveConfig({ factorioUserDir: userDir, rcon: { host: "127.0.0.1", port: 19015, password: "secret" } });
+    const connect = vi.spyOn(RconClient.prototype, "connect");
+    const report = await collectDoctorReport({ rcon: { host: "192.0.2.10", port: 19016, password: "secret" } });
+    expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
+    expect(connect).not.toHaveBeenCalled();
+  });
   it("resolves the public app version", () => expect(companionVersion()).toBe("0.7.0"));
 });
 

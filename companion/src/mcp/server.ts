@@ -3,8 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { Bridge } from "../bridge.js";
 import { RconClient } from "../rcon.js";
-import { assertProtocolCompatibility } from "../protocol/contract.js";
-import type { RconSettings } from "../config.js";
+import { assertConnectionCompatibility } from "../compatibility.js";
+import { companionVersion, type RconSettings } from "../config.js";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -44,7 +44,7 @@ export async function connectStatus(b: Bridge) {
   const ping: any = await b.call("ping");
   if (ping.companion_dead) return result("Connected, but Codex is dead. This interface never auto-respawns.", true);
   if (!ping.companion_exists && !ping.companion_ever_created) await b.call("spawn_companion", {});
-  return result({ status: "connected", app_version: "0.7.0", protocol_version: ping.protocol_version, mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick });
+  return result({ status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version, mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick });
 }
 
 type ToolRegistrar = {
@@ -101,6 +101,7 @@ export function createBridgeProvider(
   let connecting: Promise<Bridge> | undefined;
 
   return async () => {
+    assertConnectionCompatibility(opts);
     if (!opts.password) throw new Error("setup has not been completed; run `factorio-codex setup`");
     if (connection?.rcon.connected) return connection.bridge;
     if (connecting) return connecting;
@@ -117,7 +118,7 @@ export function createBridgeProvider(
         await rcon.connect();
         const bridge = new Bridge(rcon);
         await bridge.unlock();
-        assertProtocolCompatibility(await bridge.call("ping"));
+        assertConnectionCompatibility(opts, await bridge.call("ping"), companionVersion());
         const owned = { rcon, bridge };
         connection = owned;
         rcon.on("close", () => {

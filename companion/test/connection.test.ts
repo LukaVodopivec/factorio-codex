@@ -28,7 +28,7 @@ describe("lazy MCP bridge connection", () => {
     rcon.connect.mockImplementation(async () => { await ready.promise; rcon.connected = true; });
     const factory = vi.fn(() => rcon as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 5 });
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 5, mod_version: "0.7.0" });
     const getBridge = createBridgeProvider(settings, factory);
 
     const first = getBridge();
@@ -47,7 +47,7 @@ describe("lazy MCP bridge connection", () => {
       .mockReturnValueOnce(first as unknown as RconClient)
       .mockReturnValueOnce(second as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 5 });
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 5, mod_version: "0.7.0" });
     const getBridge = createBridgeProvider(settings, factory);
 
     await getBridge();
@@ -58,7 +58,7 @@ describe("lazy MCP bridge connection", () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["connect", "unlock", "protocol"] as const)("closes the candidate after a failed %s handshake", async (stage) => {
+  it.each(["connect", "unlock", "protocol", "mod"] as const)("closes the candidate after a failed %s handshake", async (stage) => {
     const failed = new FakeRcon();
     const retry = new FakeRcon();
     const factory = vi.fn()
@@ -69,8 +69,9 @@ describe("lazy MCP bridge connection", () => {
       if (stage === "unlock" && (this as any).rcon === failed) throw new ModError("unlock failed");
     });
     vi.spyOn(Bridge.prototype, "call").mockImplementation(async function () {
-      if (stage === "protocol" && (this as any).rcon === failed) return { protocol_version: 4 };
-      return { protocol_version: 5 };
+      if (stage === "protocol" && (this as any).rcon === failed) return { protocol_version: 4, mod_version: "0.7.0" };
+      if (stage === "mod" && (this as any).rcon === failed) return { protocol_version: 5, mod_version: "0.6.0" };
+      return { protocol_version: 5, mod_version: "0.7.0" };
     });
     const getBridge = createBridgeProvider(settings, factory);
 
@@ -78,5 +79,15 @@ describe("lazy MCP bridge connection", () => {
     expect(failed.close).toHaveBeenCalledTimes(1);
     await expect(getBridge()).resolves.toBeInstanceOf(Bridge);
     expect(factory).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { host: "192.0.2.10", port: 19015, password: "secret" },
+    { host: "127.0.0.1", port: 19016, password: "secret" },
+  ])("rejects non-canonical RCON config before opening a socket: $host:$port", async (invalid) => {
+    const factory = vi.fn();
+    const getBridge = createBridgeProvider(invalid, factory);
+    await expect(getBridge()).rejects.toThrow("RCON must use 127.0.0.1:19015");
+    expect(factory).not.toHaveBeenCalled();
   });
 });

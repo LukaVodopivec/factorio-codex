@@ -24,17 +24,18 @@ end
 -- the entity's products. Fail before starting the mining state instead of
 -- waiting until the bridge timeout or bypassing the character with scripted
 -- entity mining.
-local function inventory_accepts_products(inv, e)
+local function character_accepts_products(c, e)
   local required = {}
   local products = e.prototype.mineable_properties.products or {}
   for _, product in ipairs(products) do
     if (product.type == nil or product.type == "item") and product.name then
-      local count = tonumber(product.amount) or tonumber(product.amount_min) or 1
+      local count = tonumber(product.amount) or tonumber(product.amount_max)
+        or tonumber(product.amount_min) or 1
       required[product.name] = (required[product.name] or 0) + math.max(1, math.ceil(count))
     end
   end
   for name, count in pairs(required) do
-    if not inv.can_insert({ name = name, count = count }) then return false end
+    if not c.can_insert({ name = name, count = count }) then return false end
   end
   return true
 end
@@ -65,7 +66,7 @@ function M.tick(task)
     if reached ~= "ok" then return nil end
     local inv = c.get_main_inventory()
     if not inv then return { status = "failed", detail = "the Codex character has no inventory" } end
-    if not inventory_accepts_products(inv, e) then
+    if not character_accepts_products(c, e) then
       return { status = "failed", detail = "cannot mine " .. e.name .. " — Codex inventory is full" }
     end
     task._target_amount = entity_amount(e)

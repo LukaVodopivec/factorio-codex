@@ -19,15 +19,18 @@ local inventory_count = 0
 local inventory_has_room = true
 local inventory = {
   get_item_count = function() return inventory_count end,
-  can_insert = function(stack)
-    check(stack.name == "iron-ore" and stack.count == 1,
-      "mining checks capacity for the exact target's real product")
-    return inventory_has_room
-  end,
+  can_insert = function() error("mining capacity must use the embodied LuaControl") end,
 }
+local capacity_checks = 0
 local body = {
   valid = true, position = { x = 0, y = 0 }, resource_reach_distance = 3,
   mining_state = { mining = false },
+  can_insert = function(stack)
+    capacity_checks = capacity_checks + 1
+    check(stack.name == "iron-ore" and stack.count == 1,
+      "mining derives the exact target's real item product")
+    return inventory_has_room
+  end,
   get_main_inventory = function() return inventory end,
   surface = { find_entities_filtered = function(filter)
     check(filter.area ~= nil and filter.radius == nil, "mining queries an exact area without a nearby radius")
@@ -43,16 +46,17 @@ local full_task = { target = { x = 0, y = 0 } }; mine.start(full_task)
 local full = mine.tick(full_task)
 check(full and full.status == "failed" and full.detail:match("inventory is full") ~= nil,
   "mining fails honestly before starting when Codex inventory cannot accept the product")
-check(body.mining_state.mining == false and exact.amount == 100 and scripted_mine_calls == 0,
-  "full-inventory mining neither starts physical mining nor calls scripted mine")
+check(capacity_checks == 1 and body.mining_state.mining == false
+  and exact.amount == 100 and scripted_mine_calls == 0,
+  "full-inventory mining uses LuaControl capacity and never starts mining")
 
 inventory_has_room = true
 local task = { target = { x = 0, y = 0 } }; mine.start(task)
 check(task._entity_name == "iron-ore", "mining selects only the entity occupying the exact coordinate")
 local first_tick = mine.tick(task)
 check(first_tick == nil and body.mining_state.mining == true
-  and body.mining_state.position.x == exact.position.x,
-  "LuaControl mining_state starts on the exact target")
+  and body.mining_state.position.x == exact.position.x and capacity_checks == 2,
+  "normal-capacity mining starts LuaControl mining_state on the exact target")
 game.tick = game.tick + 1
 local second_tick = mine.tick(task)
 check(second_tick == nil and game.tick == 101 and exact.amount == 100 and inventory_count == 0,

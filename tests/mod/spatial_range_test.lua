@@ -11,6 +11,7 @@ package.loaded["scripts.companion"] = {
   require_companion = function() return body end,
   get = function() return body end,
 }
+package.loaded["scripts.tasks"] = { active_summary = function() return nil end }
 _G.defines = { build_check_type = { manual = 1 } }
 _G.prototypes = { item = {
   ["transport-belt"] = { place_result = { name = "transport-belt", collision_box = {

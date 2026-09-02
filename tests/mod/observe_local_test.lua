@@ -70,10 +70,17 @@ _G.prototypes = { entity = {
     selection_box = { left_top = { x = -1.75, y = -1.75 }, right_bottom = { x = 1.75, y = 1.75 } },
   },
 } }
-local observation = require("scripts.spatial").observe_local({ radius = 15 })
+local spatial = require("scripts.spatial")
+local parse_require = require
+_G.require = function()
+  error("require can't be used after control-stage parsing")
+end
+local observation = spatial.observe_local({ radius = 15 })
 check(observation.tick == 123 and observation.radius == 15, "observation includes current tick and radius")
+check(observation.character.active_task == nil,
+  "observation uses its parse-time task dependency when runtime require is prohibited")
 check(observation.grid.origin.x == -15 and observation.grid.origin.y == -15, "observation is centered on sole Codex character")
-local injected_center = require("scripts.spatial").observe_local({ radius = 15, center = { x = 999, y = -999 } })
+local injected_center = spatial.observe_local({ radius = 15, center = { x = 999, y = -999 } })
 check(injected_center.grid.origin.x == observation.grid.origin.x
   and injected_center.grid.origin.y == observation.grid.origin.y
   and canonical(injected_center) == canonical(observation),
@@ -111,6 +118,7 @@ check(a_detail and a_detail.status == 1 and a_detail.recipe == "iron-gear-wheel"
 check(edge_detail and edge_detail.bounds.left_top.x == 14.75 and edge_detail.bounds.right_bottom.x == 18.25 and edge_detail.footprint.width == 3.5,
   "selection-only overlap with center and collision outside grid is queried and retained with precise union bounds")
 local reversed = {}; for i = #entities, 1, -1 do reversed[#reversed + 1] = entities[i] end; entity_order = reversed
-local shuffled_observation = require("scripts.spatial").observe_local({ radius = 15 })
+local shuffled_observation = spatial.observe_local({ radius = 15 })
 check(canonical(observation) == canonical(shuffled_observation), "shuffled entity input produces byte-identical canonical output")
+_G.require = parse_require
 os.exit(failures == 0 and 0 or 1)

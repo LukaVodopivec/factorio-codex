@@ -3,6 +3,7 @@
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
 local companion = require("scripts.companion")
+local tasks = require("scripts.tasks")
 
 local M = {}
 
@@ -324,7 +325,7 @@ function M.observe_local(params)
   end)
   for _, patch in ipairs(patches) do patch._members = nil end
   local inventory = {}; for _, item in ipairs(c.get_main_inventory().get_contents()) do inventory[item.name] = (inventory[item.name] or 0) + item.count end
-  return { tick = game.tick, radius = radius, character = { position = { x = c.position.x, y = c.position.y }, health = c.health, inventory = inventory, active_task = require("scripts.tasks").active_summary(), reach_distance = c.reach_distance, build_distance = c.build_distance }, grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend, coordinate_rule = "rows north-to-south; columns west-to-east; x=origin.x+column, y=origin.y+row" }, entities = details, resource_patches = patches, omitted_entities = omitted }
+  return { tick = game.tick, radius = radius, character = { position = { x = c.position.x, y = c.position.y }, health = c.health, inventory = inventory, active_task = tasks.active_summary(), reach_distance = c.reach_distance, build_distance = c.build_distance }, grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend, coordinate_rule = "rows north-to-south; columns west-to-east; x=origin.x+column, y=origin.y+row" }, entities = details, resource_patches = patches, omitted_entities = omitted }
 end
 
 -- --------------------------------------------------------------- can_place

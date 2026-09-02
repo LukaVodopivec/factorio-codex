@@ -4,10 +4,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 
-describe("bridge protocol v5", () => {
+describe("bridge protocol v6", () => {
   it("has the expected version and retained methods", () => {
-    expect(PROTOCOL_VERSION).toBe(5);
-    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "describe_prototype", "enqueue", "get_task", "cancel", "get_chunk"]);
+    expect(PROTOCOL_VERSION).toBe(6);
+    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk"]);
   });
   it("matches the exact Lua registrations", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -46,7 +46,8 @@ describe("bridge protocol v5", () => {
     expect(read("mod/agentic-companion/scripts/actions/mine.lua"))
       .not.toMatch(/task\.resource|resource_name|find_entity_near|radius|\.mine\s*\(|\.insert\s*\(|spill_item_stack|create_entity/);
     expect(read("mod/agentic-companion/scripts/actions/build_plan.lua")).not.toMatch(/step\.entity/);
-    expect(luaSources).not.toMatch(/run_plan|wait_for_item/);
+    expect(luaSources).not.toMatch(/register\(["']run_plan/);
+    expect(read("mod/agentic-companion/scripts/tasks.lua")).toMatch(/wait_for_item/);
   });
   it("keeps the private package on the repository-only mod layout", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");

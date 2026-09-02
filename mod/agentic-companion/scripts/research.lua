@@ -43,4 +43,21 @@ function M.start_research(params)
   return { queued = true, technology = name }
 end
 
+function M.progression_status()
+  local force = companion.require_companion().force
+  local researched, available = {}, {}
+  for name, technology in pairs(force.technologies) do
+    if technology.researched then researched[#researched + 1] = name
+    elseif technology.enabled then available[#available + 1] = name end
+  end
+  table.sort(researched); table.sort(available)
+  local queue = {}
+  for _, technology in ipairs(force.research_queue or {}) do queue[#queue + 1] = technology.name end
+  return {
+    force = force.name, current_research = force.current_research and force.current_research.name or nil,
+    research_progress = force.research_progress or 0, research_queue = queue,
+    researched = researched, available = available,
+  }
+end
+
 return M

@@ -79,6 +79,12 @@ function M.tick(task)
     return { status = "failed", detail = "the companion character is gone" }
   end
   local s = task._craft
+  if task.wait_for_completion == false then
+    return {
+      status = "done",
+      detail = string.format("accepted %dx %s into Factorio's hand-crafting queue%s", s.started, task.recipe, s.note),
+    }
+  end
   if game.tick < s.next_poll then return nil end
   s.next_poll = game.tick + POLL_TICKS
   if c.crafting_queue_size > 0 then return nil end

@@ -1,4 +1,4 @@
--- Protocol-v5 local perception: observe_local (ASCII tile grid), can_place
+-- Protocol-v6 local perception: compact by default; full adds the ASCII grid.
 -- (dry-run placement check with blocker naming),
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
@@ -99,7 +99,10 @@ end
 
 local function entity_status(e)
   local ok, status = pcall(function() return e.status end)
-  if ok then return status end
+  if ok and status ~= nil then
+    for name, value in pairs((defines and defines.entity_status) or {}) do if value == status then return name end end
+    return tostring(status)
+  end
   return nil
 end
 
@@ -339,7 +342,24 @@ function M.observe_local(params)
   end)
   for _, patch in ipairs(patches) do patch._members = nil end
   local inventory = {}; for _, item in ipairs(c.get_main_inventory().get_contents()) do inventory[item.name] = (inventory[item.name] or 0) + item.count end
-  return { tick = game.tick, radius = radius, character = { position = { x = c.position.x, y = c.position.y }, health = c.health, inventory = inventory, active_task = tasks.active_summary(), reach_distance = c.reach_distance, build_distance = c.build_distance }, grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend, coordinate_rule = "rows north-to-south; columns west-to-east; x=origin.x+column, y=origin.y+row" }, entities = details, resource_patches = patches, omitted_entities = omitted }
+  local crafting = { queue_size = c.crafting_queue_size or 0, progress = c.crafting_queue_progress or 0, queue = {} }
+  for _, entry in ipairs(c.crafting_queue or {}) do
+    local recipe = entry.recipe
+    pcall(function() recipe = entry.recipe.name end)
+    crafting.queue[#crafting.queue + 1] = { recipe = recipe, count = entry.count }
+  end
+  local result = {
+    tick = game.tick, radius = radius, detail = params.detail == "full" and "full" or "compact",
+    character = { position = { x = c.position.x, y = c.position.y }, health = c.health,
+      inventory = inventory, active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
+      crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance },
+    entities = details, resource_patches = patches, omitted_entities = omitted,
+  }
+  if result.detail == "full" then
+    result.grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend,
+      coordinate_rule = "rows north-to-south; columns west-to-east; x=origin.x+column, y=origin.y+row" }
+  end
+  return result
 end
 
 -- --------------------------------------------------------------- can_place
@@ -576,22 +596,30 @@ function M.describe_prototype(params)
       DESCRIBE_MAX_NAMES))
   end
 
-  local c = companion.get()
-  local force = (c and c.force) or game.forces.player
+  local force = companion.require_companion().force
 
   local out = {}
-  for _, name in ipairs(names) do
+  for _, requested in ipairs(names) do
+    local name = type(requested) == "table" and requested.name or requested
+    local kind = type(requested) == "table" and requested.kind or nil
     if type(name) == "string" then
       local item = prototypes.item[name]
       local placed = item and item.place_result
-      if placed then
-        out[name] = describe_entity(placed, name)
+      local key = kind and (kind .. ":" .. name) or name
+      if kind == "recipe" and prototypes.recipe[name] then
+        out[key] = describe_recipe(prototypes.recipe[name], force)
+      elseif kind == "entity" and prototypes.entity[name] then
+        out[key] = describe_entity(prototypes.entity[name], nil)
+      elseif kind == "item" and item then
+        out[key] = placed and describe_entity(placed, name) or { kind = "item", item = name }
+      elseif placed then
+        out[key] = describe_entity(placed, name)
       elseif prototypes.entity[name] then
-        out[name] = describe_entity(prototypes.entity[name], nil)
+        out[key] = describe_entity(prototypes.entity[name], nil)
       elseif prototypes.recipe[name] then
-        out[name] = describe_recipe(prototypes.recipe[name], force)
+        out[key] = describe_recipe(prototypes.recipe[name], force)
       else
-        out[name] = { kind = "unknown" }
+        out[key] = { kind = "unknown" }
       end
     end
   end

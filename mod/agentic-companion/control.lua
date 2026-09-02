@@ -9,7 +9,7 @@ local spatial = require("scripts.spatial")
 
 rpc.register("ping", function()
   return {
-    protocol_version = 5,
+    protocol_version = 6,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
@@ -24,8 +24,11 @@ rpc.register("inspect", inspect.inspect)
 rpc.register("start_research", research.start_research)
 rpc.register("can_place", spatial.can_place)
 rpc.register("describe_prototype", spatial.describe_prototype)
+rpc.register("progression_status", research.progression_status)
 rpc.register("enqueue", tasks.enqueue)
 rpc.register("get_task", tasks.get)
+rpc.register("queue_plan", tasks.queue_plan)
+rpc.register("plan_status", tasks.plan_status)
 rpc.register("cancel", tasks.cancel)
 -- get_chunk is registered inside rpc.lua itself.
 
@@ -37,8 +40,10 @@ remote.add_interface("agentic", {
 
 local function initialize()
   state.init()
+  tasks.set_observer(spatial.observe_local)
   companion.enforce_normal_speed()
 end
+tasks.set_observer(spatial.observe_local)
 
 script.on_init(initialize)
 script.on_configuration_changed(initialize)

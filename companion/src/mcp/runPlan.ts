@@ -1,146 +1,59 @@
 import { z } from "zod";
-import { Bridge, DEFAULT_TASK_TIMEOUT_MS, ModError, TaskCancelledError, type TaskClock } from "../bridge.js";
-import type { Task } from "../types.js";
+import { DEFAULT_TASK_TIMEOUT_MS, ModError, TaskCancelledError, type TaskClock } from "../bridge.js";
+import type { Bridge } from "../bridge.js";
 import { normalizeObservation } from "./observation.js";
-import { toolPayloads } from "./toolPayloads.js";
 
 const position = { x: z.number(), y: z.number() };
 const items = z.record(z.string(), z.number().int().positive());
-const step = z.discriminatedUnion("action", [
+export const planStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("walk_to"), ...position }).strict(),
   z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1) }).strict(),
   z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional() }).strict(),
-  z.object({ action: z.literal("craft_items"), recipe: z.string(), count: z.number().int().positive() }).strict(),
+  z.object({ action: z.literal("craft_items"), recipe: z.string(), count: z.number().int().positive(), wait_for_completion: z.boolean().default(true) }).strict(),
   z.object({ action: z.literal("insert_items"), ...position, items }).strict(),
   z.object({ action: z.literal("extract_items"), ...position, items: items.optional() }).strict(),
   z.object({ action: z.literal("set_recipe"), ...position, recipe: z.string() }).strict(),
   z.object({ action: z.literal("rotate_entity"), ...position, direction: z.number().int().min(0).max(15).optional() }).strict(),
-  z.object({
-    action: z.literal("wait_for_item"), ...position,
-    inventory: z.enum(["input", "output", "fuel", "main"]),
-    item: z.string(), count: z.number().int().positive(),
-    timeout_seconds: z.number().min(1).max(300).default(120),
-  }).strict(),
+  z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
 ]);
-
-export const runPlanSchema = z.object({
-  steps: z.array(step).min(1).max(25),
+export const queuePlanSchema = z.object({
+  steps: z.array(planStepSchema).min(1).max(25),
   final_observation_radius: z.number().int().min(5).max(30).default(15),
+  observation_detail: z.enum(["compact", "full"]).default("compact"),
+  after_plan_id: z.number().int().positive().optional(),
 }).strict();
-
+export const runPlanSchema = queuePlanSchema;
 export type RunPlanInput = z.infer<typeof runPlanSchema>;
-type PlanStep = RunPlanInput["steps"][number];
-
-export type PlanOutcome =
-  | { step: number; action: PlanStep["action"]; status: "completed"; result: string }
-  | { step: number; action: PlanStep["action"]; status: "failed" | "cancelled"; error: string };
-
+export interface PlanOutcome { step: number; action: RunPlanInput["steps"][number]["action"]; status: "completed" | "failed" | "cancelled"; result?: string; error?: string }
 export interface RunPlanResult {
-  status: "completed" | "failed" | "cancelled";
-  completed_steps: number;
-  outcomes: PlanOutcome[];
-  failed_step?: { step: number; action: PlanStep["action"]; error: string };
-  observation?: Record<string, unknown>;
-  observation_error?: string;
+  plan_id?: number; status: "completed" | "failed" | "cancelled"; source_tick?: number;
+  position?: { x: number; y: number }; current_step?: number; completed_steps: number;
+  total_steps?: number; outcomes: PlanOutcome[]; queue_depth?: number;
+  observation?: Record<string, unknown>; observation_error?: string;
 }
+const realClock: TaskClock = { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 
-const realClock: TaskClock = {
-  now: Date.now,
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-};
-
-function taskFor(step: Exclude<PlanStep, { action: "wait_for_item" }>): Task {
-  switch (step.action) {
-    case "walk_to": return { type: "walk_to", ...toolPayloads.target({ x: step.x, y: step.y }) };
-    case "mine": return { type: "mine", ...toolPayloads.mine(step) };
-    case "place_entity": return { type: "place", ...toolPayloads.place(step) };
-    case "craft_items": return { type: "craft", recipe: step.recipe, count: step.count };
-    case "insert_items": return { type: "insert", ...toolPayloads.insert(step) };
-    case "extract_items": return { type: "extract", ...toolPayloads.extract(step) };
-    case "set_recipe": return { type: "set_recipe", ...toolPayloads.recipe(step) };
-    case "rotate_entity": return { type: "rotate", ...toolPayloads.rotate(step) };
-  }
-}
-
-function abortError(): ModError {
-  return new TaskCancelledError("run_plan was cancelled");
-}
-
-async function waitForItem(
-  bridge: Bridge,
-  step: Extract<PlanStep, { action: "wait_for_item" }>,
-  planDeadline: number,
-  signal: AbortSignal | undefined,
-  clock: TaskClock,
-): Promise<string> {
-  const deadline = Math.min(planDeadline, clock.now() + step.timeout_seconds * 1000);
-  while (true) {
-    if (signal?.aborted) throw abortError();
-    const response = await bridge.call<{ entities?: Array<Record<string, unknown>> }>(
-      "inspect", toolPayloads.inspect([{ x: step.x, y: step.y }]),
-    );
-    if (signal?.aborted) throw abortError();
-    if (clock.now() >= deadline) throw new ModError(`timed out waiting for ${step.count} ${step.item} in ${step.inventory}`);
-    const entity = response.entities?.[0];
-    if (!entity || typeof entity.error === "string") {
-      throw new ModError(typeof entity?.error === "string" ? entity.error : "inspect returned no entity");
-    }
-    const inventories = entity.inventories as Record<string, Record<string, number>> | undefined;
-    const found = inventories?.[step.inventory]?.[step.item] ?? 0;
-    if (found >= step.count) return `${step.inventory} has ${found} ${step.item}`;
-    const remaining = deadline - clock.now();
-    if (remaining <= 0) throw new ModError(`timed out waiting for ${step.count} ${step.item} in ${step.inventory}`);
-    await clock.sleep(Math.min(500, remaining));
-  }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export async function executeRunPlan(
-  bridge: Bridge,
-  input: RunPlanInput,
-  signal?: AbortSignal,
-  clock: TaskClock = realClock,
-): Promise<RunPlanResult> {
+export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal?: AbortSignal, clock: TaskClock = realClock): Promise<RunPlanResult> {
+  if (signal?.aborted) return { status: "cancelled", completed_steps: 0, outcomes: [] };
+  const { plan_id } = await bridge.call<{ plan_id: number }>("queue_plan", input);
   const deadline = clock.now() + DEFAULT_TASK_TIMEOUT_MS;
-  const outcomes: PlanOutcome[] = [];
-  let attempted: { step: number; action: PlanStep["action"] } | undefined;
-  let terminal: RunPlanResult;
-
   try {
-    for (let index = 0; index < input.steps.length; index++) {
-      const current = input.steps[index]!;
-      if (signal?.aborted) throw abortError();
-      if (clock.now() >= deadline) throw new ModError("run_plan exceeded its 570-second deadline");
-      attempted = { step: index + 1, action: current.action };
-      const detail = current.action === "wait_for_item"
-        ? await waitForItem(bridge, current, deadline, signal, clock)
-        : await bridge.enqueueAndWait(taskFor(current), { deadlineMs: deadline, signal, clock });
-      outcomes.push({ step: index + 1, action: current.action, status: "completed", result: detail });
-      attempted = undefined;
+    while (clock.now() < deadline) {
+      if (signal?.aborted) throw new TaskCancelledError("run_plan was cancelled");
+      await clock.sleep(Math.min(500, deadline - clock.now()));
+      if (signal?.aborted) throw new TaskCancelledError("run_plan was cancelled");
+      const status = await bridge.call<RunPlanResult>("plan_status", { plan_id });
+      if (["completed", "failed", "cancelled"].includes(status.status)) {
+        if (status.observation) status.observation = normalizeObservation(status.observation);
+        return status;
+      }
     }
-    terminal = { status: "completed", completed_steps: outcomes.length, outcomes };
+    throw new ModError("run_plan gave up after 570s");
   } catch (error) {
-    const completedSteps = outcomes.length;
-    const cancelled = signal?.aborted || error instanceof TaskCancelledError;
-    const status = cancelled ? "cancelled" : "failed";
-    const message = errorText(error);
-    if (attempted) outcomes.push({ ...attempted, status, error: message });
-    terminal = {
-      status,
-      completed_steps: completedSteps,
-      outcomes,
-      ...(attempted ? { failed_step: { ...attempted, error: message } } : {}),
-    };
+    await bridge.call("cancel", { plan_id }).catch(() => {});
+    if (error instanceof TaskCancelledError || signal?.aborted) {
+      return { plan_id, status: "cancelled", completed_steps: 0, outcomes: [], observation_error: error instanceof Error ? error.message : String(error) };
+    }
+    throw error;
   }
-
-  try {
-    terminal.observation = normalizeObservation(await bridge.call("observe_local", { radius: input.final_observation_radius }));
-  } catch (error) {
-    terminal.observation_error = errorText(error);
-    if (terminal.status === "completed") terminal.status = "failed";
-  }
-  return terminal;
 }

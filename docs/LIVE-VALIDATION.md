@@ -1,8 +1,8 @@
 # Live validation
 
-This runbook validates release **0.8.0**. Offline release verification was
-followed by a successful September 2026 live run on Linux Factorio 2.0.77 with
-app/mod 0.8.0. On a fresh machine:
+This runbook validates release **0.9.0**. Its offline verification is complete;
+the prior September 2026 live evidence below remains attributable to 0.8.0
+until the fresh 0.9.0 run is recorded. On a fresh machine:
 
 1. Launch Factorio 2.0.x once, reach the main menu, and exit. This must happen
    before setup so the user-data directory and `config/config.ini` exist.
@@ -47,7 +47,7 @@ turn; treat that as a platform residual and fall back to a previously available
 connected child without bypassing repository ownership or adding an action
 writer.
 
-## Verified 0.8.0 live result
+## Prior verified 0.8.0 live result
 
 - `doctor` passed the complete config, authenticated RCON, protocol, and mod
   checks on Linux Factorio 2.0.77. `connect_status` reported app/mod 0.8.0.
@@ -88,7 +88,7 @@ addresses as runtime inputs, not permanent configuration: confirm them with
   rule was `ufw allow from 192.0.2.0/24 to any port 34197 proto udp`.
   Apply this only through the workstation's supervised firewall procedure;
   do not change router DHCP settings for this validation.
-- The couch install needs the same `agentic-companion_0.8.0.zip` in
+- The prior verified couch install used `agentic-companion_0.8.0.zip` in
   `%APPDATA%\\Factorio\\mods` and an enabled `agentic-companion` entry in
   `%APPDATA%\\Factorio\\mods\\mod-list.json` before joining. The verified couch
   ZIP matched the server archive hash, was enabled, and joined successfully.
@@ -140,13 +140,14 @@ a `walk_to` action and that a normal player is never moved by this behavior.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.8.0. They
+The successful observations below were collected before release 0.9.0. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.8.0. Complete the fresh run above after installing 0.8.0 before recording a
+0.8.0. Complete the fresh run above after installing 0.9.0 before recording a
 current-release result.
 
-- `doctor --json` is the quickest preflight: it should report exact config
-  shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app 0.8.0.
+- `doctor --json` is the quickest preflight: the historical run reported exact
+  config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
+  0.8.0. A 0.9.0 run must instead report protocol v6 and mod/app 0.9.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

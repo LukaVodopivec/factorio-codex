@@ -45,7 +45,7 @@ describe("registered MCP handler parity with Lua v5", () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.8.0", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 6, mod_version: "0.9.0", factorio_version: "2.0.0", tick: 1 }
       : method === "observe_local" ? { entities: [], resource_patches: [] } : { ok: method });
     const enqueueAndWait = vi.fn(async (task: unknown) => ({ task }));
     registerMcpTools({
@@ -58,9 +58,9 @@ describe("registered MCP handler parity with Lua v5", () => {
     await handlers.connect_status({});
     expect(call).toHaveBeenLastCalledWith("ping");
     await handlers.observe_local({ radius: 15, center: { x: 999, y: 999 } });
-    expect(call).toHaveBeenLastCalledWith("observe_local", { radius: 15 });
+    expect(call).toHaveBeenLastCalledWith("observe_local", { radius: 15, detail: undefined });
     expect(schemas.observe_local.shape.center).toBeUndefined();
-    expect(schemas.observe_local.safeParse({ radius: 15, center: { x: 999, y: 999 } }).data).toEqual({ radius: 15 });
+    expect(schemas.observe_local.safeParse({ radius: 15, center: { x: 999, y: 999 } }).data).toEqual({ radius: 15, detail: "compact" });
     await handlers.describe_prototype({ names: ["transport-belt"] });
     expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"] });
     expect(schemas.describe_prototype.safeParse({ names: Array(10).fill("x") }).success).toBe(true);
@@ -100,13 +100,13 @@ describe("registered MCP handler parity with Lua v5", () => {
     expect(call).toHaveBeenLastCalledWith("start_research", { technology: "automation" });
     await handlers.stop({});
     expect(call).toHaveBeenLastCalledWith("cancel", { all: true });
-    expect(Object.keys(handlers)).toHaveLength(17);
+    expect(Object.keys(handlers)).toHaveLength(20);
   });
 });
 
 describe("connect_status body lifecycle", () => {
   it("reports a persistent death without calling spawn", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 5, mod_version: "0.8.0" });
+    const call = vi.fn().mockResolvedValue({ companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 6, mod_version: "0.9.0" });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(true);
     expect(output.content[0].text).toMatch(/dead.*never auto-respawns/i);
@@ -114,14 +114,14 @@ describe("connect_status body lifecycle", () => {
   });
 
   it("rejects a stale mod before reporting connected", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.6.0" });
-    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.8.0");
+    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 6, mod_version: "0.6.0" });
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.9.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
   it("spawns Codex exactly once only for a never-created save", async () => {
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 5, mod_version: "0.8.0", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 6, mod_version: "0.9.0", factorio_version: "2.0.0", tick: 1 }
       : { name: "Codex" });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);

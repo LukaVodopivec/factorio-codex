@@ -37,14 +37,25 @@
 ## Two-session gameplay
 
 One Sol strategist may read and plan while one Luna pilot is the sole ordinary
-MCP action writer for the single physical Codex character and task lane. Luna
-receives bounded milestone packets, batches reads, selects exact visible
-coordinates, uses `build_plan` for layouts and `run_plan` for two or more known
-dependent steps, and completes the assigned milestone without inventing the
-next strategic goal. Consume `run_plan`'s final observation; otherwise each
-packet ends with `observe_local` and a report of position, inventory, active
-task, result, and failure. Never use screenshots or screen capture. Missing
-structured state is an `MCP_GAP`, not permission to guess.
+MCP action writer for the single physical Codex character and flat FIFO lane.
+Keep a rolling envelope containing phase and success, the executing plan, one
+prepared successor with predecessor and preconditions, prioritized fallbacks,
+current and next bill of materials, and source tick/plan ID. The strategist
+owns phase and successor choice; an optional specialist is read-only. Discard
+stale advice unless the pilot revalidates it.
+
+The pilot may mine, refuel, collect output, repair routes, and use an approved
+fallback without waiting. Fallback order is: defend; unblock production; mine
+the BOM bottleneck in batches; build validated automation; physically scout.
+Never idle on a wait while productive work exists. Cluster travel and reuse
+terminal observations. Durable player knowledge may contain only in-game
+learned recipes/calculations and Codex-authored relative layouts—never map
+coordinates, tutorials, external blueprint strings, or online build sequences.
+
+Each report carries source tick/plan ID, position, inventory, active plan/step,
+queue depth, crafting, result, and failure. Never use screenshots or screen
+capture. Missing structured state is an `MCP_GAP` that blocks only the affected
+branch, not permission to guess or stop unrelated productive work.
 Concurrency removes thinking idle time, not physical walking time. There is no
 second body, raw Lua/console, teleport, hidden map, free resource, or second
 RCON path; `stop` is emergency cancellation only.

@@ -1,19 +1,20 @@
 # Agent play performance
 
-Release 0.8.0 reduces reasoning round trips while preserving one physical
+Release 0.9.0 reduces reasoning round trips while preserving one physical
 Codex body, one task lane, and honest Factorio mechanics.
 
 ## Recorded baseline and operating model
 
-The accepted one-shot live baseline required **22 MCP calls** for the initial
-mine/craft/place/fuel/inspect milestone. The September 2026 live run verified
-the retained 0.8.0 path against Linux Factorio 2.0.77 with app/mod 0.8.0.
+The prior one-shot live baseline required **22 MCP calls** for the initial
+mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
+came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
+0.9.0 validation.
 
-Use one persistent Sol-medium strategist and one persistent Luna-low pilot.
-Sol batches reads and sends bounded milestones. Luna is the sole ordinary
-action writer and executes knowable dependent actions with `run_plan`. This
-removes model-thinking idle time; it does not accelerate walking, mining,
-crafting, or any other game tick.
+The accepted operating candidate uses one persistent Sol-medium strategist and
+one persistent Luna-low pilot. Sol owns the rolling phase/successor envelope;
+Luna is the sole ordinary writer. Plans execute contiguously in Lua and may
+prepare one successor by predecessor ID. This removes model-thinking idle time;
+it does not accelerate walking, mining, crafting, or any other game tick.
 
 For each live benchmark, record the release SHA, milestone, MCP call count,
 wall time, Factorio tick delta, completed/failed plan steps, final position and
@@ -21,7 +22,7 @@ inventory, and any `MCP_GAP`. Compare the same fresh-save milestone against the
 22-call baseline. These measurements document completed bounded packets; they
 do not imply continuing autonomous gameplay.
 
-## Verified 0.8.0 structured timings
+## Prior 0.8.0 structured timings
 
 All gameplay perception and action below used the Factorio MCP text surface.
 No screenshot, raw console, Lua, cheat, teleport, second body, or second task
@@ -66,5 +67,46 @@ never infer it from screenshots, by-name search, or hidden global state.
   machinery as runtime dependencies.
 
 The retained design is deliberately smaller: MCP synchronously sequences
-existing tools, Lua continues to own only physical tasks, and every terminal
-plan path attempts one compact local observation.
+or immediately queues plans, Lua composes the existing physical task runners,
+and every terminal plan path attempts one compact local observation.
+
+## Peaceful steam milestone benchmark
+
+This is a documentation and results protocol, not runtime machinery. Do not add
+a harness, telemetry, reset automation, benchmark endpoint, couch automation,
+or launcher behavior.
+
+Create one dedicated Factorio 2.0.x freeplay baseline with an explicitly
+recorded seed, peaceful mode enabled, and enemy bases disabled. Spawn Codex
+before the couch viewer joins. Join `lukiPukiSmuki` only as a characterless
+spectator and establish couch follow before announcing `GO`. Stop the server,
+hash the immutable baseline save with SHA-256, and make one byte-for-byte copy
+per trial. Record the baseline hash and verify every copy has the same hash
+before use. Each trial starts from a fresh copy and fresh model conversations;
+run only one trial at a time.
+
+Success is a coal-fired steam plant powering a working electric mining drill,
+with at least one mined ore delivered and later-tick structured proof, within
+20 minutes of `GO`. Record wall time, start/end ticks, all plan IDs and
+outcomes, MCP call count, final compact observation, and any `MCP_GAP`. Verify
+Lua contiguity, predecessor success/failure cancellation, explicit
+cancellation, and productive overlap with nonblocking hand-crafting; also
+verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
+observations, recipe disambiguation, progression, protocol v6, version 0.9.0,
+and exactly 20 tools.
+
+Use at most three candidates in a wave:
+
+| ID | Topology | Models / effort |
+| --- | --- | --- |
+| A | One session owns strategy and the sole writer role | Sol, medium |
+| B | Read-only strategist plus sole pilot | Sol medium + Luna low |
+| C | Read-only strategist, sole pilot, optional read-only specialist | Sol medium + Luna low + Luna low |
+
+Run three repeats per retained wave and rotate order `ABC`, `BCA`, `CAB` to
+reduce ordering bias. Fast wave 1 compares all three on completion and elapsed
+time. Fast wave 2 retains no more than the best three variants and changes only
+one documented prompt/envelope choice. Fast wave 3 confirms the leading choice
+with the same immutable baseline. Never tune from a partial trial or run trials
+concurrently. Append completed results below with exact baseline/release hashes;
+do not present historical 0.8.0 timings as 0.9.0 benchmark results.

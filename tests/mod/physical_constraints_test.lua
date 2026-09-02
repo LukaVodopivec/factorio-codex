@@ -114,6 +114,12 @@ game.tick = 60
 local crafted = craft.tick(craft_task)
 check(crafted.status == "done" and crafted.detail:match("%+1 iron%-gear%-wheel") ~= nil,
   "crafting completes only after Factorio advances and produces inventory")
+inventory["iron-plate"], body.crafting_queue_size = 2, 0
+local nonblocking = { recipe = "iron-gear-wheel", count = 1, wait_for_completion = false }
+craft.start(nonblocking)
+local accepted = craft.tick(nonblocking)
+check(accepted.status == "done" and accepted.detail:match("accepted 1x iron%-gear%-wheel") ~= nil
+  and body.crafting_queue_size == 1, "nonblocking crafting returns only after Factorio accepts the real queue")
 
 package.loaded["scripts.actions.walk"] = nil
 local walk = require("scripts.actions.walk")

@@ -16,10 +16,12 @@ package.loaded["scripts.companion"] = {
 }
 
 local queued
-local technology = { name = "automation", researched = false, prerequisites = {}, prototype = {} }
+local technology = { name = "automation", researched = false, enabled = true, prerequisites = {}, prototype = {} }
+local completed = { name = "steam-power", researched = true, enabled = true, prerequisites = {}, prototype = {} }
 local codex_force = {
-  technologies = { automation = technology },
+  name = "codex-force", technologies = { automation = technology, ["steam-power"] = completed },
   research_queue = {},
+  current_research = technology, research_progress = 0.25,
   add_research = function(name) queued = name; return true end,
 }
 _G.game = { forces = { player = {
@@ -43,5 +45,9 @@ body = { valid = true, force = codex_force }
 local live, result = pcall(research.start_research, { technology = "automation" })
 check(live and result.queued == true and queued == "automation",
   "research queues only on the live Codex body's force")
+local progression = research.progression_status()
+check(progression.force == "codex-force" and progression.current_research == "automation"
+  and progression.research_progress == 0.25 and progression.researched[1] == "steam-power"
+  and progression.available[1] == "automation", "progression_status reads only Codex's live force")
 
 os.exit(failures == 0 and 0 or 1)

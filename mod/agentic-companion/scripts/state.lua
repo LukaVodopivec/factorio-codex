@@ -1,10 +1,10 @@
 local M = {}
 
--- Initializes the fresh v5 storage schema. Safe to call repeatedly.
+-- Initializes the v6-compatible single-body storage schema. Safe to call repeatedly.
 -- All fields any module needs MUST be declared here (single owner of the schema).
 function M.init()
   -- Tasks: one flat queue and one optional active task for the sole Codex
-  -- body. Rebuild only the canonical fresh-v5 shape while retaining its data.
+  -- body. Rebuild only the canonical flat shape while retaining its data.
   local tasks = storage.tasks or {}
   storage.tasks = {
     next_id = tasks.next_id or 1,

@@ -17,7 +17,11 @@ _G.prototypes = { item = {
   ["transport-belt"] = { place_result = { name = "transport-belt", collision_box = {
     left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 },
   } } },
-}, entity = {}, recipe = {} }
+  gear = { place_result = { name = "gear-entity", collision_box = { left_top = { x = 0, y = 0 }, right_bottom = { x = 1, y = 1 } } } },
+}, entity = {}, recipe = {
+  gear = { name = "gear", ingredients = { { name = "iron-plate", amount = 2 } }, products = { { name = "gear", amount = 1 } }, energy = 0.5, category = "crafting" },
+} }
+body.force.recipes.gear = { enabled = true }
 
 local spatial = require("scripts.spatial")
 local accepted = spatial.can_place({ placements = {
@@ -69,5 +73,8 @@ ten_names[11] = "unknown-11"
 local eleven_ok, eleven_error = pcall(spatial.describe_prototype, { names = ten_names })
 check(not eleven_ok and tostring(eleven_error):match("at most 10 names") ~= nil,
   "describe_prototype rejects 11 names in Lua")
+local disambiguated = spatial.describe_prototype({ names = { { name = "gear", kind = "recipe" }, { name = "gear", kind = "item" } } })
+check(disambiguated["recipe:gear"].kind == "recipe" and disambiguated["recipe:gear"].ingredients["iron-plate"] == 2
+  and disambiguated["item:gear"].kind == "entity", "describe_prototype disambiguates same-named recipe and item")
 
 os.exit(failures == 0 and 0 or 1)

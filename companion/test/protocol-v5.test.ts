@@ -27,7 +27,7 @@ describe("bridge protocol v5", () => {
       "mod/agentic-companion/scripts/spatial.lua",
       "mod/agentic-companion/scripts/actions/transfer.lua",
     ].map(read).join("\n");
-    expect(all).not.toMatch(/params\.companion|by_companion|storage\.companions|set_context|find_buildable_area|params\.center|M\.deliver|deliver_target|register\(["']echo["']/);
+    expect(all).not.toMatch(/params\.companion|by_companion|storage\.companions|set_context|MAX_COMPANIONS|palette|tasks\.lane|failed_chains|params\.chain|task\.chain|find_buildable_area|params\.center|M\.deliver|deliver_target|register\(["']echo["']/);
     expect(read("mod/agentic-companion/scripts/inspect.lua")).not.toMatch(/unit_number|get_entity_by_unit_number|connected_players/);
     expect(read("mod/agentic-companion/scripts/actions/mine.lua")).not.toMatch(/task\.resource|resource_name|find_entity_near|radius/);
   });

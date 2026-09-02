@@ -14,7 +14,7 @@
     "test:npm-package": "node scripts/test-npm-package.mjs",
     "typecheck": "npm run typecheck -w companion",
     "package:mod": "bash scripts/package-mod.sh",
-    "test:mod": "lua5.4 tests/mod/state_single_body_test.lua && lua5.4 tests/mod/tasks_chain_test.lua && lua5.4 tests/mod/companion_movement_test.lua && lua5.4 tests/mod/build_plan_autocraft_test.lua && lua5.4 tests/mod/observe_local_test.lua && lua5.4 tests/mod/exact_mining_test.lua && lua5.4 tests/mod/inspect_range_test.lua && lua5.4 tests/mod/extract_items_test.lua && lua5.4 tests/mod/control_load_test.lua",
+    "test:mod": "lua5.4 tests/mod/state_single_body_test.lua && lua5.4 tests/mod/tasks_cancel_test.lua && lua5.4 tests/mod/companion_movement_test.lua && lua5.4 tests/mod/build_plan_autocraft_test.lua && lua5.4 tests/mod/observe_local_test.lua && lua5.4 tests/mod/exact_mining_test.lua && lua5.4 tests/mod/inspect_range_test.lua && lua5.4 tests/mod/extract_items_test.lua && lua5.4 tests/mod/control_load_test.lua",
     "test:package": "bash scripts/package-mod.sh --verify"
   },
   "engines": {

@@ -59,11 +59,10 @@ local function request_path(state, c, task_id)
   state.last_pos = nil
 end
 
--- Pop the pathfinder result on_path_finished stashed on the active task of
--- the current companion, but only if it answers THIS walker's request.
+-- Pop the pathfinder result stashed on the sole active task, but only if it
+-- answers this walker's request.
 local function take_path_result(state, task_id)
-  local l = storage.tasks.lane
-  local task = l and l.active
+  local task = storage.tasks.active
   if not task or task.id ~= task_id then return nil end
   local result = task._path_result
   if not result or result.id ~= state.request_id then return nil end
@@ -187,8 +186,7 @@ function M.on_path_finished(event)
   local entry = storage.path_requests[event.id]
   if not entry then return end
   storage.path_requests[event.id] = nil
-  local l = storage.tasks.lane
-  local task = l and l.active
+  local task = storage.tasks.active
   if not task or task.id ~= entry.task_id then return end
   local waypoints
   if event.path then

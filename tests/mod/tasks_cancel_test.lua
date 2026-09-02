@@ -35,12 +35,12 @@ _G.game = { tick = 1 }; _G.defines = { shooting = { not_shooting = 0 } }
 local tasks = require("scripts.tasks")
 
 local function check_crafting_stop(task_type)
-  _G.storage = { tasks = { next_id = 1, records = {}, lane = { queue = {}, active = nil }, failed_chains = {} } }
+  _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
   local first = tasks.enqueue({ task = { type = task_type } })
   tasks.on_tick()
   local second = tasks.enqueue({ task = { type = "mine" } })
-  local lane = storage.tasks.lane
-  check(first.task_id == 1 and second.task_id == 2 and lane.active.id == 1 and lane.queue[1].id == 2,
+  local task_state = storage.tasks
+  check(first.task_id == 1 and second.task_id == 2 and task_state.active.id == 1 and task_state.queue[1].id == 2,
     task_type .. " remains active while a later action queues")
   local stopped = tasks.cancel({ all = true })
   check(stopped.cancelled == 2, "stop cancels active " .. task_type .. " and queued action")

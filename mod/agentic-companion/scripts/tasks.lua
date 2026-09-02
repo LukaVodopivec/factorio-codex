@@ -26,16 +26,6 @@ local runners = {
   build_plan = build_plan,
 }
 
--- The retained storage shape has one fixed lane for the sole Codex body.
-local function lane()
-  local l = storage.tasks.lane
-  if not l then
-    l = { queue = {}, active = nil }
-    storage.tasks.lane = l
-  end
-  return l
-end
-
 local function stop_body()
   local c = companion.get()
   if c then
@@ -64,49 +54,23 @@ local function finish(task, status, detail)
     detail = detail or "",
     finished_tick = game.tick,
   }
-  local l = lane()
-  if l.active and l.active.id == task.id then
-    l.active = nil
+  local tasks = storage.tasks
+  if tasks.active and tasks.active.id == task.id then
+    tasks.active = nil
   end
   stop_body()
-
-  -- A failed step of a plan takes its dependent siblings down with it: later
-  -- steps of the same chain are cancelled so the brain gets ONE failure event
-  -- instead of a cascade ("insert the plates" can't work if the craft failed).
-  -- The chain is also remembered as failed: a fast failure can beat the
-  -- remaining enqueue RPCs to the punch, so late arrivals of the same chain
-  -- are cancelled at enqueue time (see M.enqueue).
-  if status == "failed" and task.chain then
-    storage.tasks.failed_chains = storage.tasks.failed_chains or {}
-    storage.tasks.failed_chains[task.chain] = game.tick
-    local l2 = lane()
-    local kept = {}
-    for _, q in ipairs(l2.queue) do
-      if q.chain == task.chain then
-        storage.tasks.records[q.id] = {
-          status = "cancelled",
-          detail = "skipped: an earlier step of the same plan failed",
-          finished_tick = game.tick,
-        }
-      else
-        kept[#kept + 1] = q
-      end
-    end
-    l2.queue = kept
-  end
-
 end
 
-local function cancel_lane()
-  local l = lane()
+local function cancel_all()
+  local tasks = storage.tasks
   local n = 0
-  for _, q in ipairs(l.queue) do
+  for _, q in ipairs(tasks.queue) do
     storage.tasks.records[q.id] = { status = "cancelled", detail = "", finished_tick = game.tick }
     n = n + 1
   end
-  l.queue = {}
-  if l.active then
-    finish(l.active, "cancelled", "")
+  tasks.queue = {}
+  if tasks.active then
+    finish(tasks.active, "cancelled", "")
     n = n + 1
   end
   return n
@@ -122,33 +86,18 @@ function M.enqueue(params)
   task.id = t.next_id
   t.next_id = t.next_id + 1
   task.status = "queued"
-  if params.chain ~= nil then task.chain = tostring(params.chain) end
-
-  -- Late arrival of an already-failed plan: cancel silently right here (the
-  -- failure that killed the chain already produced its one event).
-  local fc = storage.tasks.failed_chains
-  if task.chain and fc and fc[task.chain] then
-    t.records[task.id] = {
-      status = "cancelled",
-      detail = "skipped: an earlier step of the same plan failed",
-      finished_tick = game.tick,
-    }
-    return { task_id = task.id, cancelled = true }
-  end
-
-  local l = lane()
-  l.queue[#l.queue + 1] = task
+  t.queue[#t.queue + 1] = task
   return { task_id = task.id }
 end
 
 function M.get(params)
   local id = tonumber(params.task_id)
   if not id then error("get_task requires task_id") end
-  local l = lane()
-  if l.active and l.active.id == id then
+  local tasks = storage.tasks
+  if tasks.active and tasks.active.id == id then
     return { status = "running", detail = "" }
   end
-  for _, q in ipairs(l.queue) do
+  for _, q in ipairs(tasks.queue) do
     if q.id == id then return { status = "queued", detail = "" } end
   end
   local rec = storage.tasks.records[id]
@@ -159,18 +108,18 @@ end
 function M.cancel(params)
   local n = 0
   if params.all then
-    n = cancel_lane()
+    n = cancel_all()
   else
     local id = tonumber(params.task_id)
     if not id then error("cancel requires task_id or all=true") end
-    local l = lane()
-    if l.active and l.active.id == id then
-      finish(l.active, "cancelled", "")
+    local tasks = storage.tasks
+    if tasks.active and tasks.active.id == id then
+      finish(tasks.active, "cancelled", "")
       n = 1
     else
-      for i, q in ipairs(l.queue) do
+      for i, q in ipairs(tasks.queue) do
         if q.id == id then
-          table.remove(l.queue, i)
+          table.remove(tasks.queue, i)
           storage.tasks.records[id] = { status = "cancelled", detail = "", finished_tick = game.tick }
           n = 1
           break
@@ -181,15 +130,15 @@ function M.cancel(params)
   return { cancelled = n }
 end
 
--- Serializable summary of a companion's active task for get_state.
+-- Serializable summary of Codex's active task for observe_local.
 function M.active_summary()
-  local a = lane().active
+  local a = storage.tasks.active
   if not a then return nil end
   return { id = a.id, type = a.type, status = "running" }
 end
 
 function M.queue_length()
-  return #lane().queue
+  return #storage.tasks.queue
 end
 
 local function prune_records()
@@ -199,20 +148,15 @@ local function prune_records()
       t.records[id] = nil
     end
   end
-  for chain, tick in pairs(t.failed_chains or {}) do
-    if game.tick - tick > RECORD_TTL_TICKS then
-      t.failed_chains[chain] = nil
-    end
-  end
 end
 
-local function step_lane(l)
-  local task = l.active
+local function step_task_queue(tasks)
+  local task = tasks.active
   if not task then
-    if #l.queue == 0 then return end
-    task = table.remove(l.queue, 1)
+    if #tasks.queue == 0 then return end
+    task = table.remove(tasks.queue, 1)
     task.status = "running"
-    l.active = task
+    tasks.active = task
     local ok, err = pcall(runners[task.type].start, task)
     if not ok then
       finish(task, "failed", tostring(err))
@@ -232,9 +176,9 @@ function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then
     prune_records()
   end
-  local l = lane()
-  if l.active or #l.queue > 0 then
-    step_lane(l)
+  local tasks = storage.tasks
+  if tasks.active or #tasks.queue > 0 then
+    step_task_queue(tasks)
   end
 end
 

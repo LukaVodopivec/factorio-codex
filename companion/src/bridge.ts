@@ -4,6 +4,7 @@ import type { ChunkedEnvelope, GetTaskResult, Task } from "./types.js";
 import { parseRpcEnvelope, type RpcMethod } from "./protocol/contract.js";
 
 export class ModError extends Error {}
+export class TaskCancelledError extends ModError {}
 
 /** Escapes a string for inclusion in a double-quoted Lua string literal.
  *  JSON.stringify output never contains raw control characters, so escaping
@@ -97,7 +98,7 @@ export class Bridge {
   /** Enqueues a task and polls until it reaches a terminal state.
    *  Resolves with the human-readable detail; rejects (ModError) on failure. */
   async enqueueAndWait(task: Task, opts: EnqueueOptions = {}): Promise<string> {
-    if (opts.signal?.aborted) throw new ModError("the task was cancelled");
+    if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
     const { task_id } = await this.call<{ task_id: number }>("enqueue", { task });
     const clock = opts.clock ?? realClock;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
@@ -106,14 +107,14 @@ export class Bridge {
 
     try {
       while (clock.now() < deadline) {
-        if (opts.signal?.aborted) throw new ModError("the task was cancelled");
+        if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
         const delay = TASK_POLL_DELAYS_MS[Math.min(poll, TASK_POLL_DELAYS_MS.length - 1)]!;
         poll++;
         await clock.sleep(Math.min(delay, deadline - clock.now()));
-        if (opts.signal?.aborted) throw new ModError("the task was cancelled");
+        if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
         if (clock.now() >= deadline) throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
         const st = await this.call<GetTaskResult>("get_task", { task_id });
-        if (opts.signal?.aborted) throw new ModError("the task was cancelled");
+        if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
         if (clock.now() >= deadline) throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
         switch (st.status) {
           case "done":
@@ -121,7 +122,7 @@ export class Bridge {
           case "failed":
             throw new ModError(st.detail || "task failed");
           case "cancelled":
-            throw new ModError("the task was cancelled");
+            throw new TaskCancelledError("the task was cancelled");
           default:
             break; // queued / running
         }

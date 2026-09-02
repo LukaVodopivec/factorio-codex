@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Bridge, DEFAULT_TASK_TIMEOUT_MS, ModError, type TaskClock } from "../bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, ModError, TaskCancelledError, type TaskClock } from "../bridge.js";
 import type { Task } from "../types.js";
 import { normalizeObservation } from "./observation.js";
 import { toolPayloads } from "./toolPayloads.js";
@@ -63,7 +63,7 @@ function taskFor(step: Exclude<PlanStep, { action: "wait_for_item" }>): Task {
 }
 
 function abortError(): ModError {
-  return new ModError("run_plan was cancelled");
+  return new TaskCancelledError("run_plan was cancelled");
 }
 
 async function waitForItem(
@@ -106,6 +106,7 @@ export async function executeRunPlan(
 ): Promise<RunPlanResult> {
   const deadline = clock.now() + DEFAULT_TASK_TIMEOUT_MS;
   const outcomes: PlanOutcome[] = [];
+  let attempted: { step: number; action: PlanStep["action"] } | undefined;
   let terminal: RunPlanResult;
 
   try {
@@ -113,24 +114,25 @@ export async function executeRunPlan(
       const current = input.steps[index]!;
       if (signal?.aborted) throw abortError();
       if (clock.now() >= deadline) throw new ModError("run_plan exceeded its 570-second deadline");
+      attempted = { step: index + 1, action: current.action };
       const detail = current.action === "wait_for_item"
         ? await waitForItem(bridge, current, deadline, signal, clock)
         : await bridge.enqueueAndWait(taskFor(current), { deadlineMs: deadline, signal, clock });
       outcomes.push({ step: index + 1, action: current.action, status: "completed", result: detail });
+      attempted = undefined;
     }
     terminal = { status: "completed", completed_steps: outcomes.length, outcomes };
   } catch (error) {
-    const next = input.steps[outcomes.length];
-    const attemptedStep = outcomes.length + 1;
-    const cancelled = signal?.aborted || /cancelled/i.test(errorText(error));
+    const completedSteps = outcomes.length;
+    const cancelled = signal?.aborted || error instanceof TaskCancelledError;
     const status = cancelled ? "cancelled" : "failed";
     const message = errorText(error);
-    if (next) outcomes.push({ step: attemptedStep, action: next.action, status, error: message });
+    if (attempted) outcomes.push({ ...attempted, status, error: message });
     terminal = {
       status,
-      completed_steps: attemptedStep - 1,
+      completed_steps: completedSteps,
       outcomes,
-      ...(next ? { failed_step: { step: attemptedStep, action: next.action, error: message } } : {}),
+      ...(attempted ? { failed_step: { ...attempted, error: message } } : {}),
     };
   }
 

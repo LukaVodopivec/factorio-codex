@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Bridge, TaskClock } from "../src/bridge.js";
+import { Bridge, type TaskClock } from "../src/bridge.js";
 import { registerMcpTools } from "../src/mcp/server.js";
 import { executeRunPlan, runPlanSchema } from "../src/mcp/runPlan.js";
+import type { RconClient } from "../src/rcon.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 const observation = { tick: 9, entities: {}, resource_patches: {}, character: { inventory: {} } };
@@ -84,6 +85,25 @@ describe("run_plan", () => {
       expect(output.structuredContent[scenario.errorField]).toBeDefined();
       expect(output.content[0].text).toBe(JSON.stringify(output.structuredContent));
     }
+  });
+
+  it("reports provider failure before execution without fabricating an attempted step", async () => {
+    const handlers: Record<string, (args: unknown) => Promise<any>> = {};
+    const provider = vi.fn(async () => { throw new Error("RCON acquisition failed"); });
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, provider, validConfig);
+
+    const output = await handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] });
+
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(output.isError).toBe(true);
+    expect(output.structuredContent).toEqual({
+      status: "failed",
+      completed_steps: 0,
+      outcomes: [],
+      observation_error: "RCON acquisition failed",
+    });
+    expect(output.structuredContent).not.toHaveProperty("failed_step");
+    expect(output.content[0].text).toBe(JSON.stringify(output.structuredContent));
   });
 
   it("maps existing action paths in order, uses one deadline, and observes once", async () => {
@@ -180,10 +200,9 @@ describe("run_plan", () => {
       completed_steps: 1,
       outcomes: [
         { step: 1, action: "walk_to", status: "completed", result: "walked" },
-        { step: 2, action: "mine", status: "failed", error: "run_plan exceeded its 570-second deadline" },
       ],
-      failed_step: { step: 2, action: "mine", error: "run_plan exceeded its 570-second deadline" },
     });
+    expect(result).not.toHaveProperty("failed_step");
     expect(enqueueAndWait).toHaveBeenCalledTimes(1);
     expect(enqueueAndWait.mock.calls[0]?.[1]).toMatchObject({ deadlineMs: 570_000 });
   });
@@ -201,12 +220,100 @@ describe("run_plan", () => {
       completed_steps: 1,
       outcomes: [
         { step: 1, action: "walk_to", status: "completed", result: "walked" },
-        { step: 2, action: "mine", status: "cancelled", error: "run_plan was cancelled" },
       ],
-      failed_step: { step: 2, action: "mine" },
       observation_error: "observation unavailable",
     });
+    expect(result).not.toHaveProperty("failed_step");
     expect(enqueueAndWait).toHaveBeenCalledTimes(1);
+  });
+
+  it("records no attempted step when execution starts pre-aborted and still observes", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const bridge = bridgeWith();
+
+    const result = await executeRunPlan(bridge, runPlanSchema.parse({
+      steps: [{ action: "walk_to", x: 1, y: 2 }],
+    }), controller.signal);
+
+    expect(result).toEqual({
+      status: "cancelled",
+      completed_steps: 0,
+      outcomes: [],
+      observation: { ...observation, entities: [], resource_patches: [] },
+    });
+    expect(result).not.toHaveProperty("failed_step");
+    expect(vi.mocked(bridge.enqueueAndWait)).not.toHaveBeenCalled();
+    expect(vi.mocked(bridge.call)).toHaveBeenCalledWith("observe_local", { radius: 15 });
+  });
+
+  it("classifies an in-step Bridge deadline timeout as failed, not cancelled", async () => {
+    const methods: string[] = [];
+    const exec = vi.fn(async (command: string) => {
+      let data: unknown;
+      if (command.includes('"enqueue"')) { methods.push("enqueue"); data = { task_id: 42 }; }
+      else if (command.includes('"get_task"')) { methods.push("get_task"); data = { status: "running" }; }
+      else if (command.includes('"cancel"')) { methods.push("cancel"); data = { cancelled: 1 }; }
+      else if (command.includes('"observe_local"')) { methods.push("observe_local"); data = observation; }
+      else throw new Error(`unexpected command: ${command}`);
+      return JSON.stringify({ ok: true, data });
+    });
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async () => { now = 570_000; } };
+    const bridge = new Bridge({ exec } as unknown as RconClient);
+
+    const result = await executeRunPlan(bridge, runPlanSchema.parse({
+      steps: [{ action: "mine", x: 1, y: 2 }],
+    }), undefined, clock);
+
+    expect(result.status).toBe("failed");
+    expect(result.completed_steps).toBe(0);
+    expect(result.outcomes).toEqual([{
+      step: 1,
+      action: "mine",
+      status: "failed",
+      error: "gave up after 570s — task cancelled",
+    }]);
+    expect(result.failed_step).toEqual({
+      step: 1,
+      action: "mine",
+      error: "gave up after 570s — task cancelled",
+    });
+    expect(result.observation).toEqual({ ...observation, entities: [], resource_patches: [] });
+    expect(methods).toEqual(["enqueue", "cancel", "observe_local"]);
+  });
+
+  it("classifies an exact remote task-cancelled outcome as cancelled", async () => {
+    const exec = vi.fn(async (command: string) => {
+      const data = command.includes('"enqueue"') ? { task_id: 43 }
+        : command.includes('"get_task"') ? { status: "cancelled" }
+          : command.includes('"cancel"') ? { cancelled: 1 }
+            : command.includes('"observe_local"') ? observation
+              : undefined;
+      return JSON.stringify({ ok: true, data });
+    });
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+
+    const result = await executeRunPlan(
+      new Bridge({ exec } as unknown as RconClient),
+      runPlanSchema.parse({ steps: [{ action: "mine", x: 1, y: 2 }] }),
+      undefined,
+      clock,
+    );
+
+    expect(result.status).toBe("cancelled");
+    expect(result.outcomes).toEqual([{
+      step: 1,
+      action: "mine",
+      status: "cancelled",
+      error: "the task was cancelled",
+    }]);
+    expect(result.failed_step).toEqual({
+      step: 1,
+      action: "mine",
+      error: "the task was cancelled",
+    });
   });
 
   it("times out wait_for_item under its bounded deadline and observes", async () => {

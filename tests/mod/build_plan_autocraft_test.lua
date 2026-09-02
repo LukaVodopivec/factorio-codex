@@ -21,6 +21,8 @@ character = {
       products = { { type = "item", name = "transport-belt", amount = 2 } } },
     ["burner-mining-drill"] = { name = "burner-mining-drill", enabled = true,
       products = { { type = "item", name = "burner-mining-drill", amount = 1 } } },
+    ["misleading-machine"] = { name = "misleading-machine", enabled = true,
+      products = { { type = "item", name = "iron-plate", amount = 1 } } },
   } },
   get_item_count = function(name) return inventory[name] or 0 end,
   begin_crafting = function(args)
@@ -61,6 +63,7 @@ package.loaded["scripts.actions.approach"] = approach_stub
 _G.prototypes = { item = {
   ["transport-belt"] = { place_result = { name = "transport-belt" } },
   ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill" } },
+  ["misleading-machine"] = { place_result = { name = "misleading-machine" } },
 } }
 _G.defines = { build_check_type = { manual = 1 } }
 
@@ -85,6 +88,16 @@ local two_belts = build_plan.tick(task)
 check(two_belts and two_belts.status == "done" and placed_count == 2
   and inventory["transport-belt"] == 0 and crafted["transport-belt"] == 1,
   "build_plan: reuses multi-output surplus without another craft")
+
+local wrong_product = { steps = {
+  { item = "misleading-machine", position = { x = 0, y = 0 } },
+} }
+build_plan.start(wrong_product)
+local wrong_product_failure = build_plan.tick(wrong_product)
+check(wrong_product_failure and wrong_product_failure.status == "failed"
+  and wrong_product_failure.detail:match("does not produce requested item misleading%-machine")
+  and crafted["misleading-machine"] == nil,
+  "build_plan: refuses a recipe that does not produce the requested item")
 
 crafted = {}
 character.crafting_queue_size = 0
@@ -113,6 +126,17 @@ check(fail_fast.stop_on_error == true and failure and failure.status == "failed"
   and fail_fast._index == 2 and crafted["burner-mining-drill"] == nil,
   "build_plan: first placement failure prevents every later-step craft side effect")
 character.surface.create_entity = create_entity
+
+local semantic_fail_fast = { steps = {
+  { item = "not-a-placeable-item", position = { x = 0, y = 0 } },
+  { item = "burner-mining-drill", position = { x = 1, y = 0 } },
+} }
+build_plan.start(semantic_fail_fast)
+local semantic_failure = build_plan.tick(semantic_fail_fast)
+check(semantic_failure and semantic_failure.status == "failed"
+  and semantic_failure.detail:match("no item called 'not%-a%-placeable%-item'")
+  and next(crafted) == nil,
+  "build_plan: semantic failure of the first step starts zero later-step crafts")
 
 local placed_name
 inventory["transport-belt"] = 1

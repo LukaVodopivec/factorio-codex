@@ -90,22 +90,34 @@ function M.start(task)
 end
 
 -- Deterministic number of the requested item produced by one recipe craft.
--- Probabilistic/ranged products fall back to one so auto-craft never assumes
--- an uncertain yield that could leave the current step unprepared.
+-- Auto-craft refuses recipes whose requested product is absent or variable;
+-- guessing would queue the wrong physical work and misreport preparation.
 local function output_per_craft(recipe, item_name)
+  local found, total = false, 0
   for _, product in ipairs(recipe.products or {}) do
     if product.type == "item" and product.name == item_name then
-      if type(product.amount) == "number" and product.amount > 0 then
-        return product.amount
+      found = true
+      if product.probability ~= nil and product.probability ~= 1 then
+        return nil, "recipe " .. (recipe.name or "<unknown>")
+          .. " produces " .. item_name .. " probabilistically, so auto-craft cannot prepare it exactly"
       end
-      if type(product.amount_min) == "number" and product.amount_min > 0
+      local amount = product.amount
+      if amount == nil and type(product.amount_min) == "number"
           and product.amount_min == product.amount_max then
-        return product.amount_min
+        amount = product.amount_min
       end
-      return 1
+      if type(amount) ~= "number" or amount <= 0 then
+        return nil, "recipe " .. (recipe.name or "<unknown>")
+          .. " has a non-deterministic " .. item_name .. " output, so auto-craft cannot prepare it exactly"
+      end
+      total = total + amount
     end
   end
-  return 1
+  if not found then
+    return nil, "recipe " .. (recipe.name or "<unknown>")
+      .. " does not produce requested item " .. item_name
+  end
+  return total
 end
 
 -- Prepare only the current step. Returns true when a real crafting queue entry
@@ -116,7 +128,9 @@ local function start_current_craft(task, c, step)
   task._craft_attempted = task._index
   if missing == 0 or not recipe or not recipe.enabled then return false end
 
-  local count = math.ceil(missing / output_per_craft(recipe, step.item))
+  local output, why = output_per_craft(recipe, step.item)
+  if not output then return false, why end
+  local count = math.ceil(missing / output)
   local started = c.begin_crafting({ count = count, recipe = recipe.name or step.item })
   if started <= 0 then return false end
   task._auto_crafted = task._auto_crafted + started
@@ -336,9 +350,10 @@ function M.tick(task)
     return advance(task, false, step.item .. " is not a placeable item")
   end
   if c.get_item_count(step.item) == 0 and task.auto_craft
-      and task._craft_attempted ~= task._index
-      and start_current_craft(task, c, step) then
-    return nil
+      and task._craft_attempted ~= task._index then
+    local started, why = start_current_craft(task, c, step)
+    if why then return advance(task, false, why) end
+    if started then return nil end
   end
   if c.get_item_count(step.item) == 0 then
     return advance(task, false, "I don't have any " .. step.item .. " left in my inventory")

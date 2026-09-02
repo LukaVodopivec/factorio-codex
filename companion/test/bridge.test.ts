@@ -37,6 +37,31 @@ describe("Bridge.call", () => {
     );
   });
 
+  it("reassembles an actual chunked mod response before returning its data", async () => {
+    const complete = JSON.stringify({ ok: true, data: { tick: 42, note: "x".repeat(80) } });
+    const cuts = [complete.slice(0, 37), complete.slice(37, 79), complete.slice(79)];
+    let nextPart = 0;
+    const { rcon, exec } = fakeRcon((cmd) => {
+      if (cmd.includes('"get_chunk"')) {
+        nextPart++;
+        return ok({ data: cuts[nextPart] });
+      }
+      return Promise.resolve(JSON.stringify({
+        ok: true,
+        chunked: true,
+        id: 17,
+        parts: cuts.length,
+        data: cuts[0],
+      }));
+    });
+
+    await expect(new Bridge(rcon).call<{ tick: number; note: string }>("ping", {}))
+      .resolves.toEqual({ tick: 42, note: "x".repeat(80) });
+    expect(exec).toHaveBeenCalledTimes(3);
+    expect(exec.mock.calls[1][0]).toContain('get_chunk","{\\"id\\":17,\\"part\\":2}"');
+    expect(exec.mock.calls[2][0]).toContain('get_chunk","{\\"id\\":17,\\"part\\":3}"');
+  });
+
   it("throws ModError on ok:false", async () => {
     const { rcon } = fakeRcon(() =>
       Promise.resolve(JSON.stringify({ ok: false, error: "boom" })),

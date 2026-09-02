@@ -29,11 +29,22 @@ describe("exact local configuration", () => {
     fs.writeFileSync(configPath(), JSON.stringify({ factorioUserDir: "/tmp/f", provider: "old", rcon: { host: "127.0.0.1", port: 19015, password: "keep-me" } }));
     expect(loadConfig()).toBeNull(); expect(existingRconPassword()).toBe("keep-me");
   });
+  it.each([
+    { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "" } },
+    { factorioUserDir: "/factorio", rcon: { host: "localhost", port: 19015, password: "secret" } },
+    { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 27099, password: "secret" } },
+    { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret", extra: true } },
+  ])("rejects an inexact or empty-secret config schema", (candidate) => {
+    isolatedHome(); fs.mkdirSync(path.dirname(configPath()), { recursive: true });
+    fs.writeFileSync(configPath(), JSON.stringify(candidate));
+    expect(loadConfig()).toBeNull();
+  });
   it("reports invalid/missing config without leaking or mangling an empty password", async () => {
     isolatedHome();
     const report = await collectDoctorReport({ rcon: { host: "127.0.0.1", port: 19015, password: "" } });
     const rendered = JSON.stringify(report);
     expect(rendered).not.toMatch(/provider|brain|telemetry|api.?key/i);
+    expect(rendered).not.toContain("[redacted]");
     expect(report.checks).toEqual([expect.objectContaining({ name: "config", ok: false })]);
   });
   it("redacts a configured password from doctor text and JSON failures", async () => {
@@ -53,7 +64,20 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
     expect(connect).not.toHaveBeenCalled();
   });
-  it("resolves the public app version", () => expect(companionVersion()).toBe("0.7.0"));
+  it("keeps root, package, lockfile, runtime, and mod versions at 0.7.0", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const read = (relative: string) => JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
+    const lock = read("package-lock.json");
+    expect([
+      read("package.json").version,
+      read("companion/package.json").version,
+      read("mod/agentic-companion/info.json").version,
+      lock.version,
+      lock.packages[""].version,
+      lock.packages.companion.version,
+      companionVersion(),
+    ]).toEqual(Array(7).fill("0.7.0"));
+  });
 });
 
 describe("Lua dependency closure", () => {

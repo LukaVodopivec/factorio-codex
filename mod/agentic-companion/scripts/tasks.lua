@@ -194,7 +194,7 @@ local function finish_step(plan, result)
 end
 local function wait_for_item(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
-  local response = inspect.inspect({ positions = { { x = step.x, y = step.y } } })
+  local response = inspect.inspect({ targets = { { x = step.x, y = step.y } } })
   local entity = response.entities and response.entities[1]
   if not entity or entity.error then return { status = "failed", detail = entity and entity.error or "inspect returned no entity" } end
   local found = entity.inventories and entity.inventories[step.inventory] and entity.inventories[step.inventory][step.item] or 0

@@ -14,7 +14,9 @@ const PASSWORD_RE = /^\s*;?\s*local-rcon-password\s*=/;
 
 export function patchRconConfig(configIniPath: string, settings: RconIniSettings): { changed: boolean } {
   let original: string;
+  let originalMode: number;
   try {
+    originalMode = fs.statSync(configIniPath).mode & 0o777;
     original = fs.readFileSync(configIniPath, "utf8");
   } catch {
     throw new Error(
@@ -61,6 +63,6 @@ export function patchRconConfig(configIniPath: string, settings: RconIniSettings
   if (!fs.existsSync(backupPath)) {
     fs.copyFileSync(configIniPath, backupPath); // keep the pristine original only
   }
-  atomicWriteFile(configIniPath, updated);
+  atomicWriteFile(configIniPath, updated, originalMode);
   return { changed: true };
 }

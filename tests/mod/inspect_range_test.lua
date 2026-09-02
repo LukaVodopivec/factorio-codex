@@ -16,8 +16,10 @@ package.loaded["scripts.companion"] = {
 }
 
 local entity = { valid = true, name = "stone-furnace", type = "furnace", direction = 0, position = { x = 30, y = 0 } }
+local inspection_queries = 0
 local surface = {
   find_entities_filtered = function(filter)
+    inspection_queries = inspection_queries + 1
     check(filter.position.x == entity.position.x and filter.position.y == entity.position.y,
       "inspection searches only the accepted target coordinate")
     return { entity }
@@ -54,9 +56,11 @@ local batch = inspect.inspect({ targets = { { x = 0, y = 30.000001 } } })
 check(batch.entities[1].error:match("within 30 tiles") ~= nil,
   "batched public inspection reports an over-range target as a physical rejection")
 
+local queries_before_single = inspection_queries
 local single, single_error = pcall(inspect.inspect, { position = { x = 0, y = 0 } })
-check(not single and tostring(single_error):match("targets must be a non%-empty array") ~= nil,
-  "removed single-target inspection shape is rejected")
+check(not single and tostring(single_error):match("targets must be a non%-empty array") ~= nil
+  and inspection_queries == queries_before_single,
+  "removed single-target inspection shape is rejected before a surface query")
 
 local empty, empty_error = pcall(inspect.inspect, { targets = {} })
 check(not empty and tostring(empty_error):match("targets must be a non%-empty array") ~= nil,

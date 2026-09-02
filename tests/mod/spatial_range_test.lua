@@ -31,6 +31,14 @@ local beyond, beyond_error = pcall(spatial.can_place, {
 check(not beyond and tostring(beyond_error):match("placements must be a non%-empty array") ~= nil and checks == 1,
   "can_place rejects the removed single-item fallback before querying the surface")
 
+local inherited = spatial.can_place({
+  item = "transport-belt",
+  placements = { { position = { x = 0, y = 0 } } },
+})
+check(inherited.results[1].can_place == false
+  and inherited.results[1].reason:match("requires item") ~= nil and checks == 1,
+  "each placement requires its own item and cannot inherit a top-level fallback")
+
 local batch = spatial.can_place({ placements = {
   { item = "transport-belt", position = { x = 0, y = 30.000001 } },
 } })

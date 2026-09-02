@@ -39,6 +39,25 @@ describe("bridge protocol v5", () => {
     expect(read("mod/agentic-companion/scripts/actions/mine.lua")).not.toMatch(/task\.resource|resource_name|find_entity_near|radius|\.mine\s*\(/);
     expect(read("mod/agentic-companion/scripts/actions/build_plan.lua")).not.toMatch(/step\.entity/);
   });
+  it("keeps the private package on the repository-only mod layout", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const rootPackage = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+    const companionPackage = JSON.parse(fs.readFileSync(path.join(root, "companion/package.json"), "utf8"));
+    expect(companionPackage.files).toEqual(["dist"]);
+    expect(companionPackage.scripts).not.toHaveProperty("prepack");
+    expect(companionPackage.scripts).not.toHaveProperty("postpack");
+    expect(rootPackage.scripts).not.toHaveProperty("test:npm-package");
+    expect(rootPackage.scripts.test).not.toContain("test:npm-package");
+    expect(fs.readFileSync(path.join(root, "companion/src/setup/installMod.ts"), "utf8"))
+      .not.toMatch(/packageRoot|assets/);
+    expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8"))
+      .not.toContain("companion/assets/");
+    for (const removed of [
+      "companion/.npmignore",
+      "companion/scripts/package-assets.mjs",
+      "scripts/test-npm-package.mjs",
+    ]) expect(fs.existsSync(path.join(root, removed)), removed).toBe(false);
+  });
   it("validates normal, error, and chunk envelopes", () => {
     expect(parseRpcEnvelope('{"ok":true,"data":{"tick":1}}')).toMatchObject({ ok: true });
     expect(parseRpcEnvelope('{"ok":false,"error":"nope"}')).toEqual({ ok: false, error: "nope" });

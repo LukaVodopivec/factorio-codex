@@ -32,9 +32,10 @@ machine:
 One Sol strategist may observe and plan, but one Luna pilot remains the sole
 ordinary MCP action writer for one physical Codex body and one task lane. Sol
 sends bounded milestone packets; Luna may observe, choose exact visible
-coordinates, retry honest pathing, and finish the assigned milestone, then ends
-each packet with `observe_local` and reports position, inventory, active task,
-result, and failure. Concurrency removes thinking idle time, not physical
+coordinates, retry honest pathing, and finish the assigned milestone. End with
+an authoritative observation: consume `run_plan.observation` when `run_plan`
+is used; otherwise call `observe_local`. Report position, inventory, active
+task, result, and failure. Concurrency removes thinking idle time, not physical
 walking time. Do not add a second body, raw Lua/console, teleport, hidden map,
 free resources, or a second RCON path. `stop` is emergency cancellation only.
 
@@ -90,7 +91,12 @@ Codex body automatically. Codex itself still walks physically; only the
 characterless viewer camera is repositioned. Confirm the camera follows during
 a `walk_to` action and that a normal player is never moved by this behavior.
 
-## Live results and known failure signatures
+## Prior-release 0.7.0 live evidence and known failure signatures
+
+The successful observations below were collected before release 0.8.0. They
+are historical 0.7.0 evidence and diagnostic guidance, not live validation of
+0.8.0. Complete the fresh run above after installing 0.8.0 before recording a
+current-release result.
 
 - `doctor --json` is the quickest preflight: it should report exact config
   shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app 0.8.0.

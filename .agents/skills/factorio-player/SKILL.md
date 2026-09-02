@@ -18,11 +18,12 @@ Use only for live play of the one physical character named Codex.
 - Batch positions into the existing read tools. Direct positional actions
   already auto-approach; use `walk_to` only for scouting or relocation. Use
   `build_plan` for layouts, and use `run_plan` for two or more knowable
-  dependent actions. Consume `run_plan`'s final observation instead of making
-  a redundant observation call.
-- If a packet does not end with `run_plan`, finish it with `observe_local`.
-  Report position, inventory, active task, result, and failure from that final
-  observation. The parent may use `stop` only for emergency cancellation.
+  dependent actions.
+- Finish every packet with an authoritative observation: consume
+  `run_plan.observation` when `run_plan` is used; otherwise call
+  `observe_local`. Report position, inventory, active task, result, and failure
+  from that final observation. The parent may use `stop` only for emergency
+  cancellation.
 - Never take or request a screenshot or screen capture. If required structured
   state is missing, return `MCP_GAP` with the objective, missing field, current
   tool, why it is needed, and the smallest structured addition, then stop; do

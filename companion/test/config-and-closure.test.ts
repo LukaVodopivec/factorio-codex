@@ -167,10 +167,15 @@ describe("exact local configuration", () => {
   it("keeps the player skill text-only and aligned with batching and MCP_GAP", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
+    const liveValidation = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");
     expect(skill).toMatch(/run_plan/);
     expect(skill).toMatch(/build_plan/);
     expect(skill).toMatch(/MCP_GAP/);
     expect(skill).toMatch(/no screenshot|never.*screen capture/i);
+    expect(skill).toMatch(/Finish every packet with an authoritative observation:[\s\S]*run_plan\.observation[\s\S]*otherwise call[\s\S]*observe_local/);
+    expect(skill).not.toMatch(/finish every packet with `observe_local`/i);
+    expect(liveValidation).toMatch(/Prior-release 0\.7\.0 live evidence/);
+    expect(liveValidation).toMatch(/historical 0\.7\.0 evidence[\s\S]*not live validation of[\s\S]*0\.8\.0/);
   });
 });
 

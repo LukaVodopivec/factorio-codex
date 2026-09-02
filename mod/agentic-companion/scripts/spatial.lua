@@ -108,6 +108,30 @@ local function entity_recipe(e)
   return nil
 end
 
+-- Area queries are collision-based, while the observation contract reports
+-- the union of collision and selection footprints. Expand only the bounded
+-- local query by the largest installed prototype extent, then precisely
+-- intersect each returned entity with the requested grid below.
+local footprint_query_margin
+local function max_footprint_extent()
+  if footprint_query_margin ~= nil then return footprint_query_margin end
+  local margin = 0
+  for _, proto in pairs((prototypes and prototypes.entity) or {}) do
+    local function include(box)
+      if box then
+        local lt, rb = vec_xy(box.left_top), vec_xy(box.right_bottom)
+        if lt and rb then
+          margin = math.max(margin, math.abs(lt.x), math.abs(lt.y), math.abs(rb.x), math.abs(rb.y))
+        end
+      end
+    end
+    include(proto.collision_box)
+    include(proto.selection_box)
+  end
+  footprint_query_margin = margin
+  return margin
+end
+
 -- ----------------------------------------------------------- observe_local
 
 -- Higher paints over lower when several things share a tile.
@@ -176,8 +200,9 @@ function M.observe_local(params)
 
   -- Entity pass: paint complete selection/collision footprints.
   local enemy_force = game.forces.enemy
+  local query_margin = max_footprint_extent()
   local entities = surface.find_entities_filtered({
-    area = { { ox, oy }, { ox + size, oy + size } },
+    area = { { ox - query_margin, oy - query_margin }, { ox + size + query_margin, oy + size + query_margin } },
   })
   -- Factorio does not promise entity iteration order. First retain everything
   -- whose precise footprint intersects the grid, including centers outside it.
@@ -266,16 +291,24 @@ function M.observe_local(params)
   for _, detail in ipairs(details) do detail._distance, detail._unit = nil, nil end
   local patches = {}
   for name, resources in pairs(resources_by_name) do
+    table.sort(resources, function(a, b)
+      if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+      if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+      if (a.amount or 0) ~= (b.amount or 0) then return (a.amount or 0) < (b.amount or 0) end
+      return (tonumber(a.unit_number) or -1) < (tonumber(b.unit_number) or -1)
+    end)
     local visited = {}
     for start = 1, #resources do if not visited[start] then
-      local queue, head, count, amount, sx, sy = { start }, 1, 0, 0, 0, 0; visited[start] = true
+      local queue, head, count, amount, sx, sy, members = { start }, 1, 0, 0, 0, 0, {}; visited[start] = true
       while head <= #queue do
         local index = queue[head]; head = head + 1; local e = resources[index]
         count, amount, sx, sy = count + 1, amount + (e.amount or 0), sx + e.position.x, sy + e.position.y
+        members[#members + 1] = string.format("%.17g,%.17g,%.17g,%d", e.position.x, e.position.y,
+          e.amount or 0, tonumber(e.unit_number) or -1)
         for other = 1, #resources do if not visited[other] then local o = resources[other]; if math.abs(e.position.x - o.position.x) <= 1.1 and math.abs(e.position.y - o.position.y) <= 1.1 then visited[other] = true; queue[#queue + 1] = other end end end
       end
       local center = { x = sx / count, y = sy / count }; local dx, dy = center.x - c.position.x, center.y - c.position.y
-      patches[#patches + 1] = { name = name, entity_count = count, total_amount = amount, center = center, distance = math.sqrt(dx * dx + dy * dy) }
+      patches[#patches + 1] = { name = name, entity_count = count, total_amount = amount, center = center, distance = math.sqrt(dx * dx + dy * dy), _members = table.concat(members, ";") }
     end end
   end
   table.sort(patches, function(a, b)
@@ -284,8 +317,10 @@ function M.observe_local(params)
     if a.center.y ~= b.center.y then return a.center.y < b.center.y end
     if a.center.x ~= b.center.x then return a.center.x < b.center.x end
     if a.entity_count ~= b.entity_count then return a.entity_count < b.entity_count end
-    return a.total_amount < b.total_amount
+    if a.total_amount ~= b.total_amount then return a.total_amount < b.total_amount end
+    return a._members < b._members
   end)
+  for _, patch in ipairs(patches) do patch._members = nil end
   local inventory = {}; for _, item in ipairs(c.get_main_inventory().get_contents()) do inventory[item.name] = (inventory[item.name] or 0) + item.count end
   return { tick = game.tick, radius = radius, character = { position = { x = c.position.x, y = c.position.y }, health = c.health, inventory = inventory, active_task = require("scripts.tasks").active_summary(), reach_distance = c.reach_distance, build_distance = c.build_distance }, grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend, coordinate_rule = "rows north-to-south; columns west-to-east; x=origin.x+column, y=origin.y+row" }, entities = details, resource_patches = patches, omitted_entities = omitted }
 end

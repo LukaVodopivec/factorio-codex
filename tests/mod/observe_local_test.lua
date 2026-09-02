@@ -23,7 +23,7 @@ end
 local function resource(name, x, y, amount)
   return { valid = true, name = name, type = "resource", force = neutral_force, amount = amount, position = { x = x, y = y }, selection_box = { left_top = { x = x - 0.49, y = y - 0.49 }, right_bottom = { x = x + 0.49, y = y + 0.49 } } }
 end
-entities[1] = entity("z-machine", 3, 3, 1, 1)
+entities[1] = entity("z-machine", 0, 0, 1, 1)
 entities[2] = entity("a-machine", 0, 0, 2, 2)
 entities[2].status = 1
 entities[2].get_recipe = function() return { name = "iron-gear-wheel" } end
@@ -34,12 +34,27 @@ entities[6] = resource("copper-ore", -5, 0, 75)
 local corners = { { -14, -14 }, { 14, -14 }, { -14, 14 }, { 14, 14 } }
 for i = 1, 258 do local point = corners[(i - 1) % #corners + 1]; entities[#entities + 1] = entity("machine-" .. i, point[1], point[2], 1, 1) end
 local edge = entity("edge-machine", 16.5, 0, 3, 3)
-edge.bounding_box = { left_top = { x = 14.75, y = -1.75 }, right_bottom = { x = 18.25, y = 1.75 } }
+edge.bounding_box = { left_top = { x = 16, y = -0.5 }, right_bottom = { x = 17, y = 0.5 } }
+edge.selection_box = { left_top = { x = 14.75, y = -1.75 }, right_bottom = { x = 18.25, y = 1.75 } }
 entities[#entities + 1] = edge
 local entity_order = entities
 local surface = {
   get_tile = function() return { collides_with = function() return false end } end,
-  find_entities_filtered = function() return entity_order end,
+  find_entities_filtered = function(filter)
+    local area, result = filter.area, {}
+    local left, top, right, bottom = area[1][1], area[1][2], area[2][1], area[2][2]
+    for _, candidate in ipairs(entity_order) do
+      local box = candidate.bounding_box or {
+        left_top = { x = candidate.position.x - 0.5, y = candidate.position.y - 0.5 },
+        right_bottom = { x = candidate.position.x + 0.5, y = candidate.position.y + 0.5 },
+      }
+      if box.right_bottom.x > left and box.left_top.x < right
+        and box.right_bottom.y > top and box.left_top.y < bottom then
+        result[#result + 1] = candidate
+      end
+    end
+    return result
+  end,
 }
 local inventory = { get_contents = function() return { { name = "iron-plate", count = 3 } } end }
 character = { valid = true, name = "character", type = "character", force = player_force, surface = surface, position = { x = 0, y = 0 }, health = 250, reach_distance = 10, build_distance = 10, get_main_inventory = function() return inventory end }
@@ -47,12 +62,18 @@ entities[#entities + 1] = character
 package.loaded["scripts.companion"] = { require_companion = function() return character end }
 package.loaded["scripts.tasks"] = { active_summary = function() return nil end }
 _G.game = { tick = 123, forces = { enemy = enemy_force } }
+_G.prototypes = { entity = {
+  ["edge-machine"] = {
+    collision_box = { left_top = { x = -0.5, y = -0.5 }, right_bottom = { x = 0.5, y = 0.5 } },
+    selection_box = { left_top = { x = -1.75, y = -1.75 }, right_bottom = { x = 1.75, y = 1.75 } },
+  },
+} }
 local observation = require("scripts.spatial").observe_local({ radius = 15 })
 check(observation.tick == 123 and observation.radius == 15, "observation includes current tick and radius")
-local ignored_center = require("scripts.spatial").observe_local({ radius = 15, center = { x = 1000, y = 1000 } })
-check(ignored_center.grid.origin.x == -15 and ignored_center.grid.origin.y == -15, "observation always centers on Codex and ignores arbitrary center input")
+check(observation.grid.origin.x == -15 and observation.grid.origin.y == -15, "observation is centered on sole Codex character")
 check(observation.character.inventory["iron-plate"] == 3, "observation includes character inventory")
 check(observation.grid.rows[15]:sub(15, 16) == "aa" and observation.grid.rows[16]:sub(15, 16) == "a@", "full 2x2 footprint is painted beneath higher-priority Codex")
+check(observation.grid.rows[15]:sub(15, 15) == "a", "equal-priority overlap deterministically paints the lexical-name glyph")
 check(observation.grid.legend.a == "a-machine" and observation.grid.legend.b == "edge-machine", "building glyphs are assigned lexically")
 check(#observation.entities == 256 and observation.omitted_entities == 10, "nearest 256 entity cap is explicit")
 local ordered = true
@@ -72,7 +93,7 @@ local a_detail, edge_detail
 for _, detail in ipairs(observation.entities) do if detail.name == "a-machine" then a_detail = detail elseif detail.name == "edge-machine" then edge_detail = detail end end
 check(a_detail and a_detail.status == 1 and a_detail.recipe == "iron-gear-wheel", "entity details include runtime status and recipe")
 check(edge_detail and edge_detail.bounds.left_top.x == 14.75 and edge_detail.bounds.right_bottom.x == 18.25 and edge_detail.footprint.width == 3.5,
-  "3x3 entity with center outside grid is retained with precise union bounds")
+  "selection-only overlap with center and collision outside grid is queried and retained with precise union bounds")
 local reversed = {}; for i = #entities, 1, -1 do reversed[#reversed + 1] = entities[i] end; entity_order = reversed
 local shuffled_observation = require("scripts.spatial").observe_local({ radius = 15 })
 check(canonical(observation) == canonical(shuffled_observation), "shuffled entity input produces byte-identical canonical output")

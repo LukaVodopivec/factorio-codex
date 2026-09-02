@@ -10,7 +10,7 @@ end
 local body
 package.loaded["scripts.companion"] = {
   require_companion = function()
-    if not (body and body.valid) then error("companion 'Codex' does not exist — call spawn_companion first") end
+    if not (body and body.valid) then error("companion 'Codex' does not exist — call connect_status first") end
     return body
   end,
 }

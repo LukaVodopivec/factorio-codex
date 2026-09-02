@@ -10,7 +10,7 @@ end
 local body
 package.loaded["scripts.companion"] = {
   require_companion = function()
-    if not (body and body.valid) then error("companion 'Codex' does not exist — call spawn_companion first") end
+    if not (body and body.valid) then error("companion 'Codex' does not exist — call connect_status first") end
     return body
   end,
 }
@@ -57,6 +57,14 @@ check(beyond.entities[1].error:match("within 30 tiles") ~= nil,
 local batch = inspect.inspect({ targets = { { x = 0, y = 30.000001 } } })
 check(batch.entities[1].error:match("within 30 tiles") ~= nil,
   "batched public inspection reports an over-range target as a physical rejection")
+
+entity.position = { x = 1, y = 0 }
+entity.valid = false
+local absent = inspect.inspect({ targets = { entity.position } })
+check(absent.entities[1].error:match("call observe_local first") ~= nil
+  and absent.entities[1].error:match("look_around") == nil,
+  "missing-entity guidance names only the public observe_local tool")
+entity.valid = true
 
 local queries_before_single = inspection_queries
 local single, single_error = pcall(inspect.inspect, { position = { x = 0, y = 0 } })

@@ -16,6 +16,10 @@ _G.game = { connected_players = { player }, forces = { player = force }, surface
 _G.rendering = { draw_text = function() return { valid = true, destroy = function() end } end }
 local companion = require("scripts.companion")
 check(companion.movement_speed_multiplier() == 1.6, "configured movement remains physical")
+local missing, missing_error = pcall(companion.require_companion)
+check(not missing and tostring(missing_error):match("call connect_status first") ~= nil
+  and tostring(missing_error):match("spawn_companion") == nil,
+  "missing-body guidance names only the public connect_status tool")
 local created = companion.spawn()
 local response_keys = {}; for key in pairs(created) do response_keys[#response_keys + 1] = key end
 check(#response_keys == 1 and response_keys[1] == "position",

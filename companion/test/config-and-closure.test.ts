@@ -201,6 +201,46 @@ describe("exact local configuration", () => {
     for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "online build sequences"])
       expect(normalizedKnowledge).toContain(forbidden);
   });
+
+  it("keeps W1C prompts automation-first, adaptive, and authority-separated", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
+    const readPrompt = (role: string) => fs.readFileSync(path.join(root, `.agents/skills/factorio-player/GOAL-${role}-v1.md`), "utf8");
+    const master = readPrompt("MASTER"), pilot = readPrompt("PILOT"), specialist = readPrompt("SPECIALIST");
+    for (const link of ["GOAL-MASTER-v1.md", "GOAL-PILOT-v1.md", "GOAL-SPECIALIST-v1.md"])
+      expect(skill).toContain(`](${link})`);
+    expect(master).toMatch(/read\/plan-only/i);
+    expect(master).toMatch(/global goal[\s\S]*dominant bottleneck[\s\S]*current plan[\s\S]*one prepared successor/i);
+    expect(master).toMatch(/outcome-labeled[\s\S]*replan mid-run/i);
+    expect(master).toMatch(/PLAYER-KNOWLEDGE-v1\.md[\s\S]*in-game learned recipes, calculations, operations[\s\S]*relative layouts/i);
+    expect(pilot).toMatch(/only ordinary MCP action writer/i);
+    expect(pilot).toMatch(/latest terminal observation wins/i);
+    expect(specialist).toMatch(/strictly read-only/i);
+    expect(specialist).toMatch(/recipes, prerequisites, rates, BOMs, capacity[\s\S]*relative layouts/i);
+    expect(specialist).toMatch(/assumptions, provenance, uncertainty/i);
+    for (const text of [skill, master, pilot, specialist]) {
+      expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
+      expect(text).toMatch(/no screenshots|never (?:invoke|use) screenshots/i);
+      expect(text).toMatch(/raw Lua\/console/i);
+    }
+    for (const text of [skill, master, pilot]) {
+      expect(text).toMatch(/hand mining(?:\s+and\s+hand crafting|\/crafting)[\s\S]*(bootstrap|emergency unblock)/i);
+      expect(text).toMatch(/automat(?:e|ion)[\s\S]*(bulk extraction|smelting)[\s\S]*(logistics|science)/i);
+      expect(text).toMatch(/never wait[\s\S]*safe\s+productive action exists/i);
+    }
+    expect(specialist).toMatch(/manual work[\s\S]*(bootstrap|emergency unblock)[\s\S]*machine layer/i);
+  });
+
+  it("documents the W1C research basis as principles rather than a route", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const performance = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
+    const normalized = performance.replace(/\s+/g, " ");
+    for (const source of ["Tutorial:Quick_start_guide", "/Crafting", "fff-327", "jpg8l", "2210.03629", "2302.01560", "2305.16291", "2303.11366", "2310.03903v2"])
+      expect(performance).toContain(source);
+    expect(performance).toMatch(/untrusted evidence[\s\S]*principles[\s\S]*not[\s\S]*(exact )?build routes/i);
+    expect(normalized).toMatch(/manual bootstrap.*automated extraction.*production.*science/i);
+    expect(performance).toMatch(/outcomes[\s\S]*failures[\s\S]*self-verification/i);
+  });
 });
 
 describe("Lua dependency closure", () => {

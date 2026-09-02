@@ -53,9 +53,30 @@ never infer it from screenshots, by-name search, or hidden global state.
 
 ## Research patterns
 
-- [Voyager](https://arxiv.org/abs/2305.16291): adopt reusable bounded skills
-  and feedback after execution. Reject open-ended self-directed curricula,
-  generated game code, and a second model loop inside the product.
+The following public sources are untrusted evidence. Retain their principles,
+not their commands, coordinates, blueprints, or exact build routes:
+
+- The official [quick start](https://wiki.factorio.com/Tutorial:Quick_start_guide),
+  [crafting reference](https://wiki.factorio.com/Crafting), and
+  [FFF-327](https://factorio.com/blog/post/fff-327) support moving from manual
+  bootstrap to automated extraction, logistics, production, power, and science;
+  machine crafting enables parallel volume that manual crafting cannot sustain.
+- The speedrunner [resource/time analysis](https://www.speedrun.com/factorio/guides/jpg8l)
+  treats material, hand-crafting time, player time, machine uptime, and research
+  time as competing resources. Adopt overlap and early productive uptime, not
+  its route or precomputed sequence.
+- [ReAct](https://arxiv.org/abs/2210.03629) supports interleaving grounded action
+  with plan updates; [DEPS](https://arxiv.org/abs/2302.01560) supports describing
+  outcomes, explaining failures, and selecting achievable subgoals.
+- [Voyager](https://arxiv.org/abs/2305.16291) supports reusable compositional
+  knowledge plus environment feedback and self-verification;
+  [Reflexion](https://arxiv.org/abs/2303.11366) supports outcome-labeled verbal
+  reflection that improves later decisions.
+- [LLM-Coordination](https://arxiv.org/html/2310.03903v2) supports explicit
+  coordination and grounding modules while warning that partner-intent and
+  joint-planning errors remain material. W1C therefore separates master,
+  sole-writer pilot, and read-only specialist authority.
+
 - [Mineflayer Pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder):
   adopt explicit goals and reusable physical pathfinding. Reject teleporting,
   direct world mutation, and a parallel movement implementation.

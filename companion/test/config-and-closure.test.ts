@@ -207,10 +207,16 @@ describe("exact local configuration", () => {
     const launcher = fs.readFileSync(path.join(root, "scripts/launch-native-client.sh"), "utf8");
     expect(launcher).toMatch(/XDG_STATE_HOME[\s\S]*factorio-codex\/native-client/);
     expect(launcher).toMatch(/service-username[^\n]*Codex/);
-    expect(launcher).toMatch(/--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--disable-audio/);
+    expect(launcher).toMatch(/standalone[\s\S]*service-username[^\n]*Codex[\s\S]*--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--disable-audio/);
+    expect(launcher).toMatch(/Steam Factorio build replaces the isolated Codex identity/);
     expect(launcher).toContain("--prepare-only");
     expect(fs.statSync(path.join(root, "scripts/launch-native-client.sh")).mode & 0o111).not.toBe(0);
     expect(launcher).not.toMatch(/\.factorio\/config|\.factorio\/mods/);
+    const couchLauncher = fs.readFileSync(path.join(root, "scripts/launch-native-client.ps1"), "utf8");
+    expect(couchLauncher).toMatch(/LOCALAPPDATA[\s\S]*factorio-codex\\native-client/);
+    expect(couchLauncher).toMatch(/service-username.*Codex/);
+    expect(couchLauncher).toMatch(/Steam Factorio build replaces the isolated Codex identity/);
+    expect(couchLauncher).toMatch(/--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--disable-audio/);
   });
 
   it("keeps W1C prompts automation-first, adaptive, and authority-separated", () => {

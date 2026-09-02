@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_ROOT="${XDG_STATE_HOME:-${HOME:?}/.local/state}/factorio-codex/native-client"
-FACTORIO="${FACTORIO_CODEX_BINARY:-${HOME:?}/.steam/debian-installation/steamapps/common/Factorio/bin/x64/factorio}"
+FACTORIO="${FACTORIO_CODEX_BINARY:-${XDG_STATE_HOME:-${HOME:?}/.local/state}/factorio-codex/standalone/bin/x64/factorio}"
 ADDRESS="${1:-127.0.0.1:34197}"
 MODE="${2:-launch}"
 
@@ -11,6 +11,14 @@ if [[ ! -x "$FACTORIO" ]]; then
   echo "Factorio executable not found: $FACTORIO" >&2
   exit 1
 fi
+
+FACTORIO_VERSION="$("$FACTORIO" --version | sed -n '1p')"
+if grep -q ', steam)' <<<"$FACTORIO_VERSION"; then
+  echo "The Steam Factorio build replaces the isolated Codex identity; use the full standalone build via FACTORIO_CODEX_BINARY." >&2
+  exit 1
+fi
+
+FACTORIO_DATA="$(cd "$(dirname "$FACTORIO")/../../data" && pwd)"
 
 mkdir -p "$STATE_ROOT/config" "$STATE_ROOT/mods"
 CONFIG_TMP="$STATE_ROOT/config/config.ini.tmp"
@@ -20,7 +28,7 @@ MOD_LIST_TMP="$STATE_ROOT/mods/mod-list.json.tmp"
 printf '%s\n' \
   '; factorio-codex isolated native client' \
   '[path]' \
-  'read-data=__PATH__system-read-data__' \
+  "read-data=$FACTORIO_DATA" \
   "write-data=$STATE_ROOT" \
   '[general]' \
   'locale=en' \
@@ -29,7 +37,7 @@ mv "$CONFIG_TMP" "$STATE_ROOT/config/config.ini"
 
 printf '%s\n' '{"service-username":"Codex"}' > "$PLAYER_TMP"
 mv "$PLAYER_TMP" "$STATE_ROOT/player-data.json"
-printf '%s\n' '{"mods":[{"name":"base","enabled":true},{"name":"agentic-companion","enabled":true}]}' > "$MOD_LIST_TMP"
+printf '%s\n' '{"mods":[{"name":"base","enabled":true},{"name":"elevated-rails","enabled":false},{"name":"quality","enabled":false},{"name":"space-age","enabled":false},{"name":"agentic-companion","enabled":true}]}' > "$MOD_LIST_TMP"
 mv "$MOD_LIST_TMP" "$STATE_ROOT/mods/mod-list.json"
 
 bash "$ROOT/scripts/package-mod.sh" >/dev/null

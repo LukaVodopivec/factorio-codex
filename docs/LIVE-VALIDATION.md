@@ -1,18 +1,24 @@
 # Live validation
 
 This runbook validates release **0.10.0**. Prior live evidence remains historical
-until the fresh 0.10.0 run is recorded. On a fresh machine:
+until the fresh 0.10.0 run is recorded. The Linux workstation is permanently
+headless: run only the dedicated server, Node bridge, and agent there. Both
+visual Factorio processes run on the couch PC.
 
-1. Launch Factorio 2.0.x once, reach the main menu, and exit. This must happen
-   before setup so the user-data directory and `config/config.ini` exist.
+1. On the couch PC, install the full standalone Factorio 2.0.x build under
+   `%LOCALAPPDATA%\factorio-codex\standalone`, or pass its executable as
+   `-FactorioBinary`. The Steam build is intentionally rejected for the Codex
+   client because it replaces the isolated LAN identity.
 2. Run `nvm use 22 && npm ci && npm run build && node companion/dist/cli.js setup`.
-3. Restart Factorio, enable **Factorio Codex Companion**, and host a dedicated
-   fresh freeplay save with permanent peaceful mode and enemy bases disabled.
+3. Enable **Factorio Codex Companion** and host a dedicated base-game fresh
+   freeplay save with permanent peaceful mode and enemy bases disabled. Keep
+   elevated-rails, quality, and space-age disabled in both server and client.
    Console-backed RCON disables achievements for the save.
-4. Run `scripts/launch-native-client.sh <host:port>` to connect the isolated
-   low-resource native client as the real player named `Codex`, before
-   connecting the couch viewer. Its write-data and mod profile lives only in
-   `${XDG_STATE_HOME:-$HOME/.local/state}/factorio-codex/native-client`. Run
+4. From the couch PC, run
+   `scripts/launch-native-client.ps1 -Address <server:port>` to connect the
+   isolated low-resource native client as the real player named `Codex`, before
+   starting the normal couch Factorio client as the viewer. Its write-data and
+   mod profile lives only in `%LOCALAPPDATA%\factorio-codex\native-client`. Run
    `node companion/dist/cli.js doctor`, start Codex at the repository root,
    then call `connect_status` and `observe_local`. Confirm the mod refuses an
    absent or wrong player instead of creating a standalone character.
@@ -127,32 +133,13 @@ reaches `InGame`.
 
 ## Viewer-only couch session
 
-Joining a multiplayer save creates a normal Factorio player slot by default.
-The Codex MCP surface does not expose spectator-controller management. To
-make the couch session genuinely view-only, use Factorio's built-in
-administrator/spectator UI after joining and confirm that the couch account
-has no character HUD or inventory. Do not add a raw Lua/console or cheat path
-to the Codex mod. Until spectator mode is visibly confirmed, leave the couch
-player stationary and use the map view only.
-
-For the tested headless server, perform this from the dedicated-server console,
-where the result can be verified authoritatively. First run
-`/promote <couch-player-name>`, then run
-`/c local p=game.get_player("<couch-player-name>"); p.set_controller{type=defines.controllers.spectator}; log("spectator="..tostring(p.controller_type==defines.controllers.spectator).." character="..tostring(p.character~=nil))`.
-Require the server log to report `spectator=true character=false`. A UI bridge
-reporting that it typed the command, or other visual-only evidence, is not
-sufficient evidence because keyboard focus and open GUI panels can make those
-signals misleading. This is an administrator/cheat command and disables
-achievements for the save.
-
-The verified couch identity was `lukiPukiSmuki`: the server reported
-`spectator=true character=false`. After Codex moved through physical MCP play,
-the server measured the spectator camera at distance `0.00` from Codex.
-
-With the current mod loaded, every connected spectator camera follows the sole
-Codex body automatically. Codex itself still walks physically; only the
-characterless viewer camera is repositioned. Confirm the camera follows during
-a `walk_to` action and that a normal player is never moved by this behavior.
+The exact `Codex` client must join first. Every other connected identity is
+made characterless and placed in spectator mode by the mod; there is no second
+body and no administrator or console step. The current mod makes each connected
+spectator camera follow the sole Codex body automatically. Codex itself still
+walks physically; only the characterless viewer camera follows. Confirm the
+normal couch identity has no body or inventory and remains aligned with Codex
+during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 

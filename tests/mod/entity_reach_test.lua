@@ -63,17 +63,20 @@ entity.remove_item = function(stack) mutations.extract = mutations.extract + 1 r
 entity.get_output_inventory = function() return nil end
 entity.get_inventory = function() return nil end
 
-local gate_calls = 0
 package.loaded["scripts.actions.approach"] = {
   ensure = function() return "ok" end,
   find_entity_near = function() return entity end,
-  ensure_entity = function()
-    gate_calls = gate_calls + 1
-    return nil
-  end,
+  ensure_entity = real_approach.ensure_entity,
 }
 
 body.valid = true
+walk_result = nil
+local action_reach_checks = 0
+body.can_reach_entity = function(candidate)
+  check(candidate == entity, "action reach gate checks the resolved entity")
+  action_reach_checks = action_reach_checks + 1
+  return false
+end
 body.force = { recipes = { ["iron-gear-wheel"] = { enabled = true } } }
 body.get_item_count = function() return 1 end
 body.remove_item = function() return 1 end
@@ -110,6 +113,7 @@ local extract = { target = { x = 6, y = 0 }, items = { coal = 1 } }
 transfer.extract.start(extract)
 check(transfer.extract.tick(extract) == nil and mutations.extract == 0,
   "extract waits for authoritative entity reach")
-check(gate_calls == 4, "all four nearby-entity actions use the shared reach gate")
+check(action_reach_checks == 4,
+  "all four nearby-entity actions call Codex can_reach_entity on the resolved entity")
 
 os.exit(failures == 0 and 0 or 1)

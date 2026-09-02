@@ -73,8 +73,13 @@ ten_names[11] = "unknown-11"
 local eleven_ok, eleven_error = pcall(spatial.describe_prototype, { names = ten_names })
 check(not eleven_ok and tostring(eleven_error):match("at most 10 names") ~= nil,
   "describe_prototype rejects 11 names in Lua")
-local disambiguated = spatial.describe_prototype({ names = { { name = "gear", kind = "recipe" }, { name = "gear", kind = "item" } } })
-check(disambiguated["recipe:gear"].kind == "recipe" and disambiguated["recipe:gear"].ingredients["iron-plate"] == 2
-  and disambiguated["item:gear"].kind == "entity", "describe_prototype disambiguates same-named recipe and item")
+local recipe = spatial.describe_prototype({ names = { "gear" }, kind = "recipe" })
+local entity = spatial.describe_prototype({ names = { "gear" }, kind = "entity" })
+local automatic = spatial.describe_prototype({ names = { "gear" }, kind = "auto" })
+check(recipe["recipe:gear"].kind == "recipe" and recipe["recipe:gear"].ingredients["iron-plate"] == 2
+  and entity["entity:gear"].kind == "entity" and automatic.gear.kind == "entity",
+  "describe_prototype exposes recipe/entity and preserves auto resolution")
+local bad_kind_ok = pcall(spatial.describe_prototype, { names = { "gear" }, kind = "item" })
+check(not bad_kind_ok, "describe_prototype rejects kinds outside auto entity recipe")
 
 os.exit(failures == 0 and 0 or 1)

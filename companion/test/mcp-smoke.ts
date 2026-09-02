@@ -41,6 +41,9 @@ try {
   if (!rotateSchema.direction || rotateSchema.reverse) throw new Error("rotate_entity must expose Lua direction, never reverse");
   const describeSchema = tools.find((tool: any) => tool.name === "describe_prototype")?.inputSchema?.properties ?? {};
   if (describeSchema.names?.maxItems !== 10) throw new Error("describe_prototype must match Lua's 10-name cap");
+  if (JSON.stringify(describeSchema.kind?.enum) !== JSON.stringify(["auto", "entity", "recipe"]) || describeSchema.kind?.default !== "auto") throw new Error("describe_prototype must expose kind auto|entity|recipe with auto default");
+  const rejectedKind = await request("tools/call", { name: "describe_prototype", arguments: { names: ["transport-belt"], kind: "item" } });
+  if (!rejectedKind.result?.isError) throw new Error("describe_prototype accepted removed item kind");
   const extractSchema = tools.find((tool: any) => tool.name === "extract_items")?.inputSchema ?? {};
   if ((extractSchema.required ?? []).includes("items")) throw new Error("extract_items must allow omitted items for all=true extraction");
   const planSchema = tools.find((tool: any) => tool.name === "build_plan")?.inputSchema?.properties ?? {};

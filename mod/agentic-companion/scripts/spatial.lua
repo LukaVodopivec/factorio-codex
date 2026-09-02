@@ -587,6 +587,7 @@ end
 
 function M.describe_prototype(params)
   local names = params.names
+  local kind = params.kind or "auto"
   if type(names) ~= "table" or #names == 0 then
     error('describe_prototype requires names = ["burner-mining-drill", ...]')
   end
@@ -595,28 +596,29 @@ function M.describe_prototype(params)
       "describe_prototype takes at most %d names per call — split the list and call again",
       DESCRIBE_MAX_NAMES))
   end
+  if kind ~= "auto" and kind ~= "entity" and kind ~= "recipe" then
+    error("describe_prototype kind must be auto, entity, or recipe")
+  end
 
   local force = companion.require_companion().force
 
   local out = {}
-  for _, requested in ipairs(names) do
-    local name = type(requested) == "table" and requested.name or requested
-    local kind = type(requested) == "table" and requested.kind or nil
+  for _, name in ipairs(names) do
     if type(name) == "string" then
       local item = prototypes.item[name]
       local placed = item and item.place_result
-      local key = kind and (kind .. ":" .. name) or name
+      local key = kind ~= "auto" and (kind .. ":" .. name) or name
       if kind == "recipe" and prototypes.recipe[name] then
         out[key] = describe_recipe(prototypes.recipe[name], force)
       elseif kind == "entity" and prototypes.entity[name] then
         out[key] = describe_entity(prototypes.entity[name], nil)
-      elseif kind == "item" and item then
-        out[key] = placed and describe_entity(placed, name) or { kind = "item", item = name }
-      elseif placed then
+      elseif kind == "entity" and placed then
         out[key] = describe_entity(placed, name)
-      elseif prototypes.entity[name] then
+      elseif kind == "auto" and placed then
+        out[key] = describe_entity(placed, name)
+      elseif kind == "auto" and prototypes.entity[name] then
         out[key] = describe_entity(prototypes.entity[name], nil)
-      elseif prototypes.recipe[name] then
+      elseif kind == "auto" and prototypes.recipe[name] then
         out[key] = describe_recipe(prototypes.recipe[name], force)
       else
         out[key] = { kind = "unknown" }

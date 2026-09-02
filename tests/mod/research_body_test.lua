@@ -16,10 +16,17 @@ package.loaded["scripts.companion"] = {
 }
 
 local queued
-local technology = { name = "automation", researched = false, enabled = true, prerequisites = {}, prototype = {} }
+local prerequisite = { name = "electronics", researched = true }
+local technology = { name = "automation", researched = false, enabled = true,
+  prerequisites = { electronics = prerequisite },
+  prototype = { research_unit_ingredients = { { name = "logistic-science-pack", amount = 1 }, { name = "automation-science-pack", amount = 2 } }, research_unit_count = 10, research_unit_energy = 30 },
+  effects = { { type = "unlock-recipe", recipe = "long-handed-inserter" }, { type = "unlock-recipe", recipe = "assembling-machine-1" } } }
 local completed = { name = "steam-power", researched = true, enabled = true, prerequisites = {}, prototype = {} }
+local blocked = { name = "advanced", researched = false, enabled = true,
+  prerequisites = { missing = { researched = false } }, prototype = {}, effects = {} }
 local codex_force = {
-  name = "codex-force", technologies = { automation = technology, ["steam-power"] = completed },
+  name = "codex-force", technologies = { advanced = blocked, automation = technology, ["steam-power"] = completed },
+  recipes = { zeta = { enabled = true }, alpha = { enabled = true }, disabled = { enabled = false } },
   research_queue = {},
   current_research = technology, research_progress = 0.25,
   add_research = function(name) queued = name; return true end,
@@ -48,6 +55,14 @@ check(live and result.queued == true and queued == "automation",
 local progression = research.progression_status()
 check(progression.force == "codex-force" and progression.current_research == "automation"
   and progression.research_progress == 0.25 and progression.researched[1] == "steam-power"
-  and progression.available[1] == "automation", "progression_status reads only Codex's live force")
+  and progression.available[1].name == "automation" and progression.available[2] == nil
+  and progression.available[1].prerequisites[1] == "electronics"
+  and progression.available[1].science_requirements[1].name == "automation-science-pack"
+  and progression.available[1].science_requirements[2].name == "logistic-science-pack"
+  and progression.available[1].science_count == 10 and progression.available[1].science_time == 30
+  and progression.available[1].unlocks[1] == "assembling-machine-1"
+  and progression.available[1].unlocks[2] == "long-handed-inserter"
+  and progression.enabled_recipes[1] == "alpha" and progression.enabled_recipes[2] == "zeta",
+  "progression_status returns deterministic live-force progression records")
 
 os.exit(failures == 0 and 0 or 1)

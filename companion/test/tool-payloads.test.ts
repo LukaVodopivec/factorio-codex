@@ -63,6 +63,10 @@ describe("registered MCP handler parity with Lua v5", () => {
     expect(schemas.observe_local.safeParse({ radius: 15, center: { x: 999, y: 999 } }).data).toEqual({ radius: 15, detail: "compact" });
     await handlers.describe_prototype({ names: ["transport-belt"] });
     expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"] });
+    expect(schemas.describe_prototype.safeParse({ names: ["transport-belt"] }).data.kind).toBe("auto");
+    await handlers.describe_prototype({ names: ["transport-belt"], kind: "entity" });
+    expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"], kind: "entity" });
+    expect(schemas.describe_prototype.safeParse({ names: ["x"], kind: "item" }).success).toBe(false);
     expect(schemas.describe_prototype.safeParse({ names: Array(10).fill("x") }).success).toBe(true);
     expect(schemas.describe_prototype.safeParse({ names: Array(11).fill("x") }).success).toBe(false);
 

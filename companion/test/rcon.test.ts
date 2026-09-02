@@ -27,6 +27,7 @@ class FakeRconServer {
   port = 0;
   password = "secret";
   respondToAuth = true;
+  responseDelayMs = 0;
   activeConnections = 0;
   handler: (cmd: string) => string[] = () => [""];
 
@@ -52,9 +53,11 @@ class FakeRconServer {
           } else if (type === EXEC) {
             if (body === "") continue; // Factorio sends nothing back for empty commands
             const parts = body === " " ? [""] : this.handler(body);
-            for (const part of parts) {
-              socket.write(packet(id, RESPONSE_VALUE, part));
-            }
+            const respond = () => {
+              for (const part of parts) socket.write(packet(id, RESPONSE_VALUE, part));
+            };
+            if (body !== " " && this.responseDelayMs > 0) setTimeout(respond, this.responseDelayMs);
+            else respond();
           }
         }
       });
@@ -113,6 +116,14 @@ describe("RconClient", () => {
     await client.connect();
     server.handler = (cmd) => (cmd === "" ? [""] : [`echo:${cmd}`]);
     await expect(client.exec("hello")).resolves.toBe("echo:hello");
+  });
+
+  it("does not let the sentinel overtake a delayed command response", async () => {
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
+    await client.connect();
+    server.responseDelayMs = 100;
+    server.handler = (cmd) => [`rpc:${cmd}`];
+    await expect(client.exec("enqueue")).resolves.toBe("rpc:enqueue");
   });
 
   it("reassembles multi-packet responses", async () => {

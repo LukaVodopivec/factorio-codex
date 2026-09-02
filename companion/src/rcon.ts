@@ -1,7 +1,9 @@
 // Hand-rolled Source RCON client. Factorio splits responses larger than ~4 kB
 // into multiple packets sharing the request id, with no terminator — so every
-// command is followed by a "sentinel" command; when the sentinel's response
-// arrives, everything buffered for the real id is the full response.
+// command's first response packet is followed by a "sentinel" command; when
+// the sentinel's response arrives, everything buffered for the real id is the
+// full response. Waiting for the first real packet prevents a fast sentinel
+// from overtaking a command whose response is emitted later by Factorio.
 // The sentinel body is a single space: Factorio sends NO response at all to a
 // zero-length command (verified against 2.0.77), but replies to " ".
 import net from "node:net";
@@ -24,6 +26,7 @@ export interface RconOptions {
 interface PendingExec {
   id: number;
   sentinelId: number;
+  sentinelSent: boolean;
   chunks: string[];
   resolve: (body: string) => void;
   reject: (err: Error) => void;
@@ -130,9 +133,8 @@ export class RconClient extends EventEmitter {
           reject(new RconError(`RCON command timed out after ${this.opts.timeoutMs ?? 10_000}ms`));
         }
       }, this.opts.timeoutMs ?? 10_000);
-      this.pendingExec = { id, sentinelId, chunks: [], resolve, reject, timer };
+      this.pendingExec = { id, sentinelId, sentinelSent: false, chunks: [], resolve, reject, timer };
       this.socket!.write(encodePacket(id, EXEC_COMMAND, command));
-      this.socket!.write(encodePacket(sentinelId, EXEC_COMMAND, " "));
     });
   }
 
@@ -178,6 +180,10 @@ export class RconClient extends EventEmitter {
     if (!pending) return;
     if (id === pending.id) {
       pending.chunks.push(body);
+      if (!pending.sentinelSent) {
+        pending.sentinelSent = true;
+        this.socket!.write(encodePacket(pending.sentinelId, EXEC_COMMAND, " "));
+      }
     } else if (id === pending.sentinelId) {
       clearTimeout(pending.timer);
       this.pendingExec = null;

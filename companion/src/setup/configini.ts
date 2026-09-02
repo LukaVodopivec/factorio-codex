@@ -11,6 +11,7 @@ export interface RconIniSettings {
 
 const SOCKET_RE = /^\s*;?\s*local-rcon-socket\s*=/;
 const PASSWORD_RE = /^\s*;?\s*local-rcon-password\s*=/;
+const SECRET_MODE = 0o600;
 
 export function patchRconConfig(configIniPath: string, settings: RconIniSettings): { changed: boolean } {
   let original: string;
@@ -57,12 +58,12 @@ export function patchRconConfig(configIniPath: string, settings: RconIniSettings
 
   const eol = original.includes("\r\n") ? "\r\n" : "\n";
   const updated = out.join(eol);
-  if (updated === original) return { changed: false };
+  if (updated === original && originalMode === SECRET_MODE) return { changed: false };
 
   const backupPath = path.join(path.dirname(configIniPath), "config.ini.agentic-bak");
   if (!fs.existsSync(backupPath)) {
     fs.copyFileSync(configIniPath, backupPath); // keep the pristine original only
   }
-  atomicWriteFile(configIniPath, updated, originalMode);
+  atomicWriteFile(configIniPath, updated, SECRET_MODE);
   return { changed: true };
 }

@@ -44,13 +44,33 @@ describe("setup transaction", () => {
 });
 
 describe("patchRconConfig", () => {
-  it("preserves a mode-0600 config while adding the RCON secret", () => {
+  it("keeps a mode-0600 config private while adding the RCON secret", () => {
     const file = path.join(tempDir(), "config.ini");
     fs.writeFileSync(file, "[other]\n");
     fs.chmodSync(file, 0o600);
     patchRconConfig(file, { port: 19015, password: "secret" });
     expect(fs.readFileSync(file, "utf8")).toContain("local-rcon-password=secret");
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("tightens a mode-0664 config while adding the RCON secret", () => {
+    const file = path.join(tempDir(), "config.ini");
+    fs.writeFileSync(file, "[other]\n");
+    fs.chmodSync(file, 0o664);
+    expect(patchRconConfig(file, { port: 19015, password: "secret" }).changed).toBe(true);
+    expect(fs.readFileSync(file, "utf8")).toContain("local-rcon-password=secret");
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("tightens mode even when the RCON contents already match", () => {
+    const file = path.join(tempDir(), "config.ini");
+    const contents = "[other]\nlocal-rcon-socket=127.0.0.1:19015\nlocal-rcon-password=secret\n";
+    fs.writeFileSync(file, contents);
+    fs.chmodSync(file, 0o664);
+    expect(patchRconConfig(file, { port: 19015, password: "secret" }).changed).toBe(true);
+    expect(fs.readFileSync(file, "utf8")).toBe(contents);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(patchRconConfig(file, { port: 19015, password: "secret" }).changed).toBe(false);
   });
 
   it("is idempotent and preserves CRLF", () => {

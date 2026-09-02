@@ -11,8 +11,9 @@ play and structured Factorio Codex observations:
 Do not store map coordinates, tutorials, external blueprint strings, or online
 build sequences. No world position, absolute or relative coordinate pair,
 landmark position, entity location, or route belongs in this file. Run-local
-coordinates stay in the pilot-owned shared-run files and expire on reset,
-contradictory observation, referenced-entity mutation, or route failure.
+coordinates may exist only in the ephemeral `operations.json` ledger with
+their source tick and save identity, and expire on reset, contradictory
+observation, referenced-entity mutation, or route failure.
 Revalidate stale knowledge against current structured game state before using
 it. This file defines the versioned contract; it is not a place to persist
 save-specific observations.

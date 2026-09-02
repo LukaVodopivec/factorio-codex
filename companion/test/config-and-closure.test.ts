@@ -186,17 +186,14 @@ describe("exact local configuration", () => {
     expect(liveValidation).not.toContain("%APPDATA%\\\\Factorio\\\\mod-list.json");
   });
 
-  it("locks the instructions-only benchmark waves and player-knowledge boundary", () => {
+  it("locks the selected Candidate B and player-knowledge boundary", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const benchmark = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
     const knowledge = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md"), "utf8");
     const normalizedKnowledge = knowledge.replace(/\s+/g, " ");
-    expect(benchmark).toMatch(/W1[^\n]*topology[\s\S]*Terra-medium combined strategist\/pilot[\s\S]*Terra-medium read-only strategist \+ Terra-low sole pilot[\s\S]*Terra-low read-only specialist/);
-    expect(benchmark).toMatch(/W2[^\n]*model\/effort[\s\S]*Luna-low in every role[\s\S]*Terra-medium strategist \+ Luna-low pilot \+ Terra-low specialist[\s\S]*Sol-medium strategist \+ Luna-low pilot \+ Terra-low specialist/);
-    expect(benchmark).toMatch(/W3[^\n]*fast mode[\s\S]*Fast off[\s\S]*Fast for strategist and specialist only[\s\S]*Fast for every role/);
-    expect(benchmark).toContain("single-session deduplication");
-    expect(benchmark).toContain("`ABC`, `BCA`, `CAB`");
-    expect(benchmark).toMatch(/do not predeclare a Sol\/Luna\s+winner/i);
+    expect(benchmark).toMatch(/Candidate B is exactly[\s\S]*Sol-medium read\/plan-only master[\s\S]*Terra-low\s+sole-writer pilot[\s\S]*Terra-low read-only specialist[\s\S]*fast mode off/i);
+    expect(benchmark).toMatch(/supersedes the earlier prospective wave matrix/i);
+    expect(benchmark).not.toMatch(/\| W[123] —/);
     expect(knowledge).toMatch(/recipes[\s\S]*calculations[\s\S]*operations[\s\S]*relative layouts/);
     for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "online build sequences"])
       expect(normalizedKnowledge).toContain(forbidden);
@@ -226,13 +223,13 @@ describe("exact local configuration", () => {
     for (const link of ["GOAL-MASTER-v1.md", "GOAL-PILOT-v1.md", "GOAL-SPECIALIST-v1.md"])
       expect(skill).toContain(`](${link})`);
     expect(master).toMatch(/read\/plan-only/i);
-    expect(master).toMatch(/global goal[\s\S]*dominant bottleneck[\s\S]*current plan[\s\S]*one prepared successor/i);
+    expect(master).toMatch(/global goal[\s\S]*dominant bottleneck[\s\S]*current plan[\s\S]*exactly one actually queued successor/i);
     expect(master).toMatch(/outcome-labeled[\s\S]*replan mid-run/i);
     expect(master).toMatch(/PLAYER-KNOWLEDGE-v1\.md[\s\S]*in-game learned recipes, calculations, operations[\s\S]*relative layouts/i);
     expect(pilot).toMatch(/only ordinary MCP action writer/i);
     expect(pilot).toMatch(/latest terminal observation wins/i);
     expect(specialist).toMatch(/strictly read-only/i);
-    expect(specialist).toMatch(/recipes, prerequisites, rates, BOMs, capacity[\s\S]*relative layouts/i);
+    expect(specialist).toMatch(/recipes, prerequisites, rates, BOMs, capacity, utilization, automation payback[\s\S]*relative layouts/i);
     expect(specialist).toMatch(/assumptions, provenance, uncertainty/i);
     for (const text of [skill, master, pilot, specialist]) {
       expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
@@ -240,11 +237,14 @@ describe("exact local configuration", () => {
       expect(text).toMatch(/raw Lua\/console/i);
     }
     for (const text of [skill, master, pilot]) {
-      expect(text).toMatch(/hand mining(?:\s+and\s+hand crafting|\/crafting)[\s\S]*(bootstrap|emergency unblock)/i);
+      expect(text).toMatch(/After bootstrap[\s\S]*manual mining(?:\s+or\s+crafting|\/crafting) batch|After bootstrap[\s\S]*manual mining\/crafting batch/i);
+      expect(text).toMatch(/exact net deficit[\s\S]*carried stock[\s\S]*machine buffers\/output[\s\S]*(?:work in progress|WIP)[\s\S]*machine unlock or fuel consumer[\s\S]*uptime[\s\S]*payback[\s\S]*item\/time units[\s\S]*break-even[\s\S]*numeric stop/i);
       expect(text).toMatch(/automat(?:e|ion)[\s\S]*(bulk extraction|smelting)[\s\S]*(logistics|science)/i);
       expect(text).toMatch(/never wait[\s\S]*safe\s+productive action exists/i);
     }
-    expect(specialist).toMatch(/manual work[\s\S]*(bootstrap|emergency unblock)[\s\S]*machine layer/i);
+    expect(specialist).toMatch(/After bootstrap[\s\S]*manual mining\/crafting batch[\s\S]*exact net deficit[\s\S]*payback[\s\S]*numeric stop/i);
+    expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
+    expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
   });
 
   it("documents the W1C research basis as principles rather than a route", () => {
@@ -256,6 +256,30 @@ describe("exact local configuration", () => {
     expect(performance).toMatch(/untrusted evidence[\s\S]*principles[\s\S]*not[\s\S]*(exact )?build routes/i);
     expect(normalized).toMatch(/manual bootstrap.*automated extraction.*production.*science/i);
     expect(performance).toMatch(/outcomes[\s\S]*failures[\s\S]*self-verification/i);
+  });
+
+  it("locks Candidate B timing snapshot and continuous rocket acceptance", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const performance = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
+    const live = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");
+    const joined = `${performance}\n${live}`;
+    expect(joined).toMatch(/Candidate B[\s\S]*Sol-medium read\/plan-only master[\s\S]*Terra-low\s+sole-writer pilot[\s\S]*Terra-low read-only specialist[\s\S]*fast mode off/i);
+    expect(joined).toMatch(/fresh[\s\S]*immutable[\s\S]*peaceful[\s\S]*enemy bases disabled[\s\S]*couch PC/i);
+    expect(performance).toMatch(/Record `GO` as one UTC wall-clock timestamp[\s\S]*monotonic-clock instant[\s\S]*Factorio tick/i);
+    expect(performance).toMatch(/`GO\+1200s` \(`GO\+20m`\)[\s\S]*first structured observation at or after[\s\S]*before the next ordinary action/i);
+    expect(performance).toMatch(/never backdate[\s\S]*grant grace/i);
+    expect(performance).toMatch(/`PASS_AT_20M`[\s\S]*`MISS_AT_20M`/i);
+    expect(performance).toMatch(/drain the FIFO lane[\s\S]*queued plan cannot start across the deadline/i);
+    expect(performance).toMatch(/`PASS_AT_20M` only when[\s\S]*at or before the deadline[\s\S]*collection latency is `MISS_AT_20M`/i);
+    for (const field of ["carried and factory inventory", "hand-mined totals", "hand-craft counts/time", "capacity", "utilization", "automated extraction", "research, power", "work in progress", "inter-plan timing", "dominant bottleneck", "queued expansion"])
+      expect(performance.toLowerCase()).toContain(field);
+    expect(performance).toMatch(/20-minute result is a non-terminal checkpoint[\s\S]*same run ID[\s\S]*legitimately paid rocket launch[\s\S]*honest terminal failure/i);
+    expect(performance).toMatch(/no human tactical coaching or prompt\s+amendment/i);
+    expect(performance).not.toContain("do not imply continuing autonomous gameplay");
+    expect(performance).not.toMatch(/\| W[123] —/);
+    const candidate = performance.slice(performance.indexOf("### Candidate B acceptance run"));
+    expect(candidate).toMatch(/both graphical clients exclusively on the couch PC/i);
+    expect(candidate).toMatch(/one Codex body[\s\S]*one FIFO lane/i);
   });
 });
 

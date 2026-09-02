@@ -10,76 +10,107 @@ const skill = read("SKILL.md");
 const master = read("GOAL-MASTER-v1.md");
 const pilot = read("GOAL-PILOT-v1.md");
 const specialist = read("GOAL-SPECIALIST-v1.md");
+const knowledge = read("PLAYER-KNOWLEDGE-v1.md");
 const prompts = [master, pilot, specialist];
-const allInstructions = [skill, ...prompts].join("\n");
+const allInstructions = [skill, ...prompts, knowledge].join("\n");
+const ledgerPath = "/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json";
 
 describe("shared gameplay run contract", () => {
-  it("uses one explicit run directory and exact file ownership", () => {
-    const runPath = "${XDG_STATE_HOME:-$HOME/.local/state}/factorio-codex/runs/<run-id>";
-    for (const text of [skill, ...prompts]) expect(text).toContain(runPath);
+  it("uses one exact ephemeral operations ledger and removes every retired run file", () => {
+    for (const text of [skill, ...prompts]) expect(text).toContain(ledgerPath);
+    for (const retired of [
+      "XDG_STATE_HOME", "manifest.json", "master-envelope.json", "decisions.md",
+      "pilot-state.json", "pilot-events.jsonl", "landmarks.json", "specialist-notes.md",
+    ]) expect(allInstructions).not.toContain(retired);
+    expect(skill).toMatch(/exactly one ephemeral\s+ledger/i);
+    expect(skill).toMatch(/Do not create another run file, append log/i);
+  });
 
-    expect(skill).toMatch(/parent\s+alone writes `manifest\.json`/i);
-    expect(skill).toMatch(/master alone writes `master-envelope\.json`\s+and `decisions\.md`/i);
-    expect(skill).toMatch(/pilot alone writes `pilot-state\.json`, append-only\s+`pilot-events\.jsonl`, and `landmarks\.json`/i);
-    expect(skill).toMatch(/specialist alone writes\s+`specialist-notes\.md`/i);
-    expect(skill).toMatch(/Every participant reads every shared-run file/i);
+  it("locks parent initialization, permissions, and phase-separated ownership", () => {
+    expect(skill).toMatch(/parent creates the run\s+directory with mode `0700` and initializes the file with mode `0600`/i);
+    expect(skill).toMatch(/after\s+initialization, the master is the sole host-ledger writer/i);
+    expect(master).toMatch(/parent creates the `0700` directory and initializes[\s\S]*the single `0600` `operations\.json`[\s\S]*sole host-ledger writer/i);
+    expect(pilot).toMatch(/read the single `operations\.json` but never write it/i);
+    expect(pilot).toMatch(/sole authority for the latest observation/i);
+    expect(specialist).toMatch(/read the single `operations\.json` but never write it/i);
+    expect(specialist).toMatch(/strictly read-only/i);
+  });
 
-    expect(master).toMatch(/write exactly `master-envelope\.json` and `decisions\.md`/i);
-    expect(pilot).toMatch(/write exactly `pilot-state\.json`, `pilot-events\.jsonl`, and `landmarks\.json`/i);
-    expect(specialist).toMatch(/write exactly `specialist-notes\.md`/i);
-    for (const prompt of prompts) {
-      expect(prompt).toMatch(/read every shared-run file/i);
-      expect(prompt).toMatch(/never write `manifest\.json` or another role's files/i);
+  it("locks the operations snapshot fields and atomic replacement", () => {
+    for (const field of ["schema version", "run/save identity", "monotonic revision", "source tick", "phase", "success", "latest pilot observation", "capacity", "utilization", "current plan", "queued successor", "predecessor", "preconditions"])
+      expect(skill.toLowerCase()).toContain(field);
+    for (const field of ["schema_version", "run", "revision", "source_tick", "phase", "success", "capacity", "utilization", "bottleneck", "current_plan", "queued_successor", "fallbacks", "current_bom", "next_bom", "latest_observation", "decisions", "specialist_advice", "invalidations", "outcome"])
+      expect(skill).toContain(`\`${field}\``);
+    for (const field of ["id", "release_sha", "baseline_save_sha256", "save_identity", "created_at"])
+      expect(skill).toContain(`\`${field}\``);
+    expect(skill).toMatch(/`outcome` object/i);
+    for (const field of ["GO UTC/monotonic/tick", "deadline", "collection UTC/monotonic/tick", "latency", "`PASS_AT_20M`", "`MISS_AT_20M`", "throughput", "rocket/terminal evidence"])
+      expect(skill).toContain(field);
+    expect(master).toMatch(/Rewrite it atomically through (?:a `0600` )?adjacent temporary file and rename/i);
+    expect(master).toMatch(/`0600` adjacent temporary file[\s\S]*verify the final file remains `0600`/i);
+    expect(allInstructions).not.toMatch(/file watching|filesystem watcher|message broker|sqlite|postgres|mysql/i);
+  });
+
+  it("enforces revision tick and immutable save freshness", () => {
+    for (const text of [skill, master, pilot, specialist]) {
+      expect(text).toMatch(/revision/i);
+      expect(text).toMatch(/source tick/i);
+      expect(text).toMatch(/save identity/i);
+      expect(text).toMatch(/regress/i);
     }
+    expect(skill).toMatch(/save identity regresses or disagrees with live structured state/i);
+    expect(skill).toMatch(/parent writes revision `0`/i);
+    expect(skill).toMatch(/is exactly prior\s+revision plus one/i);
+    expect(skill).toMatch(/revision `0` with both[\s\S]*`source_tick` and `latest_observation` set to `null`/i);
+    expect(skill).toMatch(/preserves `run` byte-for-byte/i);
+    expect(skill).toMatch(/After the first pilot observation,[\s\S]*`source_tick` never decreases[\s\S]*equals `latest_observation\.source_tick`/i);
+    expect(skill).toMatch(/a\s+reset, tick rollback, or save identity mismatch requires a fresh parent-created\s+run ID and ledger/i);
+    expect(master).toMatch(/monotonic revision/i);
+    expect(pilot).toMatch(/reject regressing source ticks or a mismatched save identity/i);
   });
 
-  it("requires atomic snapshots and one append-only event log", () => {
-    expect(skill).toMatch(/Rewrite files atomically[\s\S]*temporary file and rename/i);
-    expect(skill).toMatch(/only `pilot-events\.jsonl` is appended, one complete\s+JSON object per line/i);
-    expect(pilot).toMatch(/Atomically rewrite `pilot-state\.json` and `landmarks\.json`[\s\S]*temporary file and rename/i);
-    expect(pilot).toMatch(/Append one complete JSON object per line to `pilot-events\.jsonl`; never rewrite it/i);
-  });
-
-  it("keeps coordinates run-local and invalidates them on every named event", () => {
+  it("invalidates coordinate state and keeps durable knowledge coordinate-free", () => {
     for (const phrase of ["reset", "contradictory observation", "referenced-entity mutation", "route failure"])
       expect(allInstructions.toLowerCase()).toContain(phrase);
-    expect(skill).toMatch(/Run coordinates may appear only in `pilot-state\.json`, `pilot-events\.jsonl`,\s+or `landmarks\.json`/i);
-    expect(pilot).toMatch(/Never copy coordinates into `PLAYER-KNOWLEDGE-v1\.md`, master files, or specialist notes/i);
-
-    const knowledge = read("PLAYER-KNOWLEDGE-v1.md");
+    expect(skill).toMatch(/Remove affected coordinates from the\s+ledger/i);
+    expect(knowledge).toMatch(/coordinates may exist only in the ephemeral `operations\.json` ledger/i);
     expect(knowledge).toMatch(/No world position[\s\S]*coordinate pair[\s\S]*landmark position[\s\S]*entity location[\s\S]*route belongs in this file/i);
-    expect(knowledge).toMatch(/Run-local\s+coordinates stay in the pilot-owned shared-run files/i);
   });
 
-  it("preserves deterministic planning, stale invalidation, and productive overlap", () => {
-    for (const text of [skill, ...prompts]) {
-      expect(text).toMatch(/deterministic MCP (?:state and tool results|tools)/i);
-      expect(text).toMatch(/current plan[\s\S]*(?:one|exactly one) prepared successor/i);
-      expect(text).toMatch(/invalidate stale|invalidat(?:e|ion).*stale/i);
-      expect(text).toMatch(/productive (?:work )?overlap|productive work overlapping|overlap(?:ping)?[\s\S]*production/i);
+  it("requires quantified automation payback and a real queued successor", () => {
+    for (const text of [skill, master, pilot, specialist]) {
+      expect(text).toMatch(/exact net deficit[\s\S]*carried stock[\s\S]*machine buffers\/output[\s\S]*(?:work in progress|WIP)/i);
+      expect(text).toMatch(/machine unlock or fuel consumer[\s\S]*uptime/i);
+      expect(text).toMatch(/payback[\s\S]*item\/time units[\s\S]*break-even/i);
+      expect(text).toMatch(/numeric stop/i);
+      expect(text).toMatch(/capacity/i);
+      expect(text).toMatch(/utilization/i);
+      expect(text).toMatch(/actually queued/i);
+      expect(text).toMatch(/reason (?:none|no .*successor)/i);
     }
+    expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
+    expect(skill).toMatch(/never\s+prepend a redundant `walk_to`/i);
+    expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
   });
 
-  it("adds no coordination machinery and keeps the peaceful one-writer text-only boundary", () => {
+  it("preserves deterministic stale invalidation productive overlap and boundaries", () => {
     for (const text of [skill, ...prompts]) {
+      expect(text).toMatch(/deterministic MCP (?:state and tool results|tools|evidence)/i);
+      expect(text).toMatch(/invalidat(?:e|ion).*stale/i);
+      expect(text).toMatch(/productive (?:work )?overlap|productive work overlapping|overlap(?:ping)?[\s\S]*production/i);
       expect(text).toMatch(/peaceful[\s\S]*enemy bases disabled/i);
       expect(text).toMatch(/no combat tool/i);
       expect(text).not.toMatch(/\bbiters?\b|\bdefen[cd]e?\b/i);
       expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
       expect(text).toMatch(/no screenshots|never (?:invoke|use) screenshots/i);
       expect(text).toMatch(/raw Lua\/console/i);
+      expect(text).toMatch(/scripted\s+mining/i);
+      expect(text).toMatch(/imported blueprints/i);
     }
     expect(fs.readdirSync(skillRoot).sort()).toEqual([
-      "GOAL-MASTER-v1.md",
-      "GOAL-PILOT-v1.md",
-      "GOAL-SPECIALIST-v1.md",
-      "PLAYER-KNOWLEDGE-v1.md",
-      "SKILL.md",
+      "GOAL-MASTER-v1.md", "GOAL-PILOT-v1.md", "GOAL-SPECIALIST-v1.md",
+      "PLAYER-KNOWLEDGE-v1.md", "SKILL.md",
     ]);
-    expect(allInstructions).not.toMatch(/file watching|filesystem watcher|message broker|sqlite|postgres|mysql/i);
-    expect(allInstructions).not.toMatch(/future[\s\S]{0,40}(?:combat|enemy|biter)|\bbiters?\b|\bdefen[cs]e?\b/i);
     expect(pilot).toMatch(/only ordinary MCP action writer/i);
-    expect(master).toMatch(/sole ordinary MCP action writer/i);
-    expect(specialist).toMatch(/strictly read-only/i);
   });
 });

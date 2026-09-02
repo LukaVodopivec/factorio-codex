@@ -21,8 +21,8 @@ walking, mining, crafting, or any other game tick.
 For each live benchmark, record the release SHA, milestone, MCP call count,
 wall time, Factorio tick delta, completed/failed plan steps, final position and
 inventory, and any `MCP_GAP`. Compare the same fresh-save milestone against the
-22-call baseline. These measurements document completed bounded packets; they
-do not imply continuing autonomous gameplay.
+22-call baseline. Historical measurements remain bounded evidence; the
+Candidate B acceptance run below has an explicit continuous-play requirement.
 
 ## Prior 0.8.0 structured timings
 
@@ -121,25 +121,47 @@ and exactly 24 tools. Exercise `find_placement` at a shoreline,
 `production_requirements`, and physical belt, pipe, and power
 `connect_entities` routes.
 
-Run these instructions-only waves exactly; each row is candidate `A`, `B`, then
-`C` for that wave:
+### Candidate B acceptance run
 
-| Wave | A | B | C |
-| --- | --- | --- | --- |
-| W1 — topology | Terra-medium combined strategist/pilot | Terra-medium read-only strategist + Terra-low sole pilot | Terra-medium read-only strategist + Terra-low sole pilot + Terra-low read-only specialist |
-| W2 — model/effort | Luna-low in every role of the retained topology | Terra-medium strategist + Luna-low pilot + Terra-low specialist | Sol-medium strategist + Luna-low pilot + Terra-low specialist |
-| W3 — fast mode | Fast off | Fast for strategist and specialist only | Fast for every role |
+Candidate B is exactly a Sol-medium read/plan-only master, Terra-low
+sole-writer pilot, and Terra-low read-only specialist, with fast mode off. Use
+fresh role conversations, a fresh byte-identical copy of the immutable
+peaceful/enemy-bases-disabled baseline, one `operations.json`, one Codex body,
+one FIFO lane, and both graphical clients exclusively on the couch PC.
 
-For a topology without a specialist, omit the specialist named by a later
-wave. A combined topology remains one conversation and one MCP writer. Apply
-single-session deduplication: if two candidates resolve to the same effective
-set of conversations, roles, models/efforts, prompts, and fast settings, run
-that configuration once and reuse its result within the wave rather than
-starting a duplicate conversation.
+Freeze the role instructions, run/save identity, release SHA, baseline hash,
+and exact ledger path before `GO`; no human tactical coaching or prompt
+amendment is allowed afterward. Record `GO` as one UTC wall-clock timestamp,
+one monotonic-clock instant, and the current Factorio tick immediately before
+the first gameplay decision or action, after the characterless viewer is
+confirmed following Codex.
 
-Run three repeats per wave and rotate candidate order `ABC`, `BCA`, `CAB` to
-reduce ordering bias. Retain the winning topology from W1 for W2, and the
-winning model/effort assignment from W2 for W3; do not predeclare a Sol/Luna
-winner. Never tune from a partial trial or run trials concurrently. Append
-completed results below with exact baseline/release hashes; do not present
-historical timings as 0.10.0 benchmark results.
+At `GO+1200s` (`GO+20m`), capture the first structured observation at or after
+the deadline and before the next ordinary action. Record the deadline,
+collection time, collection latency, and tick; never backdate the sample or
+grant grace. Before the checkpoint window, record a concrete no-successor
+reason and drain the FIFO lane at the last safe boundary so an automatically
+queued plan cannot start across the deadline. Label `PASS_AT_20M` only when
+structured success evidence completed at or before the deadline; completion
+during collection latency is `MISS_AT_20M`. Permanently record that label and:
+
+- carried and factory inventory;
+- exact hand-mined totals and hand-craft counts/time;
+- installed/working machine counts, status, capacity, utilization, and
+  idle/starved/blocked causes;
+- automated extraction and processing rates;
+- research, power, and work in progress;
+- plan, path, and inter-plan timing;
+- the dominant bottleneck; and
+- the `plan_status`-confirmed queued expansion, or the reason none is queued.
+
+The 20-minute result is a non-terminal checkpoint. Continue the same run ID,
+baseline copy/save, frozen roles, Codex body, ordinary writer, and FIFO lane
+until later-tick structured proof of a legitimately paid rocket launch or an
+honest terminal failure after relevant safe fallbacks. Never reset, retry, or
+relabel a miss.
+
+Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
+its candidate labels or substitute another topology, model, effort, or fast
+setting. Append the completed result below with exact baseline/release hashes;
+do not present historical timings as 0.10.0 benchmark results.

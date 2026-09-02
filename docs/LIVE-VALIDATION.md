@@ -51,6 +51,28 @@ server and agent sessions run on the headless workstation, while the exact
 `Codex` client and the characterless spectator/follower run only on the couch
 PC. Do not launch a local GUI as a recovery or benchmark shortcut.
 
+For the Candidate B acceptance run use exactly a Sol-medium read/plan-only
+master, Terra-low sole-writer pilot, Terra-low read-only specialist, and fast
+mode off. Give all three the same exact
+`/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json` path. Before
+`GO`, verify the fresh baseline copy and release hashes, permanent peaceful
+mode/enemy bases disabled, exact `Codex` native player, characterless following
+couch viewer, one body/lane/writer, frozen instructions, and no post-`GO` human
+tactical coaching.
+
+Record `GO` as UTC time, monotonic time, and Factorio tick immediately before
+the first gameplay decision/action. At `GO+1200s`, take the first structured
+observation at or after the deadline and before another ordinary action; record
+collection latency and an immutable `PASS_AT_20M` or `MISS_AT_20M` label with
+the complete throughput vector from `AGENT-PLAY-PERFORMANCE.md`. Drain the lane
+at the last safe boundary before the checkpoint and do not queue a successor
+that could start across the deadline. A pass requires structured success
+completion at or before the deadline, never during collection latency. This is a
+checkpoint, not a stop: do not reset or restart the server or either client.
+Continue the same save, run, roles, body, writer, and lane to later-tick
+structured proof of a legitimately paid rocket launch or an honest terminal
+failure after relevant safe fallbacks.
+
 Use the topology and model/effort assignment selected by completed benchmark
 results; do not assume a Sol/Luna winner. In a split topology, one strategist
 may observe and plan, but one persistent pilot remains the sole ordinary MCP

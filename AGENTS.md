@@ -40,15 +40,20 @@ Use the benchmark-selected topology and model/effort assignment; do not
 predeclare a Sol/Luna winner. In a split topology, one strategist may read and
 plan while one persistent pilot is the sole ordinary MCP action writer for the
 single physical Codex character and flat FIFO lane.
-Keep a rolling envelope containing phase and success, the executing plan, one
-prepared successor with predecessor and preconditions, prioritized fallbacks,
-current and next bill of materials, and source tick/plan ID. The strategist
-owns phase and successor choice; an optional specialist is read-only. Discard
-stale advice unless the pilot revalidates it.
+Keep one ephemeral `operations.json` ledger containing phase and success,
+capacity/utilization, the executing plan, one `plan_status`-confirmed queued
+successor with predecessor and preconditions (or the reason none is queued),
+prioritized fallbacks, current and next bill of materials, and source tick/plan
+ID. The master is its sole atomic host writer; the pilot is the sole ordinary
+MCP writer and latest-observation authority; an optional specialist is
+read-only. Discard stale advice unless the pilot revalidates it.
 
 The pilot may mine, refuel, collect output, repair routes, and use an approved
-fallback without waiting. Fallback order is: preserve safety; unblock production; mine
-the BOM bottleneck in batches; build validated automation; physically scout.
+fallback without waiting. After bootstrap, manual batches require an exact net
+deficit after carried stock, machine buffers/output and WIP, the exact machine
+unlock or fuel consumer and uptime, automation payback in named item/time units
+with break-even, and a numeric stop. Fallback order is: preserve safety; unblock production; mine the
+BOM bottleneck in batches; build validated automation; physically scout.
 Never idle on a wait while productive work exists. Cluster travel and reuse
 terminal observations. Durable player knowledge may contain only in-game
 learned recipes/calculations and Codex-authored relative layouts—never map

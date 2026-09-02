@@ -56,13 +56,15 @@ has no character HUD or inventory. Do not add a raw Lua/console or cheat path
 to the Codex mod. Until spectator mode is visibly confirmed, leave the couch
 player stationary and use the map view only.
 
-In the tested desktop client, open the Factorio console with `/` (the alternate
-`~` key may be focus-sensitive), then enter
-`/c game.player.set_controller{type=defines.controllers.spectator}` and press
-Enter. This is an administrator/cheat command and disables achievements for the
-save; verify success visually by the disappearance of the character HUD and
-inventory. If the command is rejected, promote the couch account through an
-existing server administrator first.
+For the tested headless server, perform this from the dedicated-server console,
+where the result can be verified authoritatively. First run
+`/promote <couch-player-name>`, then run
+`/c local p=game.get_player("<couch-player-name>"); p.set_controller{type=defines.controllers.spectator}; log("spectator="..tostring(p.controller_type==defines.controllers.spectator).." character="..tostring(p.character~=nil))`.
+Require the server log to report `spectator=true character=false`. A UI bridge
+reporting that it typed the command, or a screenshot without a HUD, is not
+sufficient evidence because keyboard focus and open GUI panels can make those
+signals misleading. This is an administrator/cheat command and disables
+achievements for the save.
 
 ## Live results and known failure signatures
 

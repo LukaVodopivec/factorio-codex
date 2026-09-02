@@ -8,8 +8,8 @@ export interface PlacementCandidate {
 export interface PlacementSearchResult { item: string; entity: string; preferred: Position; candidates: PlacementCandidate[] }
 export interface MapSummary {
   tick: number; charted_chunks: number;
-  resources: Array<{ name: string; entity_count: number; total_amount: number; nearest: Position }>;
-  water_edges: Array<{ land: Position; water: Position }>;
+  resources: Array<{ name: string; entity_count: number; total_amount: number; nearest: Position; observed_tick: number }>;
+  water_edges: Array<{ land: Position; water: Position; observed_tick: number }>;
   factory_landmarks: Array<{ name: string; type: string; position: Position; direction?: number; status?: string; recipe?: string; observed_tick: number }>;
 }
 export interface ProductionRequirementNode {
@@ -17,17 +17,18 @@ export interface ProductionRequirementNode {
   category: string; time: number; ingredients: Record<string, number>; products: Record<string, number>;
 }
 export interface ProductionRequirements {
-  item: string; count: number; nodes: ProductionRequirementNode[];
+  targets: Record<string, number>; nodes: ProductionRequirementNode[];
   raw: Record<string, number>; products: Record<string, number>; total_time: number;
 }
 export interface PhysicalRoute {
   kind: "belt" | "pipe" | "power"; prototype: string; from: Position; to: Position;
   length: number; steps: Array<{ name: string; x: number; y: number; direction?: number }>;
-  physical: true; ghosts: false;
+  physical: true; ghosts: false; status?: "completed"; detail?: string;
 }
 export interface ElectricalInspection {
   network_id?: number; energy?: number; buffer_capacity?: number; demand?: number;
-  satisfaction?: number; connected_poles?: number;
+  satisfaction?: number; power_usage?: number; power_production?: number;
+  input_flow_limit?: number; output_flow_limit?: number; connected_poles?: number;
 }
 export interface PlanProblem { step?: number; action?: string; entity?: string; position?: Position; status?: string; detail: string }
 export interface PlanDiagnostics { route: PlanProblem[]; machines: PlanProblem[] }

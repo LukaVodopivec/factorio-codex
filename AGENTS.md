@@ -47,7 +47,7 @@ owns phase and successor choice; an optional specialist is read-only. Discard
 stale advice unless the pilot revalidates it.
 
 The pilot may mine, refuel, collect output, repair routes, and use an approved
-fallback without waiting. Fallback order is: defend; unblock production; mine
+fallback without waiting. Fallback order is: preserve safety; unblock production; mine
 the BOM bottleneck in batches; build validated automation; physically scout.
 Never idle on a wait while productive work exists. Cluster travel and reuse
 terminal observations. Durable player knowledge may contain only in-game

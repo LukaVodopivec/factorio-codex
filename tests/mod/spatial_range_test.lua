@@ -27,8 +27,12 @@ local spatial = require("scripts.spatial")
 local accepted = spatial.can_place({ placements = {
   { item = "transport-belt", position = { x = 30, y = 0 } },
 } })
-check(accepted.results[1].can_place == true and checks == 1,
-  "can_place placements accept the exact 30-tile boundary")
+check(accepted.results[1].can_place == true and accepted.results[1].reason == "placeable"
+  and accepted.results[1].item == "transport-belt"
+  and accepted.results[1].entity == "transport-belt"
+  and accepted.results[1].position.x == 30 and accepted.results[1].direction == 0
+  and checks == 1,
+  "can_place returns authoritative placement identity and reason at the exact 30-tile boundary")
 
 local beyond, beyond_error = pcall(spatial.can_place, {
   item = "transport-belt", position = { x = 30.000001, y = 0 },

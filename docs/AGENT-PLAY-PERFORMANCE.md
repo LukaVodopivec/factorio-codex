@@ -1,6 +1,7 @@
 # Agent play performance
 
-Release 0.9.0 reduces reasoning round trips while preserving one physical
+Release 0.10.0 adds deterministic placement, map, production, and connection
+queries while preserving one physical
 Codex body, one task lane, and honest Factorio mechanics.
 
 ## Recorded baseline and operating model
@@ -8,7 +9,7 @@ Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.9.0 validation.
+0.10.0 validation.
 
 The operating topology and model/effort choice remain benchmark candidates;
 do not predeclare a winner. In every multi-session candidate, the strategist
@@ -99,8 +100,8 @@ a harness, telemetry, reset automation, benchmark endpoint, couch automation,
 or launcher behavior.
 
 Create one dedicated Factorio 2.0.x freeplay baseline with an explicitly
-recorded seed, peaceful mode enabled, and enemy bases disabled. Spawn Codex
-before the couch viewer joins. Join `lukiPukiSmuki` only as a characterless
+recorded seed, permanent peaceful mode, and enemy bases disabled. Connect the
+native `Codex` player before the couch viewer joins. Join `lukiPukiSmuki` only as a characterless
 spectator and establish couch follow before announcing `GO`. Stop the server,
 hash the immutable baseline save with SHA-256, and make one byte-for-byte copy
 per trial. Record the baseline hash and verify every copy has the same hash
@@ -114,8 +115,11 @@ outcomes, MCP call count, final compact observation, and any `MCP_GAP`. Verify
 Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
-observations, recipe disambiguation, progression, protocol v6, version 0.9.0,
-and exactly 20 tools.
+observations, recipe disambiguation, progression, protocol v7, version 0.10.0,
+and exactly 24 tools. Exercise `find_placement` at a shoreline,
+`map_summary` without charting, ambiguous and selected
+`production_requirements`, and physical belt, pipe, and power
+`connect_entities` routes.
 
 Run these instructions-only waves exactly; each row is candidate `A`, `B`, then
 `C` for that wave:
@@ -138,4 +142,4 @@ reduce ordering bias. Retain the winning topology from W1 for W2, and the
 winning model/effort assignment from W2 for W3; do not predeclare a Sol/Luna
 winner. Never tune from a partial trial or run trials concurrently. Append
 completed results below with exact baseline/release hashes; do not present
-historical 0.8.0 timings as 0.9.0 benchmark results.
+historical timings as 0.10.0 benchmark results.

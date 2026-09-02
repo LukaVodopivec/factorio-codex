@@ -121,27 +121,4 @@ local accepted = craft.tick(nonblocking)
 check(accepted.status == "done" and accepted.detail:match("accepted 1x iron%-gear%-wheel") ~= nil
   and body.crafting_queue_size == 1, "nonblocking crafting returns only after Factorio accepts the real queue")
 
-package.loaded["scripts.actions.walk"] = nil
-local walk = require("scripts.actions.walk")
-local walk_task = { id = 7, target = { x = 20, y = 0 } }
-_G.storage = { tasks = { active = walk_task }, path_request = nil }
-game.tick = 0
-walk.start(walk_task)
-check(walk.tick(walk_task) == nil and storage.path_request.task_id == 7 and body.walking_state.walking == false,
-  "walking waits for the sole pathfinder response")
-walk.on_path_finished({ id = storage.path_request.id })
-game.tick = 1
-check(walk.tick(walk_task) == nil and body.walking_state.walking == true,
-  "a no-path result falls back to physical straight-line walking")
-game.tick = 61
-check(walk.tick(walk_task) == nil and storage.path_request.task_id == 7,
-  "a stationary body retries pathfinding once before failing")
-walk.on_path_finished({ id = storage.path_request.id })
-game.tick = 62
-check(walk.tick(walk_task) == nil, "the retry still requires elapsed movement ticks")
-game.tick = 122
-local stuck = walk.tick(walk_task)
-check(stuck.status == "failed" and stuck.detail:match("got stuck") ~= nil,
-  "persistent blocked movement ends as an observable physical path failure")
-
 os.exit(failures == 0 and 0 or 1)

@@ -81,6 +81,8 @@ codex.connected = false
 companion.on_player_left({ player_index = 1 })
 check(companion.get() == nil and storage.companion.disconnected == true,
   "disconnect makes the native body unavailable without replacing it")
+check(storage.companion.entity == nil,
+  "disconnect clears the live binding without selecting another player")
 codex.connected = true
 companion.on_player_available({ player_index = 1 })
 check(companion.get() == codex_body and storage.companion.disconnected == nil,
@@ -102,6 +104,14 @@ codex.character = respawn_body
 companion.on_player_respawned({ player_index = 1 })
 check(companion.get() == respawn_body and storage.companion.dead == nil,
   "Factorio's native respawn event is the only body replacement trigger")
+
+companion.on_player_removed({ player_index = 1 })
+check(companion.get() == nil and storage.companion.entity == nil
+  and storage.companion.player_index == nil and storage.companion.removed == true,
+  "player removal clears the exact live binding without selecting another player")
+companion.on_player_available({ player_index = 1 })
+check(companion.get() == respawn_body and storage.companion.removed == nil,
+  "a later native lifecycle event can bind the exact Codex player again")
 
 local legacy_destroyed = false
 storage.companion = {

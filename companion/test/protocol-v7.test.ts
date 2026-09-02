@@ -1,14 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
-import { registerMcpTools } from "../src/mcp/server.js";
+import { MCP_SERVER_VERSION, registerMcpTools } from "../src/mcp/server.js";
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "../src/mcp/toolPayloads.js";
 import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
 describe("protocol v7 DTO and tool registry", () => {
-  it("declares v7 and the exact eventual RPC additions", () => {
+  it("declares v7 and the exact accepted RPC additions", () => {
     expect(PROTOCOL_VERSION).toBe(7);
+    expect(MCP_SERVER_VERSION).toBe("0.10.0");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
@@ -16,8 +17,11 @@ describe("protocol v7 DTO and tool registry", () => {
   it("registers exactly 24 tools and forwards exact v7 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
-    const call = vi.fn(async (method: string) => ({ method }));
-    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call } as unknown as Bridge), validConfig);
+    const call = vi.fn(async (method: string) => method === "connect_entities"
+      ? { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, length: 1, steps: [{ name: "transport-belt", x: 1.5, y: 0.5, direction: 4 }], physical: true, ghosts: false }
+      : { method });
+    const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
     expect(Object.keys(handlers)).toHaveLength(24);
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
@@ -25,11 +29,15 @@ describe("protocol v7 DTO and tool registry", () => {
     expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8 });
     await handlers.map_summary({});
     expect(call).toHaveBeenLastCalledWith("map_summary", {});
-    await handlers.production_requirements({ item: "automation-science-pack", count: 10, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
-    expect(call).toHaveBeenLastCalledWith("production_requirements", { item: "automation-science-pack", count: 10, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
+    await handlers.production_requirements({ targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
+    expect(call).toHaveBeenLastCalledWith("production_requirements", { targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
     const route = schemas.connect_entities.parse({ kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 } });
     await handlers.connect_entities(route);
     expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, max_length: 25 });
+    expect(enqueueAndWait).toHaveBeenCalledWith({
+      type: "build_plan", auto_craft: true, stop_on_error: true,
+      steps: [{ item: "transport-belt", position: { x: 1.5, y: 0.5 }, direction: 4 }],
+    });
     expect(schemas.find_placement.safeParse({ item: "x", preferred: { x: 0, y: 0 }, radius: 31 }).success).toBe(false);
     expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 26 }).success).toBe(false);
   });
@@ -45,6 +53,7 @@ describe("protocol v7 DTO and tool registry", () => {
   it("keeps payload construction explicit and lossless", () => {
     expect(toolPayloads.findPlacement({ item: "pipe", preferred: { x: 1, y: 2 }, radius: 3, directions: [0], limit: 1 })).toEqual({ item: "pipe", preferred: { x: 1, y: 2 }, radius: 3, directions: [0], limit: 1 });
     expect(toolPayloads.connectEntities({ kind: "pipe", prototype: "pipe", from: { x: 1, y: 2 }, to: { x: 3, y: 2 }, max_length: 2 })).toEqual({ kind: "pipe", prototype: "pipe", from: { x: 1, y: 2 }, to: { x: 3, y: 2 }, max_length: 2 });
+    expect(toolPayloads.productionRequirements({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } })).toEqual({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } });
   });
 
   it("normalizes Lua empty tables at every v7 array boundary", () => {

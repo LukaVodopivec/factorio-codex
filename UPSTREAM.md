@@ -5,6 +5,6 @@ Factorio Codex retains the Git history of Matteo Mekhail's
 commit `158dee786df204cf588a3c5e5120b2dd79aab695` (package metadata: `xell`).
 
 This downstream removes built-in model providers, chat control, multi-agent
-coordination, images, blueprints, combat, vehicles, trains and persistent
+coordination, images, blueprints, hostile gameplay, vehicles, trains and persistent
 duties. It retains the serialized RCON bridge and physical Factorio mechanics
 behind a single text-only Codex MCP companion.

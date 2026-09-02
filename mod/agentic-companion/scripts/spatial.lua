@@ -1,4 +1,4 @@
--- Protocol-v6 local perception: compact by default; full adds the ASCII grid.
+-- Protocol-v7 local perception: compact by default; full adds the ASCII grid.
 -- (dry-run placement check with blocker naming),
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
@@ -141,7 +141,7 @@ end
 -- Higher paints over lower when several things share a tile.
 local PRIORITY = {
   land = 0, water = 1, cliff = 2, rock = 3, tree = 4,
-  resource = 5, building = 6, enemy = 7, player = 8, companion = 9,
+  resource = 5, building = 6, player = 7, companion = 8,
 }
 
 function M.observe_local(params)
@@ -157,7 +157,7 @@ function M.observe_local(params)
   local size = radius * 2 + 1
 
   -- Fixed symbols are pre-registered so dynamically assigned letters can
-  -- never collide with them (T/R/E/P and lowercase c are reserved).
+  -- never collide with them (T/R/P and lowercase c are reserved).
   local legend = {
     ["."] = "buildable land",
     ["~"] = "water",
@@ -166,7 +166,6 @@ function M.observe_local(params)
     ["R"] = "rock",
     ["@"] = "you",
     ["P"] = "player",
-    ["E"] = "enemy",
   }
 
   -- Assign the next free letter of `alphabet` to each distinct name.
@@ -203,7 +202,6 @@ function M.observe_local(params)
   end
 
   -- Entity pass: paint complete selection/collision footprints.
-  local enemy_force = game.forces.enemy
   local query_margin = max_footprint_extent()
   local entities = surface.find_entities_filtered({
     area = { { ox - query_margin, oy - query_margin }, { ox + size + query_margin, oy + size + query_margin } },
@@ -241,8 +239,6 @@ function M.observe_local(params)
           ch, p = "@", PRIORITY.companion
         elseif e.type == "character" then
           ch, p = "P", PRIORITY.player
-        elseif e.force == enemy_force then
-          ch, p = "E", PRIORITY.enemy
         elseif e.force == c.force then
           ch, p = letter_for(e.name, building_letters, LOWER_LETTERS), PRIORITY.building
         elseif e.type == "resource" then
@@ -414,8 +410,16 @@ local function can_place_one(c, surface, item, position, direction)
     force = c.force,
     build_check_type = defines.build_check_type.manual,
   })
+  local identity = {
+    item = item,
+    entity = entity_proto.name,
+    position = { x = pos.x, y = pos.y },
+    direction = direction,
+  }
   if ok then
-    return { can_place = true }
+    identity.can_place = true
+    identity.reason = "placeable"
+    return identity
   end
 
   -- Best-effort explanation: name whatever occupies the would-be footprint.
@@ -448,7 +452,9 @@ local function can_place_one(c, surface, item, position, direction)
   else
     reason = "blocked (terrain or overlap)"
   end
-  return { can_place = false, reason = reason }
+  identity.can_place = false
+  identity.reason = reason
+  return identity
 end
 
 local MAX_PLACEMENTS = 24
@@ -476,6 +482,8 @@ function M.can_place(params)
     if not ok then
       res = { can_place = false, reason = tostring(res):gsub("^.-:%d+:%s*", "") }
     end
+    res.item = res.item or p.item
+    res.direction = res.direction or math.floor(tonumber(p.direction) or 0) % 16
     res.position = {
       x = tonumber(type(p.position) == "table" and p.position.x or nil),
       y = tonumber(type(p.position) == "table" and p.position.y or nil),

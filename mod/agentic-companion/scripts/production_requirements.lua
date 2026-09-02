@@ -45,12 +45,19 @@ local function candidate_recipes(force, product)
 end
 
 function M.production_requirements(params)
-  if type(params.item) ~= "string" then error("production_requirements item must be an item or fluid name") end
-  if not ((prototypes.item and prototypes.item[params.item]) or (prototypes.fluid and prototypes.fluid[params.item])) then
-    error("no item or fluid called '" .. params.item .. "'")
+  local targets = params.targets
+  if type(targets) ~= "table" then error("production_requirements targets must map item or fluid names to positive integer counts") end
+  local target_names = {}
+  for target, raw_count in pairs(targets) do
+    if type(target) ~= "string" or not ((prototypes.item and prototypes.item[target]) or (prototypes.fluid and prototypes.fluid[target])) then
+      error("no item or fluid called '" .. tostring(target) .. "'")
+    end
+    local count = tonumber(raw_count)
+    if not count or count <= 0 or count % 1 ~= 0 then error("production_requirements target counts must be positive integers") end
+    target_names[#target_names + 1] = target
   end
-  local requested = tonumber(params.count)
-  if not requested or requested <= 0 or requested % 1 ~= 0 then error("production_requirements count must be a positive integer") end
+  if #target_names < 1 or #target_names > 16 then error("production_requirements targets must contain 1-16 entries") end
+  table.sort(target_names)
   local choices = params.recipe_choices or {}
   if type(choices) ~= "table" then error("production_requirements recipe_choices must map product names to recipe names") end
   local force = companion.require_companion().force
@@ -100,14 +107,14 @@ function M.production_requirements(params)
     for name, per_craft in pairs(node.products) do all_products[name] = (all_products[name] or 0) + per_craft * added_crafts end
   end
 
-  require_item(params.item, requested)
+  for _, target in ipairs(target_names) do require_item(target, tonumber(targets[target])) end
   local nodes, total_time = {}, 0
   for _, node in pairs(nodes_by_item) do
     total_time = total_time + node.time * node.crafts
     nodes[#nodes + 1] = node
   end
   table.sort(nodes, function(a, b) return a.item == b.item and a.recipe < b.recipe or a.item < b.item end)
-  return { item = params.item, count = requested, nodes = nodes, raw = raw, products = all_products, total_time = total_time }
+  return { targets = targets, nodes = nodes, raw = raw, products = all_products, total_time = total_time }
 end
 
 return M

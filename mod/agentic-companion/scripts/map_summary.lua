@@ -54,7 +54,7 @@ function M.map_summary(_params)
         and string.format("%s\0%.17g\0%.17g", entity.name, entity.position.x, entity.position.y) or nil
       if resource_key and not seen_resource[resource_key] then
         seen_resource[resource_key] = true
-        local row = resources_by_name[entity.name] or { name = entity.name, entity_count = 0, total_amount = 0, nearest = nil, _distance = nil }
+        local row = resources_by_name[entity.name] or { name = entity.name, entity_count = 0, total_amount = 0, nearest = nil, observed_tick = game.tick, _distance = nil }
         resources_by_name[entity.name] = row
         row.entity_count = row.entity_count + 1
         row.total_amount = row.total_amount + (tonumber(entity.amount) or 0)
@@ -97,7 +97,7 @@ function M.map_summary(_params)
               local edge_key = string.format("%d,%d:%d,%d", land.x, land.y, water.x, water.y)
               if not seen_edge[edge_key] then
                 seen_edge[edge_key] = true
-                water_edges[#water_edges + 1] = { land = land, water = water }
+                water_edges[#water_edges + 1] = { land = land, water = water, observed_tick = game.tick }
               end
             end
           end

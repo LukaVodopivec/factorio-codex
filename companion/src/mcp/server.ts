@@ -10,6 +10,7 @@ import { executeRunPlan, queuePlanSchema, runPlanSchema, type RunPlanResult } fr
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
+export const MCP_SERVER_VERSION = "0.10.0";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -22,11 +23,20 @@ export async function connectStatus(bridge: () => Promise<Bridge>, configDiagnos
   const diagnostic = configDiagnostic();
   if (!diagnostic.ok) return result(`Offline: ${diagnostic.error}`, false);
   const b = await bridge();
-  const ping: any = await b.call("ping");
+  let ping: any = await b.call("ping");
   assertRuntimeCompatibility(ping, companionVersion());
-  if (ping.companion_dead) return result("Connected, but Codex is dead. This interface never auto-respawns.", true);
-  if (!ping.companion_exists && !ping.companion_ever_created) await b.call("spawn_companion", {});
-  return result({ status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version, mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick });
+  if (!ping.companion_exists) {
+    await b.call("spawn_companion", {});
+    ping = await b.call("ping");
+    assertRuntimeCompatibility(ping, companionVersion());
+    if (!ping.companion_exists) throw new Error("native player 'Codex' did not provide a living character");
+  }
+  return result({
+    status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version,
+    mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick,
+    companion_exists: ping.companion_exists, companion_ever_created: ping.companion_ever_created,
+    companion_dead: ping.companion_dead,
+  });
 }
 
 type ToolRegistrar = {
@@ -45,7 +55,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   };
 
-  server.registerTool("connect_status", { description: "Validate config, RCON, mod, app and protocol; create Codex only if this save never had one.", inputSchema: z.object({}) }, async () => {
+  server.registerTool("connect_status", { description: "Validate config, RCON, mod, app and protocol, then bind the exact connected native player named Codex without creating a character.", inputSchema: z.object({}) }, async () => {
     try {
       return await connectStatus(bridge, configDiagnostic);
     } catch (error) { return result(`Offline: ${error instanceof Error ? error.message : String(error)}`, false); }
@@ -72,12 +82,19 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", {}))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
-  server.registerTool("production_requirements", { description: "Expand an unlocked deterministic production DAG into recipe counts, raw inputs, products, categories and crafting time; recipe_choices resolves genuine multi-recipe ambiguity.", inputSchema: z.object({ item: z.string(), count: z.number().int().positive(), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
+  server.registerTool("production_requirements", { description: "Expand one or more targets through the unlocked deterministic production DAG into recipe counts, raw inputs, products, categories and crafting time; recipe_choices resolves genuine multi-recipe ambiguity.", inputSchema: z.object({ targets: z.record(z.string(), z.number().int().positive()).refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 16, "targets must contain 1-16 entries"), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
     try { return result(normalizeProductionRequirements(await (await bridge()).call("production_requirements", toolPayloads.productionRequirements(p)))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
-  server.registerTool("connect_entities", { description: "Plan a deterministic physical belt, pipe or power route between exact force-charted endpoints, respecting the selected prototype, maximum length and authoritative placement constraints; returns one build_plan-compatible route and never ghosts.", inputSchema: z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string(), from: position, to: position, max_length: z.number().int().min(1).max(25).default(25) }).strict() }, async (p) => {
-    try { return result(normalizePhysicalRoute(await (await bridge()).call("connect_entities", toolPayloads.connectEntities(p)))); }
+  server.registerTool("connect_entities", { description: "Build a deterministic physical belt, pipe or power route between exact force-charted endpoints through the existing inventory-backed build runner, respecting the selected prototype, maximum length, walking, reach, collision and elapsed time; never creates ghosts.", inputSchema: z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string(), from: position, to: position, max_length: z.number().int().min(1).max(25).default(25) }).strict() }, async (p) => {
+    try {
+      const b = await bridge();
+      const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities(p)));
+      const detail = route.steps.length === 0
+        ? "endpoints already have a physical connection"
+        : await b.enqueueAndWait({ type: "build_plan", ...toolPayloads.buildPlan(route.steps, { auto_craft: true, stop_on_error: true }) } as never);
+      return result({ ...route, status: "completed", detail });
+    }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
   server.registerTool("walk_to", { description: "Scout or relocate by walking physically to an exact position; positional actions already auto-approach.", inputSchema: position }, async (p) => task("walk_to", toolPayloads.target(p)));
@@ -173,7 +190,7 @@ export function createBridgeProvider(
 }
 
 export async function runMcpServer(configDiagnostic: () => ConfigDiagnostic = diagnoseConfig): Promise<void> {
-  const server = new McpServer({ name: "factorio-codex", version: "0.9.0" }, { instructions: "Control one physical Factorio character named Codex. Keep one rolling current plan plus one prepared successor. Never use screenshots or screen capture." });
+  const server = new McpServer({ name: "factorio-codex", version: MCP_SERVER_VERSION }, { instructions: "Control one physical Factorio character named Codex. Keep one rolling current plan plus one prepared successor. Never use screenshots or screen capture." });
   const bridge = createBridgeProvider(configDiagnostic);
   registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic);
   await server.connect(new StdioServerTransport());

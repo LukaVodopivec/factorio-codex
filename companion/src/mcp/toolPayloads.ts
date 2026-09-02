@@ -11,7 +11,7 @@ export const toolPayloads = {
   canPlace: (placements: Array<{ x: number; y: number; name: string; direction?: number }>) => ({ placements: placements.map((placement) => toolPayloads.placement(placement)) }),
   buildPlan: (steps: Array<{ x: number; y: number; name: string; [key: string]: unknown }>, rest: Record<string, unknown>) => ({ ...rest, steps: steps.map(({ x, y, name, ...step }) => ({ ...step, item: name, position: { x, y } })) }),
   findPlacement: ({ item, preferred, radius, directions, limit }: { item: string; preferred: { x: number; y: number }; radius: number; directions: number[]; limit: number }) => ({ item, preferred, radius, directions, limit }),
-  productionRequirements: ({ item, count, recipe_choices }: { item: string; count: number; recipe_choices?: Record<string, string> }) => ({ item, count, recipe_choices }),
+  productionRequirements: ({ targets, recipe_choices }: { targets: Record<string, number>; recipe_choices?: Record<string, string> }) => ({ targets, recipe_choices }),
   connectEntities: ({ kind, prototype, from, to, max_length }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number }) => ({ kind, prototype, from, to, max_length }),
 };
 
@@ -80,12 +80,26 @@ export function normalizeInspection(value: any): any {
 
 export function normalizePlanDiagnostics(value: any): any {
   if (!value || typeof value !== "object") return value;
-  const route = Array.isArray(value.outcomes) ? value.outcomes
+  const active = value.diagnostics && typeof value.diagnostics === "object" ? value.diagnostics : undefined;
+  const route = active?.route ? [{
+    action: active.action,
+    status: active.route.phase,
+    detail: active.route.failure ?? `native path ${active.route.phase ?? "active"}`,
+    retries: active.route.retries,
+    request_tick: active.route.request_tick,
+    last_progress_tick: active.route.last_progress_tick,
+  }] : [];
+  if (Array.isArray(value.outcomes)) route.push(...value.outcomes
     .filter((outcome: any) => outcome?.status === "failed" || outcome?.status === "cancelled")
-    .map((outcome: any) => ({ step: outcome.step, action: outcome.action, detail: outcome.error ?? outcome.result ?? outcome.status })) : [];
+    .map((outcome: any) => ({ step: outcome.step, action: outcome.action, detail: outcome.error ?? outcome.result ?? outcome.status })));
   const entities = Array.isArray(value.observation?.entities) ? value.observation.entities : [];
   const machines = entities
     .filter((entity: any) => entity?.status && !["working", "normal"].includes(entity.status))
     .map((entity: any) => ({ entity: entity.name, position: entity.position, status: entity.status, detail: `machine status: ${entity.status}` }));
+  if (active?.machine) machines.unshift({
+    position: active.machine.position,
+    status: "active_target",
+    detail: `active ${active.action ?? "plan"} target`,
+  });
   return { ...value, diagnostics: { route, machines } };
 }

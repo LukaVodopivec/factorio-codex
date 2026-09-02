@@ -10,8 +10,7 @@ local MAP_TAG_MOVE_SQ = 9
 
 local function get_player(index)
   if not index then return nil end
-  if game.get_player then return game.get_player(index) end
-  return game.players and game.players[index] or nil
+  return game.get_player(index)
 end
 
 local function is_native_codex(player)
@@ -47,18 +46,6 @@ function M.get()
   if not rec then return nil end
 
   local player = get_player(rec.player_index)
-  -- Compatible migration for an old save whose record already points at a
-  -- real player's character. A standalone legacy character is never adopted.
-  if not player and rec.entity and rec.entity.valid then
-    for _, candidate in pairs(game.players or game.connected_players or {}) do
-      if candidate.character == rec.entity then
-        player = candidate
-        rec.player_index = candidate.index
-        break
-      end
-    end
-  end
-
   local ent = rec.entity
   if is_native_codex(player) and player.character == ent then
     enforce_normal_speed(ent)
@@ -125,6 +112,7 @@ local function bind_native_player(player)
   rec.entity = player.character
   rec.dead = nil
   rec.disconnected = nil
+  rec.removed = nil
   rec.entity.color = COLOR
   enforce_normal_speed(rec.entity)
   attach_label(rec, rec.entity)
@@ -156,7 +144,20 @@ end
 
 function M.on_player_left(event)
   local rec = storage.companion
-  if rec and rec.player_index == event.player_index then rec.disconnected = true end
+  if not rec or rec.player_index ~= event.player_index then return end
+  rec.entity = nil
+  rec.disconnected = true
+  M.update_map_tag()
+end
+
+function M.on_player_removed(event)
+  local rec = storage.companion
+  if not rec or rec.player_index ~= event.player_index then return end
+  rec.entity = nil
+  rec.player_index = nil
+  rec.disconnected = nil
+  rec.removed = true
+  M.update_map_tag()
 end
 
 function M.on_player_died(event)

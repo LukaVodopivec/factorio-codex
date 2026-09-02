@@ -1,17 +1,21 @@
 # Live validation
 
-This runbook validates release **0.9.0**. Its offline verification is complete;
-the prior September 2026 live evidence below remains attributable to 0.8.0
-until the fresh 0.9.0 run is recorded. On a fresh machine:
+This runbook validates release **0.10.0**. Prior live evidence remains historical
+until the fresh 0.10.0 run is recorded. On a fresh machine:
 
 1. Launch Factorio 2.0.x once, reach the main menu, and exit. This must happen
    before setup so the user-data directory and `config/config.ini` exist.
 2. Run `nvm use 22 && npm ci && npm run build && node companion/dist/cli.js setup`.
 3. Restart Factorio, enable **Factorio Codex Companion**, and host a dedicated
-   fresh freeplay save with enemy bases disabled so biters cannot spawn.
+   fresh freeplay save with permanent peaceful mode and enemy bases disabled.
    Console-backed RCON disables achievements for the save.
-4. Run `node companion/dist/cli.js doctor`, start Codex at the repository root,
-   then call `connect_status` and `observe_local`.
+4. Run `scripts/launch-native-client.sh <host:port>` to connect the isolated
+   low-resource native client as the real player named `Codex`, before
+   connecting the couch viewer. Its write-data and mod profile lives only in
+   `${XDG_STATE_HOME:-$HOME/.local/state}/factorio-codex/native-client`. Run
+   `node companion/dist/cli.js doctor`, start Codex at the repository root,
+   then call `connect_status` and `observe_local`. Confirm the mod refuses an
+   absent or wrong player instead of creating a standalone character.
 5. Physically mine resources; place a burner mining drill and stone furnace;
    insert legitimately acquired fuel; wait; inspect; extract. Confirm inventory
    changes, elapsed ticks, full footprints, honest reach and path failures.
@@ -23,7 +27,11 @@ until the fresh 0.9.0 run is recorded. On a fresh machine:
    and cancelled paths. Confirm Codex walks at ordinary Factorio speed and no
    global game-speed setting changes.
 7. Interrupt a long action in the TUI, then call `stop`.
-8. If bootstrap items are absent, use another fresh built-in freeplay save.
+8. Exercise `find_placement` at a shoreline; confirm `map_summary` reads only
+   force-charted chunks; verify deterministic production arithmetic and
+   ambiguity refusal; then physically connect steam power to an electric drill
+   and deliver mined ore through belt, pipe, and power routes.
+9. If bootstrap items are absent, use another fresh built-in freeplay save.
    Never use console commands, editor mode, spawned items, or teleporting.
 
 ## Two-session pilot contract
@@ -105,6 +113,12 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 `factorio.exe` to exit completely before replacing the ZIP: Windows briefly
 retained a lock on the old archive during the verified rollout.
 
+Before upgrading an existing 0.9.x save, stop the server and retain an exact
+copy of both the save and its matching 0.9.x mod archive. Validate 0.10.0 on a
+copy first. Rollback means stopping the server, restoring that paired save and
+archive, and confirming the restored version through `doctor`; never open the
+only rollback save with the newer mod.
+
 An ordinary SSH `Start-Process` did not place Steam in the interactive console
 session. The verified fallback used one limited, interactive, one-shot
 Scheduled Task to launch Steam, then removed that task. Without screenshots,
@@ -142,14 +156,14 @@ a `walk_to` action and that a normal player is never moved by this behavior.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.9.0. They
+The successful observations below were collected before release 0.10.0. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.8.0. Complete the fresh run above after installing 0.9.0 before recording a
+0.10.0. Complete the fresh run above after installing 0.10.0 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.9.0 run must instead report protocol v6 and mod/app 0.9.0.
+  0.8.0. A 0.10.0 run must instead report protocol v7 and mod/app 0.10.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

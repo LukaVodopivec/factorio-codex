@@ -200,6 +200,23 @@ local function inspect_one(position, c)
     out.energy = math.floor(energy)
   end
 
+  local electrical = {}
+  local function electrical_number(key, read)
+    local ok, value = pcall(read)
+    if ok and type(value) == "number" then electrical[key] = value end
+  end
+  electrical_number("network_id", function() return e.electric_network_id end)
+  electrical_number("energy", function() return e.energy end)
+  electrical_number("power_usage", function() return e.power_usage end)
+  electrical_number("power_production", function() return e.power_production end)
+  local ok_source, source = pcall(function() return e.prototype.electric_energy_source_prototype end)
+  if ok_source and source then
+    electrical_number("buffer_capacity", function() return source.buffer_capacity end)
+    electrical_number("input_flow_limit", function() return source.input_flow_limit end)
+    electrical_number("output_flow_limit", function() return source.output_flow_limit end)
+  end
+  if next(electrical) ~= nil then out.electrical = electrical end
+
   if e.type == "resource" then out.amount = e.amount end
 
   local inventories = collect_inventories(e)

@@ -23,7 +23,6 @@ local function stop_body()
   local c = companion.get()
   if not c then return end
   c.walking_state, c.mining_state = { walking = false }, { mining = false }
-  pcall(function() c.shooting_state = { state = defines.shooting.not_shooting } end)
 end
 local function cancel_crafting()
   local c = companion.get()
@@ -107,12 +106,34 @@ function M.queue_plan(params)
 end
 local function plan_payload(plan)
   local c = companion.get()
+  local diagnostics
+  if plan.current_task then
+    diagnostics = { action = plan.steps[plan.current_step] and plan.steps[plan.current_step].action }
+    local walker = plan.current_task._walk
+      or (plan.current_task._approach and plan.current_task._approach.walk)
+      or plan.current_task.walker
+      or plan.current_task
+    if walker.phase or walker.retries or walker.failure then
+      diagnostics.route = {
+        phase = walker.phase,
+        retries = walker.retries or 0,
+        failure = walker.failure,
+        request_tick = walker.request_tick,
+        last_progress_tick = walker.last_progress_tick,
+      }
+    end
+    local target = plan.current_task.target or plan.current_task.position
+    if target then diagnostics.machine = { position = { x = target.x, y = target.y } } end
+  elseif plan.status == "failed" and plan.outcomes[#plan.outcomes] then
+    diagnostics = { failure = plan.outcomes[#plan.outcomes].error }
+  end
   return {
     plan_id = plan.id, status = plan.status, source_tick = game.tick,
     position = c and { x = c.position.x, y = c.position.y } or nil,
     current_step = plan.current_step, completed_steps = plan.completed_steps,
     total_steps = #plan.steps, outcomes = plan.outcomes, queue_depth = #storage.tasks.queue,
     observation = plan.observation, observation_error = plan.observation_error,
+    diagnostics = diagnostics,
   }
 end
 function M.plan_status(params)

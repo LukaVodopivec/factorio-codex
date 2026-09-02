@@ -124,7 +124,6 @@ function M.find_placement(params)
   end
   table.sort(candidates, function(a, b)
     if a.distance ~= b.distance then return a.distance < b.distance end
-    if a.distance_from_codex ~= b.distance_from_codex then return a.distance_from_codex < b.distance_from_codex end
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
     if a.position.x ~= b.position.x then return a.position.x < b.position.x end
     return a.direction < b.direction

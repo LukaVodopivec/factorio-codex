@@ -4,10 +4,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 
-describe("bridge protocol v6", () => {
+describe("bridge protocol v7", () => {
   it("has the expected version and retained methods", () => {
-    expect(PROTOCOL_VERSION).toBe(6);
-    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk"]);
+    expect(PROTOCOL_VERSION).toBe(7);
+    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk"]);
   });
   it("matches the exact Lua registrations", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -70,7 +70,7 @@ describe("bridge protocol v6", () => {
       "scripts/test-npm-package.mjs",
     ]) expect(fs.existsSync(path.join(root, removed)), removed).toBe(false);
   });
-  it("guides users only through public fresh-v5 tool names", () => {
+  it("guides users only through public v7 tool names", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const companionSource = fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/companion.lua"), "utf8");
     const inspectSource = fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/inspect.lua"), "utf8");

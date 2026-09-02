@@ -19,6 +19,8 @@ local owned = companion .. walk .. approach
 
 check(not companion:match("create_entity") and not companion:match("create_character"),
   "native player lifecycle contains no standalone character creation")
+check(not companion:match("game%.players"),
+  "native body lookup never scans or adopts another player")
 check(not companion:match("entity%.teleport") and not companion:match("character%.teleport")
   and not companion:match("rec%.entity%.teleport"),
   "Codex character has no teleport path")

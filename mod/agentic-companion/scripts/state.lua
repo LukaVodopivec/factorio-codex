@@ -1,6 +1,6 @@
 local M = {}
 
--- Initializes the v6-compatible single-body storage schema. Safe to call repeatedly.
+-- Initializes the v7-compatible single-body storage schema. Safe to call repeatedly.
 -- All fields any module needs MUST be declared here (single owner of the schema).
 function M.init()
   -- Tasks: one flat queue and one optional active task for the sole Codex

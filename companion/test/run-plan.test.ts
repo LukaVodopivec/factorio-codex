@@ -7,7 +7,7 @@ import { registerMcpTools } from "../src/mcp/server.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 const observation = { tick: 9, detail: "compact", entities: {}, resource_patches: {}, character: { inventory: {}, crafting: { queue_size: 0 } } };
 
-describe("protocol-v6 plans", () => {
+describe("protocol-v7 plans", () => {
   it("validates the complete plan before acquiring a bridge", async () => {
     const handlers: Record<string, (args: unknown) => Promise<any>> = {};
     const provider = vi.fn(async () => ({} as Bridge));

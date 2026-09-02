@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.9.0**.
+Current release: **0.10.0**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -11,7 +11,8 @@ Requirements: Factorio 2.0.x, Node.js 22, and a dedicated save. The fixed
 `/silent-command remote.call` bridge means Factorio disables achievements for
 that save. The interface never exposes Lua, arbitrary console commands, images,
 global-map state, teleportation of the Codex body or free resources. Connected
-spectator cameras follow Codex without affecting its physical movement.
+spectator cameras follow Codex without affecting its physical movement. Every
+supported save is permanently peaceful with enemy bases disabled.
 
 ## Install and use
 
@@ -23,15 +24,23 @@ node companion/dist/cli.js setup
 ```
 
 Restart Factorio, enable **Factorio Codex Companion**, host a fresh freeplay
-save, run `node companion/dist/cli.js doctor`, then start `codex` at this root.
-The committed project config starts MCP automatically. Begin with
+save, and run `scripts/launch-native-client.sh <host:port>` to connect the
+isolated low-resource native client as the real player named `Codex`.
+The mod never creates a standalone fallback character. Run
+`node companion/dist/cli.js doctor`, then start `codex` at this root. The
+committed project config starts MCP automatically. Begin with
 `connect_status`, then `observe_local`; `stop` cancels active and queued work.
 
 The public CLI contains only `setup`, `doctor [--json]`, and `mcp`. MCP exposes
-exactly 20 text-only tools through `tools/list`. `queue_plan` immediately adds
+exactly 24 text-only tools through `tools/list`. `queue_plan` immediately adds
 one Lua-contiguous plan to the sole FIFO; `plan_status` reads it, while
 `run_plan` provides synchronous compatibility. Plans reuse the existing honest
 physical runners and end with a compact or full local observation.
+`find_placement` searches authoritative charted candidates,
+`map_summary` summarizes only already-charted terrain and factory landmarks,
+`production_requirements` performs deterministic recipe arithmetic, and
+`connect_entities` builds an inventory-backed physical belt, pipe, or power
+route.
 
 Live play uses the benchmark-selected topology and model/effort assignment.
 In a split topology the strategist is read/plan-only, while one persistent

@@ -39,29 +39,47 @@ local function character_accepts_products(inv, e)
   table.sort(names)
 
   -- LuaControl.can_insert only means that some of a stack fits, and separate
-  -- queries can double-count shared empty slots. Stage every product in the
-  -- real inventory synchronously, then remove it again before mining starts.
-  -- This gives Factorio ownership of stack sizes, filters, and aggregate slot
-  -- allocation without creating an observable item or advancing game time.
-  local staged = {}
-  local function restore()
-    for i = #staged, 1, -1 do
-      local stack = staged[i]
-      local removed = inv.remove(stack)
-      if removed ~= stack.count then
-        error("mining capacity preflight could not restore Codex inventory")
+  -- queries can double-count shared empty slots. Simulate allocation from the
+  -- read-only inventory slot state so the preflight neither creates nor moves
+  -- any item. Existing partial stacks are consumed first, followed by matching
+  -- filtered slots and then shared unfiltered slots in deterministic order.
+  local available, filtered_empty, shared_empty = {}, {}, {}
+  local last = #inv
+  local ok_bar, bar = pcall(function() return inv.get_bar() end)
+  if ok_bar and type(bar) == "number" and bar > 0 then last = math.min(last, bar - 1) end
+  for index = 1, last do
+    local stack = inv[index]
+    local ok_filter, filter = pcall(function() return inv.get_filter(index) end)
+    if not ok_filter then filter = nil end
+    if stack and stack.valid_for_read then
+      if required[stack.name] then
+        local stack_size = tonumber(stack.prototype and stack.prototype.stack_size) or stack.count
+        available[stack.name] = (available[stack.name] or 0) + math.max(0, stack_size - stack.count)
       end
+    elseif filter then
+      filtered_empty[filter] = (filtered_empty[filter] or 0) + 1
+    else
+      shared_empty[#shared_empty + 1] = index
     end
   end
+
   for _, name in ipairs(names) do
-    local inserted = inv.insert({ name = name, count = required[name] })
-    if inserted > 0 then staged[#staged + 1] = { name = name, count = inserted } end
-    if inserted < required[name] then
-      restore()
-      return false
+    local remaining = required[name] - (available[name] or 0)
+    local proto = prototypes and prototypes.item and prototypes.item[name]
+    local stack_size = tonumber(proto and proto.stack_size)
+    if remaining > 0 and not stack_size then return false end
+    local reserved = filtered_empty[name] or 0
+    if remaining > 0 and reserved > 0 then
+      local used = math.min(reserved, math.ceil(remaining / stack_size))
+      filtered_empty[name] = reserved - used
+      remaining = remaining - used * stack_size
     end
+    while remaining > 0 and #shared_empty > 0 do
+      table.remove(shared_empty)
+      remaining = remaining - stack_size
+    end
+    if remaining > 0 then return false end
   end
-  restore()
   return true
 end
 
@@ -69,6 +87,8 @@ function M.start(task)
   local c = companion.require_companion()
   local target = task.target
   if type(target) ~= "table" or type(target.x) ~= "number" or type(target.y) ~= "number" then error("mine requires target = {x, y}") end
+  local count = tonumber(task.count) or 1
+  if count ~= math.floor(count) or count < 1 or count > 200 then error("mine count must be an integer from 1 to 200") end
   local candidates = c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } }, type = MINABLE_TYPES })
   local found
   for _, e in ipairs(candidates) do
@@ -78,21 +98,34 @@ function M.start(task)
     end
   end
   if not found then error(string.format("nothing minable occupies exact coordinate (%.1f, %.1f)", target.x, target.y)) end
+  if count > 1 and found.type ~= "resource" then error("mine count greater than 1 is only valid for resources") end
   task._entity, task._entity_name = found, found.name
+  task._requested, task._completed, task._actual_gain = count, 0, 0
+end
+
+local function partial_failure(task, reason)
+  return {
+    status = "failed",
+    detail = string.format("mining %s stopped: requested %d cycles, completed %d, actual gain %d items — %s",
+      task._entity_name, task._requested, task._completed, task._actual_gain, reason),
+  }
 end
 
 function M.tick(task)
   local c, e = companion.get(), task._entity
-  if not c then return { status = "failed", detail = "the Codex character is gone" } end
+  if not c then return partial_failure(task, "the Codex character is gone") end
   if not task._mining_started then
-    if not (e and e.valid) then return { status = "failed", detail = "the exact target was removed before mining started" } end
+    if not (e and e.valid) then
+      if task._completed > 0 then return partial_failure(task, "the initially selected resource was exhausted") end
+      return partial_failure(task, "the exact target was removed before mining started")
+    end
     local reached = approach.ensure(task, c, e.position, c.resource_reach_distance)
     if type(reached) == "table" then return reached end
     if reached ~= "ok" then return nil end
     local inv = c.get_main_inventory()
     if not inv then return { status = "failed", detail = "the Codex character has no inventory" } end
     if not character_accepts_products(inv, e) then
-      return { status = "failed", detail = "cannot mine " .. e.name .. " — Codex inventory is full" }
+      return partial_failure(task, "Codex inventory is full")
     end
     task._target_amount = entity_amount(e)
     task._inventory_before = inv.get_item_count()
@@ -102,7 +135,7 @@ function M.tick(task)
     -- entity.
     c.update_selected_entity(e.position)
     if c.selected ~= e then
-      return { status = "failed", detail = "could not select the exact mining target" }
+      return partial_failure(task, "could not select the exact mining target")
     end
     task._mining_started = true
     c.mining_state = { mining = true, position = e.position }
@@ -118,9 +151,20 @@ function M.tick(task)
   local inv = c.get_main_inventory()
   local gained = inv and (inv.get_item_count() - task._inventory_before) or 0
   if gained <= 0 then
-    return { status = "failed", detail = "the exact target changed without mined items reaching Codex inventory" }
+    return partial_failure(task, "the exact target changed without mined items reaching Codex inventory")
   end
-  return { status = "done", detail = string.format("mined %s at exact coordinate (+%d items)", task._entity_name, gained) }
+  task._completed = task._completed + 1
+  task._actual_gain = task._actual_gain + gained
+  task._mining_started = false
+  if task._completed >= task._requested then
+    return {
+      status = "done",
+      detail = string.format("mined %s at exact coordinate: requested %d cycles, completed %d, actual gain %d items",
+        task._entity_name, task._requested, task._completed, task._actual_gain),
+    }
+  end
+  if not (e and e.valid) then return partial_failure(task, "the initially selected resource was exhausted") end
+  return nil
 end
 
 return M

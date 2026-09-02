@@ -106,7 +106,7 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "mod", ok: false, detail: expect.stringMatching(/RPC unavailable: (unlock|ping) failed/), fix: expect.stringContaining("install and enable") }));
   });
   it.each([
-    { ping: { protocol_version: 4, mod_version: "0.7.0" }, failedCheck: "protocol" },
+    { ping: { protocol_version: 4, mod_version: "0.8.0" }, failedCheck: "protocol" },
     { ping: { protocol_version: 5, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
@@ -125,7 +125,7 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
     expect(connect).not.toHaveBeenCalled();
   });
-  it("keeps root, package, lockfile, runtime, and mod versions at 0.7.0", () => {
+  it("keeps root, package, lockfile, runtime, mod, and docs at 0.8.0", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const read = (relative: string) => JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
     const lock = read("package-lock.json");
@@ -137,20 +137,40 @@ describe("exact local configuration", () => {
       lock.packages[""].version,
       lock.packages.companion.version,
       companionVersion(),
-    ]).toEqual(Array(7).fill("0.7.0"));
-    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.7.0**");
-    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.7.0**");
+    ]).toEqual(Array(7).fill("0.8.0"));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.8.0**");
+    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.8.0**");
   });
   it("keeps visible locale title and description aligned with one-body mod metadata", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const info = JSON.parse(fs.readFileSync(path.join(root, "mod/agentic-companion/info.json"), "utf8"));
     const locale = fs.readFileSync(path.join(root, "mod/agentic-companion/locale/en/agentic-companion.cfg"), "utf8");
     const values = [...locale.matchAll(/^agentic-companion=(.+)$/gm)].map((match) => match[1]);
-    expect(info).toMatchObject({ version: "0.7.0", title: "Factorio Codex Companion" });
+    expect(info).toMatchObject({ version: "0.8.0", title: "Factorio Codex Companion" });
     expect(values).toEqual([info.title, info.description]);
-    expect(locale).toContain("agentic-companion-movement-speed=Codex movement speed");
-    expect(locale).toContain("sole Codex character");
+    expect(locale).not.toMatch(/movement.speed|multiplier/i);
     expect(locale).not.toMatch(/Agentic Companion|AI companion|companions|characters|vehicles/i);
+  });
+
+  it("uses the source MCP entry and contains no retired speed-setting path", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const config = fs.readFileSync(path.join(root, ".codex/config.toml"), "utf8");
+    expect(config).toContain('command = "node"');
+    expect(config).toContain('args = ["node_modules/.bin/tsx", "companion/src/cli.ts", "mcp"]');
+    expect(config).not.toMatch(/^cwd\s*=/m);
+    expect(fs.existsSync(path.join(root, "mod/agentic-companion/settings.lua"))).toBe(false);
+    const modSource = ["control.lua", "scripts/companion.lua", "locale/en/agentic-companion.cfg"]
+      .map((file) => fs.readFileSync(path.join(root, "mod/agentic-companion", file), "utf8")).join("\n");
+    expect(modSource).not.toMatch(/movement.speed|movement_speed|runtime_mod_setting/i);
+  });
+
+  it("keeps the player skill text-only and aligned with batching and MCP_GAP", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
+    expect(skill).toMatch(/run_plan/);
+    expect(skill).toMatch(/build_plan/);
+    expect(skill).toMatch(/MCP_GAP/);
+    expect(skill).toMatch(/no screenshot|never.*screen capture/i);
   });
 });
 

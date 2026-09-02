@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const expected = ["connect_status","observe_local","inspect_entity","describe_prototype","can_place","walk_to","mine","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","start_research","stop"].sort();
+const expected = ["connect_status","observe_local","inspect_entity","describe_prototype","can_place","walk_to","mine","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","run_plan","start_research","stop"].sort();
 const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = process.env.MCP_ENTRY ?? "src/cli.ts";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-mcp-home-"));
@@ -31,7 +31,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.7.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.8.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -49,11 +49,16 @@ try {
   const rejectedPlan = await request("tools/call", { name: "build_plan", arguments: { steps: tooManySteps } });
   const rejectedText = rejectedPlan.result?.content?.[0]?.text ?? "";
   if (!rejectedPlan.result?.isError || /Offline:/.test(rejectedText)) throw new Error(`26-step plan reached runtime instead of input rejection: ${rejectedText}`);
+  const mineSchema = tools.find((tool: any) => tool.name === "mine")?.inputSchema?.properties ?? {};
+  if (mineSchema.count?.default !== 1 || mineSchema.count?.maximum !== 200) throw new Error("mine must expose count 1-200 default 1");
+  const runPlanSchema = tools.find((tool: any) => tool.name === "run_plan")?.inputSchema ?? {};
+  if (runPlanSchema.properties?.steps?.maxItems !== 25 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-25 steps");
+  if (/build_plan|start_research|stop|sleep|by_name/.test(JSON.stringify(runPlanSchema))) throw new Error("run_plan exposes a forbidden nested step");
   const status = await request("tools/call", { name: "connect_status", arguments: {} });
   const text = status.result?.content?.[0]?.text ?? "";
   if (!text.startsWith("Offline:") || !text.includes("factorio-codex setup")) throw new Error(`offline status not actionable: ${text}`);
   if (stderr.trim()) throw new Error(`unexpected pre-init/offline stderr: ${stderr}`);
-  console.log("PASS initialize, exact 16 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
+  console.log("PASS initialize, exact 17 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
 } finally {
   child.kill();
   fs.rmSync(home, { recursive: true, force: true });

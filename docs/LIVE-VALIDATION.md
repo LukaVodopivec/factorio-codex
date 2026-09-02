@@ -1,6 +1,6 @@
 # Live validation
 
-This runbook validates release **0.7.0**.
+This runbook validates release **0.8.0**.
 
 Factorio was unavailable during the offline release verification. On a fresh
 machine:
@@ -16,8 +16,15 @@ machine:
 5. Physically mine resources; place a burner mining drill and stone furnace;
    insert legitimately acquired fuel; wait; inspect; extract. Confirm inventory
    changes, elapsed ticks, full footprints, honest reach and path failures.
-6. Interrupt a long action in the TUI, then call `stop`.
-7. If bootstrap items are absent, use another fresh built-in freeplay save.
+   Verify `mine` count repeats cycles only on its initial exact resource and
+   that `observe_local` reports resources as connected patches with an exact
+   `nearest_target`, not duplicate entity rows.
+6. Run a two-or-more-step `run_plan`. Confirm ordered fail-fast outcomes, no
+   later enqueue after failure, and a final observation on completed, failed,
+   and cancelled paths. Confirm Codex walks at ordinary Factorio speed and no
+   global game-speed setting changes.
+7. Interrupt a long action in the TUI, then call `stop`.
+8. If bootstrap items are absent, use another fresh built-in freeplay save.
    Never use console commands, editor mode, spawned items, or teleporting.
 
 ## Two-session pilot contract
@@ -46,7 +53,7 @@ addresses as runtime inputs, not permanent configuration: confirm them with
   rule was `ufw allow from 192.0.2.0/24 to any port 34197 proto udp`.
   Apply this only through the workstation's supervised firewall procedure;
   do not change router DHCP settings for this validation.
-- The couch install needs the same `agentic-companion_0.7.0.zip` in
+- The couch install needs the same `agentic-companion_0.8.0.zip` in
   `%APPDATA%\\Factorio\\mods` and an enabled `agentic-companion` entry in
   `%APPDATA%\\Factorio\\mod-list.json` before joining.
 - The server's RCON remains private and local: `127.0.0.1:19015`. It is not
@@ -73,7 +80,7 @@ where the result can be verified authoritatively. First run
 `/promote <couch-player-name>`, then run
 `/c local p=game.get_player("<couch-player-name>"); p.set_controller{type=defines.controllers.spectator}; log("spectator="..tostring(p.controller_type==defines.controllers.spectator).." character="..tostring(p.character~=nil))`.
 Require the server log to report `spectator=true character=false`. A UI bridge
-reporting that it typed the command, or a screenshot without a HUD, is not
+reporting that it typed the command, or other visual-only evidence, is not
 sufficient evidence because keyboard focus and open GUI panels can make those
 signals misleading. This is an administrator/cheat command and disables
 achievements for the save.
@@ -86,7 +93,7 @@ a `walk_to` action and that a normal player is never moved by this behavior.
 ## Live results and known failure signatures
 
 - `doctor --json` is the quickest preflight: it should report exact config
-  shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app 0.7.0.
+  shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app 0.8.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and
@@ -102,36 +109,3 @@ a `walk_to` action and that a normal player is never moved by this behavior.
 - The observed couch launch reached `InGame` and the server logged the join.
   A successful network join alone does not prove spectator mode; verify the
   controller in the Factorio UI as described above.
-
-## Optional couch UI navigation layer
-
-For semantic Windows UI navigation, the couch PC was tested with
-[CursorTouch Windows-MCP 0.8.5](https://pypi.org/project/windows-mcp/0.8.5/).
-This is an optional companion to SSH and the existing `couch-ui` fallback; it
-does not control Factorio through the Codex MCP server.
-
-The tested deployment details are:
-
-- Python 3.12 and `windows-mcp==0.8.5` installed for the Windows user.
-- A per-user Scheduled Task named `windows-mcp-server`, running at logon with
-  limited (non-elevated) privileges.
-- Streamable HTTP bound only to `127.0.0.1:8000`; never expose this listener
-  directly on the LAN. If remote use is needed, carry it through the existing
-  authenticated SSH connection with a local port forward.
-- Telemetry disabled with `ANONYMIZED_TELEMETRY=false` and an empty
-  `POSTHOG_API_KEY`.
-- The launcher passes this explicit UI-only allowlist:
-  `Screenshot,Snapshot,Click,Type,Scroll,Move,Shortcut,Wait,WaitFor,DisplayInventory,App`.
-  PowerShell, FileSystem, Registry, Process, Clipboard, Scrape, Notification,
-  MultiSelect, and MultiEdit are excluded.
-
-The installer rewrites `~/.windows-mcp/start-server.cmd`; apply the allowlist
-to that launcher after installation and restart only the `windows-mcp-server`
-task. If using `config.toml`, write it as UTF-8 without a BOM: Windows
-PowerShell's default UTF-8 writer can otherwise cause `Invalid statement` at
-startup. Verify with a local MCP `initialize`/`tools/list` request and confirm
-exactly 11 tools before adding the server to a client.
-
-The tested endpoint reported Windows-MCP 4.0.1 internally even though the
-installed package was 0.8.5; use the package version for pinning and retain
-the scheduled-task launcher as the source of the effective runtime options.

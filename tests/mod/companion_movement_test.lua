@@ -6,7 +6,7 @@ _G.storage = {}; _G.settings = nil
 _G.defines = { controllers = { character = 1, spectator = 4 } }
 local tag = { valid = true, position = { x = 1, y = 2 }, destroy = function() end }
 local force = { add_chart_tag = function() return tag end }
-local body = { valid = true, unit_number = 41, position = { x = 1, y = 2 }, force = force }
+local body = { valid = true, unit_number = 41, position = { x = 1, y = 2 }, force = force, character_running_speed_modifier = 0.6 }
 local surface
 surface = {
   find_non_colliding_position = function() return { x = 1, y = 2 } end,
@@ -29,7 +29,6 @@ player = {
 _G.game = { connected_players = { player }, forces = { player = force }, surfaces = { surface } }
 _G.rendering = { draw_text = function() return { valid = true, destroy = function() end } end }
 local companion = require("scripts.companion")
-check(companion.movement_speed_multiplier() == 1.6, "configured movement remains physical")
 local missing, missing_error = pcall(companion.require_companion)
 check(not missing and tostring(missing_error):match("call connect_status first") ~= nil
   and tostring(missing_error):match("spawn_companion") == nil,
@@ -40,8 +39,13 @@ check(#response_keys == 1 and response_keys[1] == "position",
   "spawn returns only the fixed body's position without selectable identity")
 local record_keys = {}; for key in pairs(storage.companion) do record_keys[#record_keys + 1] = key end; table.sort(record_keys)
 check(table.concat(record_keys, ",") == "entity,label,map_tag", "storage contains exactly one fixed Codex record")
-companion.apply_movement_speed()
-check(math.abs(body.character_running_speed_modifier - 0.6) < 0.000001, "movement modifier applies to Codex")
+check(body.character_running_speed_modifier == 0, "new Codex bodies use ordinary Factorio movement speed")
+body.character_running_speed_modifier = 0.6
+check(companion.get() == body and body.character_running_speed_modifier == 0,
+  "body validation removes a stale Codex-only speed modifier")
+body.character_running_speed_modifier = 0.6
+companion.enforce_normal_speed()
+check(body.character_running_speed_modifier == 0, "configuration change normalization restores ordinary speed")
 companion.follow_spectators()
 check(teleports == 0 and player.position.x == 0, "normal players never follow Codex")
 player.controller_type = defines.controllers.spectator

@@ -1,7 +1,6 @@
 [mcp_servers.factorio]
 command = "node"
-args = ["companion/dist/cli.js", "mcp"]
-cwd = "."
+args = ["node_modules/.bin/tsx", "companion/src/cli.ts", "mcp"]
 enabled = true
 required = true
 startup_timeout_sec = 15

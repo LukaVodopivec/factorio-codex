@@ -18,6 +18,11 @@ describe("bridge protocol v5", () => {
   it("keeps replaced callable paths absent from retained Lua sources", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8");
+    const luaRoot = path.join(root, "mod/agentic-companion");
+    const luaSources = fs.readdirSync(luaRoot, { recursive: true, encoding: "utf8" })
+      .filter((file) => file.endsWith(".lua"))
+      .map((file) => fs.readFileSync(path.join(luaRoot, file), "utf8"))
+      .join("\n");
     const all = [
       "mod/agentic-companion/control.lua",
       "mod/agentic-companion/scripts/companion.lua",
@@ -38,8 +43,10 @@ describe("bridge protocol v5", () => {
     expect(inspectSource).toMatch(/return \{ entities = out \}/);
     expect(read("mod/agentic-companion/scripts/research.lua")).not.toMatch(/companion\.get|game\.forces\.player|connected_players/);
     expect(read("mod/agentic-companion/scripts/research.lua")).toMatch(/companion\.require_companion\(\)\.force/);
-    expect(read("mod/agentic-companion/scripts/actions/mine.lua")).not.toMatch(/task\.resource|resource_name|find_entity_near|radius|\.mine\s*\(/);
+    expect(read("mod/agentic-companion/scripts/actions/mine.lua"))
+      .not.toMatch(/task\.resource|resource_name|find_entity_near|radius|\.mine\s*\(|\.insert\s*\(|spill_item_stack|create_entity/);
     expect(read("mod/agentic-companion/scripts/actions/build_plan.lua")).not.toMatch(/step\.entity/);
+    expect(luaSources).not.toMatch(/run_plan|wait_for_item/);
   });
   it("keeps the private package on the repository-only mod layout", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");

@@ -263,9 +263,13 @@ function M.observe_local(params)
               chars[rr][cc], prio[rr][cc], paint_key[rr][cc] = ch, p, key
             end
           end end
-          local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y
-          details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, status = entity_status(e), recipe = entity_recipe(e), bounds = bounds, footprint = { width = bounds.right_bottom.x - bounds.left_top.x, height = bounds.right_bottom.y - bounds.left_top.y }, _distance = ddx * ddx + ddy * ddy, _unit = tonumber(e.unit_number) or -1 }
-          if e.type == "resource" then resources_by_name[e.name] = resources_by_name[e.name] or {}; resources_by_name[e.name][#resources_by_name[e.name] + 1] = e end
+          if e.type == "resource" then
+            resources_by_name[e.name] = resources_by_name[e.name] or {}
+            resources_by_name[e.name][#resources_by_name[e.name] + 1] = e
+          else
+            local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y
+            details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, status = entity_status(e), recipe = entity_recipe(e), bounds = bounds, footprint = { width = bounds.right_bottom.x - bounds.left_top.x, height = bounds.right_bottom.y - bounds.left_top.y }, _distance = ddx * ddx + ddy * ddy, _unit = tonumber(e.unit_number) or -1 }
+          end
         end
     end
   end
@@ -303,15 +307,25 @@ function M.observe_local(params)
     local visited = {}
     for start = 1, #resources do if not visited[start] then
       local queue, head, count, amount, sx, sy, members = { start }, 1, 0, 0, 0, 0, {}; visited[start] = true
+      local nearest, nearest_distance_sq, nearest_unit
       while head <= #queue do
         local index = queue[head]; head = head + 1; local e = resources[index]
         count, amount, sx, sy = count + 1, amount + (e.amount or 0), sx + e.position.x, sy + e.position.y
+        local ndx, ndy = e.position.x - c.position.x, e.position.y - c.position.y
+        local distance_sq, unit = ndx * ndx + ndy * ndy, tonumber(e.unit_number) or -1
+        if not nearest or distance_sq < nearest_distance_sq
+          or (distance_sq == nearest_distance_sq and (e.position.y < nearest.position.y
+            or (e.position.y == nearest.position.y and (e.position.x < nearest.position.x
+              or (e.position.x == nearest.position.x and ((e.amount or 0) < (nearest.amount or 0)
+                or ((e.amount or 0) == (nearest.amount or 0) and unit < nearest_unit))))))) then
+          nearest, nearest_distance_sq, nearest_unit = e, distance_sq, unit
+        end
         members[#members + 1] = string.format("%.17g,%.17g,%.17g,%d", e.position.x, e.position.y,
           e.amount or 0, tonumber(e.unit_number) or -1)
         for other = 1, #resources do if not visited[other] then local o = resources[other]; if math.abs(e.position.x - o.position.x) <= 1.1 and math.abs(e.position.y - o.position.y) <= 1.1 then visited[other] = true; queue[#queue + 1] = other end end end
       end
       local center = { x = sx / count, y = sy / count }; local dx, dy = center.x - c.position.x, center.y - c.position.y
-      patches[#patches + 1] = { name = name, entity_count = count, total_amount = amount, center = center, distance = math.sqrt(dx * dx + dy * dy), _members = table.concat(members, ";") }
+      patches[#patches + 1] = { name = name, entity_count = count, total_amount = amount, center = center, distance = math.sqrt(dx * dx + dy * dy), nearest_target = { x = nearest.position.x, y = nearest.position.y, amount = nearest.amount or 0, distance = math.sqrt(nearest_distance_sq) }, _members = table.concat(members, ";") }
     end end
   end
   table.sort(patches, function(a, b)

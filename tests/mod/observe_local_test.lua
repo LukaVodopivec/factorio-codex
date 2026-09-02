@@ -33,6 +33,8 @@ entities[5] = resource("iron-ore", 12, 0, 50)
 entities[6] = resource("copper-ore", -5, 0, 75)
 entities[7] = resource("coal", 0, 8, 30)
 entities[8] = resource("stone", 0, -8, 40)
+entities[9] = resource("uranium-ore", -0.5, 0, 10)
+entities[10] = resource("uranium-ore", 0.5, 0, 20)
 local corners = { { -14, -14 }, { 14, -14 }, { -14, 14 }, { 14, 14 } }
 for i = 1, 258 do local point = corners[(i - 1) % #corners + 1]; entities[#entities + 1] = entity("machine-" .. i, point[1], point[2], 1, 1) end
 local edge = entity("edge-machine", 16.5, 0, 3, 3)
@@ -89,7 +91,11 @@ check(observation.character.inventory["iron-plate"] == 3, "observation includes 
 check(observation.grid.rows[15]:sub(15, 16) == "aa" and observation.grid.rows[16]:sub(15, 16) == "a@", "full 2x2 footprint is painted beneath higher-priority Codex")
 check(observation.grid.rows[15]:sub(15, 15) == "a", "equal-priority overlap deterministically paints the lexical-name glyph")
 check(observation.grid.legend.a == "a-machine" and observation.grid.legend.b == "edge-machine", "building glyphs are assigned lexically")
-check(#observation.entities == 256 and observation.omitted_entities == 12, "nearest 256 entity cap is explicit")
+check(#observation.entities == 256 and observation.omitted_entities == 6,
+  "nearest 256 entity cap and omission count cover only non-resource details")
+local has_resource_detail = false
+for _, detail in ipairs(observation.entities) do if detail.type == "resource" then has_resource_detail = true end end
+check(not has_resource_detail, "resource rows are omitted from entity details and represented only as patches")
 local ordered = true
 for i = 2, #observation.entities do
   local a, b = observation.entities[i - 1], observation.entities[i]
@@ -105,6 +111,15 @@ for _, patch in ipairs(observation.resource_patches) do if patch.name == "iron-o
 table.sort(iron_patches, function(a, b) return a.entity_count > b.entity_count end)
 check(#iron_patches == 2 and iron_patches[1].entity_count == 2 and iron_patches[1].total_amount == 300 and iron_patches[2].entity_count == 1 and iron_patches[2].total_amount == 50,
   "connected resource tiles become deterministic amount-bearing patches")
+check(iron_patches[1].nearest_target.x == 5 and iron_patches[1].nearest_target.y == 0
+  and iron_patches[1].nearest_target.amount == 100 and iron_patches[1].nearest_target.distance == 5,
+  "resource patches expose the deterministic nearest exact mining target without an identity")
+check(iron_patches[1].nearest_target.unit_number == nil,
+  "nearest resource targets never expose unit numbers")
+local uranium_patch
+for _, patch in ipairs(observation.resource_patches) do if patch.name == "uranium-ore" then uranium_patch = patch end end
+check(uranium_patch and uranium_patch.nearest_target.x == -0.5 and uranium_patch.nearest_target.distance == 0.5,
+  "equal-distance nearest resource targets use the stable y/x tiebreak")
 local coal_index, stone_index
 for index, patch in ipairs(observation.resource_patches) do
   if patch.name == "coal" then coal_index = index elseif patch.name == "stone" then stone_index = index end

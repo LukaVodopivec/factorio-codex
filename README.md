@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.7.0**.
+Current release: **0.8.0**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -28,13 +28,20 @@ The committed project config starts MCP automatically. Begin with
 `connect_status`, then `observe_local`; `stop` cancels active and queued work.
 
 The public CLI contains only `setup`, `doctor [--json]`, and `mcp`. MCP exposes
-exactly 16 text-only tools through `tools/list`.
+exactly 17 text-only tools through `tools/list`. `run_plan` synchronously runs
+up to 25 known dependent actions through the existing physical paths and ends
+with a local observation; it adds no Lua planner or background executor.
 
 Live play supports one Sol strategist and one Luna pilot: the strategist is
 read/plan-only, while Luna alone writes ordinary MCP actions for the one
 physical Codex body and task lane. Bounded packets prevent strategic drift;
 concurrency removes thinking idle time, not physical walking time. See the
-repo-local `factorio-player` skill for the packet and reporting contract.
+repo-local `factorio-player` skill for the packet and reporting contract. The
+pilot batches read targets, uses direct actions without a redundant `walk_to`,
+uses `build_plan` for layouts, and uses `run_plan` for dependent multi-step
+work. Screenshots and screen capture are never part of this text-only
+interface. See [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md) for the
+22-call baseline, benchmark fields, and adopted research patterns.
 
 ## Verification
 

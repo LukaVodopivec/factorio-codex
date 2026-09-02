@@ -12,6 +12,7 @@ describe("public MCP to Lua DTO mappings", () => {
       resource_patches: [{ name: "iron-ore", entity_count: 2, total_amount: 300, center: { x: 5.5, y: 0 } }],
     };
     const output = result(normalizeObservation(value));
+    expect(output.content[0].text).toBe(JSON.stringify(value));
     expect(JSON.parse(output.content[0].text)).toEqual(value);
     expect(JSON.parse(output.content[0].text)).toEqual(output.structuredContent);
     expect(output.content[0].text).toContain('"resource_patches"');
@@ -22,7 +23,8 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(JSON.parse(output.content[0].text)).toEqual(output.structuredContent);
   });
   it("maps every coordinate action to the retained Lua DTO", () => {
-    expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } }); // walk_to and mine
+    expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } });
+    expect(toolPayloads.mine({ x: 1, y: 2, count: 3 })).toEqual({ target: { x: 1, y: 2 }, count: 3 });
     expect(toolPayloads.place({ x: 1, y: 2, name: "furnace", direction: 4 })).toEqual({ item: "furnace", position: { x: 1, y: 2 }, direction: 4 });
     expect(toolPayloads.insert({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
     expect(toolPayloads.extract({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
@@ -43,7 +45,7 @@ describe("registered MCP handler parity with Lua v5", () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.7.0", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.8.0", factorio_version: "2.0.0", tick: 1 }
       : method === "observe_local" ? { entities: [], resource_patches: [] } : { ok: method });
     const enqueueAndWait = vi.fn(async (task: unknown) => ({ task }));
     registerMcpTools({
@@ -80,8 +82,10 @@ describe("registered MCP handler parity with Lua v5", () => {
     expect(call).toHaveBeenLastCalledWith("can_place", { placements: [{ item: "transport-belt", position: { x: 7, y: 8 }, direction: 4 }] });
     await handlers.walk_to({ x: 9, y: 10 });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "walk_to", target: { x: 9, y: 10 } });
-    await handlers.mine({ x: 11, y: 12 });
-    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 } });
+    await handlers.mine({ x: 11, y: 12, count: 4 });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 4 });
+    expect(schemas.mine.safeParse({ x: 0, y: 0 }).data.count).toBe(1);
+    expect(schemas.mine.safeParse({ x: 0, y: 0, count: 201 }).success).toBe(false);
     await handlers.place_entity({ x: 13, y: 14, name: "stone-furnace", direction: 8 });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "place", item: "stone-furnace", position: { x: 13, y: 14 }, direction: 8 });
     await handlers.craft_items({ recipe: "iron-gear-wheel", count: 2 });
@@ -96,13 +100,13 @@ describe("registered MCP handler parity with Lua v5", () => {
     expect(call).toHaveBeenLastCalledWith("start_research", { technology: "automation" });
     await handlers.stop({});
     expect(call).toHaveBeenLastCalledWith("cancel", { all: true });
-    expect(Object.keys(handlers)).toHaveLength(16);
+    expect(Object.keys(handlers)).toHaveLength(17);
   });
 });
 
 describe("connect_status body lifecycle", () => {
   it("reports a persistent death without calling spawn", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 5, mod_version: "0.7.0" });
+    const call = vi.fn().mockResolvedValue({ companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 5, mod_version: "0.8.0" });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(true);
     expect(output.content[0].text).toMatch(/dead.*never auto-respawns/i);
@@ -111,13 +115,13 @@ describe("connect_status body lifecycle", () => {
 
   it("rejects a stale mod before reporting connected", async () => {
     const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 5, mod_version: "0.6.0" });
-    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.7.0");
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.8.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
   it("spawns Codex exactly once only for a never-created save", async () => {
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 5, mod_version: "0.7.0", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 5, mod_version: "0.8.0", factorio_version: "2.0.0", tick: 1 }
       : { name: "Codex" });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);

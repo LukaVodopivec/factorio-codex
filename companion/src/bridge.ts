@@ -14,10 +14,21 @@ export function escapeLuaString(s: string): string {
 
 export interface EnqueueOptions {
   timeoutMs?: number;
-  pollMs?: number;
+  deadlineMs?: number;
+  signal?: AbortSignal;
+  clock?: TaskClock;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+export interface TaskClock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+
+const realClock: TaskClock = {
+  now: Date.now,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+export const TASK_POLL_DELAYS_MS = [100, 200, 500] as const;
 export const DEFAULT_TASK_TIMEOUT_MS = 570_000;
 
 export class Bridge {
@@ -86,26 +97,39 @@ export class Bridge {
   /** Enqueues a task and polls until it reaches a terminal state.
    *  Resolves with the human-readable detail; rejects (ModError) on failure. */
   async enqueueAndWait(task: Task, opts: EnqueueOptions = {}): Promise<string> {
+    if (opts.signal?.aborted) throw new ModError("the task was cancelled");
     const { task_id } = await this.call<{ task_id: number }>("enqueue", { task });
+    const clock = opts.clock ?? realClock;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
-    const pollMs = opts.pollMs ?? 500;
-    const deadline = Date.now() + timeoutMs;
+    const deadline = opts.deadlineMs ?? clock.now() + timeoutMs;
+    let poll = 0;
 
-    while (Date.now() < deadline) {
-      await sleep(pollMs);
-      const st = await this.call<GetTaskResult>("get_task", { task_id });
-      switch (st.status) {
-        case "done":
-          return st.detail || "done";
-        case "failed":
-          throw new ModError(st.detail || "task failed");
-        case "cancelled":
-          throw new ModError("the task was cancelled");
-        default:
-          break; // queued / running
+    try {
+      while (clock.now() < deadline) {
+        if (opts.signal?.aborted) throw new ModError("the task was cancelled");
+        const delay = TASK_POLL_DELAYS_MS[Math.min(poll, TASK_POLL_DELAYS_MS.length - 1)]!;
+        poll++;
+        await clock.sleep(Math.min(delay, deadline - clock.now()));
+        if (opts.signal?.aborted) throw new ModError("the task was cancelled");
+        if (clock.now() >= deadline) throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
+        const st = await this.call<GetTaskResult>("get_task", { task_id });
+        if (opts.signal?.aborted) throw new ModError("the task was cancelled");
+        if (clock.now() >= deadline) throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
+        switch (st.status) {
+          case "done":
+            return st.detail || "done";
+          case "failed":
+            throw new ModError(st.detail || "task failed");
+          case "cancelled":
+            throw new ModError("the task was cancelled");
+          default:
+            break; // queued / running
+        }
       }
+      throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
+    } catch (error) {
+      await this.call("cancel", { task_id }).catch(() => {});
+      throw error;
     }
-    await this.call("cancel", { task_id }).catch(() => {});
-    throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
   }
 }

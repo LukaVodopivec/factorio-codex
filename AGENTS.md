@@ -38,10 +38,13 @@
 
 One Sol strategist may read and plan while one Luna pilot is the sole ordinary
 MCP action writer for the single physical Codex character and task lane. Luna
-receives bounded milestone packets, may observe, select exact visible
-coordinates, retry honest pathing, and complete the assigned milestone, but
-does not invent the next strategic goal. Each packet ends with `observe_local`
-and a report of position, inventory, active task, result, and failure.
+receives bounded milestone packets, batches reads, selects exact visible
+coordinates, uses `build_plan` for layouts and `run_plan` for two or more known
+dependent steps, and completes the assigned milestone without inventing the
+next strategic goal. Consume `run_plan`'s final observation; otherwise each
+packet ends with `observe_local` and a report of position, inventory, active
+task, result, and failure. Never use screenshots or screen capture. Missing
+structured state is an `MCP_GAP`, not permission to guess.
 Concurrency removes thinking idle time, not physical walking time. There is no
 second body, raw Lua/console, teleport, hidden map, free resource, or second
 RCON path; `stop` is emergency cancellation only.

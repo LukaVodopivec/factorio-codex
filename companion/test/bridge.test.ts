@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Bridge, DEFAULT_TASK_TIMEOUT_MS, escapeLuaString, ModError } from "../src/bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, escapeLuaString, ModError, type TaskClock } from "../src/bridge.js";
 import type { RconClient } from "../src/rcon.js";
 
 function fakeRcon(execImpl: (cmd: string) => Promise<string>): {
@@ -11,6 +11,12 @@ function fakeRcon(execImpl: (cmd: string) => Promise<string>): {
 }
 
 const ok = (data: unknown) => Promise.resolve(JSON.stringify({ ok: true, data }));
+function fakeClock() {
+  let now = 0;
+  const sleeps: number[] = [];
+  const clock: TaskClock = { now: () => now, sleep: async (ms) => { sleeps.push(ms); now += ms; } };
+  return { clock, sleeps, set: (value: number) => { now = value; } };
+}
 
 describe("escapeLuaString", () => {
   it("escapes backslashes and quotes", () => {
@@ -91,14 +97,16 @@ describe("Bridge.enqueueAndWait", () => {
     const { rcon, exec } = fakeRcon((cmd) => {
       if (cmd.includes('"enqueue"')) return ok({ task_id: 7 });
       polls++;
-      return polls < 3
+      return polls < 5
         ? ok({ status: "running", detail: "" })
         : ok({ status: "done", detail: "arrived at (1.0, 2.0)" });
     });
     const bridge = new Bridge(rcon);
+    const time = fakeClock();
     await expect(
-      bridge.enqueueAndWait({ type: "walk_to", target: { x: 1, y: 2 } }, { pollMs: 1 }),
+      bridge.enqueueAndWait({ type: "walk_to", target: { x: 1, y: 2 } }, { clock: time.clock }),
     ).resolves.toBe("arrived at (1.0, 2.0)");
+    expect(time.sleeps).toEqual([100, 200, 500, 500, 500]);
     expect(exec.mock.calls[0][0]).toContain('\\"task\\"');
     expect(exec.mock.calls[0][0]).not.toContain("replace");
   });
@@ -109,9 +117,9 @@ describe("Bridge.enqueueAndWait", () => {
         ? ok({ task_id: 8 })
         : ok({ status: "failed", detail: "got stuck" }),
     );
-    await expect(
-      new Bridge(rcon).enqueueAndWait({ type: "mine", target: { x: 0, y: 0 } }, { pollMs: 1 }),
-    ).rejects.toThrow("got stuck");
+    await expect(new Bridge(rcon).enqueueAndWait(
+      { type: "mine", target: { x: 0, y: 0 }, count: 1 }, { clock: fakeClock().clock },
+    )).rejects.toThrow("got stuck");
   });
 
   it("cancels and rejects on timeout", async () => {
@@ -124,12 +132,37 @@ describe("Bridge.enqueueAndWait", () => {
       }
       return ok({ status: "running", detail: "" });
     });
+    const time = fakeClock();
     await expect(
       new Bridge(rcon).enqueueAndWait(
         { type: "walk_to", target: { x: 1, y: 2 } },
-        { pollMs: 1, timeoutMs: 30 },
+        { clock: time.clock, timeoutMs: 300 },
       ),
     ).rejects.toThrow(/gave up/);
     expect(cancelled).toHaveLength(1);
+  });
+
+  it("cancels its owned task on abort and never polls again", async () => {
+    const controller = new AbortController();
+    const methods: string[] = [];
+    const { rcon } = fakeRcon((cmd) => {
+      if (cmd.includes('"enqueue"')) { methods.push("enqueue"); return ok({ task_id: 12 }); }
+      if (cmd.includes('"cancel"')) { methods.push("cancel"); return ok({ cancelled: 1 }); }
+      methods.push("get_task"); return ok({ status: "running" });
+    });
+    const clock: TaskClock = { now: () => 0, sleep: async () => { controller.abort(); } };
+    await expect(new Bridge(rcon).enqueueAndWait(
+      { type: "mine", target: { x: 0, y: 0 }, count: 2 }, { signal: controller.signal, clock },
+    )).rejects.toThrow(/cancelled/);
+    expect(methods).toEqual(["enqueue", "cancel"]);
+  });
+
+  it("does not enqueue when already aborted", async () => {
+    const controller = new AbortController(); controller.abort();
+    const { rcon, exec } = fakeRcon(() => ok({}));
+    await expect(new Bridge(rcon).enqueueAndWait(
+      { type: "walk_to", target: { x: 1, y: 2 } }, { signal: controller.signal },
+    )).rejects.toThrow(/cancelled/);
+    expect(exec).not.toHaveBeenCalled();
   });
 });

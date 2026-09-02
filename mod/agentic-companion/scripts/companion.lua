@@ -3,35 +3,19 @@
 local M = {}
 
 local CODEX_LABEL = "Codex"
-local MOVEMENT_SPEED_SETTING = "agentic-companion-movement-speed"
-local DEFAULT_MOVEMENT_SPEED = 1.6
 local COLOR = { r = 0.30, g = 0.79, b = 0.69, a = 1 }
 
 local LABEL_OFFSET = { 0, -2.9 }
 local MAP_TAG_MOVE_SQ = 9
 
--- Keep the speed bonus scoped to companion bodies. A force-level modifier
--- would also accelerate human players, while LuaControl's modifier is local
--- to this character and composes with tiles, equipment and research.
-function M.movement_speed_multiplier()
-  local setting = settings and settings.global and settings.global[MOVEMENT_SPEED_SETTING]
-  return (setting and tonumber(setting.value)) or DEFAULT_MOVEMENT_SPEED
-end
-
-local function apply_speed_to(ent)
+local function enforce_normal_speed(ent)
   if not (ent and ent.valid) then return end
-  ent.character_running_speed_modifier = M.movement_speed_multiplier() - 1
+  if ent.character_running_speed_modifier ~= 0 then ent.character_running_speed_modifier = 0 end
 end
 
-function M.apply_movement_speed()
+function M.enforce_normal_speed()
   local rec = storage.companion
-  apply_speed_to(rec and rec.entity)
-end
-
-function M.on_runtime_setting_changed(event)
-  if event.setting == MOVEMENT_SPEED_SETTING then
-    M.apply_movement_speed()
-  end
+  enforce_normal_speed(rec and rec.entity)
 end
 
 -- Spectators have no character to move, and Factorio's player-follow list
@@ -50,7 +34,10 @@ end
 function M.get()
   local rec = storage.companion
   local ent = rec and rec.entity
-  if ent and ent.valid then return ent end
+  if ent and ent.valid then
+    enforce_normal_speed(ent)
+    return ent
+  end
   return nil
 end
 
@@ -138,7 +125,6 @@ end
 function M.spawn()
   local existing = M.get()
   if existing then
-    apply_speed_to(existing)
     return {
       position = { x = existing.position.x, y = existing.position.y },
     }
@@ -171,7 +157,7 @@ function M.spawn()
   storage.companion = rec
   rec.entity = ent
   ent.color = COLOR
-  apply_speed_to(ent)
+  enforce_normal_speed(ent)
   attach_label(rec, ent)
   M.update_map_tag()
 

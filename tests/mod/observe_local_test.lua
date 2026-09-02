@@ -31,6 +31,8 @@ entities[3] = resource("iron-ore", 5, 0, 100)
 entities[4] = resource("iron-ore", 6, 0, 200)
 entities[5] = resource("iron-ore", 12, 0, 50)
 entities[6] = resource("copper-ore", -5, 0, 75)
+entities[7] = resource("coal", 0, 8, 30)
+entities[8] = resource("stone", 0, -8, 40)
 local corners = { { -14, -14 }, { 14, -14 }, { -14, 14 }, { 14, 14 } }
 for i = 1, 258 do local point = corners[(i - 1) % #corners + 1]; entities[#entities + 1] = entity("machine-" .. i, point[1], point[2], 1, 1) end
 local edge = entity("edge-machine", 16.5, 0, 3, 3)
@@ -75,7 +77,7 @@ check(observation.character.inventory["iron-plate"] == 3, "observation includes 
 check(observation.grid.rows[15]:sub(15, 16) == "aa" and observation.grid.rows[16]:sub(15, 16) == "a@", "full 2x2 footprint is painted beneath higher-priority Codex")
 check(observation.grid.rows[15]:sub(15, 15) == "a", "equal-priority overlap deterministically paints the lexical-name glyph")
 check(observation.grid.legend.a == "a-machine" and observation.grid.legend.b == "edge-machine", "building glyphs are assigned lexically")
-check(#observation.entities == 256 and observation.omitted_entities == 10, "nearest 256 entity cap is explicit")
+check(#observation.entities == 256 and observation.omitted_entities == 12, "nearest 256 entity cap is explicit")
 local ordered = true
 for i = 2, #observation.entities do
   local a, b = observation.entities[i - 1], observation.entities[i]
@@ -83,12 +85,21 @@ for i = 2, #observation.entities do
 end
 check(ordered, "retained nearest entities are finally sorted by stable y/x/name")
 check(observation.grid.coordinate_rule:match("north%-to%-south") ~= nil, "coordinate rule is explicit")
-check(observation.grid.legend.A == "copper-ore" and observation.grid.legend.B == "iron-ore", "resource glyphs are assigned lexically")
+check(observation.grid.legend.A == "coal" and observation.grid.legend.B == "copper-ore"
+  and observation.grid.legend.C == "iron-ore" and observation.grid.legend.D == "stone",
+  "resource glyphs are assigned lexically")
 local iron_patches = {}
 for _, patch in ipairs(observation.resource_patches) do if patch.name == "iron-ore" then iron_patches[#iron_patches + 1] = patch end end
 table.sort(iron_patches, function(a, b) return a.entity_count > b.entity_count end)
 check(#iron_patches == 2 and iron_patches[1].entity_count == 2 and iron_patches[1].total_amount == 300 and iron_patches[2].entity_count == 1 and iron_patches[2].total_amount == 50,
   "connected resource tiles become deterministic amount-bearing patches")
+local coal_index, stone_index
+for index, patch in ipairs(observation.resource_patches) do
+  if patch.name == "coal" then coal_index = index elseif patch.name == "stone" then stone_index = index end
+end
+check(coal_index and stone_index and coal_index < stone_index
+  and observation.resource_patches[coal_index].distance == observation.resource_patches[stone_index].distance,
+  "equal-distance resource patches use the lexical-name tiebreak")
 local a_detail, edge_detail
 for _, detail in ipairs(observation.entities) do if detail.name == "a-machine" then a_detail = detail elseif detail.name == "edge-machine" then edge_detail = detail end end
 check(a_detail and a_detail.status == 1 and a_detail.recipe == "iron-gear-wheel", "entity details include runtime status and recipe")

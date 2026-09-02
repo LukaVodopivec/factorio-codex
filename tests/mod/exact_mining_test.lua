@@ -8,13 +8,23 @@ local function ore(name, x)
     valid = true, name = name, type = "resource", amount = 100,
     position = { x = x, y = 0 },
     selection_box = { left_top = { x = x - 0.49, y = -0.49 }, right_bottom = { x = x + 0.49, y = 0.49 } },
-    prototype = { mineable_properties = { minable = true, mining_time = 1, products = {} } },
+    prototype = { mineable_properties = { minable = true, mining_time = 1, products = {
+      { type = "item", name = name, amount = 1 },
+    } } },
     mine = function() scripted_mine_calls = scripted_mine_calls + 1 error("scripted mine must never run") end,
   }
 end
 local exact, adjacent = ore("iron-ore", 0), ore("copper-ore", 1)
 local inventory_count = 0
-local inventory = { get_item_count = function() return inventory_count end }
+local inventory_has_room = true
+local inventory = {
+  get_item_count = function() return inventory_count end,
+  can_insert = function(stack)
+    check(stack.name == "iron-ore" and stack.count == 1,
+      "mining checks capacity for the exact target's real product")
+    return inventory_has_room
+  end,
+}
 local body = {
   valid = true, position = { x = 0, y = 0 }, resource_reach_distance = 3,
   mining_state = { mining = false },
@@ -28,6 +38,15 @@ package.loaded["scripts.companion"] = { require_companion = function() return bo
 package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end }
 _G.game = { tick = 100 }
 local mine = require("scripts.actions.mine")
+inventory_has_room = false
+local full_task = { target = { x = 0, y = 0 } }; mine.start(full_task)
+local full = mine.tick(full_task)
+check(full and full.status == "failed" and full.detail:match("inventory is full") ~= nil,
+  "mining fails honestly before starting when Codex inventory cannot accept the product")
+check(body.mining_state.mining == false and exact.amount == 100 and scripted_mine_calls == 0,
+  "full-inventory mining neither starts physical mining nor calls scripted mine")
+
+inventory_has_room = true
 local task = { target = { x = 0, y = 0 } }; mine.start(task)
 check(task._entity_name == "iron-ore", "mining selects only the entity occupying the exact coordinate")
 local first_tick = mine.tick(task)

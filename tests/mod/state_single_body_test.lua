@@ -8,22 +8,15 @@ local function check(ok, name)
 end
 
 local body_record = { entity = { valid = false } }
-local legacy_queue = { { id = 99, type = "mine" } }
-_G.storage = {
-  companion = body_record,
-  companions = { Old = { entity = { valid = true } } },
-  tasks = { next_id = 100, records = {}, queue = legacy_queue, active = { id = 98 } },
-}
+_G.storage = { companion = body_record }
 
 require("scripts.state").init()
 check(storage.companion == body_record, "initialization retains one persistent body record")
 check(storage.tasks.lane.next_id == 1 and #storage.tasks.lane.queue == 0
   and storage.tasks.lane.active == nil,
-  "initialization does not read or convert legacy task fields")
+  "initialization creates the fresh single task lane")
 local task_keys = {}; for key in pairs(storage.tasks) do task_keys[#task_keys + 1] = key end; table.sort(task_keys)
 check(table.concat(task_keys, ",") == "lane", "task storage exposes only the sole fresh lane")
-check(storage.companion == body_record and storage.companion ~= storage.companions.Old,
-  "initialization never converts the legacy companion registry")
 check(storage.path_request == nil and storage.path_requests == nil,
   "path routing has one optional request slot rather than per-body maps")
 

@@ -3,8 +3,8 @@ local M = {}
 -- Initializes the fresh v5 storage schema. Safe to call repeatedly.
 -- All fields any module needs MUST be declared here (single owner of the schema).
 function M.init()
-  -- Tasks: one lane for the sole Codex body. Fresh v5 has no migration
-  -- consumer; preserve only an already-current lane on repeated init.
+  -- Tasks: one lane for the sole Codex body. Repeated initialization retains
+  -- the current fresh-v5 lane.
   local lane = storage.tasks and storage.tasks.lane
   storage.tasks = { lane = lane or {
     next_id = 1,

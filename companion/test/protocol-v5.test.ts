@@ -52,6 +52,8 @@ describe("bridge protocol v5", () => {
       .not.toMatch(/packageRoot|assets/);
     expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8"))
       .not.toContain("companion/assets/");
+    expect(fs.readFileSync(path.join(root, ".github/workflows/ci.yml"), "utf8"))
+      .not.toMatch(/npm pack|test:npm-package|package-assets/);
     for (const removed of [
       "companion/.npmignore",
       "companion/scripts/package-assets.mjs",

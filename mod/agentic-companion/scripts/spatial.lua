@@ -185,15 +185,15 @@ function M.observe_local(params)
   local resource_letters, building_letters = {}, {}
 
   -- Terrain pass: land / water.
-  local chars, prio = {}, {}
+  local chars, prio, paint_key = {}, {}, {}
   for row = 1, size do
-    local crow, prow = {}, {}
-    chars[row], prio[row] = crow, prow
+    local crow, prow, krow = {}, {}, {}
+    chars[row], prio[row], paint_key[row] = crow, prow, krow
     for col = 1, size do
       if is_water_at(surface, ox + col - 1, oy + row - 1) then
-        crow[col], prow[col] = "~", PRIORITY.water
+        crow[col], prow[col], krow[col] = "~", PRIORITY.water, "water"
       else
-        crow[col], prow[col] = ".", PRIORITY.land
+        crow[col], prow[col], krow[col] = ".", PRIORITY.land, "land"
       end
     end
   end
@@ -253,11 +253,13 @@ function M.observe_local(params)
         local x1, y1 = math.floor(bounds.left_top.x), math.floor(bounds.left_top.y)
         local x2, y2 = math.ceil(bounds.right_bottom.x), math.ceil(bounds.right_bottom.y)
         if ch then
+          local key = string.format("%s\0%s\0%.17g\0%.17g\0%d", e.name, e.type,
+            e.position.y, e.position.x, tonumber(e.unit_number) or -1)
           for py = y1, y2 - 1 do for px = x1, x2 - 1 do
             local rr, cc = py - oy + 1, px - ox + 1
             if rr >= 1 and rr <= size and cc >= 1 and cc <= size
-              and (p > prio[rr][cc] or (p == prio[rr][cc] and ch < chars[rr][cc])) then
-              chars[rr][cc], prio[rr][cc] = ch, p
+              and (p > prio[rr][cc] or (p == prio[rr][cc] and key < paint_key[rr][cc])) then
+              chars[rr][cc], prio[rr][cc], paint_key[rr][cc] = ch, p, key
             end
           end end
           local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y

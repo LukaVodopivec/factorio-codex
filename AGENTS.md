@@ -14,7 +14,8 @@
   mechanics.
 - Non-goals: Image perception, agent-facing Lua or console execution, built-in
   model loops, game-chat control, multiple controllable bodies, multi-agent
-  orchestration, hosted services, teleportation, or free resources.
+  orchestration, hosted services, teleportation of the Codex body, or free
+  resources. A characterless spectator camera may follow Codex.
 - Replacement trigger: Retire or consolidate this repository when a simpler
   maintained native Factorio/Codex interface provides the same constrained
   behavior.

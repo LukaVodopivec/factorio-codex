@@ -9,7 +9,8 @@ machine:
    before setup so the user-data directory and `config/config.ini` exist.
 2. Run `nvm use 22 && npm ci && npm run build && node companion/dist/cli.js setup`.
 3. Restart Factorio, enable **Factorio Codex Companion**, and host a dedicated
-   fresh freeplay save. Console-backed RCON disables achievements for the save.
+   fresh freeplay save with enemy bases disabled so biters cannot spawn.
+   Console-backed RCON disables achievements for the save.
 4. Run `node companion/dist/cli.js doctor`, start Codex at the repository root,
    then call `connect_status` and `observe_local`.
 5. Physically mine resources; place a burner mining drill and stone furnace;
@@ -65,6 +66,11 @@ reporting that it typed the command, or a screenshot without a HUD, is not
 sufficient evidence because keyboard focus and open GUI panels can make those
 signals misleading. This is an administrator/cheat command and disables
 achievements for the save.
+
+With the current mod loaded, every connected spectator camera follows the sole
+Codex body automatically. Codex itself still walks physically; only the
+characterless viewer camera is repositioned. Confirm the camera follows during
+a `walk_to` action and that a normal player is never moved by this behavior.
 
 ## Live results and known failure signatures
 

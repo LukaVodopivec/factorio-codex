@@ -10,7 +10,8 @@ inventory, crafting, placement, research and elapsed game time remain real.
 Requirements: Factorio 2.0.x, Node.js 22, and a dedicated save. The fixed
 `/silent-command remote.call` bridge means Factorio disables achievements for
 that save. The interface never exposes Lua, arbitrary console commands, images,
-global-map state, teleportation or free resources.
+global-map state, teleportation of the Codex body or free resources. Connected
+spectator cameras follow Codex without affecting its physical movement.
 
 ## Install and use
 

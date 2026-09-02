@@ -34,6 +34,19 @@ function M.on_runtime_setting_changed(event)
   end
 end
 
+-- Spectators have no character to move, and Factorio's player-follow list
+-- cannot target this script-created body. Keep connected spectator cameras on
+-- Codex while leaving normal players and Codex's physical movement untouched.
+function M.follow_spectators()
+  local ent = M.get()
+  if not ent then return end
+  for _, player in pairs(game.connected_players) do
+    if player.controller_type == defines.controllers.spectator then
+      pcall(function() player.teleport(ent.position, ent.surface) end)
+    end
+  end
+end
+
 function M.get()
   local rec = storage.companion
   local ent = rec and rec.entity

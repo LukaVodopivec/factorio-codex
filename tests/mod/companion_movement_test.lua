@@ -3,6 +3,7 @@ package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 _G.storage = {}; _G.settings = nil
+_G.defines = { controllers = { character = 1, spectator = 4 } }
 local tag = { valid = true, position = { x = 1, y = 2 }, destroy = function() end }
 local force = { add_chart_tag = function() return tag end }
 local body = { valid = true, unit_number = 41, position = { x = 1, y = 2 }, force = force }
@@ -11,7 +12,20 @@ surface = {
   find_non_colliding_position = function() return { x = 1, y = 2 } end,
   create_entity = function() body.surface = surface return body end,
 }
-local player = { surface = surface, position = { x = 0, y = 0 }, force = force }
+local teleports = 0
+local player
+player = {
+  surface = surface,
+  position = { x = 0, y = 0 },
+  force = force,
+  controller_type = defines.controllers.character,
+  teleport = function(position, target_surface)
+    teleports = teleports + 1
+    player.position = { x = position.x, y = position.y }
+    player.surface = target_surface
+    return true
+  end,
+}
 _G.game = { connected_players = { player }, forces = { player = force }, surfaces = { surface } }
 _G.rendering = { draw_text = function() return { valid = true, destroy = function() end } end }
 local companion = require("scripts.companion")
@@ -28,7 +42,16 @@ local record_keys = {}; for key in pairs(storage.companion) do record_keys[#reco
 check(table.concat(record_keys, ",") == "entity,label,map_tag", "storage contains exactly one fixed Codex record")
 companion.apply_movement_speed()
 check(math.abs(body.character_running_speed_modifier - 0.6) < 0.000001, "movement modifier applies to Codex")
+companion.follow_spectators()
+check(teleports == 0 and player.position.x == 0, "normal players never follow Codex")
+player.controller_type = defines.controllers.spectator
+body.position = { x = 7, y = -3 }
+companion.follow_spectators()
+check(teleports == 1 and player.position.x == 7 and player.position.y == -3 and player.surface == surface,
+  "connected spectator camera follows the physical Codex body")
 storage.companion.entity = { valid = false }
+companion.follow_spectators()
+check(teleports == 1, "spectator camera stops when Codex is absent")
 check(companion.get() == nil and companion.record() ~= nil, "death persists without auto-respawn")
 local respawned, respawn_error = pcall(companion.spawn)
 check(not respawned and tostring(respawn_error):match("never respawns") ~= nil, "persistent death tombstone refuses respawn")

@@ -9,6 +9,10 @@ play and structured Factorio Codex observations:
 - Codex-authored relative layouts expressed without world coordinates.
 
 Do not store map coordinates, tutorials, external blueprint strings, or online
-build sequences. Revalidate stale knowledge against current structured game
-state before using it. This file defines the versioned contract; it is not a
-place to persist save-specific observations.
+build sequences. No world position, absolute or relative coordinate pair,
+landmark position, entity location, or route belongs in this file. Run-local
+coordinates stay in the pilot-owned shared-run files and expire on reset,
+contradictory observation, referenced-entity mutation, or route failure.
+Revalidate stale knowledge against current structured game state before using
+it. This file defines the versioned contract; it is not a place to persist
+save-specific observations.

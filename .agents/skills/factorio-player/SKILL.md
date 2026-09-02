@@ -15,9 +15,29 @@ current model/effort assignment and pastes one adjacent prompt into each:
 - [automation specialist](GOAL-SPECIALIST-v1.md), read-only.
 
 The parent identifies the shared milestone and communication route, confirms
-that only the pilot writes, and lets the master issue the first rolling
-envelope. The prompts select actions from current structured state; none
-hardcodes a route, map position, or build sequence.
+that only the pilot invokes ordinary MCP action tools, and lets the master
+issue the first rolling envelope. The prompts select actions from current
+structured state; none hardcodes a route, map position, or build sequence.
+
+## Shared-run contract
+
+For each run, the parent creates a fresh run ID and the shared directory
+`${XDG_STATE_HOME:-$HOME/.local/state}/factorio-codex/runs/<run-id>`. The parent
+alone writes `manifest.json`. The master alone writes `master-envelope.json`
+and `decisions.md`; the pilot alone writes `pilot-state.json`, append-only
+`pilot-events.jsonl`, and `landmarks.json`; the specialist alone writes
+`specialist-notes.md`. Every participant reads every shared-run file and must
+update exactly its owned files. Rewrite files atomically with an adjacent
+temporary file and rename; only `pilot-events.jsonl` is appended, one complete
+JSON object per line. The files are direct coordination artifacts: do not add a
+watcher, broker, database, orchestrator, or other coordination process.
+
+Run coordinates may appear only in `pilot-state.json`, `pilot-events.jsonl`,
+or `landmarks.json`. They expire on a game reset, contradictory observation,
+mutation of the referenced entity, or route failure and must not be copied to
+durable player knowledge. Use deterministic MCP state and tool results before
+shared notes or prose. Carry only the grounded current plan and one prepared
+successor; invalidate stale state and keep safe productive work overlapping.
 
 - Use the topology and model/effort assignment selected by completed benchmark
   results; do not assume a Sol/Luna winner. In a split topology, one strategist
@@ -41,8 +61,8 @@ hardcodes a route, map position, or build sequence.
   `queue_plan`/`plan_status` for a prepared successor, and `run_plan` for
   synchronous compatibility. `inspect_entity` accepts `positions`.
 - The pilot may mine, refuel, collect output, repair routes, or take an approved
-  fallback without waiting. Priority is defend; unblock production; mine the
-  BOM bottleneck in batches; build validated automation; physically scout.
+  fallback without waiting. Priority is: unblock production; mine the BOM
+  bottleneck in batches; build validated automation; physically scout.
   Never idle on a wait while productive work exists.
 - Finish every packet with an authoritative observation by consuming the
   plan's terminal observation. Observe again only
@@ -53,5 +73,7 @@ hardcodes a route, map position, or build sequence.
   current tool, why it is needed, and smallest structured addition. It blocks
   only that branch; continue other productive work and never guess.
 - Follow [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) for durable knowledge.
+- The gameplay baseline is permanently peaceful with enemy bases disabled;
+  there are no combat tools or combat branch to plan for.
 - No second body, raw Lua/console, teleport, hidden map, free items, or second
   RCON path. Concurrency removes thinking idle time, not physical walking time.

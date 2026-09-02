@@ -10,11 +10,12 @@ mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
 0.9.0 validation.
 
-The accepted operating candidate uses one persistent Sol-medium strategist and
-one persistent Luna-low pilot. Sol owns the rolling phase/successor envelope;
-Luna is the sole ordinary writer. Plans execute contiguously in Lua and may
-prepare one successor by predecessor ID. This removes model-thinking idle time;
-it does not accelerate walking, mining, crafting, or any other game tick.
+The operating topology and model/effort choice remain benchmark candidates;
+do not predeclare a winner. In every multi-session candidate, the strategist
+owns the rolling phase/successor envelope and the pilot is the sole ordinary
+writer. Plans execute contiguously in Lua and may prepare one successor by
+predecessor ID. This removes model-thinking idle time; it does not accelerate
+walking, mining, crafting, or any other game tick.
 
 For each live benchmark, record the release SHA, milestone, MCP call count,
 wall time, Factorio tick delta, completed/failed plan steps, final position and
@@ -95,18 +96,25 @@ verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations, recipe disambiguation, progression, protocol v6, version 0.9.0,
 and exactly 20 tools.
 
-Use at most three candidates in a wave:
+Run these instructions-only waves exactly; each row is candidate `A`, `B`, then
+`C` for that wave:
 
-| ID | Topology | Models / effort |
-| --- | --- | --- |
-| A | One session owns strategy and the sole writer role | Sol, medium |
-| B | Read-only strategist plus sole pilot | Sol medium + Luna low |
-| C | Read-only strategist, sole pilot, optional read-only specialist | Sol medium + Luna low + Luna low |
+| Wave | A | B | C |
+| --- | --- | --- | --- |
+| W1 — topology | Terra-medium combined strategist/pilot | Terra-medium read-only strategist + Terra-low sole pilot | Terra-medium read-only strategist + Terra-low sole pilot + Terra-low read-only specialist |
+| W2 — model/effort | Luna-low in every role of the retained topology | Terra-medium strategist + Luna-low pilot + Terra-low specialist | Sol-medium strategist + Luna-low pilot + Terra-low specialist |
+| W3 — fast mode | Fast off | Fast for strategist and specialist only | Fast for every role |
 
-Run three repeats per retained wave and rotate order `ABC`, `BCA`, `CAB` to
-reduce ordering bias. Fast wave 1 compares all three on completion and elapsed
-time. Fast wave 2 retains no more than the best three variants and changes only
-one documented prompt/envelope choice. Fast wave 3 confirms the leading choice
-with the same immutable baseline. Never tune from a partial trial or run trials
-concurrently. Append completed results below with exact baseline/release hashes;
-do not present historical 0.8.0 timings as 0.9.0 benchmark results.
+For a topology without a specialist, omit the specialist named by a later
+wave. A combined topology remains one conversation and one MCP writer. Apply
+single-session deduplication: if two candidates resolve to the same effective
+set of conversations, roles, models/efforts, prompts, and fast settings, run
+that configuration once and reuse its result within the wave rather than
+starting a duplicate conversation.
+
+Run three repeats per wave and rotate candidate order `ABC`, `BCA`, `CAB` to
+reduce ordering bias. Retain the winning topology from W1 for W2, and the
+winning model/effort assignment from W2 for W3; do not predeclare a Sol/Luna
+winner. Never tune from a partial trial or run trials concurrently. Append
+completed results below with exact baseline/release hashes; do not present
+historical 0.8.0 timings as 0.9.0 benchmark results.

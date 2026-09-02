@@ -33,9 +33,10 @@ one Lua-contiguous plan to the sole FIFO; `plan_status` reads it, while
 `run_plan` provides synchronous compatibility. Plans reuse the existing honest
 physical runners and end with a compact or full local observation.
 
-Live play supports one Sol strategist and one Luna pilot: the strategist is
-read/plan-only, while Luna alone writes ordinary MCP actions for the one
-physical Codex body and task lane. Bounded packets prevent strategic drift;
+Live play uses the benchmark-selected topology and model/effort assignment.
+In a split topology the strategist is read/plan-only, while one persistent
+pilot alone writes ordinary MCP actions for the one physical Codex body and
+task lane. Bounded packets prevent strategic drift;
 concurrency removes thinking idle time, not physical walking time. See the
 repo-local `factorio-player` skill for the packet and reporting contract. The
 pilot batches read targets, uses direct actions without a redundant `walk_to`,

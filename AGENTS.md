@@ -36,8 +36,10 @@
 
 ## Two-session gameplay
 
-One Sol strategist may read and plan while one Luna pilot is the sole ordinary
-MCP action writer for the single physical Codex character and flat FIFO lane.
+Use the benchmark-selected topology and model/effort assignment; do not
+predeclare a Sol/Luna winner. In a split topology, one strategist may read and
+plan while one persistent pilot is the sole ordinary MCP action writer for the
+single physical Codex character and flat FIFO lane.
 Keep a rolling envelope containing phase and success, the executing plan, one
 prepared successor with predecessor and preconditions, prioritized fallbacks,
 current and next bill of materials, and source tick/plan ID. The strategist

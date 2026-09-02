@@ -174,6 +174,8 @@ describe("exact local configuration", () => {
     expect(skill).toMatch(/no screenshot|never.*screen capture/i);
     expect(skill).toMatch(/Finish every packet with an authoritative observation[\s\S]*terminal observation[\s\S]*missing or became stale/);
     expect(skill).not.toMatch(/finish every packet with `observe_local`/i);
+    expect(skill).toContain("[player knowledge v1](PLAYER-KNOWLEDGE-v1.md)");
+    expect(skill).toMatch(/do not assume a Sol\/Luna winner/i);
     expect(liveValidation).toMatch(/Prior-release 0\.7\.0 live evidence/);
     expect(liveValidation).toMatch(/historical 0\.7\.0 evidence[\s\S]*not live validation of[\s\S]*0\.8\.0/);
     expect(liveValidation).toMatch(/Optional couch UI navigation layer/);
@@ -182,6 +184,22 @@ describe("exact local configuration", () => {
     expect(liveValidation).toMatch(/gameplay pilot remains MCP-text-only[\s\S]*Screenshot capability must never be used for Factorio[\s\S]*perception or play/i);
     expect(liveValidation).toContain("%APPDATA%\\\\Factorio\\\\mods\\\\mod-list.json");
     expect(liveValidation).not.toContain("%APPDATA%\\\\Factorio\\\\mod-list.json");
+  });
+
+  it("locks the instructions-only benchmark waves and player-knowledge boundary", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const benchmark = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
+    const knowledge = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md"), "utf8");
+    const normalizedKnowledge = knowledge.replace(/\s+/g, " ");
+    expect(benchmark).toMatch(/W1[^\n]*topology[\s\S]*Terra-medium combined strategist\/pilot[\s\S]*Terra-medium read-only strategist \+ Terra-low sole pilot[\s\S]*Terra-low read-only specialist/);
+    expect(benchmark).toMatch(/W2[^\n]*model\/effort[\s\S]*Luna-low in every role[\s\S]*Terra-medium strategist \+ Luna-low pilot \+ Terra-low specialist[\s\S]*Sol-medium strategist \+ Luna-low pilot \+ Terra-low specialist/);
+    expect(benchmark).toMatch(/W3[^\n]*fast mode[\s\S]*Fast off[\s\S]*Fast for strategist and specialist only[\s\S]*Fast for every role/);
+    expect(benchmark).toContain("single-session deduplication");
+    expect(benchmark).toContain("`ABC`, `BCA`, `CAB`");
+    expect(benchmark).toMatch(/do not predeclare a Sol\/Luna\s+winner/i);
+    expect(knowledge).toMatch(/recipes[\s\S]*calculations[\s\S]*operations[\s\S]*relative layouts/);
+    for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "online build sequences"])
+      expect(normalizedKnowledge).toContain(forbidden);
   });
 });
 

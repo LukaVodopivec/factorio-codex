@@ -7,9 +7,11 @@ description: Operate the live Factorio Codex character through the constrained M
 
 Use only for live play of the one physical character named Codex.
 
-- One Sol strategist owns phase, success, and one prepared successor. Reuse one
-  persistent Luna pilot as the sole ordinary MCP action writer. An optional
-  specialist is read-only. Discard stale advice unless Luna revalidates it.
+- Use the topology and model/effort assignment selected by completed benchmark
+  results; do not assume a Sol/Luna winner. In a split topology, one strategist
+  owns phase, success, and one prepared successor, one persistent pilot is the
+  sole ordinary MCP action writer, and an optional specialist is read-only.
+  Discard stale advice unless the pilot revalidates it.
 - Maintain a rolling envelope: phase and success, executing plan, one prepared
   successor with predecessor and preconditions, prioritized fallbacks, current
   and next bill of materials, and source tick/plan ID.
@@ -20,7 +22,7 @@ Use only for live play of the one physical character named Codex.
   `walk_to` only for scouting or relocation. Use `build_plan` for layouts,
   `queue_plan`/`plan_status` for a prepared successor, and `run_plan` for
   synchronous compatibility. `inspect_entity` accepts `positions`.
-- Luna may mine, refuel, collect output, repair routes, or take an approved
+- The pilot may mine, refuel, collect output, repair routes, or take an approved
   fallback without waiting. Priority is defend; unblock production; mine the
   BOM bottleneck in batches; build validated automation; physically scout.
   Never idle on a wait while productive work exists.
@@ -32,8 +34,6 @@ Use only for live play of the one physical character named Codex.
 - No screenshots or screen capture. An `MCP_GAP` names the objective, missing field,
   current tool, why it is needed, and smallest structured addition. It blocks
   only that branch; continue other productive work and never guess.
-- Durable player knowledge is limited to recipes/calculations learned in-game
-  and Codex-authored relative layouts. Never store map coordinates, tutorials,
-  external blueprint strings, or online build sequences.
+- Follow [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) for durable knowledge.
 - No second body, raw Lua/console, teleport, hidden map, free items, or second
   RCON path. Concurrency removes thinking idle time, not physical walking time.

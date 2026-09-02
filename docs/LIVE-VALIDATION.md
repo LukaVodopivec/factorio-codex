@@ -28,9 +28,11 @@ until the fresh 0.9.0 run is recorded. On a fresh machine:
 
 ## Two-session pilot contract
 
-One Sol strategist may observe and plan, but one Luna pilot remains the sole
-ordinary MCP action writer for one physical Codex body and one task lane. Sol
-sends bounded milestone packets; Luna may observe, choose exact visible
+Use the topology and model/effort assignment selected by completed benchmark
+results; do not assume a Sol/Luna winner. In a split topology, one strategist
+may observe and plan, but one persistent pilot remains the sole ordinary MCP
+action writer for one physical Codex body and one task lane. The strategist
+sends bounded milestone packets; the pilot may observe, choose exact visible
 coordinates, retry honest pathing, and finish the assigned milestone. End with
 an authoritative observation: consume a fresh `run_plan.observation` directly;
 call `observe_local` only when that observation is missing or became stale

@@ -14,7 +14,8 @@ end
 function M.ensure(task, c, target_pos, reach)
   if dist_sq(c.position, target_pos) <= reach * reach then
     local active = task._approach
-    if active and active.target.x == target_pos.x and active.target.y == target_pos.y then
+    if active and active.target.x == target_pos.x and active.target.y == target_pos.y
+      and active.reach == reach then
       task._approach = nil
       c.walking_state = { walking = false }
     end
@@ -22,8 +23,8 @@ function M.ensure(task, c, target_pos, reach)
   end
 
   local a = task._approach
-  if not a or a.target.x ~= target_pos.x or a.target.y ~= target_pos.y then
-    a = { target = { x = target_pos.x, y = target_pos.y }, walk = {} }
+  if not a or a.target.x ~= target_pos.x or a.target.y ~= target_pos.y or a.reach ~= reach then
+    a = { target = { x = target_pos.x, y = target_pos.y }, reach = reach, walk = {} }
     task._approach = a
     walk.begin(a.walk, c, a.target, math.max(reach - 0.5, 0.5))
   end

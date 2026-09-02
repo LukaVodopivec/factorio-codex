@@ -72,7 +72,7 @@ local action_reach_checks = 0
 body.can_reach_entity = function(candidate)
   check(candidate == entity, "action reach gate checks the resolved entity")
   action_reach_checks = action_reach_checks + 1
-  return math.abs(body.position.x - candidate.position.x) <= body.reach_distance
+  return math.abs(body.position.x - candidate.position.x) <= body.reach_distance - 0.5
 end
 body.surface = { find_entities_filtered = function() return { entity } end }
 body.force = { recipes = { ["iron-gear-wheel"] = { enabled = true } } }
@@ -92,7 +92,7 @@ _G.prototypes = { item = { coal = {} } }
 local build = require("scripts.actions.build")
 local transfer = require("scripts.actions.transfer")
 
-local walk_begins, walk_steps
+local walk_begins, walk_steps, arrival_x
 walk_stub.begin = function(_, _, target)
   walk_begins = walk_begins + 1
   check(target.x == entity.position.x and target.y == entity.position.y,
@@ -101,19 +101,22 @@ end
 walk_stub.step = function()
   walk_steps = walk_steps + 1
   if walk_steps == 2 then
-    body.position = { x = 2, y = 0 }
+    body.position = { x = arrival_x, y = 0 }
     return "arrived"
   end
   return nil
 end
 
-local function completes_after_real_approach(label, runner, task, mutation)
+local function completes_after_real_approach(label, runner, task, mutation, entity_x, reached_x)
+  entity.position = { x = entity_x, y = 0 }
   body.position = { x = 0, y = 0 }
+  arrival_x = reached_x
   walk_begins, walk_steps = 0, 0
   local before = mutations[mutation]
   runner.start(task)
   local first = runner.tick(task)
-  check(first == nil and task._approach and task._approach.target.x == 7.5
+  check(first == nil and task._approach and task._approach.target.x == entity_x
+    and task._approach.reach == body.reach_distance - 0.5
     and walk_begins == 1 and mutations[mutation] == before,
     label .. " starts one real approach to the resolved entity")
   local second = runner.tick(task)
@@ -123,14 +126,23 @@ local function completes_after_real_approach(label, runner, task, mutation)
 end
 
 completes_after_real_approach("rotate", build.rotate,
-  { id = 10, target = { x = 6, y = 0 } }, "rotate")
+  { id = 10, target = { x = 6, y = 0 } }, "rotate", 7.5, 2)
 completes_after_real_approach("set_recipe", build.set_recipe,
-  { id = 11, target = { x = 6, y = 0 }, recipe = "iron-gear-wheel" }, "recipe")
+  { id = 11, target = { x = 6, y = 0 }, recipe = "iron-gear-wheel" }, "recipe", 7.5, 2)
 completes_after_real_approach("insert", transfer.insert,
-  { id = 12, target = { x = 6, y = 0 }, items = { coal = 1 } }, "insert")
+  { id = 12, target = { x = 6, y = 0 }, items = { coal = 1 } }, "insert", 7.5, 2)
 completes_after_real_approach("extract", transfer.extract,
-  { id = 13, target = { x = 6, y = 0 }, items = { coal = 1 } }, "extract")
-check(action_reach_checks == 12,
-  "all four actions recheck Factorio reach across their multi-tick entity approach")
+  { id = 13, target = { x = 6, y = 0 }, items = { coal = 1 } }, "extract", 7.5, 2)
+
+completes_after_real_approach("same-coordinate rotate", build.rotate,
+  { id = 20, target = { x = 6, y = 0 } }, "rotate", 6, 0.5)
+completes_after_real_approach("same-coordinate set_recipe", build.set_recipe,
+  { id = 21, target = { x = 6, y = 0 }, recipe = "iron-gear-wheel" }, "recipe", 6, 0.5)
+completes_after_real_approach("same-coordinate insert", transfer.insert,
+  { id = 22, target = { x = 6, y = 0 }, items = { coal = 1 } }, "insert", 6, 0.5)
+completes_after_real_approach("same-coordinate extract", transfer.extract,
+  { id = 23, target = { x = 6, y = 0 }, items = { coal = 1 } }, "extract", 6, 0.5)
+check(action_reach_checks == 24,
+  "all four actions recheck Factorio reach across both multi-tick entity approach identities")
 
 os.exit(failures == 0 and 0 or 1)

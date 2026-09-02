@@ -1,5 +1,5 @@
 import net from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RconClient, RconError } from "../src/rcon.js";
 
 const AUTH = 3;
@@ -26,10 +26,14 @@ class FakeRconServer {
   private server: net.Server;
   port = 0;
   password = "secret";
+  respondToAuth = true;
+  activeConnections = 0;
   handler: (cmd: string) => string[] = () => [""];
 
   constructor() {
     this.server = net.createServer((socket) => {
+      this.activeConnections++;
+      socket.once("close", () => this.activeConnections--);
       let buf = Buffer.alloc(0);
       socket.on("data", (data) => {
         buf = Buffer.concat([buf, data]);
@@ -41,6 +45,7 @@ class FakeRconServer {
           const body = buf.toString("utf8", 12, 4 + size - 2);
           buf = buf.subarray(4 + size);
           if (type === AUTH) {
+            if (!this.respondToAuth) continue;
             // mimic Source servers: empty RESPONSE_VALUE first, then AUTH_RESPONSE
             socket.write(packet(id, RESPONSE_VALUE, ""));
             socket.write(packet(body === this.password ? id : -1, AUTH_RESPONSE, ""));
@@ -93,6 +98,14 @@ describe("RconClient", () => {
   it("rejects on wrong password", async () => {
     client = new RconClient({ host: "127.0.0.1", port: server.port, password: "nope" });
     await expect(client.connect()).rejects.toThrow(/auth failed/);
+  });
+
+  it("destroys the socket when authentication times out", async () => {
+    server.respondToAuth = false;
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret", timeoutMs: 20 });
+    await expect(client.connect()).rejects.toThrow(/auth timed out/);
+    expect(client.connected).toBe(false);
+    await vi.waitFor(() => expect(server.activeConnections).toBe(0));
   });
 
   it("executes a command and returns the response body", async () => {

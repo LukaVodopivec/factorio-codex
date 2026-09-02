@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Bridge } from "../src/bridge.js";
+import { Bridge } from "../src/bridge.js";
 import { companionVersion, configPath, diagnoseConfig, existingRconPassword, loadConfig, saveConfig } from "../src/config.js";
 import { collectDoctorReport } from "../src/doctor.js";
 import { connectStatus } from "../src/mcp/server.js";
@@ -17,6 +17,13 @@ function isolatedHome(): string {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); homes.splice(0).forEach((home) => fs.rmSync(home, { recursive: true, force: true })); });
 
 describe("exact local configuration", () => {
+  function validDoctorSettings(password = "secret") {
+    const home = isolatedHome(); const userDir = path.join(home, "factorio"); fs.mkdirSync(userDir);
+    const settings = { rcon: { host: "127.0.0.1", port: 19015, password } } as const;
+    saveConfig({ factorioUserDir: userDir, rcon: settings.rcon });
+    return settings;
+  }
+
   async function expectConnectConfigError(pattern: RegExp) {
     const bridge = vi.fn(async () => ({ call: vi.fn() } as unknown as Bridge));
     const output = await connectStatus(bridge, diagnoseConfig);
@@ -78,13 +85,37 @@ describe("exact local configuration", () => {
     await expectConnectConfigError(/Offline: configuration mode is 644; expected 600; run setup again/);
   });
   it("redacts a configured password from doctor text and JSON failures", async () => {
-    const home = isolatedHome(); const userDir = path.join(home, "factorio"); fs.mkdirSync(userDir);
     const secret = "never-print-this";
-    saveConfig({ factorioUserDir: userDir, rcon: { host: "127.0.0.1", port: 19015, password: secret } });
+    const settings = validDoctorSettings(secret);
     vi.spyOn(RconClient.prototype, "connect").mockRejectedValueOnce(new Error(`auth failed for ${secret}`));
-    const report = await collectDoctorReport({ rcon: { host: "127.0.0.1", port: 19015, password: secret } });
+    const report = await collectDoctorReport(settings);
     expect(JSON.stringify(report)).not.toContain(secret);
     expect(report.checks.find((check) => check.name === "rcon")?.detail).toContain("[redacted]");
+  });
+  it.each([
+    { stage: "unlock", unlockError: new Error("unlock failed") },
+    { stage: "ping", callError: new Error("ping failed") },
+  ])("keeps authenticated RCON successful when $stage cannot reach the mod", async ({ unlockError, callError }) => {
+    const settings = validDoctorSettings();
+    vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
+    vi.spyOn(Bridge.prototype, "unlock").mockImplementationOnce(async () => { if (unlockError) throw unlockError; });
+    const call = vi.spyOn(Bridge.prototype, "call");
+    if (callError) call.mockRejectedValueOnce(callError);
+    const report = await collectDoctorReport(settings);
+    expect(report.checks.filter((check) => check.name === "rcon")).toEqual([{ name: "rcon", ok: true, detail: "authenticated" }]);
+    expect(report.checks).toContainEqual(expect.objectContaining({ name: "mod", ok: false, detail: expect.stringMatching(/RPC unavailable: (unlock|ping) failed/), fix: expect.stringContaining("install and enable") }));
+  });
+  it.each([
+    { ping: { protocol_version: 4, mod_version: "0.7.0" }, failedCheck: "protocol" },
+    { ping: { protocol_version: 5, mod_version: "0.6.0" }, failedCheck: "mod" },
+  ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
+    const settings = validDoctorSettings();
+    vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
+    vi.spyOn(Bridge.prototype, "unlock").mockResolvedValueOnce();
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValueOnce(ping as never);
+    const report = await collectDoctorReport(settings);
+    expect(report.checks.filter((check) => check.name === "rcon")).toEqual([{ name: "rcon", ok: true, detail: "authenticated" }]);
+    expect(report.checks).toContainEqual(expect.objectContaining({ name: failedCheck, ok: false, fix: expect.stringContaining("install Factorio Codex Companion") }));
   });
   it("doctor reuses exact endpoint validation and never connects to a remote or wrong port", async () => {
     const home = isolatedHome(); const userDir = path.join(home, "factorio"); fs.mkdirSync(userDir);

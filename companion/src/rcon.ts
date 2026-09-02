@@ -91,6 +91,7 @@ export class RconClient extends EventEmitter {
       setTimeout(() => {
         if (this.pendingAuth?.id === id) {
           this.pendingAuth = null;
+          this.close();
           reject(new RconError("RCON auth timed out"));
         }
       }, this.opts.timeoutMs ?? 10_000).unref();

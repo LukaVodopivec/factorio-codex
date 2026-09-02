@@ -20,6 +20,17 @@ machine:
 7. If bootstrap items are absent, use another fresh built-in freeplay save.
    Never use console commands, editor mode, spawned items, or teleporting.
 
+## Two-session pilot contract
+
+One Sol strategist may observe and plan, but one Luna pilot remains the sole
+ordinary MCP action writer for one physical Codex body and one task lane. Sol
+sends bounded milestone packets; Luna may observe, choose exact visible
+coordinates, retry honest pathing, and finish the assigned milestone, then ends
+each packet with `observe_local` and reports position, inventory, active task,
+result, and failure. Concurrency removes thinking idle time, not physical
+walking time. Do not add a second body, raw Lua/console, teleport, hidden map,
+free resources, or a second RCON path. `stop` is emergency cancellation only.
+
 ## Observed two-machine setup
 
 The following was verified during the September 2026 live run. Treat the LAN

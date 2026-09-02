@@ -33,3 +33,15 @@
   publication; live gameplay validation requires an installed Factorio game.
 - Complete private-repository changes on clean, pushed `main` with exact
   remote-SHA readback.
+
+## Two-session gameplay
+
+One Sol strategist may read and plan while one Luna pilot is the sole ordinary
+MCP action writer for the single physical Codex character and task lane. Luna
+receives bounded milestone packets, may observe, select exact visible
+coordinates, retry honest pathing, and complete the assigned milestone, but
+does not invent the next strategic goal. Each packet ends with `observe_local`
+and a report of position, inventory, active task, result, and failure.
+Concurrency removes thinking idle time, not physical walking time. There is no
+second body, raw Lua/console, teleport, hidden map, free resource, or second
+RCON path; `stop` is emergency cancellation only.

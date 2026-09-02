@@ -30,6 +30,12 @@ The committed project config starts MCP automatically. Begin with
 The public CLI contains only `setup`, `doctor [--json]`, and `mcp`. MCP exposes
 exactly 16 text-only tools through `tools/list`.
 
+Live play supports one Sol strategist and one Luna pilot: the strategist is
+read/plan-only, while Luna alone writes ordinary MCP actions for the one
+physical Codex body and task lane. Bounded packets prevent strategic drift;
+concurrency removes thinking idle time, not physical walking time. See the
+repo-local `factorio-player` skill for the packet and reporting contract.
+
 ## Verification
 
 ```sh

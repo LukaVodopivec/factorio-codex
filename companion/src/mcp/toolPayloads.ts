@@ -10,4 +10,82 @@ export const toolPayloads = {
   placement: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
   canPlace: (placements: Array<{ x: number; y: number; name: string; direction?: number }>) => ({ placements: placements.map((placement) => toolPayloads.placement(placement)) }),
   buildPlan: (steps: Array<{ x: number; y: number; name: string; [key: string]: unknown }>, rest: Record<string, unknown>) => ({ ...rest, steps: steps.map(({ x, y, name, ...step }) => ({ ...step, item: name, position: { x, y } })) }),
+  findPlacement: ({ item, preferred, radius, directions, limit }: { item: string; preferred: { x: number; y: number }; radius: number; directions: number[]; limit: number }) => ({ item, preferred, radius, directions, limit }),
+  productionRequirements: ({ item, count, recipe_choices }: { item: string; count: number; recipe_choices?: Record<string, string> }) => ({ item, count, recipe_choices }),
+  connectEntities: ({ kind, prototype, from, to, max_length }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number }) => ({ kind, prototype, from, to, max_length }),
 };
+
+export function normalizeCanPlace(value: any, placements: Array<{ name: string; x: number; y: number; direction?: number }>): any {
+  if (!value || !Array.isArray(value.results)) return value;
+  return { ...value, results: value.results.map((entry: any, index: number) => {
+    const requested = placements[index];
+    if (!requested) return entry;
+    return {
+      ...entry,
+      item: requested.name,
+      position: entry?.position ?? { x: requested.x, y: requested.y },
+      direction: requested.direction ?? 0,
+      ...(entry?.can_place === false && typeof entry.reason !== "string" ? { reason: "placement rejected by Factorio" } : {}),
+    };
+  }) };
+}
+
+function luaArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object" && Object.keys(value).length === 0) return [];
+  return value as unknown[];
+}
+
+export function normalizePlacementSearch(value: any): any {
+  return value && typeof value === "object" ? { ...value, candidates: luaArray(value.candidates) } : value;
+}
+
+export function normalizeMapSummary(value: any): any {
+  return value && typeof value === "object" ? {
+    ...value,
+    resources: luaArray(value.resources),
+    water_edges: luaArray(value.water_edges),
+    factory_landmarks: luaArray(value.factory_landmarks),
+  } : value;
+}
+
+export function normalizeProductionRequirements(value: any): any {
+  return value && typeof value === "object" ? { ...value, nodes: luaArray(value.nodes) } : value;
+}
+
+export function normalizePhysicalRoute(value: any): any {
+  return value && typeof value === "object" ? { ...value, steps: luaArray(value.steps) } : value;
+}
+
+export function normalizeInspection(value: any): any {
+  if (!value || !Array.isArray(value.entities)) return value;
+  return { ...value, entities: value.entities.map((entity: any) => {
+    if (!entity || entity.error) return entity;
+    const hasElectricalMarker = entity.electrical !== undefined || entity.electric_network_id !== undefined
+      || entity.electric_buffer_capacity !== undefined || entity.electric_demand !== undefined
+      || entity.electric_satisfaction !== undefined || entity.connected_poles !== undefined;
+    if (!hasElectricalMarker) return entity;
+    const electrical = entity.electrical ?? {
+      network_id: entity.electric_network_id,
+      energy: entity.energy,
+      buffer_capacity: entity.electric_buffer_capacity,
+      demand: entity.electric_demand,
+      satisfaction: entity.electric_satisfaction,
+      connected_poles: entity.connected_poles,
+    };
+    const populated = Object.fromEntries(Object.entries(electrical).filter(([, item]) => item !== undefined));
+    return Object.keys(populated).length > 0 ? { ...entity, electrical: populated } : entity;
+  }) };
+}
+
+export function normalizePlanDiagnostics(value: any): any {
+  if (!value || typeof value !== "object") return value;
+  const route = Array.isArray(value.outcomes) ? value.outcomes
+    .filter((outcome: any) => outcome?.status === "failed" || outcome?.status === "cancelled")
+    .map((outcome: any) => ({ step: outcome.step, action: outcome.action, detail: outcome.error ?? outcome.result ?? outcome.status })) : [];
+  const entities = Array.isArray(value.observation?.entities) ? value.observation.entities : [];
+  const machines = entities
+    .filter((entity: any) => entity?.status && !["working", "normal"].includes(entity.status))
+    .map((entity: any) => ({ entity: entity.name, position: entity.position, status: entity.status, detail: `machine status: ${entity.status}` }));
+  return { ...value, diagnostics: { route, machines } };
+}

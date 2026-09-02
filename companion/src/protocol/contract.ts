@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /** Executable manifest shared by runtime validation and conformance tests. */
 export const RPC_METHODS = [
@@ -10,6 +10,10 @@ export const RPC_METHODS = [
   "inspect",
   "start_research",
   "can_place",
+  "find_placement",
+  "map_summary",
+  "production_requirements",
+  "connect_entities",
   "describe_prototype",
   "progression_status",
   "enqueue",

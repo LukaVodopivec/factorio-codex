@@ -7,7 +7,7 @@ import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../co
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
 import { normalizeObservation } from "./observation.js";
 import { executeRunPlan, queuePlanSchema, runPlanSchema, type RunPlanResult } from "./runPlan.js";
-import { toolPayloads } from "./toolPayloads.js";
+import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
 
@@ -54,10 +54,32 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
-  server.registerTool("inspect_entity", { description: "Batch-inspect entities at up to 16 exact positions within 30 tiles.", inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => rpc("inspect", toolPayloads.inspect(positions)));
+  server.registerTool("inspect_entity", { description: "Batch-inspect entities at up to 16 exact positions within 30 tiles, including available electrical network, buffer, demand, satisfaction and pole-link facts.", inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
+    try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions)))); }
+    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+  });
   server.registerTool("describe_prototype", { description: "Batch-describe up to 10 exact prototypes; kind=auto preserves automatic item/entity/recipe resolution.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
   server.registerTool("progression_status", { description: "Read research progression from Codex's live force.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
-  server.registerTool("can_place", { description: "Batch-check up to 24 placements within 30 tiles without side effects.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().optional() })).min(1).max(24) }) }, async ({ placements }) => rpc("can_place", toolPayloads.canPlace(placements)));
+  server.registerTool("can_place", { description: "Batch-check up to 24 identified placements within 30 tiles without side effects; every result retains the requested item, position, direction and rejection reason.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
+    try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
+    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+  });
+  server.registerTool("find_placement", { description: "Find stable nearest force-charted positions within 30 tiles of Codex using Factorio's authoritative placement check; reports land, shoreline or offshore candidates.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8) }).strict() }, async (p) => {
+    try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)))); }
+    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+  });
+  server.registerTool("map_summary", { description: "Summarize only already force-charted chunks: resource totals, shoreline edges, factory landmarks and observation ticks. Never charts or generates terrain.", inputSchema: z.object({}).strict() }, async () => {
+    try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", {}))); }
+    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+  });
+  server.registerTool("production_requirements", { description: "Expand an unlocked deterministic production DAG into recipe counts, raw inputs, products, categories and crafting time; recipe_choices resolves genuine multi-recipe ambiguity.", inputSchema: z.object({ item: z.string(), count: z.number().int().positive(), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
+    try { return result(normalizeProductionRequirements(await (await bridge()).call("production_requirements", toolPayloads.productionRequirements(p)))); }
+    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+  });
+  server.registerTool("connect_entities", { description: "Plan a deterministic physical belt, pipe or power route between exact force-charted endpoints, respecting the selected prototype, maximum length and authoritative placement constraints; returns one build_plan-compatible route and never ghosts.", inputSchema: z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string(), from: position, to: position, max_length: z.number().int().min(1).max(25).default(25) }).strict() }, async (p) => {
+    try { return result(normalizePhysicalRoute(await (await bridge()).call("connect_entities", toolPayloads.connectEntities(p)))); }
+    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+  });
   server.registerTool("walk_to", { description: "Scout or relocate by walking physically to an exact position; positional actions already auto-approach.", inputSchema: position }, async (p) => task("walk_to", toolPayloads.target(p)));
   server.registerTool("mine", { description: "Auto-approach and physically mine 1–200 cycles from the same entity at this exact visible position; no by-name discovery.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1) }) }, async (p) => task("mine", toolPayloads.mine(p)));
   server.registerTool("place_entity", { description: "Auto-approach and place an inventory item at an exact position.", inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional() }) }, async (p) => task("place", toolPayloads.place(p)));
@@ -72,14 +94,14 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try {
       const value: any = await (await bridge()).call("plan_status", p);
       if (value.observation) value.observation = normalizeObservation(value.observation);
-      return result(value, value.status === "failed" || value.status === "cancelled");
+      return result(normalizePlanDiagnostics(value), value.status === "failed" || value.status === "cancelled");
     } catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
   server.registerTool("run_plan", { description: "Run 1–25 known dependent physical steps sequentially with fail-fast cancellation and a final observation; prefer this for two or more dependent actions.", inputSchema: runPlanSchema }, async (input, extra) => {
     const parsed = runPlanSchema.parse(input);
     try {
       const outcome = await executeRunPlan(await bridge(), parsed, extra?.signal);
-      return result(outcome, outcome.status !== "completed");
+      return result(normalizePlanDiagnostics(outcome), outcome.status !== "completed");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const status = extra?.signal?.aborted ? "cancelled" : "failed";
@@ -89,7 +111,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
         outcomes: [],
         observation_error: message,
       };
-      return result(outcome, true);
+      return result(normalizePlanDiagnostics(outcome), true);
     }
   });
   server.registerTool("start_research", { description: "Start an unlocked technology using the force's real research queue.", inputSchema: z.object({ technology: z.string() }) }, async (p) => rpc("start_research", p));

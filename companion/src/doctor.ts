@@ -3,11 +3,15 @@ import { companionVersion, diagnoseConfig, type Settings } from "./config.js";
 import { EXPECTED_RCON_HOST, EXPECTED_RCON_PORT, connectionCompatibility, type PingIdentity } from "./compatibility.js";
 import { PROTOCOL_VERSION } from "./protocol/contract.js";
 import { RconClient } from "./rcon.js";
+import { nodeRuntimeDiagnostic } from "./runtime.js";
 
 export interface DoctorCheck { name: string; ok: boolean; detail: string; fix?: string }
 export interface DoctorReport { ok: boolean; app_version: string; rcon: { host: string; port: number; password_configured: boolean }; checks: DoctorCheck[] }
 export async function collectDoctorReport(settings: Settings): Promise<DoctorReport> {
-  const checks: DoctorCheck[] = []; const diagnostic = diagnoseConfig();
+  const checks: DoctorCheck[] = [];
+  const runtime = nodeRuntimeDiagnostic();
+  checks.push({ name: "node", ...runtime });
+  const diagnostic = diagnoseConfig();
   checks.push(diagnostic.ok
     ? { name: "config", ok: true, detail: "exact shape, mode 0600, Factorio user-data directory exists" }
     : { name: "config", ok: false, detail: diagnostic.error, fix: diagnostic.error.includes("launch Factorio") ? "launch Factorio once, then run setup again" : "run `factorio-codex setup`" });

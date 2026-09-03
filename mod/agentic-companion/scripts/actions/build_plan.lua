@@ -9,6 +9,7 @@
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local output_targets = require("scripts.output_target")
+local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
 
@@ -441,16 +442,11 @@ function M.tick(task)
     expected_output = current.entity
   end
 
-  local can_place = c.surface.can_place_entity({
-    name = entity_name,
-    position = step.position,
-    direction = step.direction,
-    force = c.force,
-    build_check_type = defines.build_check_type.manual,
-  })
+  local can_place, placement_reason = placement_geometry.can_place(c, place_result, step.position, step.direction)
   if not can_place then
     return advance(task, false, string.format("can't place %s at (%.1f, %.1f) — %s",
-      step.item, step.position.x, step.position.y, blocked_reason(c, step.position)))
+      step.item, step.position.x, step.position.y,
+      placement_reason == "CODEX_BODY_OVERLAP" and "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint" or blocked_reason(c, step.position)))
   end
 
   local built = c.surface.create_entity({

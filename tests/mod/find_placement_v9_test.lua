@@ -112,6 +112,20 @@ local edge = finder.find_placement({ item = "pipe", preferred = { x = 31.5, y = 
 local leaked = false; for _, candidate in ipairs(edge.candidates) do if candidate.position.x >= 32 then leaked = true end end
 check(not leaked and charted_calls > 0, "uncharted candidate footprints are never passed through as placements")
 check(placement_calls > 0, "charted candidates use Factorio can_place_entity")
+prototypes.item.pipe.place_result.fluidbox_prototypes = {
+  { index = 1, production_type = "input-output", pipe_connections = { { positions = {
+    { x = 0, y = -1 }, { x = 1, y = 0 }, { x = 0, y = 1 }, { x = -1, y = 0 },
+  } } } },
+}
+only_position = { x = 4.5, y = 4.5 }
+local fluid_candidate = finder.find_placement({ item = "pipe", preferred = { x = 4.5, y = 4.5 },
+  radius = 1, directions = { 4 }, limit = 1 }).candidates[1]
+check(fluid_candidate and fluid_candidate.fluid_connections[1]
+  and fluid_candidate.fluid_connections[1].position.x == 5.5
+  and fluid_candidate.fluid_connections[1].position.y == 4.5
+  and fluid_candidate.fluid_connections[1].production_type == "input-output",
+  "placement candidates expose direction-indexed world-space prototype fluid endpoints")
+only_position = nil
 local inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
   directions = { 4, 0 }, limit = 2 })
 check(inserter.candidates[1].pickup_position.x == 1.5 and inserter.candidates[1].pickup_position.y == 0.5
@@ -230,6 +244,13 @@ resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 600,
     prototype = { resource_category = "basic-solid" } },
 }
+local coverage_ranked = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+  radius = 1, directions = { 0 }, limit = 1 })
+check(coverage_ranked.candidates[1]
+  and coverage_ranked.candidates[1].position.x == 9
+  and coverage_ranked.candidates[1].resource_coverage[1].total_amount == 1200,
+  "drill placement ranks greater compatible resource coverage before proximity")
+only_position = { x = 8, y = 8 }
 local mixed_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(mixed_drill.candidates[1]
@@ -237,6 +258,7 @@ check(mixed_drill.candidates[1]
   and mixed_drill.candidates[1].resource_coverage[1].name == "iron-ore"
   and mixed_drill.candidates[1].resource_coverage[1].total_amount == 500,
   "mixed coverage excludes incompatible, unknown-category, malformed-position, and overlap-only resources")
+only_position = nil
 resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 8, y = 8 },
     prototype = { resource_category = "basic-solid" } },

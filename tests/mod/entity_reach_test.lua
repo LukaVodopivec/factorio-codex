@@ -145,4 +145,14 @@ completes_after_real_approach("same-coordinate extract", transfer.extract,
 check(action_reach_checks == 24,
   "all four actions recheck Factorio reach across both multi-tick entity approach identities")
 
+body.position, entity.position = { x = 6, y = 0 }, { x = 6, y = 0 }
+body.get_item_count = function() return 1 end
+entity.insert = function(stack) mutations.insert = mutations.insert + 1 return stack.count end
+local partial_insert = { id = 30, target = { x = 6, y = 0 }, items = { coal = 2 } }
+transfer.insert.start(partial_insert)
+local partial_insert_result = transfer.insert.tick(partial_insert)
+check(partial_insert_result and partial_insert_result.status == "failed"
+  and partial_insert_result.detail:match("requested 2 coal, inserted 1, remainder 1"),
+  "partial insert is a terminal failure with requested, moved, and remainder counts")
+
 os.exit(failures == 0 and 0 or 1)

@@ -36,30 +36,37 @@
 
 ## Two-session gameplay
 
-Use the benchmark-selected topology and model/effort assignment; do not
-predeclare a Sol/Luna winner. In a split topology, one strategist may read and
-plan while one persistent pilot is the sole ordinary MCP action writer for the
-single physical Codex character and flat FIFO lane.
+Until the owner explicitly re-enables benchmarking, every new live run is a
+supervised debug run. The session that starts the run is the debug supervisor
+and may use any available observation or write surface needed to diagnose and
+recover it, including screenshots, raw Factorio/RCON or console commands,
+direct movement or teleport recovery, save/source edits, and server/client
+restart or replacement. Record every intervention with its reason and affected
+state; assisted progress and timing are never benchmark evidence.
+
+The active gameplay topology remains one Sol-medium read/advice-only strategist
+and one persistent Terra-low pilot. The pilot is the sole ordinary MCP action
+writer for the single physical Codex character and flat FIFO lane. Neither
+gameplay role inherits the supervisor's debug authority.
 Keep one ephemeral `operations.json` ledger containing phase and success,
 capacity/utilization, the executing plan, one `plan_status`-confirmed queued
 successor with predecessor and preconditions (or the reason none is queued),
 prioritized fallbacks, current and next bill of materials, and source tick/plan
-ID. The master is its sole atomic host writer; the pilot is the sole ordinary
-MCP writer and latest-observation authority; an optional specialist is
-read-only. Discard stale advice unless the pilot revalidates it.
+ID. The strategist is its sole atomic host writer; the pilot is the sole
+ordinary MCP writer and latest-observation authority. Discard stale advice
+unless the pilot revalidates it.
 The pilot copies plan and predecessor IDs verbatim from returned `queue_plan`
 and `plan_status` structured values and never reconstructs, substitutes, or
 relabels them from memory or prose.
-Immediately after one authoritative preflight packet, the master writes and
-sends a broad state-grounded first physical envelope, then ends its turn so new
-pilot or specialist evidence can trigger a fresh turn; it does not repeat the
-initial diagnostics already supplied by the pilot. At `GO`, after that initial
-observation and until the first master envelope arrives, the pilot immediately
-uses a pre-authorized state-driven bootstrap envelope: deploy already-carried
+Immediately after one authoritative preflight packet, the strategist writes and
+sends one coordinate-free strategy proposal, then ends its turn so new pilot
+evidence can trigger a fresh turn; it does not repeat the initial diagnostics
+already supplied by the pilot. At `GO`, after that initial observation, the
+pilot immediately uses its state-driven bootstrap policy: deploy already-carried
 automation only against a verified visible resource and sink, otherwise scout
 a visible dry waypoint or gather the nearest measured blocker to a numeric
-stop. Report the first material result; the master envelope supersedes the
-default. This remains one writer/body/lane and never fixes an item, resource,
+stop. It never waits for or grants control to a proposal. This remains one
+writer/body/lane and never fixes an item, resource,
 order, coordinate, route, or timed phase.
 
 The pilot may mine, refuel, collect output, repair routes, and use an approved
@@ -84,28 +91,36 @@ valid. Count automation capacity only after structured state
 shows output accepted by its next physical sink and observable there. Upstream
 fuel/input changes end with measured dependent utilization and a bounded
 corrective successor when preconditions hold; rate claims without timing or
-buffer evidence use measured deltas only. The specialist may proactively emit
-at most one coalescible calculation memo per new ledger revision; on the first
-material-flow contradiction it distinguishes a game bottleneck from an MCP
-observability gap. Otherwise it idles. Durable player knowledge may contain only in-game
+buffer evidence use measured deltas only. On the first material-flow
+contradiction, the strategist may advise whether evidence suggests a game
+bottleneck or an MCP observability gap; the pilot decides. Treat one `working`
+status as provisional until a later observation after at least one expected
+production cycle proves input availability, transfer, downstream acceptance,
+and increased output; stored buffers are transient evidence. Recalculate BOMs,
+successors, and waits from actual accepted/produced quantities. Rank placements
+by useful lifetime, compatible coverage, endpoint binding, and safe character
+egress before proximity. After repeated identical path evidence without
+movement, stop arbitrary offset attempts and use one materially distinct route
+or productive fallback. Maintain time-based fuel/input reserves from observed
+deltas, and bound every diagnosis with one falsifiable hypothesis, expected
+measurable effect, and numeric stop. Durable player knowledge may contain only in-game
 learned recipes/calculations and Codex-authored relative layouts—never map
 coordinates, tutorials, external blueprint strings, or online build sequences.
 
 Each report carries source tick/plan ID, position, inventory, active plan/step,
-queue depth, crafting, result, and failure. Never use screenshots or screen
-capture for live gameplay perception, navigation, targeting, placement choice,
-or action selection. After a scored run is frozen, screenshots may cover all
-relevant placed-item and machine areas only when structured MCP evidence is
-insufficient. They are non-authoritative review evidence: they contribute no
-coordinates, routes, tactics, or durable knowledge, and any finding that could
-affect a later run must be revalidated through structured in-game MCP data.
+queue depth, crafting, result, and failure. Gameplay roles never use screenshots
+or screen capture for live gameplay perception, navigation, targeting,
+placement choice, or action selection. The debug supervisor may use screenshots
+for diagnosis and intervention, but revalidates affected state through
+structured in-game MCP data before returning ordinary control to the pilot.
 Missing structured state is an `MCP_GAP` that blocks only the affected branch,
 not permission to guess or stop unrelated productive work.
 Concurrency removes thinking idle time, not physical walking time. There is no
 second body, raw Lua/console, teleport, hidden map, free resource, or second
-RCON path; `stop` is emergency cancellation only. At the immutable `GO+20m`
-checkpoint, freeze the snapshot, cancel and drain the lane, diagnose and repair,
-and permit no post-snapshot gameplay. A rerun starts only from a fresh baseline.
+ordinary RCON path for the gameplay roles; `stop` is emergency cancellation
+only. Debug runs continue past `GO+20m` until their assigned milestone, an
+explicit the owner stop, or a genuine blocker. Candidate B freeze and fresh-baseline
+rules are historical unless the owner explicitly starts a benchmark.
 
 When a newly observed gameplay difficulty appears to require greenfield code,
 first make one bounded Firecrawl reuse survey for maintained mods, interfaces,

@@ -108,6 +108,30 @@ local no_targets = inspect.inspect({ targets = { inserter.position } }).entities
 check(no_targets.pickup_target == nil and no_targets.drop_target == nil,
   "inserter inspection omits invalid and absent targets")
 
+local connected_pipe = { valid = true, name = "pipe", type = "pipe", position = { x = 2, y = 1 } }
+local fluidbox = { [1] = {} }
+fluidbox.get_pipe_connections = function(index)
+  check(index == 1, "fluid endpoint inspection requests the exact fluidbox index")
+  return { { position = { x = 1, y = 0.5 }, target_position = { x = 1.5, y = 0.5 }, connection_type = "normal",
+    flow_direction = "input-output", target = { owner = connected_pipe } } }
+end
+local pump = { valid = true, name = "offshore-pump", type = "offshore-pump", direction = 4,
+  position = { x = 1, y = 1 }, prototype = {}, fluidbox = fluidbox,
+  get_fluid_box_prototype = function(index)
+    return { index = index, production_type = "output", filter = { name = "water" } }
+  end }
+found_entity = pump
+local pump_result = inspect.inspect({ targets = { pump.position } }).entities[1]
+check(pump_result.fluid_connections[1]
+  and pump_result.fluid_connections[1].position.x == 1
+  and pump_result.fluid_connections[1].position.y == 0.5
+  and pump_result.fluid_connections[1].target_position.x == 1.5
+  and pump_result.fluid_connections[1].target_position.y == 0.5
+  and pump_result.fluid_connections[1].production_type == "output"
+  and pump_result.fluid_connections[1].filter == "water"
+  and pump_result.fluid_connections[1].connected_target.name == "pipe",
+  "entity inspection exposes live fluid endpoints and their connected target")
+
 local ore = { valid = true, name = "iron-ore", type = "resource", position = { x = 2.25, y = 0.25 }, amount = 873 }
 local drill = {
   valid = true, name = "burner-mining-drill", type = "mining-drill", direction = 4,

@@ -34,8 +34,12 @@ check(pipe.length > 0 and pipe.steps[1].direction == nil, "pipe routes use physi
 
 from_entity.type, from_entity.name = "boiler", "boiler"
 to_entity.type, to_entity.name = "generator", "steam-engine"
-from_entity.fluidbox = { {}, get_pipe_connections = function() return { { connection_type = "normal", target_position = { x = 1.5, y = 0.5 } } } end }
-to_entity.fluidbox = { {}, get_pipe_connections = function() return { { connection_type = "normal", target_position = { x = 3.5, y = 0.5 } } } end }
+from_entity.fluidbox = { {}, get_pipe_connections = function() return { {
+  connection_type = "normal", position = { x = 1, y = 0.5 }, target_position = { x = 1.5, y = 0.5 },
+} } end }
+to_entity.fluidbox = { {}, get_pipe_connections = function() return { {
+  connection_type = "normal", position = { x = 4, y = 0.5 }, target_position = { x = 3.5, y = 0.5 },
+} } end }
 local machine_pipe = connect.connect_entities({ kind = "pipe", prototype = "pipe", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 }, max_length = 10 })
 local includes_source_port, includes_target_port = false, false
 for _, step in ipairs(machine_pipe.steps) do

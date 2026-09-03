@@ -297,6 +297,15 @@ machine_inventory_empty, machine_fluids = true, { water = 1 }
 local wet, wet_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" })
 check(not wet and tostring(wet_error):match("nonempty inventories or fluids") ~= nil,
   "player-owned recovery fails closed for nonempty fluids")
+configure_capacity(2)
+local drainless = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned", allow_fluid_loss = true }
+mine.start(drainless)
+local drainless_result = run(drainless, 10)
+check(drainless_result and drainless_result.status == "done" and not machine.valid
+  and drainless_result.detail:match("discarded contained fluid")
+  and drainless_result.detail:match("1%.0 water"),
+  "explicit fluid-loss recovery uses ordinary dismantling and reports the discarded amount")
+machine.valid = true
 machine_fluids = {}
 covered_resource.valid, covered_resource.amount = true, 100
 configure_capacity(4)
@@ -309,5 +318,9 @@ check(implicit._entity == covered_resource,
 local repeated_owned, repeated_owned_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 2, target_kind = "owned" })
 check(not repeated_owned and tostring(repeated_owned_error):match("exactly one physical mining cycle") ~= nil,
   "explicit player-owned recovery permits exactly one physical cycle")
+local natural_loss, natural_loss_error = pcall(mine.start,
+  { target = { x = 5, y = 0 }, count = 1, target_kind = "natural", allow_fluid_loss = true })
+check(not natural_loss and tostring(natural_loss_error):match("only with target_kind=owned") ~= nil,
+  "fluid-loss permission cannot broaden natural-resource mining")
 
 os.exit(failures == 0 and 0 or 1)

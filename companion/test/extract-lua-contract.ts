@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const payload = toolPayloads.extract({ x: 1, y: 2 });
 assert.deepEqual(payload, { target: { x: 1, y: 2 }, all: true });
 
-const result = spawnSync("lua5.4", [
+const result = spawnSync(process.env.LUA_BIN ?? "lua5.4", [
   path.join(root, "tests/mod/extract_contract_runner.lua"),
   String(payload.target.x),
   String(payload.target.y),

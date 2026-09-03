@@ -9,7 +9,7 @@ local function table_empty(value)
   return next(value) == nil
 end
 
-local function recoverable_empty(e)
+local function inventory_empty(e)
   local seen = {}
   for _, inventory_id in pairs(defines.inventory or {}) do
     if type(inventory_id) == "number" and not seen[inventory_id] then
@@ -18,9 +18,28 @@ local function recoverable_empty(e)
       if ok and inv and not inv.is_empty() then return false end
     end
   end
-  local ok, fluids = pcall(e.get_fluid_contents)
-  if ok and not table_empty(fluids) then return false end
   return true
+end
+
+
+local function fluid_contents(e)
+  local ok, fluids = pcall(e.get_fluid_contents)
+  if not ok or table_empty(fluids) then return {} end
+  local copy = {}
+  for name, amount in pairs(fluids) do copy[name] = tonumber(amount) or 0 end
+  return copy
+end
+
+local function recoverable(e, allow_fluid_loss)
+  return inventory_empty(e) and (allow_fluid_loss or table_empty(fluid_contents(e)))
+end
+
+local function fluid_loss_detail(fluids)
+  local names, parts = {}, {}
+  for name in pairs(fluids or {}) do names[#names + 1] = name end
+  table.sort(names)
+  for _, name in ipairs(names) do parts[#parts + 1] = string.format("%.1f %s", fluids[name], name) end
+  return #parts > 0 and ("; discarded contained fluid through ordinary dismantling: " .. table.concat(parts, ", ")) or ""
 end
 
 local function expected_item_names(e)
@@ -147,6 +166,10 @@ function M.start(task)
   if target_kind == "owned" and count ~= 1 then
     error("mine target_kind=owned requires exactly one physical mining cycle")
   end
+  task.allow_fluid_loss = task.allow_fluid_loss == true
+  if task.allow_fluid_loss and target_kind ~= "owned" then
+    error("mine allow_fluid_loss=true is valid only with target_kind=owned")
+  end
   if target_kind == "owned" and (tonumber(c.crafting_queue_size) or 0) > 0 then
     error("refusing to recover a player-owned entity while Codex has active hand-crafting")
   end
@@ -172,12 +195,15 @@ function M.start(task)
   if target_kind == "owned" then found = owned else found = natural end
   if not found then error(string.format("no %s minable entity occupies exact coordinate (%.1f, %.1f)", target_kind, target.x, target.y)) end
   if count > 1 and found.type ~= "resource" then error("mine count greater than 1 is only valid for resources") end
-  if found == owned and not recoverable_empty(found) then
-    error("refusing to recover a player-owned entity with nonempty inventories or fluids")
+  if found == owned and not recoverable(found, task.allow_fluid_loss) then
+    error(task.allow_fluid_loss
+      and "refusing to recover a player-owned entity with nonempty inventories"
+      or "refusing to recover a player-owned entity with nonempty inventories or fluids; set allow_fluid_loss=true to discard fluids through ordinary dismantling")
   end
   task._entity, task._entity_name = found, found.name
   task._target_kind = target_kind
   task._expected_items = expected_item_names(found)
+  task._discarded_fluids = task.allow_fluid_loss and fluid_contents(found) or {}
   task._requested, task._completed, task._actual_gain = count, 0, 0
 end
 
@@ -204,7 +230,7 @@ function M.tick(task)
     local reached = approach.ensure(task, c, e.position, c.resource_reach_distance)
     if type(reached) == "table" then return reached end
     if reached ~= "ok" then return nil end
-    if task._target_kind == "owned" and not recoverable_empty(e) then
+    if task._target_kind == "owned" and not recoverable(e, task.allow_fluid_loss) then
       c.mining_state = { mining = false }
       return partial_failure(task, "refusing to recover a player-owned entity that gained inventory or fluid contents")
     end
@@ -231,7 +257,7 @@ function M.tick(task)
     return nil
   end
 
-  if task._target_kind == "owned" and e and e.valid and not recoverable_empty(e) then
+  if task._target_kind == "owned" and e and e.valid and not recoverable(e, task.allow_fluid_loss) then
     c.mining_state = { mining = false }
     return partial_failure(task, "refusing to continue recovery after the player-owned entity gained inventory or fluid contents")
   end
@@ -268,8 +294,9 @@ function M.tick(task)
   if task._completed >= task._requested then
     return {
       status = "done",
-      detail = string.format("mined %s at exact coordinate: requested %d cycles, completed %d, actual gain %d items",
-        task._entity_name, task._requested, task._completed, task._actual_gain),
+      detail = string.format("mined %s at exact coordinate: requested %d cycles, completed %d, actual gain %d items%s",
+        task._entity_name, task._requested, task._completed, task._actual_gain,
+        fluid_loss_detail(task._discarded_fluids)),
     }
   end
   if not (e and e.valid) then return partial_failure(task, "the initially selected resource was exhausted") end

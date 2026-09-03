@@ -71,7 +71,8 @@ check(tasks.plan_status({ plan_id = expiring.plan_id }).status == "waiting",
 game.tick = 61; tasks.on_tick()
 local expired = tasks.plan_status({ plan_id = expiring.plan_id })
 check(expired.status == "failed" and storage.tasks.records[expiring.plan_id].finished_tick == 61
-  and expired.outcomes[1].status == "failed" and expired.outcomes[1].error:match("timed out waiting") ~= nil,
+  and expired.outcomes[1].status == "failed"
+  and expired.outcomes[1].error:match("starting 0, current 0, observed delta 0 after 60 ticks") ~= nil,
   "wait parked at tick 1 becomes terminal failed at tick 61")
 check(storage.tasks.active and storage.tasks.active.id == physical.task_id
   and storage.tasks.active == active_at_start

@@ -3,6 +3,7 @@
 -- through on_script_path_request_finished → M.on_path_finished (wired in
 -- control.lua); storage.path_request belongs to the sole active task.
 local companion = require("scripts.companion")
+local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
 
@@ -13,6 +14,7 @@ local PATH_WAIT_TICKS = 90
 local RETRY_DELAY_TICKS = 30
 local MAX_RETRIES = 3
 local MAX_RECOVERIES = 1
+local ESCAPE_TICKS = 90
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
 local OCTANT_RATIO = 0.41421356
@@ -67,6 +69,32 @@ end
 local function fail(c, code, detail)
   stop(c)
   return { failed = code .. ": " .. detail }
+end
+
+local function collision_labels(collisions)
+  local labels = {}
+  for _, collision in ipairs(collisions) do
+    labels[#labels + 1] = string.format("%s:%s@(%.1f,%.1f)", collision.kind, collision.name,
+      collision.position.x, collision.position.y)
+  end
+  return #labels > 0 and table.concat(labels, ",") or "none"
+end
+
+local function begin_escape(state, c)
+  local collisions = placement_geometry.start_collisions(c)
+  if #collisions == 0 then return false end
+  local ok, target = pcall(c.surface.find_non_colliding_position,
+    c.name or "character", c.position, 1.5, 0.1, false)
+  if not ok or not target then
+    return fail(c, "START_COLLISION", "character path body overlaps " .. collision_labels(collisions)
+      .. "; Factorio found no clear position within 1.5 tiles")
+  end
+  state.phase = "escaping"
+  state.escape_target = { x = target.x, y = target.y }
+  state.escape_started_tick = game.tick
+  state.escape_started_position = { x = c.position.x, y = c.position.y }
+  state.start_collisions = collision_labels(collisions)
+  return true
 end
 
 local function blocker_evidence(state, c, goal)
@@ -208,7 +236,31 @@ function M.step(state, c, task_id)
   end
 
   if state.phase == "request" then
+    local escape = begin_escape(state, c)
+    if type(escape) == "table" then return escape end
+    if escape then
+      c.walking_state = { walking = true, direction = direction_toward(c.position, state.escape_target) }
+      return nil
+    end
     request_path(state, c, task_id)
+  end
+
+
+  if state.phase == "escaping" then
+    local collisions = placement_geometry.start_collisions(c)
+    if #collisions == 0 then
+      state.escape_cleared_tick = game.tick
+      request_path(state, c, task_id)
+      stop(c)
+      return nil
+    end
+    if game.tick - state.escape_started_tick >= ESCAPE_TICKS then
+      return fail(c, "START_COLLISION", string.format(
+        "ordinary walking could not clear %s toward free position (%.1f, %.1f) within %d ticks",
+        state.start_collisions, state.escape_target.x, state.escape_target.y, ESCAPE_TICKS))
+    end
+    c.walking_state = { walking = true, direction = direction_toward(c.position, state.escape_target) }
+    return nil
   end
 
   if state.phase == "waiting" then

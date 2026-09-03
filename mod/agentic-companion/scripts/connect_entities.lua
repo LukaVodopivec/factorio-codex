@@ -1,5 +1,7 @@
 -- Deterministic physical route planning between exact, already-charted endpoints.
 local companion = require("scripts.companion")
+local placement_geometry = require("scripts.placement_geometry")
+local fluid_connections = require("scripts.fluid_connections")
 
 local M = {}
 local BELT = { ["transport-belt"] = true }
@@ -50,19 +52,13 @@ end
 local function key(pos) return string.format("%.3f,%.3f", pos.x, pos.y) end
 
 local function can_place(c, proto, pos, direction_value)
-  local box = proto.collision_box
-  if box then
-    local lt, rb = box.left_top, box.right_bottom
-    if direction_value == 4 or direction_value == 12 then lt, rb = { x = lt.y, y = lt.x }, { x = rb.y, y = rb.x } end
-    for _, corner in ipairs({
-      { x = pos.x + lt.x, y = pos.y + lt.y }, { x = pos.x + rb.x - 0.001, y = pos.y + lt.y },
-      { x = pos.x + lt.x, y = pos.y + rb.y - 0.001 }, { x = pos.x + rb.x - 0.001, y = pos.y + rb.y - 0.001 },
-    }) do if not charted(c.force, c.surface, corner) then return false end end
-  elseif not charted(c.force, c.surface, pos) then return false end
-  return c.surface.can_place_entity({
-    name = proto.name, position = pos, direction = direction_value or 0, force = c.force,
-    build_check_type = defines.build_check_type.manual,
-  })
+  local area = placement_geometry.footprint(proto, pos, direction_value or 0)
+  for _, corner in ipairs({ area.left_top,
+    { x = area.right_bottom.x - 0.001, y = area.left_top.y },
+    { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
+    { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 },
+  }) do if not charted(c.force, c.surface, corner) then return false end end
+  return placement_geometry.can_place(c, proto, pos, direction_value or 0)
 end
 
 local function grid_route(c, item_name, proto, from, to, max_length, kind, from_entity, include_from, include_to)
@@ -121,17 +117,8 @@ end
 local function pipe_terminals(entity)
   if PIPE[entity.type] then return { { position = entity.position, existing = true } } end
   local terminals = {}
-  local ok_count, count = pcall(function() return #entity.fluidbox end)
-  if not ok_count then return terminals end
-  for index = 1, count do
-    local ok, connections = pcall(function() return entity.fluidbox.get_pipe_connections(index) end)
-    if ok then
-      for _, connection in ipairs(connections or {}) do
-        if connection.target_position and connection.connection_type ~= "linked" then
-          terminals[#terminals + 1] = { position = connection.target_position, existing = false }
-        end
-      end
-    end
+  for _, connection in ipairs(fluid_connections.live(entity)) do
+    terminals[#terminals + 1] = { position = connection.target_position, existing = false }
   end
   table.sort(terminals, function(a, b)
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end

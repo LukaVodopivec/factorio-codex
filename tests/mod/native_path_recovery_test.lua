@@ -67,6 +67,27 @@ body.position = { x = 10, y = 0 }
 check(walk.step(task._walk, body, task.id) == "arrived" and body.walking_state.walking == false,
   "native path success finishes at physical position")
 
+-- A legal placement can leave the physical body inside another collision box.
+-- Recovery must use ordinary walking to a Factorio-selected nearby clear point
+-- before asking the native pathfinder for the requested route.
+body.bounding_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } }
+found_blockers = { { valid = true, name = "stone-furnace", type = "furnace", position = { x = 0, y = 0 },
+  bounding_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } }
+body.surface.find_non_colliding_position = function() return { x = -1, y = 0 } end
+task = reset()
+check(walk.step(task._walk, body, task.id) == nil and task._walk.phase == "escaping"
+  and body.walking_state.walking and storage.path_request == nil,
+  "start collision begins bounded ordinary-walking escape before pathfinding")
+body.position = { x = -1, y = 0 }; body.bounding_box = { left_top = { x = -1.2, y = -0.2 }, right_bottom = { x = -0.8, y = 0.2 } }
+found_blockers = {}
+check(walk.step(task._walk, body, task.id) == nil and task._walk.phase == "waiting"
+  and storage.path_request and storage.path_request.id == 1 and body.walking_state.walking == false,
+  "cleared start collision resumes the native pathfinder from the physical position")
+body.bounding_box, body.surface.find_non_colliding_position = nil, nil
+found_blockers = {
+  { valid = true, name = "stone-furnace", type = "furnace", position = { x = 1, y = 0 } },
+}
+
 task = reset()
 walk.step(task._walk, body, task.id); deliver(nil, false)
 local result = walk.step(task._walk, body, task.id)

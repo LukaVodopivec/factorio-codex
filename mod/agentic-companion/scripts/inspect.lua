@@ -1,6 +1,7 @@
 -- inspect: detailed view of an entity at an exact local map position
 -- (1.5-tile search, non-characters preferred).
 local companion = require("scripts.companion")
+local fluid_connections = require("scripts.fluid_connections")
 
 local M = {}
 
@@ -322,6 +323,8 @@ local function inspect_one(position, c)
   if belt then out.belt_contents = belt end
 
   collect_fluids(e, out)
+  local connections = fluid_connections.live(e)
+  if #connections > 0 then out.fluid_connections = connections end
 
   return out
 end

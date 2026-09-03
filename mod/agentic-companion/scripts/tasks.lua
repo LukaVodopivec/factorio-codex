@@ -90,7 +90,7 @@ local function make_step_task(step)
   local task = { type = kind }
   if kind == "walk_to" or kind == "mine" then
     task.target = { x = step.x, y = step.y }; task.count = step.count
-    if kind == "mine" then task.target_kind = step.target_kind end
+    if kind == "mine" then task.target_kind, task.allow_fluid_loss = step.target_kind, step.allow_fluid_loss end
   end
   if kind == "pickup" then task.target, task.item, task.count = { x = step.x, y = step.y }, step.item, step.count end
   if kind == "place" then
@@ -251,10 +251,15 @@ local function wait_timeout_ticks(step)
   return math.floor((tonumber(step.timeout_seconds) or 120) * 60)
 end
 local function wait_timeout_detail(step)
-  return "timed out waiting for " .. step.count .. " " .. step.item .. " in " .. step.inventory
+  local start = tonumber(step._starting_count) or 0
+  local current = tonumber(step._current_count) or start
+  local elapsed = step._wait_started_tick and game.tick - step._wait_started_tick or 0
+  return string.format("timed out waiting for %d %s in %s: starting %d, current %d, observed delta %d after %d ticks",
+    step.count, step.item, step.inventory, start, current, current - start, elapsed)
 end
 local function wait_for_item(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
+  step._wait_started_tick = step._wait_started_tick or plan.wait_started_tick
   if game.tick - plan.wait_started_tick >= wait_timeout_ticks(step) then
     plan.wait_started_tick, plan.next_check_tick = nil, nil
     return { status = "failed", detail = wait_timeout_detail(step) }
@@ -269,6 +274,8 @@ local function wait_for_item(plan, step)
   local entity = response.entities and response.entities[1]
   if not entity or entity.error then return { status = "failed", detail = entity and entity.error or "inspect returned no entity" } end
   local found = entity.inventories and entity.inventories[step.inventory] and entity.inventories[step.inventory][step.item] or 0
+  if step._starting_count == nil then step._starting_count = found end
+  step._current_count = found
   if found >= step.count then
     plan.wait_started_tick, plan.next_check_tick = nil, nil
     return { status = "done", detail = step.inventory .. " has " .. found .. " " .. step.item }

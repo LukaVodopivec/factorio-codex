@@ -6,6 +6,12 @@ export interface PlacementCandidate {
   distance: number; distance_from_codex: number; terrain: "land" | "shoreline" | "offshore";
   output_position?: Position; pickup_position?: Position; drop_position?: Position;
   resource_coverage?: Array<{ name: string; entity_count: number; total_amount: number }>;
+  fluid_connections?: FluidConnection[];
+}
+export interface FluidConnection {
+  fluidbox_index: number; production_type?: string; filter?: string; connection_type?: string;
+  flow_direction?: string; position: Position; target_position?: Position;
+  connected_target?: { name: string; type: string; position: Position } | null;
 }
 export interface PlacementSearchResult {
   item: string; entity: string; preferred: Position;
@@ -43,7 +49,7 @@ export interface PlanProblem { step?: number; action?: string; entity?: string; 
 export interface PlanDiagnostics { route: PlanProblem[]; machines: PlanProblem[] }
 export type Task =
   | { type: "walk_to"; target: { x: number; y: number } }
-  | { type: "mine"; target: { x: number; y: number }; count?: number; target_kind?: "natural" | "owned" }
+  | { type: "mine"; target: { x: number; y: number }; count?: number; target_kind?: "natural" | "owned"; allow_fluid_loss?: boolean }
   | { type: "pickup"; target: Position; item: string; count: number }
   | { type: "place" | "rotate" | "set_recipe" | "insert" | "extract" | "craft"; [key: string]: unknown }
   | { type: "build_plan"; steps: unknown[]; auto_craft?: boolean; stop_on_error?: boolean };

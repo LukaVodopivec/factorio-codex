@@ -1,6 +1,8 @@
 -- Deterministic, side-effect-free placement search over already charted terrain.
 local companion = require("scripts.companion")
 local output_targets = require("scripts.output_target")
+local placement_geometry = require("scripts.placement_geometry")
+local fluid_connections = require("scripts.fluid_connections")
 
 local M = {}
 
@@ -21,23 +23,6 @@ end
 
 local function charted(force, surface, pos)
   return force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) })
-end
-
-local function footprint(proto, pos, direction)
-  local box = proto.collision_box
-  local lt, rb = box.left_top, box.right_bottom
-  if direction == 4 or direction == 12 then
-    lt, rb = { x = lt.y, y = lt.x }, { x = rb.y, y = rb.x }
-  elseif direction ~= 0 and direction ~= 8 then
-    -- Diagonal orientations need a conservative square bound. The actual
-    -- authoritative answer still comes from can_place_entity below.
-    local extent = math.max(math.abs(lt.x), math.abs(lt.y), math.abs(rb.x), math.abs(rb.y))
-    lt, rb = { x = -extent, y = -extent }, { x = extent, y = extent }
-  end
-  return {
-    left_top = { x = pos.x + lt.x, y = pos.y + lt.y },
-    right_bottom = { x = pos.x + rb.x, y = pos.y + rb.y },
-  }
 end
 
 local function footprint_charted(force, surface, area)
@@ -186,7 +171,7 @@ function M.find_placement(params)
         if codex_distance_sq <= 900 then
           for _, direction in ipairs(directions) do
             local pos = { x = x, y = y }
-            local area = footprint(proto, pos, direction)
+            local area = placement_geometry.footprint(proto, pos, direction)
             local output_position = output_targets.output_position(proto, pos, direction)
             local pickup_offset = inserter_pickup_offset and rotate(inserter_pickup_offset, direction) or nil
             local inserter_output_offset = inserter_drop_offset and rotate(inserter_drop_offset, direction) or nil
@@ -200,10 +185,8 @@ function M.find_placement(params)
             local output_matches = not output_target or recipient == output_target.entity
             local output_known = not output_capable or (output_position ~= nil
               and (recipient_state == "bound" or recipient_state == "none"))
-            if output_known and output_matches and footprint_charted(c.force, c.surface, area) and c.surface.can_place_entity({
-              name = proto.name, position = pos, direction = direction, force = c.force,
-              build_check_type = defines.build_check_type.manual,
-            }) then
+            local can_place = placement_geometry.can_place(c, proto, pos, direction)
+            if output_known and output_matches and footprint_charted(c.force, c.surface, area) and can_place then
               local resource_coverage = drill_resource_coverage(c.force, c.surface, proto, pos)
               if resource_coverage and #resource_coverage == 0 then
                 rejected_no_compatible_resource = rejected_no_compatible_resource + 1
@@ -217,6 +200,7 @@ function M.find_placement(params)
                   output_target = candidate_output_target,
                   pickup_position = pickup_position,
                   drop_position = drop_position,
+                  fluid_connections = fluid_connections.prototype(proto, pos, direction),
                   resource_coverage = resource_coverage,
                 }
               end
@@ -227,6 +211,18 @@ function M.find_placement(params)
     end
   end
   table.sort(candidates, function(a, b)
+    if proto.type == "mining-drill" then
+      local function coverage(candidate)
+        local amount, count = 0, 0
+        for _, row in ipairs(candidate.resource_coverage or {}) do
+          amount, count = amount + (row.total_amount or 0), count + (row.entity_count or 0)
+        end
+        return amount, count
+      end
+      local aa, ac = coverage(a); local ba, bc = coverage(b)
+      if aa ~= ba then return aa > ba end
+      if ac ~= bc then return ac > bc end
+    end
     if a.distance ~= b.distance then return a.distance < b.distance end
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
     if a.position.x ~= b.position.x then return a.position.x < b.position.x end

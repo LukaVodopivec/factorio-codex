@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.13.9**. Prior live evidence remains historical
-until the fresh 0.13.9 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.13.10**. Prior live evidence remains historical
+until the fresh 0.13.10 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -69,7 +69,10 @@ not provide a Linux visual client launcher.
    Then physically connect steam power to an
    electric drill and deliver mined ore through belt, pipe, and power routes.
 9. If bootstrap items are absent, use another fresh built-in freeplay save.
-   Never use console commands, editor mode, spawned items, or teleporting.
+   Gameplay roles never use console commands, editor mode, spawned items, or
+   teleporting. A debug supervisor may use those surfaces only for recorded
+   diagnosis or the smallest recovery intervention, after which the pilot must
+   re-observe authoritative MCP state.
 
 ## Two-session pilot contract
 
@@ -78,31 +81,29 @@ server and agent sessions run on the headless workstation, while the exact
 `Codex` client and the characterless spectator/follower run only on the couch
 PC. Do not launch a local GUI as a recovery or benchmark shortcut.
 
-The active two-role topology uses exactly a Sol-medium read/advice-only
-strategist and the unchanged Terra-low sole-writer single-pilot baseline, with
-fast mode off. Give both roles the same exact
-`/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json` path. Before
-`GO`, verify the fresh baseline copy and release hashes, permanent peaceful
-mode/enemy bases disabled, exact `Codex` native player, characterless following
-couch viewer, one body/lane/writer, frozen instructions, and no post-`GO` human
-tactical coaching.
+Until the owner explicitly re-enables benchmarking, the active topology is a
+supervised debug run with exactly a Sol-medium read/advice-only strategist and
+the unchanged Terra-low sole-writer pilot, with fast mode off. Give both roles
+the same exact `/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json`
+path. Before `GO`, verify the requested fresh save and release hashes, permanent
+peaceful mode/enemy bases disabled, exact `Codex` native player, characterless
+following couch viewer, and one body/lane/writer. Record `GO` time and Factorio
+tick, but continue past 20 minutes toward the assigned milestone; Candidate B
+and R1-R7 checkpoint/freeze rules are historical unless the owner explicitly starts
+a benchmark.
 
-Record `GO` as UTC time, monotonic time, and Factorio tick immediately before
-the first gameplay decision/action. At `GO+1200s`, take the first structured
-observation at or after the deadline and before another ordinary action; record
-collection latency and an immutable `SNAPSHOT_AT_20M` progress vector with
-the complete throughput vector from `AGENT-PLAY-PERFORMANCE.md`. Drain the lane
-at the last safe boundary before the checkpoint and do not queue a successor
-that could start across the deadline. Work completed during collection latency
-remains visible but must not be attributed to the deadline; the snapshot is not
-a binary success gate. Freeze the trial, cancel and drain the FIFO, and permit
-no post-snapshot gameplay. Diagnose the frozen result and repair the general
-interface or guidance. The parent starts any rerun from a fresh byte-identical
-baseline with a new run and fresh role conversations; do not reset or relabel
-the immutable snapshot.
+The parent session is the debug supervisor. It may inspect screenshots or raw
+Factorio state, modify source or save state, move/teleport the body, and restart
+or replace server/client processes when needed for diagnosis or recovery. None
+of that authority passes to either gameplay role. Record the pre-intervention
+tick/error/state, the smallest intervention and reason, and the first fresh
+post-intervention MCP observation; invalidate affected assumptions and never
+present assisted timing or progress as benchmark evidence. Intervene only when
+the same failure survives two materially distinct safe approaches without
+relevant progress, no unrelated productive branch remains, or a structured MCP
+defect prevents physical recovery.
 
-The first rollout is the next fresh matched run; Candidate B and R1-R7 remain
-historical evidence rather than active topology instructions. The strategist
+The strategist
 has zero Factorio MCP access and writes only coordinate-free
 `strategy_proposal` advice to the one operations ledger. One persistent pilot
 remains the sole Factorio MCP user, gameplay writer, and live-state authority
@@ -125,8 +126,11 @@ an authoritative observation: consume a fresh `run_plan.observation` directly;
 call `observe_local` only when that observation is missing or became stale
 after a subsequent action. Report position, inventory, active task, result,
 and failure. Concurrency removes thinking idle time, not physical walking time.
-Do not add a second body, raw Lua/console, teleport, hidden map, free resources,
-or a second RCON path. `stop` is emergency cancellation only.
+Gameplay roles do not add a second body, raw Lua/console, teleport, hidden map,
+free resources, or a second ordinary RCON path. `stop` is emergency
+cancellation only. If an intervened pilot goal has already terminated, retire
+it and start one replacement Terra-low pilot on the same run/save; never keep
+two active pilots or add a third gameplay role.
 
 Use the current public schema shown by `tools/list`. In particular,
 `inspect_entity` accepts `positions`; the removed `targets` input must fail
@@ -252,7 +256,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.13.9 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.13.10 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -275,14 +279,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.13.9. They
+The successful observations below were collected before release 0.13.10. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.13.9. Complete the fresh run above after installing 0.13.9 before recording a
+0.13.10. Complete the fresh run above after installing 0.13.10 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.13.9 run must instead report protocol v16 and mod/app 0.13.9.
+  0.8.0. A 0.13.10 run must instead report protocol v17 and mod/app 0.13.10.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

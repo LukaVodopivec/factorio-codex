@@ -83,9 +83,9 @@ describe("shared gameplay run contract", () => {
     for (const field of ["id", "release_sha", "baseline_save_sha256", "save_identity", "created_at"])
       expect(skill).toContain(`\`${field}\``);
     expect(skill).toMatch(/`outcome` object/i);
-    for (const field of ["GO UTC/monotonic/tick", "deadline", "collection UTC/monotonic/tick", "latency", "`SNAPSHOT_AT_20M`", "progress vector", "throughput", "cancellation/drain evidence", "diagnosis"])
+    for (const field of ["debug timing", "supervisor interventions", "reasons", "diagnosis", "milestone evidence", "elapsed wall/game time"])
       expect(skill).toContain(field);
-    expect(skill).toMatch(/20-minute snapshot is not a binary success gate/i);
+    expect(skill).toMatch(/Historical\s+Candidate B timing and snapshot fields apply only when the owner explicitly starts\s+a benchmark run/i);
     expect(allInstructions).not.toMatch(/PASS_AT_20M|MISS_AT_20M/);
     expect(strategist).toMatch(/Rewrite the file atomically through (?:a `0600` )?adjacent temporary file and rename/i);
     expect(strategist).toMatch(/`0600` adjacent temporary file[\s\S]*verify the final file remains `0600`/i);
@@ -177,7 +177,8 @@ describe("shared gameplay run contract", () => {
     }
     expect(roleGuidance).toMatch(/coalesces superseded pilot reports[\s\S]*current_plan[\s\S]*queued_successor[\s\S]*pilot-reported MCP\s+facts/i);
     expect(roleGuidance).toMatch(/strategy_proposal[\s\S]*safe bounds[\s\S]*numeric[\s\S]*non-executable advice/i);
-    expect(pilot).toMatch(/no post-snapshot gameplay/i);
+    expect(pilot).toMatch(/supervised debug run[\s\S]*Continue ordinary play past `GO\+20m`/i);
+    expect(pilot).toMatch(/supervisor may intervene[\s\S]*fresh authoritative MCP state/i);
     expect(strategist).toMatch(/material-flow contradiction[\s\S]*MCP observability gap/i);
     for (const text of [strategist, pilot, roleGuidance]) {
       for (const phrase of ["output", "physical sink", "observable", "capacity"]) expect(text.toLowerCase()).toContain(phrase);

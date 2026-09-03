@@ -62,7 +62,10 @@ describe("exact local configuration", () => {
     const rendered = JSON.stringify(report);
     expect(rendered).not.toMatch(/provider|brain|telemetry|api.?key/i);
     expect(rendered).not.toContain("[redacted]");
-    expect(report.checks).toEqual([expect.objectContaining({ name: "config", ok: false })]);
+    expect(report.checks).toEqual([
+      expect.objectContaining({ name: "node", ok: true }),
+      expect.objectContaining({ name: "config", ok: false }),
+    ]);
   });
   it("connect_status reports a missing config before creating RCON", async () => {
     isolatedHome();
@@ -106,8 +109,8 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "mod", ok: false, detail: expect.stringMatching(/RPC unavailable: (unlock|ping) failed/), fix: expect.stringContaining("install and enable") }));
   });
   it.each([
-    { ping: { protocol_version: 6, mod_version: "0.13.9" }, failedCheck: "protocol" },
-    { ping: { protocol_version: 16, mod_version: "0.6.0" }, failedCheck: "mod" },
+    { ping: { protocol_version: 6, mod_version: "0.13.10" }, failedCheck: "protocol" },
+    { ping: { protocol_version: 17, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
@@ -125,7 +128,7 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
     expect(connect).not.toHaveBeenCalled();
   });
-  it("keeps root, package, lockfile, runtime, mod, and docs at 0.13.9", () => {
+  it("keeps root, package, lockfile, runtime, mod, and docs at 0.13.10", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const read = (relative: string) => JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
     const lock = read("package-lock.json");
@@ -137,16 +140,16 @@ describe("exact local configuration", () => {
       lock.packages[""].version,
       lock.packages.companion.version,
       companionVersion(),
-    ]).toEqual(Array(7).fill("0.13.9"));
-    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.13.9**");
-    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.13.9**");
+    ]).toEqual(Array(7).fill("0.13.10"));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.13.10**");
+    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.13.10**");
   });
   it("keeps visible locale title and description aligned with one-body mod metadata", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const info = JSON.parse(fs.readFileSync(path.join(root, "mod/agentic-companion/info.json"), "utf8"));
     const locale = fs.readFileSync(path.join(root, "mod/agentic-companion/locale/en/agentic-companion.cfg"), "utf8");
     const values = [...locale.matchAll(/^agentic-companion=(.+)$/gm)].map((match) => match[1]);
-    expect(info).toMatchObject({ version: "0.13.9", title: "Factorio Codex Companion" });
+    expect(info).toMatchObject({ version: "0.13.10", title: "Factorio Codex Companion" });
     expect(values).toEqual([info.title, info.description]);
     expect(locale).not.toMatch(/movement.speed|multiplier/i);
     expect(locale).not.toMatch(/Agentic Companion|AI companion|companions|characters|vehicles/i);

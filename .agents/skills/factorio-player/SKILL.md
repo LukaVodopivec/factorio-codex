@@ -7,6 +7,15 @@ description: Operate the live Factorio Codex character through the constrained M
 
 Use only for live play of the one physical character named Codex.
 
+Until the owner explicitly re-enables benchmarking, the parent starts a supervised
+debug run. The parent is the debug supervisor and may use screenshots, raw
+Factorio/RCON or console access, direct movement or teleport recovery,
+save/source changes, and server/client restart or replacement for observation,
+diagnosis, and rescue. Record each intervention and invalidate affected stale
+state. Assisted progress and timing are never benchmark evidence. Gameplay
+roles retain every restriction below and do not inherit this authority; after
+an intervention, the pilot obtains fresh authoritative MCP state before acting.
+
 For the active two-role topology, the parent starts exactly two persistent
 conversations and pastes one adjacent prompt into each:
 
@@ -65,12 +74,10 @@ The exact top-level keys are `schema_version`, `run`, `revision`, `source_tick`,
 `phase`, `success`, `capacity`, `utilization`, `bottleneck`, `current_plan`,
 `queued_successor`, `fallbacks`, `current_bom`, `next_bom`,
 `latest_observation`, `decisions`, `strategy_proposal`, `invalidations`, and
-`outcome`. The `outcome` object also owns Candidate B timing and benchmark
-state: GO UTC/monotonic/tick, deadline, collection UTC/monotonic/tick and
-latency, immutable `SNAPSHOT_AT_20M` progress vector, the complete throughput
-snapshot, cancellation/drain evidence, diagnosis, and elapsed wall/game time.
-The 20-minute snapshot is not a binary success gate; it terminates that scored
-trial without converting its progress vector into a pass/fail judgment.
+`outcome`. The `outcome` object owns debug timing, supervisor interventions and
+reasons, diagnosis, milestone evidence, and elapsed wall/game time. Historical
+Candidate B timing and snapshot fields apply only when the owner explicitly starts
+a benchmark run.
 Parent-owned immutable `run` metadata contains `id`, `release_sha`,
 `baseline_save_sha256`, `save_identity`, `created_at`, and the two role
 model/effort assignments. The parent writes revision `0` with both
@@ -146,6 +153,8 @@ upstream fuel or input ends with measured utilization of already-built
 dependents and one bounded corrective successor when its preconditions hold.
 When timing or buffer state is missing, make rate claims only from measured
 deltas and retain the expected result plus its falsifier.
+
+A single `working` status is provisional: verify sustained end-to-end flow after at least one expected production cycle, including available input, physical transfer, downstream acceptance, and increased output. Treat stored buffers as transient until that later proof. Recalculate dependent waits and BOMs from actual accepted/produced quantities. Rank placements by useful lifetime, resource coverage, endpoint binding, and safe egress before proximity. After repeated identical path evidence without movement, stop offset roulette and use one materially distinct route or productive fallback. Maintain time-based input/fuel reserves from measured deltas, and express every diagnostic attempt as one falsifiable hypothesis, expected measurable effect, and numeric stop.
 
 - Use exactly the active two-role topology: one Sol-medium strategist offers
   coordinate-free advisory synthesis and owns atomic ledger writes with zero Factorio MCP
@@ -228,10 +237,12 @@ deltas and retain the expected result plus its falsifier.
   record why, and patch the smallest existing active path; do not create a
   service, gate, or report workflow.
 
-The first rollout of this two-role topology is the next fresh matched run.
-Candidate B and R1-R7 remain historical records and do not select active roles.
-Start from a fresh immutable peaceful baseline with enemy bases disabled and
-both graphical clients on the couch PC. At exactly `GO+20m`, freeze the immutable scored
-snapshot, cancel and drain the FIFO, and permit no post-snapshot gameplay.
-Diagnose the result, repair the general implementation or role guidance, and
-rerun only from a fresh byte-identical baseline under parent authority.
+For debug runs, keep the two-role model assignment and fast mode off unless the
+parent explicitly changes them. Start from the requested peaceful save with
+enemy bases disabled and continue past `GO+20m` until the assigned milestone,
+an explicit the owner stop, or a genuine blocker. The supervisor may inspect or
+intervene at any time, but records the intervention and requires the pilot to
+reobserve before continuing. Candidate B freeze and byte-identical rerun rules
+apply only when the owner explicitly starts a benchmark.
+
+The supervisor intervenes only after the same failure survives two materially distinct safe approaches without relevant state progress, no unrelated productive branch remains, or a structured MCP defect prevents physical recovery. Record the pre-intervention tick/error/state, the smallest intervention and reason, and the first fresh post-intervention MCP observation. If a pilot `/goal` became terminal before the repair, retire that inactive conversation and start one replacement Terra-low pilot on the same run/save identity; never have two active pilots or add a third gameplay role.

@@ -1,6 +1,6 @@
 export const toolPayloads = {
   target: (value: { x: number; y: number }) => ({ target: value }),
-  mine: ({ x, y, count, target_kind }: { x: number; y: number; count?: number; target_kind?: "natural" | "owned" }) => ({ target: { x, y }, count, ...(target_kind ? { target_kind } : {}) }),
+  mine: ({ x, y, count, target_kind, allow_fluid_loss }: { x: number; y: number; count?: number; target_kind?: "natural" | "owned"; allow_fluid_loss?: boolean }) => ({ target: { x, y }, count, ...(target_kind ? { target_kind } : {}), ...(allow_fluid_loss ? { allow_fluid_loss: true } : {}) }),
   pickup: ({ x, y, item, count }: { x: number; y: number; item: string; count: number }) => ({ target: { x, y }, item, count }),
   craft: ({ recipe, crafts, wait_for_completion }: { recipe: string; crafts: number; wait_for_completion?: boolean }) => ({ recipe, count: crafts, ...(wait_for_completion === undefined ? {} : { wait_for_completion }) }),
   place: ({ x, y, name, direction, output_target }: { x: number; y: number; name: string; direction?: number; output_target?: { x: number; y: number } }) => ({ item: name, position: { x, y }, direction, ...(output_target ? { output_target } : {}) }),
@@ -43,6 +43,7 @@ export function normalizePlacementSearch(value: any): any {
   return { ...value, candidates: luaArray(value.candidates).map((candidate: any) => ({
     ...candidate,
     ...(candidate?.output_target === false ? { output_target: null } : {}),
+    ...(candidate?.fluid_connections === undefined ? {} : { fluid_connections: luaArray(candidate.fluid_connections) }),
     ...(candidate?.resource_coverage === undefined ? {} : { resource_coverage: luaArray(candidate.resource_coverage) }),
   })) };
 }
@@ -69,6 +70,9 @@ export function normalizeInspection(value: any): any {
   return { ...value, entities: value.entities.map((entity: any) => {
     if (!entity || entity.error) return entity;
     if (entity.drop_target === false) entity = { ...entity, drop_target: null };
+    if (entity.fluid_connections !== undefined) entity = { ...entity,
+      fluid_connections: luaArray(entity.fluid_connections).map((connection: any) => connection?.connected_target === false
+        ? { ...connection, connected_target: null } : connection) };
     const hasElectricalMarker = entity.electrical !== undefined || entity.electric_network_id !== undefined
       || entity.electric_buffer_capacity !== undefined || entity.electric_demand !== undefined
       || entity.electric_satisfaction !== undefined || entity.connected_poles !== undefined;

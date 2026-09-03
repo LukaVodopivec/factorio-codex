@@ -90,10 +90,14 @@ function M.insert.tick(task)
       local why = inserted < n and ("the " .. e.name .. " wouldn't take more")
         or string.format("I only had %d", have)
       moved[#moved + 1] = string.format("%d of %d %s (%s)", inserted, it.count, it.name, why)
+      problems[#problems + 1] = string.format("requested %d %s, inserted %d, remainder %d",
+        it.count, it.name, inserted, it.count - inserted)
     elseif have == 0 then
-      problems[#problems + 1] = "I have no " .. it.name
+      problems[#problems + 1] = string.format("requested %d %s, inserted 0, remainder %d — I have none",
+        it.count, it.name, it.count)
     else
-      problems[#problems + 1] = "the " .. e.name .. " wouldn't accept " .. it.name
+      problems[#problems + 1] = string.format("requested %d %s, inserted 0, remainder %d — the %s wouldn't accept it",
+        it.count, it.name, it.count, e.name)
     end
   end
 
@@ -104,7 +108,12 @@ function M.insert.tick(task)
         e.name, table.concat(problems, "; ")),
     }
   end
-  local extra = #problems > 0 and ("; " .. table.concat(problems, "; ")) or ""
+  if #problems > 0 then
+    return {
+      status = "failed",
+      detail = string.format("partial insert into the %s — %s", e.name, table.concat(problems, "; ")),
+    }
+  end
   -- Automation nudge: hand-feeding smelters is a treadmill.
   local tip = ""
   if e.type == "furnace" then
@@ -112,7 +121,7 @@ function M.insert.tick(task)
   end
   return {
     status = "done",
-    detail = string.format("inserted %s into the %s%s%s", table.concat(moved, ", "), e.name, extra, tip),
+    detail = string.format("inserted %s into the %s%s", table.concat(moved, ", "), e.name, tip),
   }
 end
 

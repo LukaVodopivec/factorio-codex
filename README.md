@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.13.9**.
+Current release: **0.13.10**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -56,11 +56,14 @@ physical runners and end with a compact or full local observation.
 position, recipient (explicitly `null` when unbound), and a drill-only
 `drop_target_bound` boolean, current drill resource targets, furnace
 fuel/input/output buffers including exact empty compartments only when the
-corresponding inventory exists, and belt contents. `find_placement`
+corresponding inventory exists, belt contents, and world-space fluid endpoints
+with direction, filter, and connected-target evidence. `find_placement`
 searches authoritative charted candidates, reports compatible mining-drill
-resource coverage, rejects charted candidates with no compatible resources with a
-deterministic count while retaining uncharted candidates with coverage omitted, and
-exposes cardinal inserter pickup/drop endpoints. Output-capable candidates expose
+resource coverage and ranks higher useful coverage before proximity, rejects
+charted candidates with no compatible resources with a deterministic count
+while retaining uncharted candidates with coverage omitted, and exposes
+cardinal inserter pickup/drop endpoints plus rotated fluid endpoints.
+Output-capable candidates expose
 their deterministic `output_position` and recipient, explicitly `null` for
 ground output. Its existing `output_target` contract resolves the requested
 recipient by exact entity position, floors the predicted or live output point
@@ -77,7 +80,13 @@ Native no-path and repeated-stall failures inspect only the immediate charted
 collision segment and report stable, capped local candidate identities and
 colliding tiles as inferred visible collision candidates, not authoritative
 blockers (or explicitly say none was identified); they never expand or search
-the map.
+the map. Placement checks share exact collision geometry and explicitly reject
+the Codex body footprint. If a route begins inside a collision, Codex uses
+ordinary walking toward Factorio's bounded nearest clear position before
+requesting a new native path. Partial inserts fail with requested, moved, and
+remainder counts; waits report their observed start/current/delta; recovering a
+fluid-filled owned machine requires explicit `allow_fluid_loss=true` and reports
+what ordinary dismantling discarded.
 `map_summary` summarizes only already-charted terrain and factory landmarks,
 `production_requirements` performs deterministic recipe arithmetic, and
 `connect_entities` builds an inventory-backed physical belt, pipe, or power
@@ -88,32 +97,35 @@ descriptions, and fieldless space-platform triggers. `start_research` refuses a
 trigger technology with its required in-game action and never reports it as
 queued progress.
 
-Live play uses exactly two active roles: a Sol-medium read/advice-only strategist
-with zero Factorio MCP access and the unchanged Terra-low single-pilot baseline
-with fast mode off. The strategist writes coordinate-free non-executable
-`strategy_proposal` advice to the one ledger. The persistent pilot alone uses
-Factorio MCP, writes gameplay actions, and owns live-state authority for the one
-physical Codex body and task lane. It never waits for the strategist or ledger,
-owns the local bottleneck/action/fallback plus current plan and one grounded
-successor, attempts the ledger once at startup rather than per MCP call, and reads
-at most one tick-keyed proposal only at a natural decision boundary.
+Live play is currently supervised debugging, not benchmarking. The initiating
+session may inspect, intervene, modify, rescue, and restart the run through any
+available debug surface, including screenshots and raw Factorio/RCON. Every
+intervention is recorded and assisted progress is never presented as benchmark
+evidence. The two gameplay roles remain constrained: a Sol-medium
+read/advice-only strategist has zero Factorio MCP access, while the unchanged
+Terra-low pilot is the sole ordinary MCP writer and live-state authority for one
+physical Codex body and task lane. Neither role inherits supervisor authority.
+The pilot never waits for the strategist or ledger, owns the local
+bottleneck/action/fallback plus current plan and one grounded successor,
+attempts the ledger once at startup rather than per MCP call, and reads at most
+one tick-keyed proposal only at a natural decision boundary.
 Latest MCP state wins; the pilot validates save identity and every proposal
 precondition once, accepts or discards it, keeps work queued, and reports only
 material changes or a repeated distinct failure. It alone authorizes manual
 batches and owns the learning loop, authoritative calculations, success, plans,
 fallbacks, and milestone completion from MCP proof. An unavailable, late,
 malformed, stale, or wrong-run proposal/ledger/message never pauses gameplay.
-A restarted strategist rebuilds
-from the ledger without pausing play. The first rollout is the next fresh matched run; Candidate
-B and R1-R7 remain historical evidence. Bounded packets prevent strategic drift;
+A restarted strategist rebuilds from the ledger without pausing play. Debug
+runs continue past `GO+20m` to their assigned milestone unless the owner stops them;
+Candidate B and R1-R7 remain historical evidence. Bounded packets prevent strategic drift;
 concurrency removes thinking idle time, not physical walking time. See the
 repo-local `factorio-player` skill for the packet and reporting contract. The
 pilot batches read targets, uses direct actions without a redundant `walk_to`,
 uses `build_plan` for layouts, and uses `run_plan` for dependent multi-step
-work. Screenshots and screen capture are never part of the live text-only
-interface. Non-authoritative post-run review is bounded by the player skill and
-live-validation guide. See [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md) for the
-22-call baseline, benchmark fields, and adopted research patterns.
+work. Gameplay roles never use screenshots for perception or action selection;
+the supervisor may use them for debug diagnosis and then revalidates relevant
+state through MCP. See [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md)
+for historical benchmark evidence and adopted research patterns.
 
 ## Verification
 

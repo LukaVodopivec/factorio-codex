@@ -4,6 +4,7 @@
 -- entities and recipes). All instant methods — no tasks, no side effects.
 local companion = require("scripts.companion")
 local tasks = require("scripts.tasks")
+local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
 
@@ -95,6 +96,12 @@ local function entity_bounds(e)
     left, top, right, bottom = e.position.x, e.position.y, e.position.x + 1, e.position.y + 1
   end
   return { left_top = { x = left, y = top }, right_bottom = { x = right, y = bottom } }
+end
+
+local function plain_box(box)
+  if not box or not box.left_top or not box.right_bottom then return nil end
+  return { left_top = { x = box.left_top.x, y = box.left_top.y },
+    right_bottom = { x = box.right_bottom.x, y = box.right_bottom.y } }
 end
 
 local function entity_status(e)
@@ -280,7 +287,7 @@ function M.observe_local(params)
             resources_by_name[e.name][#resources_by_name[e.name] + 1] = e
           elseif e.type ~= "item-entity" then
             local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y
-            details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, status = entity_status(e), recipe = entity_recipe(e), bounds = bounds, footprint = { width = bounds.right_bottom.x - bounds.left_top.x, height = bounds.right_bottom.y - bounds.left_top.y }, _distance = ddx * ddx + ddy * ddy, _unit = tonumber(e.unit_number) or -1 }
+            details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, status = entity_status(e), recipe = entity_recipe(e), bounds = bounds, selection_box = plain_box(e.selection_box), collision_box = plain_box(e.bounding_box), footprint = { width = bounds.right_bottom.x - bounds.left_top.x, height = bounds.right_bottom.y - bounds.left_top.y }, _distance = ddx * ddx + ddy * ddy, _unit = tonumber(e.unit_number) or -1 }
           end
         end
     end
@@ -381,12 +388,15 @@ function M.observe_local(params)
     pcall(function() recipe = entry.recipe.name end)
     crafting.queue[#crafting.queue + 1] = { recipe = recipe, count = entry.count }
   end
+  local start_collisions = placement_geometry.start_collisions(c)
   local result = {
     tick = game.tick, radius = radius, detail = params.detail == "full" and "full" or "compact",
     character = { position = { x = c.position.x, y = c.position.y }, health = c.health,
       inventory = inventory, inventory_scope = "main", ammo_inventory = ammo_inventory,
       active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
-      crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance },
+      crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance,
+      collision_box = plain_box(placement_geometry.character_box(c)),
+      path_start = { clear = #start_collisions == 0, collisions = start_collisions } },
     entities = details, resource_patches = patches, ground_items = ground_items,
     omitted_entities = omitted, omitted_ground_items = omitted_ground_items,
   }
@@ -399,23 +409,9 @@ end
 
 -- --------------------------------------------------------------- can_place
 
--- The entity's collision box translated to `pos` (quarter turns swap the
--- axes — a good-enough approximation for the blocker search).
-local function footprint(proto, pos, direction)
-  local box = proto.collision_box
-  local lt, rb = box.left_top, box.right_bottom
-  if direction == 4 or direction == 12 then
-    lt, rb = { x = lt.y, y = lt.x }, { x = rb.y, y = rb.x }
-  end
-  return {
-    { pos.x + lt.x, pos.y + lt.y },
-    { pos.x + rb.x, pos.y + rb.y },
-  }
-end
-
 local function footprint_touches_water(surface, area)
-  local x1, y1 = area[1][1], area[1][2]
-  local x2, y2 = area[2][1], area[2][2]
+  local x1, y1 = area.left_top.x, area.left_top.y
+  local x2, y2 = area.right_bottom.x, area.right_bottom.y
   for ty = math.floor(y1), math.max(math.ceil(y2) - 1, math.floor(y1)) do
     for tx = math.floor(x1), math.max(math.ceil(x2) - 1, math.floor(x1)) do
       if is_water_at(surface, tx, ty) then return true end
@@ -442,13 +438,7 @@ local function can_place_one(c, surface, item, position, direction)
     error(item .. " is not a placeable item — it doesn't turn into a building")
   end
 
-  local ok = surface.can_place_entity({
-    name = entity_proto.name,
-    position = pos,
-    direction = direction,
-    force = c.force,
-    build_check_type = defines.build_check_type.manual,
-  })
+  local ok, placement_reason = placement_geometry.can_place(c, entity_proto, pos, direction)
   local identity = {
     item = item,
     entity = entity_proto.name,
@@ -461,8 +451,14 @@ local function can_place_one(c, surface, item, position, direction)
     return identity
   end
 
+  if placement_reason == "CODEX_BODY_OVERLAP" then
+    identity.can_place = false
+    identity.reason = "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint"
+    return identity
+  end
+
   -- Best-effort explanation: name whatever occupies the would-be footprint.
-  local area = footprint(entity_proto, pos, direction)
+  local area = placement_geometry.footprint(entity_proto, pos, direction)
   local blocker, companion_in_way
   for _, e in ipairs(surface.find_entities_filtered({ area = area })) do
     if e.valid then

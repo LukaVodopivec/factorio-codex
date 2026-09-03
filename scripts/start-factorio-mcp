@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' 2>/dev/null; then
+  exec node node_modules/.bin/tsx companion/src/cli.ts mcp
+fi
+
+account_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+nvm_root="${NVM_DIR:-$account_home/.nvm}"
+if [[ -s "$nvm_root/nvm.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "$nvm_root/nvm.sh"
+  nvm use --silent 22 >/dev/null
+  exec node node_modules/.bin/tsx companion/src/cli.ts mcp
+fi
+
+echo "Factorio Codex MCP requires Node 22 or newer; activate it before starting Codex" >&2
+exit 1

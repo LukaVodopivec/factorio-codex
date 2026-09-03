@@ -158,8 +158,11 @@ describe("exact local configuration", () => {
   it("uses the source MCP entry and contains no retired speed-setting path", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const config = fs.readFileSync(path.join(root, ".codex/config.toml"), "utf8");
-    expect(config).toContain('command = "node"');
-    expect(config).toContain('args = ["node_modules/.bin/tsx", "companion/src/cli.ts", "mcp"]');
+    expect(config).toContain('command = "./scripts/start-factorio-mcp"');
+    expect(config).toContain("args = []");
+    const launcher = fs.readFileSync(path.join(root, "scripts/start-factorio-mcp"), "utf8");
+    expect(launcher).toContain("nvm use --silent 22");
+    expect(launcher).toContain("exec node node_modules/.bin/tsx companion/src/cli.ts mcp");
     expect(config).not.toMatch(/^cwd\s*=/m);
     expect(fs.existsSync(path.join(root, "mod/agentic-companion/settings.lua"))).toBe(false);
     const modSource = ["control.lua", "scripts/companion.lua", "locale/en/agentic-companion.cfg"]

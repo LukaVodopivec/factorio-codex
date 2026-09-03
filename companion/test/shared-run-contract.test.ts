@@ -230,6 +230,8 @@ describe("shared gameplay run contract", () => {
     expect(pilot).toMatch(/never send every observation or outcome/i);
     expect(skill).toMatch(/pilot permanently owns the success criteria[\s\S]*fallback decisions[\s\S]*current plan[\s\S]*grounded queued successor/i);
     expect(skill).not.toMatch(/strategist owns[\s\S]{0,100}phase and successor planning/i);
+    expect(skill).toMatch(/strategist may only propose coordinate-free calculations[\s\S]*advisory estimates[\s\S]*pilot owns phase and success interpretation for[\s\S]*gameplay, all action and fallback decisions, the current plan, and the grounded[\s\S]*successor/i);
+    expect(skill).not.toMatch(/strategist (?:owns|controls|selects|chooses) (?:the )?(?:current plan|grounded successor|successor planning)/i);
     expect(fs.existsSync(path.join(skillRoot, "GOAL-MASTER-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(skillRoot, "GOAL-SPECIALIST-v1.md"))).toBe(false);
   });

@@ -121,9 +121,11 @@ production, or expansion changes, or a repeated distinct failure; consumes the
 `run_plan` terminal observation; and never repeats an executed plan ID. It never stops or hands off
 merely because one useful item or incidental non-production loot was obtained;
 validated automation utilization, the current plan, and its grounded successor
-remain the priority. The strategist offers coordinate-free hypothesis advice,
-never authoritative calculations, the pilot's phase, plan, successor, fallback
-choice, batch authorization, success, or completion criteria. A proposal may
+remain the priority. The strategist may only propose coordinate-free calculations
+as advisory estimates. The pilot owns phase and success interpretation for
+gameplay, all action and fallback decisions, the current plan, and the grounded
+successor. The strategist never owns batch authorization, success, completion
+criteria, or successor planning/control. A proposal may
 flag a material-flow contradiction; the pilot distinguishes the game bottleneck
 from an MCP observability gap and decides what to do.
 

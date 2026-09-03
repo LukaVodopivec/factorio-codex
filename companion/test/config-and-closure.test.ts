@@ -272,6 +272,8 @@ describe("exact local configuration", () => {
     expect(skill).toMatch(/failure never pauses or gates gameplay[\s\S]*autonomous current-plus-successor work running from latest MCP state/i);
     expect(skill).toMatch(/pilot permanently owns the success criteria[\s\S]*fallback decisions[\s\S]*current plan[\s\S]*grounded queued successor/i);
     expect(skill).not.toMatch(/strategist owns[\s\S]{0,100}phase and successor planning/i);
+    expect(skill).toMatch(/strategist may only propose coordinate-free calculations[\s\S]*advisory estimates[\s\S]*pilot owns phase and success interpretation for[\s\S]*gameplay, all action and fallback decisions, the current plan, and the grounded[\s\S]*successor/i);
+    expect(skill).not.toMatch(/strategist (?:owns|controls|selects|chooses) (?:the )?(?:current plan|grounded successor|successor planning)/i);
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
     expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
   });

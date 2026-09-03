@@ -55,6 +55,8 @@ local function research_trigger(technology)
   return record
 end
 
+M.research_trigger = research_trigger
+
 local function filter_action(filter)
   if not filter then return "" end
   if filter.quality then
@@ -77,6 +79,8 @@ local function trigger_action(trigger)
   end
   return trigger.type .. detail
 end
+
+M.trigger_action = trigger_action
 
 function M.start_research(params)
   local name = params.technology

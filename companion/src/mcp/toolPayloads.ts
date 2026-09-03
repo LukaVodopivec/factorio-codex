@@ -20,7 +20,12 @@ export const toolPayloads = {
   }) => ({ item, preferred, radius, directions, limit,
     ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}),
     ...(output_recipient_item ? { output_recipient_item } : {}) }),
-  productionRequirements: ({ targets, recipe_choices }: { targets: Record<string, number>; recipe_choices?: Record<string, string> }) => ({ targets, recipe_choices }),
+  productionRequirements: ({ targets, technology, location, recipe_choices, flow_precision }: {
+    targets?: Record<string, number>; technology?: string; location?: string;
+    recipe_choices?: Record<string, string>; flow_precision?: string;
+  }) => ({ ...(targets ? { targets } : {}), ...(technology ? { technology } : {}),
+    ...(location ? { location } : {}), ...(recipe_choices ? { recipe_choices } : {}),
+    ...(flow_precision ? { flow_precision } : {}) }),
   connectEntities: ({ kind, prototype, from, to, max_length }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number }) => ({ kind, prototype, from, to, max_length }),
 };
 
@@ -90,7 +95,20 @@ export function normalizeMapSummary(value: any): any {
 }
 
 export function normalizeProductionRequirements(value: any): any {
-  return value && typeof value === "object" ? { ...value, nodes: luaArray(value.nodes) } : value;
+  if (!value || typeof value !== "object") return value;
+  const deterministic = value.deterministic_requirements && typeof value.deterministic_requirements === "object"
+    ? { ...value.deterministic_requirements, nodes: luaArray(value.deterministic_requirements.nodes),
+      ambiguities: luaArray(value.deterministic_requirements.ambiguities),
+      variable_operating_requirements: luaArray(value.deterministic_requirements.variable_operating_requirements) }
+    : undefined;
+  return { ...value, nodes: luaArray(value.nodes),
+    ...(deterministic ? { deterministic_requirements: deterministic } : {}),
+    missing_technologies: luaArray(value.missing_technologies),
+    trigger_conditions: luaArray(value.trigger_conditions),
+    force_flows: luaArray(value.force_flows),
+    ambiguities: luaArray(value.ambiguities),
+    variable_operating_requirements: luaArray(value.variable_operating_requirements),
+  };
 }
 
 export function normalizePhysicalRoute(value: any): any {

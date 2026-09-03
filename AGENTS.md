@@ -13,9 +13,10 @@
   character through deterministic, text-only local perception and honest game
   mechanics.
 - Non-goals: Image perception, agent-facing Lua or console execution, built-in
-  model loops, game-chat control, multiple controllable bodies, multi-agent
-  orchestration, hosted services, teleportation of the Codex body, or free
-  resources. A characterless spectator camera may follow Codex.
+  model loops, game-chat control, multiple controllable bodies or gameplay
+  writers, agent-owned orchestration services, hosted services, teleportation
+  of the Codex body, or free resources. A characterless spectator camera may
+  follow Codex.
 - Replacement trigger: Retire or consolidate this repository when a simpler
   maintained native Factorio/Codex interface provides the same constrained
   behavior.
@@ -34,7 +35,7 @@
 - Complete private-repository changes on clean, pushed `main` with exact
   remote-SHA readback.
 
-## Persistent single-pilot gameplay
+## Persistent two-brain gameplay
 
 Until the owner explicitly re-enables benchmarking, every new live run is supervised
 debugging. The initiating session is the debug supervisor and may diagnose or
@@ -43,11 +44,20 @@ teleport recovery, save/source edits, and server/client replacement. Record each
 intervention and invalidate affected state; assisted progress and timing are
 never benchmark evidence. None of that authority passes to ordinary gameplay.
 
-Start exactly one persistent pilot. It is the sole Factorio MCP user, gameplay
-writer, live-state authority, planner, growth owner, and milestone owner for one
-physical body and FIFO lane. Do not create a strategist, operations ledger,
-advisory proposal, gameplay report/resend channel, second writer, or coordination
-store. Latest structured MCP state wins.
+Start exactly two persistent reasoning sessions around one physical body and
+FIFO lane. The `gpt-5.6-luna` pilot uses `high` reasoning with fast mode enabled
+and is the sole gameplay writer, physical controller, immediate-safety
+authority, and source of latest exact local state. The persistent
+`gpt-5.6-sol` strategist uses `high` reasoning, owns coordinate-free long-horizon
+NOW/NEXT/LATER priorities, and may call only the mechanically read-only MCP
+surface. Its reads never enter or delay the physical lane.
+
+Keep one compact `operations.json`. Sol is its sole atomic host writer; Luna
+never writes it. Reports and ledger updates are material and asynchronous, not
+per-call acknowledgements or blocking synchronization. Luna validates each
+unseen revision against newer physical evidence and continues fail-open when
+Sol, a report, or the ledger is missing, malformed, stale, or unavailable. Do
+not add another writer, body, lane, ledger, broker, daemon, or control channel.
 
 The native `/goal` owns continuation. Waypoints, batches, individual plans,
 tool results, and progress reports are nonterminal. While later-tick milestone

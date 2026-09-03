@@ -8,5 +8,6 @@ dist/
 !mod/**/*.zip
 .scratch/
 coverage/
+operations.json
 .claude/settings.local.json
 .claude/scheduled_tasks.lock

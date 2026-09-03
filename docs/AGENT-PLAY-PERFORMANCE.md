@@ -26,16 +26,19 @@ mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
 0.16.0 validation.
 
-The active topology is one persistent pilot: the sole Factorio MCP user,
-gameplay writer, live-state authority, planner, growth owner, and milestone
-owner. There is no strategist, operations ledger, advisory proposal, report
-channel, acknowledgement, or resend path. The first rollout is the next fresh
-matched run. Plans execute contiguously in Lua and may prepare one successor by
-predecessor ID. This removes model-thinking idle time; it does not accelerate
-walking, mining, crafting, or any other game tick.
-The next fresh supervised run uses `gpt-5.6-luna`, `xhigh` reasoning, and fast
-mode enabled. Record all three settings before `GO`; never change the active
-debug run in place.
+The next fresh-run topology has two persistent reasoning sessions and one
+physical writer. The `gpt-5.6-luna` pilot uses `high` reasoning with fast mode
+enabled and is the sole gameplay writer, character controller, and exact-local-
+state authority. The persistent `gpt-5.6-sol` strategist uses `high` reasoning,
+owns one compact NOW/NEXT/LATER list, atomically writes `operations.json`, and
+receives only the separate read-only MCP surface. Strategist reads never enter
+the physical FIFO. Luna validates advice against newer physical evidence and
+continues fail-open when Sol or the ledger is stale or unavailable. Record both
+profiles before `GO`; never change the active debug run in place.
+
+Plans execute contiguously in Lua and may prepare one successor by predecessor
+ID. This removes model-thinking idle time; it does not accelerate walking,
+mining, crafting, or any other game tick.
 
 After the scored run is frozen, screenshots may be taken for human or agent
 review of every relevant map area where items or machines were placed, but only
@@ -103,8 +106,8 @@ not their commands, coordinates, blueprints, or exact build routes:
   reflection that improves later decisions.
 - [LLM-Coordination](https://arxiv.org/html/2310.03903v2) warns that partner
   intent and joint-planning errors remain material. The selected active design
-  avoids that failure surface by giving one persistent pilot all ordinary
-  gameplay planning, live-state, growth, and completion responsibility.
+  contains that failure surface with one physical writer, a compact strategic
+  task list, exact evidence freshness, and fail-open pilot authority.
 
 - [Mineflayer Pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder):
   adopt explicit goals and reusable physical pathfinding. Reject teleporting,
@@ -209,7 +212,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v20, version 0.16.0, and exactly 25 tools.
+disambiguation, progression, protocol v21, version 0.16.0, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power

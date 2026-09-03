@@ -44,13 +44,32 @@ function failure(error: unknown, prefix = "Error") {
   return result({ status: "failed", terminal: true, code: "TOOL_ERROR", summary: `${prefix}: ${message}`, next_action: null }, true);
 }
 
-export async function connectStatus(bridge: () => Promise<Bridge>, configDiagnostic: () => ConfigDiagnostic) {
+export type McpSurface = "full" | "read-only";
+export const READ_ONLY_TOOLS = [
+  "connect_status", "map_summary", "progression_status", "production_requirements",
+  "describe_prototype", "observe_local", "inspect_entity", "plan_status",
+] as const;
+
+export async function connectStatus(
+  bridge: () => Promise<Bridge>,
+  configDiagnostic: () => ConfigDiagnostic,
+  bindCompanion = true,
+) {
   const diagnostic = configDiagnostic();
   if (!diagnostic.ok) return result({ status: "offline", terminal: true, summary: `Offline: ${diagnostic.error}`, next_action: null }, false);
   const b = await bridge();
   let ping: any = await b.call("ping");
   assertRuntimeCompatibility(ping, companionVersion());
   if (!ping.companion_exists) {
+    if (!bindCompanion) {
+      return result({
+        status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version,
+        mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick,
+        companion_exists: false, companion_ever_created: ping.companion_ever_created,
+        companion_dead: ping.companion_dead, read_only: true,
+        summary: "Connected read-only; no living Codex character is currently available",
+      });
+    }
     await b.call("spawn_companion", {});
     ping = await b.call("ping");
     assertRuntimeCompatibility(ping, companionVersion());
@@ -70,7 +89,12 @@ type ToolRegistrar = {
 
 /** Register the complete public surface against an injectable bridge provider.
  *  Tests use the same handlers with a fake Bridge to prove the exact Lua DTOs. */
-export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Bridge>, configDiagnostic: () => ConfigDiagnostic): void {
+export function registerMcpTools(
+  server: ToolRegistrar,
+  bridge: () => Promise<Bridge>,
+  configDiagnostic: () => ConfigDiagnostic,
+  surface: McpSurface = "full",
+): void {
   const rpc = async (method: any, params: unknown = {}) => {
     try { return result(await (await bridge()).call(method, params)); }
     catch (error) { return failure(error); }
@@ -86,7 +110,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
 
   server.registerTool("connect_status", { description: "Validate config, RCON, mod, app and protocol, then bind the exact connected native player named Codex without creating a character.", inputSchema: z.object({}) }, async () => {
     try {
-      return await connectStatus(bridge, configDiagnostic);
+      return await connectStatus(bridge, configDiagnostic, surface === "full");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return result({ status: "offline", terminal: true, summary: `Offline: ${message}`, next_action: null }, false);
@@ -102,14 +126,16 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
   });
   server.registerTool("describe_prototype", { description: "Batch-describe up to 10 exact item, entity, or recipe prototypes; kind=auto resolves placeable items as entities, then genuine items, then recipes.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
   server.registerTool("progression_status", { description: "Read researched technologies, ordinary queueable research, and action/trigger unlocks with authoritative item/entity quality filters and scripted descriptions from Codex's live force.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
-  server.registerTool("can_place", { description: "Batch-check up to 24 identified placements within 30 tiles without side effects; every result retains the requested item, position, direction and rejection reason.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
-    try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
-    catch (error) { return failure(error); }
-  });
-  server.registerTool("find_placement", { description: "Find stable force-charted placements. Optional input_target constrains an inserter pickup. Use either an existing output_target or output_recipient_item to search a provisional recipient-first pair; geometry never claims runtime binding.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), input_target: position.optional(), output_target: position.optional(), output_recipient_item: z.string().min(1).optional() }).strict().refine((p) => !(p.output_target && p.output_recipient_item), "use output_target or output_recipient_item, not both") }, async (p) => {
-    try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)))); }
-    catch (error) { return failure(error); }
-  });
+  if (surface === "full") {
+    server.registerTool("can_place", { description: "Batch-check up to 24 identified placements within 30 tiles without side effects; every result retains the requested item, position, direction and rejection reason.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
+      try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
+      catch (error) { return failure(error); }
+    });
+    server.registerTool("find_placement", { description: "Find stable force-charted placements. Optional input_target constrains an inserter pickup. Use either an existing output_target or output_recipient_item to search a provisional recipient-first pair; geometry never claims runtime binding.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), input_target: position.optional(), output_target: position.optional(), output_recipient_item: z.string().min(1).optional() }).strict().refine((p) => !(p.output_target && p.output_recipient_item), "use output_target or output_recipient_item, not both") }, async (p) => {
+      try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)))); }
+      catch (error) { return failure(error); }
+    });
+  }
   const mapSummarySchema = z.object({
     detail: z.enum(["aggregate", "full"]).default("aggregate"),
     flow_precision: z.enum(["five_seconds", "one_minute", "ten_minutes", "one_hour"]).default("one_minute"),
@@ -121,10 +147,33 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", mapSummarySchema.parse(p)))); }
     catch (error) { return failure(error); }
   });
-  server.registerTool("production_requirements", { description: 'Expand unlocked production requirements. Canonical input: {"targets":{"automation-science-pack":10}}; use targets, never target/count.', inputSchema: z.object({ targets: z.record(z.string(), z.number().int().positive()).refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 16, "targets must contain 1-16 entries"), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
+  const productionRequirementsSchema = z.object({
+    targets: z.record(z.string(), z.number().positive()).refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 16, "targets must contain 1-16 entries").optional(),
+    technology: z.string().min(1).optional(), location: z.string().min(1).optional(),
+    recipe_choices: z.record(z.string(), z.string()).optional(),
+    flow_precision: z.enum(["five_seconds", "one_minute", "ten_minutes", "one_hour"]).default("one_minute"),
+  }).strict().superRefine((value, ctx) => {
+    const modes = Number(value.targets !== undefined) + Number(value.technology !== undefined) + Number(value.location !== undefined);
+    if (modes !== 1) ctx.addIssue({ code: "custom", message: "provide exactly one of targets, technology, or location" });
+  });
+  server.registerTool("production_requirements", { description: 'Expand one item/fluid target map, technology prerequisite closure, or space-location unlock closure. Canonical inputs: {"targets":{"automation-science-pack":10}}, {"technology":"automation"}, or {"location":"solar-system-edge"}. Technology/location results separate deterministic requirements from triggers, ambiguities, and variable operating costs; exact remote inventories are never credited.', inputSchema: productionRequirementsSchema }, async (p) => {
     try { return result(normalizeProductionRequirements(await (await bridge()).call("production_requirements", toolPayloads.productionRequirements(p)))); }
     catch (error) { return failure(error); }
   });
+  server.registerTool("plan_status", { description: "Read plan state immediately, or wait up to 60 seconds for a completed step, waiting state, or terminal outcome. Waiting monitors only and never cancels physical work.", inputSchema: planStatusSchema }, async (input, extra) => {
+    try {
+      const p = planStatusSchema.parse(input);
+      const value: any = await waitForPlanStatus(await bridge(), p.plan_id, p.wait_until, p.timeout_seconds * 1_000, extra?.signal);
+      if (value.observation) value.observation = normalizeObservation(value.observation);
+      const terminal = ["completed", "partial", "failed", "cancelled"].includes(value.status);
+      return result(normalizePlanDiagnostics({ ...value, terminal,
+        next_action: terminal ? null : { tool: "plan_status", arguments: {
+          plan_id: value.plan_id, wait_until: p.wait_until === "current" ? "progress" : p.wait_until, timeout_seconds: p.timeout_seconds,
+        } },
+      }), value.status === "failed" || value.status === "cancelled");
+    } catch (error) { return failure(error); }
+  });
+  if (surface === "read-only") return;
   server.registerTool("connect_entities", { description: "Build a deterministic physical belt, pipe or power route between exact force-charted endpoints through the existing inventory-backed build runner, respecting the selected prototype, maximum length, walking, reach, collision and elapsed time; never creates ghosts.", inputSchema: z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string(), from: position, to: position, max_length: z.number().int().min(1).max(25).default(25) }).strict() }, async (p) => {
     try {
       const b = await bridge();
@@ -196,19 +245,6 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
       return result({ ...queued, status: "queued", terminal: false, summary: `queued plan ${queued.plan_id}`,
         next_action: { tool: "plan_status", arguments: { plan_id: queued.plan_id, wait_until: "progress", timeout_seconds: 30 } } });
-    } catch (error) { return failure(error); }
-  });
-  server.registerTool("plan_status", { description: "Read plan state immediately, or wait up to 60 seconds for a completed step, waiting state, or terminal outcome. Waiting monitors only and never cancels physical work.", inputSchema: planStatusSchema }, async (input, extra) => {
-    try {
-      const p = planStatusSchema.parse(input);
-      const value: any = await waitForPlanStatus(await bridge(), p.plan_id, p.wait_until, p.timeout_seconds * 1_000, extra?.signal);
-      if (value.observation) value.observation = normalizeObservation(value.observation);
-      const terminal = ["completed", "partial", "failed", "cancelled"].includes(value.status);
-      return result(normalizePlanDiagnostics({ ...value, terminal,
-        next_action: terminal ? null : { tool: "plan_status", arguments: {
-          plan_id: value.plan_id, wait_until: p.wait_until === "current" ? "progress" : p.wait_until, timeout_seconds: p.timeout_seconds,
-        } },
-      }), value.status === "failed" || value.status === "cancelled");
     } catch (error) { return failure(error); }
   });
   server.registerTool("run_plan", { description: 'Run 1–25 dependent physical or local-inspection steps. Canonical input: {"steps":[{"action":"craft_items","recipe":"iron-gear-wheel","crafts":2,"wait_for_completion":true}]}; physical audit pattern: walk_to then inspect_entities. Steps commit sequentially without rollback; use steps, never summary/actions.', inputSchema: runPlanSchema }, async (input, extra) => {
@@ -286,9 +322,15 @@ export function createBridgeProvider(
   };
 }
 
-export async function runMcpServer(configDiagnostic: () => ConfigDiagnostic = diagnoseConfig): Promise<void> {
-  const server = new McpServer({ name: "factorio-codex", version: MCP_SERVER_VERSION }, { instructions: "Control one physical Factorio character named Codex. Keep one rolling current plan plus one prepared successor. Never use screenshots or screen capture." });
+export async function runMcpServer(
+  surface: McpSurface = "full",
+  configDiagnostic: () => ConfigDiagnostic = diagnoseConfig,
+): Promise<void> {
+  const instructions = surface === "read-only"
+    ? "Read Factorio state without moving, mutating, queueing, cancelling, or controlling the Codex character."
+    : "Control one physical Factorio character named Codex. Keep one rolling current plan plus one prepared successor. Never use screenshots or screen capture.";
+  const server = new McpServer({ name: "factorio-codex", version: MCP_SERVER_VERSION }, { instructions });
   const bridge = createBridgeProvider(configDiagnostic);
-  registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic);
+  registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface);
   await server.connect(new StdioServerTransport());
 }

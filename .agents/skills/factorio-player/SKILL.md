@@ -6,15 +6,18 @@ description: Operate the live Factorio Codex character through the constrained M
 # Factorio player
 
 Use only for live play of the one physical character named Codex. Start exactly
-one persistent pilot with [the pilot goal](GOAL-PILOT-v1.md). That pilot is the
-sole Factorio MCP user, ordinary gameplay writer, live-state authority, planner,
-growth owner, and milestone owner. There is no strategist, gameplay peer,
-operations ledger, advisory proposal, report channel, acknowledgement, or resend
-path.
+two persistent reasoning sessions: a [Sol strategist](GOAL-STRATEGIST-v1.md)
+and a [Luna pilot](GOAL-PILOT-v1.md). The pilot is the sole gameplay writer,
+physical character controller, and authority for immediate safety, exact local
+state, coordinates, actions, plans, and physical completion evidence. The
+strategist owns coordinate-free long-horizon priorities and may use only the
+mechanically read-only Factorio MCP surface. There is one body, one physical
+FIFO, one mutation path, and one compact `operations.json`.
 
-For the next fresh supervised run, start that one pilot as `gpt-5.6-luna` with
-`xhigh` reasoning and fast mode enabled. This profile applies only at the safe
-fresh-run cutover; never reconfigure or replace a live pilot in place.
+For the next fresh supervised run, start the pilot as `gpt-5.6-luna` with
+`high` reasoning and fast mode enabled, and the strategist as `gpt-5.6-sol`
+with `high` reasoning and the default service tier. These profiles apply only
+at the safe fresh-run cutover; never reconfigure or replace a live role in place.
 
 Until the owner explicitly re-enables benchmarking, the parent session is a debug
 supervisor. It may diagnose or rescue through surfaces unavailable to the pilot,
@@ -38,7 +41,25 @@ only on an explicit the owner request. Declare a blocker only after the loaded
 exhaustion contract has eliminated materially distinct safe fallbacks and no
 unrelated productive branch remains.
 
-## State-driven growth loop
+## Shared priority and state-driven growth loop
+
+Sol owns one short `NOW`/`NEXT`/`LATER` list in the ledger. Each entry contains
+only an objective, strategic reason, measurable completion condition, and any
+essential prerequisite. NOW is a broad capacity or infrastructure outcome;
+NEXT is the bottleneck expected after it succeeds; LATER is the next major
+production or planetary phase. Sol may replace a priority when reports show no
+structural growth. Luna may safely finish committed physical work, but applies
+the revised priority to subsequent work unless fresh local evidence falsifies
+it. Strategist silence, stale state, or a failed ledger read never blocks play.
+
+The principal objective is to maximize useful, sustained, autonomous production
+growth until the factory completes Space Age and reaches the Solar System Edge.
+Research normally consumes surplus and unlocks stronger scaling tools; the next
+item, trigger, technology, or packet is not automatically the main objective.
+The broad horizon is sustained Nauvis production, a functional orbital platform,
+the capabilities of Vulcanus, Fulgora, and Gleba in an evidence-selected order,
+the Aquilo expedition, cryogenic and fusion-capable platform infrastructure,
+and travel to the Solar System Edge. Never prescribe a fixed planetary order.
 
 At each natural decision boundary:
 
@@ -150,7 +171,8 @@ and zero character insert/extract actions for the segment must all hold.
   aggregate without exact stock; `rolling_force_surface_flow` is a rate over
   its named window; cached or previously observed facts retain their old tick;
   and a `time_skewed_physical_tour` is never a simultaneous snapshot.
-- Exactly one physical Factorio tool call may be in flight. The Lua task queue is
+- Exactly one physical Factorio tool call may be in flight. The Luna pilot is
+  the only role that receives mutation tools, and the Lua task queue is
   the sole FIFO lane. Parallelize only read-only observations when inconsistent
   source ticks are acceptable, then revalidate the newest snapshot before any
   mutation.
@@ -171,8 +193,8 @@ and zero character insert/extract actions for the segment must all hold.
   micro-packet idle gaps while their shared bottleneck remains valid.
   `run_plan` is sequential and nontransactional: completed and partial effects
   remain committed when a later step fails, with no rollback.
-- `inspect_entity` requires `positions`. `production_requirements` requires
-  `targets`. `craft_items` and plan craft steps require an actual recipe name
+- `inspect_entity` requires `positions`. `production_requirements` accepts
+  exactly one of `targets`, `technology`, or `location`. `craft_items` and plan craft steps require an actual recipe name
   plus `crafts`; `place_entity` requires `name`.
 - Before crafting, confirm the exact name in
   `progression_status.enabled_recipes` or `describe_prototype(kind="recipe")`.
@@ -204,14 +226,15 @@ and zero character insert/extract actions for the segment must all hold.
 
 ## Reporting and knowledge
 
-Reports are nonterminal and material, never one per tool call. Before reporting,
+Pilot reports to Sol are nonterminal and material, never one per tool call. Before reporting,
 keep useful work queued or name the exact reason no successor is safe. Include
 source tick/plan ID, position, inventory, active step, queue/crafting, current
 bottleneck and growth objective, current/next BOM, buffers/WIP, capacity and
 utilization before/after, accepted downstream output, the resulting bottleneck,
-successor/preconditions, and residual failure. State either the measured
+successor/preconditions, invalidated assumptions, and residual failure. State either the measured
 capacity increase and avoided future touches or quantitatively why a short
-manual bridge still beats automation payback.
+manual bridge still beats automation payback. The pilot never writes the ledger;
+Sol is the sole atomic host writer.
 
 Follow [player knowledge v1](PLAYER-KNOWLEDGE-v1.md). Durable knowledge may hold
 only in-game learned recipes, calculations, operations, and coordinate-free

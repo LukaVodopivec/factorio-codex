@@ -4,12 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const expected = ["connect_status","observe_local","inspect_entity","describe_prototype","progression_status","can_place","find_placement","map_summary","production_requirements","connect_entities","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","plan_status","run_plan","start_research","stop"].sort();
+const surface = process.env.MCP_SURFACE ?? "full";
+const expected = (surface === "read-only"
+  ? ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status"]
+  : ["connect_status","observe_local","inspect_entity","describe_prototype","progression_status","can_place","find_placement","map_summary","production_requirements","connect_entities","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","plan_status","run_plan","start_research","stop"]).sort();
 const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = process.env.MCP_ENTRY ?? "src/cli.ts";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-mcp-home-"));
 const command = entry.endsWith(".ts") ? "npx" : "node";
-const args = entry.endsWith(".ts") ? ["tsx", entry, "mcp"] : [entry, "mcp"];
+const surfaceArgs = surface === "read-only" ? ["--surface", "read-only"] : [];
+const args = entry.endsWith(".ts") ? ["tsx", entry, "mcp", ...surfaceArgs] : [entry, "mcp", ...surfaceArgs];
 const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, HOME: home } });
 let buffer = "", stderr = "", next = 1;
 const pending = new Map<number, (value: any) => void>();
@@ -37,6 +41,12 @@ try {
   const names = tools.map((tool: any) => tool.name).sort();
   if (JSON.stringify(names) !== JSON.stringify(expected)) throw new Error(`tool mismatch: ${names}`);
   if (/agent_id|companion|background|image|lua|console/i.test(JSON.stringify(tools))) throw new Error("forbidden schema/content exposed");
+  if (surface === "read-only") {
+    const forbidden = ["walk_to", "mine", "pickup_items", "place_entity", "craft_items", "insert_items", "extract_items",
+      "set_recipe", "rotate_entity", "build_plan", "queue_plan", "run_plan", "start_research", "stop"];
+    if (forbidden.some((name) => names.includes(name))) throw new Error(`read-only surface exposed mutation: ${names}`);
+    console.log("PASS initialize, exact 8 read-only tools, no physical mutation surface");
+  } else {
   const rotateSchema = tools.find((tool: any) => tool.name === "rotate_entity")?.inputSchema?.properties ?? {};
   if (!rotateSchema.direction || rotateSchema.reverse) throw new Error("rotate_entity must expose Lua direction, never reverse");
   const describeSchema = tools.find((tool: any) => tool.name === "describe_prototype")?.inputSchema?.properties ?? {};
@@ -73,6 +83,7 @@ try {
   if (statusSchema.wait_until?.default !== "current" || statusSchema.timeout_seconds?.default !== 30
     || statusSchema.timeout_seconds?.maximum !== 60) throw new Error("plan_status bounded wait schema mismatch");
   console.log("PASS initialize, exact 25 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
+  }
 } finally {
   child.kill();
   fs.rmSync(home, { recursive: true, force: true });

@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:mcp": "MCP_SMOKE_OFFLINE=1 tsx test/mcp-smoke.ts",
+    "test:mcp:readonly": "MCP_SURFACE=read-only MCP_SMOKE_OFFLINE=1 tsx test/mcp-smoke.ts",
     "test:mcp:built": "MCP_ENTRY=dist/cli.js MCP_SMOKE_OFFLINE=1 tsx test/mcp-smoke.ts"
   },
   "dependencies": {

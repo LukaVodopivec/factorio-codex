@@ -108,20 +108,40 @@ turning them into a fixed opening or map-specific sequence:
   state, or terminal result. A monitoring timeout does not cancel the plan and
   returns a self-describing continuation.
 
-## Persistent single-pilot contract
+## Persistent two-brain, one-writer contract
 
 The dedicated server and agent session run on the headless workstation, while
 the exact `Codex` client and characterless spectator/follower run only on the
 couch PC. Do not launch a local GUI as a recovery shortcut.
 
-The active supervised-debug topology has exactly one persistent pilot. It is
-the sole Factorio MCP user, gameplay writer, live-state authority, planner,
-growth owner, and milestone owner. Do not create a strategist, peer, operations
-ledger, advisory proposal, report channel, acknowledgement, or resend path.
-For the next fresh cutover, select `gpt-5.6-luna`, `xhigh` reasoning, and fast
-mode enabled before starting that one persistent pilot. Record the exact model,
-effort, mode, release SHA, archive hash, and save hash before `GO`. Never apply
-this profile change to the currently active run.
+The next fresh supervised-debug topology has exactly two persistent reasoning
+sessions and one physical writer. Start the sole gameplay pilot as
+`gpt-5.6-luna` with `high` reasoning and fast mode enabled. Start the persistent
+strategist as `gpt-5.6-sol` with `high` reasoning and expose only the disabled-
+by-default `factorio-readonly` MCP server to it; disable the full `factorio`
+server in that Sol session. Sol owns NOW/NEXT/LATER and is the sole atomic writer
+of one compact `operations.json`. Luna owns immediate safety, coordinates,
+physical plans, actions, and latest exact local evidence. Sol reads never enter
+the physical FIFO, and Luna continues without waiting when Sol or its ledger is
+stale or unavailable. Record both profiles, their MCP surfaces, release SHA,
+archive hash, and save hash before `GO`. Never apply this cutover to the current
+run.
+
+At cutover, launch the two sessions with role-specific project overrides (or
+the equivalent supervised UI selections):
+
+```sh
+codex -m gpt-5.6-luna -c 'model_reasoning_effort="high"' -c fast_mode=true \
+  -c mcp_servers.factorio.enabled=true -c mcp_servers.factorio-readonly.enabled=false
+codex -m gpt-5.6-sol -c 'model_reasoning_effort="high"' -c fast_mode=false \
+  -c mcp_servers.factorio.enabled=false -c mcp_servers.factorio-readonly.enabled=true
+```
+
+Start each with its checked-in role goal. Confirm Sol lists exactly the eight
+configured read-only tools and cannot list any movement, transfer, crafting,
+placement, research mutation, plan enqueue/run/cancel, or stop tool before
+`GO`.
+
 Before `GO`, verify the requested fresh save and release hashes, permanent
 peaceful mode/enemy bases disabled, exact native player, viewer, and one
 body/lane/writer. Continue past 20 minutes toward the assigned milestone;
@@ -305,7 +325,7 @@ current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.16.0 run must instead report protocol v20 and mod/app 0.16.0.
+  0.8.0. A 0.16.0 run must instead report protocol v21 and mod/app 0.16.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

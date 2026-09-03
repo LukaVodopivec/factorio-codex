@@ -6,15 +6,15 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v20 DTO and tool registry", () => {
-  it("declares v20 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(20);
+describe("protocol v21 DTO and tool registry", () => {
+  it("declares v21 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(21);
     expect(MCP_SERVER_VERSION).toBe("0.16.0");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
 
-  it("registers exactly 25 tools and forwards exact v20 payloads", async () => {
+  it("registers exactly 25 tools and forwards exact v21 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -43,6 +43,11 @@ describe("protocol v20 DTO and tool registry", () => {
     expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute" });
     await handlers.production_requirements({ targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
     expect(call).toHaveBeenLastCalledWith("production_requirements", { targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
+    await handlers.production_requirements({ technology: "automation", flow_precision: "one_minute" });
+    expect(call).toHaveBeenLastCalledWith("production_requirements", { technology: "automation", flow_precision: "one_minute" });
+    await handlers.production_requirements({ location: "solar-system-edge", flow_precision: "ten_minutes" });
+    expect(call).toHaveBeenLastCalledWith("production_requirements", { location: "solar-system-edge", flow_precision: "ten_minutes" });
+    expect(schemas.production_requirements.safeParse({ targets: { gear: 1 }, technology: "automation" }).success).toBe(false);
     const route = schemas.connect_entities.parse({ kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 } });
     await handlers.connect_entities(route);
     expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, max_length: 25 });

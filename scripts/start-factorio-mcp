@@ -3,9 +3,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+surface_args=("$@")
 
 if node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' 2>/dev/null; then
-  exec node node_modules/.bin/tsx companion/src/cli.ts mcp
+  exec node node_modules/.bin/tsx companion/src/cli.ts mcp "${surface_args[@]}"
 fi
 
 account_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
@@ -19,7 +20,7 @@ for candidate in "$nvm_root"/versions/node/v*/bin/node; do
 done
 
 if [[ -n "$node_22" ]]; then
-  exec "$node_22" node_modules/.bin/tsx companion/src/cli.ts mcp
+  exec "$node_22" node_modules/.bin/tsx companion/src/cli.ts mcp "${surface_args[@]}"
 fi
 
 echo "Factorio Codex MCP requires Node 22 or newer; activate it before starting Codex" >&2

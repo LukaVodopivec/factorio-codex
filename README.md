@@ -104,15 +104,16 @@ queued progress.
 Live play is currently supervised debugging, not benchmarking. The initiating
 session may inspect, intervene, modify, rescue, and restart the run through its
 separate debug surface. Every intervention is recorded and assisted progress is
-never benchmark evidence. Ordinary gameplay uses one persistent pilot as the
-sole MCP writer, live-state authority, planner, growth owner, and milestone
-owner for one physical body and FIFO lane. There is no strategist or operations
-ledger. The pilot's `/goal` continues after waypoints, batches, plans, and
-progress reports until later-tick milestone proof, an explicit the owner stop, or a
-genuine blocker.
-The next fresh supervised run uses one persistent `gpt-5.6-luna` pilot with
-`xhigh` reasoning and fast mode enabled. This selection never reconfigures an
-active run in place.
+never benchmark evidence. Ordinary gameplay uses exactly two persistent
+reasoning sessions around one physical body and one FIFO mutation lane. A
+`gpt-5.6-luna` pilot with `high` reasoning and fast mode enabled is the sole
+gameplay writer, character controller, immediate-safety authority, and source
+of latest exact local state. A persistent `gpt-5.6-sol` strategist with `high`
+reasoning owns compact NOW/NEXT/LATER priorities and may use only the separate
+mechanically read-only MCP surface. Its observations never enter the physical
+lane. Sol atomically writes the one `operations.json`; Luna never writes it and
+continues fail-open when advice is absent, malformed, stale, or unavailable.
+Neither role profile is applied to an active run in place.
 
 After immediate safety and a hard production unblock, the pilot evaluates the
 highest-payback expansion of the measured factory bottleneck before another
@@ -124,6 +125,12 @@ payback comparison. The pilot prefers evidence-backed headroom, clustered
 travel, and buffer-aware packets over exact next-task quantities. Exactly one
 physical call may be in flight; only read-only snapshots may overlap when their
 tick inconsistency is acceptable.
+
+`production_requirements` also accepts one technology or space-location target.
+It derives missing current-force prerequisites, remaining science, trigger
+conditions, permitted locked-recipe arithmetic, bounded force-flow rates, and
+time estimates while separating probabilistic or operational requirements and
+never crediting exact remote inventories.
 
 Debug runs continue past `GO+20m` to their assigned milestone unless the owner stops
 them; Candidate B and R1-R7 remain historical evidence. Gameplay remains

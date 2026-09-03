@@ -110,7 +110,7 @@ describe("exact local configuration", () => {
   });
   it.each([
     { ping: { protocol_version: 6, mod_version: "0.16.0" }, failedCheck: "protocol" },
-    { ping: { protocol_version: 20, mod_version: "0.6.0" }, failedCheck: "mod" },
+    { ping: { protocol_version: 21, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
@@ -159,12 +159,14 @@ describe("exact local configuration", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const config = fs.readFileSync(path.join(root, ".codex/config.toml"), "utf8");
     expect(config).toContain('command = "./scripts/start-factorio-mcp"');
-    expect(config).toContain("args = []");
+    expect(config).toMatch(/\[mcp_servers\.factorio\][\s\S]*args = \[\][\s\S]*enabled = true/);
+    expect(config).toMatch(/\[mcp_servers\.factorio-readonly\][\s\S]*args = \["--surface", "read-only"\][\s\S]*enabled = false/);
+    expect(config).toContain('enabled_tools = ["connect_status", "map_summary", "progression_status", "production_requirements", "describe_prototype", "observe_local", "inspect_entity", "plan_status"]');
     const launcher = fs.readFileSync(path.join(root, "scripts/start-factorio-mcp"), "utf8");
     expect(launcher).toContain('"$nvm_root"/versions/node/v*/bin/node');
     expect(launcher).not.toContain('source "$nvm_root/nvm.sh"');
     expect(launcher).not.toContain("nvm use --silent 22");
-    expect(launcher).toContain('exec "$node_22" node_modules/.bin/tsx companion/src/cli.ts mcp');
+    expect(launcher).toContain('exec "$node_22" node_modules/.bin/tsx companion/src/cli.ts mcp "${surface_args[@]}"');
     expect(config).not.toMatch(/^cwd\s*=/m);
     expect(fs.existsSync(path.join(root, "mod/agentic-companion/settings.lua"))).toBe(false);
     const modSource = ["control.lua", "scripts/companion.lua", "locale/en/agentic-companion.cfg"]
@@ -172,7 +174,7 @@ describe("exact local configuration", () => {
     expect(modSource).not.toMatch(/movement.speed|movement_speed|runtime_mod_setting/i);
   });
 
-  it("keeps the player skill text-only and aligned with the single-pilot MCP contract", () => {
+  it("keeps the player skill text-only and aligned with the two-brain MCP contract", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
     const normalizedSkill = skill.replace(/\s+/g, " ");
@@ -180,11 +182,11 @@ describe("exact local configuration", () => {
     expect(skill).toMatch(/run_plan/);
     expect(skill).toMatch(/build_plan/);
     expect(skill).toMatch(/MCP_GAP/);
-    expect(skill).toMatch(/one persistent pilot[\s\S]*sole Factorio MCP user[\s\S]*growth owner[\s\S]*milestone owner/i);
+    expect(skill).toMatch(/two persistent reasoning sessions[\s\S]*pilot[\s\S]*sole gameplay writer[\s\S]*strategist[\s\S]*long-horizon priorities/i);
     expect(skill).toMatch(/screenshots[\s\S]*never use[\s\S]*gameplay evidence|never use screenshots/i);
     expect(normalizedSkill).toMatch(/highest-payback capacity expansion.*satisfying only the next deficit is never the default/i);
     expect(skill).toContain("[player knowledge v1](PLAYER-KNOWLEDGE-v1.md)");
-    expect(skill).not.toContain("GOAL-STRATEGIST-v1.md");
+    expect(skill).toContain("GOAL-STRATEGIST-v1.md");
     expect(liveValidation).toMatch(/Prior-release 0\.7\.0 live evidence/);
     expect(liveValidation).toMatch(/historical 0\.7\.0 evidence[\s\S]*not live validation of[\s\S]*0\.8\.0/);
     expect(liveValidation).toMatch(/Optional couch UI navigation layer/);
@@ -227,16 +229,18 @@ describe("exact local configuration", () => {
     expect(liveValidation).toMatch(/no dedicated[\s\S]*GPU[\s\S]*permanently headless[\s\S]*Both visual Factorio processes run exclusively on the couch PC/);
   });
 
-  it("keeps exactly one active persistent pilot prompt", () => {
+  it("keeps exactly one pilot and one read-only strategist prompt", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
     const pilot = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/GOAL-PILOT-v1.md"), "utf8");
     expect(skill).toContain("](GOAL-PILOT-v1.md)");
-    expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md"))).toBe(false);
+    const strategist = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md"), "utf8");
+    expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md"))).toBe(true);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-MASTER-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-SPECIALIST-v1.md"))).toBe(false);
-    expect(`${skill}\n${pilot}`).toMatch(/sole Factorio MCP user[\s\S]*live-state authority[\s\S]*planner[\s\S]*growth owner[\s\S]*milestone owner/i);
-    expect(`${skill}\n${pilot}`).toMatch(/next fresh supervised run[\s\S]*gpt-5\.6-luna[\s\S]*xhigh[\s\S]*fast mode enabled/i);
+    expect(`${skill}\n${pilot}`).toMatch(/gpt-5\.6-luna[\s\S]*high[\s\S]*fast mode enabled/i);
+    expect(strategist).toMatch(/gpt-5\.6-sol[\s\S]*high[\s\S]*mechanically read-only/i);
+    expect(`${skill}\n${pilot}\n${strategist}`).toMatch(/sole (?:Factorio )?(?:MCP|gameplay) writer[\s\S]*(?:the )?latest exact local state/i);
     expect(pilot).toMatch(/continuation is the default[\s\S]*progress report is not a completion or pause boundary/i);
     expect(pilot).toMatch(/highest-payback expansion[\s\S]*before another manual deficit batch/i);
     expect(pilot).toMatch(/exactly one physical MCP call may be in flight/i);
@@ -244,7 +248,7 @@ describe("exact local configuration", () => {
 
   it("keeps every durable gameplay prompt semantic and route-free", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-    const files = ["SKILL.md", "GOAL-PILOT-v1.md", "PLAYER-KNOWLEDGE-v1.md"];
+    const files = ["SKILL.md", "GOAL-PILOT-v1.md", "GOAL-STRATEGIST-v1.md", "PLAYER-KNOWLEDGE-v1.md"];
     const texts = files.map((file) => fs.readFileSync(path.join(root, ".agents/skills/factorio-player", file), "utf8"));
     for (const text of texts) {
       expect(text).not.toMatch(/\b(?:first|start by)\s+(?:mine|craft|place|build|research)\b/i);

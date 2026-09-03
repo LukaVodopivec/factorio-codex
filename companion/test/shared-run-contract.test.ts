@@ -149,6 +149,16 @@ describe("shared gameplay run contract", () => {
     expect(roleGuidance).not.toMatch(/first (?:mine|craft|build|place)[^\n]{0,120}then|(?:at|by) minute \d+/i);
   });
 
+  it("starts bounded state-driven physical work while the first master envelope is prepared", () => {
+    expect(pilot).toMatch(/At `GO`[\s\S]*authoritative initial observation[\s\S]*awaiting the first master envelope[\s\S]*pre-authorized bootstrap envelope/i);
+    expect(pilot).toMatch(/already-carried automation[\s\S]*verified visible resource[\s\S]*exact physical sink[\s\S]*visible dry waypoint[\s\S]*nearest measured blocker[\s\S]*numeric stop/i);
+    expect(pilot).toMatch(/Report the first material result[\s\S]*first master envelope supersedes this default/i);
+    expect(pilot).toMatch(/same sole writer, body, and FIFO lane/i);
+    expect(pilot).toMatch(/never a fixed item, resource, order, coordinate, route, or timed phase/i);
+    expect(master).toMatch(/initial observation[\s\S]*already supplied by the pilot[\s\S]*pre-authorized bootstrap work[\s\S]*master envelope then supersedes/i);
+    expect(roleGuidance).toMatch(/At `GO`[\s\S]*pre-authorized bootstrap envelope[\s\S]*numeric\s+stop[\s\S]*no second writer, body, or[\s\S]*lane/i);
+  });
+
   it("preserves deterministic stale invalidation productive overlap and boundaries", () => {
     for (const text of [skill, ...prompts]) {
       expect(text).toMatch(/deterministic MCP (?:state and tool results|tools|evidence)/i);

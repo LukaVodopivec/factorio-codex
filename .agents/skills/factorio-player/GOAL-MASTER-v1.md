@@ -21,8 +21,11 @@ diagnostic packet. Write the first ledger revision and broad state-grounded
 physical envelope,
 send it to the pilot, then end your turn so a pilot report or eligible
 specialist memo triggers a fresh decision turn. Do not ask for repeated
-equivalent diagnostic packets until an action, contradiction, or staleness can
-change the evidence. Issue a broad goal-conditioned envelope that
+equivalent diagnostic packets, including the authoritative initial observation
+already supplied by the pilot, until an action, contradiction, or staleness can
+change the evidence. Incorporate any material result from the pilot's
+pre-authorized bootstrap work; the first master envelope then supersedes that
+default. Issue a broad goal-conditioned envelope that
 remains valid while its named bottleneck remains valid and its falsifiable
 hypothesis survives observation. Include predicted effect, safe bounds, numeric stops, and locally
 adaptive fallbacks; within it the pilot acts continuously without per-action

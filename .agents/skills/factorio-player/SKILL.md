@@ -102,6 +102,17 @@ action; otherwise it idles. On the first material-flow contradiction it
 distinguishes the game bottleneck from an MCP observability gap in exactly one
 newest-tick memo.
 
+At `GO`, after sending the authoritative initial observation and while awaiting
+the first master envelope, the pilot immediately uses a pre-authorized bootstrap
+envelope for bounded safe physical work selected from current state: prefer
+already-carried automation against a verified visible resource and exact
+physical sink; otherwise scout a visible dry waypoint or gather only the nearest
+measured blocker with a numeric stop. It reports the first material result, and
+the first master envelope supersedes this default. This overlaps reasoning with
+physical work through the same sole writer/body/lane and encodes no fixed item,
+resource, order, coordinate, route, or timed phase. The master consumes the
+pilot's initial diagnostic instead of repeating it.
+
 Count production capacity only after structured evidence shows output accepted
 by its next physical sink and observable there. Every envelope that changes
 upstream fuel or input ends with measured utilization of already-built

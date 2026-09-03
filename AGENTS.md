@@ -52,7 +52,15 @@ and `plan_status` structured values and never reconstructs, substitutes, or
 relabels them from memory or prose.
 Immediately after one authoritative preflight packet, the master writes and
 sends a broad state-grounded first physical envelope, then ends its turn so new
-pilot or specialist evidence can trigger a fresh turn.
+pilot or specialist evidence can trigger a fresh turn; it does not repeat the
+initial diagnostics already supplied by the pilot. At `GO`, after that initial
+observation and until the first master envelope arrives, the pilot immediately
+uses a pre-authorized state-driven bootstrap envelope: deploy already-carried
+automation only against a verified visible resource and sink, otherwise scout
+a visible dry waypoint or gather the nearest measured blocker to a numeric
+stop. Report the first material result; the master envelope supersedes the
+default. This remains one writer/body/lane and never fixes an item, resource,
+order, coordinate, route, or timed phase.
 
 The pilot may mine, refuel, collect output, repair routes, and use an approved
 fallback without waiting. Broad envelopes remain active while their named

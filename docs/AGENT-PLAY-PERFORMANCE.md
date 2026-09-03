@@ -144,7 +144,8 @@ newest source tick, writes one ledger revision for the current decision, and
 never reissues an executed plan ID. The first decision uses one authoritative
 preflight diagnostic packet, immediately writes and sends a broad physical
 envelope, and ends the master turn so new peer evidence can trigger a fresh
-turn; equivalent diagnostics repeat only after action,
+turn; it consumes rather than repeats the pilot's initial diagnostics, and
+equivalent diagnostics repeat only after action,
 contradiction, or staleness. Each broad goal-conditioned envelope states a
 falsifiable hypothesis, predicted measurable effect, safe bounds, numeric
 stops, and locally adaptive fallbacks, and remains active while the bottleneck
@@ -153,6 +154,14 @@ observation, reports only terminal, material-bottleneck, or invalidation
 evidence, and never repeats an executed envelope. It never stops or reports
 merely for one useful item or incidental non-production loot. Measured
 automation utilization and continuous current-plus-successor work dominate.
+At `GO`, the pilot sends the authoritative initial observation and immediately
+performs bounded safe physical work under a pre-authorized bootstrap envelope
+while the master reasons. Current structured state selects the work: prefer
+already-carried automation with a verified visible resource and exact sink;
+otherwise scout a visible dry waypoint or gather the nearest measured blocker
+to a numeric stop. The pilot reports the first material result, and the first
+master envelope supersedes the default. This creates no second writer, body, or
+lane and prescribes no item, resource, order, coordinate, route, or timed phase.
 The specialist proactively returns at most one
 run/tick-keyed coalescible evidence memo per new ledger revision when a
 calculation can change the next action; otherwise it idles. On the first

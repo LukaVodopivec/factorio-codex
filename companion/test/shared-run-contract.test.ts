@@ -179,6 +179,8 @@ describe("shared gameplay run contract", () => {
     expect(roleGuidance).toMatch(/strategy_proposal[\s\S]*safe bounds[\s\S]*numeric[\s\S]*non-executable advice/i);
     expect(pilot).toMatch(/supervised debug run[\s\S]*Continue ordinary play past `GO\+20m`/i);
     expect(pilot).toMatch(/supervisor may intervene[\s\S]*fresh authoritative MCP state/i);
+    expect(strategist).toMatch(/supervised-debug topology[\s\S]*Continue advisory turns past `GO\+20m`[\s\S]*never ask the pilot to freeze, cancel, drain, or wait/i);
+    for (const text of prompts) expect(text).not.toMatch(/At the checkpoint|SNAPSHOT_AT_20M|next fresh matched run/i);
     expect(strategist).toMatch(/material-flow contradiction[\s\S]*MCP observability gap/i);
     for (const text of [strategist, pilot, roleGuidance]) {
       for (const phrase of ["output", "physical sink", "observable", "capacity"]) expect(text.toLowerCase()).toContain(phrase);

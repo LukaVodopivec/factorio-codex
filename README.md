@@ -46,7 +46,8 @@ exactly 25 text-only tools through `tools/list`. `observe_local` exposes exact
 stack through the character's normal picking state. Its character record labels
 the existing `inventory` as `main` and reports equipped ammunition separately.
 `queue_plan` immediately adds
-one Lua-contiguous plan to the sole FIFO; `plan_status` reads it, while
+one Lua-contiguous plan to the sole FIFO; both calls echo the stored
+`after_plan_id`, and `plan_status` reads it without reconstructing identity, while
 `run_plan` provides synchronous compatibility. Plans reuse the existing honest
 physical runners and end with a compact or full local observation.
 `inspect_entity` reports live inserter pickup/drop positions and valid targets,

@@ -92,7 +92,8 @@ describe("shared gameplay run contract", () => {
       expect(text).toMatch(/actually queued/i);
       expect(text).toMatch(/reason (?:none|no .*successor)/i);
     }
-    expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
+    expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*matching `plan_status` values verbatim[\s\S]*confirms status `queued`[\s\S]*never reconstruct or relabel IDs from memory[\s\S]*`queued_successor: null`/i);
+    expect(skill).toMatch(/Report the returned[\s\S]*`plan_id` and echoed `after_plan_id` verbatim from structured results[\s\S]*never reconstruct, substitute, or[\s\S]*relabel either ID from memory/i);
     expect(skill).toMatch(/never\s+prepend a redundant `walk_to`/i);
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
   });

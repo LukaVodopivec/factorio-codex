@@ -133,8 +133,10 @@ deltas and retain the expected result plus its falsifier.
 - Batch reads and cluster travel. Direct positional actions auto-approach; never
   prepend a redundant `walk_to`, and use `walk_to` only for physical scouting or
   relocation that no following positional action already performs. Use `build_plan` for layouts,
-  `queue_plan`/`plan_status` for a queued successor, recording its returned
-  `plan_id` and `after_plan_id` only after `plan_status` confirms `queued`, and `run_plan` for
+  `queue_plan`/`plan_status` for a queued successor. Report the returned
+  `plan_id` and echoed `after_plan_id` verbatim from structured results only
+  after `plan_status` confirms `queued`; never reconstruct, substitute, or
+  relabel either ID from memory. Use `run_plan` for
   synchronous compatibility. `inspect_entity` accepts `positions`.
 - Never physically place a mining drill from a `find_placement` candidate unless
   `resource_coverage` is present and contains positive compatible coverage.

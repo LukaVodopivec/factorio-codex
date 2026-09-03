@@ -118,13 +118,17 @@ unclear licensing, so none was imported. The retained path uses Factorio's
 official `LuaEntity.drop_target` and `LuaTechnologyPrototype.research_trigger`
 state directly and changes no game mechanics.
 
-The reported plan-25/plan-26/craft interaction was not a FIFO cancellation
-bug. A standalone craft appends to the same flat queue; normal completion
-clears only its own active task. A predecessor-dependent successor remains
-queued while the predecessor is waiting and is released when that predecessor
-completes. Only explicit cancellation, failure/invalidation of its predecessor,
-or cancellation/timeout of the exact owned task can cancel it. A regression
-now locks that behavior. Terminal observations also label `inventory` as the
+Authoritative parsed R5 calls show plan 25 was the stone mine, while plan 26
+was submitted with `after_plan_id=21`, not 25. Plan 26 correctly remained
+queued while plan 25 ran and then cancelled because its declared predecessor
+21 had not completed; pilot prose incorrectly relabeled the predecessor as 25.
+This was an agent reporting failure, not a FIFO runtime failure. A standalone
+craft appends to the same flat queue and normal completion clears only its own
+active task. A regression proves a successor whose actual `after_plan_id`
+names its successful predecessor remains queued across independent crafting
+and is then released. Pilot reports must copy returned `queue_plan` and
+`plan_status` IDs verbatim rather than reconstructing them from memory.
+Terminal observations also label `inventory` as the
 main compartment and expose equipped ammunition separately, preventing an
 empty-main-inventory reading from implying that equipped magazines vanished.
 

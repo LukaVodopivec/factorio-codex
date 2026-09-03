@@ -47,6 +47,9 @@ prioritized fallbacks, current and next bill of materials, and source tick/plan
 ID. The master is its sole atomic host writer; the pilot is the sole ordinary
 MCP writer and latest-observation authority; an optional specialist is
 read-only. Discard stale advice unless the pilot revalidates it.
+The pilot copies plan and predecessor IDs verbatim from returned `queue_plan`
+and `plan_status` structured values and never reconstructs, substitutes, or
+relabels them from memory or prose.
 Immediately after one authoritative preflight packet, the master writes and
 sends a broad state-grounded first physical envelope, then ends its turn so new
 pilot or specialist evidence can trigger a fresh turn.

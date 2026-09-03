@@ -103,12 +103,15 @@ game.tick = 139; tasks.on_tick()
 game.tick = 140; tasks.on_tick()
 check(tasks.get({ task_id = standalone_craft.task_id }).status == "done"
   and tasks.plan_status({ plan_id = craft_predecessor.plan_id }).status == "waiting"
-  and tasks.plan_status({ plan_id = craft_successor.plan_id }).status == "queued",
-  "standalone legitimate craft completes without cancelling an already queued successor")
+  and craft_successor.after_plan_id == craft_predecessor.plan_id
+  and tasks.plan_status({ plan_id = craft_successor.plan_id }).status == "queued"
+  and tasks.plan_status({ plan_id = craft_successor.plan_id }).after_plan_id == craft_predecessor.plan_id,
+  "standalone legitimate craft preserves the exact successful predecessor ID on its queued successor")
 game.tick = 169; tasks.on_tick()
 game.tick = 170; tasks.on_tick()
 check(tasks.plan_status({ plan_id = craft_predecessor.plan_id }).status == "completed"
-  and tasks.plan_status({ plan_id = craft_successor.plan_id }).status == "completed",
+  and tasks.plan_status({ plan_id = craft_successor.plan_id }).status == "completed"
+  and tasks.plan_status({ plan_id = craft_successor.plan_id }).after_plan_id == craft_predecessor.plan_id,
   "queued successor still releases after its parked predecessor becomes satisfied")
 
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1

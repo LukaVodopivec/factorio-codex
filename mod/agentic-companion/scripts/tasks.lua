@@ -117,7 +117,7 @@ function M.queue_plan(params)
     observation_detail = params.observation_detail == "full" and "full" or "compact",
     after_plan_id = predecessor,
   }
-  return { plan_id = assign(plan) }
+  return { plan_id = assign(plan), after_plan_id = predecessor }
 end
 local function plan_payload(plan)
   local c = companion.get()
@@ -144,7 +144,8 @@ local function plan_payload(plan)
     diagnostics = { failure = plan.outcomes[#plan.outcomes].error }
   end
   return {
-    plan_id = plan.id, status = plan.status, source_tick = game.tick,
+    plan_id = plan.id, after_plan_id = plan.after_plan_id,
+    status = plan.status, source_tick = game.tick,
     position = c and { x = c.position.x, y = c.position.y } or nil,
     current_step = plan.current_step, completed_steps = plan.completed_steps,
     total_steps = #plan.steps, outcomes = plan.outcomes, queue_depth = #storage.tasks.queue,

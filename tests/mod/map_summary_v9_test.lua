@@ -149,13 +149,21 @@ local sample = require("scripts.map_summary").factory_component_sample({ source_
   positions = { { x = flow_source.position.x, y = flow_source.position.y },
     { x = flow_processor.position.x, y = flow_processor.position.y } } })
 require("scripts.factory_activity").record_validation({ proven = true, component_signature = sample.component_signature,
-  start_tick = 900, end_tick = 960, duration_ticks = 60, products_finished_delta = 2,
+  start_tick = 901, end_tick = 960, duration_ticks = 59, products_finished_delta = 2,
   character_transfer_actions = 0 })
 game.tick = 960
 local proven = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })
 check(proven.factory.material_flow.components[1].state.autonomous_end_to_end
   and proven.factory.material_flow.components[1].state.validation.products_finished_delta == 2,
   "matching bounded multi-tick validation promotes the unchanged component to autonomous end to end")
+storage.factory_activity.events[#storage.factory_activity.events + 1] = {
+  tick = 900, action = "insert", item_count = 1, target = {
+    name = flow_processor.name, type = flow_processor.type, position = flow_processor.position,
+  }, items = { { name = "ore", count = 1 } },
+}
+local bootstrapped = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })
+check(bootstrapped.factory.material_flow.components[1].state.autonomous_end_to_end,
+  "a proven interval can sunset earlier bootstrap transfers without calling a hand-fed loop autonomous")
 require("scripts.factory_activity").record("insert", { target = flow_processor,
   transfers = { { item = "ore", inserted = 1 } } })
 local touched = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })

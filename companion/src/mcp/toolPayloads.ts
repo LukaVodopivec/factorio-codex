@@ -1,9 +1,11 @@
 export const toolPayloads = {
-  target: (value: { x: number; y: number }) => ({ target: value }),
+  target: ({ x, y, arrival_mode = "exact", arrival_radius = 1 }: { x: number; y: number; arrival_mode?: "exact" | "vicinity"; arrival_radius?: number }) => ({
+    target: { x, y }, arrival_mode, arrival_radius,
+  }),
   mine: ({ x, y, count, target_kind, allow_fluid_loss, expected_name, observed_tick }: { x: number; y: number; count?: number; target_kind?: "natural" | "owned"; allow_fluid_loss?: boolean; expected_name?: string; observed_tick?: number }) => ({ target: { x, y }, count, ...(target_kind ? { target_kind } : {}), ...(allow_fluid_loss ? { allow_fluid_loss: true } : {}), ...(expected_name ? { expected_name } : {}), ...(observed_tick === undefined ? {} : { observed_tick }) }),
   pickup: ({ x, y, item, count }: { x: number; y: number; item: string; count: number }) => ({ target: { x, y }, item, count }),
   craft: ({ recipe, crafts, wait_for_completion }: { recipe: string; crafts: number; wait_for_completion?: boolean }) => ({ recipe, count: crafts, ...(wait_for_completion === undefined ? {} : { wait_for_completion }) }),
-  place: ({ x, y, name, direction, output_target }: { x: number; y: number; name: string; direction?: number; output_target?: { x: number; y: number } }) => ({ item: name, position: { x, y }, direction, ...(output_target ? { output_target } : {}) }),
+  place: ({ x, y, name, direction, input_target, output_target }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number } }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}) }),
   insert: ({ x, y, items: values }: { x: number; y: number; items: Record<string, number> }) => ({ target: { x, y }, items: values }),
   extract: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y }, all: true }) : ({ target: { x, y }, items: values }),
   recipe: ({ x, y, recipe }: { x: number; y: number; recipe: string }) => ({ target: { x, y }, recipe }),
@@ -12,7 +14,12 @@ export const toolPayloads = {
   placement: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
   canPlace: (placements: Array<{ x: number; y: number; name: string; direction?: number }>) => ({ placements: placements.map((placement) => toolPayloads.placement(placement)) }),
   buildPlan: (steps: Array<{ x: number; y: number; name: string; [key: string]: unknown }>, rest: Record<string, unknown>) => ({ ...rest, steps: steps.map(({ x, y, name, ...step }) => ({ ...step, item: name, position: { x, y } })) }),
-  findPlacement: ({ item, preferred, radius, directions, limit, output_target }: { item: string; preferred: { x: number; y: number }; radius: number; directions: number[]; limit: number; output_target?: { x: number; y: number } }) => ({ item, preferred, radius, directions, limit, ...(output_target ? { output_target } : {}) }),
+  findPlacement: ({ item, preferred, radius, directions, limit, input_target, output_target, output_recipient_item }: {
+    item: string; preferred: { x: number; y: number }; radius: number; directions: number[]; limit: number;
+    input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; output_recipient_item?: string;
+  }) => ({ item, preferred, radius, directions, limit,
+    ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}),
+    ...(output_recipient_item ? { output_recipient_item } : {}) }),
   productionRequirements: ({ targets, recipe_choices }: { targets: Record<string, number>; recipe_choices?: Record<string, string> }) => ({ targets, recipe_choices }),
   connectEntities: ({ kind, prototype, from, to, max_length }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number }) => ({ kind, prototype, from, to, max_length }),
 };
@@ -42,6 +49,7 @@ export function normalizePlacementSearch(value: any): any {
   if (!value || typeof value !== "object") return value;
   return { ...value, candidates: luaArray(value.candidates).map((candidate: any) => ({
     ...candidate,
+    build_steps: luaArray(candidate?.build_steps),
     ...(candidate?.output_target === false ? { output_target: null } : {}),
     ...(candidate?.output_position === undefined ? {} : { output_precondition: {
       endpoint: candidate.output_position,
@@ -75,6 +83,7 @@ export function normalizeMapSummary(value: any): any {
       ...(transfers ? { character_transfers: { ...transfers,
         inserted_items: luaArray(transfers.inserted_items), extracted_items: luaArray(transfers.extracted_items),
         target_actions: luaArray(transfers.target_actions), events: luaArray(transfers.events),
+        validations: luaArray(transfers.validations),
       } } : {}),
     } } : {}),
   };

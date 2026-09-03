@@ -6,15 +6,15 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v19 DTO and tool registry", () => {
-  it("declares v19 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(19);
-    expect(MCP_SERVER_VERSION).toBe("0.15.0");
+describe("protocol v20 DTO and tool registry", () => {
+  it("declares v20 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(20);
+    expect(MCP_SERVER_VERSION).toBe("0.16.0");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
 
-  it("registers exactly 25 tools and forwards exact v18 payloads", async () => {
+  it("registers exactly 25 tools and forwards exact v20 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -30,14 +30,15 @@ describe("protocol v19 DTO and tool registry", () => {
     expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8 });
     await handlers.find_placement({ ...find, output_target: { x: 3, y: 4 } });
     expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8, output_target: { x: 3, y: 4 } });
-    expect(schemas.find_placement.safeParse({ ...find, input_target: { x: 0, y: 1 } }).success).toBe(false);
-    const place = schemas.place_entity.parse({ name: "inserter", x: 1, y: 2, output_target: { x: 1, y: 3 } });
+    expect(schemas.find_placement.safeParse({ ...find, input_target: { x: 0, y: 1 } }).success).toBe(true);
+    expect(schemas.find_placement.safeParse({ ...find, output_target: { x: 3, y: 4 }, output_recipient_item: "wooden-chest" }).success).toBe(false);
+    const place = schemas.place_entity.parse({ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
     await handlers.place_entity(place);
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 1, y: 2 }, direction: undefined, output_target: { x: 1, y: 3 } });
-    const build = schemas.build_plan.parse({ steps: [{ name: "inserter", x: 1, y: 2, output_target: { x: 1, y: 3 } }] });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 1, y: 2 }, direction: undefined, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
+    const build = schemas.build_plan.parse({ steps: [{ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
     await handlers.build_plan(build);
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
-      steps: [{ item: "inserter", position: { x: 1, y: 2 }, output_target: { x: 1, y: 3 } }] });
+      steps: [{ item: "inserter", position: { x: 1, y: 2 }, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
     await handlers.map_summary({});
     expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute" });
     await handlers.production_requirements({ targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
@@ -135,6 +136,11 @@ describe("protocol v19 DTO and tool registry", () => {
           requires_player_owned_target_before_placement: true } });
     expect(normalizeInspection({ entities: [{ name: "drill", type: "mining-drill", drop_target: false }] }).entities[0].drop_target).toBeNull();
     expect(normalizeMapSummary({ resources: {}, water_edges: {}, factory_landmarks: {} })).toMatchObject({ resources: [], water_edges: [], factory_landmarks: [] });
+    expect(normalizeMapSummary({ factory: { groups: {}, force_flows: {}, character_transfers: {
+      inserted_items: {}, extracted_items: {}, target_actions: {}, events: {}, validations: {},
+    } } })).toMatchObject({ factory: { groups: [], force_flows: [], character_transfers: {
+      inserted_items: [], extracted_items: [], target_actions: [], events: [], validations: [],
+    } } });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);
     expect(normalizePhysicalRoute({ steps: {} }).steps).toEqual([]);
   });

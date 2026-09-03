@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.15.0**.
+Current release: **0.16.0**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -110,6 +110,9 @@ owner for one physical body and FIFO lane. There is no strategist or operations
 ledger. The pilot's `/goal` continues after waypoints, batches, plans, and
 progress reports until later-tick milestone proof, an explicit the owner stop, or a
 genuine blocker.
+The next fresh supervised run uses one persistent `gpt-5.6-luna` pilot with
+`xhigh` reasoning and fast mode enabled. This selection never reconfigures an
+active run in place.
 
 After immediate safety and a hard production unblock, the pilot evaluates the
 highest-payback expansion of the measured factory bottleneck before another

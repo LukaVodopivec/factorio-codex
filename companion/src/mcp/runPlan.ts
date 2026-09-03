@@ -6,10 +6,12 @@ import { normalizeObservation } from "./observation.js";
 const position = { x: z.number(), y: z.number() };
 const items = z.record(z.string(), z.number().int().positive());
 export const planStepSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("walk_to"), ...position }).strict(),
-  z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).default("natural"), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict(),
+  z.object({ action: z.literal("walk_to"), ...position,
+    arrival_mode: z.enum(["exact", "vicinity"]).default("exact"),
+    arrival_radius: z.number().min(0.5).max(6).default(1) }).strict(),
+  z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict(),
   z.object({ action: z.literal("pickup_items"), ...position, item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
-  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), output_target: z.object(position).strict().optional() }).strict(),
+  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: z.object(position).strict().optional(), output_target: z.object(position).strict().optional() }).strict(),
   z.object({ action: z.literal("craft_items"), recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict(),
   z.object({ action: z.literal("insert_items"), ...position, items }).strict(),
   z.object({ action: z.literal("extract_items"), ...position, items: items.optional() }).strict(),
@@ -17,13 +19,24 @@ export const planStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("rotate_entity"), ...position, direction: z.number().int().min(0).max(15).optional() }).strict(),
   z.object({ action: z.literal("inspect_entities"), positions: z.array(z.object(position).strict()).min(1).max(16) }).strict(),
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
+  z.object({ action: z.literal("wait_for_research"), technology: z.string().min(1), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
+  z.object({ action: z.literal("validate_factory_component"), source_tick: z.number().int().nonnegative(),
+    positions: z.array(z.object(position).strict()).min(1).max(16),
+    duration_seconds: z.number().min(1).max(300).default(60) }).strict(),
 ]);
 export const queuePlanSchema = z.object({
   steps: z.array(planStepSchema).min(1).max(25),
   final_observation_radius: z.number().int().min(5).max(30).default(15),
   observation_detail: z.enum(["none", "compact", "full"]).default("none"),
   after_plan_id: z.number().int().positive().optional(),
-}).strict();
+}).strict().superRefine((plan, context) => {
+  plan.steps.forEach((step, index) => {
+    if (step.action === "walk_to" && step.arrival_mode === "exact" && step.arrival_radius !== 1) {
+      context.addIssue({ code: "custom", path: ["steps", index, "arrival_radius"],
+        message: "exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius" });
+    }
+  });
+});
 export const runPlanSchema = queuePlanSchema;
 export const planStatusSchema = z.object({
   plan_id: z.number().int().positive(),

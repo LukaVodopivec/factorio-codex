@@ -302,7 +302,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
   for _, node in ipairs(nodes) do
     local r = root(node.id)
     local component = by_root[r] or { node_ids = {}, roles = {}, status_counts = {}, edge_count = 0,
-      products_finished_total = 0, character_transfer_actions = 0 }
+      products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil }
     by_root[r] = component
     component.node_ids[#component.node_ids + 1] = node.id
     component.roles[node.role] = (component.roles[node.role] or 0) + 1
@@ -315,7 +315,12 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
       local key = string.format("%s\0%s\0%.17g\0%.17g", event.target.name, event.target.type,
         event.target.position.x, event.target.position.y)
       local node = retained[key]
-      if node then by_root[root(node.id)].character_transfer_actions = by_root[root(node.id)].character_transfer_actions + event.transfer_actions end
+      if node then
+        local component = by_root[root(node.id)]
+        component.character_transfer_actions = component.character_transfer_actions + event.transfer_actions
+        component.last_character_transfer_tick = math.max(component.last_character_transfer_tick or 0,
+          tonumber(event.last_transfer_tick) or 0)
+      end
     end
   end
   local components = sorted_rows(by_root, function(a, b) return a.node_ids[1] < b.node_ids[1] end)
@@ -407,7 +412,14 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
     for _, candidate in ipairs(activity.validations or {}) do
       if candidate.component_signature == component.component_signature and candidate.proven then validation = candidate end
     end
-    local topology_ready = #blockers == 0 and activity.history_complete and component.character_transfer_actions == 0
+    -- Bootstrap transfers before a successful bounded validation are historical
+    -- debt, not evidence that the now-connected component still needs the
+    -- character. Any transfer at or after the validation interval begins
+    -- revokes it; incomplete telemetry remains conservatively unproven.
+    local transfer_observed = validation and component.last_character_transfer_tick
+      and component.last_character_transfer_tick >= validation.start_tick
+      or not validation and component.character_transfer_actions > 0
+    local topology_ready = #blockers == 0 and activity.history_complete and not transfer_observed
     local autonomous = topology_ready and validation ~= nil
     local blocker_names, seen_blocker = {}, {}
     for _, blocker in ipairs(blockers) do
@@ -424,7 +436,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
       autonomy_topology_ready = topology_ready,
       autonomous_end_to_end = autonomous,
       autonomy_evidence = autonomous and "bounded_multi_tick_no_character_transfer_validation"
-        or component.character_transfer_actions > 0 and "character_transfer_observed"
+        or transfer_observed and "character_transfer_observed"
         or not activity.history_complete and "character_transfer_history_incomplete"
         or topology_ready and "bounded_multi_tick_production_not_yet_proven"
         or "physical_end_to_end_path_not_proven",

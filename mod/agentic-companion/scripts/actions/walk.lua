@@ -643,6 +643,9 @@ function M.start(task)
   if task.arrival_radius < (task.arrival_mode == "vicinity" and 0.5 or 0.1) or task.arrival_radius > 6 then
     error("walk_to arrival_radius is outside the supported range")
   end
+  if task.arrival_mode == "exact" and task.arrival_radius ~= 1 then
+    error("walk_to exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius")
+  end
   task.arrive_within = task.arrival_mode == "vicinity" and 0.5 or task.arrival_radius
   task._walk = {}
   M.begin(task._walk, c, t, task.arrive_within, task.arrival_mode, task.arrival_radius)

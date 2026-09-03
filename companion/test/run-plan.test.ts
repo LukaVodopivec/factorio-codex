@@ -18,7 +18,8 @@ describe("current queued-plan protocol", () => {
     expect(runPlanSchema.safeParse({ steps: Array(26).fill({ action: "walk_to", x: 0, y: 0 }) }).success).toBe(false);
     expect(runPlanSchema.parse({ steps: [{ action: "craft_items", recipe: "gear", crafts: 1 }] }).steps[0]).toMatchObject({ crafts: 1, wait_for_completion: true });
     expect(runPlanSchema.safeParse({ steps: [{ action: "craft_items", recipe: "gear", count: 1 }] }).success).toBe(false);
-    expect(runPlanSchema.parse({ steps: [{ action: "mine", x: 0, y: 0 }] }).steps[0]).toMatchObject({ count: 1, target_kind: "natural" });
+    expect(runPlanSchema.parse({ steps: [{ action: "mine", x: 0, y: 0 }] }).steps[0]).toMatchObject({ count: 1 });
+    expect(runPlanSchema.parse({ steps: [{ action: "mine", x: 0, y: 0 }] }).steps[0]).not.toHaveProperty("target_kind");
     expect(runPlanSchema.parse({ steps: [{ action: "mine", x: 0.25, y: 0.5, expected_name: "tree-01", observed_tick: 42 }] }).steps[0]).toMatchObject({ expected_name: "tree-01", observed_tick: 42 });
     expect(runPlanSchema.safeParse({ steps: [{ action: "mine", x: 0, y: 0, expected_name: "", observed_tick: -1 }] }).success).toBe(false);
     expect(runPlanSchema.safeParse({ steps: [{ action: "mine", x: 0, y: 0, target_kind: "machine" }] }).success).toBe(false);
@@ -37,14 +38,22 @@ describe("current queued-plan protocol", () => {
   it("accepts exact grounded pickup steps and rejects incomplete targets", () => {
     expect(queuePlanSchema.safeParse({ steps: [{ action: "pickup_items", x: 1.25, y: 2.5, item: "iron-ore", count: 3 }] }).success).toBe(true);
     expect(queuePlanSchema.safeParse({ steps: [{ action: "pickup_items", x: 1.25, y: 2.5, item: "iron-ore" }] }).success).toBe(false);
+    expect(queuePlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }] }).steps[0])
+      .toMatchObject({ arrival_mode: "exact", arrival_radius: 1 });
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "walk_to", x: 1, y: 2, arrival_mode: "vicinity", arrival_radius: 6 }] }).success).toBe(true);
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "walk_to", x: 1, y: 2, arrival_mode: "exact", arrival_radius: 2 }] }).success).toBe(false);
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "walk_to", x: 1, y: 2, arrival_radius: 7 }] }).success).toBe(false);
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "wait_for_research", technology: "automation", timeout_seconds: 30 }] }).success).toBe(true);
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "validate_factory_component", source_tick: 4,
+      positions: [{ x: 1, y: 2 }], duration_seconds: 30 }] }).success).toBe(true);
   });
 
-  it("preserves an exact inserter output target through queued plans", () => {
+  it("preserves exact inserter input and output targets through queued plans", () => {
     const parsed = queuePlanSchema.parse({ steps: [{ action: "place_entity", name: "inserter", x: 1, y: 2,
-      output_target: { x: 1, y: 3 } }] });
-    expect(parsed.steps[0]).toMatchObject({ output_target: { x: 1, y: 3 } });
+      input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
+    expect(parsed.steps[0]).toMatchObject({ input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
     expect(queuePlanSchema.safeParse({ steps: [{ action: "place_entity", name: "inserter", x: 1, y: 2,
-      input_target: { x: 1, y: 1 } }] }).success).toBe(false);
+      input_target: { x: "stale", y: 1 } }] }).success).toBe(false);
   });
 
   it("run_plan queues once, polls plan_status, and returns Lua's terminal observation", async () => {

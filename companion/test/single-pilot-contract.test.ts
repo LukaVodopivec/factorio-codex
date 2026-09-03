@@ -20,6 +20,12 @@ describe("persistent single-pilot contract", () => {
     expect(read("companion/src/cli.ts")).not.toMatch(/ledger-apply|--ledger|coordination\/ledger/);
   });
 
+  it("selects Luna xhigh fast only for the next fresh run", () => {
+    const normalized = active.replace(/\s+/g, " ");
+    expect(normalized).toMatch(/next fresh supervised run.*gpt-5\.6-luna.*xhigh.*fast mode enabled/i);
+    expect(normalized).toMatch(/never (?:change|reconfigure|replace).*live (?:run|pilot).*in place/i);
+  });
+
   it("makes reports and intermediate work nonterminal", () => {
     expect(active).toMatch(/waypoint[\s\S]*batch[\s\S]*plan[\s\S]*(?:progress )?report[\s\S]*(?:not a completion|nonterminal)/i);
     expect(active).toMatch(/while later-tick milestone proof is absent[\s\S]*continue whenever[\s\S]*(?:productive work|bounded recovery)/i);
@@ -53,6 +59,8 @@ describe("persistent single-pilot contract", () => {
     expect(normalized).toMatch(/machine_present.*locally_operating.*autonomous_end_to_end/);
     expect(normalized).toMatch(/physical upstream source.*ordinary factorio entities.*physical downstream sink/);
     expect(normalized).toMatch(/hand-inserted input never proves autonomy/);
+    expect(normalized).toMatch(/every consumed.*material.*fuel input.*non-character physical source/i);
+    expect(normalized).toMatch(/finite.*(?:chest|buffer|burner stock).*never qualify|buffer root.*not autonomous/i);
     expect(normalized).toMatch(/automation-debt list|automation debt/);
     expect(normalized).toMatch(/character touches per output.*service trips per interval.*trend downward/);
     expect(normalized).toMatch(/permanent physical connection.*bounded number of additional manual batches.*numeric stop condition/);
@@ -61,6 +69,15 @@ describe("persistent single-pilot contract", () => {
     expect(normalized).toMatch(/disconnected production island.*transport path.*completed and validated/);
     expect(normalized).toMatch(/reserve.*loop.*automation.*continuous.*self-running.*fully calibrated.*autonomous_end_to_end/);
     expect(normalized).toMatch(/handcraft\/insert\/wait\/extract\/walk.*manual service cycle/);
+  });
+
+  it("forbids observation timers, mechanical retries, and frontier loops", () => {
+    const normalized = active.replace(/\s+/g, " ").toLowerCase();
+    expect(normalized).toMatch(/`?map_summary`? is a diagnostic sample, never a timer/);
+    expect(normalized).toMatch(/never.*(?:programmatic|host-language).*(?:polling|retry) loop/);
+    expect(normalized).toMatch(/syntax or schema failure.*higher-level intent|syntax fix.*reconsideration of the strategy/);
+    expect(normalized).toMatch(/goal occupancy.*route failure|occupied goal.*failed route/);
+    expect(normalized).toMatch(/net distance|net progress/);
   });
 
   it("uses authoritative capabilities and one FIFO physical lane", () => {

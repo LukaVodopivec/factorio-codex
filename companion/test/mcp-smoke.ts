@@ -31,7 +31,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.15.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.16.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -52,13 +52,15 @@ try {
   if (!rejectedPlan.result?.isError || /Offline:/.test(rejectedText)) throw new Error(`26-step plan reached runtime instead of input rejection: ${rejectedText}`);
   const mineSchema = tools.find((tool: any) => tool.name === "mine")?.inputSchema?.properties ?? {};
   if (mineSchema.count?.default !== 1 || mineSchema.count?.maximum !== 200) throw new Error("mine must expose count 1-200 default 1");
-  if (mineSchema.target_kind?.default !== "natural" || JSON.stringify(mineSchema.target_kind?.enum) !== JSON.stringify(["natural", "owned"])) throw new Error("mine must expose explicit natural|owned target identity");
+  if (mineSchema.target_kind?.default !== undefined || JSON.stringify(mineSchema.target_kind?.enum) !== JSON.stringify(["natural", "owned"])) throw new Error("mine must expose optional natural|owned target identity for overlap disambiguation");
   if (!mineSchema.expected_name || mineSchema.observed_tick?.minimum !== 0) throw new Error("mine must expose optional exact observation provenance");
   const pickupSchema = tools.find((tool: any) => tool.name === "pickup_items")?.inputSchema ?? {};
   if (!pickupSchema.required?.includes("x") || !pickupSchema.required?.includes("y") || !pickupSchema.required?.includes("item") || !pickupSchema.required?.includes("count")) throw new Error("pickup_items must require exact observed position/item/count");
   const runPlanSchema = tools.find((tool: any) => tool.name === "run_plan")?.inputSchema ?? {};
   if (runPlanSchema.properties?.steps?.maxItems !== 25 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-25 steps");
   if (runPlanSchema.properties?.final_observation_radius?.default !== 15 || runPlanSchema.properties?.observation_radius) throw new Error("run_plan must expose only final_observation_radius");
+  const serializedSteps = JSON.stringify(runPlanSchema.properties?.steps);
+  for (const action of ["wait_for_research", "validate_factory_component"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
   const serializedRunPlan = JSON.stringify(runPlanSchema);
   if (/"const":"(?:build_plan|start_research|stop|sleep)"|"by_name":/.test(serializedRunPlan)) throw new Error("run_plan exposes a forbidden nested step");
   const status = await request("tools/call", { name: "connect_status", arguments: {} });

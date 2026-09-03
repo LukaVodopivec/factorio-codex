@@ -17,7 +17,8 @@ check(snapshot.transfer_actions == 2 and snapshot.transferred_items == 8,
   "activity counts only successful queued character transfers")
 check(snapshot.inserted_items[1].name == "fuel" and snapshot.inserted_items[2].name == "ore"
   and snapshot.extracted_items[1].name == "plate", "activity item rows are deterministic")
-check(snapshot.events[1].target.position.x == 1 and snapshot.history_complete,
+check(snapshot.events[1].target.position.x == 1 and snapshot.target_actions[1].last_transfer_tick == 120
+  and snapshot.history_complete,
   "activity retains bounded target identity and run-local completeness")
 
 for i = 1, 129 do

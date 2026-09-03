@@ -85,8 +85,10 @@ function M.snapshot(since_tick)
       if event.target and event.target.position then
         local key = string.format("%s\0%s\0%.17g\0%.17g", event.target.name or "", event.target.type or "",
           event.target.position.x, event.target.position.y)
-        local row = targets[key] or { target = event.target, transfer_actions = 0, transferred_items = 0 }
+        local row = targets[key] or { target = event.target, transfer_actions = 0, transferred_items = 0,
+          last_transfer_tick = event.tick }
         targets[key] = row; row.transfer_actions = row.transfer_actions + 1; row.transferred_items = row.transferred_items + event.item_count
+        row.last_transfer_tick = math.max(row.last_transfer_tick or event.tick, event.tick)
       end
     end
   end

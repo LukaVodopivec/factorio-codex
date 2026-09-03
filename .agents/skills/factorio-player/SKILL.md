@@ -12,6 +12,10 @@ growth owner, and milestone owner. There is no strategist, gameplay peer,
 operations ledger, advisory proposal, report channel, acknowledgement, or resend
 path.
 
+For the next fresh supervised run, start that one pilot as `gpt-5.6-luna` with
+`xhigh` reasoning and fast mode enabled. This profile applies only at the safe
+fresh-run cutover; never reconfigure or replace a live pilot in place.
+
 Until the owner explicitly re-enables benchmarking, the parent session is a debug
 supervisor. It may diagnose or rescue through surfaces unavailable to the pilot,
 but records every intervention and requires a fresh structured MCP observation
@@ -63,6 +67,10 @@ and run for a bounded validation interval with no character inventory transfer
 touching that segment. Keep `machine_present`, `locally_operating`, and
 `autonomous_end_to_end` distinct. Local operation on cached or hand-inserted
 input never proves autonomy.
+Every consumed recipe material and every fuel input must arrive from a proven
+non-character physical source. A finite chest, machine buffer, or burner stock
+loaded by the character is a buffer root, not autonomous supply, regardless of
+how long it runs unattended.
 
 Reserve **loop**, **automation**, **continuous**, **self-running**, and
 **fully calibrated** for a segment with current `autonomous_end_to_end`
@@ -147,9 +155,13 @@ and zero character insert/extract actions for the segment must all hold.
   source ticks are acceptable, then revalidate the newest snapshot before any
   mutation.
 - Direct positional actions already auto-approach. Use `walk_to` for scouting or
-  relocation, not as a redundant prefix. On path failure, choose a returned
-  charted reachable frontier, move physically, and re-observe; do not guess
-  offsets repeatedly.
+  relocation, not as a redundant prefix or a route to an entity action. Exact
+  walking preserves the requested goal; explicit vicinity walking may resolve a
+  reported reachable point nearby. A tool-owned recovery may use a charted
+  reachable frontier while preserving the requested goal. Goal occupancy is
+  distinct from route failure. Let one bounded tool-owned recovery track net distance and visited
+  frontiers; never wrap `walk_to` in a programmatic retry loop or revisit a
+  frontier after progress stalls.
 - Exact natural targets are ephemeral. After travel, mutation, selection
   contradiction, or route failure, take a fresh local observation and cluster
   nearby work. Never substitute a nearby entity or replay stale coordinates.
@@ -179,8 +191,12 @@ and zero character insert/extract actions for the segment must all hold.
   continuity, power, working state, output acceptance, and useful downstream
   production.
 - `wait_for_item` observes only within its documented local range. Use bounded
-  status waiting; while a machine or research wait is open, execute independent
-  productive work through the same FIFO whenever available.
+  `wait_for_research`, component validation, and status waiting for meaningful
+  transitions. `map_summary` is a diagnostic sample, never a timer. Never put
+  repeated MCP observations in a host-language polling expression. After a
+  syntax or schema failure, reconsider the higher-level intent as well as the
+  malformed expression. While a wait is open, execute independent productive
+  work through the same FIFO whenever available.
 - `mine` count means physical mining cycles, not guaranteed items. Recalculate
   BOMs, successors, fuel, and waits from actual accepted/produced quantities. Derive
   item ceilings from the in-game learned per-cycle yield and confirm them with

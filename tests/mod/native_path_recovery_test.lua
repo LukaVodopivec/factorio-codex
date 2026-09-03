@@ -63,6 +63,10 @@ local function deliver(path, transient)
 end
 
 local task = reset()
+local exact_radius_ok, exact_radius_error = pcall(walk.start,
+  { id = 8, target = { x = 10, y = 0 }, arrival_mode = "exact", arrival_radius = 2 })
+check(not exact_radius_ok and tostring(exact_radius_error):match("fixed 1%-tile tolerance"),
+  "exact arrival cannot masquerade as a wide vicinity tolerance")
 check(walk.step(task._walk, body, task.id) == nil and body.walking_state.walking == false,
   "native walker waits for Factorio's path result")
 deliver({ { x = 5, y = 0 }, { x = 10, y = 0 } })

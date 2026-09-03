@@ -31,7 +31,7 @@ _G.prototypes = { item = {
   ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill", type = "mining-drill", tile_width = 2, tile_height = 2,
     vector_to_place_result = { x = 1, y = 0 }, collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } } },
   ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter", tile_width = 1, tile_height = 1,
-    inserter_pickup_position = { x = 0, y = -1 }, inserter_drop_position = { x = 0, y = 1 },
+    inserter_pickup_position = { 0, -1 }, inserter_drop_position = { 0, 1 },
     collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
 } }
 local finder = require("scripts.find_placement")

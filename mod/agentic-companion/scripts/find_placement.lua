@@ -11,6 +11,14 @@ local function position(value, label)
   return { x = tonumber(value.x), y = tonumber(value.y) }
 end
 
+local function prototype_vector(value)
+  if type(value) ~= "table" then return nil end
+  local x = tonumber(value.x) or tonumber(value[1])
+  local y = tonumber(value.y) or tonumber(value[2])
+  if x == nil or y == nil then return nil end
+  return { x = x, y = y }
+end
+
 local function charted(force, surface, pos)
   return force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) })
 end
@@ -118,8 +126,8 @@ function M.find_placement(params)
     local ok_pickup, raw_pickup = pcall(function() return proto.inserter_pickup_position end)
     local ok_drop, raw_drop = pcall(function() return proto.inserter_drop_position end)
     if ok_pickup and raw_pickup and ok_drop and raw_drop then
-      inserter_pickup_offset = position(raw_pickup, "inserter pickup offset")
-      inserter_drop_offset = position(raw_drop, "inserter drop offset")
+      inserter_pickup_offset = prototype_vector(raw_pickup)
+      inserter_drop_offset = prototype_vector(raw_drop)
     end
   end
 

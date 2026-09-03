@@ -1,6 +1,7 @@
 -- Exact, read-only recipient resolution shared by placement search and physical
 -- placement verification.
 local M = {}
+local BINDING_WAIT_TICKS = 30
 
 local RECIPIENT_TYPES = {
   ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
@@ -57,9 +58,17 @@ function M.contains(entity, point)
   return contains(entity.selection_box, point) or contains(entity.bounding_box, point)
 end
 
-function M.verify_drop_target(built, expected)
+function M.binding_status(built, expected, placed_tick)
+  if not built.valid then return "invalid" end
+  if not expected.valid then return "target-invalid" end
   local ok, actual = pcall(function() return built.drop_target end)
-  return ok and actual == expected
+  if not ok then return "unreadable" end
+  if actual == expected then return "matched" end
+  if actual ~= nil then return "mismatch" end
+  if game.tick <= placed_tick + BINDING_WAIT_TICKS then return "pending" end
+  return "timeout"
 end
+
+M.binding_wait_ticks = BINDING_WAIT_TICKS
 
 return M

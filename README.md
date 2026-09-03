@@ -57,16 +57,20 @@ resource coverage, rejects charted candidates with no compatible resources with 
 deterministic count while retaining uncharted candidates with coverage omitted, and
 exposes cardinal inserter pickup/drop endpoints. Its existing
 `output_target` contract filters an exact sink and verifies Factorio's live
-`drop_target` on a later game tick after physical placement while retaining the
-exact created entity; inspect the placed inserter's
+`drop_target` for up to 30 later game ticks after physical placement while
+retaining the exact created entity. A non-nil mismatch or invalidation fails
+immediately; a nil binding fails honestly at the bound without removing or
+replacing the entity. Inspect the placed inserter's
 `pickup_target` to falsify an incorrect source binding.
 `map_summary` summarizes only already-charted terrain and factory landmarks,
 `production_requirements` performs deterministic recipe arithmetic, and
 `connect_entities` builds an inventory-backed physical belt, pipe, or power
 route.
 `progression_status` separates ordinary queueable research from action/trigger
-unlocks. `start_research` refuses a trigger technology with its required
-in-game action and never reports it as queued progress.
+unlocks, retaining item/entity quality filters and comparators, scripted trigger
+descriptions, and fieldless space-platform triggers. `start_research` refuses a
+trigger technology with its required in-game action and never reports it as
+queued progress.
 
 Live play uses the benchmark-selected topology and model/effort assignment.
 In a split topology the strategist is read/plan-only, while one persistent

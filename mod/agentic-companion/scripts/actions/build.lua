@@ -83,15 +83,22 @@ function M.place.tick(task)
   if task._placed_entity then
     if game.tick <= task._placed_tick then return nil end
     local built, expected_output = task._placed_entity, task._expected_output
+    local binding = output_targets.binding_status(built, expected_output, task._placed_tick)
+    if binding == "pending" then return nil end
     task._placed_entity, task._placed_tick, task._expected_output = nil, nil, nil
-    if not built.valid then
+    if binding == "invalid" then
       return { status = "failed", detail = "the exact placed entity vanished before output binding could be verified" }
     end
-    if not output_targets.verify_drop_target(built, expected_output) then
+    if binding == "target-invalid" then
+      return { status = "failed", detail = "the exact expected output target vanished before binding could be verified" }
+    end
+    if binding ~= "matched" then
+      local wait_detail = binding == "timeout"
+        and (" within " .. tostring(output_targets.binding_wait_ticks) .. " ticks") or ""
       return {
         status = "failed",
-        detail = string.format("placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",
-          task.item, built.position.x, built.position.y),
+        detail = string.format("placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target%s; recover the exact placed entity before retrying",
+          task.item, built.position.x, built.position.y, wait_detail),
       }
     end
     return {

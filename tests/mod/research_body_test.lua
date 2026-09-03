@@ -25,16 +25,29 @@ local technology = { name = "automation", researched = false, enabled = true,
 local completed = { name = "steam-power", researched = true, enabled = true, prerequisites = {}, prototype = {} }
 local trigger_technology = { name = "trigger-alpha", researched = false, enabled = true,
   prerequisites = {}, prototype = { research_trigger = {
-    type = "craft-item", item = { name = "iron-gear-wheel" }, count = 12,
+    type = "craft-item", item = { name = "iron-gear-wheel", quality = "rare", comparator = ">=" }, count = 12,
   } }, effects = {} }
 local later_trigger = { name = "trigger-zeta", researched = false, enabled = true,
-  prerequisites = {}, prototype = { research_trigger = { type = "scripted" } }, effects = {} }
+  prerequisites = {}, prototype = { research_trigger = {
+    type = "scripted", trigger_description = { "", "Launch ", { "item-name.rocket-part" }, 1 },
+  } }, effects = {} }
+local platform_trigger = { name = "trigger-platform", researched = false, enabled = true,
+  prerequisites = {}, prototype = { research_trigger = { type = "create-space-platform" } }, effects = {} }
+local build_trigger = { name = "trigger-build", researched = false, enabled = true,
+  prerequisites = {}, prototype = { research_trigger = {
+    type = "build-entity", entity = { name = "lab", quality = "epic", comparator = "=" },
+  } }, effects = {} }
+local send_trigger = { name = "trigger-send", researched = false, enabled = true,
+  prerequisites = {}, prototype = { research_trigger = {
+    type = "send-item-to-orbit", item = { name = "space-science-pack", quality = "uncommon", comparator = ">" },
+  } }, effects = {} }
 local blocked = { name = "advanced", researched = false, enabled = true,
   prerequisites = { missing = { researched = false } }, prototype = {}, effects = {} }
 local codex_force = {
   name = "codex-force", technologies = { advanced = blocked, automation = technology,
     ["steam-power"] = completed, ["trigger-alpha"] = trigger_technology,
-    ["trigger-zeta"] = later_trigger },
+    ["trigger-build"] = build_trigger, ["trigger-platform"] = platform_trigger,
+    ["trigger-send"] = send_trigger, ["trigger-zeta"] = later_trigger },
   recipes = { zeta = { enabled = true }, alpha = { enabled = true }, disabled = { enabled = false } },
   research_queue = {},
   current_research = technology, research_progress = 0.25,
@@ -66,6 +79,7 @@ local trigger_ok, trigger_error = pcall(research.start_research, { technology = 
 check(not trigger_ok and add_research_calls == before_trigger
   and tostring(trigger_error):match("cannot queue trigger technology trigger%-alpha")
   and tostring(trigger_error):match("craft%-item 12 iron%-gear%-wheel")
+  and tostring(trigger_error):match("quality >= rare")
   and tostring(trigger_error):match("progression_status"),
   "start_research refuses trigger technology with actionable evidence before queueing")
 local progression = research.progression_status()
@@ -81,14 +95,30 @@ check(progression.force == "codex-force" and progression.current_research == "au
   and progression.trigger_unlocks[1].name == "trigger-alpha"
   and progression.trigger_unlocks[1].trigger.type == "craft-item"
   and progression.trigger_unlocks[1].trigger.item == "iron-gear-wheel"
+  and progression.trigger_unlocks[1].trigger.item_filter.name == "iron-gear-wheel"
+  and progression.trigger_unlocks[1].trigger.item_filter.quality == "rare"
+  and progression.trigger_unlocks[1].trigger.item_filter.comparator == ">="
   and progression.trigger_unlocks[1].trigger.count == 12
-  and progression.trigger_unlocks[2].name == "trigger-zeta"
-  and progression.trigger_unlocks[2].trigger.type == "scripted"
+  and progression.trigger_unlocks[2].name == "trigger-build"
+  and progression.trigger_unlocks[2].trigger.entity == "lab"
+  and progression.trigger_unlocks[2].trigger.entity_filter.quality == "epic"
+  and progression.trigger_unlocks[2].trigger.entity_filter.comparator == "="
+  and progression.trigger_unlocks[3].name == "trigger-platform"
+  and progression.trigger_unlocks[3].trigger.type == "create-space-platform"
+  and progression.trigger_unlocks[4].name == "trigger-send"
+  and progression.trigger_unlocks[4].trigger.item == "space-science-pack"
+  and progression.trigger_unlocks[4].trigger.item_filter.quality == "uncommon"
+  and progression.trigger_unlocks[4].trigger.item_filter.comparator == ">"
+  and progression.trigger_unlocks[5].name == "trigger-zeta"
+  and progression.trigger_unlocks[5].trigger.type == "scripted"
+  and progression.trigger_unlocks[5].trigger.trigger_description[2] == "Launch "
+  and progression.trigger_unlocks[5].trigger.trigger_description[3][1] == "item-name.rocket-part"
+  and progression.trigger_unlocks[5].trigger.trigger_description[4] == 1
   and progression.enabled_recipes[1] == "alpha" and progression.enabled_recipes[2] == "zeta",
   "progression_status separates deterministic queueable and trigger unlock records")
 
 local trigger_prereq = { researched = false, prototype = { research_trigger = {
-  type = "build-entity", entity = { name = "lab" },
+  type = "build-entity", entity = { name = "lab", quality = "epic", comparator = "=" },
 } } }
 local ordinary_prereq = { researched = false, prototype = {} }
 local gated = { name = "gated", researched = false, enabled = true,
@@ -98,10 +128,10 @@ codex_force.add_research = function() add_research_calls = add_research_calls + 
 local gated_ok, gated_error = pcall(research.start_research, { technology = "gated" })
 local gated_message = tostring(gated_error)
 check(not gated_ok
-  and gated_message:match("alpha requires in%-game trigger build%-entity lab and cannot be queued")
+  and gated_message:match("alpha requires in%-game trigger build%-entity lab %(quality = epic%) and cannot be queued")
   and gated_message:match("zeta must be researched first")
   and gated_message:find("alpha", 1, true) < gated_message:find("zeta", 1, true)
   and gated_message:match("progression_status and retry"),
-  "failed queue reports sorted trigger and ordinary prerequisite actions")
+  "failed queue reports sorted trigger and ordinary prerequisite actions with exact filter constraints")
 
 os.exit(failures == 0 and 0 or 1)

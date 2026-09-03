@@ -304,17 +304,24 @@ end
 local function finish_placed_step(task, c, step, built)
   if task._expected_output then
     if game.tick <= task._output_verification_tick then return nil end
-    local expected_output = task._expected_output
+    local binding = output_targets.binding_status(built, task._expected_output, task._output_verification_tick)
+    if binding == "pending" then return nil end
     task._expected_output, task._output_verification_tick = nil, nil
-    if not built.valid then
+    if binding == "invalid" then
       task._built = nil
       return advance(task, false, "the exact placed entity vanished before output binding could be verified")
     end
-    if not output_targets.verify_drop_target(built, expected_output) then
+    if binding == "target-invalid" then
       task._built = nil
+      return advance(task, false, "the exact expected output target vanished before binding could be verified")
+    end
+    if binding ~= "matched" then
+      task._built = nil
+      local wait_detail = binding == "timeout"
+        and (" within " .. tostring(output_targets.binding_wait_ticks) .. " ticks") or ""
       return advance(task, false, string.format(
-        "placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",
-        step.item, built.position.x, built.position.y))
+        "placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target%s; recover the exact placed entity before retrying",
+        step.item, built.position.x, built.position.y, wait_detail))
     end
   end
 

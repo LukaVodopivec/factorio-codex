@@ -1,8 +1,11 @@
 # Agent play performance
 
-Release 0.13.9 defers exact inserter output-recipient verification until a later
-game tick, distinguishes queueable research from in-game trigger unlocks, and
-labels main versus equipped-ammunition inventory. It retains 0.13.8's exact
+Release 0.13.9 retains each exact placed entity while polling a nil output
+binding for up to 30 later ticks, fails immediately on mismatch or invalidation,
+and distinguishes queueable research from in-game trigger unlocks without
+dropping item/entity quality constraints, scripted descriptions, or fieldless
+space-platform triggers. It also labels main versus equipped-ammunition
+inventory. It retains 0.13.8's exact
 pre/post-verified inserter output-recipient binding and compatible mining-drill
 resource coverage with deterministic charted-zero rejection and omitted
 uncharted coverage. Entity inspection

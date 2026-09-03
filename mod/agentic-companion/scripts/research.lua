@@ -3,32 +3,65 @@ local companion = require("scripts.companion")
 
 local M = {}
 
+local function id_filter(value)
+  if type(value) == "string" then return value, nil end
+  if type(value) ~= "table" or type(value.name) ~= "string" then return nil, nil end
+  local filter = { name = value.name }
+  if type(value.quality) == "string" then filter.quality = value.quality end
+  if type(value.comparator) == "string" then filter.comparator = value.comparator end
+  return value.name, filter
+end
+
+local function serializable_localised_string(value, depth, seen)
+  local kind = type(value)
+  if kind == "string" or kind == "number" or kind == "boolean" then return value end
+  if kind ~= "table" or depth >= 20 or seen[value] then return nil end
+  local length = #value
+  for key in pairs(value) do
+    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > length then return nil end
+  end
+  local copy, next_seen = {}, {}
+  for table_value in pairs(seen) do next_seen[table_value] = true end
+  next_seen[value] = true
+  for i = 1, length do
+    copy[i] = serializable_localised_string(value[i], depth + 1, next_seen)
+    if copy[i] == nil then return nil end
+  end
+  return copy
+end
+
 local function research_trigger(technology)
   local ok, trigger = pcall(function() return technology.prototype.research_trigger end)
   if not ok or type(trigger) ~= "table" or type(trigger.type) ~= "string" then return nil end
 
   local record = { type = trigger.type }
-  local function filter_name(value)
-    if type(value) == "table" and type(value.name) == "string" then return value.name end
-    if type(value) == "string" then return value end
-    return nil
-  end
   if trigger.type == "craft-item" then
-    record.item = filter_name(trigger.item)
+    record.item, record.item_filter = id_filter(trigger.item)
     if type(trigger.count) == "number" then record.count = trigger.count end
   elseif trigger.type == "mine-entity" then
-    record.entity = filter_name(trigger.entity)
+    if type(trigger.entity) == "string" then record.entity = trigger.entity end
   elseif trigger.type == "craft-fluid" then
-    record.fluid = filter_name(trigger.fluid)
+    if type(trigger.fluid) == "string" then record.fluid = trigger.fluid end
     if type(trigger.amount) == "number" then record.amount = trigger.amount end
   elseif trigger.type == "send-item-to-orbit" then
-    record.item = filter_name(trigger.item)
+    record.item, record.item_filter = id_filter(trigger.item)
   elseif trigger.type == "capture-spawner" then
-    record.entity = filter_name(trigger.entity)
+    if type(trigger.entity) == "string" then record.entity = trigger.entity end
   elseif trigger.type == "build-entity" then
-    record.entity = filter_name(trigger.entity)
+    record.entity, record.entity_filter = id_filter(trigger.entity)
+  elseif trigger.type == "scripted" then
+    record.trigger_description = serializable_localised_string(trigger.trigger_description, 0, {})
   end
   return record
+end
+
+local function filter_action(filter)
+  if not filter then return "" end
+  if filter.quality then
+    return " (quality " .. (filter.comparator or "=") .. " " .. filter.quality .. ")"
+  end
+  if filter.comparator then return " (quality comparator " .. filter.comparator .. ")" end
+  return ""
 end
 
 local function trigger_action(trigger)
@@ -37,6 +70,11 @@ local function trigger_action(trigger)
   local detail = ""
   if quantity and target then detail = " " .. tostring(quantity) .. " " .. target
   elseif target then detail = " " .. target end
+  detail = detail .. filter_action(trigger.item_filter or trigger.entity_filter)
+  if trigger.type == "scripted" and trigger.trigger_description then
+    if type(trigger.trigger_description) == "string" then detail = " " .. trigger.trigger_description
+    else detail = " described by progression_status" end
+  end
   return trigger.type .. detail
 end
 

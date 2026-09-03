@@ -14,6 +14,8 @@ local PATH_WAIT_TICKS = 90
 local RETRY_DELAY_TICKS = 30
 local MAX_RETRIES = 3
 local MAX_RECOVERIES = 1
+local MAX_FRONTIER_SEGMENTS = 3
+local MIN_FRONTIER_PROGRESS_SQ = 0.01
 local ESCAPE_TICKS = 90
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
@@ -197,6 +199,62 @@ local function charted(c, point)
     { x = math.floor(point.x / 32), y = math.floor(point.y / 32) })
 end
 
+local function point_key(point)
+  return string.format("%.2f:%.2f", point.x, point.y)
+end
+
+local function goal_occupancy(c, point)
+  local current_box = placement_geometry.character_box(c)
+  if not current_box then return { state = "unknown", reason = "character collision box unavailable" } end
+  local dx, dy = point.x - c.position.x, point.y - c.position.y
+  local area = {
+    left_top = { x = current_box.left_top.x + dx, y = current_box.left_top.y + dy },
+    right_bottom = { x = current_box.right_bottom.x + dx, y = current_box.right_bottom.y + dy },
+  }
+  local corners = { area.left_top,
+    { x = area.right_bottom.x - 0.001, y = area.left_top.y },
+    { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
+    { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 } }
+  for _, corner in ipairs(corners) do
+    if not charted(c, corner) then
+      return { state = "unknown", reason = "goal collision box crosses uncharted terrain" }
+    end
+  end
+  local entities, tiles = {}, {}
+  local ok, found = pcall(c.surface.find_entities_filtered, {
+    area = area, collision_mask = prototypes.entity["character"].collision_mask,
+  })
+  if ok then
+    for _, entity in ipairs(found or {}) do
+      if entity.valid and entity ~= c and entity.type ~= "resource" and entity.type ~= "item-entity" then
+        entities[#entities + 1] = { name = entity.name, type = entity.type,
+          position = { x = entity.position.x, y = entity.position.y }, player_owned = entity.force == c.force }
+      end
+    end
+  end
+  table.sort(entities, function(a, b)
+    if a.name ~= b.name then return a.name < b.name end
+    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+    return a.position.x < b.position.x
+  end)
+  while #entities > 8 do table.remove(entities) end
+  local seen = {}
+  for _, corner in ipairs(corners) do
+    local tile_ok, tile = pcall(c.surface.get_tile, corner.x, corner.y)
+    local collision_ok, collides = tile_ok and tile and pcall(tile.collides_with, "player")
+    if collision_ok and collides then
+      local key = math.floor(corner.x) .. ":" .. math.floor(corner.y)
+      if not seen[key] then
+        seen[key] = true
+        tiles[#tiles + 1] = { name = tile.name or "collision-tile",
+          position = { x = math.floor(corner.x), y = math.floor(corner.y) } }
+      end
+    end
+  end
+  return { state = (#entities > 0 or #tiles > 0) and "occupied" or "clear",
+    entities = entities, tiles = tiles }
+end
+
 local function path_charted(c, path)
   for _, waypoint in ipairs(path or {}) do
     if not charted(c, waypoint) then return false end
@@ -261,13 +319,9 @@ local function nearby_collision_evidence(c)
   return entities, tiles, nil
 end
 
-local function frontier_failure(state, c)
-  local best
+local function resolve_frontiers(state, c)
   for _, entry in ipairs(state.frontier_paths or {}) do
     entry.reduction = math.sqrt(dist_sq(c.position, state.target)) - math.sqrt(dist_sq(entry.position, state.target))
-    if not best or entry.reduction > best.reduction
-      or (entry.reduction == best.reduction and (entry.position.y < best.position.y
-        or (entry.position.y == best.position.y and entry.position.x < best.position.x))) then best = entry end
   end
   table.sort(state.frontier_paths, function(a, b)
     if a.reduction ~= b.reduction then return a.reduction > b.reduction end
@@ -286,22 +340,49 @@ local function frontier_failure(state, c)
     }
   end
   local recommended = frontiers[1]
+  local occupancy = state.goal_occupancy
+    or (state.arrival_mode == "exact" and goal_occupancy(c, state.requested_goal) or nil)
+  if (not occupancy or occupancy.state ~= "occupied")
+    and (state.frontier_segments or 0) < MAX_FRONTIER_SEGMENTS then
+    local current_distance = dist_sq(c.position, state.target)
+    for index, candidate in ipairs(frontiers) do
+      local key = point_key(candidate.position)
+      if not state.visited_frontiers[key]
+        and dist_sq(candidate.position, state.target) + MIN_FRONTIER_PROGRESS_SQ < current_distance then
+        state.frontier_segments = (state.frontier_segments or 0) + 1
+        state.visited_frontiers[key] = true
+        state.recovery_history[#state.recovery_history + 1] = {
+          from = { x = c.position.x, y = c.position.y }, to = candidate.position,
+          reduction = candidate.reduction,
+        }
+        state.path, state.waypoint, state.phase = state.frontier_paths[index].path, 1, "frontier_following"
+        state.frontier_start_distance = current_distance
+        stop(c)
+        return nil
+      end
+    end
+  end
   local evidence = blocker_evidence(state, c, state.target)
   local collision_candidates, collision_tiles, evidence_error = nearby_collision_evidence(c)
-  local diagnostics = { code = "PATH_NOT_FOUND", evidence_scope = "charted_visible_only",
-    start = { x = c.position.x, y = c.position.y }, goal = state.target,
+  local code = occupancy and occupancy.state == "occupied" and "GOAL_OCCUPIED" or "PATH_NOT_FOUND"
+  local diagnostics = { code = code, evidence_scope = "charted_visible_only",
+    start = { x = c.position.x, y = c.position.y }, requested_goal = state.requested_goal,
+    resolved_goal = state.target, arrival_mode = state.arrival_mode, arrival_radius = state.arrival_radius,
     reachable_frontier = recommended and recommended.position or nil,
     reachable_frontiers = frontiers,
     partial_route = recommended and recommended.partial_route or {},
     omitted_waypoints = recommended and recommended.omitted_waypoints or 0,
     blocker_evidence = evidence,
+    goal_occupancy = occupancy,
+    recovery = { segments_completed = state.frontier_segments or 0,
+      limit = MAX_FRONTIER_SEGMENTS, history = state.recovery_history },
     owned_collision_candidates = collision_candidates, collision_tiles = collision_tiles,
     cage_evidence_error = evidence_error }
-  return fail(c, "PATH_NOT_FOUND", string.format(
-    "Factorio found no character path to (%.1f, %.1f); %s; reachable_frontier=%s",
-    state.target.x, state.target.y, evidence,
+  return fail(c, code, string.format(
+    "Factorio found no character path to resolved goal (%.1f, %.1f) after %d bounded monotonic frontier segment(s); %s; reachable_frontier=%s",
+    state.target.x, state.target.y, state.frontier_segments or 0, evidence,
     recommended and string.format("(%.1f,%.1f)", recommended.position.x, recommended.position.y) or "none"),
-    { code = "PATH_NOT_FOUND", diagnostics = { path = diagnostics } })
+    { code = code, diagnostics = { path = diagnostics } })
 end
 
 local function retry_or_fail(state, c, code, detail)
@@ -328,7 +409,7 @@ end
 
 -- (Re)initialize a walker. `state` must be a plain table stored on the task;
 -- all fields are plain data. The first step() issues the pathfinder request.
-function M.begin(state, c, target, arrive_within)
+function M.begin(state, c, target, arrive_within, arrival_mode, arrival_radius)
   -- Walking tasks take over from driving: hop out first.
   pcall(function()
     if c.driving then c.driving = false end
@@ -336,17 +417,40 @@ function M.begin(state, c, target, arrive_within)
   for k in pairs(state) do
     state[k] = nil
   end
+  state.requested_goal = { x = target.x, y = target.y }
+  state.arrival_mode = arrival_mode or "exact"
+  state.arrival_radius = tonumber(arrival_radius) or tonumber(arrive_within) or 1.0
   state.target = { x = target.x, y = target.y }
   state.arrive_within = math.max(tonumber(arrive_within) or 1.0, 0.1)
+  if state.arrival_mode == "vicinity" then
+    local ok, clear = pcall(c.surface.find_non_colliding_position,
+      c.name or "character", state.requested_goal, state.arrival_radius, 0.1, false)
+    if ok and clear and charted(c, clear) then
+      state.target = { x = clear.x, y = clear.y }
+      state.arrive_within = 0.5
+    else
+      state.resolve_failure = "no charted collision-free vicinity candidate was found"
+    end
+  end
   state.phase = "request"
   state.retries = 0
   state.recoveries = 0
+  state.frontier_segments = 0
+  state.visited_frontiers = { [point_key(c.position)] = true }
+  state.recovery_history = {}
 end
 
 -- Advance the walker one tick. Returns nil while moving, "arrived" once within
 -- arrive_within of the target, or {failed = "reason"} when it gives up.
 function M.step(state, c, task_id)
   local pos = c.position
+
+  if state.resolve_failure then
+    return fail(c, "VICINITY_NOT_FOUND", state.resolve_failure, { code = "VICINITY_NOT_FOUND",
+      diagnostics = { path = { evidence_scope = "charted_visible_only",
+        requested_goal = state.requested_goal, resolved_goal = nil,
+        arrival_mode = state.arrival_mode, arrival_radius = state.arrival_radius } } })
+  end
 
   if dist_sq(pos, state.target) <= state.arrive_within * state.arrive_within then
     stop(c)
@@ -389,7 +493,16 @@ function M.step(state, c, task_id)
           "Factorio's pathfinder remained temporarily unavailable")
         if failed then return failed end
       elseif not result.path or #result.path == 0 then
-        if not begin_frontier_diagnostics(state, c, task_id) then return frontier_failure(state, c) end
+        if state.arrival_mode == "exact" then
+          if not state.goal_occupancy or state.goal_occupancy.state == "unknown" then
+            state.goal_occupancy = goal_occupancy(c, state.requested_goal)
+          end
+          if state.goal_occupancy.state == "occupied" then
+            state.frontier_candidates, state.frontier_paths, state.frontier_index = {}, {}, 0
+            return resolve_frontiers(state, c)
+          end
+        end
+        if not begin_frontier_diagnostics(state, c, task_id) then return resolve_frontiers(state, c) end
         return nil
       else
         state.path = result.path
@@ -416,10 +529,10 @@ function M.step(state, c, task_id)
           position = state.frontier_candidates[state.frontier_index], path = result.path,
         }
       end
-      if not request_next_frontier(state, c, task_id) then return frontier_failure(state, c) end
+      if not request_next_frontier(state, c, task_id) then return resolve_frontiers(state, c) end
       return nil
     elseif game.tick - state.request_tick > PATH_WAIT_TICKS then
-      if not request_next_frontier(state, c, task_id) then return frontier_failure(state, c) end
+      if not request_next_frontier(state, c, task_id) then return resolve_frontiers(state, c) end
       return nil
     end
     stop(c)
@@ -436,13 +549,25 @@ function M.step(state, c, task_id)
 
   -- Follow only waypoints returned by Factorio's native pathfinder.
   local goal
-  if state.phase == "following" then
+  if state.phase == "following" or state.phase == "frontier_following" then
+    local following_frontier = state.phase == "frontier_following"
     local path = state.path
     while state.waypoint <= #path and dist_sq(pos, path[state.waypoint]) <= WAYPOINT_RADIUS_SQ do
       state.waypoint = state.waypoint + 1
     end
     if state.waypoint > #path then
       state.path = nil
+      if following_frontier then
+        if dist_sq(pos, state.target) + MIN_FRONTIER_PROGRESS_SQ >= state.frontier_start_distance then
+          return fail(c, "PATH_RECOVERY_CYCLE", "frontier traversal did not strictly reduce distance to the resolved goal",
+            { code = "PATH_RECOVERY_CYCLE", diagnostics = { path = { requested_goal = state.requested_goal,
+              resolved_goal = state.target, recovery = { segments_completed = state.frontier_segments,
+                limit = MAX_FRONTIER_SEGMENTS, history = state.recovery_history } } } })
+        end
+        request_path(state, c, task_id)
+        stop(c)
+        return nil
+      end
       if state.recoveries >= MAX_RECOVERIES then
         return fail(c, "PATH_INCOMPLETE", string.format(
           "native path ended %.1f tiles short of the target", math.sqrt(dist_sq(pos, state.target))))
@@ -510,9 +635,17 @@ function M.start(task)
   if type(t) ~= "table" or type(t.x) ~= "number" or type(t.y) ~= "number" then
     error("walk_to requires target = {x, y}")
   end
-  task.arrive_within = tonumber(task.arrive_within) or 1.0
+  task.arrival_mode = task.arrival_mode or "exact"
+  if task.arrival_mode ~= "exact" and task.arrival_mode ~= "vicinity" then
+    error("walk_to arrival_mode must be exact or vicinity")
+  end
+  task.arrival_radius = tonumber(task.arrival_radius) or 1.0
+  if task.arrival_radius < (task.arrival_mode == "vicinity" and 0.5 or 0.1) or task.arrival_radius > 6 then
+    error("walk_to arrival_radius is outside the supported range")
+  end
+  task.arrive_within = task.arrival_mode == "vicinity" and 0.5 or task.arrival_radius
   task._walk = {}
-  M.begin(task._walk, c, t, task.arrive_within)
+  M.begin(task._walk, c, t, task.arrive_within, task.arrival_mode, task.arrival_radius)
 end
 
 function M.tick(task)
@@ -522,7 +655,10 @@ function M.tick(task)
   end
   local r = M.step(task._walk, c, task.id)
   if r == "arrived" then
-    return { status = "done", detail = string.format("arrived at (%.1f, %.1f)", c.position.x, c.position.y) }
+    return { status = "done", detail = string.format("arrived at (%.1f, %.1f)", c.position.x, c.position.y),
+      outcome = { requested_goal = task._walk.requested_goal, resolved_goal = task._walk.target,
+        arrival_mode = task._walk.arrival_mode, arrival_radius = task._walk.arrival_radius,
+        recovery_segments = task._walk.frontier_segments } }
   elseif type(r) == "table" then
     return { status = "failed", detail = r.failed, outcome = r.outcome }
   end

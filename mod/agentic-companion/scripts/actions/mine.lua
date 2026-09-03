@@ -186,7 +186,8 @@ function M.start(task)
   if type(target) ~= "table" or type(target.x) ~= "number" or type(target.y) ~= "number" then error("mine requires target = {x, y}") end
   local count = tonumber(task.count) or 1
   if count ~= math.floor(count) or count < 1 or count > 200 then error("mine count must be an integer from 1 to 200") end
-  local target_kind = task.target_kind or "natural"
+  local requested_target_kind = task.target_kind
+  local target_kind = requested_target_kind or "natural"
   if target_kind ~= "natural" and target_kind ~= "owned" then
     error("mine target_kind must be natural or owned")
   end
@@ -232,6 +233,12 @@ function M.start(task)
   if target_kind == "owned" then found = owned else found = natural end
   task._target_kind = target_kind
   task._requested, task._completed, task._actual_gain = count, 0, 0
+  if natural and owned and requested_target_kind == nil then
+    task._initial_failure = target_failure(task, c, "TARGET_KIND_REQUIRED", "initial_resolution",
+      "both a natural and player-owned minable entity occupy the exact coordinate; specify target_kind explicitly")
+    task._initial_failure.outcome.candidates = { entity_snapshot(natural), entity_snapshot(owned) }
+    return
+  end
   if not found then
     task._initial_failure = target_failure(task, c, "TARGET_NOT_FOUND_AT_START", "initial_resolution",
       string.format("no %s minable entity occupies exact coordinate (%.3f, %.3f)", target_kind, target.x, target.y))

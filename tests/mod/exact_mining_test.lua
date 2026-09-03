@@ -250,7 +250,7 @@ local crafting_recovery, crafting_recovery_error = pcall(mine.start,
 check(not crafting_recovery and tostring(crafting_recovery_error):match("active hand%-crafting") ~= nil
   and machine.valid and covered_resource.amount == 100,
   "owned recovery refuses a concurrent nonblocking handcraft before mining")
-local crafting_natural = { target = { x = 5, y = 0 }, count = 1 }; mine.start(crafting_natural)
+local crafting_natural = { target = { x = 5, y = 0 }, count = 1, target_kind = "natural" }; mine.start(crafting_natural)
 check(crafting_natural._entity == covered_resource,
   "concurrent handcrafting does not change natural resource selection at an overlap")
 body.crafting_queue_size = 0
@@ -313,12 +313,14 @@ machine.valid = true
 machine_fluids = {}
 covered_resource.valid, covered_resource.amount = true, 100
 configure_capacity(4)
-local overlap_resource = { target = { x = 5, y = 0 }, count = 2 }; mine.start(overlap_resource)
+local overlap_resource = { target = { x = 5, y = 0 }, count = 2, target_kind = "natural" }; mine.start(overlap_resource)
 check(overlap_resource._entity == covered_resource and machine.valid and covered_resource.amount == 100,
   "multiple mining cycles require the overlapping natural resource rather than selecting the machine")
 local implicit = { target = { x = 5, y = 0 }, count = 1 }; mine.start(implicit)
-check(implicit._entity == covered_resource,
-  "default mining keeps the exact natural target and never implicitly prioritizes an overlapping machine")
+local implicit_result = mine.tick(implicit)
+check(implicit_result and implicit_result.outcome.code == "TARGET_KIND_REQUIRED"
+  and #implicit_result.outcome.candidates == 2 and implicit._entity == nil,
+  "natural/owned overlap requires explicit intent and never chooses an implicit priority")
 local repeated_owned, repeated_owned_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 2, target_kind = "owned" })
 check(not repeated_owned and tostring(repeated_owned_error):match("exactly one physical mining cycle") ~= nil,
   "explicit player-owned recovery permits exactly one physical cycle")

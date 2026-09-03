@@ -12,7 +12,7 @@ _G.defines = {
 }
 _G.prototypes = { entity = { character = { collision_mask = {} } } }
 
-local next_path_id, blocker_filter, chart_all, requested_goals = 0, nil, true, {}
+local next_path_id, blocker_filter, chart_all, requested_goals, entity_filters = 0, nil, true, {}, {}
 local found_blockers = {
   { valid = true, name = "stone-furnace", type = "furnace", position = { x = 1, y = 0 } },
 }
@@ -30,7 +30,10 @@ local body = {
   end,
   get_tile = function(x, y) tile_queries = tile_queries + 1; return { position = { x = math.floor(x), y = math.floor(y) },
     name = x >= 0.5 and "water" or "grass", collides_with = function(layer) return tile_blocks and layer == "player" and x >= 0.5 end } end,
-  find_entities_filtered = function(filter) entity_queries = entity_queries + 1; blocker_filter = filter; return found_blockers end },
+  find_entities_filtered = function(filter)
+    entity_queries = entity_queries + 1; blocker_filter = filter; entity_filters[#entity_filters + 1] = filter
+    return found_blockers
+  end },
 }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
 local walk = require("scripts.actions.walk")
@@ -93,18 +96,22 @@ found_blockers = {
 task = reset()
 walk.step(task._walk, body, task.id); deliver(nil, false)
 local result = walk.step(task._walk, body, task.id)
-check(result and result.failed:match("^PATH_NOT_FOUND:"),
-  "no-path result fails deterministically without blind walking")
+check(result and result.failed:match("^GOAL_OCCUPIED:"),
+  "no-path result diagnoses a charted occupied exact goal separately")
 check(result.failed:match("collision segment") and result.failed:match("stone%-furnace:furnace@%(1%.0,0%.0%)")
   and result.failed:match("water") and result.failed:match("inferred visible collision evidence")
   and result.failed:match("not authoritative blockers"),
   "no-path result includes bounded local collision-segment evidence")
 check(blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
   "blocker evidence uses the same character collision mask as native pathfinding")
-check(blocker_filter.area and blocker_filter.position == nil and blocker_filter.radius == nil
-  and blocker_filter.area.left_top.x == -4 and blocker_filter.area.right_bottom.x == 4
-  and result.outcome.diagnostics.path.evidence_scope == "charted_visible_only",
-  "path failure adds a bounded charted cage query rather than inspecting the far route")
+local saw_cage_query = false
+for _, filter in ipairs(entity_filters) do
+  if filter.area and filter.area.left_top.x == -4 and filter.area.right_bottom.x == 4 then saw_cage_query = true end
+end
+check(saw_cage_query
+  and result.outcome.diagnostics.path.evidence_scope == "charted_visible_only"
+  and result.outcome.diagnostics.path.goal_occupancy.state == "occupied",
+  "path failure separates bounded charted goal occupancy from the local cage query")
 
 body.surface.find_non_colliding_position = function(_, requested) return requested end
 found_blockers, tile_blocks = {}, false
@@ -123,22 +130,104 @@ for _ = 1, 8 do
   deliver(path, false)
   frontier_result = walk.step(task._walk, body, task.id)
 end
-check(frontier_result and frontier_result.failed:match("^PATH_NOT_FOUND:")
-  and frontier_result.outcome.diagnostics.path.reachable_frontier.x == 4
-  and frontier_result.outcome.diagnostics.path.reachable_frontier.y == 0
-  and #frontier_result.outcome.diagnostics.path.partial_route == 12
-  and frontier_result.outcome.diagnostics.path.omitted_waypoints == 2,
-  "frontier probes return the reachable charted route that most reduces goal distance")
-local alternatives = frontier_result.outcome.diagnostics.path.reachable_frontiers
-check(#alternatives == 8
-  and alternatives[1].position.x == 4 and alternatives[1].position.y == 0
-  and alternatives[1].reduction > alternatives[2].reduction
-  and alternatives[#alternatives].position.x == -4
-  and alternatives[#alternatives].reduction < 0,
-  "frontier diagnostics preserve every bounded charted path including lateral and backward recovery choices")
-check(#alternatives[1].partial_route == 12 and alternatives[1].omitted_waypoints == 2
-  and body.walking_state.walking == false,
-  "frontier alternatives provide capped native routes without automatically walking one")
+check(frontier_result == nil and task._walk.phase == "frontier_following"
+  and task._walk.frontier_segments == 1 and #task._walk.path == 14,
+  "no-path recovery selects the best strictly progress-making charted frontier and retains its full native path")
+for _, waypoint in ipairs(task._walk.path) do
+  body.position = { x = waypoint.x, y = waypoint.y }
+  walk.step(task._walk, body, task.id)
+end
+check(task._walk.phase == "waiting" and storage.path_request ~= nil,
+  "physical completion of a frontier segment retries the original resolved goal")
+deliver({ { x = 10, y = 0 } }, false)
+walk.step(task._walk, body, task.id)
+body.position = { x = 10, y = 0 }
+check(walk.step(task._walk, body, task.id) == "arrived" and task._walk.frontier_segments == 1,
+  "one bounded internal frontier segment can recover the original walk without an external waypoint call")
+
+-- Recovery is finite even while every local frontier continues to improve the
+-- goal distance. Each segment is an ordinary native-path walk, followed by a
+-- fresh native request to the original resolved goal.
+task = reset({ x = 30, y = 0 })
+for segment = 1, 3 do
+  walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+  for _ = 1, 8 do
+    local candidate = requested_goals[storage.path_request.id]
+    deliver({ candidate }, false)
+    walk.step(task._walk, body, task.id)
+  end
+  body.position = { x = task._walk.path[#task._walk.path].x, y = task._walk.path[#task._walk.path].y }
+  walk.step(task._walk, body, task.id)
+end
+deliver(nil, false); walk.step(task._walk, body, task.id)
+local bounded_failure
+for _ = 1, 8 do
+  local candidate = requested_goals[storage.path_request.id]
+  deliver({ candidate }, false)
+  bounded_failure = walk.step(task._walk, body, task.id)
+end
+check(bounded_failure and bounded_failure.failed:match("^PATH_NOT_FOUND:")
+  and bounded_failure.outcome.diagnostics.path.recovery.segments_completed == 3
+  and #bounded_failure.outcome.diagnostics.path.recovery.history == 3,
+  "monotonic recovery stops after exactly three physical frontier segments")
+
+-- Only A->B and B->A are exposed by this fixture. The remembered starting
+-- point and strict goal progress rule prevent the second leg from being used.
+task = reset({ x = 10, y = 0 })
+body.surface.find_non_colliding_position = function(_, requested)
+  if body.position.x == 0 and requested.x == 4 and requested.y == 0 then return requested end
+  if body.position.x == 4 and requested.x == 0 and requested.y == 0 then return requested end
+  return nil
+end
+walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+for _ = 1, 8 do
+  local request = storage.path_request
+  if not request then break end
+  local candidate = requested_goals[request.id]
+  deliver({ candidate }, false)
+  walk.step(task._walk, body, task.id)
+end
+body.position = { x = 4, y = 0 }; walk.step(task._walk, body, task.id)
+deliver(nil, false); walk.step(task._walk, body, task.id)
+local cycle_failure
+while storage.path_request do
+  local candidate = requested_goals[storage.path_request.id]
+  deliver({ candidate }, false)
+  cycle_failure = walk.step(task._walk, body, task.id)
+end
+check(cycle_failure and cycle_failure.failed:match("^PATH_NOT_FOUND:")
+  and task._walk.frontier_segments == 1 and #task._walk.recovery_history == 1,
+  "frontier history terminates an A-B-A recovery cycle without repeating A")
+
+-- Public vicinity mode resolves a charted collision-free point, but completes
+-- only after Factorio returns and the character traverses a native path to it.
+task = reset({ x = 10, y = 0 })
+body.surface.find_non_colliding_position = function(_, requested, radius)
+  check(requested.x == 10 and requested.y == 0 and radius == 2,
+    "vicinity resolution uses the requested goal and bounded arrival radius")
+  return { x = 9, y = 0 }
+end
+task.arrival_mode, task.arrival_radius = "vicinity", 2
+walk.start(task)
+walk.tick(task)
+deliver({ { x = 9, y = 0 } }, false)
+walk.tick(task)
+body.position = { x = 9, y = 0 }
+local vicinity_done = walk.tick(task)
+check(vicinity_done and vicinity_done.status == "done"
+  and vicinity_done.outcome.requested_goal.x == 10
+  and vicinity_done.outcome.resolved_goal.x == 9
+  and vicinity_done.outcome.arrival_mode == "vicinity",
+  "vicinity reports distinct requested/resolved goals only after native path success")
+
+task = reset({ x = 10, y = 0 })
+body.surface.find_non_colliding_position = function() return nil end
+task.arrival_mode, task.arrival_radius = "vicinity", 2
+walk.start(task)
+local no_vicinity = walk.tick(task)
+check(no_vicinity and no_vicinity.outcome.code == "VICINITY_NOT_FOUND"
+  and storage.path_request == nil,
+  "vicinity fails without requesting a path when no charted collision-free candidate exists")
 body.surface.find_non_colliding_position = nil
 found_blockers, tile_blocks = { { valid = true, name = "stone-furnace", type = "furnace", position = { x = 1, y = 0 } } }, true
 

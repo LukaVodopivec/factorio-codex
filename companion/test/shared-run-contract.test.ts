@@ -46,7 +46,7 @@ describe("shared gameplay run contract", () => {
     for (const field of ["id", "release_sha", "baseline_save_sha256", "save_identity", "created_at"])
       expect(skill).toContain(`\`${field}\``);
     expect(skill).toMatch(/`outcome` object/i);
-    for (const field of ["GO UTC/monotonic/tick", "deadline", "collection UTC/monotonic/tick", "latency", "`SNAPSHOT_AT_20M`", "progress vector", "throughput", "rocket/terminal evidence"])
+    for (const field of ["GO UTC/monotonic/tick", "deadline", "collection UTC/monotonic/tick", "latency", "`SNAPSHOT_AT_20M`", "progress vector", "throughput", "cancellation/drain evidence", "diagnosis"])
       expect(skill).toContain(field);
     expect(skill).toMatch(/20-minute snapshot is not a binary success gate/i);
     expect(allInstructions).not.toMatch(/PASS_AT_20M|MISS_AT_20M/);
@@ -111,14 +111,26 @@ describe("shared gameplay run contract", () => {
     expect(master).toMatch(/coalesce pilot reports and specialist memos by newest source\s+tick/i);
     expect(master).toMatch(/Superseded reports do not cause ledger rewrites/i);
     expect(master).toMatch(/first decision from one authoritative diagnostic packet/i);
-    expect(master).toMatch(/bounded goal-conditioned envelope[\s\S]*safe bounds[\s\S]*numeric\s+stops[\s\S]*locally adaptive fallbacks/i);
+    for (const phrase of ["broad goal-conditioned envelope", "bottleneck remains valid", "safe bounds", "numeric stops"])
+      expect(master.toLowerCase()).toContain(phrase);
+    expect(master).toMatch(/locally\s+adaptive fallbacks/i);
     expect(master).toMatch(/never issue the same plan ID or envelope twice/i);
     expect(pilot).toMatch(/each master envelope and plan ID as single-use/i);
     expect(pilot).toMatch(/without\s+per-action approval[\s\S]*never repeat an executed envelope or plan ID/i);
-    expect(pilot).toMatch(/`run_plan` terminal observation[\s\S]*material batch terminals or failures/i);
-    expect(specialist).toMatch(/on demand[\s\S]*one attributed,\s+coalescible evidence memo per master request/i);
+    expect(pilot).toContain("`run_plan` terminal");
+    expect(pilot).toMatch(/material bottleneck\s+changes or failures/i);
+    expect(specialist).toMatch(/at most one attributed,\s+coalescible evidence memo per new ledger revision/i);
     expect(roleGuidance).toMatch(/coalesces superseded reports[\s\S]*never reissues an executed plan ID/i);
-    expect(roleGuidance).toMatch(/bounded goal-conditioned envelope[\s\S]*numeric\s+stops[\s\S]*locally adaptive fallbacks/i);
+    expect(roleGuidance).toMatch(/broad goal-conditioned envelope[\s\S]*numeric\s+stops[\s\S]*locally adaptive fallbacks/i);
+    expect(master).toMatch(/freeze[\s\S]*cancel[\s\S]*drain[\s\S]*diagnos[\s\S]*fresh[\s\S]*baseline/i);
+    expect(pilot).toMatch(/no post-snapshot gameplay/i);
+    expect(specialist).toMatch(/at most one[\s\S]*per new ledger revision/i);
+    expect(specialist).toMatch(/material-flow\s+contradiction/i);
+    expect(specialist).toMatch(/MCP observability gap/i);
+    for (const text of [master, pilot, specialist, roleGuidance]) {
+      for (const phrase of ["output", "physical sink", "observable", "capacity"]) expect(text.toLowerCase()).toContain(phrase);
+      expect(text).toMatch(/measured deltas/i);
+    }
     expect(roleGuidance).toMatch(/general learning-loop rules/i);
     expect(roleGuidance).not.toMatch(/first (?:mine|craft|build|place)[^\n]{0,120}then|(?:at|by) minute \d+/i);
   });
@@ -132,7 +144,7 @@ describe("shared gameplay run contract", () => {
       expect(text).toMatch(/no combat tool/i);
       expect(text).not.toMatch(/\bbiters?\b|\bdefen[cd]e?\b/i);
       expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
-      expect(text).toMatch(/no screenshots|never (?:invoke|use) screenshots/i);
+      expect(text).toMatch(/never use screenshots or screen capture for live gameplay perception[\s\S]*action selection/i);
       expect(text).toMatch(/raw Lua\/console/i);
       expect(text).toMatch(/scripted\s+mining/i);
       expect(text).toMatch(/imported blueprints/i);

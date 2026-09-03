@@ -10,6 +10,7 @@ describe("public MCP to Lua DTO mappings", () => {
       grid: { origin: { x: -1, y: -1 }, rows: ["...", ".@.", "..."], legend: { "@": "you" } },
       entities: [{ name: "furnace" }],
       resource_patches: [{ name: "iron-ore", entity_count: 2, total_amount: 300, center: { x: 5.5, y: 0 } }],
+      ground_items: [{ item: "iron-ore", count: 3, position: { x: 2.25, y: -1.75 } }],
     };
     const output = result(normalizeObservation(value));
     expect(output.content[0].text).toBe(JSON.stringify(value));
@@ -18,14 +19,15 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(output.content[0].text).toContain('"resource_patches"');
   });
   it("normalizes Lua empty tables to arrays before rendering text and structure", () => {
-    const output = result(normalizeObservation({ tick: 2, entities: {}, resource_patches: {} }));
-    expect(output.structuredContent).toEqual({ tick: 2, entities: [], resource_patches: [] });
+    const output = result(normalizeObservation({ tick: 2, entities: {}, resource_patches: {}, ground_items: {} }));
+    expect(output.structuredContent).toEqual({ tick: 2, entities: [], resource_patches: [], ground_items: [] });
     expect(JSON.parse(output.content[0].text)).toEqual(output.structuredContent);
   });
   it("maps every coordinate action to the retained Lua DTO", () => {
     expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 } });
     expect(toolPayloads.mine({ x: 1, y: 2, count: 3 })).toEqual({ target: { x: 1, y: 2 }, count: 3 });
     expect(toolPayloads.mine({ x: 1, y: 2, count: 1, target_kind: "owned" })).toEqual({ target: { x: 1, y: 2 }, count: 1, target_kind: "owned" });
+    expect(toolPayloads.pickup({ x: 1, y: 2, item: "iron-ore", count: 3 })).toEqual({ target: { x: 1, y: 2 }, item: "iron-ore", count: 3 });
     expect(toolPayloads.place({ x: 1, y: 2, name: "furnace", direction: 4 })).toEqual({ item: "furnace", position: { x: 1, y: 2 }, direction: 4 });
     expect(toolPayloads.insert({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
     expect(toolPayloads.extract({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
@@ -41,13 +43,13 @@ describe("public MCP to Lua DTO mappings", () => {
   });
 });
 
-describe("registered MCP handler parity with Lua v9", () => {
+describe("registered MCP handler parity with Lua v10", () => {
   it("invokes handlers with exact RPC and task payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 9, mod_version: "0.12.2", factorio_version: "2.0.0", tick: 1 }
-      : method === "observe_local" ? { entities: [], resource_patches: [] } : { ok: method });
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 10, mod_version: "0.13.0", factorio_version: "2.0.0", tick: 1 }
+      : method === "observe_local" ? { entities: [], resource_patches: [], ground_items: [] } : { ok: method });
     const enqueueAndWait = vi.fn(async (task: unknown) => ({ task }));
     registerMcpTools({
       registerTool(name: string, config: any, handler: (args: any) => Promise<unknown>) {
@@ -96,6 +98,9 @@ describe("registered MCP handler parity with Lua v9", () => {
     expect(schemas.mine.safeParse({ x: 0, y: 0, target_kind: "owned" }).success).toBe(true);
     expect(schemas.mine.safeParse({ x: 0, y: 0, count: 2 }).success).toBe(true);
     expect(schemas.mine.safeParse({ x: 0, y: 0, count: 201 }).success).toBe(false);
+    await handlers.pickup_items({ x: 11.25, y: 12.5, item: "iron-ore", count: 3 });
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "pickup", target: { x: 11.25, y: 12.5 }, item: "iron-ore", count: 3 });
+    expect(schemas.pickup_items.safeParse({ x: 0, y: 0, item: "iron-ore", count: 0 }).success).toBe(false);
     await handlers.place_entity({ x: 13, y: 14, name: "stone-furnace", direction: 8 });
     expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "place", item: "stone-furnace", position: { x: 13, y: 14 }, direction: 8 });
     await handlers.craft_items({ recipe: "iron-gear-wheel", crafts: 2 });
@@ -111,7 +116,7 @@ describe("registered MCP handler parity with Lua v9", () => {
     expect(call).toHaveBeenLastCalledWith("start_research", { technology: "automation" });
     await handlers.stop({});
     expect(call).toHaveBeenLastCalledWith("cancel", { all: true });
-    expect(Object.keys(handlers)).toHaveLength(24);
+    expect(Object.keys(handlers)).toHaveLength(25);
   });
 });
 
@@ -120,8 +125,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 9, mod_version: "0.12.2", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 9, mod_version: "0.12.2", tick: 2 })
+        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 10, mod_version: "0.13.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 10, mod_version: "0.13.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -130,8 +135,8 @@ describe("connect_status body lifecycle", () => {
   });
 
   it("rejects a stale mod before reporting connected", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 9, mod_version: "0.6.0" });
-    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.12.2");
+    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 10, mod_version: "0.6.0" });
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.13.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
@@ -139,8 +144,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 9, mod_version: "0.12.2", factorio_version: "2.0.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 9, mod_version: "0.12.2", factorio_version: "2.0.0", tick: 2 })
+        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 10, mod_version: "0.13.0", factorio_version: "2.0.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 10, mod_version: "0.13.0", factorio_version: "2.0.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -150,7 +155,7 @@ describe("connect_status body lifecycle", () => {
 
   it("surfaces the bind-only no-player error without retrying or creating", async () => {
     const call = vi.fn()
-      .mockResolvedValueOnce({ protocol_version: 9, mod_version: "0.12.2", companion_exists: false, companion_ever_created: false, companion_dead: false })
+      .mockResolvedValueOnce({ protocol_version: 10, mod_version: "0.13.0", companion_exists: false, companion_ever_created: false, companion_dead: false })
       .mockRejectedValueOnce(new Error("native player 'Codex' is not connected with a living character"));
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("native player 'Codex' is not connected");
     expect(call.mock.calls).toEqual([["ping"], ["spawn_companion", {}]]);

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const expected = ["connect_status","observe_local","inspect_entity","describe_prototype","progression_status","can_place","find_placement","map_summary","production_requirements","connect_entities","walk_to","mine","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","plan_status","run_plan","start_research","stop"].sort();
+const expected = ["connect_status","observe_local","inspect_entity","describe_prototype","progression_status","can_place","find_placement","map_summary","production_requirements","connect_entities","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","plan_status","run_plan","start_research","stop"].sort();
 const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = process.env.MCP_ENTRY ?? "src/cli.ts";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-mcp-home-"));
@@ -31,7 +31,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.12.2") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.13.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -53,6 +53,8 @@ try {
   const mineSchema = tools.find((tool: any) => tool.name === "mine")?.inputSchema?.properties ?? {};
   if (mineSchema.count?.default !== 1 || mineSchema.count?.maximum !== 200) throw new Error("mine must expose count 1-200 default 1");
   if (mineSchema.target_kind?.default !== "natural" || JSON.stringify(mineSchema.target_kind?.enum) !== JSON.stringify(["natural", "owned"])) throw new Error("mine must expose explicit natural|owned target identity");
+  const pickupSchema = tools.find((tool: any) => tool.name === "pickup_items")?.inputSchema ?? {};
+  if (!pickupSchema.required?.includes("x") || !pickupSchema.required?.includes("y") || !pickupSchema.required?.includes("item") || !pickupSchema.required?.includes("count")) throw new Error("pickup_items must require exact observed position/item/count");
   const runPlanSchema = tools.find((tool: any) => tool.name === "run_plan")?.inputSchema ?? {};
   if (runPlanSchema.properties?.steps?.maxItems !== 25 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-25 steps");
   if (runPlanSchema.properties?.final_observation_radius?.default !== 15 || runPlanSchema.properties?.observation_radius) throw new Error("run_plan must expose only final_observation_radius");
@@ -64,7 +66,7 @@ try {
   if (stderr.trim()) throw new Error(`unexpected pre-init/offline stderr: ${stderr}`);
   const queueSchema = tools.find((tool: any) => tool.name === "queue_plan")?.inputSchema?.properties ?? {};
   if (queueSchema.after_plan_id?.exclusiveMinimum !== 0 || queueSchema.observation_detail?.default !== "compact") throw new Error("queue_plan dependency/detail schema mismatch");
-  console.log("PASS initialize, exact 24 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
+  console.log("PASS initialize, exact 25 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
 } finally {
   child.kill();
   fs.rmSync(home, { recursive: true, force: true });

@@ -9,7 +9,7 @@ local starts = {}
 local queued_place_output_target
 local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_output_target = task.output_target end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
 local walk, mine, craft = runner("walk_to"), runner("mine"), runner("craft")
-package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.craft"] = walk, mine, craft
+package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = walk, mine, runner("pickup"), craft
 package.loaded["scripts.actions.build"] = { place = runner("place"), rotate = runner("rotate"), set_recipe = runner("set_recipe") }
 package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract") }
 package.loaded["scripts.actions.build_plan"] = runner("build_plan")
@@ -31,6 +31,10 @@ for tick = 1, 5 do game.tick = tick; tasks.on_tick() end
 local a, b = tasks.plan_status({ plan_id = 1 }), tasks.plan_status({ plan_id = 2 })
 check(a.status == "completed" and a.completed_steps == 2, "Lua plan executes all steps contiguously")
 check(b.status == "completed" and table.concat(starts, ",") == "walk_to,mine,craft", "successful predecessor releases successor without interleaving")
+local pickup_plan = tasks.queue_plan({ steps = { { action = "pickup_items", x = 4, y = 5, item = "iron-ore", count = 3 } } })
+game.tick = 5.5; tasks.on_tick()
+check(tasks.plan_status({ plan_id = pickup_plan.plan_id }).status == "completed" and starts[#starts] == "pickup",
+  "queued plans route pickup_items through the same physical FIFO runner")
 check(a.observation and a.observation.detail == "compact", "terminal plan includes selected observation")
 local bad = tasks.queue_plan({ steps = { { action = "mine", x = 1, y = 1 } } })
 local blocked = tasks.queue_plan({ steps = { { action = "walk_to", x = 9, y = 9 } }, after_plan_id = bad.plan_id })

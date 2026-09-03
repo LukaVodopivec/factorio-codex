@@ -1,15 +1,16 @@
 # Agent play performance
 
-Release 0.12.2 routes native path-completion events into nested plan actions
-and preserves deterministic placement, map, production, and connection queries,
-one physical Codex body, one task lane, and honest Factorio mechanics.
+Release 0.13.0 adds exact observed ground-stack pickup through Factorio's
+physical character picking state while retaining native path-completion events
+inside nested plan actions, deterministic queries, one physical Codex body, one
+task lane, and honest Factorio mechanics.
 
 ## Recorded baseline and operating model
 
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.12.2 validation.
+0.13.0 validation.
 
 The operating topology and model/effort choice remain benchmark candidates;
 do not predeclare a winner. In every multi-session candidate, the strategist
@@ -17,6 +18,15 @@ owns the rolling phase/successor envelope and the pilot is the sole ordinary
 writer. Plans execute contiguously in Lua and may prepare one successor by
 predecessor ID. This removes model-thinking idle time; it does not accelerate
 walking, mining, crafting, or any other game tick.
+
+After the scored run is frozen, screenshots may be taken for human or agent
+review of every relevant map area where items or machines were placed, but only
+when structured MCP evidence is insufficient. They are non-authoritative review
+evidence and must never drive live perception, navigation, targeting, placement
+choice, or action selection. Do not derive coordinates, routes, tactics, or
+durable knowledge from them. Any screenshot finding that could affect a later
+run must first be revalidated through structured in-game MCP data. The benchmark
+implementation and every rerun remain text-only.
 
 For each live benchmark, record the release SHA, milestone, MCP call count,
 wall time, Factorio tick delta, completed/failed plan steps, final position and
@@ -97,13 +107,20 @@ For role coordination, the master coalesces superseded reports by run and
 newest source tick, writes one ledger revision for the current decision, and
 never reissues an executed plan ID. The first decision uses one authoritative
 diagnostic packet; equivalent diagnostics repeat only after action,
-contradiction, or staleness. Each bounded goal-conditioned envelope states a
+contradiction, or staleness. Each broad goal-conditioned envelope states a
 falsifiable hypothesis, predicted measurable effect, safe bounds, numeric
-stops, and locally adaptive fallbacks so the pilot can keep acting without
-per-action approval. The pilot consumes each `run_plan` terminal observation,
-reports material batch terminals or failures, and never repeats an executed
-envelope. The specialist is on-demand and returns one run/tick-keyed,
-coalescible evidence memo per request. These are general learning-loop rules,
+stops, and locally adaptive fallbacks, and remains active while the bottleneck
+and hypothesis remain valid. The pilot consumes each `run_plan` terminal
+observation, reports material bottleneck changes or failures, and never repeats
+an executed envelope. The specialist proactively returns at most one
+run/tick-keyed coalescible evidence memo per new ledger revision when a
+calculation can change the next action; otherwise it idles. On the first
+material-flow contradiction it distinguishes a game bottleneck from an MCP
+observability gap in one newest-tick memo. Count capacity only after output is
+accepted by its next physical sink and observable there. Upstream fuel/input
+changes end with measured dependent utilization and a bounded corrective
+successor. Rate claims without timing/buffer evidence use measured deltas and
+retain expected/falsifier pairs. These are general learning-loop rules,
 not a timed opening, fixed build order, named route, map coordinates, tutorial,
 copied layout, online sequence, or gameplay-specific action chain.
 
@@ -130,8 +147,9 @@ count, final compact observation, and any `MCP_GAP`. Verify
 Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
-observations, recipe disambiguation, progression, protocol v9, version 0.12.2,
-and exactly 24 tools. Exercise `find_placement` at a shoreline,
+observations including exact `ground_items`, physical `pickup_items`, recipe
+disambiguation, progression, protocol v10, version 0.13.0, and exactly 25 tools.
+Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
 `connect_entities` routes.
@@ -171,13 +189,24 @@ in the observation but must not be attributed to the deadline. Record:
 - the dominant bottleneck; and
 - the `plan_status`-confirmed queued expansion, or the reason none is queued.
 
-The 20-minute result is a non-terminal checkpoint. Continue the same run ID,
-baseline copy/save, frozen roles, Codex body, ordinary writer, and FIFO lane
-until later-tick structured proof of a legitimately paid rocket launch or an
-honest terminal failure after relevant safe fallbacks. Never reset, retry, or
-relabel the immutable snapshot.
+The 20-minute result freezes and terminates the scored trial without turning
+the progress vector into a binary pass/fail gate. Immediately cancel and drain
+the FIFO, record that evidence, and permit no post-snapshot gameplay. Diagnose
+the frozen result and repair the general interface or guidance. Any rerun uses
+a fresh byte-identical baseline, fresh role conversations, and a new run ID;
+never reset, retry, or relabel the immutable snapshot.
+
+If a newly observed difficulty appears to require greenfield code, first run
+one bounded Firecrawl reuse survey for maintained mods, interfaces, or tools
+that already solve the deterministic responsibility. Evaluate license,
+maintenance, current Factorio API compatibility, one-body/one-writer/text-only
+physical fit, and whether the candidate adds cheats, hidden map state, raw
+console, imported blueprints, or tutorial sequences. Reuse or adapt the
+smallest maintained compatible path. If none fits, record only why candidates
+are design evidence and patch the smallest existing active path; do not add a
+service, gate, or report bureaucracy.
 
 Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast
 setting. Append the completed result below with exact baseline/release hashes;
-do not present historical timings as 0.12.2 benchmark results.
+do not present historical timings as 0.13.0 benchmark results.

@@ -49,20 +49,48 @@ MCP writer and latest-observation authority; an optional specialist is
 read-only. Discard stale advice unless the pilot revalidates it.
 
 The pilot may mine, refuel, collect output, repair routes, and use an approved
-fallback without waiting. After bootstrap, manual batches require an exact net
+fallback without waiting. Broad envelopes remain active while their named
+bottleneck and hypothesis remain valid, and the pilot reports material
+bottleneck changes or failures instead of narrow micro-proofs. After bootstrap,
+manual batches require an exact net
 deficit after carried stock, machine buffers/output and WIP, the exact machine
 unlock or fuel consumer and uptime, automation payback in named item/time units
 with break-even, and a numeric stop. Fallback order is: preserve safety; unblock production; mine the
 BOM bottleneck in batches; build validated automation; physically scout.
 Never idle on a wait while productive work exists. Cluster travel and reuse
-terminal observations. Durable player knowledge may contain only in-game
+terminal observations. Count automation capacity only after structured state
+shows output accepted by its next physical sink and observable there. Upstream
+fuel/input changes end with measured dependent utilization and a bounded
+corrective successor when preconditions hold; rate claims without timing or
+buffer evidence use measured deltas only. The specialist may proactively emit
+at most one coalescible calculation memo per new ledger revision; on the first
+material-flow contradiction it distinguishes a game bottleneck from an MCP
+observability gap. Otherwise it idles. Durable player knowledge may contain only in-game
 learned recipes/calculations and Codex-authored relative layouts—never map
 coordinates, tutorials, external blueprint strings, or online build sequences.
 
 Each report carries source tick/plan ID, position, inventory, active plan/step,
 queue depth, crafting, result, and failure. Never use screenshots or screen
-capture. Missing structured state is an `MCP_GAP` that blocks only the affected
-branch, not permission to guess or stop unrelated productive work.
+capture for live gameplay perception, navigation, targeting, placement choice,
+or action selection. After a scored run is frozen, screenshots may cover all
+relevant placed-item and machine areas only when structured MCP evidence is
+insufficient. They are non-authoritative review evidence: they contribute no
+coordinates, routes, tactics, or durable knowledge, and any finding that could
+affect a later run must be revalidated through structured in-game MCP data.
+Missing structured state is an `MCP_GAP` that blocks only the affected branch,
+not permission to guess or stop unrelated productive work.
 Concurrency removes thinking idle time, not physical walking time. There is no
 second body, raw Lua/console, teleport, hidden map, free resource, or second
-RCON path; `stop` is emergency cancellation only.
+RCON path; `stop` is emergency cancellation only. At the immutable `GO+20m`
+checkpoint, freeze the snapshot, cancel and drain the lane, diagnose and repair,
+and permit no post-snapshot gameplay. A rerun starts only from a fresh baseline.
+
+When a newly observed gameplay difficulty appears to require greenfield code,
+first make one bounded Firecrawl reuse survey for maintained mods, interfaces,
+or tools that already own the deterministic responsibility. Check license,
+maintenance, current Factorio API compatibility, one-body/one-writer/text-only
+physical fit, and whether each candidate introduces cheats, hidden map state,
+raw console, imported blueprints, or tutorial sequences. Reuse or adapt the
+smallest maintained compatible path; otherwise retain candidates only as design
+evidence, record why they do not fit, and patch the smallest existing active
+path. This is engineering guidance, not a service, gate, or report workflow.

@@ -106,8 +106,8 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "mod", ok: false, detail: expect.stringMatching(/RPC unavailable: (unlock|ping) failed/), fix: expect.stringContaining("install and enable") }));
   });
   it.each([
-    { ping: { protocol_version: 6, mod_version: "0.12.2" }, failedCheck: "protocol" },
-    { ping: { protocol_version: 9, mod_version: "0.6.0" }, failedCheck: "mod" },
+    { ping: { protocol_version: 6, mod_version: "0.13.0" }, failedCheck: "protocol" },
+    { ping: { protocol_version: 10, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
@@ -125,7 +125,7 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
     expect(connect).not.toHaveBeenCalled();
   });
-  it("keeps root, package, lockfile, runtime, mod, and docs at 0.12.2", () => {
+  it("keeps root, package, lockfile, runtime, mod, and docs at 0.13.0", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const read = (relative: string) => JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
     const lock = read("package-lock.json");
@@ -137,16 +137,16 @@ describe("exact local configuration", () => {
       lock.packages[""].version,
       lock.packages.companion.version,
       companionVersion(),
-    ]).toEqual(Array(7).fill("0.12.2"));
-    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.12.2**");
-    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.12.2**");
+    ]).toEqual(Array(7).fill("0.13.0"));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.13.0**");
+    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.13.0**");
   });
   it("keeps visible locale title and description aligned with one-body mod metadata", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const info = JSON.parse(fs.readFileSync(path.join(root, "mod/agentic-companion/info.json"), "utf8"));
     const locale = fs.readFileSync(path.join(root, "mod/agentic-companion/locale/en/agentic-companion.cfg"), "utf8");
     const values = [...locale.matchAll(/^agentic-companion=(.+)$/gm)].map((match) => match[1]);
-    expect(info).toMatchObject({ version: "0.12.2", title: "Factorio Codex Companion" });
+    expect(info).toMatchObject({ version: "0.13.0", title: "Factorio Codex Companion" });
     expect(values).toEqual([info.title, info.description]);
     expect(locale).not.toMatch(/movement.speed|multiplier/i);
     expect(locale).not.toMatch(/Agentic Companion|AI companion|companions|characters|vehicles/i);
@@ -171,7 +171,8 @@ describe("exact local configuration", () => {
     expect(skill).toMatch(/run_plan/);
     expect(skill).toMatch(/build_plan/);
     expect(skill).toMatch(/MCP_GAP/);
-    expect(skill).toMatch(/no screenshot|never.*screen capture/i);
+    expect(skill).toMatch(/never use screenshots or screen capture for live gameplay perception,[\s\S]*navigation,[\s\S]*targeting,[\s\S]*placement choice,[\s\S]*action selection/i);
+    expect(skill).toMatch(/after a\s+scored\s+run is frozen,[\s\S]*structured MCP evidence is insufficient[\s\S]*non-authoritative review evidence[\s\S]*no coordinates, routes,[\s\S]*tactics, or durable knowledge[\s\S]*revalidated through structured in-game MCP data/i);
     expect(skill).toMatch(/Finish every packet with an authoritative observation[\s\S]*terminal observation[\s\S]*missing or became stale/);
     expect(skill).not.toMatch(/finish every packet with `observe_local`/i);
     expect(skill).toContain("[player knowledge v1](PLAYER-KNOWLEDGE-v1.md)");
@@ -182,6 +183,7 @@ describe("exact local configuration", () => {
     expect(liveValidation).toMatch(/non-game couch UI, administration, or[\s\S]*reconnection steps that SSH cannot perform/);
     expect(liveValidation).toMatch(/AutoHotkey-based `couch-ui` fallback/);
     expect(liveValidation).toMatch(/gameplay pilot remains MCP-text-only[\s\S]*Screenshot capability must never be used for Factorio[\s\S]*perception or play/i);
+    expect(liveValidation).toMatch(/post-run screenshots are permitted only after the scored run is frozen[\s\S]*structured MCP evidence is insufficient[\s\S]*non-authoritative[\s\S]*must not contribute coordinates, routes, tactics, or[\s\S]*durable knowledge[\s\S]*revalidate every finding[\s\S]*structured in-game MCP data[\s\S]*does not authorize couch GUI control or expand the Windows-MCP boundary/i);
     expect(liveValidation).toContain("%APPDATA%\\\\Factorio\\\\mods\\\\mod-list.json");
     expect(liveValidation).not.toContain("%APPDATA%\\\\Factorio\\\\mod-list.json");
   });
@@ -235,7 +237,7 @@ describe("exact local configuration", () => {
     expect(specialist).toMatch(/`connect_entities` is mutating[\s\S]*pilot-only/i);
     for (const text of [skill, master, pilot, specialist]) {
       expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
-      expect(text).toMatch(/no screenshots|never (?:invoke|use) screenshots/i);
+      expect(text).toMatch(/never use screenshots or screen capture for live gameplay perception[\s\S]*action selection/i);
       expect(text).toMatch(/raw Lua\/console/i);
       expect(text).toMatch(/bounded falsifiable experiment[\s\S]*uncertainty[\s\S]*predicted[\s\S]*safe bound[\s\S]*numeric stop/i);
       expect(text).toMatch(/copied layouts[\s\S]*tutorials[\s\S]*online sequences/i);
@@ -301,7 +303,7 @@ describe("exact local configuration", () => {
     expect(performance).toMatch(/work completed during collection latency[\s\S]*must not be attributed to the deadline/i);
     for (const field of ["carried and factory inventory", "hand-mined totals", "hand-craft counts/time", "capacity", "utilization", "automated extraction", "research, power", "work in progress", "inter-plan timing", "dominant bottleneck", "queued expansion"])
       expect(performance.toLowerCase()).toContain(field);
-    expect(performance).toMatch(/20-minute result is a non-terminal checkpoint[\s\S]*same run ID[\s\S]*legitimately paid rocket launch[\s\S]*honest terminal failure/i);
+    expect(performance).toMatch(/20-minute result freezes and terminates the scored trial[\s\S]*cancel and drain[\s\S]*no post-snapshot gameplay[\s\S]*fresh byte-identical baseline/i);
     expect(performance).toMatch(/run goal is a legitimately paid rocket launch[\s\S]*20-minute mark is an instructions-only throughput and[\s\S]*resource-processing snapshot[\s\S]*not a steam-power milestone or binary success\s+gate/i);
     expect(joined).not.toMatch(/PASS_AT_20M|MISS_AT_20M|Success is a coal-fired steam plant/i);
     expect(performance).toMatch(/no human tactical coaching or prompt\s+amendment/i);
@@ -310,6 +312,21 @@ describe("exact local configuration", () => {
     const candidate = performance.slice(performance.indexOf("### Candidate B acceptance run"));
     expect(candidate).toMatch(/both graphical clients exclusively on the couch PC/i);
     expect(candidate).toMatch(/one Codex body[\s\S]*one FIFO lane/i);
+  });
+
+  it("requires bounded reuse discovery before greenfield gameplay code", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const agentGuide = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8");
+    const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
+    for (const text of [agentGuide, skill]) {
+      const normalized = text.replace(/\s+/g, " ");
+      expect(text).toMatch(/newly observed gameplay difficulty appears to require greenfield code[\s\S]*bounded Firecrawl reuse survey/i);
+      expect(normalized).toMatch(/license,.*maintenance,.*current Factorio API compatibility,.*one-body\/one-writer\/\s*text-only physical fit/i);
+      for (const risk of ["cheats", "hidden map state", "raw console", "imported blueprints", "tutorial sequences"])
+        expect(normalized.toLowerCase()).toContain(risk);
+      expect(normalized).toMatch(/reuse or adapt the.*smallest maintained compatible path.*design evidence.*patch the smallest existing active path/i);
+      expect(text).toMatch(/not a service, gate, or report workflow|do not create a[\s\S]*service, gate, or report workflow/i);
+    }
   });
 });
 

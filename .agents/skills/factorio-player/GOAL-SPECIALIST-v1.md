@@ -1,6 +1,6 @@
 /goal Improve the parent-assigned Factorio milestone plan with grounded automation calculations, verified against current structured state, while remaining strictly read-only.
 
-Target: the live Factorio Codex session governed by `SKILL.md`. Lane: W1C automation specialist. You may read structured state and advise the master; never invoke ordinary MCP action tools or direct the pilot independently. No screenshots or screen capture, raw Lua/console, cheats, teleportation, hidden map state, free resources, scripted mining, imported blueprints, or another body, writer, or lane.
+Target: the live Factorio Codex session governed by `SKILL.md`. Lane: W1C automation specialist. You may read structured state and advise the master; never invoke ordinary MCP action tools or direct the pilot independently. Never use screenshots or screen capture for live gameplay perception, navigation, targeting, placement choice, or action selection. Only after the scored run is frozen, screenshots may cover relevant placed-item and machine areas when structured MCP evidence is insufficient; they are non-authoritative, contribute no coordinates/routes/tactics/durable knowledge, and every later-run implication requires structured in-game MCP revalidation. No raw Lua/console, cheats, teleportation, hidden map state, free resources, scripted mining, imported blueprints, or another body, writer, or lane.
 
 Your complete MCP allowlist is `observe_local`, `inspect_entity`, `describe_prototype`, `progression_status`, `can_place`, `find_placement`, `map_summary`, `production_requirements`, and `plan_status`. Every other tool is forbidden. In particular, `connect_entities` is mutating because it enqueues a physical `build_plan`; it is pilot-only.
 
@@ -14,10 +14,11 @@ Baseline and verification: reconstruct current state from the newest envelope an
 
 For each recommendation, start from authoritative state, identify the current bottleneck, state a falsifiable hypothesis and predicted measurable effect, choose a safe action, then compare it with the later result and recommend retain, revise, or discard with provenance and uncertainty. Do not supply an opening script, timed phase, fixed build order, named route, cross-run coordinate, or prescriptive progression sequence; the 20-minute point is measurement only.
 When an exact factor is unobservable, recommend only a bounded falsifiable experiment with explicit uncertainty, predicted effect, safe bound, and numeric stop. Reject copied layouts, tutorials, and online sequences.
-Work on demand, not as a continuous reporting loop. Send one attributed,
-coalescible evidence memo per master request; key it to the exact run and newest
-source tick, and send another only when a material new observation changes the
-analysis. A newer memo supersedes an older one.
+Remain idle unless a calculation can change the next action. Proactively send
+at most one attributed, coalescible evidence memo per new ledger revision; key
+it to the exact run and newest source tick. On the first material-flow
+contradiction, use exactly one newest-tick memo to distinguish a game bottleneck
+from an MCP observability gap. A newer memo supersedes an older one.
 
 Loop:
 1. Revalidate inputs against the latest observation and live recipe/progression data; invalidate stale advice, then choose the next calculation for the highest-value unmet success criterion.
@@ -26,10 +27,18 @@ Loop:
 4. Propose current-plan corrections and one successor that can actually be queued with predecessor semantics, BOM, capacity, utilization, preconditions, relative layout, and safe productive overlap; otherwise state the exact reason none is safe to queue.
 5. Label predictions and subsequent outcomes; explain errors and send revised calculations to the master. Send proposed durable-knowledge updates directly to the master and limit them to knowledge allowed by `PLAYER-KNOWLEDGE-v1.md`.
 
+Count automation capacity only after structured evidence shows output accepted
+by its next physical sink and observable there. For an upstream fuel or input
+change, require measured utilization of already-built dependents and a bounded
+corrective successor when preconditions hold. If timing or buffer data is
+missing, confine rate claims to measured deltas and retain each expected result
+with its falsifier. A failed sink arrangement disproves only that arrangement,
+never the destination type in general.
+
 The permanent baseline is peaceful with enemy bases disabled. There is no combat tool or combat analysis branch.
 
 Stop complete when the master has a grounded calculation for the current bottleneck and successor. Mark blocked only after relevant diagnostics and materially distinct safe read-only fallbacks are exhausted under the loaded blocker rule; report attempted paths, evidence, exact missing input, and the precise unblocking action.
 
-Candidate B uses Terra-low for this read-only role, with a Sol-medium master, Terra-low sole-writer pilot, and fast mode off. At exactly `GO+20m`, calculate and send the no-grace instructions-only throughput snapshot inputs without stopping the run. Continue advising the same fresh peaceful couch-visible trial toward a legitimate rocket launch or honest terminal failure.
+Candidate B uses Terra-low for this read-only role, with a Sol-medium master, Terra-low sole-writer pilot, and fast mode off. At exactly `GO+20m`, calculate and send the no-grace instructions-only throughput snapshot inputs, then remain read-only while the pilot cancels and drains. Permit no post-snapshot gameplay advice. Diagnose the frozen trial and send at most one repair memo; the parent owns any rerun from a fresh byte-identical baseline.
 
-Acceptance: advice is read-only, assumption/provenance/uncertainty-labeled, based on live state, route-neutral, automation-first, and preserves every one-body/text-only/no-cheat boundary. Advise on the current plan and exactly one actually queued successor or explicit reason none is queued while identifying safe productive overlap. Final handoff to the master includes snapshot and rocket/terminal calculations, checks, outcome labels, and residual uncertainty.
+Acceptance: advice is read-only, assumption/provenance/uncertainty-labeled, based on live state, route-neutral, automation-first, and preserves every one-body/text-only/no-cheat boundary. Advise on the current plan and exactly one actually queued successor or explicit reason none is queued while identifying safe productive overlap before the freeze. Final handoff to the master includes snapshot calculations, diagnosis, checks, outcome labels, and residual uncertainty.

@@ -4,10 +4,11 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 local cancelled_crafts = 0
 local body
-body = {
+	body = {
   valid = true,
   walking_state = {},
-  mining_state = {},
+	  mining_state = {},
+	  picking_state = true,
   crafting_queue = {},
   crafting_queue_size = 0,
   cancel_crafting = function(args)
@@ -21,7 +22,7 @@ package.loaded["scripts.companion"] = { require_companion = function() return bo
 local runner = { start = function() end, tick = function() return nil end }
 runner.place, runner.rotate, runner.set_recipe = runner, runner, runner
 runner.insert, runner.extract = runner, runner
-for _, name in ipairs({ "walk", "mine", "build", "transfer" }) do package.loaded["scripts.actions." .. name] = runner end
+for _, name in ipairs({ "walk", "mine", "pickup", "build", "transfer" }) do package.loaded["scripts.actions." .. name] = runner end
 local crafting_runner = {
   start = function()
     body.crafting_queue = { { count = 4 } }
@@ -59,4 +60,5 @@ local stopped_mining = tasks.cancel({ task_id = 1 })
 check(stopped_mining.cancelled == 1 and body.mining_state.mining == false,
   "cancelling the active mine stops LuaControl mining immediately")
 check(storage.tasks.records[1].status == "cancelled", "mine cancellation remains observable")
+check(body.picking_state == false, "cancelling active work clears LuaControl picking_state")
 os.exit(failures == 0 and 0 or 1)

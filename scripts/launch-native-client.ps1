@@ -44,14 +44,14 @@ $modList = '{"mods":[{"name":"base","enabled":true},{"name":"elevated-rails","en
 [IO.File]::WriteAllText($modListTmp, $modList + "`n")
 Move-Item -Force $modListTmp (Join-Path $modsRoot "mod-list.json")
 
-$archive = Join-Path $repoRoot "dist\agentic-companion_0.12.2.zip"
+$archive = Join-Path $repoRoot "dist\agentic-companion_0.13.0.zip"
 if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
-  throw "Build the 0.12.2 mod archive before launching: $archive"
+  throw "Build the 0.13.0 mod archive before launching: $archive"
 }
 Get-ChildItem -LiteralPath $modsRoot -Filter "agentic-companion_*.zip" -File |
-  Where-Object Name -ne "agentic-companion_0.12.2.zip" |
+  Where-Object Name -ne "agentic-companion_0.13.0.zip" |
   Remove-Item -Force
-Copy-Item -Force $archive (Join-Path $modsRoot "agentic-companion_0.12.2.zip")
+Copy-Item -Force $archive (Join-Path $modsRoot "agentic-companion_0.13.0.zip")
 
 if ($PrepareOnly) {
   Write-Output "Prepared isolated native Codex couch client at $StateRoot"

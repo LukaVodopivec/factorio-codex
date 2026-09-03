@@ -4,6 +4,7 @@ local companion = require("scripts.companion")
 local inspect = require("scripts.inspect")
 local walk = require("scripts.actions.walk")
 local mine = require("scripts.actions.mine")
+local pickup = require("scripts.actions.pickup")
 local build = require("scripts.actions.build")
 local craft = require("scripts.actions.craft")
 local transfer = require("scripts.actions.transfer")
@@ -12,7 +13,7 @@ local M = {}
 local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 local PLAN_BUDGET_TICKS = 570 * 60
 local runners = {
-  walk_to = walk, mine = mine, place = build.place, rotate = build.rotate,
+  walk_to = walk, mine = mine, pickup = pickup, place = build.place, rotate = build.rotate,
   set_recipe = build.set_recipe, craft = craft, insert = transfer.insert,
   extract = transfer.extract, build_plan = build_plan,
 }
@@ -22,7 +23,7 @@ function M.set_observer(fn) observer = fn end
 local function stop_body()
   local c = companion.get()
   if not c then return end
-  c.walking_state, c.mining_state = { walking = false }, { mining = false }
+  c.walking_state, c.mining_state, c.picking_state = { walking = false }, { mining = false }, false
 end
 local function cancel_crafting()
   local c = companion.get()
@@ -70,7 +71,7 @@ function M.enqueue(params)
 end
 
 local ACTIONS = {
-  walk_to = "walk_to", mine = "mine", place_entity = "place", craft_items = "craft",
+  walk_to = "walk_to", mine = "mine", pickup_items = "pickup", place_entity = "place", craft_items = "craft",
   insert_items = "insert", extract_items = "extract", set_recipe = "set_recipe", rotate_entity = "rotate",
 }
 local function make_step_task(step)
@@ -81,6 +82,7 @@ local function make_step_task(step)
     task.target = { x = step.x, y = step.y }; task.count = step.count
     if kind == "mine" then task.target_kind = step.target_kind end
   end
+  if kind == "pickup" then task.target, task.item, task.count = { x = step.x, y = step.y }, step.item, step.count end
   if kind == "place" then
     task.item, task.position, task.direction = step.name, { x = step.x, y = step.y }, step.direction
     task.output_target = step.output_target

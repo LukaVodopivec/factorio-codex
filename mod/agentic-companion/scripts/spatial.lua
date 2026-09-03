@@ -1,4 +1,4 @@
--- Protocol-v9 local perception: compact by default; full adds the ASCII grid.
+-- Protocol-v10 local perception: compact by default; full adds the ASCII grid.
 -- (dry-run placement check with blocker naming),
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
@@ -141,7 +141,7 @@ end
 -- Higher paints over lower when several things share a tile.
 local PRIORITY = {
   land = 0, water = 1, cliff = 2, rock = 3, tree = 4,
-  resource = 5, building = 6, player = 7, companion = 8,
+  resource = 5, ground_item = 6, building = 7, player = 8, companion = 9,
 }
 
 function M.observe_local(params)
@@ -166,6 +166,7 @@ function M.observe_local(params)
     ["R"] = "rock",
     ["@"] = "you",
     ["P"] = "player",
+    ["*"] = "item stack on ground",
   }
 
   -- Assign the next free letter of `alphabet` to each distinct name.
@@ -225,12 +226,13 @@ function M.observe_local(params)
   for _, entry in ipairs(visible) do
     local e = entry.entity
     if e.valid and e.type == "resource" and not seen_resource[e.name] then seen_resource[e.name] = true; resource_names[#resource_names + 1] = e.name
+    elseif e.valid and e.type == "item-entity" then
     elseif e.valid and e.force == c.force and e ~= c and e.type ~= "character" and not seen_building[e.name] then seen_building[e.name] = true; building_names[#building_names + 1] = e.name end
   end
   table.sort(resource_names); table.sort(building_names)
   for _, name in ipairs(resource_names) do letter_for(name, resource_letters, UPPER_LETTERS) end
   for _, name in ipairs(building_names) do letter_for(name, building_letters, LOWER_LETTERS) end
-  local details, resources_by_name = {}, {}
+  local details, resources_by_name, ground_items = {}, {}, {}
   for _, entry in ipairs(visible) do
     local e, bounds = entry.entity, entry.bounds
     if e.valid then
@@ -239,6 +241,17 @@ function M.observe_local(params)
           ch, p = "@", PRIORITY.companion
         elseif e.type == "character" then
           ch, p = "P", PRIORITY.player
+        elseif e.type == "item-entity" then
+          local stack = e.stack
+          if stack and stack.valid_for_read then
+            ch, p = "*", PRIORITY.ground_item
+            local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y
+            ground_items[#ground_items + 1] = {
+              item = stack.name, count = stack.count,
+              position = { x = e.position.x, y = e.position.y },
+              distance = math.sqrt(ddx * ddx + ddy * ddy),
+            }
+          end
         elseif e.force == c.force then
           ch, p = letter_for(e.name, building_letters, LOWER_LETTERS), PRIORITY.building
         elseif e.type == "resource" then
@@ -265,7 +278,7 @@ function M.observe_local(params)
           if e.type == "resource" then
             resources_by_name[e.name] = resources_by_name[e.name] or {}
             resources_by_name[e.name][#resources_by_name[e.name] + 1] = e
-          else
+          elseif e.type ~= "item-entity" then
             local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y
             details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, status = entity_status(e), recipe = entity_recipe(e), bounds = bounds, footprint = { width = bounds.right_bottom.x - bounds.left_top.x, height = bounds.right_bottom.y - bounds.left_top.y }, _distance = ddx * ddx + ddy * ddy, _unit = tonumber(e.unit_number) or -1 }
           end
@@ -295,6 +308,21 @@ function M.observe_local(params)
     return a._unit < b._unit
   end)
   for _, detail in ipairs(details) do detail._distance, detail._unit = nil, nil end
+  table.sort(ground_items, function(a, b)
+    if a.distance ~= b.distance then return a.distance < b.distance end
+    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+    if a.item ~= b.item then return a.item < b.item end
+    return a.count < b.count
+  end)
+  local omitted_ground_items = math.max(0, #ground_items - 256)
+  while #ground_items > 256 do table.remove(ground_items) end
+  table.sort(ground_items, function(a, b)
+    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+    if a.item ~= b.item then return a.item < b.item end
+    return a.count < b.count
+  end)
   local patches = {}
   for name, resources in pairs(resources_by_name) do
     table.sort(resources, function(a, b)
@@ -349,7 +377,8 @@ function M.observe_local(params)
     character = { position = { x = c.position.x, y = c.position.y }, health = c.health,
       inventory = inventory, active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
       crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance },
-    entities = details, resource_patches = patches, omitted_entities = omitted,
+    entities = details, resource_patches = patches, ground_items = ground_items,
+    omitted_entities = omitted, omitted_ground_items = omitted_ground_items,
   }
   if result.detail == "full" then
     result.grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend,

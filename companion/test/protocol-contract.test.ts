@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 
-describe("bridge protocol v9", () => {
+describe("bridge protocol v10", () => {
   it("has the expected version and retained methods", () => {
-    expect(PROTOCOL_VERSION).toBe(9);
+    expect(PROTOCOL_VERSION).toBe(10);
     expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk"]);
   });
   it("matches the exact Lua registrations", () => {
@@ -45,6 +45,12 @@ describe("bridge protocol v9", () => {
     expect(read("mod/agentic-companion/scripts/research.lua")).toMatch(/companion\.require_companion\(\)\.force/);
     expect(read("mod/agentic-companion/scripts/actions/mine.lua"))
       .not.toMatch(/task\.resource|resource_name|find_entity_near|radius|\.mine\s*\(|\.insert\s*\(|spill_item_stack|create_entity/);
+    const pickupSource = read("mod/agentic-companion/scripts/actions/pickup.lua");
+    expect(pickupSource).toMatch(/item_pickup_distance/);
+    expect(pickupSource).toMatch(/update_selected_entity/);
+    expect(pickupSource).toMatch(/selected\s*~=\s*task\._entity/);
+    expect(pickupSource).toMatch(/picking_state\s*=\s*true/);
+    expect(pickupSource).not.toMatch(/\bdestroy\s*\(|\bmine\s*\(|\binsert\s*\(|\bstack\.count\s*=|spill_item_stack|create_entity|teleport/);
     expect(read("mod/agentic-companion/scripts/actions/build_plan.lua")).not.toMatch(/step\.entity/);
     expect(luaSources).not.toMatch(/register\(["']run_plan/);
     expect(read("mod/agentic-companion/scripts/tasks.lua")).toMatch(/wait_for_item/);
@@ -70,7 +76,7 @@ describe("bridge protocol v9", () => {
       "scripts/test-npm-package.mjs",
     ]) expect(fs.existsSync(path.join(root, removed)), removed).toBe(false);
   });
-  it("guides users only through public v9 tool names", () => {
+  it("guides users only through public v10 tool names", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const companionSource = fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/companion.lua"), "utf8");
     const inspectSource = fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/inspect.lua"), "utf8");

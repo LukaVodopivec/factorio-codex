@@ -7,7 +7,7 @@ import { registerMcpTools } from "../src/mcp/server.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 const observation = { tick: 9, detail: "compact", entities: {}, resource_patches: {}, character: { inventory: {}, crafting: { queue_size: 0 } } };
 
-describe("protocol-v9 plans", () => {
+describe("protocol-v10 plans", () => {
   it("validates the complete plan before acquiring a bridge", async () => {
     const handlers: Record<string, (args: unknown) => Promise<any>> = {};
     const provider = vi.fn(async () => ({} as Bridge));
@@ -31,6 +31,11 @@ describe("protocol-v9 plans", () => {
     expect(call).toHaveBeenCalledWith("queue_plan", queuePlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "full" }));
   });
 
+  it("accepts exact grounded pickup steps and rejects incomplete targets", () => {
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "pickup_items", x: 1.25, y: 2.5, item: "iron-ore", count: 3 }] }).success).toBe(true);
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "pickup_items", x: 1.25, y: 2.5, item: "iron-ore" }] }).success).toBe(false);
+  });
+
   it("run_plan queues once, polls plan_status, and returns Lua's terminal observation", async () => {
     let now = 0;
     const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
@@ -40,7 +45,7 @@ describe("protocol-v9 plans", () => {
     });
     const result = await executeRunPlan({ call } as unknown as Bridge, runPlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }] }), undefined, clock);
     expect(result).toMatchObject({ plan_id: 9, status: "completed", source_tick: 42, completed_steps: 1 });
-    expect(result.observation).toEqual({ ...observation, entities: [], resource_patches: [] });
+    expect(result.observation).toEqual({ ...observation, entities: [], resource_patches: [], ground_items: [] });
     expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status"]);
   });
 

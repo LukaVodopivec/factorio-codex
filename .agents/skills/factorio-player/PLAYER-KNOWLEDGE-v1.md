@@ -18,6 +18,17 @@ Revalidate stale knowledge against current structured game state before using
 it. This file defines the versioned contract; it is not a place to persist
 save-specific observations.
 
+## Outcome-labelled material-flow knowledge
+
+- `observed-success-condition`: A machine output needs a free physical
+  destination that actually accepts the produced item. Count capacity only
+  after structured state observes output at that destination.
+- `observed-zero-utilization`: `waiting_for_space_in_destination` means the
+  producing machine has zero current utilization even if it produced earlier.
+- `retained-scaling-check`: Validate and capture existing output before scaling
+  upstream input, fuel, or machine count. A destination type or direction that
+  failed once is a falsifier for that arrangement, not a universal rule.
+
 Learn through a general state-driven loop: observe authoritative state,
 identify the current bottleneck, form a falsifiable hypothesis, predict a
 measurable effect, choose a safe action, compare predicted and actual results,

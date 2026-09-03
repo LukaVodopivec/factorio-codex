@@ -23,6 +23,11 @@ end
 local function resource(name, x, y, amount)
   return { valid = true, name = name, type = "resource", force = neutral_force, amount = amount, position = { x = x, y = y }, selection_box = { left_top = { x = x - 0.49, y = y - 0.49 }, right_bottom = { x = x + 0.49, y = y + 0.49 } } }
 end
+local function ground_item(item, count, x, y)
+  return { valid = true, name = "item-on-ground", type = "item-entity", force = player_force,
+    position = { x = x, y = y }, stack = { valid_for_read = true, name = item, count = count },
+    selection_box = { left_top = { x = x - 0.2, y = y - 0.2 }, right_bottom = { x = x + 0.2, y = y + 0.2 } } }
+end
 entities[1] = entity("z-machine", 0, 0, 1, 1)
 entities[2] = entity("a-machine", 0, 0, 2, 2)
 entities[2].status = 1
@@ -35,6 +40,13 @@ entities[7] = resource("coal", 0, 8, 30)
 entities[8] = resource("stone", 0, -8, 40)
 entities[9] = resource("uranium-ore", -0.5, 0, 10)
 entities[10] = resource("uranium-ore", 0.5, 0, 20)
+entities[11] = ground_item("iron-ore", 3, 2.25, -1.75)
+entities[12] = ground_item("nearest-ground", 1, 0.25, 0.25)
+for i = 1, 256 do
+  local x, y = -10 + ((i - 1) % 16) * 1.25, -10 + math.floor((i - 1) / 16) * 1.25
+  entities[#entities + 1] = ground_item("ground-" .. i, 1, x, y)
+end
+entities[#entities + 1] = ground_item("farthest-ground", 1, 14.4, 14.4)
 local corners = { { -14, -14 }, { 14, -14 }, { -14, 14 }, { 14, 14 } }
 for i = 1, 258 do local point = corners[(i - 1) % #corners + 1]; entities[#entities + 1] = entity("machine-" .. i, point[1], point[2], 1, 1) end
 local edge = entity("edge-machine", 16.5, 0, 3, 3)
@@ -89,6 +101,14 @@ check(injected_center.grid.origin.x == observation.grid.origin.x
   and canonical(injected_center) == canonical(observation),
   "caller center is ignored and origin derives solely from Codex")
 check(observation.character.inventory["iron-plate"] == 3, "observation includes character inventory")
+local ground_by_name = {}
+for _, item in ipairs(observation.ground_items) do ground_by_name[item.item] = item end
+check(#observation.ground_items == 256 and observation.omitted_ground_items == 3
+  and ground_by_name["nearest-ground"] and not ground_by_name["farthest-ground"],
+  "observation retains the nearest 256 exact ground targets before presentation sorting")
+check(ground_by_name["iron-ore"] and ground_by_name["iron-ore"].count == 3
+  and ground_by_name["iron-ore"].position.x == 2.25,
+  "observation exposes exact item/count/position pickup evidence")
 check(observation.grid.rows[15]:sub(15, 16) == "aa" and observation.grid.rows[16]:sub(15, 16) == "a@", "full 2x2 footprint is painted beneath higher-priority Codex")
 check(observation.grid.rows[15]:sub(15, 15) == "a", "equal-priority overlap deterministically paints the lexical-name glyph")
 check(observation.grid.legend.a == "a-machine" and observation.grid.legend.b == "edge-machine", "building glyphs are assigned lexically")
@@ -139,5 +159,7 @@ check(canonical(observation) == canonical(shuffled_observation), "shuffled entit
 local compact = spatial.observe_local({ radius = 15 })
 check(compact.detail == "compact" and compact.grid == nil and compact.character.crafting.queue_size == 0,
   "compact is the default and omits only the grid while retaining crafting")
+check(#compact.ground_items == 256 and compact.omitted_ground_items == 3,
+  "compact observation retains the same nearest grounded pickup targets")
 _G.require = parse_require
 os.exit(failures == 0 and 0 or 1)

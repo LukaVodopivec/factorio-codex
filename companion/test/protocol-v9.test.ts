@@ -6,15 +6,15 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v9 DTO and tool registry", () => {
-  it("declares v9 and the exact accepted RPC additions", () => {
-    expect(PROTOCOL_VERSION).toBe(9);
-    expect(MCP_SERVER_VERSION).toBe("0.12.2");
+describe("protocol v10 DTO and tool registry", () => {
+  it("declares v10 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(10);
+    expect(MCP_SERVER_VERSION).toBe("0.13.0");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
 
-  it("registers exactly 24 tools and forwards exact v9 payloads", async () => {
+  it("registers exactly 25 tools and forwards exact v10 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -22,7 +22,7 @@ describe("protocol v9 DTO and tool registry", () => {
       : { method });
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(24);
+    expect(Object.keys(handlers)).toHaveLength(25);
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
     await handlers.find_placement(find);
@@ -53,6 +53,7 @@ describe("protocol v9 DTO and tool registry", () => {
   });
 
   it("keeps payload construction explicit and lossless", () => {
+    expect(toolPayloads.pickup({ x: 1.25, y: 2.5, item: "iron-ore", count: 3 })).toEqual({ target: { x: 1.25, y: 2.5 }, item: "iron-ore", count: 3 });
     expect(toolPayloads.findPlacement({ item: "pipe", preferred: { x: 1, y: 2 }, radius: 3, directions: [0], limit: 1 })).toEqual({ item: "pipe", preferred: { x: 1, y: 2 }, radius: 3, directions: [0], limit: 1 });
     expect(toolPayloads.connectEntities({ kind: "pipe", prototype: "pipe", from: { x: 1, y: 2 }, to: { x: 3, y: 2 }, max_length: 2 })).toEqual({ kind: "pipe", prototype: "pipe", from: { x: 1, y: 2 }, to: { x: 3, y: 2 }, max_length: 2 });
     expect(toolPayloads.productionRequirements({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } })).toEqual({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } });

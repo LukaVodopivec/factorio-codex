@@ -207,6 +207,15 @@ smallest maintained compatible path. If none fits, record only why candidates
 are design evidence and patch the smallest existing active path; do not add a
 service, gate, or report bureaucracy.
 
+For the R4 inserter-observation gap, that bounded survey found the maintained
+MIT `SimpleAdjustableInserters` and `quick-adjustable-inserters` mods. Both
+change custom inserter vectors or player adjustment interactions instead of
+reporting vanilla bound-target identity, so neither fits the observation-only,
+one-body/one-writer, text-only physical contract. No candidate code was
+imported. The retained implementation uses Factorio's official LuaEntity
+`pickup_target`, `drop_target`, `pickup_position`, and `drop_position` fields
+through the existing inspection path.
+
 Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast
 setting. Append the completed result below with exact baseline/release hashes;

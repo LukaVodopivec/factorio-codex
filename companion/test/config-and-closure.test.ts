@@ -327,6 +327,17 @@ describe("exact local configuration", () => {
       expect(normalized).toMatch(/reuse or adapt the.*smallest maintained compatible path.*design evidence.*patch the smallest existing active path/i);
       expect(text).toMatch(/not a service, gate, or report workflow|do not create a[\s\S]*service, gate, or report workflow/i);
     }
+
+    const normalizedGuidance = `${agentGuide}\n${skill}`.replace(/\s+/g, " ");
+    expect(normalizedGuidance).toMatch(/mine`? count means physical mining cycles.*item ceilings.*in-game learned per-cycle yield.*actual inventory deltas/i);
+    expect(normalizedGuidance).toMatch(/current plan plus one grounded queued successor.*avoid micro-packet idle gaps/i);
+
+    const performance = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
+    expect(performance).toMatch(/maintained[\s\S]*MIT[\s\S]*SimpleAdjustableInserters[\s\S]*quick-adjustable-inserters/i);
+    expect(performance).toMatch(/custom inserter vectors|player adjustment interactions/i);
+    expect(performance.replace(/\s+/g, " ")).toMatch(/neither fits.*No candidate code was imported/i);
+    for (const field of ["pickup_target", "drop_target", "pickup_position", "drop_position"])
+      expect(performance).toContain(`\`${field}\``);
   });
 });
 

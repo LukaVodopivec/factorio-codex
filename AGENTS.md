@@ -58,7 +58,12 @@ unlock or fuel consumer and uptime, automation payback in named item/time units
 with break-even, and a numeric stop. Fallback order is: preserve safety; unblock production; mine the
 BOM bottleneck in batches; build validated automation; physically scout.
 Never idle on a wait while productive work exists. Cluster travel and reuse
-terminal observations. Count automation capacity only after structured state
+terminal observations. `mine` count means physical mining cycles, not
+guaranteed output items; derive item ceilings and numeric stops from the
+in-game learned per-cycle yield and confirm them with actual inventory deltas.
+Keep the current plan plus one grounded queued successor, and avoid
+micro-packet idle gaps while their shared bottleneck and hypothesis remain
+valid. Count automation capacity only after structured state
 shows output accepted by its next physical sink and observable there. Upstream
 fuel/input changes end with measured dependent utilization and a bounded
 corrective successor when preconditions hold; rate claims without timing or

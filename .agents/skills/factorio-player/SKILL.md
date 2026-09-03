@@ -133,7 +133,12 @@ deltas and retain the expected result plus its falsifier.
 - The pilot may mine, refuel, collect output, repair routes, or take an approved
   fallback without waiting. Priority is: unblock production; mine the BOM
   bottleneck in batches; build validated automation; physically scout.
-  Never idle on a wait while productive work exists.
+  Never idle on a wait while productive work exists. `mine` count means
+  physical mining cycles, not guaranteed output items; derive item ceilings
+  and numeric stops from the in-game learned per-cycle yield and confirm them
+  with actual inventory deltas. Keep the current plan plus one grounded queued
+  successor, and avoid micro-packet idle gaps while their shared bottleneck and
+  hypothesis remain valid.
 - Finish every packet with an authoritative observation by consuming the
   plan's terminal observation. Observe again only
   if it is missing or became stale after another action. Report source tick and

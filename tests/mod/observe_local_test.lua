@@ -73,12 +73,14 @@ local surface = {
   end,
 }
 local inventory = { get_contents = function() return { { name = "iron-plate", count = 3 } } end }
-character = { valid = true, name = "character", type = "character", force = player_force, surface = surface, position = { x = 0, y = 0 }, health = 250, reach_distance = 10, build_distance = 10, get_main_inventory = function() return inventory end }
+local ammo_inventory = { get_contents = function() return { { name = "firearm-magazine", count = 7 } } end }
+character = { valid = true, name = "character", type = "character", force = player_force, surface = surface, position = { x = 0, y = 0 }, health = 250, reach_distance = 10, build_distance = 10, get_main_inventory = function() return inventory end,
+  get_inventory = function(index) if index == 1 then return ammo_inventory end end }
 entities[#entities + 1] = character
 package.loaded["scripts.companion"] = { require_companion = function() return character end }
 package.loaded["scripts.tasks"] = { active_summary = function() return nil end, queue_length = function() return 0 end }
 _G.game = { tick = 123, forces = { enemy = enemy_force } }
-_G.defines = { entity_status = { no_power = 1 } }
+_G.defines = { entity_status = { no_power = 1 }, inventory = { character_ammo = 1 } }
 _G.prototypes = { entity = {
   ["edge-machine"] = {
     collision_box = { left_top = { x = -0.5, y = -0.5 }, right_bottom = { x = 0.5, y = 0.5 } },
@@ -101,6 +103,10 @@ check(injected_center.grid.origin.x == observation.grid.origin.x
   and canonical(injected_center) == canonical(observation),
   "caller center is ignored and origin derives solely from Codex")
 check(observation.character.inventory["iron-plate"] == 3, "observation includes character inventory")
+check(observation.character.inventory_scope == "main"
+  and observation.character.ammo_inventory["firearm-magazine"] == 7
+  and observation.character.inventory["firearm-magazine"] == nil,
+  "observation distinguishes main inventory from equipped ammunition")
 local ground_by_name = {}
 for _, item in ipairs(observation.ground_items) do ground_by_name[item.item] = item end
 check(#observation.ground_items == 256 and observation.omitted_ground_items == 3

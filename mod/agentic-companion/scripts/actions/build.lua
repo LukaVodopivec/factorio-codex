@@ -80,6 +80,28 @@ function M.place.tick(task)
   local c = companion.get()
   if not c then return gone() end
 
+  if task._placed_entity then
+    if game.tick <= task._placed_tick then return nil end
+    local built, expected_output = task._placed_entity, task._expected_output
+    task._placed_entity, task._placed_tick, task._expected_output = nil, nil, nil
+    if not built.valid then
+      return { status = "failed", detail = "the exact placed entity vanished before output binding could be verified" }
+    end
+    if not output_targets.verify_drop_target(built, expected_output) then
+      return {
+        status = "failed",
+        detail = string.format("placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",
+          task.item, built.position.x, built.position.y),
+      }
+    end
+    return {
+      status = "done",
+      detail = string.format("placed %s at (%.1f, %.1f)%s",
+        task.item, built.position.x, built.position.y,
+        task.direction ~= 0 and (" facing " .. dir_name(task.direction)) or ""),
+    }
+  end
+
   local reached = approach.ensure(task, c, task.position, c.build_distance)
   if type(reached) == "table" then return reached end
   if reached ~= "ok" then return nil end
@@ -127,12 +149,9 @@ function M.place.tick(task)
     }
   end
   c.remove_item({ name = task.item, count = 1 })
-  if expected_output and not output_targets.verify_drop_target(built, expected_output) then
-    return {
-      status = "failed",
-      detail = string.format("placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",
-        task.item, built.position.x, built.position.y),
-    }
+  if expected_output then
+    task._placed_entity, task._placed_tick, task._expected_output = built, game.tick, expected_output
+    return nil
   end
   return {
     status = "done",

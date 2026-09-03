@@ -3,6 +3,43 @@ local companion = require("scripts.companion")
 
 local M = {}
 
+local function research_trigger(technology)
+  local ok, trigger = pcall(function() return technology.prototype.research_trigger end)
+  if not ok or type(trigger) ~= "table" or type(trigger.type) ~= "string" then return nil end
+
+  local record = { type = trigger.type }
+  local function filter_name(value)
+    if type(value) == "table" and type(value.name) == "string" then return value.name end
+    if type(value) == "string" then return value end
+    return nil
+  end
+  if trigger.type == "craft-item" then
+    record.item = filter_name(trigger.item)
+    if type(trigger.count) == "number" then record.count = trigger.count end
+  elseif trigger.type == "mine-entity" then
+    record.entity = filter_name(trigger.entity)
+  elseif trigger.type == "craft-fluid" then
+    record.fluid = filter_name(trigger.fluid)
+    if type(trigger.amount) == "number" then record.amount = trigger.amount end
+  elseif trigger.type == "send-item-to-orbit" then
+    record.item = filter_name(trigger.item)
+  elseif trigger.type == "capture-spawner" then
+    record.entity = filter_name(trigger.entity)
+  elseif trigger.type == "build-entity" then
+    record.entity = filter_name(trigger.entity)
+  end
+  return record
+end
+
+local function trigger_action(trigger)
+  local target = trigger.item or trigger.entity or trigger.fluid
+  local quantity = trigger.count or trigger.amount
+  local detail = ""
+  if quantity and target then detail = " " .. tostring(quantity) .. " " .. target
+  elseif target then detail = " " .. target end
+  return trigger.type .. detail
+end
+
 function M.start_research(params)
   local name = params.technology
   if type(name) ~= "string" or name == "" then
@@ -18,6 +55,11 @@ function M.start_research(params)
   if tech.researched then
     error("already researched: " .. name)
   end
+  local requested_trigger = research_trigger(tech)
+  if requested_trigger then
+    error("cannot queue trigger technology " .. name .. "; complete its in-game "
+      .. trigger_action(requested_trigger) .. " trigger, then call progression_status again")
+  end
   for _, queued in ipairs(force.research_queue) do
     if queued.name == name then
       error(name .. " is already in the research queue")
@@ -29,13 +71,21 @@ function M.start_research(params)
     local missing = {}
     for prereq_name, prereq in pairs(tech.prerequisites) do
       if not prereq.researched then
-        local is_trigger = prereq.prototype.research_trigger ~= nil
-        missing[#missing + 1] = prereq_name
-          .. (is_trigger and " (unlocks via an in-game action, not lab research)" or "")
+        local trigger = research_trigger(prereq)
+        missing[#missing + 1] = {
+          name = prereq_name,
+          message = trigger
+            and (prereq_name .. " requires in-game trigger " .. trigger_action(trigger) .. " and cannot be queued")
+            or (prereq_name .. " must be researched first"),
+        }
       end
     end
     if #missing > 0 then
-      error("can't queue " .. name .. " yet — missing prerequisites: " .. table.concat(missing, ", "))
+      table.sort(missing, function(a, b) return a.name < b.name end)
+      local messages = {}
+      for _, entry in ipairs(missing) do messages[#messages + 1] = entry.message end
+      error("can't queue " .. name .. " yet — missing prerequisites: " .. table.concat(messages, ", ")
+        .. "; complete them, then call progression_status and retry")
     end
     error("could not queue " .. name .. " — the game refused it")
   end
@@ -45,7 +95,7 @@ end
 
 function M.progression_status()
   local force = companion.require_companion().force
-  local researched, available, enabled_recipes = {}, {}, {}
+  local researched, available, trigger_unlocks, enabled_recipes = {}, {}, {}, {}
   local function technology_record(name, technology)
     local prerequisites, ready = {}, true
     for prereq_name, prerequisite in pairs(technology.prerequisites or {}) do
@@ -80,11 +130,20 @@ function M.progression_status()
     if technology.researched then researched[#researched + 1] = name
     elseif technology.enabled then
       local ready, record = technology_record(name, technology)
-      if ready then available[#available + 1] = record end
+      if ready then
+        local trigger = research_trigger(technology)
+        if trigger then
+          record.trigger = trigger
+          trigger_unlocks[#trigger_unlocks + 1] = record
+        else
+          available[#available + 1] = record
+        end
+      end
     end
   end
   table.sort(researched)
   table.sort(available, function(a, b) return a.name < b.name end)
+  table.sort(trigger_unlocks, function(a, b) return a.name < b.name end)
   for name, recipe in pairs(force.recipes or {}) do
     if recipe.enabled then enabled_recipes[#enabled_recipes + 1] = name end
   end
@@ -94,7 +153,8 @@ function M.progression_status()
   return {
     force = force.name, current_research = force.current_research and force.current_research.name or nil,
     research_progress = force.research_progress or 0, research_queue = queue,
-    researched = researched, available = available, enabled_recipes = enabled_recipes,
+    researched = researched, available = available, trigger_unlocks = trigger_unlocks,
+    enabled_recipes = enabled_recipes,
   }
 end
 

@@ -41,9 +41,12 @@ is the sole ordinary MCP writer and authority for the latest observation; the
 master alone converts its report into the next atomic ledger revision.
 The master coalesces superseded reports for the same run by newest source tick
 and writes one revision for the current decision, not one revision per stale
-report. A plan ID and its envelope execute at most once. The first decision
-cycle uses one authoritative diagnostic packet and does not repeat equivalent
-diagnostics unless action, contradiction, or staleness changes the evidence.
+report. A plan ID and its envelope execute at most once. Immediately after one
+authoritative preflight diagnostic packet, the master writes the first broad
+physical envelope and ledger revision, sends the envelope, and ends its turn so
+pilot or specialist evidence can trigger a fresh decision turn. It does not
+repeat equivalent diagnostics unless action, contradiction, or staleness
+changes the evidence.
 
 The exact top-level keys are `schema_version`, `run`, `revision`, `source_tick`,
 `phase`, `success`, `capacity`, `utilization`, `bottleneck`, `current_plan`,
@@ -89,8 +92,11 @@ Each broad goal-conditioned envelope remains active while its bottleneck and
 falsifiable hypothesis remain valid and carries the expected effect, safe
 bounds, numeric stops, and locally adaptive fallbacks. Within those bounds the
 pilot keeps acting without per-action approval, reports material bottleneck
-changes or failures, consumes the `run_plan` terminal observation, and never
-repeats an executed plan ID. The specialist may proactively send at most one
+changes, terminal outcomes, or invalidations, consumes the `run_plan` terminal
+observation, and never repeats an executed plan ID. It never stops or hands off
+merely because one useful item or incidental non-production loot was obtained;
+validated automation utilization, the current plan, and its grounded successor
+remain the priority. The specialist may proactively send at most one
 coalescible memo per new ledger revision when a calculation can change the next
 action; otherwise it idles. On the first material-flow contradiction it
 distinguishes the game bottleneck from an MCP observability gap in exactly one
@@ -142,7 +148,9 @@ deltas and retain the expected result plus its falsifier.
   and numeric stops from the in-game learned per-cycle yield and confirm them
   with actual inventory deltas. Keep the current plan plus one grounded queued
   successor, and avoid micro-packet idle gaps while their shared bottleneck and
-  hypothesis remain valid.
+  hypothesis remain valid. Do not stop or report merely for one useful item or
+  incidental non-production loot; prioritize measured automation utilization
+  and continuous current-plus-successor execution.
 - Finish every packet with an authoritative observation by consuming the
   plan's terminal observation. Observe again only
   if it is missing or became stale after another action. Report source tick and

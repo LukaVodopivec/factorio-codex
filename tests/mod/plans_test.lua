@@ -88,6 +88,29 @@ game.tick = 138; tasks.on_tick()
 check(tasks.plan_status({ plan_id = output_plan.plan_id }).status == "completed"
   and queued_place_output_target.x == 2 and queued_place_output_target.y == 0,
   "queued placement carries the expected output identity into the physical task")
+
+inspected = 0
+local craft_predecessor = tasks.queue_plan({ steps = {
+  { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 },
+} })
+local craft_successor = tasks.queue_plan({ steps = {
+  { action = "walk_to", x = 11, y = 11 },
+}, after_plan_id = craft_predecessor.plan_id })
+local standalone_craft = tasks.enqueue({ task = {
+  type = "craft", recipe = "gear", count = 1, wait_for_completion = false,
+} })
+game.tick = 139; tasks.on_tick()
+game.tick = 140; tasks.on_tick()
+check(tasks.get({ task_id = standalone_craft.task_id }).status == "done"
+  and tasks.plan_status({ plan_id = craft_predecessor.plan_id }).status == "waiting"
+  and tasks.plan_status({ plan_id = craft_successor.plan_id }).status == "queued",
+  "standalone legitimate craft completes without cancelling an already queued successor")
+game.tick = 169; tasks.on_tick()
+game.tick = 170; tasks.on_tick()
+check(tasks.plan_status({ plan_id = craft_predecessor.plan_id }).status == "completed"
+  and tasks.plan_status({ plan_id = craft_successor.plan_id }).status == "completed",
+  "queued successor still releases after its parked predecessor becomes satisfied")
+
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1
 check(tasks.cancel({ all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")
 os.exit(failures == 0 and 0 or 1)

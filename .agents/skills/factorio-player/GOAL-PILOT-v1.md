@@ -19,15 +19,16 @@ per-action approval inside its stated safe bounds, numeric stops, and locally
 adaptive fallbacks while its named bottleneck and hypothesis remain valid;
 never repeat an executed envelope or plan ID. Consume the `run_plan` terminal
 observation as the authoritative post-plan state and report material bottleneck
-changes or failures rather than emitting a packet for every individual action.
+changes, terminal outcomes, or invalidations rather than emitting a packet for
+every individual action.
 
 Loop:
 1. Revalidate the envelope against the newest observation; invalidate stale coordinates, inventory claims, or completed assumptions, then choose the next safe action serving the highest-value unmet success criterion.
 2. Execute grounded visible actions through the constrained MCP. Never prepend `walk_to` to a positional action that already auto-approaches. Never physically place a mining drill from a `find_placement` candidate unless `resource_coverage` is present and contains positive compatible coverage; missing or empty coverage requires more structured observation and revalidation, not placement. Use contiguous positional plans for known dependencies and consume terminal observations without redundant reads.
-3. Keep productive work continuous: overlap crafting, movement, machine production, and research; never wait when another safe productive action exists.
+3. Keep productive work continuous: overlap crafting, movement, machine production, and research; never wait when another safe productive action exists. Measured automation utilization and continuous current-plus-successor work dominate. Never stop or report merely because one useful item or incidental non-production loot was obtained.
 4. After bootstrap, execute a manual mining/crafting batch only when the master supplies its exact net deficit after carried stock, machine buffers/output and WIP; exact machine unlock or fuel consumer and uptime bought; payback in named item/time units with break-even; and numeric stop. Stop the batch at that condition; automate bulk extraction, smelting, intermediates, logistics, and science.
 5. Inspect and fix the dominant bottleneck. Use approved fallbacks in priority order and report any `MCP_GAP` only for its affected branch.
-6. Report outcome-labeled material batch success/failure and fresh state to the master; diagnose and safely retry or pivot routine failures instead of stopping early.
+6. Report only outcome-labeled terminal, material-bottleneck, or invalidation evidence and fresh state to the master; diagnose and safely retry or pivot routine failures instead of stopping early.
 
 Count automation capacity only after structured evidence shows output accepted
 by its next physical sink and observable there. After changing upstream fuel or

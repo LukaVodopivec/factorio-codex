@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.13.8**.
+Current release: **0.13.9**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -43,7 +43,9 @@ committed project config starts MCP automatically. Begin with
 The public CLI contains only `setup`, `doctor [--json]`, and `mcp`. MCP exposes
 exactly 25 text-only tools through `tools/list`. `observe_local` exposes exact
 `ground_items` stacks and `pickup_items` physically collects one still-matching
-stack through the character's normal picking state. `queue_plan` immediately adds
+stack through the character's normal picking state. Its character record labels
+the existing `inventory` as `main` and reports equipped ammunition separately.
+`queue_plan` immediately adds
 one Lua-contiguous plan to the sole FIFO; `plan_status` reads it, while
 `run_plan` provides synchronous compatibility. Plans reuse the existing honest
 physical runners and end with a compact or full local observation.
@@ -54,12 +56,16 @@ resource coverage, rejects charted candidates with no compatible resources with 
 deterministic count while retaining uncharted candidates with coverage omitted, and
 exposes cardinal inserter pickup/drop endpoints. Its existing
 `output_target` contract filters an exact sink and verifies Factorio's live
-`drop_target` after physical placement; inspect the placed inserter's
+`drop_target` on a later game tick after physical placement while retaining the
+exact created entity; inspect the placed inserter's
 `pickup_target` to falsify an incorrect source binding.
 `map_summary` summarizes only already-charted terrain and factory landmarks,
 `production_requirements` performs deterministic recipe arithmetic, and
 `connect_entities` builds an inventory-backed physical belt, pipe, or power
 route.
+`progression_status` separates ordinary queueable research from action/trigger
+unlocks. `start_research` refuses a trigger technology with its required
+in-game action and never reports it as queued progress.
 
 Live play uses the benchmark-selected topology and model/effort assignment.
 In a split topology the strategist is read/plan-only, while one persistent

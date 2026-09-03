@@ -47,11 +47,17 @@ prioritized fallbacks, current and next bill of materials, and source tick/plan
 ID. The master is its sole atomic host writer; the pilot is the sole ordinary
 MCP writer and latest-observation authority; an optional specialist is
 read-only. Discard stale advice unless the pilot revalidates it.
+Immediately after one authoritative preflight packet, the master writes and
+sends a broad state-grounded first physical envelope, then ends its turn so new
+pilot or specialist evidence can trigger a fresh turn.
 
 The pilot may mine, refuel, collect output, repair routes, and use an approved
 fallback without waiting. Broad envelopes remain active while their named
 bottleneck and hypothesis remain valid, and the pilot reports material
-bottleneck changes or failures instead of narrow micro-proofs. After bootstrap,
+bottleneck changes, terminal outcomes, or invalidations instead of narrow
+micro-proofs. It never stops or reports merely for one useful item or incidental
+non-production loot; measured automation utilization and continuous
+current-plus-successor work dominate. After bootstrap,
 manual batches require an exact net
 deficit after carried stock, machine buffers/output and WIP, the exact machine
 unlock or fuel consumer and uptime, automation payback in named item/time units

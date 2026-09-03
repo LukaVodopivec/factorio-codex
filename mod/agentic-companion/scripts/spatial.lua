@@ -365,7 +365,16 @@ function M.observe_local(params)
     return a._members < b._members
   end)
   for _, patch in ipairs(patches) do patch._members = nil end
-  local inventory = {}; for _, item in ipairs(c.get_main_inventory().get_contents()) do inventory[item.name] = (inventory[item.name] or 0) + item.count end
+  local function inventory_contents(source)
+    local contents = {}
+    if not source then return contents end
+    for _, item in ipairs(source.get_contents()) do
+      contents[item.name] = (contents[item.name] or 0) + item.count
+    end
+    return contents
+  end
+  local inventory = inventory_contents(c.get_main_inventory())
+  local ammo_inventory = inventory_contents(c.get_inventory(defines.inventory.character_ammo))
   local crafting = { queue_size = c.crafting_queue_size or 0, progress = c.crafting_queue_progress or 0, queue = {} }
   for _, entry in ipairs(c.crafting_queue or {}) do
     local recipe = entry.recipe
@@ -375,7 +384,8 @@ function M.observe_local(params)
   local result = {
     tick = game.tick, radius = radius, detail = params.detail == "full" and "full" or "compact",
     character = { position = { x = c.position.x, y = c.position.y }, health = c.health,
-      inventory = inventory, active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
+      inventory = inventory, inventory_scope = "main", ammo_inventory = ammo_inventory,
+      active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
       crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance },
     entities = details, resource_patches = patches, ground_items = ground_items,
     omitted_entities = omitted, omitted_ground_items = omitted_ground_items,

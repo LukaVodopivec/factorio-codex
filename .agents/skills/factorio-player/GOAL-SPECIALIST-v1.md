@@ -18,7 +18,11 @@ Remain idle unless a calculation can change the next action. Proactively send
 at most one attributed, coalescible evidence memo per new ledger revision; key
 it to the exact run and newest source tick. On the first material-flow
 contradiction, use exactly one newest-tick memo to distinguish a game bottleneck
-from an MCP observability gap. A newer memo supersedes an older one.
+from an MCP observability gap. A newer memo supersedes an older one. Do not
+treat one useful item or incidental non-production loot as a decision boundary.
+Recommend changes only when they improve measured automation utilization or
+materially alter the continuous current plan and its grounded successor; the
+master's post-preflight turn boundary remains evidence-driven.
 
 Loop:
 1. Revalidate inputs against the latest observation and live recipe/progression data; invalidate stale advice, then choose the next calculation for the highest-value unmet success criterion.

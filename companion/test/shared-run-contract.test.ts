@@ -118,7 +118,7 @@ describe("shared gameplay run contract", () => {
   it("coalesces reports into bounded single-use decision envelopes", () => {
     expect(master).toMatch(/coalesce pilot reports and specialist memos by newest source\s+tick/i);
     expect(master).toMatch(/Superseded reports do not cause ledger rewrites/i);
-    expect(master).toMatch(/first decision from one authoritative diagnostic packet/i);
+    expect(master).toMatch(/first decision immediately after one authoritative preflight[\s\S]*first ledger revision[\s\S]*broad state-grounded[\s\S]*physical envelope[\s\S]*end your turn/i);
     for (const phrase of ["broad goal-conditioned envelope", "bottleneck remains valid", "safe bounds", "numeric stops"])
       expect(master.toLowerCase()).toContain(phrase);
     expect(master).toMatch(/locally\s+adaptive fallbacks/i);
@@ -126,7 +126,12 @@ describe("shared gameplay run contract", () => {
     expect(pilot).toMatch(/each master envelope and plan ID as single-use/i);
     expect(pilot).toMatch(/without\s+per-action approval[\s\S]*never repeat an executed envelope or plan ID/i);
     expect(pilot).toContain("`run_plan` terminal");
-    expect(pilot).toMatch(/material bottleneck\s+changes or failures/i);
+    expect(pilot).toMatch(/material bottleneck[\s\S]*terminal outcomes[\s\S]*invalidations/i);
+    expect(pilot).toMatch(/only outcome-labeled terminal, material-bottleneck, or invalidation evidence/i);
+    for (const text of [skill, master, pilot, specialist, roleGuidance]) {
+      expect(text).toMatch(/one useful item or incidental\s+non-production loot/i);
+      expect(text).toMatch(/automation utilization[\s\S]*current(?:-plus-| plan, and its grounded | plan and its grounded )successor/i);
+    }
     expect(specialist).toMatch(/at most one attributed,\s+coalescible evidence memo per new ledger revision/i);
     expect(roleGuidance).toMatch(/coalesces superseded reports[\s\S]*never reissues an executed plan ID/i);
     expect(roleGuidance).toMatch(/broad goal-conditioned envelope[\s\S]*numeric\s+stops[\s\S]*locally adaptive fallbacks/i);

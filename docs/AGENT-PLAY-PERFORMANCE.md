@@ -1,7 +1,11 @@
 # Agent play performance
 
-Release 0.13.8 adds an exact pre/post-verified inserter output-recipient binding and
-compatible mining-drill resource coverage with deterministic charted-zero rejection and omitted uncharted coverage. Entity inspection
+Release 0.13.9 defers exact inserter output-recipient verification until a later
+game tick, distinguishes queueable research from in-game trigger unlocks, and
+labels main versus equipped-ammunition inventory. It retains 0.13.8's exact
+pre/post-verified inserter output-recipient binding and compatible mining-drill
+resource coverage with deterministic charted-zero rejection and omitted
+uncharted coverage. Entity inspection
 retains exact live inserter endpoint/target, current drill target, and belt
 content evidence. It retains 0.13.0's physical ground-stack pickup,
 native path-completion events inside nested plan actions, deterministic queries,
@@ -12,7 +16,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.13.8 validation.
+0.13.9 validation.
 
 The operating topology and model/effort choice remain benchmark candidates;
 do not predeclare a winner. In every multi-session candidate, the strategist
@@ -105,6 +109,25 @@ The retained design is deliberately smaller: MCP synchronously sequences
 or immediately queues plans, Lua composes the existing physical task runners,
 and every terminal plan path attempts one compact local observation.
 
+R5's bounded Firecrawl reuse review found maintained agent projects with deterministic
+validator and skill patterns, but no compatible licensed component that owns
+Factorio's vanilla delayed target binding, trigger-research classification, or
+character inventory compartments under this one-body, one-writer, text-only
+physical contract. Candidate code was unnecessary, incompatible, or had
+unclear licensing, so none was imported. The retained path uses Factorio's
+official `LuaEntity.drop_target` and `LuaTechnologyPrototype.research_trigger`
+state directly and changes no game mechanics.
+
+The reported plan-25/plan-26/craft interaction was not a FIFO cancellation
+bug. A standalone craft appends to the same flat queue; normal completion
+clears only its own active task. A predecessor-dependent successor remains
+queued while the predecessor is waiting and is released when that predecessor
+completes. Only explicit cancellation, failure/invalidation of its predecessor,
+or cancellation/timeout of the exact owned task can cancel it. A regression
+now locks that behavior. Terminal observations also label `inventory` as the
+main compartment and expose equipped ammunition separately, preventing an
+empty-main-inventory reading from implying that equipped magazines vanished.
+
 The pilot physically places a mining drill only from a `find_placement`
 candidate whose `resource_coverage` is present and contains positive compatible
 coverage. Missing or empty coverage requires further structured observation and
@@ -115,13 +138,18 @@ resources.
 For role coordination, the master coalesces superseded reports by run and
 newest source tick, writes one ledger revision for the current decision, and
 never reissues an executed plan ID. The first decision uses one authoritative
-diagnostic packet; equivalent diagnostics repeat only after action,
+preflight diagnostic packet, immediately writes and sends a broad physical
+envelope, and ends the master turn so new peer evidence can trigger a fresh
+turn; equivalent diagnostics repeat only after action,
 contradiction, or staleness. Each broad goal-conditioned envelope states a
 falsifiable hypothesis, predicted measurable effect, safe bounds, numeric
 stops, and locally adaptive fallbacks, and remains active while the bottleneck
 and hypothesis remain valid. The pilot consumes each `run_plan` terminal
-observation, reports material bottleneck changes or failures, and never repeats
-an executed envelope. The specialist proactively returns at most one
+observation, reports only terminal, material-bottleneck, or invalidation
+evidence, and never repeats an executed envelope. It never stops or reports
+merely for one useful item or incidental non-production loot. Measured
+automation utilization and continuous current-plus-successor work dominate.
+The specialist proactively returns at most one
 run/tick-keyed coalescible evidence memo per new ledger revision when a
 calculation can change the next action; otherwise it idles. On the first
 material-flow contradiction it distinguishes a game bottleneck from an MCP
@@ -157,7 +185,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v15, version 0.13.8, and exactly 25 tools.
+disambiguation, progression, protocol v16, version 0.13.9, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -227,4 +255,4 @@ through the existing inspection path.
 Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast
 setting. Append the completed result below with exact baseline/release hashes;
-do not present historical timings as 0.13.8 benchmark results.
+do not present historical timings as 0.13.9 benchmark results.

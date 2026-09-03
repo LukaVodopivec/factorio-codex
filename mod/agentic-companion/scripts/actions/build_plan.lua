@@ -3,9 +3,9 @@
 -- optionally sets a recipe and inserts starter items — mirroring the exact
 -- validation rules of the single-step place/set_recipe/insert actions
 -- (scripts/actions/build.lua, scripts/actions/transfer.lua). A failed step is
--- recorded and skipped unless stop_on_error. Each step completes within a
--- single tick once in reach, so cancelling mid-plan never leaves a step
--- half-done.
+-- recorded and skipped unless stop_on_error. Output-target verification keeps
+-- the exact placed entity and waits for a later Factorio tick before accepting
+-- or rejecting its binding.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local output_targets = require("scripts.output_target")
@@ -302,6 +302,22 @@ end
 -- uses build_distance; recipe/inventory mutations use Factorio's authoritative
 -- entity-reach check through the shared physical approach state machine.
 local function finish_placed_step(task, c, step, built)
+  if task._expected_output then
+    if game.tick <= task._output_verification_tick then return nil end
+    local expected_output = task._expected_output
+    task._expected_output, task._output_verification_tick = nil, nil
+    if not built.valid then
+      task._built = nil
+      return advance(task, false, "the exact placed entity vanished before output binding could be verified")
+    end
+    if not output_targets.verify_drop_target(built, expected_output) then
+      task._built = nil
+      return advance(task, false, string.format(
+        "placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",
+        step.item, built.position.x, built.position.y))
+    end
+  end
+
   if step.recipe or step._insert then
     local reached = approach.ensure_entity(task, c, built)
     if type(reached) == "table" then
@@ -412,10 +428,8 @@ function M.tick(task)
   end
   c.remove_item({ name = step.item, count = 1 })
   task._placed = task._placed + 1
-  if expected_output and not output_targets.verify_drop_target(built, expected_output) then
-    return advance(task, false, string.format(
-      "placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",
-      step.item, built.position.x, built.position.y))
+  if expected_output then
+    task._expected_output, task._output_verification_tick = expected_output, game.tick
   end
   task._built = built
   return finish_placed_step(task, c, step, built)

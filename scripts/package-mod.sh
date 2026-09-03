@@ -31,7 +31,7 @@ rm -f "$ZIP_PATH"
 echo "Packaged $ZIP_PATH"
 
 if [ "${1:-}" = "--verify" ]; then
-  test "$VERSION" = "0.13.8"
+  test "$VERSION" = "0.13.9"
   entries="$(unzip -Z1 "$ZIP_PATH")"
   test "$(printf '%s\n' "$entries" | sed -n '1p')" = "$NAME/"
   printf '%s\n' "$entries" | grep -Fx "$NAME/info.json" >/dev/null
@@ -39,6 +39,6 @@ if [ "${1:-}" = "--verify" ]; then
     echo "Archive contains a path outside $NAME/" >&2
     exit 1
   fi
-  test "$(unzip -p "$ZIP_PATH" "$NAME/info.json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" = "0.13.8"
+  test "$(unzip -p "$ZIP_PATH" "$NAME/info.json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" = "0.13.9"
   echo "Verified $ZIP_PATH layout and version"
 fi

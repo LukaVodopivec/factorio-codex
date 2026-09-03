@@ -16,13 +16,18 @@ Baseline and verification: reconstruct current state from the newest observation
 
 For every strategic choice, observe authoritative state, identify the current bottleneck, form a falsifiable hypothesis, predict a measurable effect, choose a safe action, compare prediction with outcome, and retain, revise, or discard the lesson with provenance and uncertainty. Never replace this loop with an opening script, timed phase, fixed build order, named route, map coordinate, or prescriptive progression sequence; `GO+20m` is measurement only.
 If an exact factor is unobservable, allow a bounded falsifiable experiment with explicit uncertainty, predicted effect, safe bound, and numeric stop. Reject copied layouts, tutorials, and online sequences.
-Make the first decision from one authoritative diagnostic packet. Do not ask
-for repeated equivalent diagnostic packets until an action, contradiction, or
-staleness can change the evidence. Issue a broad goal-conditioned envelope that
+Make the first decision immediately after one authoritative preflight
+diagnostic packet. Write the first ledger revision and broad state-grounded
+physical envelope,
+send it to the pilot, then end your turn so a pilot report or eligible
+specialist memo triggers a fresh decision turn. Do not ask for repeated
+equivalent diagnostic packets until an action, contradiction, or staleness can
+change the evidence. Issue a broad goal-conditioned envelope that
 remains valid while its named bottleneck remains valid and its falsifiable
 hypothesis survives observation. Include predicted effect, safe bounds, numeric stops, and locally
 adaptive fallbacks; within it the pilot acts continuously without per-action
-approval and reports only material bottleneck changes or failures.
+approval and reports only terminal outcomes, material bottleneck changes, or
+invalidations.
 
 Loop:
 1. Read the newest authoritative observation and at most one coalescible specialist evidence memo per new ledger revision when its calculation can change the next action; invalidate stale state and advice unless revalidated, then choose the next best action for the highest-value unmet success criterion.
@@ -38,6 +43,10 @@ upstream fuel or input finishes with measured utilization of already-built
 dependents and a bounded corrective successor when preconditions hold. If
 timing or buffer state is missing, use measured deltas only for rate claims and
 record both the expected result and its falsifier.
+Treat measured automation utilization and continuous current-plus-successor
+work as the dominant operating priority. One useful item or incidental
+non-production loot is neither a turn boundary nor a reason to stop, report,
+or replace a still-valid envelope.
 
 Stop complete only when every milestone success criterion has later-tick structured proof. Mark blocked only after relevant diagnostics and materially distinct safe fallbacks are exhausted under the loaded blocker rule; report attempted paths, evidence, the exact unmet criterion, and the precise unblocking action.
 

@@ -38,6 +38,12 @@ local function malformed(step)
       return "output_target must be {x, y} with numeric coordinates"
     end
   end
+  if step.input_target ~= nil then
+    local target = step.input_target
+    if type(target) ~= "table" or type(target.x) ~= "number" or type(target.y) ~= "number" then
+      return "input_target must be {x, y} with numeric coordinates"
+    end
+  end
   if step.recipe ~= nil and type(step.recipe) ~= "string" then
     return "recipe must be a recipe name string"
   end
@@ -72,9 +78,21 @@ function M.start(task)
 
   for _, step in ipairs(task.steps) do
     step.direction = math.floor(tonumber(step.direction) or 0) % 16
+    local proto = prototypes.item[step.item]
+    step._is_inserter = proto and proto.place_result and proto.place_result.type == "inserter" or false
     if step.output_target ~= nil then
-      step._output_target = output_targets.resolve(companion.require_companion(), step.output_target,
-        "build_plan output_target")
+      step._output_target = step._is_inserter
+        and output_targets.resolve_endpoint(companion.require_companion(), step.output_target,
+          "build_plan output_target")
+        or output_targets.resolve(companion.require_companion(), step.output_target,
+          "build_plan output_target")
+    end
+    if step.input_target ~= nil then
+      if not step._is_inserter then
+        error("build_plan input_target is only supported for inserters")
+      end
+      step._input_target = output_targets.resolve_input(companion.require_companion(), step.input_target,
+        "build_plan input_target")
     end
     if step.insert ~= nil then
       -- {"coal":10} → sorted {name, count} list for deterministic messages.
@@ -376,9 +394,18 @@ function M.tick(task)
 
   local entity_name = place_result.name
 
-  local expected_output
+  local expected_input, expected_output
+  if step._input_target then
+    local current = output_targets.resolve_input(c, step.input_target, "build_plan input_target")
+    if current.entity ~= step._input_target.entity then
+      return advance(task, false, "input_target changed before placement; observe again")
+    end
+    expected_input = current.entity
+  end
   if step._output_target then
-    local current = output_targets.resolve(c, step.output_target, "build_plan output_target")
+    local current = step._is_inserter
+      and output_targets.resolve_endpoint(c, step.output_target, "build_plan output_target")
+      or output_targets.resolve(c, step.output_target, "build_plan output_target")
     if current.entity ~= step._output_target.entity then
       return advance(task, false, "output_target changed before placement; observe again")
     end
@@ -411,6 +438,11 @@ function M.tick(task)
   end
   c.remove_item({ name = step.item, count = 1 })
   task._placed = task._placed + 1
+  if expected_input and not output_targets.verify_pickup_target(built, expected_input) then
+    return advance(task, false, string.format(
+      "placed %s at (%.1f, %.1f), but Factorio did not bind the expected input target; recover the exact placed entity before retrying",
+      step.item, built.position.x, built.position.y))
+  end
   if expected_output and not output_targets.verify_drop_target(built, expected_output) then
     return advance(task, false, string.format(
       "placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target; recover the exact placed entity before retrying",

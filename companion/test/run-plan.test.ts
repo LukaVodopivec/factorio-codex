@@ -7,7 +7,7 @@ import { registerMcpTools } from "../src/mcp/server.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 const observation = { tick: 9, detail: "compact", entities: {}, resource_patches: {}, character: { inventory: {}, crafting: { queue_size: 0 } } };
 
-describe("protocol-v10 plans", () => {
+describe("protocol-v11 plans", () => {
   it("validates the complete plan before acquiring a bridge", async () => {
     const handlers: Record<string, (args: unknown) => Promise<any>> = {};
     const provider = vi.fn(async () => ({} as Bridge));
@@ -34,6 +34,12 @@ describe("protocol-v10 plans", () => {
   it("accepts exact grounded pickup steps and rejects incomplete targets", () => {
     expect(queuePlanSchema.safeParse({ steps: [{ action: "pickup_items", x: 1.25, y: 2.5, item: "iron-ore", count: 3 }] }).success).toBe(true);
     expect(queuePlanSchema.safeParse({ steps: [{ action: "pickup_items", x: 1.25, y: 2.5, item: "iron-ore" }] }).success).toBe(false);
+  });
+
+  it("preserves exact inserter input and output targets through queued plans", () => {
+    const parsed = queuePlanSchema.parse({ steps: [{ action: "place_entity", name: "inserter", x: 1, y: 2,
+      input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
+    expect(parsed.steps[0]).toMatchObject({ input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
   });
 
   it("run_plan queues once, polls plan_status, and returns Lua's terminal observation", async () => {

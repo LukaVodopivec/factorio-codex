@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.13.1**. Prior live evidence remains historical
-until the fresh 0.13.1 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.13.2**. Prior live evidence remains historical
+until the fresh 0.13.2 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -41,9 +41,12 @@ not provide a Linux visual client launcher.
 7. Interrupt a long action in the TUI, then call `stop`.
 8. Exercise `find_placement` at a shoreline; confirm `map_summary` reads only
    force-charted chunks; verify deterministic production arithmetic and
-   ambiguity refusal. Inspect a live inserter and confirm its pickup/drop
-   positions and valid target identities; confirm belt contents and a mining
-   drill's current resource target. Then physically connect steam power to an
+   ambiguity refusal. Find a cardinal inserter placement with exact
+   `input_target` and `output_target`, physically place it with the same targets,
+   and confirm Factorio bound both identities. Confirm mining-drill candidates
+   report the resources covered by their mining area. Inspect the live inserter
+   and confirm its pickup/drop positions and valid target identities; confirm
+   belt contents and a mining drill's current resource target. Then physically connect steam power to an
    electric drill and deliver mined ore through belt, pipe, and power routes.
 9. If bootstrap items are absent, use another fresh built-in freeplay save.
    Never use console commands, editor mode, spawned items, or teleporting.
@@ -165,7 +168,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.13.1 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.13.2 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -188,14 +191,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.13.1. They
+The successful observations below were collected before release 0.13.2. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.13.1. Complete the fresh run above after installing 0.13.1 before recording a
+0.13.2. Complete the fresh run above after installing 0.13.2 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.13.1 run must instead report protocol v10 and mod/app 0.13.1.
+  0.8.0. A 0.13.2 run must instead report protocol v11 and mod/app 0.13.2.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

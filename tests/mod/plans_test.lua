@@ -6,8 +6,8 @@ local body = { valid = true, position = { x = 0, y = 0 }, walking_state = {}, mi
 body.cancel_crafting = function(args) table.remove(body.crafting_queue, args.index); body.crafting_queue_size = #body.crafting_queue end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 local starts = {}
-local queued_place_output_target
-local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_output_target = task.output_target end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
+local queued_place_input_target, queued_place_output_target
+local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_input_target, queued_place_output_target = task.input_target, task.output_target end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
 local walk, mine, craft = runner("walk_to"), runner("mine"), runner("craft")
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = walk, mine, runner("pickup"), craft
 package.loaded["scripts.actions.build"] = { place = runner("place"), rotate = runner("rotate"), set_recipe = runner("set_recipe") }
@@ -83,11 +83,12 @@ check(timeout_status.status == "failed" and timeout_status.outcomes[1].error:mat
   and inspected == 0,
   "out-of-range parking preserves the original deadline and times out without remote inspection")
 body.position = { x = 0, y = 0 }
-local output_plan = tasks.queue_plan({ steps = { { action = "place_entity", name = "burner-mining-drill", x = 1, y = 0, output_target = { x = 2, y = 0 } } } })
+local output_plan = tasks.queue_plan({ steps = { { action = "place_entity", name = "burner-inserter", x = 1, y = 0, input_target = { x = 0, y = 0 }, output_target = { x = 2, y = 0 } } } })
 game.tick = 138; tasks.on_tick()
 check(tasks.plan_status({ plan_id = output_plan.plan_id }).status == "completed"
+  and queued_place_input_target.x == 0 and queued_place_input_target.y == 0
   and queued_place_output_target.x == 2 and queued_place_output_target.y == 0,
-  "queued placement carries the expected output recipient into the physical task")
+  "queued placement carries expected input and output identities into the physical task")
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1
 check(tasks.cancel({ all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")
 os.exit(failures == 0 and 0 or 1)

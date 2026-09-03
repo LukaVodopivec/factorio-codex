@@ -1,5 +1,6 @@
--- Exact, read-only output-recipient resolution shared by placement search and
--- physical placement verification.
+-- Exact, read-only endpoint resolution shared by placement search and physical
+-- placement verification. Machine outputs retain their established recipient
+-- allowlist; inserter endpoints rely on Factorio's authoritative live binding.
 local M = {}
 
 local RECIPIENT_TYPES = {
@@ -20,7 +21,7 @@ local function contains(box, point)
     and point.y >= box.left_top.y and point.y < box.right_bottom.y
 end
 
-function M.resolve(c, requested, label)
+local function resolve(c, requested, label, require_recipient)
   local target = position(requested, label or "output_target")
   local dx, dy = c.position.x - target.x, c.position.y - target.y
   if dx * dx + dy * dy > 900 then error((label or "output_target") .. " must be within 30 tiles of Codex") end
@@ -39,14 +40,26 @@ function M.resolve(c, requested, label)
   if #matches == 0 then error((label or "output_target") .. " does not identify a player-owned entity") end
   if #matches > 1 then error((label or "output_target") .. " is ambiguous") end
   local entity = matches[1]
-  if not RECIPIENT_TYPES[entity.type] then
+  if require_recipient and not RECIPIENT_TYPES[entity.type] then
     error((label or "output_target") .. " identifies " .. entity.name .. ", which cannot receive placed output")
   end
   return {
     entity = entity,
     position = target,
-    identity = { name = entity.name, position = { x = entity.position.x, y = entity.position.y } },
+    identity = { name = entity.name, type = entity.type, position = { x = entity.position.x, y = entity.position.y } },
   }
+end
+
+function M.resolve(c, requested, label)
+  return resolve(c, requested, label, true)
+end
+
+function M.resolve_input(c, requested, label)
+  return resolve(c, requested, label or "input_target", false)
+end
+
+function M.resolve_endpoint(c, requested, label)
+  return resolve(c, requested, label, false)
 end
 
 function M.contains(entity, point)
@@ -55,6 +68,11 @@ end
 
 function M.verify_drop_target(built, expected)
   local ok, actual = pcall(function() return built.drop_target end)
+  return ok and actual == expected
+end
+
+function M.verify_pickup_target(built, expected)
+  local ok, actual = pcall(function() return built.pickup_target end)
   return ok and actual == expected
 end
 

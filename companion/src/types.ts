@@ -4,11 +4,13 @@ export interface Position { x: number; y: number }
 export interface PlacementCandidate {
   item: string; entity: string; position: Position; direction: number;
   distance: number; distance_from_codex: number; terrain: "land" | "shoreline" | "offshore";
-  output_position?: Position;
+  output_position?: Position; pickup_position?: Position; drop_position?: Position;
+  resource_coverage?: Array<{ name: string; entity_count: number; total_amount: number }>;
 }
 export interface PlacementSearchResult {
   item: string; entity: string; preferred: Position;
-  output_target?: { name: string; position: Position };
+  output_target?: { name: string; type: string; position: Position };
+  input_target?: { name: string; type: string; position: Position };
   candidates: PlacementCandidate[];
 }
 export interface MapSummary {

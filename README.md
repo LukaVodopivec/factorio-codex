@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.13.1**.
+Current release: **0.13.2**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -49,7 +49,9 @@ one Lua-contiguous plan to the sole FIFO; `plan_status` reads it, while
 physical runners and end with a compact or full local observation.
 `inspect_entity` reports live inserter pickup/drop positions and valid targets,
 current mining-drill resource targets, and belt contents. `find_placement`
-searches authoritative charted candidates and includes cardinal inserter endpoint evidence,
+searches authoritative charted candidates, reports mining-drill resource
+coverage, and can bind cardinal inserter pickup/drop endpoints to exact source
+and sink identities before physical placement verifies both live bindings,
 `map_summary` summarizes only already-charted terrain and factory landmarks,
 `production_requirements` performs deterministic recipe arithmetic, and
 `connect_entities` builds an inventory-backed physical belt, pipe, or power

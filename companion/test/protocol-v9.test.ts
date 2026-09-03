@@ -6,15 +6,15 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v10 DTO and tool registry", () => {
-  it("declares v10 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(10);
-    expect(MCP_SERVER_VERSION).toBe("0.13.1");
+describe("protocol v11 DTO and tool registry", () => {
+  it("declares v11 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(11);
+    expect(MCP_SERVER_VERSION).toBe("0.13.2");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
 
-  it("registers exactly 25 tools and forwards exact v10 payloads", async () => {
+  it("registers exactly 25 tools and forwards exact v11 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -29,6 +29,15 @@ describe("protocol v10 DTO and tool registry", () => {
     expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8 });
     await handlers.find_placement({ ...find, output_target: { x: 3, y: 4 } });
     expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8, output_target: { x: 3, y: 4 } });
+    await handlers.find_placement({ ...find, input_target: { x: 0, y: 1 }, output_target: { x: 3, y: 4 } });
+    expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8, input_target: { x: 0, y: 1 }, output_target: { x: 3, y: 4 } });
+    const place = schemas.place_entity.parse({ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
+    await handlers.place_entity(place);
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 1, y: 2 }, direction: undefined, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
+    const build = schemas.build_plan.parse({ steps: [{ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
+    await handlers.build_plan(build);
+    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
+      steps: [{ item: "inserter", position: { x: 1, y: 2 }, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
     await handlers.map_summary({});
     expect(call).toHaveBeenLastCalledWith("map_summary", {});
     await handlers.production_requirements({ targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
@@ -57,12 +66,14 @@ describe("protocol v10 DTO and tool registry", () => {
   it("keeps payload construction explicit and lossless", () => {
     expect(toolPayloads.pickup({ x: 1.25, y: 2.5, item: "iron-ore", count: 3 })).toEqual({ target: { x: 1.25, y: 2.5 }, item: "iron-ore", count: 3 });
     expect(toolPayloads.findPlacement({ item: "pipe", preferred: { x: 1, y: 2 }, radius: 3, directions: [0], limit: 1 })).toEqual({ item: "pipe", preferred: { x: 1, y: 2 }, radius: 3, directions: [0], limit: 1 });
+    expect(toolPayloads.place({ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } })).toEqual({ item: "inserter", position: { x: 1, y: 2 }, direction: undefined, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
     expect(toolPayloads.connectEntities({ kind: "pipe", prototype: "pipe", from: { x: 1, y: 2 }, to: { x: 3, y: 2 }, max_length: 2 })).toEqual({ kind: "pipe", prototype: "pipe", from: { x: 1, y: 2 }, to: { x: 3, y: 2 }, max_length: 2 });
     expect(toolPayloads.productionRequirements({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } })).toEqual({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } });
   });
 
-  it("normalizes Lua empty tables at every v9 array boundary", () => {
+  it("normalizes Lua empty tables at every array boundary", () => {
     expect(normalizePlacementSearch({ candidates: {} }).candidates).toEqual([]);
+    expect(normalizePlacementSearch({ candidates: [{ resource_coverage: {} }] }).candidates[0].resource_coverage).toEqual([]);
     expect(normalizeMapSummary({ resources: {}, water_edges: {}, factory_landmarks: {} })).toMatchObject({ resources: [], water_edges: [], factory_landmarks: [] });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);
     expect(normalizePhysicalRoute({ steps: {} }).steps).toEqual([]);

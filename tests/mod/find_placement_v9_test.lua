@@ -20,8 +20,25 @@ local recipient = { valid = true, name = "stone-furnace", type = "furnace", forc
   selection_box = { left_top = { x = 5, y = 1 }, right_bottom = { x = 6, y = 2 } } }
 local pole = { valid = true, name = "small-electric-pole", type = "electric-pole", force = force,
   position = { x = 5.5, y = 1.5 }, selection_box = recipient.selection_box }
+local source = { valid = true, name = "wooden-chest", type = "container", force = force,
+  position = { x = 1.5, y = 0.5 },
+  selection_box = { left_top = { x = 1, y = 0 }, right_bottom = { x = 2, y = 1 } } }
+local sink = { valid = true, name = "burner-mining-drill", type = "mining-drill", force = force,
+  position = { x = 1.5, y = 2.5 },
+  selection_box = { left_top = { x = 1, y = 2 }, right_bottom = { x = 2, y = 3 } } }
+local ore = {
+  { valid = true, name = "iron-ore", type = "resource", amount = 500 },
+  { valid = true, name = "iron-ore", type = "resource", amount = 450 },
+}
+local resource_calls = 0
 local target_matches = { recipient }
-surface.find_entities_filtered = function() return target_matches end
+surface.find_entities_filtered = function(args)
+  if args.type == "resource" then resource_calls = resource_calls + 1; return ore end
+  local x, y = args.area[1][1], args.area[1][2]
+  if x == 1.5 and y == 0.5 then return { source } end
+  if x == 1.5 and y == 2.5 then return { sink } end
+  return target_matches
+end
 local body = { position = { x = 1.5, y = 1.5 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
 _G.defines = { build_check_type = { manual = 1 } }
@@ -29,9 +46,13 @@ _G.prototypes = { item = {
   pipe = { place_result = { name = "pipe", type = "pipe", tile_width = 1, tile_height = 1, collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
   ["offshore-pump"] = { place_result = { name = "offshore-pump", type = "offshore-pump", tile_width = 1, tile_height = 1, collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
   ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill", type = "mining-drill", tile_width = 2, tile_height = 2,
-    vector_to_place_result = { x = 1, y = 0 }, collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } } },
+    vector_to_place_result = { x = 1, y = 0 }, mining_drill_radius = 1,
+    collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } } },
   ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter", tile_width = 1, tile_height = 1,
     inserter_pickup_position = { 0, -1 }, inserter_drop_position = { 0, 1 },
+    collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
+  ["electric-mining-drill"] = { place_result = { name = "electric-mining-drill", type = "mining-drill", tile_width = 1, tile_height = 1,
+    mining_drill_radius = 2,
     collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
 } }
 local finder = require("scripts.find_placement")
@@ -57,6 +78,12 @@ check(inserter.candidates[2].direction == 4
   and inserter.candidates[2].pickup_position.x == 2.5 and inserter.candidates[2].pickup_position.y == 1.5
   and inserter.candidates[2].drop_position.x == 0.5 and inserter.candidates[2].drop_position.y == 1.5,
   "inserter endpoint evidence rotates with candidate direction")
+local bound_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
+  directions = { 0 }, limit = 1, input_target = { x = 1.5, y = 0.5 }, output_target = { x = 1.5, y = 2.5 } })
+check(bound_inserter.input_target.name == "wooden-chest" and bound_inserter.input_target.type == "container"
+  and bound_inserter.output_target.name == "burner-mining-drill" and bound_inserter.output_target.type == "mining-drill"
+  and #bound_inserter.candidates == 1,
+  "inserter search binds both deterministic endpoints to exact target identities")
 local diagonal_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
   directions = { 2 }, limit = 1 })
 check(diagonal_inserter.candidates[1].pickup_position == nil and diagonal_inserter.candidates[1].drop_position == nil,
@@ -69,7 +96,17 @@ for _, candidate in ipairs(aligned.candidates) do
   check(candidate.output_position.x >= 5 and candidate.output_position.x < 6
     and candidate.output_position.y >= 1 and candidate.output_position.y < 2,
     "every returned direction deposits inside the requested recipient")
+  check(candidate.resource_coverage[1].name == "iron-ore"
+    and candidate.resource_coverage[1].entity_count == 2
+    and candidate.resource_coverage[1].total_amount == 950,
+    "mining drill candidates expose deterministic resource coverage")
 end
+local resource_calls_before_edge = resource_calls
+local chart_edge_drill = finder.find_placement({ item = "electric-mining-drill", preferred = { x = 30.5, y = 1.5 },
+  radius = 1, directions = { 0 }, limit = 1 })
+check(chart_edge_drill.candidates[1] and chart_edge_drill.candidates[1].resource_coverage == nil
+  and resource_calls == resource_calls_before_edge,
+  "drill coverage is omitted without querying beyond fully charted mining area")
 target_matches = { pole }
 local invalid, invalid_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })

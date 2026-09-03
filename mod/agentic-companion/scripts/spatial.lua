@@ -1,4 +1,4 @@
--- Protocol-v10 local perception: compact by default; full adds the ASCII grid.
+-- Protocol-v11 local perception: compact by default; full adds the ASCII grid.
 -- (dry-run placement check with blocker naming),
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.

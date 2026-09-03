@@ -9,7 +9,7 @@ export const planStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("walk_to"), ...position }).strict(),
   z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).default("natural") }).strict(),
   z.object({ action: z.literal("pickup_items"), ...position, item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
-  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), output_target: z.object(position).strict().optional() }).strict(),
+  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: z.object(position).strict().optional(), output_target: z.object(position).strict().optional() }).strict(),
   z.object({ action: z.literal("craft_items"), recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict(),
   z.object({ action: z.literal("insert_items"), ...position, items }).strict(),
   z.object({ action: z.literal("extract_items"), ...position, items: items.optional() }).strict(),

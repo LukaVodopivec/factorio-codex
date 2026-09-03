@@ -2,6 +2,15 @@ local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
+local function canonical(value)
+  if type(value) ~= "table" then return type(value) == "string" and string.format("%q", value) or tostring(value) end
+  local is_array, count = true, 0
+  for key in pairs(value) do if type(key) ~= "number" then is_array = false end; count = count + 1 end
+  if is_array then local out = {}; for i = 1, count do out[i] = canonical(value[i]) end; return "[" .. table.concat(out, ",") .. "]" end
+  local keys = {}; for key in pairs(value) do keys[#keys + 1] = key end; table.sort(keys)
+  local out = {}; for _, key in ipairs(keys) do out[#out + 1] = string.format("%q", key) .. ":" .. canonical(value[key]) end
+  return "{" .. table.concat(out, ",") .. "}"
+end
 local resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 20, position = { x = 8, y = 1 } },
   { valid = true, name = "iron-ore", type = "resource", amount = 10, position = { x = 3, y = 1 } },
@@ -88,9 +97,14 @@ for i = 1, 70 do
 end
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return dense end
 local bounded = require("scripts.map_summary").map_summary({})
-check(#bounded.factory.groups == 64 and bounded.factory.omissions.capped_groups == 6
-  and #bounded.factory.material_flow.nodes == 32 and bounded.factory.omissions.capped_flow_nodes == 38
-  and #bounded.factory.force_flows == 64 and bounded.factory.omissions.capped_flows == 6
+check(#bounded.factory.groups == 32 and bounded.factory.omissions.capped_groups == 38
+  and #bounded.factory.material_flow.nodes == 16 and bounded.factory.omissions.capped_flow_nodes == 54
+  and #bounded.factory.force_flows == 32 and bounded.factory.omissions.capped_flows == 38
   and bounded.factory.partial,
   "factory groups, graph nodes, and flow rows have deterministic caps and omission counts")
+local bounded_full = require("scripts.map_summary").map_summary({ detail = "full" })
+local aggregate_bytes, full_bytes = #canonical(bounded), #canonical(bounded_full)
+check(aggregate_bytes < 30000 and aggregate_bytes * 5 < full_bytes * 4,
+  "bounded aggregate stays below 30k fixture bytes and at least 20% smaller than full detail (aggregate="
+    .. aggregate_bytes .. ", full=" .. full_bytes .. ")")
 os.exit(failures == 0 and 0 or 1)

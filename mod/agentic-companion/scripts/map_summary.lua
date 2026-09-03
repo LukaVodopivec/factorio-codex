@@ -5,10 +5,10 @@ local factory_activity = require("scripts.factory_activity")
 local M = {}
 local MAX_EDGES = 256
 local MAX_LANDMARKS = 256
-local MAX_FACTORY_GROUPS = 64
-local MAX_FLOW_ROWS = 64
-local MAX_FLOW_NODES = 32
-local MAX_FLOW_EDGES = 64
+local MAX_FACTORY_GROUPS = 32
+local MAX_FLOW_ROWS = 32
+local MAX_FLOW_NODES = 16
+local MAX_FLOW_EDGES = 32
 
 local MACHINE_TYPES = {
   ["assembling-machine"] = true, furnace = true, ["mining-drill"] = true,

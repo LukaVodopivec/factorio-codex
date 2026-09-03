@@ -26,7 +26,7 @@ for i = 1, 129 do
     transfers = { { item = "ore", inserted = 1 } } })
 end
 local capped = activity.snapshot(100)
-check(#capped.events == 16 and capped.events_omitted_in_window > 0 and capped.events_omitted_before_window > 0
-  and not capped.history_complete and #capped.target_actions == 64 and capped.target_actions_omitted > 0,
+check(#capped.events == 8 and capped.events_omitted_in_window > 0 and capped.events_omitted_before_window > 0
+  and not capped.history_complete and #capped.target_actions == 16 and capped.target_actions_omitted > 0,
   "activity history is capped and reports omissions instead of pretending completeness")
 os.exit(failures == 0 and 0 or 1)

@@ -2,8 +2,8 @@
 -- performed through the sole task queue; it is not a second coordination store.
 local M = {}
 local MAX_EVENTS = 128
-local MAX_RETURNED_EVENTS = 16
-local MAX_TARGET_ROWS = 64
+local MAX_RETURNED_EVENTS = 8
+local MAX_TARGET_ROWS = 16
 
 local function ensure()
   storage.factory_activity = storage.factory_activity or {

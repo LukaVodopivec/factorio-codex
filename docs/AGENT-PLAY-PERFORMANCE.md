@@ -288,17 +288,27 @@ The deployed archive SHA-256 was
 `d8d3600e4eb0a1d0087d1c9810070e514c4491c7abf05e63f01f14f58b3a2106`.
 `GO` was `2026-09-03T06:26:52.063455112Z` at Factorio tick `23015`, and the
 deadline was `2026-09-03T06:46:52.065339056Z`. The last ordinary action
-completed at `2026-09-03T06:46:24Z`. The first read-only frozen snapshot
-completed at `2026-09-03T06:47:08Z` with `source_tick=95498`, about 16 seconds
+completed at `2026-09-03T06:46:24.228Z`. The first read-only frozen snapshot
+completed at `2026-09-03T06:47:08Z` with `source_tick=95498`, 15.9 seconds
 after the deadline. No post-deadline gameplay occurred, and no work visible
 during collection latency is attributed to the deadline.
 
 `SNAPSHOT_AT_20M` recorded carried `iron-plate=40`, `copper-plate=10`,
 `copper-ore=8`, and `wood=2`; furnace output contained `iron-plate=10`.
 The FIFO queue depth was zero, the active task was `null`, and the character
-crafting queue was zero. Interval evidence established accepted automated
-copper and iron drill-to-chest extraction, repeated furnace processing, and
-unlocks for electronics and steam power.
+crafting queue was zero. The strongest pre-deadline inspection, at
+`2026-09-03T06:46:16.362Z`—35.7 seconds before the deadline—showed nine iron
+plates in furnace output and one active craft at progress `0.73`; the carried
+40 plates were already established by earlier completed extracts. The exact
+pre-deadline lower bound is therefore 49 processed iron plates. Accepted
+automated copper and iron drill-to-chest extraction, `copper-plate=10`, and the
+Electronics unlock were also established before the deadline.
+
+The tenth furnace plate and Steam Power are collection-confirmed by the
+15.9-second-late frozen snapshot. Passive pre-cutoff processing makes both
+overwhelmingly likely to reflect work already underway before the cutoff, but
+they are not exact-deadline proof. Keep 49 as the exact cutoff lower bound
+unless the master ledger establishes tighter tick attribution.
 
 This is a satisfactory automation-first progress vector compared with R5 and
 R6, not rocket completion. Remaining bottlenecks were manual tree-fuel trips,

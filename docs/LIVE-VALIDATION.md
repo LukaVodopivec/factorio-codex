@@ -130,18 +130,27 @@ deployed commit `80a5874eabc8d9822e7c8d24dd36b68ece4e26e6` and archive SHA-256
 `d8d3600e4eb0a1d0087d1c9810070e514c4491c7abf05e63f01f14f58b3a2106`.
 `GO` was `2026-09-03T06:26:52.063455112Z` at tick `23015`; the deadline was
 `2026-09-03T06:46:52.065339056Z`. The last ordinary action completed at
-`2026-09-03T06:46:24Z`, before the deadline. The first read-only frozen sample
+`2026-09-03T06:46:24.228Z`, before the deadline. The first read-only frozen sample
 completed at `2026-09-03T06:47:08Z` with `source_tick=95498`. No post-deadline
-gameplay occurred, and the roughly 16-second collection latency grants no grace
+gameplay occurred, and the 15.9-second collection latency grants no grace
 or attribution to the deadline.
 
 The frozen sample recorded carried `iron-plate=40`, `copper-plate=10`,
 `copper-ore=8`, and `wood=2`, plus `iron-plate=10` in furnace output. Queue
 depth, active task, and crafting queue were respectively `0`, `null`, and `0`.
-Structured interval evidence proved accepted copper and iron drill-to-chest
-extraction, repeated furnace processing, and electronics plus steam-power
-unlocks. This is satisfactory automation-first progress relative to R5/R6,
-not a completed rocket objective.
+The pre-deadline inspection at `2026-09-03T06:46:16.362Z`, 35.7 seconds before
+the cutoff, showed furnace output `iron-plate=9` and one active craft at
+progress `0.73`; earlier completed extracts had already established 40 carried
+plates. Thus the exact cutoff lower bound is 49 processed iron plates.
+Accepted copper and iron drill-to-chest extraction, `copper-plate=10`, and
+Electronics were proved before the deadline.
+
+The tenth furnace plate and Steam Power are collection-confirmed. Passive
+pre-cutoff processing makes them overwhelmingly likely to reflect work already
+underway before the cutoff, but the late snapshot alone is not exact-deadline
+proof. Retain 49 as the cutoff lower bound unless tighter master-ledger tick
+attribution is established. This remains satisfactory automation-first progress
+relative to R5/R6, not a completed rocket objective.
 
 Residuals were manual tree-fuel travel, manual chest/furnace transfers, one
 recovered trapped layout, and master ledger/message lag that caused stale

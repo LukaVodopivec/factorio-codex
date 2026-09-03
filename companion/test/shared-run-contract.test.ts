@@ -27,12 +27,15 @@ describe("shared gameplay run contract", () => {
       "80a5874eabc8d9822e7c8d24dd36b68ece4e26e6",
       "d8d3600e4eb0a1d0087d1c9810070e514c4491c7abf05e63f01f14f58b3a2106",
       "2026-09-03T06:26:52.063455112Z", "2026-09-03T06:46:52.065339056Z",
-      "2026-09-03T06:46:24Z", "2026-09-03T06:47:08Z", "source_tick=95498",
+      "2026-09-03T06:46:16.362Z", "2026-09-03T06:46:24.228Z",
+      "2026-09-03T06:47:08Z", "source_tick=95498",
     ]) expect(joined).toContain(value);
     const result = performance.slice(performance.indexOf("#### Candidate B R7 recorded result"));
     expect(result).toMatch(/SNAPSHOT_AT_20M[\s\S]*iron-plate=40[\s\S]*copper-plate=10[\s\S]*copper-ore=8[\s\S]*wood=2[\s\S]*furnace output[\s\S]*iron-plate=10/i);
     expect(result).toMatch(/queue depth was zero[\s\S]*active task was `null`[\s\S]*crafting queue was zero/i);
-    expect(result).toMatch(/accepted automated[\s\S]*copper and iron drill-to-chest extraction[\s\S]*repeated furnace processing[\s\S]*electronics and steam power/i);
+    expect(result).toMatch(/35\.7 seconds before the deadline[^\n]*showed[\s\S]*nine iron\s+plates[\s\S]*active craft at\s+progress `0\.73`[\s\S]*exact\s+pre-deadline lower bound is therefore 49 processed iron plates/i);
+    expect(result).toMatch(/accepted\s+automated[\s\S]*copper and iron drill-to-chest extraction[\s\S]*copper-plate=10[\s\S]*Electronics unlock[\s\S]*before the deadline/i);
+    expect(result).toMatch(/tenth furnace plate and Steam Power are collection-confirmed[\s\S]*overwhelmingly likely[\s\S]*not exact-deadline proof[\s\S]*49 as the exact cutoff lower bound[\s\S]*tighter tick attribution/i);
     expect(result).toMatch(/satisfactory automation-first progress vector[\s\S]*not rocket completion/i);
     expect(result).toMatch(/manual tree-fuel trips[\s\S]*manual chest\/furnace transfers[\s\S]*trapped[^\n]*layout[\s\S]*ledger\/message lag[\s\S]*stale envelopes[\s\S]*false\s+post-deadline attribution/i);
     expect(result).toMatch(/nil mining-drill `drop_target`[\s\S]*runtime target becomes authoritative only after first output/i);

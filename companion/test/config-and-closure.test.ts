@@ -161,8 +161,10 @@ describe("exact local configuration", () => {
     expect(config).toContain('command = "./scripts/start-factorio-mcp"');
     expect(config).toContain("args = []");
     const launcher = fs.readFileSync(path.join(root, "scripts/start-factorio-mcp"), "utf8");
-    expect(launcher).toContain("nvm use --silent 22");
-    expect(launcher).toContain("exec node node_modules/.bin/tsx companion/src/cli.ts mcp");
+    expect(launcher).toContain('"$nvm_root"/versions/node/v*/bin/node');
+    expect(launcher).not.toContain('source "$nvm_root/nvm.sh"');
+    expect(launcher).not.toContain("nvm use --silent 22");
+    expect(launcher).toContain('exec "$node_22" node_modules/.bin/tsx companion/src/cli.ts mcp');
     expect(config).not.toMatch(/^cwd\s*=/m);
     expect(fs.existsSync(path.join(root, "mod/agentic-companion/settings.lua"))).toBe(false);
     const modSource = ["control.lua", "scripts/companion.lua", "locale/en/agentic-companion.cfg"]

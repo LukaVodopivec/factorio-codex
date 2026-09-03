@@ -6,15 +6,15 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v13 DTO and tool registry", () => {
-  it("declares v12 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(13);
-    expect(MCP_SERVER_VERSION).toBe("0.13.4");
+describe("protocol v14 DTO and tool registry", () => {
+  it("declares v14 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(14);
+    expect(MCP_SERVER_VERSION).toBe("0.13.5");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
 
-  it("registers exactly 25 tools and forwards exact v12 payloads", async () => {
+  it("registers exactly 25 tools and forwards exact v14 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"

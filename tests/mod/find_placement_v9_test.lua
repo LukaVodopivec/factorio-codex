@@ -27,9 +27,21 @@ local sink = { valid = true, name = "iron-chest", type = "container", force = fo
   position = { x = 1.5, y = 2.5 },
   selection_box = { left_top = { x = 1, y = 2 }, right_bottom = { x = 2, y = 3 } } }
 local ore = {
-  { valid = true, name = "iron-ore", type = "resource", amount = 500,
+  { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 3.25, y = 1 },
     prototype = { resource_category = "basic-solid" } },
-  { valid = true, name = "iron-ore", type = "resource", amount = 450,
+  { valid = true, name = "iron-ore", type = "resource", amount = 450, position = { x = 3.5, y = 1 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 5, y = -0.75 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 450, position = { x = 5, y = -0.5 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 6.5, y = 1 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 450, position = { x = 6.75, y = 1 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 5, y = 2.5 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 450, position = { x = 5, y = 2.75 },
     prototype = { resource_category = "basic-solid" } },
 }
 local resource_calls, resources = 0, ore
@@ -102,33 +114,52 @@ for _, candidate in ipairs(aligned.candidates) do
     and candidate.resource_coverage[1].total_amount == 950,
     "mining drill candidates expose deterministic resource coverage")
 end
-resources = { ore[1], { valid = true, name = "crude-oil", type = "resource", amount = 100000,
-  prototype = { resource_category = "basic-fluid" } } }
+resources = {
+  { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 8, y = 8 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "crude-oil", type = "resource", amount = 100000, position = { x = 8, y = 8 },
+    prototype = { resource_category = "basic-fluid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 700, position = { x = 9.1, y = 8 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "mystery-resource", type = "resource", amount = 900, position = { x = 8, y = 8 },
+    prototype = {} },
+}
 local mixed_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(mixed_drill.candidates[1]
   and #mixed_drill.candidates[1].resource_coverage == 1
   and mixed_drill.candidates[1].resource_coverage[1].name == "iron-ore"
   and mixed_drill.candidates[1].resource_coverage[1].total_amount == 500,
-  "mixed coverage reports only resources compatible with the drill prototype")
+  "mixed coverage excludes incompatible, unknown-category, and overlap-only resources")
+resources = {
+  { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 8, y = 8 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "copper-ore", type = "resource", amount = 400, position = { x = 8, y = 8 },
+    prototype = { resource_category = "basic-solid" } },
+}
+local lexical_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+  radius = 1, directions = { 0 }, limit = 1 })
+check(lexical_drill.candidates[1].resource_coverage[1].name == "copper-ore"
+  and lexical_drill.candidates[1].resource_coverage[2].name == "iron-ore",
+  "compatible resource coverage keeps lexical presentation order")
 resources = {}
 local empty_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
-  radius = 1, directions = { 0 }, limit = 8 })
-check(#empty_drill.candidates == 0 and empty_drill.rejected_no_compatible_resource > 0,
-  "zero compatible coverage is not useful and is explicitly rejected before candidate acceptance")
-resources = { { valid = true, name = "crude-oil", type = "resource", amount = 100000,
+  radius = 1, directions = { 0 }, limit = 1 })
+check(empty_drill.candidates[1] and #empty_drill.candidates[1].resource_coverage == 0,
+  "fully charted empty coverage is reported explicitly on an otherwise valid candidate")
+resources = { { valid = true, name = "crude-oil", type = "resource", amount = 100000, position = { x = 8, y = 8 },
   prototype = { resource_category = "basic-fluid" } } }
 local incompatible_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
-  radius = 1, directions = { 0 }, limit = 8 })
-check(#incompatible_drill.candidates == 0 and incompatible_drill.rejected_no_compatible_resource > 0,
-  "fully charted drill candidates with only incompatible resources are explicitly rejected")
+  radius = 1, directions = { 0 }, limit = 1 })
+check(incompatible_drill.candidates[1] and #incompatible_drill.candidates[1].resource_coverage == 0,
+  "fully charted incompatible-only coverage is reported as an explicit empty array")
 resources = ore
 local resource_calls_before_edge = resource_calls
 local chart_edge_drill = finder.find_placement({ item = "electric-mining-drill", preferred = { x = 30.5, y = 1.5 },
   radius = 1, directions = { 0 }, limit = 1 })
-check(#chart_edge_drill.candidates == 0 and chart_edge_drill.rejected_unknown_resource_coverage > 0
+check(chart_edge_drill.candidates[1] and chart_edge_drill.candidates[1].resource_coverage == nil
   and resource_calls == resource_calls_before_edge,
-  "drill candidates with uncharted coverage are explicitly rejected without a resource query")
+  "drill candidates with uncharted coverage omit the field without a resource query")
 target_matches = { pole }
 local invalid, invalid_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })

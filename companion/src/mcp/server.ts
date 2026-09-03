@@ -10,7 +10,7 @@ import { executeRunPlan, queuePlanSchema, runPlanSchema, type RunPlanResult } fr
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.13.4";
+export const MCP_SERVER_VERSION = "0.13.5";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -74,7 +74,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
-  server.registerTool("find_placement", { description: "Find stable nearest force-charted positions within 30 tiles of Codex using Factorio's authoritative placement check; drills report compatible resource coverage and reject zero coverage as not useful or unknown coverage as unverified, while optional output_target binds a machine or cardinal inserter output to an exact recipient.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), output_target: position.optional() }).strict() }, async (p) => {
+  server.registerTool("find_placement", { description: "Find stable nearest force-charted positions within 30 tiles of Codex using Factorio's authoritative placement check; drills report compatible resource coverage (an empty array is not useful, while uncharted coverage is omitted), and optional output_target binds a machine or cardinal inserter output to an exact recipient.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), output_target: position.optional() }).strict() }, async (p) => {
     try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });

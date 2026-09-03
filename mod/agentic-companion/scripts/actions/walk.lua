@@ -69,6 +69,66 @@ local function fail(c, code, detail)
   return { failed = code .. ": " .. detail }
 end
 
+local function blocker_evidence(state, c, goal)
+  local from = c.position
+  local dx, dy = goal.x - from.x, goal.y - from.y
+  local distance = math.sqrt(dx * dx + dy * dy)
+  local scale = distance > 2.5 and 2.5 / distance or 1
+  local to = { x = from.x + dx * scale, y = from.y + dy * scale }
+  local entities = {}
+  local area = {
+    left_top = { x = math.min(from.x, to.x) - 0.5, y = math.min(from.y, to.y) - 0.5 },
+    right_bottom = { x = math.max(from.x, to.x) + 0.5, y = math.max(from.y, to.y) + 0.5 },
+  }
+  local corners = {
+    area.left_top,
+    { x = area.right_bottom.x - 0.001, y = area.left_top.y },
+    { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
+    { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 },
+  }
+  for _, corner in ipairs(corners) do
+    if not c.force.is_chunk_charted(c.surface,
+      { x = math.floor(corner.x / 32), y = math.floor(corner.y / 32) }) then
+      return "collision segment unavailable because its bounded evidence area crosses uncharted terrain"
+    end
+  end
+  local ok_entities, found = pcall(c.surface.find_entities_filtered, {
+    area = area,
+    collision_mask = prototypes.entity["character"].collision_mask,
+  })
+  if ok_entities and type(found) == "table" then
+    for _, entity in ipairs(found) do
+      if entity.valid and entity ~= c and entity.type ~= "resource" and entity.type ~= "item-entity" then
+        entities[#entities + 1] = string.format("%s@(%.1f,%.1f)", entity.name,
+          entity.position.x, entity.position.y)
+      end
+    end
+  end
+  table.sort(entities)
+  while #entities > 8 do table.remove(entities) end
+
+  local tiles, seen = {}, {}
+  for index = 0, 5 do
+    local x, y = from.x + (to.x - from.x) * index / 5, from.y + (to.y - from.y) * index / 5
+    local ok_tile, tile = pcall(c.surface.get_tile, x, y)
+    local collision_ok, collides = false, false
+    if ok_tile and tile then collision_ok, collides = pcall(tile.collides_with, "player") end
+    if collision_ok and collides then
+      local tx, ty = math.floor(x), math.floor(y)
+      local key = tx .. ":" .. ty
+      if not seen[key] then
+        seen[key] = true
+        tiles[#tiles + 1] = string.format("%s@(%d,%d)", tile.name or "collision-tile", tx, ty)
+      end
+    end
+  end
+  local evidence = string.format("collision segment (%.1f,%.1f)->(%.1f,%.1f); blocker_candidates=%s; collision_tiles=%s",
+    from.x, from.y, to.x, to.y, #entities > 0 and table.concat(entities, ",") or "none",
+    #tiles > 0 and table.concat(tiles, ",") or "none")
+  state.blocker_evidence = evidence
+  return evidence
+end
+
 local function retry_or_fail(state, c, code, detail)
   state.retries = state.retries + 1
   if state.retries > MAX_RETRIES then
@@ -130,8 +190,9 @@ function M.step(state, c, task_id)
           "Factorio's pathfinder remained temporarily unavailable")
         if failed then return failed end
       elseif not result.path or #result.path == 0 then
+        local evidence = blocker_evidence(state, c, state.target)
         return fail(c, "PATH_NOT_FOUND", string.format(
-          "Factorio found no character path to (%.1f, %.1f)", state.target.x, state.target.y))
+          "Factorio found no character path to (%.1f, %.1f); %s", state.target.x, state.target.y, evidence))
       else
         state.path = result.path
         state.waypoint = 1
@@ -190,9 +251,10 @@ function M.step(state, c, task_id)
         stop(c)
         return nil
       end
+      local evidence = blocker_evidence(state, c, goal or state.target)
       return fail(c, "PATH_STALLED", string.format(
-          "got stuck at (%.1f, %.1f), still %.1f tiles from the target — water, cliffs or buildings may be in the way",
-          pos.x, pos.y, math.sqrt(dist_sq(pos, state.target))))
+          "got stuck at (%.1f, %.1f), still %.1f tiles from the target; %s",
+          pos.x, pos.y, math.sqrt(dist_sq(pos, state.target)), evidence))
     end
     state.last_check_tick = game.tick
     state.last_pos = { x = pos.x, y = pos.y }

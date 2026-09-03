@@ -12,16 +12,21 @@ _G.defines = {
 }
 _G.prototypes = { entity = { character = { collision_mask = {} } } }
 
-local next_path_id = 0
+local next_path_id, blocker_filter, chart_all = 0, nil, true
+local entity_queries, tile_queries = 0, 0
 local body = {
   valid = true,
   position = { x = 0, y = 0 },
-  force = {},
+  force = { is_chunk_charted = function(_, chunk) return chart_all or chunk.x == 0 end },
   walking_state = {},
   surface = { request_path = function()
     next_path_id = next_path_id + 1
     return next_path_id
-  end },
+  end,
+  get_tile = function(x, y) tile_queries = tile_queries + 1; return { position = { x = math.floor(x), y = math.floor(y) },
+    name = x >= 0.5 and "water" or "grass", collides_with = function(layer) return layer == "player" and x >= 0.5 end } end,
+  find_entities_filtered = function(filter) entity_queries = entity_queries + 1; blocker_filter = filter; return { { valid = true, name = "stone-furnace", type = "furnace",
+    position = { x = 1, y = 0 } } } end },
 }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
 local walk = require("scripts.actions.walk")
@@ -64,6 +69,20 @@ walk.step(task._walk, body, task.id); deliver(nil, false)
 local result = walk.step(task._walk, body, task.id)
 check(result and result.failed:match("^PATH_NOT_FOUND:"),
   "no-path result fails deterministically without blind walking")
+check(result.failed:match("collision segment") and result.failed:match("stone%-furnace") and result.failed:match("water"),
+  "no-path result includes bounded local collision-segment evidence")
+check(blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
+  "blocker evidence uses the same character collision mask as native pathfinding")
+
+chart_all = false
+task = reset({ x = 40, y = 0 })
+body.position = { x = 31.8, y = 0 }
+entity_queries, tile_queries = 0, 0
+walk.step(task._walk, body, task.id); deliver(nil, false)
+local boundary_result = walk.step(task._walk, body, task.id)
+check(boundary_result.failed:match("crosses uncharted terrain") and entity_queries == 0 and tile_queries == 0,
+  "collision evidence makes zero entity or tile queries when its bounded area crosses an uncharted chunk")
+chart_all = true
 
 task = reset()
 local transient_result
@@ -99,6 +118,8 @@ game.tick = 120
 result = walk.step(task._walk, body, task.id)
 check(result and result.failed:match("^PATH_STALLED:"),
   "repeated physical stall ends with a deterministic diagnostic")
+check(result.failed:match("collision segment") and result.failed:match("stone%-furnace"),
+  "stalled path includes the same bounded local blocker evidence")
 
 task = reset()
 walk.step(task._walk, body, task.id); deliver({ { x = 0, y = 0 } })

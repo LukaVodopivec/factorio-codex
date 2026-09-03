@@ -49,6 +49,7 @@ local function collect_inventories(entity)
   local has_burner = ok_burner and burner ~= nil
 
   local result = {}
+  local expose_empty = entity.type == "furnace"
   local seen = {}
   local found = false
   for _, probe in ipairs(INVENTORY_PROBES) do
@@ -56,15 +57,17 @@ local function collect_inventories(entity)
     if index and not seen[index] then
       seen[index] = true
       local ok, inv = pcall(entity.get_inventory, index)
-      if ok and inv and not inv.is_empty() then
+      if ok and inv then
         local label = probe[2]
         if probe[1] == "fuel" and not has_burner then label = "main" end
-        local bucket = result[label] or {}
-        result[label] = bucket
-        for _, item in ipairs(inv.get_contents()) do
-          bucket[item.name] = (bucket[item.name] or 0) + item.count
+        if not inv.is_empty() or expose_empty then
+          local bucket = result[label] or {}
+          result[label] = bucket
+          for _, item in ipairs(inv.get_contents()) do
+            bucket[item.name] = (bucket[item.name] or 0) + item.count
+          end
+          found = true
         end
-        found = true
       end
     end
   end
@@ -265,6 +268,12 @@ local function inspect_one(position, c)
   end
 
   if e.type == "mining-drill" then
+    local ok_drop_position, drop_position = pcall(function() return e.drop_position end)
+    if ok_drop_position and drop_position then
+      out.drop_position = { x = drop_position.x, y = drop_position.y }
+    end
+    local ok_drop_target, drop_target = pcall(function() return e.drop_target end)
+    if ok_drop_target then out.drop_target = entity_identity(drop_target) or false end
     local ok_target, target = pcall(function() return e.mining_target end)
     if ok_target then
       local identity = entity_identity(target)

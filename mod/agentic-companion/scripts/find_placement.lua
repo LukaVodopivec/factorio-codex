@@ -159,12 +159,11 @@ function M.find_placement(params)
     end
   end
 
-  local output_target, drop_offset
+  local output_target = nil
+  local drop_offset = output_targets.output_offset(proto)
+  local output_capable = proto.type == "mining-drill" or proto.type == "inserter" or drop_offset ~= nil
   if params.output_target ~= nil then
     output_target = output_targets.resolve(c, params.output_target, "find_placement output_target")
-    local ok, raw = pcall(function() return proto.vector_to_place_result end)
-    if ok and raw then drop_offset = prototype_vector(raw) end
-    if not drop_offset and proto.type == "inserter" then drop_offset = inserter_drop_offset end
     if not drop_offset then error(params.item .. " has no deterministic output offset") end
   end
   if output_target then
@@ -188,15 +187,20 @@ function M.find_placement(params)
           for _, direction in ipairs(directions) do
             local pos = { x = x, y = y }
             local area = footprint(proto, pos, direction)
-            local output_offset = drop_offset and rotate(drop_offset, direction) or nil
-            local output_position = output_offset and { x = x + output_offset.x, y = y + output_offset.y } or nil
+            local output_position = output_targets.output_position(proto, pos, direction)
             local pickup_offset = inserter_pickup_offset and rotate(inserter_pickup_offset, direction) or nil
             local inserter_output_offset = inserter_drop_offset and rotate(inserter_drop_offset, direction) or nil
             local pickup_position = pickup_offset and { x = x + pickup_offset.x, y = y + pickup_offset.y } or nil
             local drop_position = inserter_output_offset and { x = x + inserter_output_offset.x, y = y + inserter_output_offset.y } or nil
             if proto.type == "inserter" and output_target then output_position = drop_position end
-            local output_matches = not output_target or output_targets.contains(output_target.entity, output_position)
-            if output_matches and footprint_charted(c.force, c.surface, area) and c.surface.can_place_entity({
+            local recipient, recipient_identity, recipient_state = output_targets.recipient_at(c, output_position)
+            local candidate_output_target
+            if output_position and recipient_state == "bound" then candidate_output_target = recipient_identity end
+            if output_position and recipient_state == "none" then candidate_output_target = false end
+            local output_matches = not output_target or recipient == output_target.entity
+            local output_known = not output_capable or (output_position ~= nil
+              and (recipient_state == "bound" or recipient_state == "none"))
+            if output_known and output_matches and footprint_charted(c.force, c.surface, area) and c.surface.can_place_entity({
               name = proto.name, position = pos, direction = direction, force = c.force,
               build_check_type = defines.build_check_type.manual,
             }) then
@@ -210,6 +214,7 @@ function M.find_placement(params)
                   distance_from_codex = math.sqrt(codex_distance_sq),
                   terrain = terrain(c.force, c.surface, proto, area),
                   output_position = output_position,
+                  output_target = candidate_output_target,
                   pickup_position = pickup_position,
                   drop_position = drop_position,
                   resource_coverage = resource_coverage,

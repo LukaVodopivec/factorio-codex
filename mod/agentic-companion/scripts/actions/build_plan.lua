@@ -76,6 +76,13 @@ function M.start(task)
     if step.output_target ~= nil then
       step._output_target = output_targets.resolve(companion.require_companion(), step.output_target,
         "build_plan output_target")
+      local result = proto and proto.place_result
+      local matches, endpoint = result and output_targets.geometry_matches(companion.require_companion(), result,
+        step.position, step.direction, step._output_target.entity)
+      if not matches then
+        error(string.format("build_plan output_target is not at the exact output endpoint%s",
+          endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
+      end
     end
     if step.insert ~= nil then
       -- {"coal":10} → sorted {name, count} list for deterministic messages.
@@ -405,6 +412,10 @@ function M.tick(task)
     local current = output_targets.resolve(c, step.output_target, "build_plan output_target")
     if current.entity ~= step._output_target.entity then
       return advance(task, false, "output_target changed before placement; observe again")
+    end
+    local matches = output_targets.geometry_matches(c, place_result, step.position, step.direction, current.entity)
+    if not matches then
+      return advance(task, false, "output geometry changed before placement; observe again")
     end
     expected_output = current.entity
   end

@@ -12,12 +12,23 @@ const pilot = read("GOAL-PILOT-v1.md");
 const specialist = read("GOAL-SPECIALIST-v1.md");
 const knowledge = read("PLAYER-KNOWLEDGE-v1.md");
 const performance = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
+const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+const liveValidation = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");
 const roleGuidance = performance.match(/For role coordination,[\s\S]*?(?=\n## Peaceful rocket benchmark)/)?.[0] ?? "";
 const prompts = [master, pilot, specialist];
 const allInstructions = [skill, ...prompts, knowledge].join("\n");
 const ledgerPath = "/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json";
 
 describe("shared gameplay run contract", () => {
+  it("documents exact R6 structured placement, inspection, path, and transition evidence", () => {
+    for (const text of [readme, liveValidation]) {
+      expect(text).toMatch(/output_position[\s\S]*recipient[\s\S]*null/i);
+      expect(text).toMatch(/drill[\s\S]*output\s+position[\s\S]*recipient(?:-or-null| \(explicitly `null`)/i);
+      expect(text).toMatch(/furnace[\s\S]*fuel[\s\S]*input[\s\S]*output buffers/i);
+      expect(text).toMatch(/collision segment[\s\S]*blocker/i);
+      expect(text).toMatch(/queued[\s\S]*running[\s\S]*terminal transitions/i);
+    }
+  });
   it("uses one exact ephemeral operations ledger and removes every retired run file", () => {
     for (const text of [skill, ...prompts]) expect(text).toContain(ledgerPath);
     for (const retired of [

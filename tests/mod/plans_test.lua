@@ -31,6 +31,10 @@ for tick = 1, 5 do game.tick = tick; tasks.on_tick() end
 local a, b = tasks.plan_status({ plan_id = 1 }), tasks.plan_status({ plan_id = 2 })
 check(a.status == "completed" and a.completed_steps == 2, "Lua plan executes all steps contiguously")
 check(b.status == "completed" and table.concat(starts, ",") == "walk_to,mine,craft", "successful predecessor releases successor without interleaving")
+check(a.transitions[1].status == "queued" and a.transitions[2].status == "running"
+  and a.transitions[#a.transitions].status == "completed"
+  and b.transitions[1].status == "queued" and b.transitions[#b.transitions].status == "completed",
+  "terminal plan status retains queued-through-completed transition evidence even when first polled late")
 local pickup_plan = tasks.queue_plan({ steps = { { action = "pickup_items", x = 4, y = 5, item = "iron-ore", count = 3 } } })
 game.tick = 5.5; tasks.on_tick()
 check(tasks.plan_status({ plan_id = pickup_plan.plan_id }).status == "completed" and starts[#starts] == "pickup",

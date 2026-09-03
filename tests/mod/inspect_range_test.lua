@@ -35,7 +35,8 @@ local surface = {
   end,
 }
 entity.surface = surface
-_G.defines = { inventory = {}, entity_status = {} }
+_G.defines = { inventory = { fuel = 1, chest = 1, furnace_source = 2, furnace_result = 3,
+  assembling_machine_input = 4, assembling_machine_output = 5 }, entity_status = {} }
 _G.game = { connected_players = { { surface = surface, position = { x = 1000, y = 1000 } } } }
 
 local inspect = require("scripts.inspect")
@@ -110,15 +111,23 @@ check(no_targets.pickup_target == nil and no_targets.drop_target == nil,
 local ore = { valid = true, name = "iron-ore", type = "resource", position = { x = 2.25, y = 0.25 }, amount = 873 }
 local drill = {
   valid = true, name = "burner-mining-drill", type = "mining-drill", direction = 4,
-  position = { x = 2, y = 0 }, mining_target = ore, prototype = {},
+  position = { x = 2, y = 0 }, mining_target = ore,
+  drop_position = { x = 3.3, y = -0.5 }, drop_target = drop, prototype = {},
 }
 found_entity = drill
 local drill_result = inspect.inspect({ targets = { drill.position } }).entities[1]
 check(drill_result.mining_target.name == "iron-ore"
   and drill_result.mining_target.type == "resource"
   and drill_result.mining_target.position.x == 2.25
-  and drill_result.mining_target.amount == 873,
-  "mining drill inspection reports its valid current resource target")
+  and drill_result.mining_target.amount == 873
+  and drill_result.drop_position.x == 3.3 and drill_result.drop_position.y == -0.5
+  and drill_result.drop_target.name == "stone-furnace",
+  "mining drill inspection reports its runtime output endpoint, recipient, and valid current resource target")
+
+drill.drop_target = nil
+local unbound_drill = inspect.inspect({ targets = { drill.position } }).entities[1]
+check(unbound_drill.drop_position.x == 3.3 and unbound_drill.drop_target == false,
+  "mining drill inspection preserves the endpoint and explicit unbound recipient sentinel")
 
 drill.mining_target = { valid = false }
 local no_mining_target = inspect.inspect({ targets = { drill.position } }).entities[1]
@@ -141,6 +150,14 @@ check(belt_result.belt_contents["iron-ore"] == 5 and belt_result.belt_contents.c
   "belt inspection retains contents from every transport line")
 
 found_entity = entity
+entity.type = "furnace"
+entity.get_inventory = function(index)
+  local contents = index == 1 and { { name = "coal", count = 1 } } or {}
+  return { is_empty = function() return #contents == 0 end, get_contents = function() return contents end }
+end
+local furnace_buffers = inspect.inspect({ targets = { entity.position } }).entities[1].inventories
+check(furnace_buffers.fuel.coal == 1 and next(furnace_buffers.input) == nil and next(furnace_buffers.output) == nil,
+  "furnace inspection exposes fuel, input, and output buffers even when relevant compartments are empty")
 
 local queries_before_single = inspection_queries
 local single, single_error = pcall(inspect.inspect, { position = { x = 0, y = 0 } })

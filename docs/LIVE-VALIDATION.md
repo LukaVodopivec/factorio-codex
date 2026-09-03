@@ -44,12 +44,20 @@ not provide a Linux visual client launcher.
    ambiguity refusal. Find a cardinal inserter placement with an exact
    `output_target`, physically place it with that target, and confirm Factorio
    bound its `drop_target`. Inspect the placed inserter's `pickup_target` to
-   falsify an incorrect source binding. Confirm mining-drill candidates report
+   falsify an incorrect source binding. Confirm an output-capable candidate always
+   reports `output_position` and reports its recipient or explicit `null`; a
+   selection-box-only furnace overlap must not pass exact target filtering.
+   Confirm mining-drill candidates report
    only compatible resources whose centers are covered by their mining area; treat a
-   a deterministic rejection count for charted candidates with zero compatible
+   deterministic rejection count for charted candidates with zero compatible
    resources and treat omitted coverage as uncharted. Inspect the live inserter
    and confirm its pickup/drop positions and valid target identities; confirm
-   belt contents and a mining drill's current resource target. Then physically connect steam power to an
+   belt contents, a mining drill's actual output position and recipient-or-null,
+   its current resource target, and explicit furnace fuel/input/output buffers.
+   Force a bounded no-path/stall fixture and confirm its local collision segment,
+   blocker identities and collision tiles. Confirm a terminal `plan_status` still
+   carries queued, running and terminal transitions after a fast successor.
+   Then physically connect steam power to an
    electric drill and deliver mined ore through belt, pipe, and power routes.
 9. If bootstrap items are absent, use another fresh built-in freeplay save.
    Never use console commands, editor mode, spawned items, or teleporting.

@@ -40,9 +40,11 @@ function luaArray(value: unknown): unknown[] {
 
 export function normalizePlacementSearch(value: any): any {
   if (!value || typeof value !== "object") return value;
-  return { ...value, candidates: luaArray(value.candidates).map((candidate: any) => candidate?.resource_coverage === undefined
-    ? candidate
-    : { ...candidate, resource_coverage: luaArray(candidate.resource_coverage) }) };
+  return { ...value, candidates: luaArray(value.candidates).map((candidate: any) => ({
+    ...candidate,
+    ...(candidate?.output_target === false ? { output_target: null } : {}),
+    ...(candidate?.resource_coverage === undefined ? {} : { resource_coverage: luaArray(candidate.resource_coverage) }),
+  })) };
 }
 
 export function normalizeMapSummary(value: any): any {
@@ -66,6 +68,7 @@ export function normalizeInspection(value: any): any {
   if (!value || !Array.isArray(value.entities)) return value;
   return { ...value, entities: value.entities.map((entity: any) => {
     if (!entity || entity.error) return entity;
+    if (entity.drop_target === false) entity = { ...entity, drop_target: null };
     const hasElectricalMarker = entity.electrical !== undefined || entity.electric_network_id !== undefined
       || entity.electric_buffer_capacity !== undefined || entity.electric_demand !== undefined
       || entity.electric_satisfaction !== undefined || entity.connected_poles !== undefined;
@@ -106,5 +109,9 @@ export function normalizePlanDiagnostics(value: any): any {
     status: "active_target",
     detail: `active ${active.action ?? "plan"} target`,
   });
-  return { ...value, diagnostics: { route, machines } };
+  return {
+    ...value,
+    ...(value.transitions === undefined ? {} : { transitions: luaArray(value.transitions) }),
+    diagnostics: { route, machines },
+  };
 }

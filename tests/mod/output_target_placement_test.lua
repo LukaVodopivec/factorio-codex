@@ -4,12 +4,14 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 local force = { is_chunk_charted = function() return true end }
 local recipient = { valid = true, name = "stone-furnace", type = "furnace", force = force,
-  position = { x = 2, y = 0 }, selection_box = { left_top = { x = 1.5, y = -0.5 }, right_bottom = { x = 2.5, y = 0.5 } } }
+  position = { x = 2, y = 0 }, selection_box = { left_top = { x = 1.5, y = -0.5 }, right_bottom = { x = 2.5, y = 0.5 } },
+  bounding_box = { left_top = { x = 1.5, y = -0.5 }, right_bottom = { x = 2.5, y = 0.5 } } }
 local replacement = { valid = true, name = "steel-furnace", type = "furnace", force = force,
   position = { x = 2, y = 0 }, selection_box = recipient.selection_box }
 local source = { valid = true, name = "wooden-chest", type = "container", force = force,
   position = { x = 0, y = -1 }, selection_box = { left_top = { x = -0.5, y = -1.5 }, right_bottom = { x = 0.5, y = -0.5 } } }
 local target_matches, created, removed, pickup_target, drop_target, last_built = { recipient }, 0, 0, source, recipient, nil
+local runtime_drop_position = { x = 2, y = 0 }
 local surface = {
   find_entities_filtered = function() return target_matches end,
   can_place_entity = function() return true end,
@@ -17,7 +19,8 @@ local surface = {
     created = created + 1
     last_built = { valid = true, name = args.name,
       type = args.name == "burner-inserter" and "inserter" or "mining-drill", position = args.position,
-      pickup_target = pickup_target, drop_target = drop_target }
+      pickup_target = pickup_target, drop_target = drop_target,
+      direction = args.direction, drop_position = runtime_drop_position, prototype = prototypes.item[args.name].place_result }
     return last_built
   end,
 }
@@ -28,8 +31,8 @@ package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" e
 _G.defines = { direction = { north = 0 }, build_check_type = { manual = 1 } }
 _G.game = { tick = 100 }
 _G.prototypes = { item = {
-  ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill", type = "mining-drill" } },
-  ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter" } },
+  ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill", type = "mining-drill", vector_to_place_result = { x = 1, y = 0 } } },
+  ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter", inserter_drop_position = { x = 1, y = 0 } } },
 } }
 local place = require("scripts.actions.build").place
 drop_target = nil
@@ -44,6 +47,15 @@ game.tick = game.tick + 3
 local valid_result = place.tick(valid)
 check(valid_result and valid_result.status == "done" and created == 1 and removed == 1,
   "placement accepts output binding delayed by more than one tick without recreating the entity")
+created, removed, drop_target, runtime_drop_position = 0, 0, recipient, { x = 2.25, y = 0 }
+local wrong_geometry = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+place.start(wrong_geometry)
+check(place.tick(wrong_geometry) == nil, "placement retains an entity whose runtime endpoint still needs verification")
+game.tick = game.tick + 1
+local wrong_geometry_result = place.tick(wrong_geometry)
+check(wrong_geometry_result and wrong_geometry_result.status == "done" and created == 1,
+  "authoritative exact runtime binding outranks a prototype/runtime endpoint discrepancy")
+runtime_drop_position = { x = 2, y = 0 }
 created, removed, target_matches, recipient.valid = 0, 0, { recipient }, true
 local invalidated = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
 place.start(invalidated)

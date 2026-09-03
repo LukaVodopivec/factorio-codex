@@ -73,6 +73,12 @@ function M.place.start(task)
   task._entity_name = result.name
   if task.output_target ~= nil then
     task._output_target = output_targets.resolve(c, task.output_target, "place output_target")
+    local matches, endpoint = output_targets.geometry_matches(c, result, task.position, task.direction,
+      task._output_target.entity)
+    if not matches then
+      error(string.format("place output_target is not at the exact output endpoint%s",
+        endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
+    end
   end
 end
 
@@ -122,6 +128,11 @@ function M.place.tick(task)
     local current = output_targets.resolve(c, task.output_target, "place output_target")
     if current.entity ~= task._output_target.entity then
       return { status = "failed", detail = "place output_target changed before placement; observe again" }
+    end
+    local matches = output_targets.geometry_matches(c, prototypes.item[task.item].place_result,
+      task.position, task.direction, current.entity)
+    if not matches then
+      return { status = "failed", detail = "place output geometry changed before placement; observe again" }
     end
     expected_output = current.entity
   end

@@ -60,6 +60,7 @@ describe("protocol v16 DTO and tool registry", () => {
     const diagnostics = normalizePlanDiagnostics({ outcomes: [{ step: 2, action: "place_entity", status: "failed", error: "blocked" }], observation: { entities: [{ name: "assembler", position: { x: 1, y: 1 }, status: "no_power" }] } });
     expect(diagnostics.diagnostics.route[0]).toMatchObject({ step: 2, detail: "blocked" });
     expect(diagnostics.diagnostics.machines[0]).toMatchObject({ entity: "assembler", status: "no_power" });
+    expect(normalizePlanDiagnostics({ transitions: {} }).transitions).toEqual([]);
   });
 
   it("keeps payload construction explicit and lossless", () => {
@@ -74,6 +75,9 @@ describe("protocol v16 DTO and tool registry", () => {
     expect(normalizePlacementSearch({ rejected_no_compatible_resource: 5, candidates: {} }))
       .toEqual({ rejected_no_compatible_resource: 5, candidates: [] });
     expect(normalizePlacementSearch({ candidates: [{ resource_coverage: {} }] }).candidates[0].resource_coverage).toEqual([]);
+    expect(normalizePlacementSearch({ candidates: [{ output_position: { x: 1, y: 2 }, output_target: false }] }).candidates[0])
+      .toEqual({ output_position: { x: 1, y: 2 }, output_target: null });
+    expect(normalizeInspection({ entities: [{ name: "drill", type: "mining-drill", drop_target: false }] }).entities[0].drop_target).toBeNull();
     expect(normalizeMapSummary({ resources: {}, water_edges: {}, factory_landmarks: {} })).toMatchObject({ resources: [], water_edges: [], factory_landmarks: [] });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);
     expect(normalizePhysicalRoute({ steps: {} }).steps).toEqual([]);

@@ -102,11 +102,20 @@ for _, candidate in ipairs(aligned.candidates) do
     and candidate.resource_coverage[1].total_amount == 950,
     "mining drill candidates expose deterministic resource coverage")
 end
+resources = { ore[1], { valid = true, name = "crude-oil", type = "resource", amount = 100000,
+  prototype = { resource_category = "basic-fluid" } } }
+local mixed_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+  radius = 1, directions = { 0 }, limit = 1 })
+check(mixed_drill.candidates[1]
+  and #mixed_drill.candidates[1].resource_coverage == 1
+  and mixed_drill.candidates[1].resource_coverage[1].name == "iron-ore"
+  and mixed_drill.candidates[1].resource_coverage[1].total_amount == 500,
+  "mixed coverage reports only resources compatible with the drill prototype")
 resources = {}
 local empty_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 8 })
 check(#empty_drill.candidates == 0 and empty_drill.rejected_no_compatible_resource > 0,
-  "fully charted drill candidates with zero resources are explicitly rejected")
+  "zero compatible coverage is not useful and is explicitly rejected before candidate acceptance")
 resources = { { valid = true, name = "crude-oil", type = "resource", amount = 100000,
   prototype = { resource_category = "basic-fluid" } } }
 local incompatible_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },

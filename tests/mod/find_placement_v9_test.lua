@@ -23,7 +23,7 @@ local pole = { valid = true, name = "small-electric-pole", type = "electric-pole
 local source = { valid = true, name = "wooden-chest", type = "container", force = force,
   position = { x = 1.5, y = 0.5 },
   selection_box = { left_top = { x = 1, y = 0 }, right_bottom = { x = 2, y = 1 } } }
-local sink = { valid = true, name = "burner-mining-drill", type = "mining-drill", force = force,
+local sink = { valid = true, name = "iron-chest", type = "container", force = force,
   position = { x = 1.5, y = 2.5 },
   selection_box = { left_top = { x = 1, y = 2 }, right_bottom = { x = 2, y = 3 } } }
 local ore = {
@@ -79,11 +79,10 @@ check(inserter.candidates[2].direction == 4
   and inserter.candidates[2].drop_position.x == 0.5 and inserter.candidates[2].drop_position.y == 1.5,
   "inserter endpoint evidence rotates with candidate direction")
 local bound_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
-  directions = { 0 }, limit = 1, input_target = { x = 1.5, y = 0.5 }, output_target = { x = 1.5, y = 2.5 } })
-check(bound_inserter.input_target.name == "wooden-chest" and bound_inserter.input_target.type == "container"
-  and bound_inserter.output_target.name == "burner-mining-drill" and bound_inserter.output_target.type == "mining-drill"
+  directions = { 0 }, limit = 1, output_target = { x = 1.5, y = 2.5 } })
+check(bound_inserter.output_target.name == "iron-chest" and bound_inserter.output_target.type == "container"
   and #bound_inserter.candidates == 1,
-  "inserter search binds both deterministic endpoints to exact target identities")
+  "inserter search uses its drop offset when vector_to_place_result is absent and binds the exact recipient")
 local diagonal_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
   directions = { 2 }, limit = 1 })
 check(diagonal_inserter.candidates[1].pickup_position == nil and diagonal_inserter.candidates[1].drop_position == nil,

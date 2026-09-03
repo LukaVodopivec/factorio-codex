@@ -71,15 +71,8 @@ function M.place.start(task)
   end
   task.direction = math.floor(tonumber(task.direction) or 0) % 16
   task._entity_name = result.name
-  task._is_inserter = result.type == "inserter"
   if task.output_target ~= nil then
-    task._output_target = task._is_inserter
-      and output_targets.resolve_endpoint(c, task.output_target, "place output_target")
-      or output_targets.resolve(c, task.output_target, "place output_target")
-  end
-  if task.input_target ~= nil then
-    if result.type ~= "inserter" then error("place input_target is only supported for inserters") end
-    task._input_target = output_targets.resolve_input(c, task.input_target, "place input_target")
+    task._output_target = output_targets.resolve(c, task.output_target, "place output_target")
   end
 end
 
@@ -95,18 +88,9 @@ function M.place.tick(task)
     return { status = "failed", detail = "I no longer have any " .. task.item .. " in my inventory" }
   end
 
-  local expected_input, expected_output
-  if task._input_target then
-    local current = output_targets.resolve_input(c, task.input_target, "place input_target")
-    if current.entity ~= task._input_target.entity then
-      return { status = "failed", detail = "place input_target changed before placement; observe again" }
-    end
-    expected_input = current.entity
-  end
+  local expected_output
   if task._output_target then
-    local current = task._is_inserter
-      and output_targets.resolve_endpoint(c, task.output_target, "place output_target")
-      or output_targets.resolve(c, task.output_target, "place output_target")
+    local current = output_targets.resolve(c, task.output_target, "place output_target")
     if current.entity ~= task._output_target.entity then
       return { status = "failed", detail = "place output_target changed before placement; observe again" }
     end
@@ -143,13 +127,6 @@ function M.place.tick(task)
     }
   end
   c.remove_item({ name = task.item, count = 1 })
-  if expected_input and not output_targets.verify_pickup_target(built, expected_input) then
-    return {
-      status = "failed",
-      detail = string.format("placed %s at (%.1f, %.1f), but Factorio did not bind the expected input target; recover the exact placed entity before retrying",
-        task.item, built.position.x, built.position.y),
-    }
-  end
   if expected_output and not output_targets.verify_drop_target(built, expected_output) then
     return {
       status = "failed",

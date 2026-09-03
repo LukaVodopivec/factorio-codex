@@ -36,10 +36,12 @@ describe("protocol-v11 plans", () => {
     expect(queuePlanSchema.safeParse({ steps: [{ action: "pickup_items", x: 1.25, y: 2.5, item: "iron-ore" }] }).success).toBe(false);
   });
 
-  it("preserves exact inserter input and output targets through queued plans", () => {
+  it("preserves an exact inserter output target through queued plans", () => {
     const parsed = queuePlanSchema.parse({ steps: [{ action: "place_entity", name: "inserter", x: 1, y: 2,
-      input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
-    expect(parsed.steps[0]).toMatchObject({ input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
+      output_target: { x: 1, y: 3 } }] });
+    expect(parsed.steps[0]).toMatchObject({ output_target: { x: 1, y: 3 } });
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "place_entity", name: "inserter", x: 1, y: 2,
+      input_target: { x: 1, y: 1 } }] }).success).toBe(false);
   });
 
   it("run_plan queues once, polls plan_status, and returns Lua's terminal observation", async () => {

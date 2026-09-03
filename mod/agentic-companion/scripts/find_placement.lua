@@ -148,28 +148,17 @@ function M.find_placement(params)
     end
   end
 
-  local input_target, output_target, drop_offset
-  if params.input_target ~= nil then
-    if proto.type ~= "inserter" or not inserter_pickup_offset then
-      error("input_target is only supported for inserters with a deterministic pickup offset")
-    end
-    input_target = output_targets.resolve_input(c, params.input_target, "find_placement input_target")
-  end
+  local output_target, drop_offset
   if params.output_target ~= nil then
-    if proto.type == "inserter" then
-      output_target = output_targets.resolve_endpoint(c, params.output_target, "find_placement output_target")
-      drop_offset = inserter_drop_offset
-    else
-      output_target = output_targets.resolve(c, params.output_target, "find_placement output_target")
-      local ok, raw = pcall(function() return proto.vector_to_place_result end)
-      if ok and raw then drop_offset = prototype_vector(raw) end
-    end
+    output_target = output_targets.resolve(c, params.output_target, "find_placement output_target")
+    local ok, raw = pcall(function() return proto.vector_to_place_result end)
+    if ok and raw then drop_offset = prototype_vector(raw) end
+    if not drop_offset and proto.type == "inserter" then drop_offset = inserter_drop_offset end
     if not drop_offset then error(params.item .. " has no deterministic output offset") end
   end
-  if input_target or output_target then
+  if output_target then
     for _, direction in ipairs(directions) do
-      if (input_target and not rotate(inserter_pickup_offset, direction))
-          or (output_target and not rotate(drop_offset, direction)) then
+      if not rotate(drop_offset, direction) then
         error("targeted placement directions must be cardinal: 0, 4, 8, or 12")
       end
     end
@@ -195,9 +184,8 @@ function M.find_placement(params)
             local pickup_position = pickup_offset and { x = x + pickup_offset.x, y = y + pickup_offset.y } or nil
             local drop_position = inserter_output_offset and { x = x + inserter_output_offset.x, y = y + inserter_output_offset.y } or nil
             if proto.type == "inserter" and output_target then output_position = drop_position end
-            local input_matches = not input_target or output_targets.contains(input_target.entity, pickup_position)
             local output_matches = not output_target or output_targets.contains(output_target.entity, output_position)
-            if input_matches and output_matches and footprint_charted(c.force, c.surface, area) and c.surface.can_place_entity({
+            if output_matches and footprint_charted(c.force, c.surface, area) and c.surface.can_place_entity({
               name = proto.name, position = pos, direction = direction, force = c.force,
               build_check_type = defines.build_check_type.manual,
             }) then
@@ -225,7 +213,6 @@ function M.find_placement(params)
   end)
   while #candidates > limit do table.remove(candidates) end
   return { item = params.item, entity = proto.name, preferred = preferred,
-    input_target = input_target and input_target.identity or nil,
     output_target = output_target and output_target.identity or nil, candidates = candidates }
 end
 

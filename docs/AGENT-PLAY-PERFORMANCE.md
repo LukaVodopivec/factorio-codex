@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.13.2 adds exact pre/post-verified inserter source/sink bindings and
+Release 0.13.3 adds an exact pre/post-verified inserter output-recipient binding and
 mining-drill resource coverage to placement candidates. Entity inspection
 retains exact live inserter endpoint/target, current drill target, and belt
 content evidence. It retains 0.13.0's physical ground-stack pickup,
@@ -12,7 +12,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.13.2 validation.
+0.13.3 validation.
 
 The operating topology and model/effort choice remain benchmark candidates;
 do not predeclare a winner. In every multi-session candidate, the strategist
@@ -150,7 +150,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v11, version 0.13.2, and exactly 25 tools.
+disambiguation, progression, protocol v12, version 0.13.3, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -220,4 +220,4 @@ through the existing inspection path.
 Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast
 setting. Append the completed result below with exact baseline/release hashes;
-do not present historical timings as 0.13.2 benchmark results.
+do not present historical timings as 0.13.3 benchmark results.

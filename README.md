@@ -88,7 +88,7 @@ descriptions, and fieldless space-platform triggers. `start_research` refuses a
 trigger technology with its required in-game action and never reports it as
 queued progress.
 
-Live play uses exactly two active roles: a Sol-medium read/plan-only strategist
+Live play uses exactly two active roles: a Sol-medium read/advice-only strategist
 with zero Factorio MCP access and the unchanged Terra-low single-pilot baseline
 with fast mode off. The strategist writes coordinate-free non-executable
 `strategy_proposal` advice to the one ledger. The persistent pilot alone uses
@@ -100,7 +100,9 @@ at most one tick-keyed proposal only at a natural boundary.
 Latest MCP state wins; the pilot validates save identity and every proposal
 precondition once, accepts or discards it, keeps work queued, and reports only
 material changes or a repeated distinct failure. It alone authorizes manual
-batches and determines milestone completion from MCP proof. A restarted strategist rebuilds
+batches and owns the learning loop, authoritative calculations, success, plans,
+fallbacks, and milestone completion from MCP proof. Strategist or ledger silence
+or failure never pauses gameplay. A restarted strategist rebuilds
 from the ledger without pausing play. The first rollout is the next fresh matched run; Candidate
 B and R1-R7 remain historical evidence. Bounded packets prevent strategic drift;
 concurrency removes thinking idle time, not physical walking time. See the

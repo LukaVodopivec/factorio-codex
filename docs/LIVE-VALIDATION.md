@@ -78,7 +78,7 @@ server and agent sessions run on the headless workstation, while the exact
 `Codex` client and the characterless spectator/follower run only on the couch
 PC. Do not launch a local GUI as a recovery or benchmark shortcut.
 
-The active two-role topology uses exactly a Sol-medium read/plan-only
+The active two-role topology uses exactly a Sol-medium read/advice-only
 strategist and the unchanged Terra-low sole-writer single-pilot baseline, with
 fast mode off. Give both roles the same exact
 `/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json` path. Before
@@ -115,7 +115,9 @@ save identity and every precondition exactly once, then accepts or discards it
 without acknowledgement or resend. It keeps useful work queued before reporting
 and reports only a material bottleneck, technology, production, or expansion
 change, or a repeated distinct failure. The pilot alone authorizes manual
-batches and determines milestone completion from later-tick MCP proof. A restarted strategist rebuilds from the ledger
+batches and owns learning, calculations, success, plans, fallbacks, and milestone
+completion from later-tick MCP proof. Strategist silence or ledger read/write
+failure never pauses or gates gameplay. A restarted strategist rebuilds from the ledger
 without pausing the pilot. The pilot may observe, choose exact visible
 coordinates, retry honest pathing, and finish the assigned milestone. End with
 an authoritative observation: consume a fresh `run_plan.observation` directly;

@@ -227,12 +227,13 @@ describe("exact local configuration", () => {
       expect(skill).toContain(`](${link})`);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-MASTER-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-SPECIALIST-v1.md"))).toBe(false);
-    expect(strategist).toMatch(/read\/plan-only[\s\S]*Sol-medium strategist/i);
+    expect(strategist).toMatch(/read\/advice-only[\s\S]*Sol-medium strategist/i);
+    expect(strategist).not.toMatch(/read\/plan-only/i);
     expect(strategist).toMatch(/zero Factorio MCP access[\s\S]*pilot is the sole gameplay writer and sole authority for live structured state/i);
     expect(strategist).toMatch(/`current_plan`[\s\S]*`queued_successor`[\s\S]*pilot-reported MCP facts[\s\S]*never infer them from your proposal/i);
     expect(strategist).toMatch(/coordinate-free[\s\S]*non-executable advice/i);
     expect(strategist).toMatch(/recipes, prerequisites, rates, BOMs[\s\S]*capacity[\s\S]*utilization/i);
-    expect(strategist).toMatch(/assumptions[\s\S]*provenance and uncertainty/i);
+    expect(strategist).toMatch(/assumptions[\s\S]*advisory estimates, not authoritative calculations or a plan/i);
     expect(strategist).toMatch(/PLAYER-KNOWLEDGE-v1\.md[\s\S]*in-game learned recipes, calculations, operations[\s\S]*relative layouts/i);
     expect(pilot).toMatch(/only Factorio MCP user and ordinary gameplay writer/i);
     expect(pilot).toMatch(/latest MCP result wins/i);
@@ -252,14 +253,21 @@ describe("exact local configuration", () => {
     for (const text of [skill, pilot]) {
       expect(text).toMatch(/never wait[\s\S]*safe\s+productive action exists/i);
     }
-    expect(pilot).toMatch(/read the ledger once at startup[\s\S]*never read it before or after each MCP call/i);
+    expect(pilot).toMatch(/Attempt the ledger read once at startup[\s\S]*never read it before or after each MCP call/i);
     expect(pilot).toMatch(/natural boundary[\s\S]*every precondition exactly once[\s\S]*accept or discard[\s\S]*single-use/i);
-    expect(pilot).toMatch(/permanently own the local bottleneck, action, and fallback choice plus the current plan and one grounded queued successor/i);
+    expect(pilot).toMatch(/permanently own the learning loop, authoritative calculations, success determination, local bottleneck, action, and fallback choice plus the current plan and one grounded queued successor/i);
     expect(strategist).toMatch(/at most one unique proposal per source tick[\s\S]*never replace or resend[\s\S]*single-use/i);
     expect(strategist).toMatch(/restart[\s\S]*rebuild entirely from the ledger[\s\S]*without requesting replay or pausing the pilot/i);
     expect(strategist).toMatch(/Never approve, authorize, or gate a manual batch[\s\S]*pilot independently decides/i);
-    expect(strategist).toMatch(/Never decide, declare, approve, or gate gameplay milestone completion[\s\S]*pilot alone determines/i);
+    expect(strategist).toMatch(/Never decide, declare, approve, gate, or define gameplay milestone completion criteria[\s\S]*pilot alone owns success/i);
     expect(strategist).not.toMatch(/Stop complete/i);
+    expect(strategist).toMatch(/pilot reports, the ledger, and repo-owned knowledge are your complete evidence surface/i);
+    expect(strategist).toMatch(/Never command, plan, approve, gate, or define completion criteria/i);
+    expect(pilot).toMatch(/permanently own the learning loop, authoritative calculations, success determination/i);
+    expect(pilot).toMatch(/Strategist silence, crash, unavailability, or ledger read\/write failure never pauses, narrows, or gates gameplay[\s\S]*choose the next local action\/fallback from latest MCP state/i);
+    expect(pilot).toMatch(/failed startup or natural-boundary ledger\/proposal read is consumed once, never retried on the gameplay critical path/i);
+    expect(skill).toContain("Strategist silence, unavailability, or ledger read/write");
+    expect(skill).toMatch(/failure never pauses or gates gameplay; the pilot continues from latest MCP\s+state/i);
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
     expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
   });
@@ -271,9 +279,11 @@ describe("exact local configuration", () => {
       "PLAYER-KNOWLEDGE-v1.md",
     ];
     const texts = files.map((file) => fs.readFileSync(path.join(root, ".agents/skills/factorio-player", file), "utf8"));
-    for (const text of texts) {
+    for (const text of [texts[0], texts[2], texts[3]]) {
       for (const concept of ["observ", "bottleneck", "falsifiable hypothesis", "predict", "retain", "revise", "discard", "provenance", "uncertainty"])
         expect(text.toLowerCase()).toContain(concept);
+    }
+    for (const text of texts) {
       for (const rejected of [/(?:timed\s+phase|elapsed-time\s+milestone)/i, /fixed\s+build\s+order/i, /named\s+route/i, /(?:map|cross-run|world)\s+coordinate/i, /prescriptive\s+progression\s+sequence/i])
         expect(text).toMatch(rejected);
       for (const rejected of [/cop(?:y|ied) layouts/i, /tutorials/i, /online\s+(?:build\s+)?sequences/i])
@@ -284,7 +294,7 @@ describe("exact local configuration", () => {
       expect(text).not.toMatch(/\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/);
     }
     expect(texts[0]).toMatch(/observe[\s\S]*bottleneck[\s\S]*falsifiable hypothesis[\s\S]*predict[\s\S]*safe action[\s\S]*compare[\s\S]*retain[\s\S]*revise[\s\S]*discard/i);
-    expect(texts[1]).toMatch(/current bottleneck[\s\S]*authoritative pilot report[\s\S]*falsifiable hypothesis[\s\S]*predict[\s\S]*actual pilot-reported result[\s\S]*retain[\s\S]*revise[\s\S]*discard/i);
+    expect(texts[1]).toMatch(/pilot-reported bottleneck[\s\S]*falsifiable hypothesis[\s\S]*expected measurable effect[\s\S]*advisory estimates, not authoritative calculations or a plan[\s\S]*pilot alone owns the learning loop/i);
   });
 
   it("documents the W1C research basis as principles rather than a route", () => {

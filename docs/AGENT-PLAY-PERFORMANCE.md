@@ -26,7 +26,7 @@ mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
 0.13.9 validation.
 
-The active topology is exactly two roles: a Sol-medium read/plan-only
+The active topology is exactly two roles: a Sol-medium read/advice-only
 strategist and the unchanged Terra-low sole-writer single-pilot baseline, with
 fast mode off. The strategist has zero Factorio MCP access and writes
 coordinate-free `strategy_proposal` advice; the pilot is the sole Factorio MCP
@@ -102,7 +102,7 @@ not their commands, coordinates, blueprints, or exact build routes:
 - [LLM-Coordination](https://arxiv.org/html/2310.03903v2) supports explicit
   coordination and grounding modules while warning that partner-intent and
   joint-planning errors remain material. The active topology therefore
-  separates a read/plan-only strategist from the sole-writer pilot.
+  separates a read/advice-only strategist from the sole-writer pilot.
 
 - [Mineflayer Pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder):
   adopt explicit goals and reusable physical pathfinding. Reject teleporting,
@@ -184,12 +184,14 @@ bottleneck/action/fallback selection and the current plan plus one grounded
 queued successor, reads the ledger once at startup rather than per MCP call, and
 keeps useful work queued before reporting. Latest MCP
 state always wins. A restarted strategist rebuilds from the ledger without
-pausing the pilot or requesting replay. The pilot alone authorizes manual batches
-and determines milestone completion from later-tick MCP proof; the strategist
-only analyzes options and mirrors the result.
-The strategist owns coordinate-free automation calculations in the same decision turn. On the
-first material-flow contradiction it distinguishes a game bottleneck from an
-MCP observability gap before issuing the next proposal. Count capacity only after output is
+pausing the pilot or requesting replay. Strategist silence or ledger read/write
+failure also never pauses or gates gameplay. The pilot alone owns the learning
+loop, authoritative calculations, success, plans, fallbacks, batch authorization,
+and milestone completion from later-tick MCP proof; the strategist only offers
+one advisory proposal and mirrors pilot-reported facts.
+An advisory proposal may flag a material-flow contradiction; the pilot
+distinguishes a game bottleneck from an MCP observability gap and decides what
+to do. Count capacity only after output is
 accepted by its next physical sink and observable there. Upstream fuel/input
 changes end with measured dependent utilization and a bounded corrective
 successor. Rate claims without timing/buffer evidence use measured deltas and

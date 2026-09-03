@@ -10,17 +10,18 @@ Use only for live play of the one physical character named Codex.
 For the active two-role topology, the parent starts exactly two persistent
 conversations and pastes one adjacent prompt into each:
 
-- [Sol-medium strategist](GOAL-STRATEGIST-v1.md), read/plan-only and sole
+- [Sol-medium strategist](GOAL-STRATEGIST-v1.md), read/advice-only and sole
   operations-ledger writer; and
 - [sole pilot](GOAL-PILOT-v1.md), the only ordinary MCP action writer, using
   the unchanged Terra-low single-pilot baseline with fast mode off.
 
 The parent identifies the shared milestone and communication route, confirms
 that only the pilot has Factorio MCP access or invokes gameplay tools, and lets
-the strategist issue the first operations-ledger revision. The strategist
-offers coordinate-free proposals; the pilot alone selects and executes actions
-from current structured state and alone determines milestone completion from
-later-tick MCP proof.
+the strategist issue the first operations-ledger revision. The strategist offers
+one coordinate-free advisory proposal from pilot reports, the ledger, and repo
+knowledge only; the pilot alone owns the learning loop, calculations, success,
+local plans, fallbacks, current plan plus successor, and execution from current
+structured state.
 
 ## Shared-run contract
 
@@ -30,8 +31,11 @@ passes that exact path verbatim to every role. The parent creates the run
 directory with mode `0700` and initializes the file with mode `0600`; after
 initialization, the strategist is the sole host-ledger writer. The strategist rewrites
 `operations.json` atomically through an adjacent temporary file and rename.
-The pilot reads it only under the bounded rules below and sends material updates
-directly to the strategist. Do
+The pilot attempts one startup read and thereafter reads a proposal only at a
+natural boundary under the bounded single-use rules below. It never reads the
+ledger per MCP call. Strategist silence, unavailability, or ledger read/write
+failure never pauses or gates gameplay; the pilot continues from latest MCP
+state and sends material updates when the advisory route is available. Do
 not create another run file, append log, watcher, broker, service, database,
 or coordination process.
 
@@ -89,7 +93,7 @@ pilot's deterministic MCP state and tool results before the ledger or prose. Car
 the grounded current plan and one queued successor; invalidate stale state and
 keep safe productive work overlapping.
 
-Every strategic choice follows the same state-driven learning loop: observe
+The pilot owns every strategic choice and follows the same state-driven learning loop: observe
 authoritative state; identify the current bottleneck; form a falsifiable hypothesis;
 predict one measurable effect; choose a safe action; compare the
 predicted and actual results; then retain, revise, or discard the lesson with
@@ -114,11 +118,11 @@ production, or expansion changes, or a repeated distinct failure; consumes the
 `run_plan` terminal observation; and never repeats an executed plan ID. It never stops or hands off
 merely because one useful item or incidental non-production loot was obtained;
 validated automation utilization, the current plan, and its grounded successor
-remain the priority. The strategist owns coordinate-free automation calculations
-and strategic hypothesis framing, never the pilot's phase, plan, successor, or
-fallback choice, batch authorization, or completion decision. On the first material-flow contradiction it
-distinguishes the game bottleneck from an MCP observability gap before writing
-the next proposal.
+remain the priority. The strategist offers coordinate-free hypothesis advice,
+never authoritative calculations, the pilot's phase, plan, successor, fallback
+choice, batch authorization, success, or completion criteria. A proposal may
+flag a material-flow contradiction; the pilot distinguishes the game bottleneck
+from an MCP observability gap and decides what to do.
 
 At `GO`, after sending the authoritative initial observation, the pilot
 immediately uses its bootstrap
@@ -138,8 +142,8 @@ dependents and one bounded corrective successor when its preconditions hold.
 When timing or buffer state is missing, make rate claims only from measured
 deltas and retain the expected result plus its falsifier.
 
-- Use exactly the active two-role topology: one Sol-medium strategist owns
-  coordinate-free analysis and atomic ledger writes with zero Factorio MCP
+- Use exactly the active two-role topology: one Sol-medium strategist offers
+  coordinate-free advisory synthesis and owns atomic ledger writes with zero Factorio MCP
   access; one persistent Terra-low pilot remains the sole Factorio MCP user,
   gameplay writer, and live-state authority.
   The pilot model/effort and fast-off setting are identical to the single-pilot

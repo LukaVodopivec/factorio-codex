@@ -12,7 +12,8 @@ local source = { valid = true, name = "wooden-chest", type = "container", force 
   position = { x = 0, y = -1 }, selection_box = { left_top = { x = -0.5, y = -1.5 }, right_bottom = { x = 0.5, y = -0.5 } } }
 local target_matches, created, removed, pickup_target, drop_target, last_built = { recipient }, 0, 0, source, recipient, nil
 local runtime_drop_position = { x = 2, y = 0 }
-local surface = {
+local surface
+surface = {
   find_entities_filtered = function() return target_matches end,
   can_place_entity = function() return true end,
   create_entity = function(args)
@@ -20,7 +21,8 @@ local surface = {
     last_built = { valid = true, name = args.name,
       type = args.name == "burner-inserter" and "inserter" or "mining-drill", position = args.position,
       pickup_target = pickup_target, drop_target = drop_target,
-      direction = args.direction, drop_position = runtime_drop_position, prototype = prototypes.item[args.name].place_result }
+      direction = args.direction, drop_position = runtime_drop_position, prototype = prototypes.item[args.name].place_result,
+      force = force, surface = surface }
     return last_built
   end,
 }
@@ -42,11 +44,10 @@ local placed_pending = place.tick(valid)
 local same_tick_pending = place.tick(valid)
 check(placed_pending == nil and same_tick_pending == nil and created == 1 and removed == 1,
   "placement preserves the exact new entity and waits beyond its creation tick")
-last_built.drop_target = recipient
-game.tick = game.tick + 3
+game.tick = game.tick + 1
 local valid_result = place.tick(valid)
 check(valid_result and valid_result.status == "done" and created == 1 and removed == 1,
-  "placement accepts output binding delayed by more than one tick without recreating the entity")
+  "placement verifies the live output tile one tick later without waiting for drop_target assignment")
 created, removed, drop_target, runtime_drop_position = 0, 0, recipient, { x = 2.25, y = 0 }
 local wrong_geometry = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
 place.start(wrong_geometry)
@@ -68,22 +69,20 @@ place.start(mismatch)
 check(place.tick(mismatch) == nil and created == 1 and removed == 1,
   "placement does not report an immediate false output mismatch")
 game.tick = game.tick + 1
-last_built.drop_target = replacement
+target_matches = { replacement }
 local mismatch_result = place.tick(mismatch)
-check(mismatch_result and mismatch_result.status == "failed" and mismatch_result.detail:match("did not bind the expected output target") and created == 1 and removed == 1, "post-place recipient mismatch is explicit and requires physical recovery")
-created, removed, drop_target = 0, 0, nil
-local timeout = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
-place.start(timeout)
-check(place.tick(timeout) == nil, "placement begins bounded output binding verification")
-local timeout_pending = true
-for _ = 1, 30 do game.tick = game.tick + 1; timeout_pending = timeout_pending and place.tick(timeout) == nil end
-check(timeout_pending, "placement keeps an exact nil binding pending inside the bounded window")
+check(mismatch_result and mismatch_result.status == "failed" and mismatch_result.detail:match("live output tile") and created == 1 and removed == 1, "post-place recipient mismatch is explicit and requires physical recovery")
+created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
+local unbound = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+place.start(unbound)
+check(place.tick(unbound) == nil, "placement begins later-tick output-tile verification")
+target_matches = {}
 game.tick = game.tick + 1
-local timeout_result = place.tick(timeout)
-check(timeout_result and timeout_result.status == "failed" and timeout_result.detail:match("within 30 ticks")
+local unbound_result = place.tick(unbound)
+check(unbound_result and unbound_result.status == "failed" and unbound_result.detail:match("live output tile")
   and created == 1 and removed == 1,
-  "placement fails honestly after the bounded nil-binding timeout")
-created, removed, drop_target, recipient.valid = 0, 0, nil, true
+  "placement fails honestly when the live output tile has no recipient")
+created, removed, drop_target, recipient.valid, target_matches = 0, 0, nil, true, { recipient }
 local target_lost = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
 place.start(target_lost)
 check(place.tick(target_lost) == nil, "placement retains the exact target during output binding verification")
@@ -94,7 +93,7 @@ check(target_lost_result and target_lost_result.status == "failed"
   and target_lost_result.detail:match("expected output target vanished") and created == 1 and removed == 1,
   "placement fails immediately when the exact expected output target is invalidated")
 recipient.valid = true
-created, removed, drop_target = 0, 0, nil
+created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
 local placed_lost = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
 place.start(placed_lost)
 check(place.tick(placed_lost) == nil, "placement retains the exact new entity during output binding verification")
@@ -104,10 +103,7 @@ local placed_lost_result = place.tick(placed_lost)
 check(placed_lost_result and placed_lost_result.status == "failed"
   and placed_lost_result.detail:match("exact placed entity vanished") and created == 1 and removed == 1,
   "placement fails immediately when the exact new entity is invalidated")
-created, removed, pickup_target, drop_target = 0, 0, source, recipient
-surface.find_entities_filtered = function(args)
-  return { recipient }
-end
+created, removed, pickup_target, drop_target, target_matches = 0, 0, source, recipient, { recipient }
 local inserter = { item = "burner-inserter", position = { x = 1, y = 0 },
   output_target = { x = 2, y = 0 } }
 place.start(inserter)
@@ -118,7 +114,7 @@ check(inserter_result and inserter_result.status == "done" and created == 1 and 
   "inserter placement prechecks and verifies its exact output binding")
 local build_plan = require("scripts.actions.build_plan")
 body.force.recipes, body.crafting_queue_size = {}, 0
-created, removed, pickup_target, drop_target = 0, 0, source, nil
+created, removed, pickup_target, drop_target, target_matches = 0, 0, source, nil, { recipient }
 local planned = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
   output_target = { x = 2, y = 0 } } } }
 build_plan.start(planned)
@@ -126,39 +122,33 @@ local planned_pending = build_plan.tick(planned)
 local planned_same_tick = build_plan.tick(planned)
 check(planned_pending == nil and planned_same_tick == nil and created == 1 and removed == 1,
   "build_plan preserves the exact new entity through a later-tick output check")
-last_built.drop_target = recipient
-game.tick = game.tick + 3
+game.tick = game.tick + 1
 local planned_result = build_plan.tick(planned)
 check(planned_result and planned_result.status == "done" and created == 1 and removed == 1,
-  "build_plan accepts output binding delayed by more than one tick without recreating the entity")
+  "build_plan verifies the live output tile one tick later without drop_target assignment")
 
-created, removed, drop_target = 0, 0, nil
+created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
 local planned_mismatch = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
   output_target = { x = 2, y = 0 } } } }
 build_plan.start(planned_mismatch)
 check(build_plan.tick(planned_mismatch) == nil and created == 1 and removed == 1,
   "build_plan does not report an immediate false output mismatch")
 game.tick = game.tick + 1
-last_built.drop_target = replacement
+target_matches = { replacement }
 local planned_mismatch_result = build_plan.tick(planned_mismatch)
 check(planned_mismatch_result and planned_mismatch_result.status == "failed"
-  and planned_mismatch_result.detail:match("did not bind the expected output target")
+  and planned_mismatch_result.detail:match("live output tile")
   and created == 1 and removed == 1,
   "build_plan reports a later-tick exact output mismatch without recreating the entity")
-created, removed, drop_target = 0, 0, nil
-local planned_timeout = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
+created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
+local planned_unbound = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
   output_target = { x = 2, y = 0 } } } }
-build_plan.start(planned_timeout)
-check(build_plan.tick(planned_timeout) == nil, "build_plan begins bounded output binding verification")
-local planned_timeout_pending = true
-for _ = 1, 30 do
-  game.tick = game.tick + 1
-  planned_timeout_pending = planned_timeout_pending and build_plan.tick(planned_timeout) == nil
-end
-check(planned_timeout_pending, "build_plan keeps an exact nil binding pending inside the bounded window")
+build_plan.start(planned_unbound)
+check(build_plan.tick(planned_unbound) == nil, "build_plan begins later-tick output-tile verification")
+target_matches = {}
 game.tick = game.tick + 1
-local planned_timeout_result = build_plan.tick(planned_timeout)
-check(planned_timeout_result and planned_timeout_result.status == "failed"
-  and planned_timeout_result.detail:match("within 30 ticks") and created == 1 and removed == 1,
-  "build_plan fails honestly after the bounded nil-binding timeout")
+local planned_unbound_result = build_plan.tick(planned_unbound)
+check(planned_unbound_result and planned_unbound_result.status == "failed"
+  and planned_unbound_result.detail:match("live output tile") and created == 1 and removed == 1,
+  "build_plan fails honestly when the live output tile has no recipient")
 os.exit(failures == 0 and 0 or 1)

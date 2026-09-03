@@ -62,17 +62,18 @@ resource coverage, rejects charted candidates with no compatible resources with 
 deterministic count while retaining uncharted candidates with coverage omitted, and
 exposes cardinal inserter pickup/drop endpoints. Output-capable candidates expose
 their deterministic `output_position` and recipient, explicitly `null` for
-ground output. Its existing `output_target` contract filters the exact runtime
-receiving footprint rather than the larger selection box and verifies Factorio's live
-`drop_target` for up to 30 later game ticks after physical placement while
-retaining the exact created entity. A non-nil mismatch or invalidation fails
-immediately; a nil binding fails honestly at the bound without removing or
-replacing the entity. Inspect the placed inserter's
+ground output. Its existing `output_target` contract resolves the requested
+recipient by exact entity position, floors the predicted or live output point
+to Factorio's 1×1 output tile, and uses the entities returned for that tile—never
+selection-box point containment. Physical placement retains the exact created
+entity and rechecks its live `drop_position` on a later game tick without
+removing or replacing it. Inspect the placed inserter's
 `pickup_target` to falsify an incorrect source binding.
 Native no-path and repeated-stall failures inspect only the immediate charted
-collision segment and report stable, capped local blocker identities and
-colliding tiles (or explicitly say none was identified); they never expand or
-search the map.
+collision segment and report stable, capped local candidate identities and
+colliding tiles as inferred visible collision candidates, not authoritative
+blockers (or explicitly say none was identified); they never expand or search
+the map.
 `map_summary` summarizes only already-charted terrain and factory landmarks,
 `production_requirements` performs deterministic recipe arithmetic, and
 `connect_entities` builds an inventory-backed physical belt, pipe, or power

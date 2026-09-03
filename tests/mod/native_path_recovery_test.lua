@@ -72,7 +72,9 @@ walk.step(task._walk, body, task.id); deliver(nil, false)
 local result = walk.step(task._walk, body, task.id)
 check(result and result.failed:match("^PATH_NOT_FOUND:"),
   "no-path result fails deterministically without blind walking")
-check(result.failed:match("collision segment") and result.failed:match("stone%-furnace:furnace@%(1%.0,0%.0%)") and result.failed:match("water"),
+check(result.failed:match("collision segment") and result.failed:match("stone%-furnace:furnace@%(1%.0,0%.0%)")
+  and result.failed:match("water") and result.failed:match("inferred visible collision evidence")
+  and result.failed:match("not authoritative blockers"),
   "no-path result includes bounded local collision-segment evidence")
 check(blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
   "blocker evidence uses the same character collision mask as native pathfinding")

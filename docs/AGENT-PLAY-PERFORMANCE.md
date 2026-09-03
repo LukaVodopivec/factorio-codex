@@ -1,8 +1,10 @@
 # Agent play performance
 
-Release 0.13.9 retains each exact placed entity while polling a nil output
-binding for up to 30 later ticks, fails immediately on mismatch or invalidation,
-and distinguishes queueable research from in-game trigger unlocks without
+Release 0.13.9 retains each exact placed entity, waits at least one later game
+tick, and verifies the live output point through Factorio's 1×1 output-tile
+entity query rather than selection-box containment or `drop_target` timing. It
+fails honestly on mismatch or invalidation and distinguishes queueable research
+from in-game trigger unlocks without
 dropping item/entity quality constraints, scripted descriptions, or fieldless
 space-platform triggers. It also labels main versus equipped-ammunition
 inventory. It retains 0.13.8's exact
@@ -114,12 +116,13 @@ and every terminal plan path attempts one compact local observation.
 
 R5's bounded Firecrawl reuse review found maintained agent projects with deterministic
 validator and skill patterns, but no compatible licensed component that owns
-Factorio's vanilla delayed target binding, trigger-research classification, or
+Factorio's vanilla output geometry, trigger-research classification, or
 character inventory compartments under this one-body, one-writer, text-only
 physical contract. Candidate code was unnecessary, incompatible, or had
 unclear licensing, so none was imported. The retained path uses Factorio's
-official `LuaEntity.drop_target` and `LuaTechnologyPrototype.research_trigger`
-state directly and changes no game mechanics.
+official live `drop_position`, output-tile entity search, inspection-only
+`drop_target`, and `LuaTechnologyPrototype.research_trigger` state directly and
+changes no game mechanics.
 
 Authoritative parsed R5 calls show plan 25 was the stone mine, while plan 26
 was submitted with `after_plan_id=21`, not 25. Plan 26 correctly remained

@@ -1,7 +1,6 @@
 -- Exact, read-only recipient resolution shared by placement search and physical
 -- placement verification.
 local M = {}
-local BINDING_WAIT_TICKS = 30
 
 local RECIPIENT_TYPES = {
   ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
@@ -14,11 +13,6 @@ local function position(value, label)
     error(label .. " must be {x, y}")
   end
   return { x = tonumber(value.x), y = tonumber(value.y) }
-end
-
-local function overlaps(box, area)
-  return box and box.right_bottom.x > area.left_top.x and box.left_top.x < area.right_bottom.x
-    and box.right_bottom.y > area.left_top.y and box.left_top.y < area.right_bottom.y
 end
 
 local function prototype_vector(value)
@@ -50,16 +44,9 @@ local function resolve(c, requested, label)
     error((label or "output_target") .. " must be force-charted")
   end
   local matches = {}
-  for _, entity in ipairs(c.surface.find_entities_filtered({
-    area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } },
-  })) do
+  for _, entity in ipairs(c.surface.find_entities_filtered({ position = target })) do
     if entity.valid and entity.force == c.force and entity.type ~= "character" and entity.type ~= "resource"
-      and ((entity.selection_box and target.x >= entity.selection_box.left_top.x
-          and target.x < entity.selection_box.right_bottom.x
-          and target.y >= entity.selection_box.left_top.y and target.y < entity.selection_box.right_bottom.y)
-        or (entity.bounding_box and target.x >= entity.bounding_box.left_top.x
-          and target.x < entity.bounding_box.right_bottom.x
-          and target.y >= entity.bounding_box.left_top.y and target.y < entity.bounding_box.right_bottom.y)) then
+      and entity.position.x == target.x and entity.position.y == target.y then
       matches[#matches + 1] = entity
     end
   end
@@ -108,8 +95,9 @@ function M.recipient_at(c, point)
   tile.right_bottom = { x = tile.left_top.x + 1, y = tile.left_top.y + 1 }
   local matches = {}
   for _, entity in ipairs(c.surface.find_entities_filtered({ area = tile })) do
-    if entity.valid and entity.force == c.force and RECIPIENT_TYPES[entity.type]
-      and overlaps(entity.bounding_box, tile) then matches[#matches + 1] = entity end
+    if entity.valid and entity.force == c.force and RECIPIENT_TYPES[entity.type] then
+      matches[#matches + 1] = entity
+    end
   end
   table.sort(matches, function(a, b)
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
@@ -132,14 +120,14 @@ end
 function M.binding_status(built, expected, placed_tick)
   if not built.valid then return "invalid" end
   if not expected.valid then return "target-invalid" end
-  local ok, actual = pcall(function() return built.drop_target end)
-  if not ok then return "unreadable" end
+  if game.tick <= placed_tick then return "pending" end
+  local ok, point = pcall(function() return built.drop_position end)
+  if not ok or not point or not built.surface or not built.force then return "unreadable" end
+  local actual, _, state = M.recipient_at({ surface = built.surface, force = built.force }, point)
   if actual == expected then return "matched" end
-  if actual ~= nil then return "mismatch" end
-  if game.tick <= placed_tick + BINDING_WAIT_TICKS then return "pending" end
-  return "timeout"
+  if state == "uncharted" or state == "no-endpoint" then return "unreadable" end
+  if state == "ambiguous" then return "ambiguous" end
+  return "mismatch"
 end
-
-M.binding_wait_ticks = BINDING_WAIT_TICKS
 
 return M

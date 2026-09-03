@@ -42,8 +42,9 @@ not provide a Linux visual client launcher.
 8. Exercise `find_placement` at a shoreline; confirm `map_summary` reads only
    force-charted chunks; verify deterministic production arithmetic and
    ambiguity refusal. Find a cardinal inserter placement with an exact
-   `output_target`, physically place it with that target, and confirm Factorio
-   bound its `drop_target`. Inspect the placed inserter's `pickup_target` to
+   `output_target`, physically place it with that target, and confirm its live
+   output point's 1×1 tile resolves to that exact recipient on a later game tick.
+   Inspect the placed inserter's `pickup_target` to
    falsify an incorrect source binding. Confirm an output-capable candidate always
    reports `output_position` and reports its recipient or explicit `null`; a
    selection-box-only furnace overlap must not pass exact target filtering.
@@ -56,8 +57,9 @@ not provide a Linux visual client launcher.
    `drop_target_bound`, its current resource target, and exact furnace
    fuel/input/output buffers only where the corresponding inventory exists.
    Force a bounded no-path/stall fixture and confirm only its immediate charted
-   collision segment, stable capped blocker identities and collision tiles (or
-   the explicit absence of an identified blocker). Confirm a terminal
+   collision segment, stable capped inferred visible collision candidates and
+   collision tiles—not an authoritative blocker claim—or the explicit absence
+   of an identified blocker. Confirm a terminal
    `plan_status` still carries only the assigned `queued`, first `running`, first
    applicable `waiting`, and truthful final transition after a fast successor.
    Then physically connect steam power to an

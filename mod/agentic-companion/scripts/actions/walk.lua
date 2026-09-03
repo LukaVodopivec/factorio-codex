@@ -147,10 +147,10 @@ local function blocker_evidence(state, c, goal)
   local evidence
   if #entity_labels == 0 and #tile_labels == 0 then
     evidence = string.format(
-      "immediate charted collision segment (%.1f,%.1f)->(%.1f,%.1f); no immediate charted blocker identified",
+      "immediate charted collision segment (%.1f,%.1f)->(%.1f,%.1f); inferred visible collision evidence only, not an authoritative blocker; no immediate charted blocker identified",
       from.x, from.y, to.x, to.y)
   else
-    evidence = string.format("immediate charted collision segment (%.1f,%.1f)->(%.1f,%.1f); blocker_candidates=%s; collision_tiles=%s",
+    evidence = string.format("immediate charted collision segment (%.1f,%.1f)->(%.1f,%.1f); inferred visible collision evidence only, not authoritative blockers; visible_collision_candidates=%s; collision_tiles=%s",
       from.x, from.y, to.x, to.y, #entity_labels > 0 and table.concat(entity_labels, ",") or "none",
       #tile_labels > 0 and table.concat(tile_labels, ",") or "none")
   end

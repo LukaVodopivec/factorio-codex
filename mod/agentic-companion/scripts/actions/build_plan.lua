@@ -320,15 +320,13 @@ local function finish_placed_step(task, c, step, built)
     end
     if binding == "target-invalid" then
       task._built = nil
-      return advance(task, false, "the exact expected output target vanished before binding could be verified")
+      return advance(task, false, "the exact expected output target vanished before its output tile could be verified")
     end
     if binding ~= "matched" then
       task._built = nil
-      local wait_detail = binding == "timeout"
-        and (" within " .. tostring(output_targets.binding_wait_ticks) .. " ticks") or ""
       return advance(task, false, string.format(
-        "placed %s at (%.1f, %.1f), but Factorio did not bind the expected output target%s; recover the exact placed entity before retrying",
-        step.item, built.position.x, built.position.y, wait_detail))
+        "placed %s at (%.1f, %.1f), but its live output tile did not resolve to the expected target (%s); recover the exact placed entity before retrying",
+        step.item, built.position.x, built.position.y, binding))
     end
   end
 

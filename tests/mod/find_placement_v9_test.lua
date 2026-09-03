@@ -53,6 +53,7 @@ local ore = {
 }
 local resource_calls, resources = 0, ore
 local target_matches = { recipient }
+local output_tile_override = false
 surface.find_entities_filtered = function(args)
   if args.type == "resource" then resource_calls = resource_calls + 1; return resources end
   if args.position then
@@ -63,10 +64,20 @@ surface.find_entities_filtered = function(args)
   local x, y = left_top.x, left_top.y
   local width = args.area.right_bottom and args.area.right_bottom.x - args.area.left_top.x
     or args.area[2][1] - args.area[1][1]
+  if width > 0.5 and output_tile_override ~= false then return output_tile_override end
   if width > 0.5 and x == 1 and y == 2 then return { sink } end
   if x == 1.5 and y == 0.5 then return { source } end
   if x == 1.5 and y == 2.5 then return { sink } end
-  return target_matches
+  local matches = {}
+  local right_bottom = args.area.right_bottom or { x = args.area[2][1], y = args.area[2][2] }
+  for _, entity in ipairs(target_matches) do
+    local box = entity.bounding_box
+    if box and box.right_bottom.x > x and box.left_top.x < right_bottom.x
+      and box.right_bottom.y > y and box.left_top.y < right_bottom.y then
+      matches[#matches + 1] = entity
+    end
+  end
+  return matches
 end
 local body = { position = { x = 1.5, y = 1.5 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
@@ -131,6 +142,12 @@ local aligned = finder.find_placement({ item = "burner-mining-drill", preferred 
   directions = { 12, 8, 4, 0 }, limit = 8, output_target = { x = 5.5, y = 1.5 } })
 check(aligned.output_target.name == "stone-furnace" and #aligned.candidates > 0,
   "output target resolves one exact player-owned recipient")
+local selection_only_target, selection_only_error = pcall(finder.find_placement, {
+  item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 }, radius = 1,
+  directions = { 0 }, limit = 1, output_target = { x = 5.25, y = 1.5 },
+})
+check(not selection_only_target and tostring(selection_only_error):match("does not identify") ~= nil,
+  "output target identity cannot be resolved from selection-box point containment")
 for _, candidate in ipairs(aligned.candidates) do
   local tx, ty = math.floor(candidate.output_position.x), math.floor(candidate.output_position.y)
   check(recipient.bounding_box.right_bottom.x > tx and recipient.bounding_box.left_top.x < tx + 1
@@ -154,6 +171,7 @@ target_matches, resources = { real_recipient }, {
     prototype = { resource_category = "basic-solid" } },
 }
 only_position = { x = 19, y = 22 }
+output_tile_override = {}
 local false_north = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
   radius = 1, directions = { 0 }, limit = 1, output_target = { x = 20, y = 20 } })
 only_position = { x = 17, y = 21 }
@@ -161,7 +179,21 @@ local false_east = finder.find_placement({ item = "burner-mining-drill", preferr
   radius = 1, directions = { 4 }, limit = 1, output_target = { x = 20, y = 20 } })
 check(#false_north.candidates == 0 and #false_east.candidates == 0,
   "drill targeting rejects both live-failure orientations whose endpoints only touch the furnace selection box")
+local tile_overlap_recipient = { valid = true, name = "stone-furnace", type = "furnace", force = force,
+  position = { x = 20, y = 20 },
+  selection_box = { left_top = { x = 19.2, y = 19.2 }, right_bottom = { x = 20.8, y = 20.8 } },
+  bounding_box = { left_top = { x = 18.8, y = 20.2 }, right_bottom = { x = 20.7, y = 20.7 } } }
+target_matches, output_tile_override = { tile_overlap_recipient }, { tile_overlap_recipient }
 only_position = { x = 19, y = 22 }
+local tile_overlap = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
+  radius = 1, directions = { 0 }, limit = 1, output_target = { x = 20, y = 20 } })
+check(tile_overlap.candidates[1]
+  and tile_overlap.candidates[1].output_position.x == 18.5
+  and tile_overlap.candidates[1].output_position.y == 20.7
+  and tile_overlap.candidates[1].output_position.x < tile_overlap_recipient.bounding_box.left_top.x,
+  "output tile overlap binds even when the exact output point lies outside the recipient collision box")
+only_position = { x = 19, y = 22 }
+output_tile_override = {}
 local ground_output = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(ground_output.candidates[1]
@@ -176,13 +208,14 @@ local overlapping_recipient = { valid = true, name = "wooden-chest", type = "con
 target_matches = { overlapping_recipient, { valid = true, name = "iron-chest", type = "container", force = force,
   position = overlapping_recipient.position, selection_box = overlapping_recipient.selection_box,
   bounding_box = overlapping_recipient.bounding_box } }
+output_tile_override = target_matches
 local ambiguous_output = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(#ambiguous_output.candidates == 0,
   "multiple eligible output recipients are rejected rather than mislabeled as unbound ground output")
 prototypes.item["burner-mining-drill"].place_result.vector_to_place_result = real_vector
 only_position = nil
-target_matches, resources = { recipient }, ore
+target_matches, resources, output_tile_override = { recipient }, ore, false
 resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 8, y = 8 },
     prototype = { resource_category = "basic-solid" } },

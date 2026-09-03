@@ -78,9 +78,9 @@ server and agent sessions run on the headless workstation, while the exact
 `Codex` client and the characterless spectator/follower run only on the couch
 PC. Do not launch a local GUI as a recovery or benchmark shortcut.
 
-For the Candidate B acceptance run use exactly a Sol-medium read/plan-only
-master, Terra-low sole-writer pilot, Terra-low read-only specialist, and fast
-mode off. Give all three the same exact
+The active two-role topology uses exactly a Sol-medium read/plan-only
+strategist and the unchanged Terra-low sole-writer single-pilot baseline, with
+fast mode off. Give both roles the same exact
 `/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json` path. Before
 `GO`, verify the fresh baseline copy and release hashes, permanent peaceful
 mode/enemy bases disabled, exact `Codex` native player, characterless following
@@ -101,8 +101,8 @@ interface or guidance. The parent starts any rerun from a fresh byte-identical
 baseline with a new run and fresh role conversations; do not reset or relabel
 the immutable snapshot.
 
-Use the topology and model/effort assignment selected by completed benchmark
-results; do not assume a Sol/Luna winner. In a split topology, one strategist
+The first rollout is the next fresh matched run; Candidate B and R1-R7 remain
+historical evidence rather than active topology instructions. The strategist
 may observe and plan, but one persistent pilot remains the sole ordinary MCP
 action writer for one physical Codex body and one task lane. The strategist
 sends bounded milestone packets; the pilot may observe, choose exact visible
@@ -122,7 +122,7 @@ turn; treat that as a platform residual and fall back to a previously available
 connected child without bypassing repository ownership or adding an action
 writer.
 
-## Candidate B R7 verified live result
+## Historical Candidate B R7 verified live result
 
 R7 ran the immutable baseline SHA-256
 `616de9daf11ffdc03f946dd1f76732f4544539801f0f28db62959bcf8f1eea8e` with

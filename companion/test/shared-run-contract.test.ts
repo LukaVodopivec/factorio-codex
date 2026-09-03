@@ -7,15 +7,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const skillRoot = path.join(root, ".agents/skills/factorio-player");
 const read = (name: string) => fs.readFileSync(path.join(skillRoot, name), "utf8");
 const skill = read("SKILL.md");
-const master = read("GOAL-MASTER-v1.md");
+const strategist = read("GOAL-STRATEGIST-v1.md");
 const pilot = read("GOAL-PILOT-v1.md");
-const specialist = read("GOAL-SPECIALIST-v1.md");
 const knowledge = read("PLAYER-KNOWLEDGE-v1.md");
 const performance = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 const liveValidation = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");
-const roleGuidance = performance.match(/For role coordination,[\s\S]*?(?=\n## Peaceful rocket benchmark)/)?.[0] ?? "";
-const prompts = [master, pilot, specialist];
+const roleGuidance = performance.match(/For active role coordination,[\s\S]*?(?=\n## Peaceful rocket benchmark)/)?.[0] ?? "";
+const prompts = [strategist, pilot];
 const allInstructions = [skill, ...prompts, knowledge].join("\n");
 const ledgerPath = "/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json";
 
@@ -62,17 +61,15 @@ describe("shared gameplay run contract", () => {
       "pilot-state.json", "pilot-events.jsonl", "landmarks.json", "specialist-notes.md",
     ]) expect(allInstructions).not.toContain(retired);
     expect(skill).toMatch(/exactly one ephemeral\s+ledger/i);
-    expect(skill).toMatch(/Do not create another run file, append log/i);
+    expect(skill).toMatch(/Do\s+not create another run file, append log/i);
   });
 
   it("locks parent initialization, permissions, and phase-separated ownership", () => {
     expect(skill).toMatch(/parent creates the run\s+directory with mode `0700` and initializes the file with mode `0600`/i);
-    expect(skill).toMatch(/after\s+initialization, the master is the sole host-ledger writer/i);
-    expect(master).toMatch(/parent creates the `0700` directory and initializes[\s\S]*the single `0600` `operations\.json`[\s\S]*sole host-ledger writer/i);
+    expect(skill).toMatch(/after\s+initialization, the strategist is the sole host-ledger writer/i);
+    expect(strategist).toMatch(/parent creates the `0700` directory and initializes[\s\S]*the single `0600` `operations\.json`[\s\S]*sole host-ledger writer/i);
     expect(pilot).toMatch(/read the single `operations\.json` but never write it/i);
     expect(pilot).toMatch(/sole authority for the latest observation/i);
-    expect(specialist).toMatch(/read the single `operations\.json` but never write it/i);
-    expect(specialist).toMatch(/strictly read-only/i);
   });
 
   it("locks the operations snapshot fields and atomic replacement", () => {
@@ -87,13 +84,13 @@ describe("shared gameplay run contract", () => {
       expect(skill).toContain(field);
     expect(skill).toMatch(/20-minute snapshot is not a binary success gate/i);
     expect(allInstructions).not.toMatch(/PASS_AT_20M|MISS_AT_20M/);
-    expect(master).toMatch(/Rewrite it atomically through (?:a `0600` )?adjacent temporary file and rename/i);
-    expect(master).toMatch(/`0600` adjacent temporary file[\s\S]*verify the final file remains `0600`/i);
+    expect(strategist).toMatch(/Rewrite it atomically through (?:a `0600` )?adjacent temporary file and rename/i);
+    expect(strategist).toMatch(/`0600` adjacent temporary file[\s\S]*verify the final file remains `0600`/i);
     expect(allInstructions).not.toMatch(/file watching|filesystem watcher|message broker|sqlite|postgres|mysql/i);
   });
 
   it("enforces revision tick and immutable save freshness", () => {
-    for (const text of [skill, master, pilot, specialist]) {
+    for (const text of [skill, strategist, pilot]) {
       expect(text).toMatch(/revision/i);
       expect(text).toMatch(/source tick/i);
       expect(text).toMatch(/save identity/i);
@@ -106,7 +103,7 @@ describe("shared gameplay run contract", () => {
     expect(skill).toMatch(/preserves `run` byte-for-byte/i);
     expect(skill).toMatch(/After the first pilot observation,[\s\S]*`source_tick` never decreases[\s\S]*equals `latest_observation\.source_tick`/i);
     expect(skill).toMatch(/a\s+reset, tick rollback, or save identity mismatch requires a fresh parent-created\s+run ID and ledger/i);
-    expect(master).toMatch(/monotonic revision/i);
+    expect(strategist).toMatch(/monotonic revision/i);
     expect(pilot).toMatch(/reject regressing source ticks or a mismatched save identity/i);
   });
 
@@ -119,7 +116,7 @@ describe("shared gameplay run contract", () => {
   });
 
   it("requires quantified automation payback and a real queued successor", () => {
-    for (const text of [skill, master, pilot, specialist]) {
+    for (const text of [skill, strategist, pilot]) {
       expect(text).toMatch(/exact net deficit[\s\S]*carried stock[\s\S]*machine buffers\/output[\s\S]*(?:work in progress|WIP)/i);
       expect(text).toMatch(/machine unlock or fuel consumer[\s\S]*uptime/i);
       expect(text).toMatch(/payback[\s\S]*item\/time units[\s\S]*break-even/i);
@@ -144,7 +141,7 @@ describe("shared gameplay run contract", () => {
   });
 
   it("teaches a state-driven learning loop without a disguised opening route", () => {
-    for (const text of [skill, master, pilot, specialist, knowledge]) {
+    for (const text of [skill, strategist, pilot, knowledge]) {
       for (const phrase of ["authoritative state", "current bottleneck", "falsifiable hypothesis", "measurable effect", "safe action", "retain", "revise", "discard", "provenance", "uncertainty"])
         expect(text.toLowerCase()).toContain(phrase);
       expect(text).toMatch(/opening script[\s\S]*fixed build order[\s\S]*named route/i);
@@ -154,31 +151,28 @@ describe("shared gameplay run contract", () => {
   });
 
   it("coalesces reports into bounded single-use decision envelopes", () => {
-    expect(master).toMatch(/coalesce pilot reports and specialist memos by newest source\s+tick/i);
-    expect(master).toMatch(/Superseded reports do not cause ledger rewrites/i);
-    expect(master).toMatch(/first decision immediately after one authoritative preflight[\s\S]*first ledger revision[\s\S]*broad state-grounded[\s\S]*physical envelope[\s\S]*end your turn/i);
+    expect(strategist).toMatch(/coalesce pilot reports for the same run by newest source tick/i);
+    expect(strategist).toMatch(/Superseded reports do not cause ledger rewrites/i);
+    expect(strategist).toMatch(/first decision immediately after one authoritative preflight[\s\S]*first ledger revision[\s\S]*broad state-grounded physical envelope[\s\S]*end your turn/i);
     for (const phrase of ["broad goal-conditioned envelope", "bottleneck remains valid", "safe bounds", "numeric stops"])
-      expect(master.toLowerCase()).toContain(phrase);
-    expect(master).toMatch(/locally\s+adaptive fallbacks/i);
-    expect(master).toMatch(/never issue the same plan ID or envelope twice/i);
-    expect(pilot).toMatch(/each master envelope and plan ID as single-use/i);
+      expect(strategist.toLowerCase()).toContain(phrase);
+    expect(strategist).toMatch(/locally\s+adaptive fallbacks/i);
+    expect(strategist).toMatch(/never issue the same plan ID or envelope twice/i);
+    expect(pilot).toMatch(/each strategist envelope and plan ID as single-use/i);
     expect(pilot).toMatch(/without\s+per-action approval[\s\S]*never repeat an executed envelope or plan ID/i);
     expect(pilot).toContain("`run_plan` terminal");
     expect(pilot).toMatch(/material bottleneck[\s\S]*terminal outcomes[\s\S]*invalidations/i);
     expect(pilot).toMatch(/only outcome-labeled terminal, material-bottleneck, or invalidation evidence/i);
-    for (const text of [skill, master, pilot, specialist, roleGuidance]) {
+    for (const text of [skill, strategist, pilot, roleGuidance]) {
       expect(text).toMatch(/one useful item or incidental\s+non-production loot/i);
       expect(text).toMatch(/automation utilization[\s\S]*current(?:-plus-| plan, and its grounded | plan and its grounded )successor/i);
     }
-    expect(specialist).toMatch(/at most one attributed,\s+coalescible evidence memo per new ledger revision/i);
     expect(roleGuidance).toMatch(/coalesces superseded reports[\s\S]*never reissues an executed plan ID/i);
     expect(roleGuidance).toMatch(/broad goal-conditioned envelope[\s\S]*numeric\s+stops[\s\S]*locally adaptive fallbacks/i);
-    expect(master).toMatch(/freeze[\s\S]*cancel[\s\S]*drain[\s\S]*diagnos[\s\S]*fresh[\s\S]*baseline/i);
+    expect(strategist).toMatch(/freeze[\s\S]*cancel[\s\S]*drain[\s\S]*diagnos[\s\S]*fresh[\s\S]*baseline/i);
     expect(pilot).toMatch(/no post-snapshot gameplay/i);
-    expect(specialist).toMatch(/at most one[\s\S]*per new ledger revision/i);
-    expect(specialist).toMatch(/material-flow\s+contradiction/i);
-    expect(specialist).toMatch(/MCP observability gap/i);
-    for (const text of [master, pilot, specialist, roleGuidance]) {
+    expect(strategist).toMatch(/material-flow contradiction[\s\S]*MCP observability gap/i);
+    for (const text of [strategist, pilot, roleGuidance]) {
       for (const phrase of ["output", "physical sink", "observable", "capacity"]) expect(text.toLowerCase()).toContain(phrase);
       expect(text).toMatch(/measured deltas/i);
     }
@@ -186,13 +180,13 @@ describe("shared gameplay run contract", () => {
     expect(roleGuidance).not.toMatch(/first (?:mine|craft|build|place)[^\n]{0,120}then|(?:at|by) minute \d+/i);
   });
 
-  it("starts bounded state-driven physical work while the first master envelope is prepared", () => {
-    expect(pilot).toMatch(/At `GO`[\s\S]*authoritative initial observation[\s\S]*awaiting the first master envelope[\s\S]*pre-authorized bootstrap envelope/i);
+  it("starts bounded state-driven physical work while the first strategist envelope is prepared", () => {
+    expect(pilot).toMatch(/At `GO`[\s\S]*authoritative initial observation[\s\S]*awaiting the first strategist envelope[\s\S]*pre-authorized bootstrap envelope/i);
     expect(pilot).toMatch(/already-carried automation[\s\S]*verified visible resource[\s\S]*exact physical sink[\s\S]*visible dry waypoint[\s\S]*nearest measured blocker[\s\S]*numeric stop/i);
-    expect(pilot).toMatch(/Report the first material result[\s\S]*first master envelope supersedes this default/i);
+    expect(pilot).toMatch(/Report the first material result[\s\S]*first strategist envelope supersedes this default/i);
     expect(pilot).toMatch(/same sole writer, body, and FIFO lane/i);
     expect(pilot).toMatch(/never a fixed item, resource, order, coordinate, route, or timed phase/i);
-    expect(master).toMatch(/initial observation[\s\S]*already supplied by the pilot[\s\S]*pre-authorized bootstrap work[\s\S]*master envelope then supersedes/i);
+    expect(strategist).toMatch(/initial observation[\s\S]*already supplied by the pilot[\s\S]*pre-authorized bootstrap work[\s\S]*strategist envelope then supersedes/i);
     expect(roleGuidance).toMatch(/At `GO`[\s\S]*pre-authorized bootstrap envelope[\s\S]*numeric\s+stop[\s\S]*no second writer, body, or[\s\S]*lane/i);
   });
 
@@ -211,7 +205,7 @@ describe("shared gameplay run contract", () => {
       expect(text).toMatch(/imported blueprints/i);
     }
     expect(fs.readdirSync(skillRoot).sort()).toEqual([
-      "GOAL-MASTER-v1.md", "GOAL-PILOT-v1.md", "GOAL-SPECIALIST-v1.md",
+      "GOAL-PILOT-v1.md", "GOAL-STRATEGIST-v1.md",
       "PLAYER-KNOWLEDGE-v1.md", "SKILL.md",
     ]);
     expect(pilot).toMatch(/only ordinary MCP action writer/i);

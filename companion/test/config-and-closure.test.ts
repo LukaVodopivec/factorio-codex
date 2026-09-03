@@ -176,7 +176,7 @@ describe("exact local configuration", () => {
     expect(skill).toMatch(/Finish every packet with an authoritative observation[\s\S]*terminal observation[\s\S]*missing or became stale/);
     expect(skill).not.toMatch(/finish every packet with `observe_local`/i);
     expect(skill).toContain("[player knowledge v1](PLAYER-KNOWLEDGE-v1.md)");
-    expect(skill).toMatch(/do not assume a Sol\/Luna winner/i);
+    expect(skill).toMatch(/exactly the active two-role topology[\s\S]*Sol-medium strategist[\s\S]*Terra-low pilot/i);
     expect(liveValidation).toMatch(/Prior-release 0\.7\.0 live evidence/);
     expect(liveValidation).toMatch(/historical 0\.7\.0 evidence[\s\S]*not live validation of[\s\S]*0\.8\.0/);
     expect(liveValidation).toMatch(/Optional couch UI navigation layer/);
@@ -189,13 +189,13 @@ describe("exact local configuration", () => {
     expect(liveValidation).not.toContain("%APPDATA%\\\\Factorio\\\\mod-list.json");
   });
 
-  it("locks the selected Candidate B and player-knowledge boundary", () => {
+  it("keeps Candidate B historical and locks the player-knowledge boundary", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const benchmark = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
     const knowledge = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md"), "utf8");
     const normalizedKnowledge = knowledge.replace(/\s+/g, " ");
-    expect(benchmark).toMatch(/Candidate B is exactly[\s\S]*Sol-medium read\/plan-only master[\s\S]*Terra-low\s+sole-writer pilot[\s\S]*Terra-low read-only specialist[\s\S]*fast mode off/i);
-    expect(benchmark).toMatch(/supersedes the earlier prospective wave matrix/i);
+    expect(benchmark).toMatch(/Candidate B historically used exactly[\s\S]*Sol-medium read\/plan-only master[\s\S]*Terra-low\s+sole-writer pilot[\s\S]*Terra-low read-only specialist[\s\S]*fast mode off/i);
+    expect(benchmark).toMatch(/superseded the earlier prospective wave matrix/i);
     expect(benchmark).not.toMatch(/\| W[123] —/);
     expect(knowledge).toMatch(/recipes[\s\S]*calculations[\s\S]*operations[\s\S]*relative layouts/);
     for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "online build sequences"])
@@ -218,38 +218,36 @@ describe("exact local configuration", () => {
     expect(liveValidation).toMatch(/no dedicated[\s\S]*GPU[\s\S]*permanently headless[\s\S]*Both visual Factorio processes run exclusively on the couch PC/);
   });
 
-  it("keeps W1C prompts automation-first, adaptive, and authority-separated", () => {
+  it("keeps exactly two active prompts automation-first, adaptive, and authority-separated", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
     const readPrompt = (role: string) => fs.readFileSync(path.join(root, `.agents/skills/factorio-player/GOAL-${role}-v1.md`), "utf8");
-    const master = readPrompt("MASTER"), pilot = readPrompt("PILOT"), specialist = readPrompt("SPECIALIST");
-    for (const link of ["GOAL-MASTER-v1.md", "GOAL-PILOT-v1.md", "GOAL-SPECIALIST-v1.md"])
+    const strategist = readPrompt("STRATEGIST"), pilot = readPrompt("PILOT");
+    for (const link of ["GOAL-STRATEGIST-v1.md", "GOAL-PILOT-v1.md"])
       expect(skill).toContain(`](${link})`);
-    expect(master).toMatch(/read\/plan-only/i);
-    expect(master).toMatch(/global goal[\s\S]*dominant bottleneck[\s\S]*current plan[\s\S]*exactly one actually queued successor/i);
-    expect(master).toMatch(/outcome-labeled[\s\S]*replan mid-run/i);
-    expect(master).toMatch(/PLAYER-KNOWLEDGE-v1\.md[\s\S]*in-game learned recipes, calculations, operations[\s\S]*relative layouts/i);
+    expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-MASTER-v1.md"))).toBe(false);
+    expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-SPECIALIST-v1.md"))).toBe(false);
+    expect(strategist).toMatch(/Sol-medium strategist[\s\S]*read\/plan-only/i);
+    expect(strategist).toMatch(/global goal[\s\S]*dominant bottleneck[\s\S]*current plan[\s\S]*exactly one actually queued successor/i);
+    expect(strategist).toMatch(/outcome-labeled[\s\S]*replan mid-run/i);
+    expect(strategist).toMatch(/recipes, prerequisites, rates, BOMs[\s\S]*capacity[\s\S]*utilization/i);
+    expect(strategist).toMatch(/assumptions, provenance, and uncertainty/i);
+    expect(strategist).toMatch(/PLAYER-KNOWLEDGE-v1\.md[\s\S]*in-game learned recipes, calculations, operations[\s\S]*relative layouts/i);
     expect(pilot).toMatch(/only ordinary MCP action writer/i);
     expect(pilot).toMatch(/latest terminal observation wins/i);
-    expect(specialist).toMatch(/strictly read-only/i);
-    expect(specialist).toMatch(/recipes, prerequisites, rates, BOMs, capacity, utilization, automation payback[\s\S]*relative layouts/i);
-    expect(specialist).toMatch(/assumptions, provenance, uncertainty/i);
-    expect(specialist).toContain("`observe_local`, `inspect_entity`, `describe_prototype`, `progression_status`, `can_place`, `find_placement`, `map_summary`, `production_requirements`, and `plan_status`");
-    expect(specialist).toMatch(/`connect_entities` is mutating[\s\S]*pilot-only/i);
-    for (const text of [skill, master, pilot, specialist]) {
+    for (const text of [skill, strategist, pilot]) {
       expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
       expect(text).toMatch(/never use screenshots or screen capture for live gameplay perception[\s\S]*action selection/i);
       expect(text).toMatch(/raw Lua\/console/i);
       expect(text).toMatch(/bounded falsifiable experiment[\s\S]*uncertainty[\s\S]*predicted[\s\S]*safe bound[\s\S]*numeric stop/i);
       expect(text).toMatch(/copied layouts[\s\S]*tutorials[\s\S]*online sequences/i);
     }
-    for (const text of [skill, master, pilot]) {
+    for (const text of [skill, strategist, pilot]) {
       expect(text).toMatch(/After bootstrap[\s\S]*manual mining(?:\s+or\s+crafting|\/crafting) batch|After bootstrap[\s\S]*manual mining\/crafting batch/i);
       expect(text).toMatch(/exact net deficit[\s\S]*carried stock[\s\S]*machine buffers\/output[\s\S]*(?:work in progress|WIP)[\s\S]*machine unlock or fuel consumer[\s\S]*uptime[\s\S]*payback[\s\S]*item\/time units[\s\S]*break-even[\s\S]*numeric stop/i);
       expect(text).toMatch(/automat(?:e|ion)[\s\S]*(bulk extraction|smelting)[\s\S]*(logistics|science)/i);
       expect(text).toMatch(/never wait[\s\S]*safe\s+productive action exists/i);
     }
-    expect(specialist).toMatch(/After bootstrap[\s\S]*manual mining\/crafting batch[\s\S]*exact net deficit[\s\S]*payback[\s\S]*numeric stop/i);
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
     expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
   });
@@ -257,8 +255,8 @@ describe("exact local configuration", () => {
   it("keeps every durable gameplay prompt semantic and route-free", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const files = [
-      "SKILL.md", "GOAL-MASTER-v1.md", "GOAL-PILOT-v1.md",
-      "GOAL-SPECIALIST-v1.md", "PLAYER-KNOWLEDGE-v1.md",
+      "SKILL.md", "GOAL-STRATEGIST-v1.md", "GOAL-PILOT-v1.md",
+      "PLAYER-KNOWLEDGE-v1.md",
     ];
     const texts = files.map((file) => fs.readFileSync(path.join(root, ".agents/skills/factorio-player", file), "utf8"));
     for (const text of texts) {
@@ -294,7 +292,7 @@ describe("exact local configuration", () => {
     const performance = fs.readFileSync(path.join(root, "docs/AGENT-PLAY-PERFORMANCE.md"), "utf8");
     const live = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");
     const joined = `${performance}\n${live}`;
-    expect(joined).toMatch(/Candidate B[\s\S]*Sol-medium read\/plan-only master[\s\S]*Terra-low\s+sole-writer pilot[\s\S]*Terra-low read-only specialist[\s\S]*fast mode off/i);
+    expect(joined).toMatch(/Candidate B historically used exactly[\s\S]*Sol-medium read\/plan-only master[\s\S]*Terra-low\s+sole-writer pilot[\s\S]*Terra-low read-only specialist[\s\S]*fast mode off/i);
     expect(joined).toMatch(/fresh[\s\S]*immutable[\s\S]*peaceful[\s\S]*enemy bases disabled[\s\S]*couch PC/i);
     expect(performance).toMatch(/Record `GO` as one UTC wall-clock timestamp[\s\S]*monotonic-clock instant[\s\S]*Factorio tick/i);
     expect(performance).toMatch(/`GO\+1200s` \(`GO\+20m`\)[\s\S]*first structured observation at or after[\s\S]*before the next ordinary action/i);
@@ -310,7 +308,7 @@ describe("exact local configuration", () => {
     expect(performance).toMatch(/no human tactical coaching or prompt\s+amendment/i);
     expect(performance).not.toContain("do not imply continuing autonomous gameplay");
     expect(performance).not.toMatch(/\| W[123] —/);
-    const candidate = performance.slice(performance.indexOf("### Candidate B acceptance run"));
+    const candidate = performance.slice(performance.indexOf("### Historical Candidate B acceptance run"));
     expect(candidate).toMatch(/both graphical clients exclusively on the couch PC/i);
     expect(candidate).toMatch(/one Codex body[\s\S]*one FIFO lane/i);
   });

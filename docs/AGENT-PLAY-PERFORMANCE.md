@@ -26,10 +26,11 @@ mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
 0.13.9 validation.
 
-The operating topology and model/effort choice remain benchmark candidates;
-do not predeclare a winner. In every multi-session candidate, the strategist
-owns the rolling phase/successor envelope and the pilot is the sole ordinary
-writer. Plans execute contiguously in Lua and may prepare one successor by
+The active topology is exactly two roles: a Sol-medium read/plan-only
+strategist and the unchanged Terra-low sole-writer single-pilot baseline, with
+fast mode off. The strategist owns calculations and the rolling phase/successor
+envelope; the pilot is the sole ordinary writer. The first rollout is the next
+fresh matched run. Plans execute contiguously in Lua and may prepare one successor by
 predecessor ID. This removes model-thinking idle time; it does not accelerate
 walking, mining, crafting, or any other game tick.
 
@@ -45,8 +46,8 @@ implementation and every rerun remain text-only.
 For each live benchmark, record the release SHA, milestone, MCP call count,
 wall time, Factorio tick delta, completed/failed plan steps, final position and
 inventory, and any `MCP_GAP`. Compare the same fresh-save milestone against the
-22-call baseline. Historical measurements remain bounded evidence; the
-Candidate B acceptance run below has an explicit continuous-play requirement.
+22-call baseline. Historical measurements remain bounded evidence; Candidate B
+and R1-R7 below do not select the active topology.
 
 ## Prior 0.8.0 structured timings
 
@@ -99,8 +100,8 @@ not their commands, coordinates, blueprints, or exact build routes:
   reflection that improves later decisions.
 - [LLM-Coordination](https://arxiv.org/html/2310.03903v2) supports explicit
   coordination and grounding modules while warning that partner-intent and
-  joint-planning errors remain material. W1C therefore separates master,
-  sole-writer pilot, and read-only specialist authority.
+  joint-planning errors remain material. The active topology therefore
+  separates a read/plan-only strategist from the sole-writer pilot.
 
 - [Mineflayer Pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder):
   adopt explicit goals and reusable physical pathfinding. Reject teleporting,
@@ -148,11 +149,11 @@ revalidation, not placement. This applies equally to omitted uncharted coverage
 and preserves deterministic rejection of charted candidates with zero compatible
 resources.
 
-For role coordination, the master coalesces superseded reports by run and
+For active role coordination, the strategist coalesces superseded reports by run and
 newest source tick, writes one ledger revision for the current decision, and
 never reissues an executed plan ID. The first decision uses one authoritative
 preflight diagnostic packet, immediately writes and sends a broad physical
-envelope, and ends the master turn so new peer evidence can trigger a fresh
+envelope, and ends the strategist turn so new pilot evidence can trigger a fresh
 turn; it consumes rather than repeats the pilot's initial diagnostics, and
 equivalent diagnostics repeat only after action,
 contradiction, or staleness. Each broad goal-conditioned envelope states a
@@ -165,17 +166,15 @@ merely for one useful item or incidental non-production loot. Measured
 automation utilization and continuous current-plus-successor work dominate.
 At `GO`, the pilot sends the authoritative initial observation and immediately
 performs bounded safe physical work under a pre-authorized bootstrap envelope
-while the master reasons. Current structured state selects the work: prefer
+while the strategist reasons. Current structured state selects the work: prefer
 already-carried automation with a verified visible resource and exact sink;
 otherwise scout a visible dry waypoint or gather the nearest measured blocker
 to a numeric stop. The pilot reports the first material result, and the first
-master envelope supersedes the default. This creates no second writer, body, or
+strategist envelope supersedes the default. This creates no second writer, body, or
 lane and prescribes no item, resource, order, coordinate, route, or timed phase.
-The specialist proactively returns at most one
-run/tick-keyed coalescible evidence memo per new ledger revision when a
-calculation can change the next action; otherwise it idles. On the first
-material-flow contradiction it distinguishes a game bottleneck from an MCP
-observability gap in one newest-tick memo. Count capacity only after output is
+The strategist owns automation calculations in the same decision turn. On the
+first material-flow contradiction it distinguishes a game bottleneck from an
+MCP observability gap before issuing the next envelope. Count capacity only after output is
 accepted by its next physical sink and observable there. Upstream fuel/input
 changes end with measured dependent utilization and a bounded corrective
 successor. Rate claims without timing/buffer evidence use measured deltas and
@@ -213,9 +212,9 @@ Exercise `find_placement` at a shoreline,
 `production_requirements`, and physical belt, pipe, and power
 `connect_entities` routes.
 
-### Candidate B acceptance run
+### Historical Candidate B acceptance run
 
-Candidate B is exactly a Sol-medium read/plan-only master, Terra-low
+Candidate B historically used exactly a Sol-medium read/plan-only master, Terra-low
 sole-writer pilot, and Terra-low read-only specialist, with fast mode off. Use
 fresh role conversations, a fresh byte-identical copy of the immutable
 peaceful/enemy-bases-disabled baseline, one `operations.json`, one Codex body,
@@ -274,10 +273,10 @@ imported. The retained implementation uses Factorio's official LuaEntity
 `pickup_target`, `drop_target`, `pickup_position`, and `drop_position` fields
 through the existing inspection path.
 
-Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
-its candidate labels or substitute another topology, model, effort, or fast
-setting. Append the completed result below with exact baseline/release hashes;
-do not present historical timings as 0.13.9 benchmark results.
+Candidate B superseded the earlier prospective wave matrix for its historical
+run series. Do not reuse its candidate labels as active topology instructions.
+The completed result below retains its exact baseline/release hashes; do not
+present historical timings as 0.13.9 benchmark results.
 
 #### Candidate B R7 recorded result
 

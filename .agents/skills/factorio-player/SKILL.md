@@ -7,15 +7,16 @@ description: Operate the live Factorio Codex character through the constrained M
 
 Use only for live play of the one physical character named Codex.
 
-For W1C, the parent starts three persistent conversations using the benchmark's
-current model/effort assignment and pastes one adjacent prompt into each:
+For the active two-role topology, the parent starts exactly two persistent
+conversations and pastes one adjacent prompt into each:
 
-- [adaptive master brain](GOAL-MASTER-v1.md), read/plan-only;
-- [sole pilot](GOAL-PILOT-v1.md), the only ordinary MCP action writer; and
-- [automation specialist](GOAL-SPECIALIST-v1.md), read-only.
+- [Sol-medium strategist](GOAL-STRATEGIST-v1.md), read/plan-only and sole
+  operations-ledger writer; and
+- [sole pilot](GOAL-PILOT-v1.md), the only ordinary MCP action writer, using
+  the unchanged Terra-low single-pilot baseline with fast mode off.
 
 The parent identifies the shared milestone and communication route, confirms
-that only the pilot invokes ordinary MCP action tools, and lets the master
+that only the pilot invokes ordinary MCP action tools, and lets the strategist
 issue the first operations-ledger revision. The prompts select actions from current
 structured state; none hardcodes a route, map position, or build sequence.
 
@@ -25,10 +26,10 @@ For each run, the parent creates a fresh run ID and exactly one ephemeral
 ledger at `/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json`, then
 passes that exact path verbatim to every role. The parent creates the run
 directory with mode `0700` and initializes the file with mode `0600`; after
-initialization, the master is the sole host-ledger writer. The master rewrites
+initialization, the strategist is the sole host-ledger writer. The strategist rewrites
 `operations.json` atomically through an adjacent temporary file and rename.
-The pilot and specialist only read it and send observations or advice directly
-to the master. Do not create another run file, append log, watcher, broker,
+The pilot only reads it and sends observations directly to the strategist. Do
+not create another run file, append log, watcher, broker,
 database, orchestrator, or coordination process.
 
 The ledger contains a schema version, run/save identity, monotonic revision,
@@ -38,13 +39,13 @@ successor with predecessor and preconditions—or an explicit reason that no
 successor is queued. Reject or replace stale state when revision, source tick,
 or save identity regresses or disagrees with live structured state. The pilot
 is the sole ordinary MCP writer and authority for the latest observation; the
-master alone converts its report into the next atomic ledger revision.
-The master coalesces superseded reports for the same run by newest source tick
+strategist alone converts its report into the next atomic ledger revision.
+The strategist coalesces superseded reports for the same run by newest source tick
 and writes one revision for the current decision, not one revision per stale
 report. A plan ID and its envelope execute at most once. Immediately after one
-authoritative preflight diagnostic packet, the master writes the first broad
+authoritative preflight diagnostic packet, the strategist writes the first broad
 physical envelope and ledger revision, sends the envelope, and ends its turn so
-pilot or specialist evidence can trigger a fresh decision turn. It does not
+new pilot evidence can trigger a fresh decision turn. It does not
 repeat equivalent diagnostics unless action, contradiction, or staleness
 changes the evidence.
 
@@ -59,10 +60,10 @@ snapshot, cancellation/drain evidence, diagnosis, and elapsed wall/game time.
 The 20-minute snapshot is not a binary success gate; it terminates that scored
 trial without converting its progress vector into a pass/fail judgment.
 Parent-owned immutable `run` metadata contains `id`, `release_sha`,
-`baseline_save_sha256`, `save_identity`, `created_at`, and the three role
+`baseline_save_sha256`, `save_identity`, `created_at`, and the two role
 model/effort assignments. The parent writes revision `0` with both
 `source_tick` and `latest_observation` set to `null`, then relinquishes the
-file. Every master rewrite preserves `run` byte-for-byte, is exactly prior
+file. Every strategist rewrite preserves `run` byte-for-byte, is exactly prior
 revision plus one, uses a `0600` adjacent temporary file, atomically renames it,
 and verifies the final file is still `0600`. After the first pilot observation,
 `source_tick` never decreases and equals `latest_observation.source_tick`; a
@@ -96,21 +97,20 @@ changes, terminal outcomes, or invalidations, consumes the `run_plan` terminal
 observation, and never repeats an executed plan ID. It never stops or hands off
 merely because one useful item or incidental non-production loot was obtained;
 validated automation utilization, the current plan, and its grounded successor
-remain the priority. The specialist may proactively send at most one
-coalescible memo per new ledger revision when a calculation can change the next
-action; otherwise it idles. On the first material-flow contradiction it
-distinguishes the game bottleneck from an MCP observability gap in exactly one
-newest-tick memo.
+remain the priority. The strategist owns the automation calculations alongside
+phase and successor planning. On the first material-flow contradiction it
+distinguishes the game bottleneck from an MCP observability gap before issuing
+the next envelope.
 
 At `GO`, after sending the authoritative initial observation and while awaiting
-the first master envelope, the pilot immediately uses a pre-authorized bootstrap
+the first strategist envelope, the pilot immediately uses a pre-authorized bootstrap
 envelope for bounded safe physical work selected from current state: prefer
 already-carried automation against a verified visible resource and exact
 physical sink; otherwise scout a visible dry waypoint or gather only the nearest
 measured blocker with a numeric stop. It reports the first material result, and
-the first master envelope supersedes this default. This overlaps reasoning with
+the first strategist envelope supersedes this default. This overlaps reasoning with
 physical work through the same sole writer/body/lane and encodes no fixed item,
-resource, order, coordinate, route, or timed phase. The master consumes the
+resource, order, coordinate, route, or timed phase. The strategist consumes the
 pilot's initial diagnostic instead of repeating it.
 
 Count production capacity only after structured evidence shows output accepted
@@ -120,11 +120,11 @@ dependents and one bounded corrective successor when its preconditions hold.
 When timing or buffer state is missing, make rate claims only from measured
 deltas and retain the expected result plus its falsifier.
 
-- Use the topology and model/effort assignment selected by completed benchmark
-  results; do not assume a Sol/Luna winner. In a split topology, one strategist
-  owns phase, success, and one actually queued successor, one persistent pilot is the
-  sole ordinary MCP action writer, and an optional specialist is read-only.
-  Discard stale advice unless the pilot revalidates it.
+- Use exactly the active two-role topology: one Sol-medium strategist owns
+  phase, success, calculations, the ledger, and one actually queued successor;
+  one persistent Terra-low pilot remains the sole ordinary MCP action writer.
+  The pilot model/effort and fast-off setting are identical to the single-pilot
+  baseline. Discard stale strategy unless the pilot revalidates it.
 - Maintain the rolling operations ledger: phase and success, capacity and
   utilization, executing plan, one actually queued successor with predecessor
   and preconditions (or the reason none can be queued), prioritized fallbacks,
@@ -195,10 +195,10 @@ deltas and retain the expected result plus its falsifier.
   record why, and patch the smallest existing active path; do not create a
   service, gate, or report workflow.
 
-For Candidate B use a Sol-medium read/plan-only master, Terra-low sole-writer
-pilot, and Terra-low read-only specialist with fast mode off. Start from a
-fresh immutable peaceful baseline with enemy bases disabled and both graphical
-clients on the couch PC. At exactly `GO+20m`, freeze the immutable scored
+The first rollout of this two-role topology is the next fresh matched run.
+Candidate B and R1-R7 remain historical records and do not select active roles.
+Start from a fresh immutable peaceful baseline with enemy bases disabled and
+both graphical clients on the couch PC. At exactly `GO+20m`, freeze the immutable scored
 snapshot, cancel and drain the FIFO, and permit no post-snapshot gameplay.
 Diagnose the result, repair the general implementation or role guidance, and
 rerun only from a fresh byte-identical baseline under parent authority.

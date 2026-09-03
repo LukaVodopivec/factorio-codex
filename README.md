@@ -88,10 +88,11 @@ descriptions, and fieldless space-platform triggers. `start_research` refuses a
 trigger technology with its required in-game action and never reports it as
 queued progress.
 
-Live play uses the benchmark-selected topology and model/effort assignment.
-In a split topology the strategist is read/plan-only, while one persistent
-pilot alone writes ordinary MCP actions for the one physical Codex body and
-task lane. Bounded packets prevent strategic drift;
+Live play uses exactly two active roles: a Sol-medium read/plan-only strategist
+and the unchanged Terra-low single-pilot baseline with fast mode off. The
+persistent pilot alone writes ordinary MCP actions for the one physical Codex
+body and task lane. The first rollout is the next fresh matched run; Candidate
+B and R1-R7 remain historical evidence. Bounded packets prevent strategic drift;
 concurrency removes thinking idle time, not physical walking time. See the
 repo-local `factorio-player` skill for the packet and reporting contract. The
 pilot batches read targets, uses direct actions without a redundant `walk_to`,

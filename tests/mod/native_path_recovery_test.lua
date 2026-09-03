@@ -76,6 +76,10 @@ check(result.failed:match("collision segment") and result.failed:match("stone%-f
   "no-path result includes bounded local collision-segment evidence")
 check(blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
   "blocker evidence uses the same character collision mask as native pathfinding")
+check(blocker_filter.area and blocker_filter.position == nil and blocker_filter.radius == nil
+  and blocker_filter.area.left_top.x == -0.5 and blocker_filter.area.right_bottom.x == 3.0
+  and blocker_filter.area.left_top.y == -0.5 and blocker_filter.area.right_bottom.y == 0.5,
+  "blocker query is limited to the immediate collision segment rather than the far route")
 
 chart_all = false
 task = reset({ x = 40, y = 0 })
@@ -110,12 +114,12 @@ check(result and result.failed == "PATH_TIMEOUT: no native path result arrived w
   "missing native result times out deterministically")
 
 task = reset()
-walk.step(task._walk, body, task.id); deliver({ { x = 10, y = 0 } })
+walk.step(task._walk, body, task.id); deliver({ { x = 1, y = 0 }, { x = 10, y = 0 } })
 walk.step(task._walk, body, task.id)
 game.tick = 60
 check(walk.step(task._walk, body, task.id) == nil and storage.path_request.id == 2,
   "stalled walking requests one fresh native recovery path")
-deliver({ { x = 10, y = 0 } })
+deliver({ { x = 1, y = 0 }, { x = 10, y = 0 } })
 walk.step(task._walk, body, task.id)
 game.tick = 120
 result = walk.step(task._walk, body, task.id)
@@ -123,6 +127,9 @@ check(result and result.failed:match("^PATH_STALLED:"),
   "repeated physical stall ends with a deterministic diagnostic")
 check(result.failed:match("collision segment") and result.failed:match("stone%-furnace"),
   "stalled path includes the same bounded local blocker evidence")
+check(blocker_filter.area.right_bottom.x == 1.5
+  and blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
+  "stalled evidence uses only the current-waypoint segment and excludes noncolliding entities")
 
 found_blockers, tile_blocks = {}, false
 for index = 10, 1, -1 do

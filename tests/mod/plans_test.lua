@@ -33,10 +33,12 @@ check(a.status == "completed" and a.completed_steps == 2, "Lua plan executes all
 check(b.status == "completed" and table.concat(starts, ",") == "walk_to,mine,craft", "successful predecessor releases successor without interleaving")
 check(a.transitions[1].status == "queued" and a.transitions[2].status == "running"
   and a.transitions[3].status == "completed" and #a.transitions == 3
+  and a.transitions[1].tick == 0 and a.transitions[2].tick == 1 and a.transitions[3].tick == 2
   and b.transitions[1].status == "queued" and b.transitions[2].status == "running"
   and b.transitions[3].status == "completed" and #b.transitions == 3
+  and b.transitions[1].tick == 0 and b.transitions[2].tick == 3 and b.transitions[3].tick == 3
   and b.after_plan_id == first.plan_id,
-  "terminal plan status retains queued-through-completed transition evidence even when first polled late")
+  "terminal plan status retains exact game-tick queued-through-completed milestones even when first polled late")
 local transition_count = #b.transitions
 tasks.plan_status({ plan_id = 2 }); tasks.plan_status({ plan_id = 2 })
 check(#tasks.plan_status({ plan_id = 2 }).transitions == transition_count,
@@ -70,7 +72,11 @@ check(interrupted_status.transitions[1].status == "queued"
   and interrupted_status.transitions[2].status == "running"
   and interrupted_status.transitions[3].status == "waiting"
   and interrupted_status.transitions[4].status == "cancelled"
-  and #interrupted_status.transitions == 4,
+  and #interrupted_status.transitions == 4
+  and interrupted_status.transitions[1].tick == 40
+  and interrupted_status.transitions[2].tick == 41
+  and interrupted_status.transitions[3].tick == 41
+  and interrupted_status.transitions[4].tick == 41,
   "late cancellation status retains only the bounded queued, running, waiting, and final milestones")
 inspected = 0
 local parked = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 99 } } })
@@ -146,7 +152,10 @@ check(observation_failed_status.status == "failed"
   and observation_failed_status.transitions[1].status == "queued"
   and observation_failed_status.transitions[2].status == "running"
   and observation_failed_status.transitions[3].status == "failed"
-  and #observation_failed_status.transitions == 3,
+  and #observation_failed_status.transitions == 3
+  and observation_failed_status.transitions[1].tick == 170
+  and observation_failed_status.transitions[2].tick == 171
+  and observation_failed_status.transitions[3].tick == 171,
   "terminal observation failure records one truthful failed milestone without a fabricated completed transition")
 
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1

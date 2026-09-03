@@ -131,6 +131,13 @@ check(unbound_drill.drop_position.x == 3.3 and unbound_drill.drop_target == fals
   and unbound_drill.drop_target_bound == false,
   "mining drill inspection preserves the endpoint and explicit unbound recipient sentinel")
 
+drill.drop_target = { valid = false }
+local invalid_recipient_drill = inspect.inspect({ targets = { drill.position } }).entities[1]
+check(invalid_recipient_drill.drop_target == false
+  and invalid_recipient_drill.drop_target_bound == false
+  and type(invalid_recipient_drill.drop_target) ~= "table",
+  "an invalid drill recipient is explicitly unbound and never encoded as an empty object")
+
 drill.mining_target = { valid = false }
 local no_mining_target = inspect.inspect({ targets = { drill.position } }).entities[1]
 check(no_mining_target.mining_target == nil, "mining drill inspection omits an invalid resource target")

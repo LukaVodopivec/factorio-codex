@@ -10,18 +10,39 @@ import { executeRunPlan, queuePlanSchema, runPlanSchema, type RunPlanResult } fr
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.13.10";
+export const MCP_SERVER_VERSION = "0.14.0";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
 export function result(value: unknown, isError = false) {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return { content: [{ type: "text" as const, text }], structuredContent: typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined, isError };
+  const structured = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : { status: isError ? "failed" : "completed", terminal: true, summary: String(value), next_action: null };
+  const observationSummary = typeof structured.tick === "number" && Array.isArray(structured.entities)
+    ? `observation tick ${structured.tick}; entities ${structured.entities.length}` +
+      `${typeof structured.omitted_entities === "number" ? ` (+${structured.omitted_entities} omitted)` : ""}; ` +
+      `resources ${Array.isArray(structured.resource_patches) ? structured.resource_patches.length : 0}` +
+      `${typeof structured.omitted_resource_patches === "number" ? ` (+${structured.omitted_resource_patches} omitted)` : ""}; ` +
+      `ground items ${Array.isArray(structured.ground_items) ? structured.ground_items.length : 0}` +
+      `${typeof structured.omitted_ground_items === "number" ? ` (+${structured.omitted_ground_items} omitted)` : ""}`
+    : undefined;
+  const summary = typeof structured.summary === "string" ? structured.summary
+    : typeof structured.detail === "string" ? structured.detail
+    : typeof structured.error === "string" ? structured.error
+    : typeof observationSummary === "string" ? observationSummary
+    : typeof structured.status === "string" ? structured.status
+    : "structured result";
+  return { content: [{ type: "text" as const, text: summary.slice(0, 500) }], structuredContent: structured, isError };
+}
+
+function failure(error: unknown, prefix = "Error") {
+  const message = error instanceof Error ? error.message : String(error);
+  return result({ status: "failed", terminal: true, code: "TOOL_ERROR", summary: `${prefix}: ${message}`, next_action: null }, true);
 }
 
 export async function connectStatus(bridge: () => Promise<Bridge>, configDiagnostic: () => ConfigDiagnostic) {
   const diagnostic = configDiagnostic();
-  if (!diagnostic.ok) return result(`Offline: ${diagnostic.error}`, false);
+  if (!diagnostic.ok) return result({ status: "offline", terminal: true, summary: `Offline: ${diagnostic.error}`, next_action: null }, false);
   const b = await bridge();
   let ping: any = await b.call("ping");
   assertRuntimeCompatibility(ping, companionVersion());
@@ -48,43 +69,50 @@ type ToolRegistrar = {
 export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Bridge>, configDiagnostic: () => ConfigDiagnostic): void {
   const rpc = async (method: any, params: unknown = {}) => {
     try { return result(await (await bridge()).call(method, params)); }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    catch (error) { return failure(error); }
   };
   const task = async (type: string, params: Record<string, unknown>) => {
-    try { return result(await (await bridge()).enqueueAndWait({ type, ...params } as never)); }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    try {
+      const terminal = await (await bridge()).enqueueAndWaitResult({ type, ...params } as never);
+      const status = terminal.status === "done" ? "completed" : terminal.status;
+      return result({ status, terminal: true, summary: terminal.detail || status,
+        ...(terminal.outcome ?? {}), next_action: null }, status === "failed" || status === "cancelled");
+    } catch (error) { return failure(error); }
   };
 
   server.registerTool("connect_status", { description: "Validate config, RCON, mod, app and protocol, then bind the exact connected native player named Codex without creating a character.", inputSchema: z.object({}) }, async () => {
     try {
       return await connectStatus(bridge, configDiagnostic);
-    } catch (error) { return result(`Offline: ${error instanceof Error ? error.message : String(error)}`, false); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return result({ status: "offline", terminal: true, summary: `Offline: ${message}`, next_action: null }, false);
+    }
   });
-  server.registerTool("observe_local", { description: "Current deterministic local text observation centered on Codex; character inventory is explicitly split into main and equipped-ammunition compartments, and compact omits only the ASCII grid.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15), detail: z.enum(["compact", "full"]).default("compact") }) }, async ({ radius, detail }) => {
+  server.registerTool("observe_local", { description: "Current deterministic local observation. Compact returns bounded nearest entities, ground items, and resource patches with explicit omission counts; full deliberately requests larger bounded detail.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15), detail: z.enum(["compact", "full"]).default("compact") }) }, async ({ radius, detail }) => {
     try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }))); }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    catch (error) { return failure(error); }
   });
-  server.registerTool("inspect_entity", { description: "Batch-inspect entities at up to 16 exact positions within 30 tiles, including machine state, inventories, output bindings, and exact world-space fluidbox connection points with connected target-or-null.", inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
+  server.registerTool("inspect_entity", { description: 'Batch-inspect up to 16 exact positions within 30 tiles. Canonical input: {"positions":[{"x":1.5,"y":2.5}]}.', inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
     try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions)))); }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    catch (error) { return failure(error); }
   });
   server.registerTool("describe_prototype", { description: "Batch-describe up to 10 exact item, entity, or recipe prototypes; kind=auto resolves placeable items as entities, then genuine items, then recipes.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
   server.registerTool("progression_status", { description: "Read researched technologies, ordinary queueable research, and action/trigger unlocks with authoritative item/entity quality filters and scripted descriptions from Codex's live force.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
   server.registerTool("can_place", { description: "Batch-check up to 24 identified placements within 30 tiles without side effects; every result retains the requested item, position, direction and rejection reason.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    catch (error) { return failure(error); }
   });
   server.registerTool("find_placement", { description: "Find stable force-charted positions within 30 tiles using Factorio's placement and exact output-footprint semantics. Candidates expose projected fluid connections; drills rank compatible resource amount and coverage before distance. Optional output_target requires that exact recipient.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), output_target: position.optional() }).strict() }, async (p) => {
     try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)))); }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    catch (error) { return failure(error); }
   });
   server.registerTool("map_summary", { description: "Summarize only already force-charted chunks: resource totals, shoreline edges, factory landmarks and observation ticks. Never charts or generates terrain.", inputSchema: z.object({}).strict() }, async () => {
     try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", {}))); }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    catch (error) { return failure(error); }
   });
-  server.registerTool("production_requirements", { description: "Expand target item/fluid units through the unlocked deterministic production DAG into recipe executions, per-execution units, raw/product units, categories and seconds at crafting speed 1; recipe_choices resolves genuine multi-recipe ambiguity.", inputSchema: z.object({ targets: z.record(z.string(), z.number().int().positive()).refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 16, "targets must contain 1-16 entries"), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
+  server.registerTool("production_requirements", { description: 'Expand unlocked production requirements. Canonical input: {"targets":{"automation-science-pack":10}}; use targets, never target/count.', inputSchema: z.object({ targets: z.record(z.string(), z.number().int().positive()).refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 16, "targets must contain 1-16 entries"), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
     try { return result(normalizeProductionRequirements(await (await bridge()).call("production_requirements", toolPayloads.productionRequirements(p)))); }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    catch (error) { return failure(error); }
   });
   server.registerTool("connect_entities", { description: "Build a deterministic physical belt, pipe or power route between exact force-charted endpoints through the existing inventory-backed build runner, respecting the selected prototype, maximum length, walking, reach, collision and elapsed time; never creates ghosts.", inputSchema: z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string(), from: position, to: position, max_length: z.number().int().min(1).max(25).default(25) }).strict() }, async (p) => {
     try {
@@ -93,34 +121,87 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
       const detail = route.steps.length === 0
         ? "endpoints already have a physical connection"
         : await b.enqueueAndWait({ type: "build_plan", ...toolPayloads.buildPlan(route.steps, { auto_craft: true, stop_on_error: true }) } as never);
-      return result({ ...route, status: "completed", detail });
+      if (p.kind !== "power") return result({ ...route, status: "completed", terminal: true, summary: detail, detail, next_action: null });
+
+      const ordered = [p.from, ...route.steps.map((step: any) => ({ x: step.x, y: step.y })), p.to];
+      const inspected: Array<{ position: { x: number; y: number }; network_id: number | null }> = new Array(ordered.length);
+      for (let offset = 0; offset < ordered.length; offset += 16) {
+        const points = ordered.slice(offset, offset + 16);
+        const response: any = normalizeInspection(await b.call("inspect", toolPayloads.inspect(points)));
+        for (let local = 0; local < points.length; local++) {
+          const point = points[local]!;
+          const entity = response.entities?.[local];
+          inspected[offset + local] = { position: point,
+            network_id: typeof entity?.electrical?.network_id === "number" ? entity.electrical.network_id : null };
+        }
+      }
+      const missing = inspected.flatMap((entry, index) => entry.network_id === null ? [index] : []);
+      if (missing.length > 0) {
+        return result({ ...route, placement: { requested: route.steps.length, placed: route.steps.length, complete: true },
+          status: "placed_unverified", terminal: true,
+          summary: `placed ${route.steps.length}/${route.steps.length}; electrical network evidence missing for ${missing.length} route member(s)`,
+          validation: { missing_member_indexes: missing }, next_action: null });
+      }
+      const firstNetwork = inspected[1]?.network_id ?? inspected[0]?.network_id ?? null;
+      const lastNetwork = inspected[inspected.length - 2]?.network_id ?? inspected[inspected.length - 1]?.network_id ?? null;
+      const fromCovered = firstNetwork !== null && inspected[0]?.network_id === firstNetwork;
+      const toCovered = lastNetwork !== null && inspected[inspected.length - 1]?.network_id === lastNetwork;
+      let splitAfter: number | null = null;
+      for (let index = 0; index < inspected.length - 1; index++) {
+        if (inspected[index]?.network_id === null || inspected[index]?.network_id !== inspected[index + 1]?.network_id) {
+          splitAfter = index; break;
+        }
+      }
+      const connected = fromCovered && toCovered && splitAfter === null;
+      return result({ ...route,
+        placement: { requested: route.steps.length, placed: route.steps.length, complete: true },
+        endpoint_coverage: {
+          from: { covered: fromCovered, network_id: inspected[0]?.network_id ?? null },
+          to: { covered: toCovered, network_id: inspected[inspected.length - 1]?.network_id ?? null },
+        },
+        network_continuity: { connected, split_after_index: splitAfter,
+          split: splitAfter === null ? null : { from: inspected[splitAfter], to: inspected[splitAfter + 1] } },
+        status: connected ? "connected" : "placed_unconnected", terminal: true,
+        summary: connected ? `placed ${route.steps.length}/${route.steps.length}; electrical route connected`
+          : `placed ${route.steps.length}/${route.steps.length}; electrical route is not continuous`,
+        detail, next_action: null,
+      });
     }
-    catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+    catch (error) { return failure(error); }
   });
   server.registerTool("walk_to", { description: "Scout or relocate by walking physically to an exact position; no-path/stall failures inspect only the immediate charted collision segment and report stable capped inferred visible collision candidates, not authoritative blockers, or explicit absence; positional actions already auto-approach.", inputSchema: position }, async (p) => task("walk_to", toolPayloads.target(p)));
   server.registerTool("mine", { description: "Auto-approach and physically mine an exact target. target_kind=owned recovers one player-owned minable entity; allow_fluid_loss=true explicitly permits ordinary dismantling to discard contained fluid, while inventories must remain empty.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).default("natural"), allow_fluid_loss: z.boolean().default(false) }).strict() }, async (p) => task("mine", toolPayloads.mine(p)));
   server.registerTool("pickup_items", { description: "Auto-approach and physically pick up one exact item stack reported by observe_local. The item and count must still match, the full stack must fit, and Factorio's normal picking state performs collection.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p) => task("pickup", toolPayloads.pickup(p)));
-  server.registerTool("place_entity", { description: "Auto-approach and place an inventory item at an exact position; optional output_target retains the exact entity, rejects a wrong non-nil runtime target, and reports geometry-valid/runtime-pending when Factorio has not bound a target before first output.", inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), output_target: position.strict().optional() }).strict() }, async (p) => task("place", toolPayloads.place(p)));
+  server.registerTool("place_entity", { description: 'Auto-approach and place an inventory item. Canonical input: {"name":"wooden-chest","x":1.5,"y":2.5}; use name, never item.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), output_target: position.strict().optional() }).strict() }, async (p) => task("place", toolPayloads.place(p)));
   const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict();
-  server.registerTool("craft_items", { description: "Queue an exact number of legitimate Factorio recipe crafts (not output items); reports expected or actual product-item counts.", inputSchema: craftInput }, async (p) => task("craft", toolPayloads.craft(p)));
-  server.registerTool("insert_items", { description: "Auto-approach and insert exact carried item counts into an exact-position entity; any partial acceptance is reported and fails the action so dependent plan steps cannot use stale quantities.", inputSchema: position.extend({ items }) }, async (p) => task("insert", toolPayloads.insert(p)));
+  server.registerTool("craft_items", { description: 'Queue exact recipe crafts, not output items. Canonical input: {"recipe":"iron-gear-wheel","crafts":2}; use recipe/crafts, never items.', inputSchema: craftInput }, async (p) => task("craft", toolPayloads.craft(p)));
+  server.registerTool("insert_items", { description: "Auto-approach and insert exact carried item counts into an exact-position entity. Reports full completion, useful bounded partial completion with the truthful remainder, or zero-progress failure; dependent plan steps stop after a partial result.", inputSchema: position.extend({ items }) }, async (p) => task("insert", toolPayloads.insert(p)));
   server.registerTool("extract_items", { description: "Auto-approach and extract named items, or everything when items is omitted, from an exact-position entity.", inputSchema: position.extend({ items: items.optional() }) }, async (p) => task("extract", toolPayloads.extract(p)));
-  server.registerTool("set_recipe", { description: "Auto-approach and set an exact-position crafting machine recipe.", inputSchema: position.extend({ recipe: z.string() }) }, async (p) => task("set_recipe", toolPayloads.recipe(p)));
+  server.registerTool("set_recipe", { description: "Auto-approach and set a player-owned crafting-machine recipe. Furnaces auto-select from inserted input; never call set_recipe on a furnace.", inputSchema: position.extend({ recipe: z.string() }) }, async (p) => task("set_recipe", toolPayloads.recipe(p)));
   server.registerTool("rotate_entity", { description: "Auto-approach and rotate an exact-position entity once, or set Factorio direction 0–15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p) => task("rotate", toolPayloads.rotate(p)));
   server.registerTool("build_plan", { description: "Build layouts of up to 25 sequential placements; optional output_target retains each exact entity, and a mining-drill step with starter insert applies it once then waits for first output to expose the exact runtime target; auto-craft is legitimate and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), output_target: position.strict().optional(), recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }) => task("build_plan", toolPayloads.buildPlan(steps, rest)));
-  server.registerTool("queue_plan", { description: "Immediately queue one contiguous 1-25-step physical plan, optionally after a successful predecessor; wait_for_item timeout_seconds is 1-300 and the result echoes the stored after_plan_id.", inputSchema: queuePlanSchema }, async (input) => rpc("queue_plan", queuePlanSchema.parse(input)));
+  server.registerTool("queue_plan", { description: "Queue one contiguous 1–25-step physical plan using steps and documented action discriminators; never use summary/actions. The result carries the exact plan_status next action.", inputSchema: queuePlanSchema }, async (input) => {
+    try {
+      const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
+      return result({ ...queued, status: "queued", terminal: false, summary: `queued plan ${queued.plan_id}`,
+        next_action: { tool: "plan_status", arguments: { plan_id: queued.plan_id } } });
+    } catch (error) { return failure(error); }
+  });
   server.registerTool("plan_status", { description: "Read a queued, running, or terminal plan with stored after_plan_id, bounded queued/first-running/first-waiting/truthful-final milestones, step outcomes, and terminal observation.", inputSchema: z.object({ plan_id: z.number().int().positive() }) }, async (p) => {
     try {
       const value: any = await (await bridge()).call("plan_status", p);
       if (value.observation) value.observation = normalizeObservation(value.observation);
-      return result(normalizePlanDiagnostics(value), value.status === "failed" || value.status === "cancelled");
-    } catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
+      const terminal = ["completed", "partial", "failed", "cancelled"].includes(value.status);
+      return result(normalizePlanDiagnostics({ ...value, terminal,
+        next_action: terminal ? null : { tool: "plan_status", arguments: { plan_id: value.plan_id } },
+      }), value.status === "failed" || value.status === "cancelled");
+    } catch (error) { return failure(error); }
   });
-  server.registerTool("run_plan", { description: "Run 1–25 known dependent physical steps sequentially with fail-fast cancellation and a final observation; prefer this for two or more dependent actions.", inputSchema: runPlanSchema }, async (input, extra) => {
+  server.registerTool("run_plan", { description: 'Run 1–25 dependent physical steps. Canonical input: {"steps":[{"action":"craft_items","recipe":"iron-gear-wheel","crafts":2,"wait_for_completion":true}]}; use steps, never summary/actions.', inputSchema: runPlanSchema }, async (input, extra) => {
     const parsed = runPlanSchema.parse(input);
     try {
       const outcome = await executeRunPlan(await bridge(), parsed, extra?.signal);
-      return result(normalizePlanDiagnostics(outcome), outcome.status !== "completed");
+      return result(normalizePlanDiagnostics({ ...outcome, terminal: true, next_action: null }), outcome.status === "failed" || outcome.status === "cancelled");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const status = extra?.signal?.aborted ? "cancelled" : "failed";
@@ -130,7 +211,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
         outcomes: [],
         observation_error: message,
       };
-      return result(normalizePlanDiagnostics(outcome), true);
+      return result(normalizePlanDiagnostics({ ...outcome, terminal: true, next_action: null }), true);
     }
   });
   server.registerTool("start_research", { description: "Start ordinary unlocked research using the force's real queue; requested trigger technologies and missing trigger prerequisites return explicit in-game action guidance.", inputSchema: z.object({ technology: z.string() }) }, async (p) => rpc("start_research", p));

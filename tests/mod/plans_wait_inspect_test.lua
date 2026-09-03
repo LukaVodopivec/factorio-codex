@@ -56,7 +56,7 @@ check(terminal.status == "completed" and terminal.completed_steps == 1
 -- re-inspects the target nor stops or replaces the active body action.
 storage.tasks = { next_id = 1, records = {}, queue = {}, active = nil }
 output_count, inspect_calls, physical_starts, physical_ticks = 0, 0, 0, 0
-local expiring = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 40, y = 2,
+local expiring = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2,
   inventory = "output", item = "iron-plate", count = 1, timeout_seconds = 1 } } })
 game.tick = 1; tasks.on_tick()
 local physical = tasks.enqueue({ task = { type = "walk_to", target = { x = 99, y = 99 } } })
@@ -79,8 +79,8 @@ check(storage.tasks.active and storage.tasks.active.id == physical.task_id
   and body.walking_state == walking_at_start and body.mining_state == mining_at_start
   and body.walking_state.walking and physical_starts == 1 and physical_ticks == 3,
   "queued wait expiry leaves the active physical action and body state untouched")
-check(inspect_calls == 0,
-  "queued wait expiry does not inspect its target while another physical task is active")
+check(inspect_calls == 1,
+  "queued wait expiry does not re-inspect its target while another physical task is active")
 check(tasks.plan_status({ plan_id = dependent.plan_id }).status == "queued" and tasks.queue_length() == 1,
   "the failed wait's dependent successor stays blocked in the same FIFO lane")
 os.exit(failures == 0 and 0 or 1)

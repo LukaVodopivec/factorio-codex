@@ -151,8 +151,10 @@ entity.insert = function(stack) mutations.insert = mutations.insert + 1 return s
 local partial_insert = { id = 30, target = { x = 6, y = 0 }, items = { coal = 2 } }
 transfer.insert.start(partial_insert)
 local partial_insert_result = transfer.insert.tick(partial_insert)
-check(partial_insert_result and partial_insert_result.status == "failed"
-  and partial_insert_result.detail:match("requested 2 coal, inserted 1, remainder 1"),
-  "partial insert is a terminal failure with requested, moved, and remainder counts")
+check(partial_insert_result and partial_insert_result.status == "partial"
+  and partial_insert_result.detail:match("requested 2 coal, inserted 1, remainder 1")
+  and partial_insert_result.outcome.total_inserted == 1
+  and partial_insert_result.outcome.transfers[1].remainder == 1,
+  "partial insert is an explicit bounded partial with requested, moved, and remainder counts")
 
 os.exit(failures == 0 and 0 or 1)

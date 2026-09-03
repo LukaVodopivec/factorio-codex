@@ -25,9 +25,9 @@ export const queuePlanSchema = z.object({
 }).strict();
 export const runPlanSchema = queuePlanSchema;
 export type RunPlanInput = z.infer<typeof runPlanSchema>;
-export interface PlanOutcome { step: number; action: RunPlanInput["steps"][number]["action"]; status: "completed" | "failed" | "cancelled"; result?: string; error?: string }
+export interface PlanOutcome { step: number; action: RunPlanInput["steps"][number]["action"]; status: "completed" | "partial" | "failed" | "cancelled"; result?: unknown; error?: string }
 export interface RunPlanResult {
-  plan_id?: number; status: "completed" | "failed" | "cancelled"; source_tick?: number;
+  plan_id?: number; status: "completed" | "partial" | "failed" | "cancelled"; source_tick?: number;
   position?: { x: number; y: number }; current_step?: number; completed_steps: number;
   total_steps?: number; outcomes: PlanOutcome[]; queue_depth?: number;
   observation?: Record<string, unknown>; observation_error?: string;
@@ -44,7 +44,7 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
       await clock.sleep(Math.min(500, deadline - clock.now()));
       if (signal?.aborted) throw new TaskCancelledError("run_plan was cancelled");
       const status = await bridge.call<RunPlanResult>("plan_status", { plan_id });
-      if (["completed", "failed", "cancelled"].includes(status.status)) {
+      if (["completed", "partial", "failed", "cancelled"].includes(status.status)) {
         if (status.observation) status.observation = normalizeObservation(status.observation);
         return status;
       }

@@ -122,6 +122,17 @@ describe("Bridge.enqueueAndWait", () => {
     )).rejects.toThrow("got stuck");
   });
 
+  it("retains a structured useful partial result without retrying", async () => {
+    const terminal = { status: "partial" as const, detail: "inserted 7 of 10",
+      outcome: { code: "PARTIAL_INSERT", total_inserted: 7 } };
+    const { rcon, exec } = fakeRcon((cmd) => cmd.includes('"enqueue"')
+      ? ok({ task_id: 18 }) : ok(terminal));
+    await expect(new Bridge(rcon).enqueueAndWaitResult(
+      { type: "insert", target: { x: 0, y: 0 }, items: { wood: 10 } }, { clock: fakeClock().clock },
+    )).resolves.toEqual(terminal);
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
   it("cancels and rejects on timeout", async () => {
     const cancelled: string[] = [];
     const { rcon } = fakeRcon((cmd) => {

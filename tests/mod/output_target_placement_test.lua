@@ -11,6 +11,8 @@ local replacement = { valid = true, name = "steel-furnace", type = "furnace", fo
 local source = { valid = true, name = "wooden-chest", type = "container", force = force,
   position = { x = 0, y = -1 }, selection_box = { left_top = { x = -0.5, y = -1.5 }, right_bottom = { x = 0.5, y = -0.5 } } }
 local target_matches, created, removed, inserted, pickup_target, drop_target, last_built = { recipient }, 0, 0, 0, source, recipient, nil
+local insert_limit
+local planned_recipient
 local runtime_drop_position = { x = 2, y = 0 }
 local surface
 surface = {
@@ -18,12 +20,19 @@ surface = {
   can_place_entity = function() return true end,
   create_entity = function(args)
     created = created + 1
+    local built_type = args.name == "burner-inserter" and "inserter"
+      or args.name == "wooden-chest" and "container" or "mining-drill"
     last_built = { valid = true, name = args.name,
-      type = args.name == "burner-inserter" and "inserter" or "mining-drill", position = args.position,
+      type = built_type, position = args.position,
       pickup_target = pickup_target, drop_target = drop_target,
       direction = args.direction, drop_position = runtime_drop_position, prototype = prototypes.item[args.name].place_result,
       force = force, surface = surface,
-      insert = function(stack) inserted = inserted + stack.count; return stack.count end }
+      insert = function(stack)
+        local accepted = math.min(stack.count, insert_limit or stack.count)
+        inserted = inserted + accepted
+        return accepted
+      end }
+    if built_type == "container" then planned_recipient, target_matches = last_built, { last_built } end
     return last_built
   end,
 }
@@ -40,6 +49,8 @@ _G.prototypes = { item = {
   wood = { name = "wood" },
   ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill", type = "mining-drill", vector_to_place_result = { x = 1, y = 0 } } },
   ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter", inserter_drop_position = { x = 1, y = 0 } } },
+  ["wooden-chest"] = { place_result = { name = "wooden-chest", type = "container",
+    collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
 } }
 local place = require("scripts.actions.build").place
 drop_target = nil
@@ -136,6 +147,23 @@ check(planned_result and planned_result.status == "done" and planned_result.deta
   and created == 1 and removed == 1,
   "build_plan reports valid geometry without claiming runtime binding when no starter material can produce output")
 
+created, removed, drop_target, target_matches, planned_recipient = 0, 0, nil, {}, nil
+local same_plan_target = { steps = {
+  { item = "wooden-chest", position = { x = 2, y = 0 } },
+  { item = "burner-inserter", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } },
+} }
+local same_plan_ok, same_plan_error = pcall(build_plan.start, same_plan_target)
+check(same_plan_ok, "build_plan preflight accepts one eligible earlier planned output recipient: " .. tostring(same_plan_error))
+check(build_plan.tick(same_plan_target) == nil and planned_recipient ~= nil,
+  "build_plan creates the planned recipient before resolving the producer target")
+check(build_plan.tick(same_plan_target) == nil and created == 2,
+  "build_plan resolves the exact player-owned runtime recipient before producer placement")
+last_built.drop_target = planned_recipient
+game.tick = game.tick + 1
+local same_plan_result = build_plan.tick(same_plan_target)
+check(same_plan_result and same_plan_result.status == "done",
+  "same-plan output target completes only after exact runtime binding")
+
 created, removed, inserted, drop_target, target_matches = 0, 0, 0, nil, { recipient }
 body.get_item_count = function(_, name) return name == "wood" and 1 or 1 end
 local planned_flow = { steps = { { item = "burner-mining-drill", position = { x = 1, y = 0 },
@@ -192,4 +220,20 @@ local planned_unbound_result = build_plan.tick(planned_unbound)
 check(planned_unbound_result and planned_unbound_result.status == "failed"
   and planned_unbound_result.detail:match("live output geometry") and created == 1 and removed == 1,
   "build_plan fails honestly when the live output tile has no recipient")
+
+created, removed, inserted, insert_limit, target_matches = 0, 0, 0, 7, {}
+body.get_item_count = function(name) return name == "wood" and 10 or 1 end
+local partial_insert_plan = { steps = {
+  { item = "burner-mining-drill", position = { x = 1, y = 0 }, insert = { wood = 10 } },
+  { item = "wooden-chest", position = { x = 3, y = 0 } },
+} }
+build_plan.start(partial_insert_plan)
+local partial_insert_result = build_plan.tick(partial_insert_plan)
+check(partial_insert_result and partial_insert_result.status == "partial"
+  and partial_insert_result.outcome.code == "PARTIAL_INSERT"
+  and partial_insert_result.outcome.total_inserted == 7
+  and partial_insert_result.outcome.transfers[1].requested == 10
+  and partial_insert_result.outcome.transfers[1].remainder == 3
+  and created == 1 and inserted == 7,
+  "build_plan stops after useful bounded partial insertion and reports its exact remainder")
 os.exit(failures == 0 and 0 or 1)

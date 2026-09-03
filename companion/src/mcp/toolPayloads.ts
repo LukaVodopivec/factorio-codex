@@ -43,6 +43,12 @@ export function normalizePlacementSearch(value: any): any {
   return { ...value, candidates: luaArray(value.candidates).map((candidate: any) => ({
     ...candidate,
     ...(candidate?.output_target === false ? { output_target: null } : {}),
+    ...(candidate?.output_position === undefined ? {} : { output_precondition: {
+      endpoint: candidate.output_position,
+      state: candidate.output_target && candidate.output_target !== false ? "bound" : "unbound",
+      recipient: candidate.output_target && candidate.output_target !== false ? candidate.output_target : null,
+      requires_player_owned_target_before_placement: true,
+    } }),
     ...(candidate?.fluid_connections === undefined ? {} : { fluid_connections: luaArray(candidate.fluid_connections) }),
     ...(candidate?.resource_coverage === undefined ? {} : { resource_coverage: luaArray(candidate.resource_coverage) }),
   })) };

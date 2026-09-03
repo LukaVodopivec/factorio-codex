@@ -3,6 +3,7 @@ package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 local body = { valid = true, position = { x = 0, y = 0 }, walking_state = {}, mining_state = {}, crafting_queue = {}, crafting_queue_size = 0 }
+body.get_main_inventory = function() return { get_contents = function() return { { name = "iron-plate", count = 2 } } end } end
 body.cancel_crafting = function(args) table.remove(body.crafting_queue, args.index); body.crafting_queue_size = #body.crafting_queue end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 local starts = {}
@@ -18,7 +19,7 @@ package.loaded["scripts.inspect"] = { inspect = function() inspected = inspected
 _G.game, _G.defines = { tick = 0 }, { shooting = { not_shooting = 0 } }
 _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
 local tasks = require("scripts.tasks")
-tasks.set_observer(function(params) return { tick = game.tick, detail = params.detail, entities = {}, resource_patches = {}, character = { inventory = {} } } end)
+tasks.set_observer(function(params) return { tick = game.tick, detail = params.detail, entities = {}, resource_patches = {}, character = { inventory = { ["iron-plate"] = 5 } } } end)
 local old_count_ok = pcall(tasks.queue_plan, { steps = { { action = "craft_items", recipe = "gear", count = 1 } } })
 local missing_crafts_ok = pcall(tasks.queue_plan, { steps = { { action = "craft_items", recipe = "gear" } } })
 local fractional_crafts_ok = pcall(tasks.queue_plan, { steps = { { action = "craft_items", recipe = "gear", crafts = 1.5 } } })
@@ -30,6 +31,8 @@ check(first.plan_id == 1 and successor.plan_id == 2, "queue_plan returns IDs imm
 for tick = 1, 5 do game.tick = tick; tasks.on_tick() end
 local a, b = tasks.plan_status({ plan_id = 1 }), tasks.plan_status({ plan_id = 2 })
 check(a.status == "completed" and a.completed_steps == 2, "Lua plan executes all steps contiguously")
+check(a.inventory_delta and a.inventory_delta["iron-plate"] == 3,
+  "terminal plan exposes the relevant observed inventory delta")
 check(b.status == "completed" and table.concat(starts, ",") == "walk_to,mine,craft", "successful predecessor releases successor without interleaving")
 check(a.transitions[1].status == "queued" and a.transitions[2].status == "running"
   and a.transitions[3].status == "completed" and #a.transitions == 3
@@ -97,23 +100,14 @@ check(tasks.plan_status({ plan_id = dependent.plan_id }).status == "cancelled",
 
 inspected, body.position = 0, { x = 100, y = 100 }
 local remote = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1, timeout_seconds = 2 } } })
-game.tick = 45; tasks.on_tick(); game.tick = 74; tasks.on_tick()
-check(inspected == 0 and tasks.plan_status({ plan_id = remote.plan_id }).status == "waiting",
-  "out-of-range wait stays parked without hidden remote inspection")
-body.position = { x = 0, y = 0 }; game.tick = 75; tasks.on_tick()
-check(inspected == 1 and tasks.plan_status({ plan_id = remote.plan_id }).status == "waiting",
-  "out-of-range wait resumes its original cadence after Codex returns")
-tasks.cancel({ plan_id = remote.plan_id })
-inspected, body.position = 0, { x = 100, y = 100 }
-local timed_out = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1, timeout_seconds = 1 } } })
-game.tick = 77; tasks.on_tick(); game.tick = 137; tasks.on_tick()
-local timeout_status = tasks.plan_status({ plan_id = timed_out.plan_id })
-check(timeout_status.status == "failed" and timeout_status.outcomes[1].error:match("timed out waiting")
-  and inspected == 0,
-  "out-of-range parking preserves the original deadline and times out without remote inspection")
+game.tick = 45; tasks.on_tick()
+local remote_status = tasks.plan_status({ plan_id = remote.plan_id })
+check(inspected == 0 and remote_status.status == "failed"
+  and remote_status.outcomes[1].error:match("TARGET_OUT_OF_OBSERVATION_RANGE"),
+  "out-of-range wait rejects immediately without hidden remote inspection")
 body.position = { x = 0, y = 0 }
 local output_plan = tasks.queue_plan({ steps = { { action = "place_entity", name = "burner-inserter", x = 1, y = 0, output_target = { x = 2, y = 0 } } } })
-game.tick = 138; tasks.on_tick()
+game.tick = 46; tasks.on_tick()
 check(tasks.plan_status({ plan_id = output_plan.plan_id }).status == "completed"
   and queued_place_output_target.x == 2 and queued_place_output_target.y == 0,
   "queued placement carries the expected output identity into the physical task")

@@ -67,6 +67,10 @@ function M.resolve(c, requested, label)
   return resolve(c, requested, label)
 end
 
+function M.can_receive_type(entity_type)
+  return RECIPIENT_TYPES[entity_type] == true
+end
+
 function M.output_offset(proto)
   local ok, raw = pcall(function() return proto.vector_to_place_result end)
   if ok and raw then return prototype_vector(raw) end

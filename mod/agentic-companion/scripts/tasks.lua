@@ -48,7 +48,26 @@ local function observe_terminal(plan)
   local ok, value = pcall(observer, { radius = plan.final_observation_radius, detail = plan.observation_detail })
   if ok then plan.observation = value else plan.observation_error = tostring(value) end
 end
-local function finish(task, status, detail, preserve_body)
+local function inventory_snapshot(c)
+  local out, inv = {}, c and c.get_main_inventory and c.get_main_inventory()
+  if not inv then return out end
+  for _, item in ipairs(inv.get_contents()) do out[item.name] = (out[item.name] or 0) + item.count end
+  return out
+end
+local function inventory_delta(plan)
+  if not plan.observation then return nil end
+  local final = plan.observation and plan.observation.character and plan.observation.character.inventory or {}
+  local initial, names, seen, delta = plan.start_inventory or {}, {}, {}, {}
+  for name in pairs(initial) do seen[name], names[#names + 1] = true, name end
+  for name in pairs(final) do if not seen[name] then names[#names + 1] = name end end
+  table.sort(names)
+  for _, name in ipairs(names) do
+    local change = (tonumber(final[name]) or 0) - (tonumber(initial[name]) or 0)
+    if change ~= 0 then delta[name] = change end
+  end
+  return delta
+end
+local function finish(task, status, detail, preserve_body, outcome)
   if status == "cancelled" and task_crafts(task) then cancel_crafting() end
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
   if not preserve_body then stop_body() end
@@ -61,6 +80,7 @@ local function finish(task, status, detail, preserve_body)
   end
   storage.tasks.records[task.id] = {
     status = task.type == "plan" and task.status or status, detail = detail or "",
+    outcome = outcome,
     finished_tick = game.tick, plan = task.type == "plan" and task or nil,
   }
 end
@@ -161,6 +181,7 @@ local function plan_payload(plan)
     current_step = plan.current_step, completed_steps = plan.completed_steps,
     total_steps = #plan.steps, outcomes = plan.outcomes, queue_depth = #storage.tasks.queue,
     transitions = plan.transitions,
+    inventory_delta = inventory_delta(plan),
     observation = plan.observation, observation_error = plan.observation_error,
     diagnostics = diagnostics,
   }
@@ -182,7 +203,7 @@ function M.get(params)
   if tasks.active and tasks.active.id == id then return { status = "running", detail = "" } end
   for _, queued in ipairs(tasks.queue) do if queued.id == id then return { status = "queued", detail = "" } end end
   local record = tasks.records[id]
-  if record then return { status = record.status, detail = record.detail } end
+  if record then return { status = record.status, detail = record.detail, outcome = record.outcome } end
   error("unknown task_id: " .. id)
 end
 function M.cancel(params)
@@ -239,8 +260,8 @@ local function finish_step(plan, result)
   local status = result.status == "done" and "completed" or result.status
   plan.outcomes[#plan.outcomes + 1] = {
     step = plan.current_step, action = step.action, status = status,
-    result = status == "completed" and (result.detail or "done") or nil,
-    error = status ~= "completed" and (result.detail or status) or nil,
+    result = (status == "completed" or status == "partial") and (result.outcome or result.detail or status) or nil,
+    error = (status == "failed" or status == "cancelled") and (result.detail or status) or nil,
   }
   plan.current_task = nil
   if status ~= "completed" then finish(plan, status, result.detail); return end
@@ -267,8 +288,12 @@ local function wait_for_item(plan, step)
   local c = companion.require_companion()
   local dx, dy = c.position.x - step.x, c.position.y - step.y
   if dx * dx + dy * dy > 900 then
-    plan.next_check_tick = game.tick + 30
-    return nil
+    local distance = math.sqrt(dx * dx + dy * dy)
+    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    return { status = "failed",
+      detail = string.format("TARGET_OUT_OF_OBSERVATION_RANGE: wait target is %.1f tiles away; maximum is 30", distance),
+      outcome = { code = "TARGET_OUT_OF_OBSERVATION_RANGE", distance = distance,
+        max_distance = 30, corrective_hint = "Physically approach with walk_to, or put this wait after a movement predecessor." } }
   end
   local response = inspect.inspect({ targets = { { x = step.x, y = step.y } } })
   local entity = response.entities and response.entities[1]
@@ -366,11 +391,12 @@ local function dispatch(tasks)
     if not task then return end
     if task.type == "plan" then set_plan_status(task, "running") else task.status = "running" end
     task.started_tick, tasks.active = task.started_tick or game.tick, task
+    if task.type == "plan" and task.start_inventory == nil then task.start_inventory = inventory_snapshot(companion.get()) end
     if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", tostring(err)); return end end
   end
   if task.type == "plan" then tick_plan(task); return end
   local ok, result = pcall(runners[task.type].tick, task)
-  if not ok then finish(task, "failed", tostring(result)) elseif result then finish(task, result.status, result.detail) end
+  if not ok then finish(task, "failed", tostring(result)) elseif result then finish(task, result.status, result.detail, nil, result.outcome) end
 end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end

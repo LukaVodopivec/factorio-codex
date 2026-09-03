@@ -157,6 +157,9 @@ function M.observe_local(params)
 
   local radius = math.floor(tonumber(params.radius) or SCAN_DEFAULT_RADIUS)
   radius = math.max(SCAN_MIN_RADIUS, math.min(radius, SCAN_MAX_RADIUS))
+  local compact = params.detail ~= "full"
+  local entity_limit, ground_limit, patch_limit = compact and 24 or 256,
+    compact and 24 or 256, compact and 16 or 256
 
   local center = c.position
   local ox = math.floor(center.x) - radius
@@ -306,7 +309,7 @@ function M.observe_local(params)
     if a.type ~= b.type then return a.type < b.type end
     return a._unit < b._unit
   end)
-  local omitted = math.max(0, #details - 256); while #details > 256 do table.remove(details) end
+  local omitted = math.max(0, #details - entity_limit); while #details > entity_limit do table.remove(details) end
   table.sort(details, function(a, b)
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
     if a.position.x ~= b.position.x then return a.position.x < b.position.x end
@@ -322,8 +325,8 @@ function M.observe_local(params)
     if a.item ~= b.item then return a.item < b.item end
     return a.count < b.count
   end)
-  local omitted_ground_items = math.max(0, #ground_items - 256)
-  while #ground_items > 256 do table.remove(ground_items) end
+  local omitted_ground_items = math.max(0, #ground_items - ground_limit)
+  while #ground_items > ground_limit do table.remove(ground_items) end
   table.sort(ground_items, function(a, b)
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
     if a.position.x ~= b.position.x then return a.position.x < b.position.x end
@@ -371,6 +374,8 @@ function M.observe_local(params)
     if a.total_amount ~= b.total_amount then return a.total_amount < b.total_amount end
     return a._members < b._members
   end)
+  local omitted_resource_patches = math.max(0, #patches - patch_limit)
+  while #patches > patch_limit do table.remove(patches) end
   for _, patch in ipairs(patches) do patch._members = nil end
   local function inventory_contents(source)
     local contents = {}
@@ -399,6 +404,7 @@ function M.observe_local(params)
       path_start = { clear = #start_collisions == 0, collisions = start_collisions } },
     entities = details, resource_patches = patches, ground_items = ground_items,
     omitted_entities = omitted, omitted_ground_items = omitted_ground_items,
+    omitted_resource_patches = omitted_resource_patches,
   }
   if result.detail == "full" then
     result.grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend,

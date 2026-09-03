@@ -78,6 +78,7 @@ local body = {
   force = player_force,
   mining_state = { mining = false }, selected = nil, crafting_queue_size = 0,
   can_insert = function() error("partial LuaControl.can_insert must not decide complete-cycle capacity") end,
+  can_reach_entity = function(entity) return entity.valid end,
   get_main_inventory = function() return inventory end,
   surface = { find_entities_filtered = function(filter)
     check(filter.area ~= nil and filter.radius == nil, "mining queries an exact area without a nearby radius")
@@ -96,7 +97,10 @@ body.update_selected_entity = function(position)
   end
 end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
-package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end }
+package.loaded["scripts.actions.approach"] = {
+  ensure = function() return "ok" end,
+  ensure_entity = function(_, _, entity) return entity.valid and "ok" or { status = "failed", detail = "gone" } end,
+}
 _G.defines = { inventory = { chest = 1, fuel = 2 } }
 _G.game = { tick = 100 }
 local mine = require("scripts.actions.mine")

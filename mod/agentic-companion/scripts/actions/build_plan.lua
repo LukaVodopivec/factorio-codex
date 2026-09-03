@@ -71,18 +71,44 @@ function M.start(task)
     end
   end
 
-  for _, step in ipairs(task.steps) do
+  local c = companion.require_companion()
+  for index, step in ipairs(task.steps) do
     step.direction = math.floor(tonumber(step.direction) or 0) % 16
     local proto = prototypes.item[step.item]
     if step.output_target ~= nil then
-      step._output_target = output_targets.resolve(companion.require_companion(), step.output_target,
-        "build_plan output_target")
       local result = proto and proto.place_result
-      local matches, endpoint = result and output_targets.geometry_matches(companion.require_companion(), result,
-        step.position, step.direction, step._output_target.entity)
-      if not matches then
-        error(string.format("build_plan output_target is not at the exact output endpoint%s",
-          endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
+      local ok, resolved = pcall(output_targets.resolve, c, step.output_target, "build_plan output_target")
+      if ok then
+        step._output_target = resolved
+        local matches, endpoint = result and output_targets.geometry_matches(c, result,
+          step.position, step.direction, step._output_target.entity)
+        if not matches then
+          error(string.format("build_plan output_target is not at the exact output endpoint%s",
+            endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
+        end
+      else
+        local planned_index, planned
+        for earlier = 1, index - 1 do
+          local candidate = task.steps[earlier]
+          if candidate.position.x == step.output_target.x and candidate.position.y == step.output_target.y then
+            if planned then error("build_plan output_target is ambiguous among earlier placements") end
+            planned_index, planned = earlier, candidate
+          end
+        end
+        local target_item = planned and prototypes.item[planned.item]
+        local target_proto = target_item and target_item.place_result
+        if not target_proto or not output_targets.can_receive_type(target_proto.type) then
+          error(tostring(resolved))
+        end
+        local endpoint = result and output_targets.output_position(result, step.position, step.direction)
+        local tile = endpoint and { left_top = { x = math.floor(endpoint.x), y = math.floor(endpoint.y) },
+          right_bottom = { x = math.floor(endpoint.x) + 1, y = math.floor(endpoint.y) + 1 } }
+        local footprint = placement_geometry.footprint(target_proto, planned.position, planned.direction)
+        if not endpoint or not placement_geometry.overlaps(tile, footprint) then
+          error(string.format("build_plan output_target is not at the exact output endpoint%s",
+            endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
+        end
+        step._planned_output_target = { step = planned_index, item = planned.item }
       end
     end
     if step.insert ~= nil then
@@ -227,7 +253,7 @@ end
 -- into the placed entity, removing exactly what was accepted. Returns a list
 -- of problem strings (empty = everything went in).
 local function insert_items(c, e, list)
-  local problems = {}
+  local problems, total, transfers = {}, 0, {}
   for _, it in ipairs(list) do
     if not prototypes.item[it.name] then
       problems[#problems + 1] = "no item called '" .. it.name .. "'"
@@ -241,6 +267,9 @@ local function insert_items(c, e, list)
           c.remove_item({ name = it.name, count = inserted })
         end
       end
+      total = total + inserted
+      transfers[#transfers + 1] = { item = it.name, requested = it.count,
+        available = have, inserted = inserted, remainder = it.count - inserted }
       if inserted < it.count then
         if have == 0 then
           problems[#problems + 1] = "I have no " .. it.name .. " to insert"
@@ -256,7 +285,7 @@ local function insert_items(c, e, list)
       end
     end
   end
-  return problems
+  return problems, total, transfers
 end
 
 -- --------------------------------------------------------------- progress
@@ -361,8 +390,14 @@ local function finish_placed_step(task, c, step, built)
         if why then issues[#issues + 1] = why end
       end
       if step._insert then
-        local problems = insert_items(c, built, step._insert)
+        local problems, inserted, transfers = insert_items(c, built, step._insert)
         for _, problem in ipairs(problems) do issues[#issues + 1] = problem end
+        if #problems > 0 and inserted > 0 then
+          task._built = nil
+          return { status = "partial", detail = string.format("placed the %s, then partially inserted starter items — %s",
+            step.item, table.concat(problems, "; ")),
+            outcome = { code = "PARTIAL_INSERT", total_inserted = inserted, transfers = transfers } }
+        end
       end
     end
     if #issues > 0 then
@@ -430,10 +465,13 @@ function M.tick(task)
   local entity_name = place_result.name
 
   local expected_output
-  if step._output_target then
+  if step.output_target then
     local current = output_targets.resolve(c, step.output_target, "build_plan output_target")
-    if current.entity ~= step._output_target.entity then
+    if step._output_target and current.entity ~= step._output_target.entity then
       return advance(task, false, "output_target changed before placement; observe again")
+    end
+    if step._planned_output_target and current.entity.name ~= prototypes.item[step._planned_output_target.item].place_result.name then
+      return advance(task, false, "planned output_target has the wrong runtime identity; observe again")
     end
     local matches = output_targets.geometry_matches(c, place_result, step.position, step.direction, current.entity)
     if not matches then

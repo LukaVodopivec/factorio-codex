@@ -276,9 +276,12 @@ function M.set_recipe.tick(task)
       return {
         status = "failed",
         detail = "the " .. e.name .. " is a furnace — it picks its recipe automatically from what you insert",
+        outcome = { code = "WRONG_MACHINE_TYPE", expected = "crafting_machine", actual = "furnace",
+          corrective_hint = "Insert the smeltable input; do not call set_recipe for furnaces." },
       }
     end
-    return { status = "failed", detail = "the " .. e.name .. " can't have a recipe set — only crafting machines can" }
+    return { status = "failed", detail = "the " .. e.name .. " can't have a recipe set — only crafting machines can",
+      outcome = { code = "WRONG_MACHINE_TYPE", expected = "crafting_machine", actual = e.type } }
   end
 
   local ok, removed = pcall(e.set_recipe, task.recipe)

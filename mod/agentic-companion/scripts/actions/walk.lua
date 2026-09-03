@@ -41,12 +41,13 @@ local function dist_sq(a, b)
   return dx * dx + dy * dy
 end
 
-local function request_path(state, c, task_id)
+local function request_path(state, c, task_id, target, phase)
+  target = target or state.target
   local id = c.surface.request_path({
     bounding_box = { { -0.2, -0.2 }, { 0.2, 0.2 } },
     collision_mask = prototypes.entity["character"].collision_mask,
     start = c.position,
-    goal = state.target,
+    goal = target,
     force = c.force,
     radius = math.max(state.arrive_within, 0.5),
     can_open_gates = true,
@@ -57,7 +58,7 @@ local function request_path(state, c, task_id)
   storage.path_request = { id = id, task_id = task_id }
   state.request_id = id
   state.request_tick = game.tick
-  state.phase = "waiting"
+  state.phase = phase or "waiting"
   state.last_check_tick = nil
   state.last_pos = nil
 end
@@ -66,9 +67,9 @@ local function stop(c)
   c.walking_state = { walking = false }
 end
 
-local function fail(c, code, detail)
+local function fail(c, code, detail, outcome)
   stop(c)
-  return { failed = code .. ": " .. detail }
+  return { failed = code .. ": " .. detail, outcome = outcome }
 end
 
 local function collision_labels(collisions)
@@ -186,6 +187,101 @@ local function blocker_evidence(state, c, goal)
   return evidence
 end
 
+local FRONTIER_OFFSETS = {
+  { x = 0, y = -4 }, { x = 4, y = -4 }, { x = 4, y = 0 }, { x = 4, y = 4 },
+  { x = 0, y = 4 }, { x = -4, y = 4 }, { x = -4, y = 0 }, { x = -4, y = -4 },
+}
+
+local function charted(c, point)
+  return c.force.is_chunk_charted(c.surface,
+    { x = math.floor(point.x / 32), y = math.floor(point.y / 32) })
+end
+
+local function request_next_frontier(state, c, task_id)
+  state.frontier_index = state.frontier_index + 1
+  local candidate = state.frontier_candidates[state.frontier_index]
+  if not candidate then return false end
+  request_path(state, c, task_id, candidate, "frontier_waiting")
+  return true
+end
+
+local function begin_frontier_diagnostics(state, c, task_id)
+  state.frontier_candidates, state.frontier_paths, state.frontier_index = {}, {}, 0
+  for _, offset in ipairs(FRONTIER_OFFSETS) do
+    local requested = { x = c.position.x + offset.x, y = c.position.y + offset.y }
+    if charted(c, requested) then
+      local ok, clear = pcall(c.surface.find_non_colliding_position,
+        c.name or "character", requested, 0.5, 0.1, false)
+      if ok and clear and charted(c, clear) then
+        state.frontier_candidates[#state.frontier_candidates + 1] = { x = clear.x, y = clear.y }
+      end
+    end
+  end
+  return request_next_frontier(state, c, task_id)
+end
+
+local function nearby_collision_evidence(c)
+  local area = { left_top = { x = c.position.x - 4, y = c.position.y - 4 },
+    right_bottom = { x = c.position.x + 4, y = c.position.y + 4 } }
+  for _, point in ipairs({ area.left_top, area.right_bottom }) do
+    if not charted(c, point) then return {}, {}, "bounded cage area crosses uncharted terrain" end
+  end
+  local entities, tiles = {}, {}
+  local ok, found = pcall(c.surface.find_entities_filtered, {
+    area = area, collision_mask = prototypes.entity["character"].collision_mask,
+  })
+  if ok then for _, entity in ipairs(found or {}) do
+    if entity.valid and entity ~= c and entity.type ~= "resource" and entity.type ~= "item-entity" then
+      entities[#entities + 1] = { name = entity.name, type = entity.type,
+        position = { x = entity.position.x, y = entity.position.y },
+        player_owned = entity.force == c.force }
+    end
+  end end
+  table.sort(entities, function(a, b)
+    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+    return a.name < b.name
+  end)
+  while #entities > 16 do table.remove(entities) end
+  for y = math.floor(area.left_top.y), math.ceil(area.right_bottom.y) - 1 do
+    for x = math.floor(area.left_top.x), math.ceil(area.right_bottom.x) - 1 do
+      local tile_ok, tile = pcall(c.surface.get_tile, x, y)
+      local collision_ok, collides = tile_ok and tile and pcall(tile.collides_with, "player")
+      if collision_ok and collides then tiles[#tiles + 1] = { name = tile.name or "collision-tile", position = { x = x, y = y } } end
+    end
+  end
+  while #tiles > 16 do table.remove(tiles) end
+  return entities, tiles, nil
+end
+
+local function frontier_failure(state, c)
+  local best
+  for _, entry in ipairs(state.frontier_paths or {}) do
+    entry.reduction = math.sqrt(dist_sq(c.position, state.target)) - math.sqrt(dist_sq(entry.position, state.target))
+    if not best or entry.reduction > best.reduction
+      or (entry.reduction == best.reduction and (entry.position.y < best.position.y
+        or (entry.position.y == best.position.y and entry.position.x < best.position.x))) then best = entry end
+  end
+  local route, omitted = {}, 0
+  if best then
+    omitted = math.max(0, #best.path - 12)
+    for index = 1, math.min(#best.path, 12) do route[index] = best.path[index] end
+  end
+  local evidence = blocker_evidence(state, c, state.target)
+  local collision_candidates, collision_tiles, evidence_error = nearby_collision_evidence(c)
+  local diagnostics = { code = "PATH_NOT_FOUND", evidence_scope = "charted_visible_only",
+    start = { x = c.position.x, y = c.position.y }, goal = state.target,
+    reachable_frontier = best and best.position or nil, partial_route = route,
+    omitted_waypoints = omitted, blocker_evidence = evidence,
+    owned_collision_candidates = collision_candidates, collision_tiles = collision_tiles,
+    cage_evidence_error = evidence_error }
+  return fail(c, "PATH_NOT_FOUND", string.format(
+    "Factorio found no character path to (%.1f, %.1f); %s; reachable_frontier=%s",
+    state.target.x, state.target.y, evidence,
+    best and string.format("(%.1f,%.1f)", best.position.x, best.position.y) or "none"),
+    { code = "PATH_NOT_FOUND", diagnostics = { path = diagnostics } })
+end
+
 local function retry_or_fail(state, c, code, detail)
   state.retries = state.retries + 1
   if state.retries > MAX_RETRIES then
@@ -271,9 +367,8 @@ function M.step(state, c, task_id)
           "Factorio's pathfinder remained temporarily unavailable")
         if failed then return failed end
       elseif not result.path or #result.path == 0 then
-        local evidence = blocker_evidence(state, c, state.target)
-        return fail(c, "PATH_NOT_FOUND", string.format(
-          "Factorio found no character path to (%.1f, %.1f); %s", state.target.x, state.target.y, evidence))
+        if not begin_frontier_diagnostics(state, c, task_id) then return frontier_failure(state, c) end
+        return nil
       else
         state.path = result.path
         state.waypoint = 1
@@ -288,6 +383,25 @@ function M.step(state, c, task_id)
       stop(c)
       return nil
     end
+  end
+
+
+  if state.phase == "frontier_waiting" then
+    local result = take_path_result(state, task_id)
+    if result then
+      if result.path and #result.path > 0 then
+        state.frontier_paths[#state.frontier_paths + 1] = {
+          position = state.frontier_candidates[state.frontier_index], path = result.path,
+        }
+      end
+      if not request_next_frontier(state, c, task_id) then return frontier_failure(state, c) end
+      return nil
+    elseif game.tick - state.request_tick > PATH_WAIT_TICKS then
+      if not request_next_frontier(state, c, task_id) then return frontier_failure(state, c) end
+      return nil
+    end
+    stop(c)
+    return nil
   end
 
   if state.phase == "retry_wait" then
@@ -388,7 +502,7 @@ function M.tick(task)
   if r == "arrived" then
     return { status = "done", detail = string.format("arrived at (%.1f, %.1f)", c.position.x, c.position.y) }
   elseif type(r) == "table" then
-    return { status = "failed", detail = r.failed }
+    return { status = "failed", detail = r.failed, outcome = r.outcome }
   end
   return nil
 end

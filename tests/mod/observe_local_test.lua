@@ -165,7 +165,9 @@ check(canonical(observation) == canonical(shuffled_observation), "shuffled entit
 local compact = spatial.observe_local({ radius = 15 })
 check(compact.detail == "compact" and compact.grid == nil and compact.character.crafting.queue_size == 0,
   "compact is the default and omits only the grid while retaining crafting")
-check(#compact.ground_items == 256 and compact.omitted_ground_items == 3,
-  "compact observation retains the same nearest grounded pickup targets")
+check(#compact.ground_items == 24 and compact.omitted_ground_items == 235
+  and #compact.entities == 24 and compact.omitted_entities == 238
+  and compact.omitted_resource_patches == 0,
+  "compact observation bounds nearest grounded targets and reports every omission count")
 _G.require = parse_require
 os.exit(failures == 0 and 0 or 1)

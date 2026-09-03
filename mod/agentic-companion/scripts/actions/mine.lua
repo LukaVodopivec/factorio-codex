@@ -215,6 +215,32 @@ local function partial_failure(task, reason)
   }
 end
 
+local function selection_failure(task, c, e, stage, code)
+  local selected = c.selected
+  local can_reach = false
+  if e and e.valid then
+    local ok, value = pcall(c.can_reach_entity, e)
+    can_reach = ok and value == true
+  end
+  local actual
+  if selected and selected.valid then actual = {
+    name = selected.name, type = selected.type,
+    position = { x = selected.position.x, y = selected.position.y },
+  } end
+  return {
+    status = "failed",
+    detail = code .. ": could not select the exact mining target",
+    outcome = {
+      code = code, stage = stage,
+      requested_position = { x = task.target.x, y = task.target.y },
+      target = e and e.valid and { name = e.name, type = e.type,
+        position = { x = e.position.x, y = e.position.y } } or nil,
+      character_position = { x = c.position.x, y = c.position.y },
+      can_reach_entity = can_reach, selected = actual,
+    },
+  }
+end
+
 function M.tick(task)
   local c, e = companion.get(), task._entity
   if not c then return partial_failure(task, "the Codex character is gone") end
@@ -227,7 +253,7 @@ function M.tick(task)
       if task._completed > 0 then return partial_failure(task, "the initially selected resource was exhausted") end
       return partial_failure(task, "the exact target was removed before mining started")
     end
-    local reached = approach.ensure(task, c, e.position, c.resource_reach_distance)
+    local reached = approach.ensure_entity(task, c, e)
     if type(reached) == "table" then return reached end
     if reached ~= "ok" then return nil end
     if task._target_kind == "owned" and not recoverable(e, task.allow_fluid_loss) then
@@ -248,9 +274,9 @@ function M.tick(task)
     -- does not select one for a script-created character. Select through the
     -- physical LuaControl API and refuse to mine a different overlapping
     -- entity.
-    c.update_selected_entity(e.position)
+    c.selected = e
     if c.selected ~= e then
-      return partial_failure(task, "could not select the exact mining target")
+      return selection_failure(task, c, e, "initial_selection", "TARGET_NOT_SELECTABLE")
     end
     task._mining_started = true
     c.mining_state = { mining = true, position = e.position }
@@ -268,10 +294,10 @@ function M.tick(task)
     -- A real connected client can clear LuaPlayer.selected from its native
     -- input state between ticks. Reassert the already-resolved exact entity
     -- and physical mining state; never resolve or switch to a nearby target.
-    if c.selected ~= e then c.update_selected_entity(e.position) end
+    if c.selected ~= e then c.selected = e end
     if c.selected ~= e then
       c.mining_state = { mining = false }
-      return partial_failure(task, "could not reselect the exact mining target")
+      return selection_failure(task, c, e, "reselection", "TARGET_NOT_SELECTABLE")
     end
     c.mining_state = { mining = true, position = e.position }
     return nil

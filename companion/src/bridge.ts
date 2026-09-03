@@ -98,6 +98,14 @@ export class Bridge {
   /** Enqueues a task and polls until it reaches a terminal state.
    *  Resolves with the human-readable detail; rejects (ModError) on failure. */
   async enqueueAndWait(task: Task, opts: EnqueueOptions = {}): Promise<string> {
+    const st = await this.enqueueAndWaitResult(task, opts);
+    if (st.status === "done") return st.detail || "done";
+    if (st.status === "cancelled") throw new TaskCancelledError("the task was cancelled");
+    throw new ModError(st.detail || (st.status === "partial" ? "task partially completed" : "task failed"));
+  }
+
+  /** Same physical queue path, retaining the structured terminal outcome. */
+  async enqueueAndWaitResult(task: Task, opts: EnqueueOptions = {}): Promise<GetTaskResult> {
     if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
     const { task_id } = await this.call<{ task_id: number }>("enqueue", { task });
     const clock = opts.clock ?? realClock;
@@ -118,11 +126,11 @@ export class Bridge {
         if (clock.now() >= deadline) throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
         switch (st.status) {
           case "done":
-            return st.detail || "done";
+          case "partial":
           case "failed":
-            throw new ModError(st.detail || "task failed");
+            return st;
           case "cancelled":
-            throw new TaskCancelledError("the task was cancelled");
+            return st;
           default:
             break; // queued / running
         }

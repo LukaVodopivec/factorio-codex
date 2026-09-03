@@ -1,10 +1,13 @@
 export interface ChunkedEnvelope { ok: true; chunked: true; id: number; parts: number; data: string }
-export interface GetTaskResult { status: "queued" | "running" | "done" | "failed" | "cancelled"; detail?: string }
+export interface GetTaskResult { status: "queued" | "running" | "done" | "partial" | "failed" | "cancelled"; detail?: string; outcome?: Record<string, unknown> }
 export interface Position { x: number; y: number }
 export interface PlacementCandidate {
   item: string; entity: string; position: Position; direction: number;
   distance: number; distance_from_codex: number; terrain: "land" | "shoreline" | "offshore";
   output_position?: Position; pickup_position?: Position; drop_position?: Position;
+  output_precondition?: { endpoint: Position; state: "bound" | "unbound";
+    recipient: { name: string; type: string; position: Position } | null;
+    requires_player_owned_target_before_placement: true };
   resource_coverage?: Array<{ name: string; entity_count: number; total_amount: number }>;
   fluid_connections?: FluidConnection[];
 }
@@ -38,7 +41,7 @@ export interface ProductionRequirements {
 export interface PhysicalRoute {
   kind: "belt" | "pipe" | "power"; prototype: string; from: Position; to: Position;
   length: number; steps: Array<{ name: string; x: number; y: number; direction?: number }>;
-  physical: true; ghosts: false; status?: "completed"; detail?: string;
+  physical: true; ghosts: false; status?: "completed" | "connected" | "placed_unconnected" | "placed_unverified"; detail?: string;
 }
 export interface ElectricalInspection {
   network_id?: number; energy?: number; buffer_capacity?: number; demand?: number;

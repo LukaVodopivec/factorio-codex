@@ -12,7 +12,7 @@ _G.defines = {
 }
 _G.prototypes = { entity = { character = { collision_mask = {} } } }
 
-local next_path_id, blocker_filter, chart_all = 0, nil, true
+local next_path_id, blocker_filter, chart_all, requested_goals = 0, nil, true, {}
 local found_blockers = {
   { valid = true, name = "stone-furnace", type = "furnace", position = { x = 1, y = 0 } },
 }
@@ -23,8 +23,9 @@ local body = {
   position = { x = 0, y = 0 },
   force = { is_chunk_charted = function(_, chunk) return chart_all or chunk.x == 0 end },
   walking_state = {},
-  surface = { request_path = function()
+  surface = { request_path = function(options)
     next_path_id = next_path_id + 1
+    requested_goals[next_path_id] = options.goal
     return next_path_id
   end,
   get_tile = function(x, y) tile_queries = tile_queries + 1; return { position = { x = math.floor(x), y = math.floor(y) },
@@ -37,6 +38,7 @@ local approach = require("scripts.actions.approach")
 
 local function reset(target)
   next_path_id = 0
+  requested_goals = {}
   body.position = { x = 0, y = 0 }
   body.walking_state = {}
   _G.game = { tick = 0 }
@@ -100,9 +102,29 @@ check(result.failed:match("collision segment") and result.failed:match("stone%-f
 check(blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
   "blocker evidence uses the same character collision mask as native pathfinding")
 check(blocker_filter.area and blocker_filter.position == nil and blocker_filter.radius == nil
-  and blocker_filter.area.left_top.x == -0.5 and blocker_filter.area.right_bottom.x == 3.0
-  and blocker_filter.area.left_top.y == -0.5 and blocker_filter.area.right_bottom.y == 0.5,
-  "blocker query is limited to the immediate collision segment rather than the far route")
+  and blocker_filter.area.left_top.x == -4 and blocker_filter.area.right_bottom.x == 4
+  and result.outcome.diagnostics.path.evidence_scope == "charted_visible_only",
+  "path failure adds a bounded charted cage query rather than inspecting the far route")
+
+body.surface.find_non_colliding_position = function(_, requested) return requested end
+found_blockers, tile_blocks = {}, false
+task = reset()
+walk.step(task._walk, body, task.id); deliver(nil, false)
+check(walk.step(task._walk, body, task.id) == nil and task._walk.phase == "frontier_waiting",
+  "no-path begins bounded native frontier probes")
+local frontier_result
+for _ = 1, 8 do
+  local goal = requested_goals[storage.path_request.id]
+  deliver({ goal }, false)
+  frontier_result = walk.step(task._walk, body, task.id)
+end
+check(frontier_result and frontier_result.failed:match("^PATH_NOT_FOUND:")
+  and frontier_result.outcome.diagnostics.path.reachable_frontier.x == 4
+  and frontier_result.outcome.diagnostics.path.reachable_frontier.y == 0
+  and #frontier_result.outcome.diagnostics.path.partial_route == 1,
+  "frontier probes return the reachable charted route that most reduces goal distance")
+body.surface.find_non_colliding_position = nil
+found_blockers, tile_blocks = { { valid = true, name = "stone-furnace", type = "furnace", position = { x = 1, y = 0 } } }, true
 
 chart_all = false
 task = reset({ x = 40, y = 0 })

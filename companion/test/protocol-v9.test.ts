@@ -6,22 +6,23 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v17 DTO and tool registry", () => {
-  it("declares v16 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(17);
-    expect(MCP_SERVER_VERSION).toBe("0.13.10");
+describe("protocol v18 DTO and tool registry", () => {
+  it("declares v18 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(18);
+    expect(MCP_SERVER_VERSION).toBe("0.14.0");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
 
-  it("registers exactly 25 tools and forwards exact v16 payloads", async () => {
+  it("registers exactly 25 tools and forwards exact v18 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
       ? { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, length: 1, steps: [{ name: "transport-belt", x: 1.5, y: 0.5, direction: 4 }], physical: true, ghosts: false }
       : { method });
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
-    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
+    const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
     expect(Object.keys(handlers)).toHaveLength(25);
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
@@ -32,10 +33,10 @@ describe("protocol v17 DTO and tool registry", () => {
     expect(schemas.find_placement.safeParse({ ...find, input_target: { x: 0, y: 1 } }).success).toBe(false);
     const place = schemas.place_entity.parse({ name: "inserter", x: 1, y: 2, output_target: { x: 1, y: 3 } });
     await handlers.place_entity(place);
-    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 1, y: 2 }, direction: undefined, output_target: { x: 1, y: 3 } });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 1, y: 2 }, direction: undefined, output_target: { x: 1, y: 3 } });
     const build = schemas.build_plan.parse({ steps: [{ name: "inserter", x: 1, y: 2, output_target: { x: 1, y: 3 } }] });
     await handlers.build_plan(build);
-    expect(enqueueAndWait).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
       steps: [{ item: "inserter", position: { x: 1, y: 2 }, output_target: { x: 1, y: 3 } }] });
     await handlers.map_summary({});
     expect(call).toHaveBeenLastCalledWith("map_summary", {});
@@ -50,6 +51,48 @@ describe("protocol v17 DTO and tool registry", () => {
     });
     expect(schemas.find_placement.safeParse({ item: "x", preferred: { x: 0, y: 0 }, radius: 31 }).success).toBe(false);
     expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 26 }).success).toBe(false);
+  });
+
+  it("never equates complete power-pole placement with electrical continuity", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const networks = new Map([ ["0,0", 1], ["4,0", 1], ["8,0", 9] ]);
+    const call = vi.fn(async (method: string, payload: any) => {
+      if (method === "connect_entities") return { kind: "power", prototype: "small-electric-pole",
+        from: { x: 0, y: 0 }, to: { x: 8, y: 0 }, length: 1,
+        steps: [{ name: "small-electric-pole", x: 4, y: 0 }], physical: true, ghosts: false };
+      if (method === "inspect") {
+        return { entities: payload.targets.map((point: { x: number; y: number }) =>
+          ({ name: "electrical-member", electric_network_id: networks.get(`${point.x},${point.y}`) })) };
+      }
+      return {};
+    });
+    const enqueueAndWait = vi.fn(async () => "placed 1/1");
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
+    const output = await handlers.connect_entities({ kind: "power", prototype: "small-electric-pole",
+      from: { x: 0, y: 0 }, to: { x: 8, y: 0 }, max_length: 25 });
+    expect(output.structuredContent).toMatchObject({
+      status: "placed_unconnected",
+      placement: { requested: 1, placed: 1, complete: true },
+      endpoint_coverage: { from: { covered: true, network_id: 1 }, to: { covered: false, network_id: 9 } },
+      network_continuity: { connected: false, split_after_index: 1 },
+    });
+    expect(call).toHaveBeenLastCalledWith("inspect", { targets: [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 8, y: 0 }] });
+  });
+
+  it("reports placed power routes as unverified when local network evidence is incomplete", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const call = vi.fn(async (method: string) => method === "connect_entities"
+      ? { kind: "power", prototype: "small-electric-pole", from: { x: 0, y: 0 }, to: { x: 8, y: 0 },
+        length: 1, steps: [{ name: "small-electric-pole", x: 4, y: 0 }], physical: true, ghosts: false }
+      : { entities: [{ electric_network_id: 1 }, { error: "no entity" }, { electric_network_id: 1 }] });
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, async () => ({
+      call, enqueueAndWait: vi.fn(async () => "placed 1/1"),
+    } as unknown as Bridge), validConfig);
+    const output = await handlers.connect_entities({ kind: "power", prototype: "small-electric-pole",
+      from: { x: 0, y: 0 }, to: { x: 8, y: 0 }, max_length: 25 });
+    expect(output.structuredContent).toMatchObject({ status: "placed_unverified",
+      placement: { complete: true }, validation: { missing_member_indexes: [1] } });
   });
 
   it("retains placement identity and exposes compact electrical/plan diagnostics", () => {
@@ -80,7 +123,9 @@ describe("protocol v17 DTO and tool registry", () => {
       .toEqual({ rejected_no_compatible_resource: 5, candidates: [] });
     expect(normalizePlacementSearch({ candidates: [{ resource_coverage: {} }] }).candidates[0].resource_coverage).toEqual([]);
     expect(normalizePlacementSearch({ candidates: [{ output_position: { x: 1, y: 2 }, output_target: false }] }).candidates[0])
-      .toEqual({ output_position: { x: 1, y: 2 }, output_target: null });
+      .toEqual({ output_position: { x: 1, y: 2 }, output_target: null,
+        output_precondition: { endpoint: { x: 1, y: 2 }, state: "unbound", recipient: null,
+          requires_player_owned_target_before_placement: true } });
     expect(normalizeInspection({ entities: [{ name: "drill", type: "mining-drill", drop_target: false }] }).entities[0].drop_target).toBeNull();
     expect(normalizeMapSummary({ resources: {}, water_edges: {}, factory_landmarks: {} })).toMatchObject({ resources: [], water_edges: [], factory_landmarks: [] });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);

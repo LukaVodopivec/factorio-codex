@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.13.10**.
+Current release: **0.14.0**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -40,7 +40,9 @@ The mod never creates a standalone fallback character. Run
 committed project config starts MCP automatically. Begin with
 `connect_status`, then `observe_local`; `stop` cancels active and queued work.
 
-The public CLI contains only `setup`, `doctor [--json]`, and `mcp`. MCP exposes
+The built CLI supports `setup`, `doctor [--json]`, `mcp`, and the strategist-only
+atomic mirror writer invoked as
+`node companion/dist/cli.js ledger-apply --ledger <operations.json>`. MCP exposes
 exactly 25 text-only tools through `tools/list`. `observe_local` exposes exact
 `ground_items` stacks and `pickup_items` physically collects one still-matching
 stack through the character's normal picking state. Its character record labels

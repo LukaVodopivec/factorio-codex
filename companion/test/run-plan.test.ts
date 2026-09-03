@@ -7,7 +7,7 @@ import { registerMcpTools } from "../src/mcp/server.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 const observation = { tick: 9, detail: "compact", entities: {}, resource_patches: {}, character: { inventory: {}, crafting: { queue_size: 0 } } };
 
-describe("protocol-v11 plans", () => {
+describe("current queued-plan protocol", () => {
   it("validates the complete plan before acquiring a bridge", async () => {
     const handlers: Record<string, (args: unknown) => Promise<any>> = {};
     const provider = vi.fn(async () => ({} as Bridge));
@@ -27,7 +27,8 @@ describe("protocol-v11 plans", () => {
     const handlers: Record<string, (args: unknown) => Promise<any>> = {};
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, async () => ({ call } as unknown as Bridge), validConfig);
     const output = await handlers.queue_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "full" });
-    expect(output.structuredContent).toEqual({ plan_id: 8 });
+    expect(output.structuredContent).toMatchObject({ plan_id: 8, status: "queued", terminal: false,
+      next_action: { tool: "plan_status", arguments: { plan_id: 8 } } });
     expect(call).toHaveBeenCalledWith("queue_plan", queuePlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "full" }));
   });
 

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { patchRconConfig } from "../src/setup/configini.js";
 import { setupTransaction } from "../src/setup/transaction.js";
 import { installMod } from "../src/setup/installMod.js";
+import { atomicWriteFile } from "../src/setup/atomic.js";
 
 const dirs: string[] = [];
 const tempDir = () => {
@@ -40,6 +41,17 @@ describe("setup transaction", () => {
     const file = path.join(tempDir(), "new.txt");
     setupTransaction([file], () => fs.writeFileSync(file, "committed"));
     expect(fs.readFileSync(file, "utf8")).toBe("committed");
+  });
+});
+
+describe("atomicWriteFile", () => {
+  it("replaces an existing file directly and preserves the requested mode", () => {
+    const file = path.join(tempDir(), "state.json");
+    fs.writeFileSync(file, "old", { mode: 0o644 });
+    atomicWriteFile(file, "new", 0o600);
+    expect(fs.readFileSync(file, "utf8")).toBe("new");
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["state.json"]);
   });
 });
 
@@ -89,7 +101,7 @@ describe("mod installation", () => {
     const mods = path.join(tempDir(), "mods");
     const installed = installMod(mods);
     expect(installed.copied).toBe(true);
-    expect(JSON.parse(fs.readFileSync(path.join(installed.dest, "info.json"), "utf8"))).toMatchObject({ name: "agentic-companion", version: "0.13.10" });
+    expect(JSON.parse(fs.readFileSync(path.join(installed.dest, "info.json"), "utf8"))).toMatchObject({ name: "agentic-companion", version: "0.14.0" });
     expect(JSON.parse(fs.readFileSync(path.join(mods, "mod-list.json"), "utf8")).mods).toContainEqual({ name: "agentic-companion", enabled: true });
   });
 });

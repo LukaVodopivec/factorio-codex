@@ -190,6 +190,18 @@ describe("shared gameplay run contract", () => {
     expect(roleGuidance).not.toMatch(/first (?:mine|craft|build|place)[^\n]{0,120}then|(?:at|by) minute \d+/i);
   });
 
+  it("requires deterministic mirror writes and a generic preflight discipline", () => {
+    expect(strategist).toMatch(/every recognized valid newer material report[\s\S]*`node companion\/dist\/cli\.js ledger-apply --ledger <operations\.json>`[\s\S]*exactly once/i);
+    expect(strategist).toMatch(/valid applied mirror does not require a new advisory proposal/i);
+    expect(strategist).toMatch(/named discard reason[\s\S]*not an acknowledgement protocol/i);
+    expect(pilot).toMatch(/observe[\s\S]*preflight[\s\S]*mutate[\s\S]*verify/i);
+    expect(pilot).toMatch(/Place, connect, and prove a replacement[\s\S]*before removing working capacity or a shared power dependency/i);
+    expect(pilot).toMatch(/current plan plus exactly one `plan_status`-confirmed successor/i);
+    expect(pilot).toMatch(/before a third equivalent trip[\s\S]*automation deployment cost[\s\S]*downstream utilization/i);
+    expect(pilot).toMatch(/machine remains carried[\s\S]*deploy-and-feed time[\s\S]*manual batch time/i);
+    expect(pilot).toMatch(/source-to-transfer-to-processing-to-sink loop/i);
+  });
+
   it("starts bounded state-driven physical work without awaiting a proposal", () => {
     expect(pilot).toMatch(/At `GO`[\s\S]*authoritative initial observation[\s\S]*immediately follow the bootstrap policy[\s\S]*do not wait for a proposal or ledger update/i);
     expect(pilot).toMatch(/already-carried automation[\s\S]*verified visible resource[\s\S]*exact physical sink[\s\S]*visible dry waypoint[\s\S]*nearest measured blocker[\s\S]*numeric stop/i);

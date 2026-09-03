@@ -70,6 +70,12 @@ and ends its turn so new pilot evidence can trigger a fresh decision turn. It do
 repeat equivalent diagnostics unless action, contradiction, or staleness
 changes the evidence.
 
+The strategist applies every recognized valid newer material mirror exactly once
+through `node companion/dist/cli.js ledger-apply --ledger <operations.json>` with its candidate
+on stdin. A valid mirror update never depends on producing a new proposal. A turn
+without a mirror update must have the command's explicit discard reason; this is
+local writer evidence, never a pilot acknowledgement or gameplay gate.
+
 The exact top-level keys are `schema_version`, `run`, `revision`, `source_tick`,
 `phase`, `success`, `capacity`, `utilization`, `bottleneck`, `current_plan`,
 `queued_successor`, `fallbacks`, `current_bom`, `next_bom`,

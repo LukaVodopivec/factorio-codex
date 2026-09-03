@@ -4,8 +4,8 @@
 -- validation rules of the single-step place/set_recipe/insert actions
 -- (scripts/actions/build.lua, scripts/actions/transfer.lua). A failed step is
 -- recorded and skipped unless stop_on_error. Output-target verification keeps
--- the exact placed entity and waits for a later Factorio tick before accepting
--- or rejecting its binding.
+-- the exact placed entity. Mining-drill starter insertion happens once before
+-- waiting for first output to expose Factorio's authoritative runtime target.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local output_targets = require("scripts.output_target")
@@ -277,6 +277,11 @@ local function summary(task)
       s = s .. string.format("; … and %d more failures", #f - MAX_FAILURES_LISTED)
     end
   end
+  local notes = {}
+  for i, result in ipairs(task._results) do
+    if result.ok and result.detail then notes[#notes + 1] = string.format("step %d: %s", i, result.detail) end
+  end
+  if #notes > 0 then s = s .. " — " .. table.concat(notes, "; ") end
   return s
 end
 
@@ -291,10 +296,12 @@ end
 -- result when the plan is over (or stop_on_error tripped), else nil.
 local function advance(task, ok, why)
   local i = task._index
-  task._results[i] = ok and { ok = true } or { ok = false, why = why }
+  task._results[i] = ok and { ok = true, detail = why } or { ok = false, why = why }
   if not ok then
     task._failures[#task._failures + 1] = { index = i, why = why }
   end
+  task._built, task._interactions_applied = nil, nil
+  task._expected_output, task._output_verification_tick = nil, nil
   task._index = i + 1
   if not ok and task.stop_on_error then
     return { status = "failed", detail = summary(task) .. " — stopped at the first failure (stop_on_error)" }
@@ -309,11 +316,9 @@ end
 -- uses build_distance; recipe/inventory mutations use Factorio's authoritative
 -- entity-reach check through the shared physical approach state machine.
 local function finish_placed_step(task, c, step, built)
+  local binding
   if task._expected_output then
-    if game.tick <= task._output_verification_tick then return nil end
-    local binding = output_targets.binding_status(built, task._expected_output, task._output_verification_tick)
-    if binding == "pending" then return nil end
-    task._expected_output, task._output_verification_tick = nil, nil
+    binding = output_targets.binding_status(built, task._expected_output, task._output_verification_tick)
     if binding == "invalid" then
       task._built = nil
       return advance(task, false, "the exact placed entity vanished before output binding could be verified")
@@ -322,15 +327,21 @@ local function finish_placed_step(task, c, step, built)
       task._built = nil
       return advance(task, false, "the exact expected output target vanished before its output tile could be verified")
     end
-    if binding ~= "matched" then
+    if binding == "mismatch" then
       task._built = nil
       return advance(task, false, string.format(
-        "placed %s at (%.1f, %.1f), but its live output tile did not resolve to the expected target (%s); recover the exact placed entity before retrying",
+        "placed %s at (%.1f, %.1f), but Factorio exposed a different runtime output target; recover the exact placed entity before retrying",
+        step.item, built.position.x, built.position.y))
+    end
+    if binding ~= "pending" and binding ~= "pending-output" and binding ~= "matched" then
+      task._built = nil
+      return advance(task, false, string.format(
+        "placed %s at (%.1f, %.1f), but its live output geometry could not verify the expected target (%s); recover the exact placed entity before retrying",
         step.item, built.position.x, built.position.y, binding))
     end
   end
 
-  if step.recipe or step._insert then
+  if (step.recipe or step._insert) and not task._interactions_applied then
     local reached = approach.ensure_entity(task, c, built)
     if type(reached) == "table" then
       task._built = nil
@@ -339,25 +350,37 @@ local function finish_placed_step(task, c, step, built)
     if reached ~= "ok" then return nil end
   end
 
-  local issues = {}
-  if not built.valid then
-    issues[#issues + 1] = "the placed entity vanished immediately (another mod removed it?)"
-  else
-    if step.recipe then
-      local why = apply_recipe(c, built, step.recipe)
-      if why then issues[#issues + 1] = why end
+  if not task._interactions_applied then
+    local issues = {}
+    if not built.valid then
+      issues[#issues + 1] = "the placed entity vanished immediately (another mod removed it?)"
+    else
+      if step.recipe then
+        local why = apply_recipe(c, built, step.recipe)
+        if why then issues[#issues + 1] = why end
+      end
+      if step._insert then
+        local problems = insert_items(c, built, step._insert)
+        for _, problem in ipairs(problems) do issues[#issues + 1] = problem end
+      end
     end
-    if step._insert then
-      local problems = insert_items(c, built, step._insert)
-      for _, problem in ipairs(problems) do issues[#issues + 1] = problem end
+    if #issues > 0 then
+      task._built = nil
+      return advance(task, false, string.format("placed the %s, but %s",
+        step.item, table.concat(issues, "; ")))
     end
+    task._interactions_applied = true
   end
-  task._built = nil
-  if #issues > 0 then
-    return advance(task, false, string.format("placed the %s, but %s",
-      step.item, table.concat(issues, "; ")))
+
+  if task._expected_output then
+    if binding == "pending" then return nil end
+    if binding == "pending-output" and built.type == "mining-drill" and step._insert then return nil end
+    task._expected_output, task._output_verification_tick = nil, nil
   end
-  return advance(task, true)
+  task._built, task._interactions_applied = nil, nil
+  local detail = binding == "pending-output"
+    and "exact output geometry is valid; runtime output target is pending first output" or nil
+  return advance(task, true, detail)
 end
 
 -- ------------------------------------------------------------------- tick

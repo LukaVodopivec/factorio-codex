@@ -1,9 +1,12 @@
 # Agent play performance
 
-Release 0.13.9 retains each exact placed entity, waits at least one later game
-tick, and verifies the live output point through Factorio's 1×1 output-tile
-entity query rather than selection-box containment or `drop_target` timing. It
-fails honestly on mismatch or invalidation and distinguishes queueable research
+Release 0.13.9 retains each exact placed entity and validates the live output
+point through Factorio's 1×1 output-tile entity query rather than selection-box
+containment. Exact geometry is distinct from runtime binding: a nil
+`drop_target` is reported as pending first output, while a non-nil wrong target
+fails. A mining-drill build-plan step applies its legitimate starter insertion
+once, then waits for first output to expose the exact runtime recipient. It also
+fails honestly on invalidation and distinguishes queueable research
 from in-game trigger unlocks without
 dropping item/entity quality constraints, scripted descriptions, or fieldless
 space-platform triggers. It also labels main versus equipped-ammunition
@@ -120,8 +123,8 @@ Factorio's vanilla output geometry, trigger-research classification, or
 character inventory compartments under this one-body, one-writer, text-only
 physical contract. Candidate code was unnecessary, incompatible, or had
 unclear licensing, so none was imported. The retained path uses Factorio's
-official live `drop_position`, output-tile entity search, inspection-only
-`drop_target`, and `LuaTechnologyPrototype.research_trigger` state directly and
+official live `drop_position`, output-tile entity search, runtime `drop_target`,
+and `LuaTechnologyPrototype.research_trigger` state directly and
 changes no game mechanics.
 
 Authoritative parsed R5 calls show plan 25 was the stone mine, while plan 26

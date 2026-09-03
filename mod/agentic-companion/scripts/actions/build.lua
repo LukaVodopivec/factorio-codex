@@ -98,6 +98,20 @@ function M.place.tick(task)
     if binding == "target-invalid" then
       return { status = "failed", detail = "the exact expected output target vanished before its output tile could be verified" }
     end
+    if binding == "pending-output" then
+      return {
+        status = "done",
+        detail = string.format("placed %s at (%.1f, %.1f); exact output geometry is valid, but the runtime output target is pending first output",
+          task.item, built.position.x, built.position.y),
+      }
+    end
+    if binding == "mismatch" then
+      return {
+        status = "failed",
+        detail = string.format("placed %s at (%.1f, %.1f), but Factorio exposed a different runtime output target; recover the exact placed entity before retrying",
+          task.item, built.position.x, built.position.y),
+      }
+    end
     if binding ~= "matched" then
       return {
         status = "failed",

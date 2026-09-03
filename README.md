@@ -66,8 +66,12 @@ ground output. Its existing `output_target` contract resolves the requested
 recipient by exact entity position, floors the predicted or live output point
 to Factorio's 1×1 output tile, and uses the entities returned for that tile—never
 selection-box point containment. Physical placement retains the exact created
-entity and rechecks its live `drop_position` on a later game tick without
-removing or replacing it. Inspect the placed inserter's
+entity and checks its live `drop_position` geometry and runtime `drop_target`
+without removing or replacing it. Exact geometry with a nil runtime target is
+reported as pending first output, never as bound; a non-nil wrong target fails.
+For mining-drill `build_plan` steps with starter insertion, the items are
+legitimately inserted once before the step waits for first output to expose the
+exact runtime recipient. Inspect the placed inserter's
 `pickup_target` to falsify an incorrect source binding.
 Native no-path and repeated-stall failures inspect only the immediate charted
 collision segment and report stable, capped local candidate identities and

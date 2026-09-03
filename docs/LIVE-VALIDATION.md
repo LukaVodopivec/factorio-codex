@@ -42,8 +42,12 @@ not provide a Linux visual client launcher.
 8. Exercise `find_placement` at a shoreline; confirm `map_summary` reads only
    force-charted chunks; verify deterministic production arithmetic and
    ambiguity refusal. Find a cardinal inserter placement with an exact
-   `output_target`, physically place it with that target, and confirm its live
-   output point's 1×1 tile resolves to that exact recipient on a later game tick.
+   `output_target`, physically place it with that target, and distinguish its
+   live output point's valid 1×1 recipient geometry from runtime binding. A nil
+   `drop_target` before first output must remain explicitly pending, not fail or
+   claim binding; a non-nil different target must fail. For a mining drill,
+   include legitimate starter fuel in the same build-plan step and confirm the
+   plan waits until actual output flow exposes the exact runtime recipient.
    Inspect the placed inserter's `pickup_target` to
    falsify an incorrect source binding. Confirm an output-capable candidate always
    reports `output_position` and reports its recipient or explicit `null`; a

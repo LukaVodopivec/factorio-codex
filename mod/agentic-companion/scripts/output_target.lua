@@ -121,13 +121,17 @@ function M.binding_status(built, expected, placed_tick)
   if not built.valid then return "invalid" end
   if not expected.valid then return "target-invalid" end
   if game.tick <= placed_tick then return "pending" end
+  local ok_target, actual_target = pcall(function() return built.drop_target end)
+  if not ok_target then return "unreadable" end
+  if actual_target == expected then return "matched" end
+  if actual_target ~= nil then return "mismatch" end
   local ok, point = pcall(function() return built.drop_position end)
   if not ok or not point or not built.surface or not built.force then return "unreadable" end
-  local actual, _, state = M.recipient_at({ surface = built.surface, force = built.force }, point)
-  if actual == expected then return "matched" end
+  local geometric_recipient, _, state = M.recipient_at({ surface = built.surface, force = built.force }, point)
+  if geometric_recipient == expected then return "pending-output" end
   if state == "uncharted" or state == "no-endpoint" then return "unreadable" end
   if state == "ambiguous" then return "ambiguous" end
-  return "mismatch"
+  return "geometry-mismatch"
 end
 
 return M

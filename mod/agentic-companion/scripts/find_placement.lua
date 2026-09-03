@@ -88,21 +88,24 @@ local function rotate(offset, direction)
 end
 
 local function drill_resource_coverage(force, surface, proto, pos)
-  if proto.type ~= "mining-drill" then return nil end
+  if proto.type ~= "mining-drill" then return nil, false end
   local ok_radius, radius = pcall(function() return proto.mining_drill_radius end)
   radius = ok_radius and tonumber(radius) or nil
-  if not radius or radius <= 0 then return nil end
+  if not radius or radius <= 0 then return nil, false end
   local area = {
     left_top = { x = pos.x - radius, y = pos.y - radius },
     right_bottom = { x = pos.x + radius, y = pos.y + radius },
   }
-  if not footprint_charted(force, surface, area) then return nil end
+  if not footprint_charted(force, surface, area) then return nil, false end
+  local ok_categories, categories = pcall(function() return proto.resource_categories end)
+  if not ok_categories or type(categories) ~= "table" then return {}, true end
   local by_name = {}
   for _, resource in ipairs(surface.find_entities_filtered({
     area = area,
     type = "resource",
   })) do
-    if resource.valid then
+    local ok_category, category = pcall(function() return resource.prototype.resource_category end)
+    if resource.valid and ok_category and type(category) == "string" and categories[category] then
       local row = by_name[resource.name] or { name = resource.name, entity_count = 0, total_amount = 0 }
       row.entity_count = row.entity_count + 1
       row.total_amount = row.total_amount + (tonumber(resource.amount) or 0)
@@ -112,7 +115,7 @@ local function drill_resource_coverage(force, surface, proto, pos)
   local rows = {}
   for _, row in pairs(by_name) do rows[#rows + 1] = row end
   table.sort(rows, function(a, b) return a.name < b.name end)
-  return rows
+  return rows, true
 end
 
 function M.find_placement(params)
@@ -166,7 +169,7 @@ function M.find_placement(params)
 
   local width, height = tonumber(proto.tile_width) or 1, tonumber(proto.tile_height) or 1
   local origin_x, origin_y = snapped(preferred.x, width), snapped(preferred.y, height)
-  local candidates = {}
+  local candidates, rejected_no_compatible_resource, rejected_unknown_resource_coverage = {}, 0, 0
   for y = origin_y - radius, origin_y + radius do
     for x = origin_x - radius, origin_x + radius do
       local pdx, pdy = x - preferred.x, y - preferred.y
@@ -189,16 +192,23 @@ function M.find_placement(params)
               name = proto.name, position = pos, direction = direction, force = c.force,
               build_check_type = defines.build_check_type.manual,
             }) then
-              candidates[#candidates + 1] = {
-                item = params.item, entity = proto.name, position = pos, direction = direction,
-                distance = math.sqrt(pdx * pdx + pdy * pdy),
-                distance_from_codex = math.sqrt(codex_distance_sq),
-                terrain = terrain(c.force, c.surface, proto, area),
-                output_position = output_position,
-                pickup_position = pickup_position,
-                drop_position = drop_position,
-                resource_coverage = drill_resource_coverage(c.force, c.surface, proto, pos),
-              }
+              local resource_coverage, coverage_known = drill_resource_coverage(c.force, c.surface, proto, pos)
+              if proto.type == "mining-drill" and not coverage_known then
+                rejected_unknown_resource_coverage = rejected_unknown_resource_coverage + 1
+              elseif coverage_known and #resource_coverage == 0 then
+                rejected_no_compatible_resource = rejected_no_compatible_resource + 1
+              else
+                candidates[#candidates + 1] = {
+                  item = params.item, entity = proto.name, position = pos, direction = direction,
+                  distance = math.sqrt(pdx * pdx + pdy * pdy),
+                  distance_from_codex = math.sqrt(codex_distance_sq),
+                  terrain = terrain(c.force, c.surface, proto, area),
+                  output_position = output_position,
+                  pickup_position = pickup_position,
+                  drop_position = drop_position,
+                  resource_coverage = resource_coverage,
+                }
+              end
             end
           end
         end
@@ -213,7 +223,10 @@ function M.find_placement(params)
   end)
   while #candidates > limit do table.remove(candidates) end
   return { item = params.item, entity = proto.name, preferred = preferred,
-    output_target = output_target and output_target.identity or nil, candidates = candidates }
+    output_target = output_target and output_target.identity or nil,
+    rejected_no_compatible_resource = proto.type == "mining-drill" and rejected_no_compatible_resource or nil,
+    rejected_unknown_resource_coverage = proto.type == "mining-drill" and rejected_unknown_resource_coverage or nil,
+    candidates = candidates }
 end
 
 return M

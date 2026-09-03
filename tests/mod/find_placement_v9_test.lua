@@ -27,13 +27,15 @@ local sink = { valid = true, name = "iron-chest", type = "container", force = fo
   position = { x = 1.5, y = 2.5 },
   selection_box = { left_top = { x = 1, y = 2 }, right_bottom = { x = 2, y = 3 } } }
 local ore = {
-  { valid = true, name = "iron-ore", type = "resource", amount = 500 },
-  { valid = true, name = "iron-ore", type = "resource", amount = 450 },
+  { valid = true, name = "iron-ore", type = "resource", amount = 500,
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 450,
+    prototype = { resource_category = "basic-solid" } },
 }
-local resource_calls = 0
+local resource_calls, resources = 0, ore
 local target_matches = { recipient }
 surface.find_entities_filtered = function(args)
-  if args.type == "resource" then resource_calls = resource_calls + 1; return ore end
+  if args.type == "resource" then resource_calls = resource_calls + 1; return resources end
   local x, y = args.area[1][1], args.area[1][2]
   if x == 1.5 and y == 0.5 then return { source } end
   if x == 1.5 and y == 2.5 then return { sink } end
@@ -46,13 +48,13 @@ _G.prototypes = { item = {
   pipe = { place_result = { name = "pipe", type = "pipe", tile_width = 1, tile_height = 1, collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
   ["offshore-pump"] = { place_result = { name = "offshore-pump", type = "offshore-pump", tile_width = 1, tile_height = 1, collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
   ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill", type = "mining-drill", tile_width = 2, tile_height = 2,
-    vector_to_place_result = { x = 1, y = 0 }, mining_drill_radius = 1,
+    vector_to_place_result = { x = 1, y = 0 }, mining_drill_radius = 1, resource_categories = { ["basic-solid"] = true },
     collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } } },
   ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter", tile_width = 1, tile_height = 1,
     inserter_pickup_position = { 0, -1 }, inserter_drop_position = { 0, 1 },
     collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
   ["electric-mining-drill"] = { place_result = { name = "electric-mining-drill", type = "mining-drill", tile_width = 1, tile_height = 1,
-    mining_drill_radius = 2,
+    mining_drill_radius = 2, resource_categories = { ["basic-solid"] = true },
     collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
 } }
 local finder = require("scripts.find_placement")
@@ -100,12 +102,24 @@ for _, candidate in ipairs(aligned.candidates) do
     and candidate.resource_coverage[1].total_amount == 950,
     "mining drill candidates expose deterministic resource coverage")
 end
+resources = {}
+local empty_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+  radius = 1, directions = { 0 }, limit = 8 })
+check(#empty_drill.candidates == 0 and empty_drill.rejected_no_compatible_resource > 0,
+  "fully charted drill candidates with zero resources are explicitly rejected")
+resources = { { valid = true, name = "crude-oil", type = "resource", amount = 100000,
+  prototype = { resource_category = "basic-fluid" } } }
+local incompatible_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+  radius = 1, directions = { 0 }, limit = 8 })
+check(#incompatible_drill.candidates == 0 and incompatible_drill.rejected_no_compatible_resource > 0,
+  "fully charted drill candidates with only incompatible resources are explicitly rejected")
+resources = ore
 local resource_calls_before_edge = resource_calls
 local chart_edge_drill = finder.find_placement({ item = "electric-mining-drill", preferred = { x = 30.5, y = 1.5 },
   radius = 1, directions = { 0 }, limit = 1 })
-check(chart_edge_drill.candidates[1] and chart_edge_drill.candidates[1].resource_coverage == nil
+check(#chart_edge_drill.candidates == 0 and chart_edge_drill.rejected_unknown_resource_coverage > 0
   and resource_calls == resource_calls_before_edge,
-  "drill coverage is omitted without querying beyond fully charted mining area")
+  "drill candidates with uncharted coverage are explicitly rejected without a resource query")
 target_matches = { pole }
 local invalid, invalid_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })

@@ -10,7 +10,7 @@ local registered
 local events = {}
 _G.remote = { add_interface = function(name, value) assert(name == "agentic"); registered = value end }
 _G.script = {
-  active_mods = { ["agentic-companion"] = "0.13.3", base = "2.0.0" },
+  active_mods = { ["agentic-companion"] = "0.13.4", base = "2.0.0" },
   on_init = function() end, on_configuration_changed = function() end,
   on_event = function(id, handler) events[id] = handler end,
   on_nth_tick = function() end,

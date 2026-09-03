@@ -161,6 +161,11 @@ addresses as runtime inputs, not permanent configuration: confirm them with
   ZIP matched the server archive hash, was enabled, and joined successfully.
 - The server's RCON remains private and local: `127.0.0.1:19015`. It is not
   the address the couch client uses.
+- Factorio dedicated-server process arguments contain the RCON secret. Never
+  print or read full arguments through `ps` full args, `/proc` command-line
+  data, WMI `CommandLine`, or an equivalent process-inspection surface. Verify
+  health through user-service state, PID, executable basename, and `doctor`
+  only, and keep all reported output secret-redacted.
 
 After changing the repository build or mod, run setup again, confirm both
 Factorio config files are mode `0600`, restart the dedicated server, and then

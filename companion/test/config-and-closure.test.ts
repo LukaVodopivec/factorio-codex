@@ -184,6 +184,7 @@ describe("exact local configuration", () => {
     expect(liveValidation).toMatch(/AutoHotkey-based `couch-ui` fallback/);
     expect(liveValidation).toMatch(/gameplay pilot remains MCP-text-only[\s\S]*Screenshot capability must never be used for Factorio[\s\S]*perception or play/i);
     expect(liveValidation).toMatch(/post-run screenshots are permitted only after the scored run is frozen[\s\S]*structured MCP evidence is insufficient[\s\S]*non-authoritative[\s\S]*must not contribute coordinates, routes, tactics, or[\s\S]*durable knowledge[\s\S]*revalidate every finding[\s\S]*structured in-game MCP data[\s\S]*does not authorize couch GUI control or expand the Windows-MCP boundary/i);
+    expect(liveValidation).toMatch(/dedicated-server process arguments contain the RCON secret[\s\S]*never[\s\S]*`ps` full args[\s\S]*`\/proc` command-line[\s\S]*WMI `CommandLine`[\s\S]*user-service state, PID, executable basename, and `doctor`[\s\S]*secret-redacted/i);
     expect(liveValidation).toContain("%APPDATA%\\\\Factorio\\\\mods\\\\mod-list.json");
     expect(liveValidation).not.toContain("%APPDATA%\\\\Factorio\\\\mod-list.json");
   });

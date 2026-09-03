@@ -48,8 +48,37 @@ local function collect_inventories(entity)
   local ok_burner, burner = pcall(function() return entity.burner end)
   local has_burner = ok_burner and burner ~= nil
 
+  local function contents(inv)
+    local bucket = {}
+    for _, item in ipairs(inv.get_contents()) do
+      bucket[item.name] = (bucket[item.name] or 0) + item.count
+    end
+    return bucket
+  end
+
+  -- A furnace's three buffers are gameplay evidence in their own right. Probe
+  -- the exact furnace inventory IDs rather than the generic alias order, and
+  -- expose an empty bucket only when Factorio says that compartment exists.
+  if entity.type == "furnace" then
+    local result, found = {}, false
+    local probes = {}
+    if has_burner then probes[#probes + 1] = { defines.inventory.fuel, "fuel" } end
+    probes[#probes + 1] = { defines.inventory.furnace_source, "input" }
+    probes[#probes + 1] = { defines.inventory.furnace_result, "output" }
+    for _, probe in ipairs(probes) do
+      if probe[1] then
+        local ok, inv = pcall(entity.get_inventory, probe[1])
+        if ok and inv then
+          result[probe[2]] = contents(inv)
+          found = true
+        end
+      end
+    end
+    if found then return result end
+    return nil
+  end
+
   local result = {}
-  local expose_empty = entity.type == "furnace"
   local seen = {}
   local found = false
   for _, probe in ipairs(INVENTORY_PROBES) do
@@ -60,7 +89,7 @@ local function collect_inventories(entity)
       if ok and inv then
         local label = probe[2]
         if probe[1] == "fuel" and not has_burner then label = "main" end
-        if not inv.is_empty() or expose_empty then
+        if not inv.is_empty() then
           local bucket = result[label] or {}
           result[label] = bucket
           for _, item in ipairs(inv.get_contents()) do
@@ -268,12 +297,13 @@ local function inspect_one(position, c)
   end
 
   if e.type == "mining-drill" then
-    local ok_drop_position, drop_position = pcall(function() return e.drop_position end)
-    if ok_drop_position and drop_position then
+    local drop_position = e.drop_position
+    if drop_position then
       out.drop_position = { x = drop_position.x, y = drop_position.y }
     end
-    local ok_drop_target, drop_target = pcall(function() return e.drop_target end)
-    if ok_drop_target then out.drop_target = entity_identity(drop_target) or false end
+    local drop_target = entity_identity(e.drop_target)
+    out.drop_target_bound = drop_target ~= nil
+    out.drop_target = drop_target or false
     local ok_target, target = pcall(function() return e.mining_target end)
     if ok_target then
       local identity = entity_identity(target)

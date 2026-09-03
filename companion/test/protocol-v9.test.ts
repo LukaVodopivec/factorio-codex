@@ -57,6 +57,10 @@ describe("protocol v16 DTO and tool registry", () => {
     expect(normalizeInspection({ entities: [{ name: "pole", energy: 12, electric_network_id: 7 }] }).entities[0].electrical).toEqual({ energy: 12, network_id: 7 });
     const inserterEvidence = { name: "inserter", pickup_position: { x: 1, y: 0 }, drop_position: { x: 1, y: 2 }, pickup_target: { name: "belt", type: "transport-belt", position: { x: 1, y: 0 } } };
     expect(normalizeInspection({ entities: [inserterEvidence] }).entities[0]).toEqual(inserterEvidence);
+    expect(normalizeInspection({ entities: [{ name: "drill", drop_target: false, drop_target_bound: false }] }).entities[0])
+      .toEqual({ name: "drill", drop_target: null, drop_target_bound: false });
+    expect(normalizeInspection({ entities: [{ name: "drill", drop_target: {}, drop_target_bound: false }] }).entities[0].drop_target)
+      .toEqual({});
     const diagnostics = normalizePlanDiagnostics({ outcomes: [{ step: 2, action: "place_entity", status: "failed", error: "blocked" }], observation: { entities: [{ name: "assembler", position: { x: 1, y: 1 }, status: "no_power" }] } });
     expect(diagnostics.diagnostics.route[0]).toMatchObject({ step: 2, detail: "blocked" });
     expect(diagnostics.diagnostics.machines[0]).toMatchObject({ entity: "assembler", status: "no_power" });

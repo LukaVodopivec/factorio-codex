@@ -32,9 +32,15 @@ local a, b = tasks.plan_status({ plan_id = 1 }), tasks.plan_status({ plan_id = 2
 check(a.status == "completed" and a.completed_steps == 2, "Lua plan executes all steps contiguously")
 check(b.status == "completed" and table.concat(starts, ",") == "walk_to,mine,craft", "successful predecessor releases successor without interleaving")
 check(a.transitions[1].status == "queued" and a.transitions[2].status == "running"
-  and a.transitions[#a.transitions].status == "completed"
-  and b.transitions[1].status == "queued" and b.transitions[#b.transitions].status == "completed",
+  and a.transitions[3].status == "completed" and #a.transitions == 3
+  and b.transitions[1].status == "queued" and b.transitions[2].status == "running"
+  and b.transitions[3].status == "completed" and #b.transitions == 3
+  and b.after_plan_id == first.plan_id,
   "terminal plan status retains queued-through-completed transition evidence even when first polled late")
+local transition_count = #b.transitions
+tasks.plan_status({ plan_id = 2 }); tasks.plan_status({ plan_id = 2 })
+check(#tasks.plan_status({ plan_id = 2 }).transitions == transition_count,
+  "plan polling does not fabricate lifecycle transitions")
 local pickup_plan = tasks.queue_plan({ steps = { { action = "pickup_items", x = 4, y = 5, item = "iron-ore", count = 3 } } })
 game.tick = 5.5; tasks.on_tick()
 check(tasks.plan_status({ plan_id = pickup_plan.plan_id }).status == "completed" and starts[#starts] == "pickup",
@@ -44,7 +50,14 @@ local bad = tasks.queue_plan({ steps = { { action = "mine", x = 1, y = 1 } } })
 local blocked = tasks.queue_plan({ steps = { { action = "walk_to", x = 9, y = 9 } }, after_plan_id = bad.plan_id })
 for tick = 6, 9 do game.tick = tick; tasks.on_tick() end
 check(tasks.plan_status({ plan_id = bad.plan_id }).status == "failed", "plan failure is observable")
-check(tasks.plan_status({ plan_id = blocked.plan_id }).status == "cancelled", "failed predecessor cancels successor pre-side-effect")
+local blocked_status = tasks.plan_status({ plan_id = blocked.plan_id })
+check(blocked_status.status == "cancelled"
+  and blocked_status.after_plan_id == bad.plan_id
+  and blocked_status.transitions[1].status == "queued"
+  and blocked_status.transitions[2].status == "cancelled"
+  and #blocked_status.transitions == 2
+  and blocked_status.observation and blocked_status.observation.tick == blocked_status.transitions[2].tick,
+  "failed predecessor preserves its exact ID and queued-to-cancelled successor milestones pre-side-effect")
 local waiting = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
 game.tick = 10; tasks.on_tick(); game.tick = 39; tasks.on_tick(); game.tick = 40; tasks.on_tick()
 check(tasks.plan_status({ plan_id = waiting.plan_id }).status == "completed" and inspected == 2, "tick-side wait_for_item uses structured inventory")
@@ -53,6 +66,12 @@ game.tick = 41; tasks.on_tick(); tasks.cancel({ plan_id = interrupted.plan_id })
 local interrupted_status = tasks.plan_status({ plan_id = interrupted.plan_id })
 check(interrupted_status.status == "cancelled" and interrupted_status.outcomes[1].status == "cancelled",
   "active plan cancellation records the interrupted step")
+check(interrupted_status.transitions[1].status == "queued"
+  and interrupted_status.transitions[2].status == "running"
+  and interrupted_status.transitions[3].status == "waiting"
+  and interrupted_status.transitions[4].status == "cancelled"
+  and #interrupted_status.transitions == 4,
+  "late cancellation status retains only the bounded queued, running, waiting, and final milestones")
 inspected = 0
 local parked = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 99 } } })
 local useful = tasks.queue_plan({ steps = { { action = "walk_to", x = 7, y = 7 } } })
@@ -117,6 +136,18 @@ check(tasks.plan_status({ plan_id = craft_predecessor.plan_id }).status == "comp
   and tasks.plan_status({ plan_id = craft_successor.plan_id }).status == "completed"
   and tasks.plan_status({ plan_id = craft_successor.plan_id }).after_plan_id == craft_predecessor.plan_id,
   "queued successor still releases after its parked predecessor becomes satisfied")
+
+tasks.set_observer(function() error("terminal observation unavailable") end)
+local observation_failed = tasks.queue_plan({ steps = { { action = "walk_to", x = 12, y = 12 } } })
+game.tick = 171; tasks.on_tick()
+local observation_failed_status = tasks.plan_status({ plan_id = observation_failed.plan_id })
+check(observation_failed_status.status == "failed"
+  and observation_failed_status.observation_error:match("terminal observation unavailable")
+  and observation_failed_status.transitions[1].status == "queued"
+  and observation_failed_status.transitions[2].status == "running"
+  and observation_failed_status.transitions[3].status == "failed"
+  and #observation_failed_status.transitions == 3,
+  "terminal observation failure records one truthful failed milestone without a fabricated completed transition")
 
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1
 check(tasks.cancel({ all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")

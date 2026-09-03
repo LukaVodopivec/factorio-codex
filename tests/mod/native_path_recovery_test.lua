@@ -13,6 +13,10 @@ _G.defines = {
 _G.prototypes = { entity = { character = { collision_mask = {} } } }
 
 local next_path_id, blocker_filter, chart_all = 0, nil, true
+local found_blockers = {
+  { valid = true, name = "stone-furnace", type = "furnace", position = { x = 1, y = 0 } },
+}
+local tile_blocks = true
 local entity_queries, tile_queries = 0, 0
 local body = {
   valid = true,
@@ -24,9 +28,8 @@ local body = {
     return next_path_id
   end,
   get_tile = function(x, y) tile_queries = tile_queries + 1; return { position = { x = math.floor(x), y = math.floor(y) },
-    name = x >= 0.5 and "water" or "grass", collides_with = function(layer) return layer == "player" and x >= 0.5 end } end,
-  find_entities_filtered = function(filter) entity_queries = entity_queries + 1; blocker_filter = filter; return { { valid = true, name = "stone-furnace", type = "furnace",
-    position = { x = 1, y = 0 } } } end },
+    name = x >= 0.5 and "water" or "grass", collides_with = function(layer) return tile_blocks and layer == "player" and x >= 0.5 end } end,
+  find_entities_filtered = function(filter) entity_queries = entity_queries + 1; blocker_filter = filter; return found_blockers end },
 }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
 local walk = require("scripts.actions.walk")
@@ -69,7 +72,7 @@ walk.step(task._walk, body, task.id); deliver(nil, false)
 local result = walk.step(task._walk, body, task.id)
 check(result and result.failed:match("^PATH_NOT_FOUND:"),
   "no-path result fails deterministically without blind walking")
-check(result.failed:match("collision segment") and result.failed:match("stone%-furnace") and result.failed:match("water"),
+check(result.failed:match("collision segment") and result.failed:match("stone%-furnace:furnace@%(1%.0,0%.0%)") and result.failed:match("water"),
   "no-path result includes bounded local collision-segment evidence")
 check(blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
   "blocker evidence uses the same character collision mask as native pathfinding")
@@ -120,6 +123,29 @@ check(result and result.failed:match("^PATH_STALLED:"),
   "repeated physical stall ends with a deterministic diagnostic")
 check(result.failed:match("collision segment") and result.failed:match("stone%-furnace"),
   "stalled path includes the same bounded local blocker evidence")
+
+found_blockers, tile_blocks = {}, false
+for index = 10, 1, -1 do
+  found_blockers[#found_blockers + 1] = {
+    valid = true, name = string.format("block-%02d", index), type = index % 2 == 0 and "furnace" or "container",
+    position = { x = index / 10, y = 0 },
+  }
+end
+task = reset()
+walk.step(task._walk, body, task.id); deliver(nil, false)
+local sorted_result = walk.step(task._walk, body, task.id)
+local first_block = sorted_result.failed:find("block%-01:container@", 1)
+local eighth_block = sorted_result.failed:find("block%-08:furnace@", 1)
+check(first_block and eighth_block and first_block < eighth_block
+  and not sorted_result.failed:match("block%-09") and not sorted_result.failed:match("block%-10"),
+  "collision blockers are deterministically sorted by identity and position before the eight-entry cap")
+
+found_blockers, tile_blocks = {}, false
+task = reset()
+walk.step(task._walk, body, task.id); deliver(nil, false)
+local clear_result = walk.step(task._walk, body, task.id)
+check(clear_result.failed:match("no immediate charted blocker identified"),
+  "charted collision segment says explicitly when it identifies no immediate blocker")
 
 task = reset()
 walk.step(task._walk, body, task.id); deliver({ { x = 0, y = 0 } })

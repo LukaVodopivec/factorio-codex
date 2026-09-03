@@ -52,11 +52,14 @@ not provide a Linux visual client launcher.
    deterministic rejection count for charted candidates with zero compatible
    resources and treat omitted coverage as uncharted. Inspect the live inserter
    and confirm its pickup/drop positions and valid target identities; confirm
-   belt contents, a mining drill's actual output position and recipient-or-null,
-   its current resource target, and explicit furnace fuel/input/output buffers.
-   Force a bounded no-path/stall fixture and confirm its local collision segment,
-   blocker identities and collision tiles. Confirm a terminal `plan_status` still
-   carries queued, running and terminal transitions after a fast successor.
+   belt contents, a mining drill's actual output position, recipient-or-null and
+   `drop_target_bound`, its current resource target, and exact furnace
+   fuel/input/output buffers only where the corresponding inventory exists.
+   Force a bounded no-path/stall fixture and confirm only its immediate charted
+   collision segment, stable capped blocker identities and collision tiles (or
+   the explicit absence of an identified blocker). Confirm a terminal
+   `plan_status` still carries only the assigned `queued`, first `running`, first
+   applicable `waiting`, and truthful final transition after a fast successor.
    Then physically connect steam power to an
    electric drill and deliver mined ore through belt, pipe, and power routes.
 9. If bootstrap items are absent, use another fresh built-in freeplay save.

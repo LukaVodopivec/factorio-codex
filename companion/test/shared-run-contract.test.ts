@@ -23,10 +23,11 @@ describe("shared gameplay run contract", () => {
   it("documents exact R6 structured placement, inspection, path, and transition evidence", () => {
     for (const text of [readme, liveValidation]) {
       expect(text).toMatch(/output_position[\s\S]*recipient[\s\S]*null/i);
-      expect(text).toMatch(/drill[\s\S]*output\s+position[\s\S]*recipient(?:-or-null| \(explicitly `null`)/i);
-      expect(text).toMatch(/furnace[\s\S]*fuel[\s\S]*input[\s\S]*output buffers/i);
-      expect(text).toMatch(/collision segment[\s\S]*blocker/i);
-      expect(text).toMatch(/queued[\s\S]*running[\s\S]*terminal transitions/i);
+      expect(text).toMatch(/drill[\s\S]*output\s+position[\s\S]*(?:recipient|drop_target_bound)/i);
+      expect(text).toMatch(/drop_target_bound/i);
+      expect(text).toMatch(/furnace[\s\S]*fuel[\s\S]*input[\s\S]*output buffers[\s\S]*inventory exists/i);
+      expect(text).toMatch(/immediate charted[\s\S]*collision segment[\s\S]*blocker/i);
+      expect(text).toMatch(/queued[\s\S]*running[\s\S]*waiting[\s\S]*(?:truthful )?final transition/i);
     }
   });
   it("uses one exact ephemeral operations ledger and removes every retired run file", () => {

@@ -47,13 +47,16 @@ stack through the character's normal picking state. Its character record labels
 the existing `inventory` as `main` and reports equipped ammunition separately.
 `queue_plan` immediately adds
 one Lua-contiguous plan to the sole FIFO; both calls echo the stored
-`after_plan_id`, and `plan_status` retains queued/running/terminal transitions
-even when a plan completes before its first poll, while
+`after_plan_id`, and `plan_status` retains only assigned `queued`, first
+`running`, first applicable `waiting`, and one truthful final transition after its
+terminal observation, even when a plan completes before its first poll, while
 `run_plan` provides synchronous compatibility. Plans reuse the existing honest
 physical runners and end with a compact or full local observation.
 `inspect_entity` reports live inserter endpoints and targets, mining-drill output
-position and recipient (explicitly `null` when unbound), current drill resource
-targets, furnace fuel/input/output buffers including empty compartments, and belt contents. `find_placement`
+position, recipient (explicitly `null` when unbound), and a drill-only
+`drop_target_bound` boolean, current drill resource targets, furnace
+fuel/input/output buffers including exact empty compartments only when the
+corresponding inventory exists, and belt contents. `find_placement`
 searches authoritative charted candidates, reports compatible mining-drill
 resource coverage, rejects charted candidates with no compatible resources with a
 deterministic count while retaining uncharted candidates with coverage omitted, and
@@ -66,8 +69,10 @@ retaining the exact created entity. A non-nil mismatch or invalidation fails
 immediately; a nil binding fails honestly at the bound without removing or
 replacing the entity. Inspect the placed inserter's
 `pickup_target` to falsify an incorrect source binding.
-Native no-path and repeated-stall failures include a bounded collision segment
-with local blocker entities and colliding tiles; they never expand or search the map.
+Native no-path and repeated-stall failures inspect only the immediate charted
+collision segment and report stable, capped local blocker identities and
+colliding tiles (or explicitly say none was identified); they never expand or
+search the map.
 `map_summary` summarizes only already-charted terrain and factory landmarks,
 `production_requirements` performs deterministic recipe arithmetic, and
 `connect_entities` builds an inventory-backed physical belt, pipe, or power

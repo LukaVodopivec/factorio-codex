@@ -121,12 +121,14 @@ check(drill_result.mining_target.name == "iron-ore"
   and drill_result.mining_target.position.x == 2.25
   and drill_result.mining_target.amount == 873
   and drill_result.drop_position.x == 3.3 and drill_result.drop_position.y == -0.5
-  and drill_result.drop_target.name == "stone-furnace",
+  and drill_result.drop_target.name == "stone-furnace"
+  and drill_result.drop_target_bound == true,
   "mining drill inspection reports its runtime output endpoint, recipient, and valid current resource target")
 
 drill.drop_target = nil
 local unbound_drill = inspect.inspect({ targets = { drill.position } }).entities[1]
-check(unbound_drill.drop_position.x == 3.3 and unbound_drill.drop_target == false,
+check(unbound_drill.drop_position.x == 3.3 and unbound_drill.drop_target == false
+  and unbound_drill.drop_target_bound == false,
   "mining drill inspection preserves the endpoint and explicit unbound recipient sentinel")
 
 drill.mining_target = { valid = false }
@@ -151,13 +153,29 @@ check(belt_result.belt_contents["iron-ore"] == 5 and belt_result.belt_contents.c
 
 found_entity = entity
 entity.type = "furnace"
+entity.burner = { remaining_burning_fuel = 0 }
 entity.get_inventory = function(index)
-  local contents = index == 1 and { { name = "coal", count = 1 } } or {}
+  local contents = index == defines.inventory.fuel and { { name = "coal", count = 1 } } or {}
   return { is_empty = function() return #contents == 0 end, get_contents = function() return contents end }
 end
 local furnace_buffers = inspect.inspect({ targets = { entity.position } }).entities[1].inventories
 check(furnace_buffers.fuel.coal == 1 and next(furnace_buffers.input) == nil and next(furnace_buffers.output) == nil,
   "furnace inspection exposes fuel, input, and output buffers even when relevant compartments are empty")
+
+entity.burner = nil
+local probed = {}
+entity.get_inventory = function(index)
+  probed[#probed + 1] = index
+  if index == defines.inventory.furnace_source or index == defines.inventory.furnace_result then
+    return { is_empty = function() return true end, get_contents = function() return {} end }
+  end
+  return nil
+end
+local electric_buffers = inspect.inspect({ targets = { entity.position } }).entities[1].inventories
+check(electric_buffers.fuel == nil and next(electric_buffers.input) == nil and next(electric_buffers.output) == nil
+  and #probed == 2 and probed[1] == defines.inventory.furnace_source
+  and probed[2] == defines.inventory.furnace_result,
+  "furnace inspection exposes only inventory compartments that actually exist")
 
 local queries_before_single = inspection_queries
 local single, single_error = pcall(inspect.inspect, { position = { x = 0, y = 0 } })

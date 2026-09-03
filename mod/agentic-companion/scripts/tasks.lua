@@ -53,10 +53,11 @@ local function finish(task, status, detail, preserve_body)
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
   if not preserve_body then stop_body() end
   if task.type == "plan" then
-    set_plan_status(task, status == "done" and "completed" or status)
     task.finished_tick = game.tick
     observe_terminal(task)
-    if task.status == "completed" and task.observation_error then set_plan_status(task, "failed") end
+    local final_status = status == "done" and "completed" or status
+    if final_status == "completed" and task.observation_error then final_status = "failed" end
+    set_plan_status(task, final_status)
   end
   storage.tasks.records[task.id] = {
     status = task.type == "plan" and task.status or status, detail = detail or "",
@@ -197,13 +198,13 @@ function M.cancel(params)
     end
   end
   if params.all then
-    for _, queued in ipairs(tasks.queue) do
+    local queued_tasks = tasks.queue
+    tasks.queue = {}
+    for _, queued in ipairs(queued_tasks) do
       record_cancelled_step(queued)
-      if queued.type == "plan" then set_plan_status(queued, "cancelled"); queued.finished_tick = game.tick end
-      tasks.records[queued.id] = { status = "cancelled", detail = "", finished_tick = game.tick, plan = queued.type == "plan" and queued or nil }
+      finish(queued, "cancelled", "", true)
       n = n + 1
     end
-    tasks.queue = {}
     if tasks.active then
       record_cancelled_step(tasks.active)
       finish(tasks.active, "cancelled", ""); n = n + 1
@@ -220,8 +221,7 @@ function M.cancel(params)
   for i, queued in ipairs(tasks.queue) do if queued.id == id then
     table.remove(tasks.queue, i)
     record_cancelled_step(queued)
-    if queued.type == "plan" then set_plan_status(queued, "cancelled"); queued.finished_tick = game.tick end
-    tasks.records[id] = { status = "cancelled", detail = "", finished_tick = game.tick, plan = queued.type == "plan" and queued or nil }
+    finish(queued, "cancelled", "", true)
     return { cancelled = 1 }
   end end
   return { cancelled = 0 }
@@ -349,8 +349,7 @@ local function dispatch(tasks)
           if status == "queued" or status == "running" or status == "waiting" then
             predecessor_blocked = true
           else
-            set_plan_status(candidate, "cancelled")
-            finish(candidate, "cancelled", "predecessor plan did not complete successfully")
+            finish(candidate, "cancelled", "predecessor plan did not complete successfully", true)
           end
         end
       end

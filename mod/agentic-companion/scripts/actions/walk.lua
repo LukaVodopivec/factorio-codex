@@ -99,13 +99,25 @@ local function blocker_evidence(state, c, goal)
   if ok_entities and type(found) == "table" then
     for _, entity in ipairs(found) do
       if entity.valid and entity ~= c and entity.type ~= "resource" and entity.type ~= "item-entity" then
-        entities[#entities + 1] = string.format("%s@(%.1f,%.1f)", entity.name,
-          entity.position.x, entity.position.y)
+        entities[#entities + 1] = {
+          name = entity.name, type = entity.type,
+          x = entity.position.x, y = entity.position.y,
+        }
       end
     end
   end
-  table.sort(entities)
+  table.sort(entities, function(a, b)
+    if a.name ~= b.name then return a.name < b.name end
+    if a.type ~= b.type then return a.type < b.type end
+    if a.x ~= b.x then return a.x < b.x end
+    return a.y < b.y
+  end)
   while #entities > 8 do table.remove(entities) end
+  local entity_labels = {}
+  for _, entity in ipairs(entities) do
+    entity_labels[#entity_labels + 1] = string.format("%s:%s@(%.1f,%.1f)",
+      entity.name, entity.type, entity.x, entity.y)
+  end
 
   local tiles, seen = {}, {}
   for index = 0, 5 do
@@ -118,13 +130,30 @@ local function blocker_evidence(state, c, goal)
       local key = tx .. ":" .. ty
       if not seen[key] then
         seen[key] = true
-        tiles[#tiles + 1] = string.format("%s@(%d,%d)", tile.name or "collision-tile", tx, ty)
+        tiles[#tiles + 1] = { name = tile.name or "collision-tile", x = tx, y = ty }
       end
     end
   end
-  local evidence = string.format("collision segment (%.1f,%.1f)->(%.1f,%.1f); blocker_candidates=%s; collision_tiles=%s",
-    from.x, from.y, to.x, to.y, #entities > 0 and table.concat(entities, ",") or "none",
-    #tiles > 0 and table.concat(tiles, ",") or "none")
+  table.sort(tiles, function(a, b)
+    if a.name ~= b.name then return a.name < b.name end
+    if a.x ~= b.x then return a.x < b.x end
+    return a.y < b.y
+  end)
+  while #tiles > 8 do table.remove(tiles) end
+  local tile_labels = {}
+  for _, tile in ipairs(tiles) do
+    tile_labels[#tile_labels + 1] = string.format("%s@(%d,%d)", tile.name, tile.x, tile.y)
+  end
+  local evidence
+  if #entity_labels == 0 and #tile_labels == 0 then
+    evidence = string.format(
+      "immediate charted collision segment (%.1f,%.1f)->(%.1f,%.1f); no immediate charted blocker identified",
+      from.x, from.y, to.x, to.y)
+  else
+    evidence = string.format("immediate charted collision segment (%.1f,%.1f)->(%.1f,%.1f); blocker_candidates=%s; collision_tiles=%s",
+      from.x, from.y, to.x, to.y, #entity_labels > 0 and table.concat(entity_labels, ",") or "none",
+      #tile_labels > 0 and table.concat(tile_labels, ",") or "none")
+  end
   state.blocker_evidence = evidence
   return evidence
 end

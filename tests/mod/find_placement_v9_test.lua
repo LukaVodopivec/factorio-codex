@@ -123,6 +123,10 @@ resources = {
     prototype = { resource_category = "basic-solid" } },
   { valid = true, name = "mystery-resource", type = "resource", amount = 900, position = { x = 8, y = 8 },
     prototype = {} },
+  { valid = true, name = "iron-ore", type = "resource", amount = 800, position = { x = "8", y = 8 },
+    prototype = { resource_category = "basic-solid" } },
+  { valid = true, name = "iron-ore", type = "resource", amount = 600,
+    prototype = { resource_category = "basic-solid" } },
 }
 local mixed_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
@@ -130,7 +134,7 @@ check(mixed_drill.candidates[1]
   and #mixed_drill.candidates[1].resource_coverage == 1
   and mixed_drill.candidates[1].resource_coverage[1].name == "iron-ore"
   and mixed_drill.candidates[1].resource_coverage[1].total_amount == 500,
-  "mixed coverage excludes incompatible, unknown-category, and overlap-only resources")
+  "mixed coverage excludes incompatible, unknown-category, malformed-position, and overlap-only resources")
 resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 8, y = 8 },
     prototype = { resource_category = "basic-solid" } },

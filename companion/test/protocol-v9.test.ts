@@ -9,7 +9,7 @@ const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", r
 describe("protocol v15 DTO and tool registry", () => {
   it("declares v14 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(15);
-    expect(MCP_SERVER_VERSION).toBe("0.13.6");
+    expect(MCP_SERVER_VERSION).toBe("0.13.7");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });

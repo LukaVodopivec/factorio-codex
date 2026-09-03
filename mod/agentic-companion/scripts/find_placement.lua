@@ -105,9 +105,11 @@ local function drill_resource_coverage(force, surface, proto, pos)
     type = "resource",
   })) do
     local resource_position = resource.valid and resource.position or nil
-    local center_inside = resource_position
-      and resource_position.x >= area.left_top.x and resource_position.x < area.right_bottom.x
-      and resource_position.y >= area.left_top.y and resource_position.y < area.right_bottom.y
+    local resource_x = resource_position and resource_position.x or nil
+    local resource_y = resource_position and resource_position.y or nil
+    local center_inside = type(resource_x) == "number" and type(resource_y) == "number"
+      and resource_x >= area.left_top.x and resource_x < area.right_bottom.x
+      and resource_y >= area.left_top.y and resource_y < area.right_bottom.y
     if center_inside then
       local ok_category, category = pcall(function() return resource.prototype.resource_category end)
       if ok_category and type(category) == "string" and categories[category] then

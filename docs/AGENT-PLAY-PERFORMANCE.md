@@ -162,10 +162,13 @@ contradiction, or staleness. Each proposal states a falsifiable hypothesis,
 predicted measurable effect, assumptions/preconditions, safe bounds, numeric
 stop, invalidation, and confidence. It is non-executable advice: never an
 envelope, plan enqueue, approval/gate, acknowledgement/resend/debate protocol,
-or exact-coordinate command. The pilot independently adopts, adapts, or
-discards it from live state and consumes each `run_plan` terminal
-observation, reports only terminal, material-bottleneck, or invalidation
-evidence, and never repeats an executed plan ID. It never stops or reports
+or exact-coordinate command. The pilot reads at most one unique proposal per
+source tick only at a natural plan boundary, validates save identity and every
+precondition exactly once against the latest MCP state, then accepts or discards
+it without acknowledgement or resend. It consumes each `run_plan` terminal
+observation, reports only a material bottleneck, technology, production, or
+expansion change or a repeated distinct failure, and never repeats an executed
+plan ID. It never stops or reports
 merely for one useful item or incidental non-production loot. Measured
 automation utilization and continuous current-plus-successor work dominate.
 At `GO`, the pilot sends the authoritative initial observation and immediately
@@ -173,9 +176,15 @@ performs bounded safe physical work under the bootstrap policy
 while the strategist reasons without Factorio access. Current structured state selects the work: prefer
 already-carried automation with a verified visible resource and exact sink;
 otherwise scout a visible dry waypoint or gather the nearest measured blocker
-to a numeric stop. The pilot reports the first material result and independently
-revalidates any later proposal. This creates no second writer, body, or
+to a numeric stop. The pilot continues without waiting and considers advice only
+under the single-use natural-boundary rule. This creates no second writer, body, or
 lane and prescribes no item, resource, order, coordinate, route, or timed phase.
+The pilot never waits for the strategist or ledger, permanently owns local
+bottleneck/action/fallback selection and the current plan plus one grounded
+queued successor, reads the ledger once at startup rather than per MCP call, and
+keeps useful work queued before reporting. Latest MCP
+state always wins. A restarted strategist rebuilds from the ledger without
+pausing the pilot or requesting replay.
 The strategist owns coordinate-free automation calculations in the same decision turn. On the
 first material-flow contradiction it distinguishes a game bottleneck from an
 MCP observability gap before issuing the next proposal. Count capacity only after output is

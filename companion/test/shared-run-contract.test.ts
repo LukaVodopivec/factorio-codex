@@ -165,11 +165,12 @@ describe("shared gameplay run contract", () => {
     expect(strategist).toMatch(/sole host-ledger writer[\s\S]*atomically[\s\S]*revision by exactly one/i);
     expect(strategist).toMatch(/`current_plan`[\s\S]*`queued_successor`[\s\S]*pilot-reported MCP facts[\s\S]*never infer them from your proposal/i);
     expect(strategist).toMatch(/strategy_proposal[\s\S]*run[\s\S]*save_identity[\s\S]*revision[\s\S]*source_tick[\s\S]*proposal_id[\s\S]*objective[\s\S]*bottleneck[\s\S]*falsifiable_hypothesis[\s\S]*expected_measurable_effect[\s\S]*assumptions[\s\S]*preconditions[\s\S]*safe_bounds[\s\S]*numeric_stop[\s\S]*invalidation[\s\S]*confidence[\s\S]*next_objective/i);
+    expect(strategist).toMatch(/at most one unique proposal per source tick[\s\S]*never replace or resend[\s\S]*single-use/i);
     expect(strategist).toMatch(/coordinate-free[\s\S]*non-executable advice[\s\S]*never an envelope, plan, exact-coordinate command, approval, gate, acknowledgement protocol, resend request, debate/i);
     expect(pilot).toMatch(/strategy_proposal[\s\S]*non-executable advice[\s\S]*never approves, gates, enqueues, or commands[\s\S]*no acknowledgement, resend, or debate/i);
     expect(pilot).toContain("`run_plan` terminal");
-    expect(pilot).toMatch(/material bottleneck[\s\S]*terminal outcomes[\s\S]*invalidations/i);
-    expect(pilot).toMatch(/only outcome-labeled terminal, material-bottleneck, or invalidation evidence/i);
+    expect(pilot).toMatch(/material bottleneck, technology, production, or expansion change[\s\S]*repeated distinct failure/i);
+    expect(pilot).toMatch(/natural boundary[\s\S]*at most one proposal for a source tick[\s\S]*every precondition exactly once[\s\S]*accept or discard[\s\S]*single-use/i);
     for (const text of [skill, pilot, roleGuidance]) {
       expect(text).toMatch(/one useful item or incidental\s+non-production loot/i);
       expect(text).toMatch(/automation utilization[\s\S]*current(?:-plus-| plan, and its grounded | plan and its grounded )successor/i);
@@ -186,19 +187,40 @@ describe("shared gameplay run contract", () => {
     expect(roleGuidance).not.toMatch(/first (?:mine|craft|build|place)[^\n]{0,120}then|(?:at|by) minute \d+/i);
   });
 
-  it("starts bounded state-driven physical work while the first optional proposal is prepared", () => {
-    expect(pilot).toMatch(/At `GO`[\s\S]*authoritative initial observation[\s\S]*awaiting the first optional `strategy_proposal`[\s\S]*bootstrap policy/i);
+  it("starts bounded state-driven physical work without awaiting a proposal", () => {
+    expect(pilot).toMatch(/At `GO`[\s\S]*authoritative initial observation[\s\S]*immediately follow the bootstrap policy[\s\S]*do not wait for a proposal or ledger update/i);
     expect(pilot).toMatch(/already-carried automation[\s\S]*verified visible resource[\s\S]*exact physical sink[\s\S]*visible dry waypoint[\s\S]*nearest measured blocker[\s\S]*numeric stop/i);
-    expect(pilot).toMatch(/Report the first material result[\s\S]*adopting, adapting, or discarding/i);
     expect(pilot).toMatch(/same sole writer, body, and FIFO lane/i);
     expect(pilot).toMatch(/never a fixed item, resource, order, coordinate, route, or timed phase/i);
     expect(strategist).toMatch(/pilot's newest matching run\/save report is authoritative for game facts/i);
     expect(roleGuidance).toMatch(/At `GO`[\s\S]*bounded safe physical work[\s\S]*numeric\s+stop[\s\S]*no second writer, body, or[\s\S]*lane/i);
   });
 
+  it("keeps pilot continuity autonomous and proposals advisory single-use", () => {
+    expect(pilot).toMatch(/read the ledger once at startup[\s\S]*never read it before or after each MCP call/i);
+    expect(pilot).toMatch(/Never wait for the strategist, a proposal, a ledger read, or a ledger write/i);
+    expect(pilot).toMatch(/permanently own the local bottleneck, action, and fallback choice plus the current plan and one grounded queued successor/i);
+    expect(pilot).toMatch(/latest MCP result wins/i);
+    expect(pilot).toMatch(/Keep useful work queued before reporting/i);
+    expect(strategist).toMatch(/restart[\s\S]*rebuild entirely from the ledger[\s\S]*without requesting replay or pausing the pilot/i);
+    expect(skill).toMatch(/strategist restarts[\s\S]*rebuilds entirely from the ledger without[\s\S]*pausing the pilot or requesting replay/i);
+    expect(skill).toMatch(/at most one unique,[\s\S]*single-use proposal per source tick/i);
+    expect(strategist).toMatch(/at most one unique proposal per source tick/i);
+    expect(pilot).toMatch(/at most one proposal for a source tick/i);
+    expect(roleGuidance).toMatch(/at most one unique proposal per\s+source tick/i);
+    for (const text of [skill, strategist, pilot, roleGuidance])
+      expect(text).toMatch(/(?:accepts\s+or\s+discards|accept\s+or\s+discard)/i);
+    for (const text of [skill, pilot, roleGuidance])
+      expect(text).toMatch(/natural (?:plan )?boundary/i);
+    expect(strategist).toMatch(/zero Factorio MCP access/i);
+    expect(strategist).toMatch(/never an envelope, plan, exact-coordinate command, approval, gate[\s\S]*instruction to enqueue/i);
+    expect(fs.existsSync(path.join(skillRoot, "GOAL-MASTER-v1.md"))).toBe(false);
+    expect(fs.existsSync(path.join(skillRoot, "GOAL-SPECIALIST-v1.md"))).toBe(false);
+  });
+
   it("preserves deterministic stale invalidation productive overlap and boundaries", () => {
     for (const text of [skill, pilot]) {
-      expect(text).toMatch(/deterministic MCP (?:state and tool results|tools|evidence)/i);
+      expect(text).toMatch(/deterministic MCP (?:state and tool results|tools|evidence)|latest MCP result/i);
       expect(text).toMatch(/invalidat(?:e|ion).*stale/i);
       expect(text).toMatch(/productive (?:work )?overlap|productive work overlapping|overlap(?:ping)?[\s\S]*production/i);
       expect(text).toMatch(/peaceful[\s\S]*enemy bases disabled/i);

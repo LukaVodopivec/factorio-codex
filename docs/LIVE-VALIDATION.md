@@ -106,7 +106,16 @@ historical evidence rather than active topology instructions. The strategist
 has zero Factorio MCP access and writes only coordinate-free
 `strategy_proposal` advice to the one operations ledger. One persistent pilot
 remains the sole Factorio MCP user, gameplay writer, and live-state authority
-for one physical Codex body and one task lane. The pilot may observe, choose exact visible
+for one physical Codex body and one task lane. It never waits for the strategist
+or ledger and permanently owns the local bottleneck, action, fallback, current
+plan, and one grounded queued successor. Latest MCP state wins. The pilot reads
+the ledger once at startup rather than per MCP call, then reads at most one
+single-use proposal per source tick at a natural boundary and validates
+save identity and every precondition exactly once, then accepts or discards it
+without acknowledgement or resend. It keeps useful work queued before reporting
+and reports only a material bottleneck, technology, production, or expansion
+change, or a repeated distinct failure. A restarted strategist rebuilds from the ledger
+without pausing the pilot. The pilot may observe, choose exact visible
 coordinates, retry honest pathing, and finish the assigned milestone. End with
 an authoritative observation: consume a fresh `run_plan.observation` directly;
 call `observe_local` only when that observation is missing or became stale

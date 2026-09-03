@@ -235,7 +235,7 @@ describe("exact local configuration", () => {
     expect(strategist).toMatch(/assumptions[\s\S]*provenance and uncertainty/i);
     expect(strategist).toMatch(/PLAYER-KNOWLEDGE-v1\.md[\s\S]*in-game learned recipes, calculations, operations[\s\S]*relative layouts/i);
     expect(pilot).toMatch(/only Factorio MCP user and ordinary gameplay writer/i);
-    expect(pilot).toMatch(/latest terminal observation wins/i);
+    expect(pilot).toMatch(/latest MCP result wins/i);
     expect(pilot).toMatch(/only source for ledger `current_plan` and `queued_successor`[\s\S]*proposals never populate or change those facts/i);
     for (const text of [skill, strategist, pilot]) {
       expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
@@ -252,6 +252,11 @@ describe("exact local configuration", () => {
     for (const text of [skill, pilot]) {
       expect(text).toMatch(/never wait[\s\S]*safe\s+productive action exists/i);
     }
+    expect(pilot).toMatch(/read the ledger once at startup[\s\S]*never read it before or after each MCP call/i);
+    expect(pilot).toMatch(/natural boundary[\s\S]*every precondition exactly once[\s\S]*accept or discard[\s\S]*single-use/i);
+    expect(pilot).toMatch(/permanently own the local bottleneck, action, and fallback choice plus the current plan and one grounded queued successor/i);
+    expect(strategist).toMatch(/at most one unique proposal per source tick[\s\S]*never replace or resend[\s\S]*single-use/i);
+    expect(strategist).toMatch(/restart[\s\S]*rebuild entirely from the ledger[\s\S]*without requesting replay or pausing the pilot/i);
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
     expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
   });

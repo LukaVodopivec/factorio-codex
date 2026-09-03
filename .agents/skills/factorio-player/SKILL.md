@@ -29,7 +29,8 @@ passes that exact path verbatim to every role. The parent creates the run
 directory with mode `0700` and initializes the file with mode `0600`; after
 initialization, the strategist is the sole host-ledger writer. The strategist rewrites
 `operations.json` atomically through an adjacent temporary file and rename.
-The pilot only reads it and sends observations directly to the strategist. Do
+The pilot reads it only under the bounded rules below and sends material updates
+directly to the strategist. Do
 not create another run file, append log, watcher, broker, service, database,
 or coordination process.
 
@@ -44,7 +45,8 @@ is the sole ordinary MCP writer and authority for the latest observation; the
 strategist alone converts its report into the next atomic ledger revision.
 The strategist coalesces superseded reports for the same run by newest source tick
 and writes one revision for the current decision, not one revision per stale
-report. A plan ID executes at most once. Immediately after one
+report. If the strategist restarts, it rebuilds entirely from the ledger without
+pausing the pilot or requesting replay. A plan ID executes at most once. Immediately after one
 authoritative preflight diagnostic packet, the strategist writes the first
 coordinate-free `strategy_proposal` and ledger revision, sends the proposal,
 and ends its turn so new pilot evidence can trigger a fresh decision turn. It does not
@@ -76,7 +78,8 @@ run ID and ledger rather than an in-place reconciliation.
 `proposal_id`, `objective`, `bottleneck`, `falsifiable_hypothesis`,
 `expected_measurable_effect`, `assumptions`, `preconditions`, `safe_bounds`,
 `numeric_stop`, `invalidation`, `confidence`, and optional `next_objective`.
-It is coordinate-free, non-executable advice.
+It is coordinate-free, non-executable advice. There is at most one unique,
+single-use proposal per source tick; never replace or resend it for that tick.
 
 Coordinates are ephemeral run state only. Remove affected coordinates from the
 ledger on a game reset, contradictory observation, referenced-entity mutation,
@@ -102,24 +105,27 @@ and unique proposal ID. It states an objective, bottleneck, falsifiable
 hypothesis, expected measurable effect, assumptions/preconditions, safe bounds,
 numeric stop, invalidation, confidence, and optional next objective. It is not
 an executable envelope, exact-coordinate command, approval, gate, plan enqueue,
-acknowledgement, resend protocol, or debate. The pilot independently adopts,
-adapts, or discards it from newer live evidence, reports material bottleneck
-changes, terminal outcomes, or invalidations, consumes the `run_plan` terminal
-observation, and never repeats an executed plan ID. It never stops or hands off
+acknowledgement, resend protocol, or debate. The pilot reads at most one proposal
+for a source tick only at a natural plan boundary, revalidates save identity and
+every precondition exactly once against the latest MCP state, then accepts or
+discards it permanently. The pilot reports only material bottleneck, technology,
+production, or expansion changes, or a repeated distinct failure; consumes the
+`run_plan` terminal observation; and never repeats an executed plan ID. It never stops or hands off
 merely because one useful item or incidental non-production loot was obtained;
 validated automation utilization, the current plan, and its grounded successor
-remain the priority. The strategist owns the automation calculations alongside
-phase and successor planning. On the first material-flow contradiction it
+remain the priority. The strategist owns coordinate-free automation calculations
+and strategic hypothesis framing, never the pilot's phase, plan, successor, or
+fallback choice. On the first material-flow contradiction it
 distinguishes the game bottleneck from an MCP observability gap before writing
 the next proposal.
 
-At `GO`, after sending the authoritative initial observation and while awaiting
-the first optional strategy proposal, the pilot immediately uses its bootstrap
+At `GO`, after sending the authoritative initial observation, the pilot
+immediately uses its bootstrap
 policy for bounded safe physical work selected from current state: prefer
 already-carried automation against a verified visible resource and exact
 physical sink; otherwise scout a visible dry waypoint or gather only the nearest
-measured blocker with a numeric stop. It reports the first material result and
-independently revalidates any later proposal. This overlaps reasoning with
+measured blocker with a numeric stop. It never waits for the strategist, a
+proposal, or a ledger read/write. This overlaps reasoning with
 physical work through the same sole writer/body/lane and encodes no fixed item,
 resource, order, coordinate, route, or timed phase. The strategist consumes the
 pilot's initial report instead of accessing Factorio or requesting an equivalent repeat.
@@ -142,6 +148,9 @@ deltas and retain the expected result plus its falsifier.
   queued successor with predecessor
   and preconditions (or the reason none can be queued), prioritized fallbacks,
   current and next bill of materials, and source tick/plan ID.
+- The pilot permanently owns the local bottleneck, action, fallback, current
+  plan, and one grounded queued successor. Latest MCP state wins. It keeps work
+  queued before reporting and never reads the ledger per MCP call.
 - Prefer automation. After bootstrap, the pilot executes a manual mining or
   crafting batch only after independently establishing the exact net deficit
   after carried stock, machine buffers/output,

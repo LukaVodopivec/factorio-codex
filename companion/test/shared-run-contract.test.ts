@@ -20,6 +20,28 @@ const allInstructions = [skill, ...prompts, knowledge].join("\n");
 const ledgerPath = "/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json";
 
 describe("shared gameplay run contract", () => {
+  it("records the exact satisfactory Candidate B R7 result without overstating current-source validation", () => {
+    const joined = `${performance}\n${liveValidation}`;
+    for (const value of [
+      "616de9daf11ffdc03f946dd1f76732f4544539801f0f28db62959bcf8f1eea8e",
+      "80a5874eabc8d9822e7c8d24dd36b68ece4e26e6",
+      "d8d3600e4eb0a1d0087d1c9810070e514c4491c7abf05e63f01f14f58b3a2106",
+      "2026-09-03T06:26:52.063455112Z", "2026-09-03T06:46:52.065339056Z",
+      "2026-09-03T06:46:24Z", "2026-09-03T06:47:08Z", "source_tick=95498",
+    ]) expect(joined).toContain(value);
+    const result = performance.slice(performance.indexOf("#### Candidate B R7 recorded result"));
+    expect(result).toMatch(/SNAPSHOT_AT_20M[\s\S]*iron-plate=40[\s\S]*copper-plate=10[\s\S]*copper-ore=8[\s\S]*wood=2[\s\S]*furnace output[\s\S]*iron-plate=10/i);
+    expect(result).toMatch(/queue depth was zero[\s\S]*active task was `null`[\s\S]*crafting queue was zero/i);
+    expect(result).toMatch(/accepted automated[\s\S]*copper and iron drill-to-chest extraction[\s\S]*repeated furnace processing[\s\S]*electronics and steam power/i);
+    expect(result).toMatch(/satisfactory automation-first progress vector[\s\S]*not rocket completion/i);
+    expect(result).toMatch(/manual tree-fuel trips[\s\S]*manual chest\/furnace transfers[\s\S]*trapped[^\n]*layout[\s\S]*ledger\/message lag[\s\S]*stale envelopes[\s\S]*false\s+post-deadline attribution/i);
+    expect(result).toMatch(/nil mining-drill `drop_target`[\s\S]*runtime target becomes authoritative only after first output/i);
+    expect(result).toMatch(/c56a5f5149f381fd0cc88860a24259f3f9b62e89[\s\S]*published during R7[\s\S]*neither the\s+deployed artifact nor benchmarked/i);
+    expect(result).toMatch(/No post-deadline gameplay occurred[\s\S]*no work visible[\s\S]*collection latency is attributed to the deadline/i);
+    expect(result).not.toMatch(/rocket (?:launched|completed)|R7 (?:passed|failed)|PASS_AT_20M|MISS_AT_20M/i);
+    expect(result).not.toMatch(/\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/);
+  });
+
   it("documents exact R6 structured placement, inspection, path, and transition evidence", () => {
     for (const text of [readme, liveValidation]) {
       expect(text).toMatch(/output_position[\s\S]*recipient[\s\S]*null/i);

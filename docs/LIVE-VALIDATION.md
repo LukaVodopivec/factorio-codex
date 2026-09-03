@@ -122,6 +122,42 @@ turn; treat that as a platform residual and fall back to a previously available
 connected child without bypassing repository ownership or adding an action
 writer.
 
+## Candidate B R7 verified live result
+
+R7 ran the immutable baseline SHA-256
+`616de9daf11ffdc03f946dd1f76732f4544539801f0f28db62959bcf8f1eea8e` with
+deployed commit `80a5874eabc8d9822e7c8d24dd36b68ece4e26e6` and archive SHA-256
+`d8d3600e4eb0a1d0087d1c9810070e514c4491c7abf05e63f01f14f58b3a2106`.
+`GO` was `2026-09-03T06:26:52.063455112Z` at tick `23015`; the deadline was
+`2026-09-03T06:46:52.065339056Z`. The last ordinary action completed at
+`2026-09-03T06:46:24Z`, before the deadline. The first read-only frozen sample
+completed at `2026-09-03T06:47:08Z` with `source_tick=95498`. No post-deadline
+gameplay occurred, and the roughly 16-second collection latency grants no grace
+or attribution to the deadline.
+
+The frozen sample recorded carried `iron-plate=40`, `copper-plate=10`,
+`copper-ore=8`, and `wood=2`, plus `iron-plate=10` in furnace output. Queue
+depth, active task, and crafting queue were respectively `0`, `null`, and `0`.
+Structured interval evidence proved accepted copper and iron drill-to-chest
+extraction, repeated furnace processing, and electronics plus steam-power
+unlocks. This is satisfactory automation-first progress relative to R5/R6,
+not a completed rocket objective.
+
+Residuals were manual tree-fuel travel, manual chest/furnace transfers, one
+recovered trapped layout, and master ledger/message lag that caused stale
+envelopes and false post-deadline attribution. General follow-up remains
+state-driven: validate access and accepted output before scaling, use measured
+utilization to select the next bottleneck, and derive snapshot attribution only
+from authoritative timestamps, ticks, and frozen structured evidence. For a
+mining drill, nil `drop_target` before production means runtime binding is still
+unknown; a matching non-nil target becomes authoritative after first output.
+
+Current commit `c56a5f5149f381fd0cc88860a24259f3f9b62e89` was published during
+R7. It retains the live-proven geometry behavior and adds explicit
+pending-first-output plus fueled `build_plan` waiting semantics, but it was not
+deployed or benchmarked in R7. This result used no map-coordinate evidence,
+fixed route or order, screenshot, raw console, or gameplay cheat.
+
 ## Prior verified 0.8.0 live result
 
 - `doctor` passed the complete config, authenticated RCON, protocol, and mod

@@ -278,3 +278,43 @@ Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast
 setting. Append the completed result below with exact baseline/release hashes;
 do not present historical timings as 0.13.9 benchmark results.
+
+#### Candidate B R7 recorded result
+
+Candidate B R7 used the immutable baseline with SHA-256
+`616de9daf11ffdc03f946dd1f76732f4544539801f0f28db62959bcf8f1eea8e` and
+the exact deployed predecessor commit `80a5874eabc8d9822e7c8d24dd36b68ece4e26e6`.
+The deployed archive SHA-256 was
+`d8d3600e4eb0a1d0087d1c9810070e514c4491c7abf05e63f01f14f58b3a2106`.
+`GO` was `2026-09-03T06:26:52.063455112Z` at Factorio tick `23015`, and the
+deadline was `2026-09-03T06:46:52.065339056Z`. The last ordinary action
+completed at `2026-09-03T06:46:24Z`. The first read-only frozen snapshot
+completed at `2026-09-03T06:47:08Z` with `source_tick=95498`, about 16 seconds
+after the deadline. No post-deadline gameplay occurred, and no work visible
+during collection latency is attributed to the deadline.
+
+`SNAPSHOT_AT_20M` recorded carried `iron-plate=40`, `copper-plate=10`,
+`copper-ore=8`, and `wood=2`; furnace output contained `iron-plate=10`.
+The FIFO queue depth was zero, the active task was `null`, and the character
+crafting queue was zero. Interval evidence established accepted automated
+copper and iron drill-to-chest extraction, repeated furnace processing, and
+unlocks for electronics and steam power.
+
+This is a satisfactory automation-first progress vector compared with R5 and
+R6, not rocket completion. Remaining bottlenecks were manual tree-fuel trips,
+manual chest/furnace transfers, recovery from one initially trapped layout,
+and master ledger/message lag that produced stale envelopes and false
+post-deadline attribution. Treat those as measured improvement targets, not a
+prescribed route or fixed order. Validate physical access and accepted output
+before scaling; replace manual material handling only when current structured
+state and measured utilization identify it as the bottleneck. Snapshot
+attribution comes only from authoritative timestamps, ticks, and the frozen
+observation, never from delayed prose.
+
+The run also confirmed that an early nil mining-drill `drop_target` is not a
+failure or proof of binding: exact output geometry remains predictive, while
+the runtime target becomes authoritative only after first output. Current
+commit `c56a5f5149f381fd0cc88860a24259f3f9b62e89` retains the demonstrated
+geometry behavior and improves pending-first-output reporting and fueled
+`build_plan` waiting semantics. It was published during R7 and was neither the
+deployed artifact nor benchmarked in this run.

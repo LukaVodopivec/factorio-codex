@@ -10,6 +10,7 @@ export interface PlacementCandidate {
 export interface PlacementSearchResult {
   item: string; entity: string; preferred: Position;
   output_target?: { name: string; type: string; position: Position };
+  rejected_no_compatible_resource?: number;
   candidates: PlacementCandidate[];
 }
 export interface MapSummary {

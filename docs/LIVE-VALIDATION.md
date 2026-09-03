@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.13.5**. Prior live evidence remains historical
-until the fresh 0.13.5 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.13.6**. Prior live evidence remains historical
+until the fresh 0.13.6 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -46,7 +46,8 @@ not provide a Linux visual client launcher.
    bound its `drop_target`. Inspect the placed inserter's `pickup_target` to
    falsify an incorrect source binding. Confirm mining-drill candidates report
    only compatible resources whose centers are covered by their mining area; treat a
-   charted empty result as not useful and omitted coverage as uncharted. Inspect the live inserter
+   a deterministic rejection count for charted candidates with zero compatible
+   resources and treat omitted coverage as uncharted. Inspect the live inserter
    and confirm its pickup/drop positions and valid target identities; confirm
    belt contents and a mining drill's current resource target. Then physically connect steam power to an
    electric drill and deliver mined ore through belt, pipe, and power routes.
@@ -170,7 +171,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.13.5 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.13.6 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -193,14 +194,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.13.5. They
+The successful observations below were collected before release 0.13.6. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.13.5. Complete the fresh run above after installing 0.13.5 before recording a
+0.13.6. Complete the fresh run above after installing 0.13.6 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.13.5 run must instead report protocol v14 and mod/app 0.13.5.
+  0.8.0. A 0.13.6 run must instead report protocol v15 and mod/app 0.13.6.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

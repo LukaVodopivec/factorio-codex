@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.13.5**.
+Current release: **0.13.6**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -50,7 +50,8 @@ physical runners and end with a compact or full local observation.
 `inspect_entity` reports live inserter pickup/drop positions and valid targets,
 current mining-drill resource targets, and belt contents. `find_placement`
 searches authoritative charted candidates, reports compatible mining-drill
-resource coverage (where an empty charted result is not useful and uncharted coverage is omitted), and
+resource coverage, rejects charted candidates with no compatible resources with a
+deterministic count while retaining uncharted candidates with coverage omitted, and
 exposes cardinal inserter pickup/drop endpoints. Its existing
 `output_target` contract filters an exact sink and verifies Factorio's live
 `drop_target` after physical placement; inspect the placed inserter's

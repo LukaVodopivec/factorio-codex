@@ -145,19 +145,20 @@ check(lexical_drill.candidates[1].resource_coverage[1].name == "copper-ore"
 resources = {}
 local empty_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
-check(empty_drill.candidates[1] and #empty_drill.candidates[1].resource_coverage == 0,
-  "fully charted empty coverage is reported explicitly on an otherwise valid candidate")
+check(#empty_drill.candidates == 0 and empty_drill.rejected_no_compatible_resource == 5,
+  "fully charted empty coverage rejects candidates with a deterministic count")
 resources = { { valid = true, name = "crude-oil", type = "resource", amount = 100000, position = { x = 8, y = 8 },
   prototype = { resource_category = "basic-fluid" } } }
 local incompatible_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
-check(incompatible_drill.candidates[1] and #incompatible_drill.candidates[1].resource_coverage == 0,
-  "fully charted incompatible-only coverage is reported as an explicit empty array")
+check(#incompatible_drill.candidates == 0 and incompatible_drill.rejected_no_compatible_resource == 5,
+  "fully charted incompatible-only coverage rejects candidates with a deterministic count")
 resources = ore
 local resource_calls_before_edge = resource_calls
 local chart_edge_drill = finder.find_placement({ item = "electric-mining-drill", preferred = { x = 30.5, y = 1.5 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(chart_edge_drill.candidates[1] and chart_edge_drill.candidates[1].resource_coverage == nil
+  and chart_edge_drill.rejected_no_compatible_resource == 0
   and resource_calls == resource_calls_before_edge,
   "drill candidates with uncharted coverage omit the field without a resource query")
 target_matches = { pole }

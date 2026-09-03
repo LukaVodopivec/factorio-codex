@@ -6,10 +6,10 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v14 DTO and tool registry", () => {
+describe("protocol v15 DTO and tool registry", () => {
   it("declares v14 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(14);
-    expect(MCP_SERVER_VERSION).toBe("0.13.5");
+    expect(PROTOCOL_VERSION).toBe(15);
+    expect(MCP_SERVER_VERSION).toBe("0.13.6");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
@@ -71,7 +71,8 @@ describe("protocol v14 DTO and tool registry", () => {
   });
 
   it("normalizes Lua empty tables at every array boundary", () => {
-    expect(normalizePlacementSearch({ candidates: {} }).candidates).toEqual([]);
+    expect(normalizePlacementSearch({ rejected_no_compatible_resource: 5, candidates: {} }))
+      .toEqual({ rejected_no_compatible_resource: 5, candidates: [] });
     expect(normalizePlacementSearch({ candidates: [{ resource_coverage: {} }] }).candidates[0].resource_coverage).toEqual([]);
     expect(normalizeMapSummary({ resources: {}, water_edges: {}, factory_landmarks: {} })).toMatchObject({ resources: [], water_edges: [], factory_landmarks: [] });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);

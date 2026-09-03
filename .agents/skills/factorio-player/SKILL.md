@@ -16,9 +16,10 @@ conversations and pastes one adjacent prompt into each:
   the unchanged Terra-low single-pilot baseline with fast mode off.
 
 The parent identifies the shared milestone and communication route, confirms
-that only the pilot invokes ordinary MCP action tools, and lets the strategist
-issue the first operations-ledger revision. The prompts select actions from current
-structured state; none hardcodes a route, map position, or build sequence.
+that only the pilot has Factorio MCP access or invokes gameplay tools, and lets
+the strategist issue the first operations-ledger revision. The strategist
+offers coordinate-free proposals; the pilot alone selects and executes actions
+from current structured state.
 
 ## Shared-run contract
 
@@ -29,30 +30,31 @@ directory with mode `0700` and initializes the file with mode `0600`; after
 initialization, the strategist is the sole host-ledger writer. The strategist rewrites
 `operations.json` atomically through an adjacent temporary file and rename.
 The pilot only reads it and sends observations directly to the strategist. Do
-not create another run file, append log, watcher, broker,
-database, orchestrator, or coordination process.
+not create another run file, append log, watcher, broker, service, database,
+or coordination process.
 
 The ledger contains a schema version, run/save identity, monotonic revision,
 source tick, phase and success, latest pilot observation,
 capacity and utilization, current plan, and exactly one actually queued
 successor with predecessor and preconditions—or an explicit reason that no
-successor is queued. Reject or replace stale state when revision, source tick,
+successor is queued. `current_plan` and `queued_successor` mirror pilot-reported
+MCP facts only; they never describe strategist commands or proposals. Reject or replace stale state when revision, source tick,
 or save identity regresses or disagrees with live structured state. The pilot
 is the sole ordinary MCP writer and authority for the latest observation; the
 strategist alone converts its report into the next atomic ledger revision.
 The strategist coalesces superseded reports for the same run by newest source tick
 and writes one revision for the current decision, not one revision per stale
-report. A plan ID and its envelope execute at most once. Immediately after one
-authoritative preflight diagnostic packet, the strategist writes the first broad
-physical envelope and ledger revision, sends the envelope, and ends its turn so
-new pilot evidence can trigger a fresh decision turn. It does not
+report. A plan ID executes at most once. Immediately after one
+authoritative preflight diagnostic packet, the strategist writes the first
+coordinate-free `strategy_proposal` and ledger revision, sends the proposal,
+and ends its turn so new pilot evidence can trigger a fresh decision turn. It does not
 repeat equivalent diagnostics unless action, contradiction, or staleness
 changes the evidence.
 
 The exact top-level keys are `schema_version`, `run`, `revision`, `source_tick`,
 `phase`, `success`, `capacity`, `utilization`, `bottleneck`, `current_plan`,
 `queued_successor`, `fallbacks`, `current_bom`, `next_bom`,
-`latest_observation`, `decisions`, `specialist_advice`, `invalidations`, and
+`latest_observation`, `decisions`, `strategy_proposal`, `invalidations`, and
 `outcome`. The `outcome` object also owns Candidate B timing and benchmark
 state: GO UTC/monotonic/tick, deadline, collection UTC/monotonic/tick and
 latency, immutable `SNAPSHOT_AT_20M` progress vector, the complete throughput
@@ -70,10 +72,16 @@ and verifies the final file is still `0600`. After the first pilot observation,
 reset, tick rollback, or save identity mismatch requires a fresh parent-created
 run ID and ledger rather than an in-place reconciliation.
 
+`strategy_proposal` contains `run`, `save_identity`, `revision`, `source_tick`,
+`proposal_id`, `objective`, `bottleneck`, `falsifiable_hypothesis`,
+`expected_measurable_effect`, `assumptions`, `preconditions`, `safe_bounds`,
+`numeric_stop`, `invalidation`, `confidence`, and optional `next_objective`.
+It is coordinate-free, non-executable advice.
+
 Coordinates are ephemeral run state only. Remove affected coordinates from the
 ledger on a game reset, contradictory observation, referenced-entity mutation,
-or route failure, and never copy them to durable player knowledge. Use
-deterministic MCP state and tool results before the ledger or prose. Carry only
+or route failure, and never copy them to durable player knowledge. Use the
+pilot's deterministic MCP state and tool results before the ledger or prose. Carry only
 the grounded current plan and one queued successor; invalidate stale state and
 keep safe productive work overlapping.
 
@@ -89,48 +97,54 @@ When an exact factor is not observable, a bounded falsifiable experiment is
 allowed: state the uncertainty, predicted measurable effect, safe bound, and
 numeric stop before acting. Never substitute copied layouts, tutorials, or
 online sequences for live evidence.
-Each broad goal-conditioned envelope remains active while its bottleneck and
-falsifiable hypothesis remain valid and carries the expected effect, safe
-bounds, numeric stops, and locally adaptive fallbacks. Within those bounds the
-pilot keeps acting without per-action approval, reports material bottleneck
+Each `strategy_proposal` is bound to its run/save, ledger revision, source tick,
+and unique proposal ID. It states an objective, bottleneck, falsifiable
+hypothesis, expected measurable effect, assumptions/preconditions, safe bounds,
+numeric stop, invalidation, confidence, and optional next objective. It is not
+an executable envelope, exact-coordinate command, approval, gate, plan enqueue,
+acknowledgement, resend protocol, or debate. The pilot independently adopts,
+adapts, or discards it from newer live evidence, reports material bottleneck
 changes, terminal outcomes, or invalidations, consumes the `run_plan` terminal
 observation, and never repeats an executed plan ID. It never stops or hands off
 merely because one useful item or incidental non-production loot was obtained;
 validated automation utilization, the current plan, and its grounded successor
 remain the priority. The strategist owns the automation calculations alongside
 phase and successor planning. On the first material-flow contradiction it
-distinguishes the game bottleneck from an MCP observability gap before issuing
-the next envelope.
+distinguishes the game bottleneck from an MCP observability gap before writing
+the next proposal.
 
 At `GO`, after sending the authoritative initial observation and while awaiting
-the first strategist envelope, the pilot immediately uses a pre-authorized bootstrap
-envelope for bounded safe physical work selected from current state: prefer
+the first optional strategy proposal, the pilot immediately uses its bootstrap
+policy for bounded safe physical work selected from current state: prefer
 already-carried automation against a verified visible resource and exact
 physical sink; otherwise scout a visible dry waypoint or gather only the nearest
-measured blocker with a numeric stop. It reports the first material result, and
-the first strategist envelope supersedes this default. This overlaps reasoning with
+measured blocker with a numeric stop. It reports the first material result and
+independently revalidates any later proposal. This overlaps reasoning with
 physical work through the same sole writer/body/lane and encodes no fixed item,
 resource, order, coordinate, route, or timed phase. The strategist consumes the
-pilot's initial diagnostic instead of repeating it.
+pilot's initial report instead of accessing Factorio or requesting an equivalent repeat.
 
-Count production capacity only after structured evidence shows output accepted
-by its next physical sink and observable there. Every envelope that changes
+Count production capacity only after pilot-reported structured evidence shows output accepted
+by its next physical sink and observable there. Every pilot action sequence that changes
 upstream fuel or input ends with measured utilization of already-built
 dependents and one bounded corrective successor when its preconditions hold.
 When timing or buffer state is missing, make rate claims only from measured
 deltas and retain the expected result plus its falsifier.
 
 - Use exactly the active two-role topology: one Sol-medium strategist owns
-  phase, success, calculations, the ledger, and one actually queued successor;
-  one persistent Terra-low pilot remains the sole ordinary MCP action writer.
+  coordinate-free analysis and atomic ledger writes with zero Factorio MCP
+  access; one persistent Terra-low pilot remains the sole Factorio MCP user,
+  gameplay writer, and live-state authority.
   The pilot model/effort and fast-off setting are identical to the single-pilot
   baseline. Discard stale strategy unless the pilot revalidates it.
 - Maintain the rolling operations ledger: phase and success, capacity and
-  utilization, executing plan, one actually queued successor with predecessor
+  utilization, pilot-reported executing plan, one pilot-reported actually
+  queued successor with predecessor
   and preconditions (or the reason none can be queued), prioritized fallbacks,
   current and next bill of materials, and source tick/plan ID.
-- Prefer automation. After bootstrap, every manual mining or crafting batch
-  requires the exact net deficit after carried stock, machine buffers/output,
+- Prefer automation. After bootstrap, the pilot executes a manual mining or
+  crafting batch only after independently establishing the exact net deficit
+  after carried stock, machine buffers/output,
   and work in progress; the exact machine unlock or fuel consumer and uptime
   bought; a payback comparison in named item/time units with break-even; and a
   numeric stop condition. Automate bulk
@@ -153,7 +167,7 @@ deltas and retain the expected result plus its falsifier.
   `resource_coverage` is present and contains positive compatible coverage.
   Missing or empty coverage requires more structured observation and
   revalidation, not placement.
-- The pilot may mine, refuel, collect output, repair routes, or take an approved
+- The pilot may mine, refuel, collect output, repair routes, or take a safe
   fallback without waiting. Priority is: unblock production; mine the BOM
   bottleneck in batches; build validated automation; physically scout.
   Never idle on a wait while productive work exists. `mine` count means

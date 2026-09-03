@@ -227,14 +227,16 @@ describe("exact local configuration", () => {
       expect(skill).toContain(`](${link})`);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-MASTER-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-SPECIALIST-v1.md"))).toBe(false);
-    expect(strategist).toMatch(/Sol-medium strategist[\s\S]*read\/plan-only/i);
-    expect(strategist).toMatch(/global goal[\s\S]*dominant bottleneck[\s\S]*current plan[\s\S]*exactly one actually queued successor/i);
-    expect(strategist).toMatch(/outcome-labeled[\s\S]*replan mid-run/i);
+    expect(strategist).toMatch(/read\/plan-only[\s\S]*Sol-medium strategist/i);
+    expect(strategist).toMatch(/zero Factorio MCP access[\s\S]*pilot is the sole gameplay writer and sole authority for live structured state/i);
+    expect(strategist).toMatch(/`current_plan`[\s\S]*`queued_successor`[\s\S]*pilot-reported MCP facts[\s\S]*never infer them from your proposal/i);
+    expect(strategist).toMatch(/coordinate-free[\s\S]*non-executable advice/i);
     expect(strategist).toMatch(/recipes, prerequisites, rates, BOMs[\s\S]*capacity[\s\S]*utilization/i);
-    expect(strategist).toMatch(/assumptions, provenance, and uncertainty/i);
+    expect(strategist).toMatch(/assumptions[\s\S]*provenance and uncertainty/i);
     expect(strategist).toMatch(/PLAYER-KNOWLEDGE-v1\.md[\s\S]*in-game learned recipes, calculations, operations[\s\S]*relative layouts/i);
-    expect(pilot).toMatch(/only ordinary MCP action writer/i);
+    expect(pilot).toMatch(/only Factorio MCP user and ordinary gameplay writer/i);
     expect(pilot).toMatch(/latest terminal observation wins/i);
+    expect(pilot).toMatch(/only source for ledger `current_plan` and `queued_successor`[\s\S]*proposals never populate or change those facts/i);
     for (const text of [skill, strategist, pilot]) {
       expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
       expect(text).toMatch(/never use screenshots or screen capture for live gameplay perception[\s\S]*action selection/i);
@@ -243,9 +245,11 @@ describe("exact local configuration", () => {
       expect(text).toMatch(/copied layouts[\s\S]*tutorials[\s\S]*online sequences/i);
     }
     for (const text of [skill, strategist, pilot]) {
-      expect(text).toMatch(/After bootstrap[\s\S]*manual mining(?:\s+or\s+crafting|\/crafting) batch|After bootstrap[\s\S]*manual mining\/crafting batch/i);
+      expect(text).toMatch(/After bootstrap[\s\S]*manual mining(?:\s+or\s+crafting|\/crafting)(?:\s+batch)?/i);
       expect(text).toMatch(/exact net deficit[\s\S]*carried stock[\s\S]*machine buffers\/output[\s\S]*(?:work in progress|WIP)[\s\S]*machine unlock or fuel consumer[\s\S]*uptime[\s\S]*payback[\s\S]*item\/time units[\s\S]*break-even[\s\S]*numeric stop/i);
       expect(text).toMatch(/automat(?:e|ion)[\s\S]*(bulk extraction|smelting)[\s\S]*(logistics|science)/i);
+    }
+    for (const text of [skill, pilot]) {
       expect(text).toMatch(/never wait[\s\S]*safe\s+productive action exists/i);
     }
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
@@ -260,7 +264,7 @@ describe("exact local configuration", () => {
     ];
     const texts = files.map((file) => fs.readFileSync(path.join(root, ".agents/skills/factorio-player", file), "utf8"));
     for (const text of texts) {
-      for (const concept of ["observ", "bottleneck", "falsifiable hypothesis", "predicted", "actual", "retain", "revise", "discard", "provenance", "uncertainty"])
+      for (const concept of ["observ", "bottleneck", "falsifiable hypothesis", "predict", "retain", "revise", "discard", "provenance", "uncertainty"])
         expect(text.toLowerCase()).toContain(concept);
       for (const rejected of [/(?:timed\s+phase|elapsed-time\s+milestone)/i, /fixed\s+build\s+order/i, /named\s+route/i, /(?:map|cross-run|world)\s+coordinate/i, /prescriptive\s+progression\s+sequence/i])
         expect(text).toMatch(rejected);
@@ -271,9 +275,8 @@ describe("exact local configuration", () => {
       expect(text).not.toMatch(/\b(?:at|by|after)\s+(?:minute\s*)?\d+\s*(?:m|min|minutes?)?\s*[,,:-]?\s*(?:mine|craft|place|build|research)\b/i);
       expect(text).not.toMatch(/\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/);
     }
-    for (const text of texts.slice(0, 2)) {
-      expect(text).toMatch(/observe[\s\S]*bottleneck[\s\S]*falsifiable hypothesis[\s\S]*predict[\s\S]*safe action[\s\S]*compare[\s\S]*retain[\s\S]*revise[\s\S]*discard/i);
-    }
+    expect(texts[0]).toMatch(/observe[\s\S]*bottleneck[\s\S]*falsifiable hypothesis[\s\S]*predict[\s\S]*safe action[\s\S]*compare[\s\S]*retain[\s\S]*revise[\s\S]*discard/i);
+    expect(texts[1]).toMatch(/current bottleneck[\s\S]*authoritative pilot report[\s\S]*falsifiable hypothesis[\s\S]*predict[\s\S]*actual pilot-reported result[\s\S]*retain[\s\S]*revise[\s\S]*discard/i);
   });
 
   it("documents the W1C research basis as principles rather than a route", () => {

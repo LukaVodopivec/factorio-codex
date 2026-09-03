@@ -89,9 +89,11 @@ trigger technology with its required in-game action and never reports it as
 queued progress.
 
 Live play uses exactly two active roles: a Sol-medium read/plan-only strategist
-and the unchanged Terra-low single-pilot baseline with fast mode off. The
-persistent pilot alone writes ordinary MCP actions for the one physical Codex
-body and task lane. The first rollout is the next fresh matched run; Candidate
+with zero Factorio MCP access and the unchanged Terra-low single-pilot baseline
+with fast mode off. The strategist writes coordinate-free non-executable
+`strategy_proposal` advice to the one ledger. The persistent pilot alone uses
+Factorio MCP, writes gameplay actions, and owns live-state authority for the one
+physical Codex body and task lane. The first rollout is the next fresh matched run; Candidate
 B and R1-R7 remain historical evidence. Bounded packets prevent strategic drift;
 concurrency removes thinking idle time, not physical walking time. See the
 repo-local `factorio-player` skill for the packet and reporting contract. The

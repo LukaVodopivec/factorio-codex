@@ -103,9 +103,10 @@ the immutable snapshot.
 
 The first rollout is the next fresh matched run; Candidate B and R1-R7 remain
 historical evidence rather than active topology instructions. The strategist
-may observe and plan, but one persistent pilot remains the sole ordinary MCP
-action writer for one physical Codex body and one task lane. The strategist
-sends bounded milestone packets; the pilot may observe, choose exact visible
+has zero Factorio MCP access and writes only coordinate-free
+`strategy_proposal` advice to the one operations ledger. One persistent pilot
+remains the sole Factorio MCP user, gameplay writer, and live-state authority
+for one physical Codex body and one task lane. The pilot may observe, choose exact visible
 coordinates, retry honest pathing, and finish the assigned milestone. End with
 an authoritative observation: consume a fresh `run_plan.observation` directly;
 call `observe_local` only when that observation is missing or became stale

@@ -28,8 +28,9 @@ came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
 
 The active topology is exactly two roles: a Sol-medium read/plan-only
 strategist and the unchanged Terra-low sole-writer single-pilot baseline, with
-fast mode off. The strategist owns calculations and the rolling phase/successor
-envelope; the pilot is the sole ordinary writer. The first rollout is the next
+fast mode off. The strategist has zero Factorio MCP access and writes
+coordinate-free `strategy_proposal` advice; the pilot is the sole Factorio MCP
+user, gameplay writer, and live-state authority. The first rollout is the next
 fresh matched run. Plans execute contiguously in Lua and may prepare one successor by
 predecessor ID. This removes model-thinking idle time; it does not accelerate
 walking, mining, crafting, or any other game tick.
@@ -149,32 +150,35 @@ revalidation, not placement. This applies equally to omitted uncharted coverage
 and preserves deterministic rejection of charted candidates with zero compatible
 resources.
 
-For active role coordination, the strategist coalesces superseded reports by run and
-newest source tick, writes one ledger revision for the current decision, and
-never reissues an executed plan ID. The first decision uses one authoritative
-preflight diagnostic packet, immediately writes and sends a broad physical
-envelope, and ends the strategist turn so new pilot evidence can trigger a fresh
-turn; it consumes rather than repeats the pilot's initial diagnostics, and
+For active role coordination, the strategist coalesces superseded pilot reports
+by run and newest source tick and writes one atomic ledger revision for the
+current analysis. `current_plan` and `queued_successor` mirror pilot-reported MCP
+facts rather than strategist commands. The first decision uses one authoritative
+preflight pilot report, immediately writes and sends a coordinate-free
+`strategy_proposal`, and ends the strategist turn so new pilot evidence can
+trigger a fresh turn; it consumes rather than repeats the pilot's initial report, and
 equivalent diagnostics repeat only after action,
-contradiction, or staleness. Each broad goal-conditioned envelope states a
-falsifiable hypothesis, predicted measurable effect, safe bounds, numeric
-stops, and locally adaptive fallbacks, and remains active while the bottleneck
-and hypothesis remain valid. The pilot consumes each `run_plan` terminal
+contradiction, or staleness. Each proposal states a falsifiable hypothesis,
+predicted measurable effect, assumptions/preconditions, safe bounds, numeric
+stop, invalidation, and confidence. It is non-executable advice: never an
+envelope, plan enqueue, approval/gate, acknowledgement/resend/debate protocol,
+or exact-coordinate command. The pilot independently adopts, adapts, or
+discards it from live state and consumes each `run_plan` terminal
 observation, reports only terminal, material-bottleneck, or invalidation
-evidence, and never repeats an executed envelope. It never stops or reports
+evidence, and never repeats an executed plan ID. It never stops or reports
 merely for one useful item or incidental non-production loot. Measured
 automation utilization and continuous current-plus-successor work dominate.
 At `GO`, the pilot sends the authoritative initial observation and immediately
-performs bounded safe physical work under a pre-authorized bootstrap envelope
-while the strategist reasons. Current structured state selects the work: prefer
+performs bounded safe physical work under the bootstrap policy
+while the strategist reasons without Factorio access. Current structured state selects the work: prefer
 already-carried automation with a verified visible resource and exact sink;
 otherwise scout a visible dry waypoint or gather the nearest measured blocker
-to a numeric stop. The pilot reports the first material result, and the first
-strategist envelope supersedes the default. This creates no second writer, body, or
+to a numeric stop. The pilot reports the first material result and independently
+revalidates any later proposal. This creates no second writer, body, or
 lane and prescribes no item, resource, order, coordinate, route, or timed phase.
-The strategist owns automation calculations in the same decision turn. On the
+The strategist owns coordinate-free automation calculations in the same decision turn. On the
 first material-flow contradiction it distinguishes a game bottleneck from an
-MCP observability gap before issuing the next envelope. Count capacity only after output is
+MCP observability gap before issuing the next proposal. Count capacity only after output is
 accepted by its next physical sink and observable there. Upstream fuel/input
 changes end with measured dependent utilization and a bounded corrective
 successor. Rate claims without timing/buffer evidence use measured deltas and

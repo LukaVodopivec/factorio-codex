@@ -4,12 +4,35 @@ local M = {}
 local MAX_EVENTS = 128
 local MAX_RETURNED_EVENTS = 8
 local MAX_TARGET_ROWS = 16
+local MAX_VALIDATIONS = 32
 
 local function ensure()
   storage.factory_activity = storage.factory_activity or {
     epoch_tick = game and game.tick or 0, events = {}, events_omitted = 0,
+    validations = {}, validations_omitted = 0,
   }
+  storage.factory_activity.validations = storage.factory_activity.validations or {}
+  storage.factory_activity.validations_omitted = storage.factory_activity.validations_omitted or 0
   return storage.factory_activity
+end
+
+function M.record_validation(result)
+  if type(result) ~= "table" or type(result.component_signature) ~= "string"
+    or result.proven ~= true or (tonumber(result.duration_ticks) or 0) < 1
+    or (tonumber(result.products_finished_delta) or 0) < 1
+    or (tonumber(result.character_transfer_actions) or 0) ~= 0 then return end
+  local activity = ensure()
+  activity.validations[#activity.validations + 1] = {
+    component_signature = result.component_signature,
+    start_tick = result.start_tick, end_tick = result.end_tick,
+    duration_ticks = result.duration_ticks, products_finished_delta = result.products_finished_delta,
+    character_transfer_actions = result.character_transfer_actions,
+    proven = true, evidence_class = "bounded_multi_tick_component_validation",
+  }
+  if #activity.validations > MAX_VALIDATIONS then
+    table.remove(activity.validations, 1)
+    activity.validations_omitted = activity.validations_omitted + 1
+  end
 end
 
 local function target_identity(target)
@@ -82,6 +105,10 @@ function M.snapshot(since_tick)
   while #target_rows > MAX_TARGET_ROWS do table.remove(target_rows) end
   local omitted_events = math.max(0, #events - MAX_RETURNED_EVENTS)
   while #events > MAX_RETURNED_EVENTS do table.remove(events, 1) end
+  local validations = {}
+  for _, validation in ipairs(activity.validations) do
+    if validation.end_tick >= since_tick then validations[#validations + 1] = validation end
+  end
   return {
     epoch_tick = activity.epoch_tick, since_tick = since_tick, end_tick = game.tick,
     transfer_actions = action_count, transferred_items = item_count,
@@ -89,6 +116,7 @@ function M.snapshot(since_tick)
     target_actions = target_rows, target_actions_omitted = omitted_targets,
     events = events, events_omitted_in_window = omitted_events,
     events_omitted_before_window = complete and 0 or activity.events_omitted,
+    validations = validations, validations_omitted = activity.validations_omitted,
     history_complete = complete,
   }
 end

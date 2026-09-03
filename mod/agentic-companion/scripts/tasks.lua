@@ -10,6 +10,7 @@ local craft = require("scripts.actions.craft")
 local transfer = require("scripts.actions.transfer")
 local build_plan = require("scripts.actions.build_plan")
 local factory_activity = require("scripts.factory_activity")
+local map_summary = require("scripts.map_summary")
 local M = {}
 local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 local PLAN_BUDGET_TICKS = 570 * 60
@@ -113,6 +114,7 @@ local function make_step_task(step)
   local task = { type = kind }
   if kind == "walk_to" or kind == "mine" then
     task.target = { x = step.x, y = step.y }; task.count = step.count
+    if kind == "walk_to" then task.arrival_mode, task.arrival_radius = step.arrival_mode, step.arrival_radius end
     if kind == "mine" then
       task.target_kind, task.allow_fluid_loss = step.target_kind, step.allow_fluid_loss
       task.expected_name, task.observed_tick = step.expected_name, step.observed_tick
@@ -138,7 +140,8 @@ function M.queue_plan(params)
     error("observation_detail must be none, compact, or full")
   end
   for i, step in ipairs(params.steps) do
-    if type(step) ~= "table" or (step.action ~= "wait_for_item" and step.action ~= "inspect_entities" and not ACTIONS[step.action]) then
+    if type(step) ~= "table" or (step.action ~= "wait_for_item" and step.action ~= "wait_for_research"
+      and step.action ~= "validate_factory_component" and step.action ~= "inspect_entities" and not ACTIONS[step.action]) then
       error("unknown plan action at step " .. i .. ": " .. tostring(type(step) == "table" and step.action or step))
     end
     if step.action == "craft_items" then
@@ -155,6 +158,26 @@ function M.queue_plan(params)
       for _, position in ipairs(step.positions) do
         if type(position) ~= "table" or type(position.x) ~= "number" or type(position.y) ~= "number" then
           error("queue_plan inspect_entities step " .. i .. " positions require numeric x and y")
+        end
+      end
+    end
+    if step.action == "wait_for_research" then
+      if type(step.technology) ~= "string" or step.technology == ""
+        or type(step.timeout_seconds) ~= "number" or step.timeout_seconds % 1 ~= 0
+        or step.timeout_seconds < 1 or step.timeout_seconds > 300 then
+        error("queue_plan wait_for_research step " .. i .. " requires technology and timeout_seconds from 1 to 300")
+      end
+    end
+    if step.action == "validate_factory_component" then
+      if type(step.source_tick) ~= "number" or step.source_tick % 1 ~= 0 or step.source_tick < 0
+        or type(step.duration_seconds) ~= "number" or step.duration_seconds % 1 ~= 0
+        or step.duration_seconds < 1 or step.duration_seconds > 300
+        or type(step.positions) ~= "table" or #step.positions < 1 or #step.positions > 16 then
+        error("queue_plan validate_factory_component step " .. i .. " requires source_tick, 1-16 positions, and duration_seconds from 1 to 300")
+      end
+      for _, position in ipairs(step.positions) do
+        if type(position) ~= "table" or type(position.x) ~= "number" or type(position.y) ~= "number" then
+          error("queue_plan validate_factory_component step " .. i .. " positions require numeric x and y")
         end
       end
     end
@@ -293,7 +316,7 @@ local function finish_step(plan, result)
   local status = result.status == "done" and "completed" or result.status
   plan.outcomes[#plan.outcomes + 1] = {
     step = plan.current_step, action = step.action, status = status,
-    result = (status == "completed" or status == "partial") and (result.outcome or result.detail or status) or nil,
+    result = result.outcome or ((status == "completed" or status == "partial") and (result.detail or status) or nil),
     error = (status == "failed" or status == "cancelled") and (result.detail or status) or nil,
   }
   plan.current_task = nil
@@ -304,6 +327,104 @@ end
 local function wait_timeout_ticks(step)
   return math.floor((tonumber(step.timeout_seconds) or 120) * 60)
 end
+local function wait_for_research(plan, step)
+  plan.wait_started_tick = plan.wait_started_tick or game.tick
+  step._wait_started_tick = step._wait_started_tick or plan.wait_started_tick
+  local force = companion.require_companion().force
+  local technology = force.technologies and force.technologies[step.technology]
+  if not technology then return { status = "failed", detail = "UNKNOWN_TECHNOLOGY: " .. step.technology,
+    outcome = { code = "UNKNOWN_TECHNOLOGY", technology = step.technology } } end
+  if technology.researched then
+    local elapsed = game.tick - step._wait_started_tick
+    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    return { status = "done", detail = step.technology .. " research completed",
+      outcome = { code = "RESEARCH_COMPLETED", technology = step.technology,
+        start_tick = step._wait_started_tick, completed_tick = game.tick, elapsed_ticks = elapsed } }
+  end
+  local active = force.current_research and force.current_research.name == step.technology
+  if not active then for _, queued in pairs(force.research_queue or {}) do
+    if queued and (queued.name == step.technology or queued == step.technology) then active = true; break end
+  end end
+  if not active then return { status = "failed", detail = "RESEARCH_NOT_ACTIVE: " .. step.technology,
+    outcome = { code = "RESEARCH_NOT_ACTIVE", technology = step.technology } } end
+  if game.tick - plan.wait_started_tick >= wait_timeout_ticks(step) then
+    local elapsed = game.tick - step._wait_started_tick
+    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    return { status = "failed", detail = string.format("timed out waiting for research %s after %d ticks", step.technology, elapsed),
+      outcome = { code = "RESEARCH_WAIT_TIMEOUT", technology = step.technology, elapsed_ticks = elapsed } }
+  end
+  plan.next_check_tick = game.tick + 30
+end
+
+local function validate_factory_component(plan, step)
+  plan.wait_started_tick = plan.wait_started_tick or game.tick
+  step._wait_started_tick = step._wait_started_tick or plan.wait_started_tick
+  if step.source_tick > game.tick then return { status = "failed", detail = "SOURCE_TICK_IN_FUTURE",
+    outcome = { code = "SOURCE_TICK_IN_FUTURE", source_tick = step.source_tick, current_tick = game.tick } } end
+  if not step._baseline then
+    step._baseline = map_summary.factory_component_sample({ source_tick = step.source_tick, positions = step.positions })
+    if not step._baseline.topology_ready then
+      local blockers = {}
+      for _, blocker in ipairs(step._baseline.blockers or {}) do
+        blockers[#blockers + 1] = type(blocker) == "table" and blocker or { reason = blocker }
+      end
+      plan.wait_started_tick, plan.next_check_tick = nil, nil
+      return { status = "failed", detail = "factory component autonomy preflight not proven", outcome = {
+        code = "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN", proven = false, stage = "preflight",
+        source_tick = step.source_tick, component_signature = step._baseline.component_signature,
+        selected_node_ids = step._baseline.selected_node_ids, start_tick = step._baseline.tick,
+        end_tick = step._baseline.tick, requested_duration_seconds = step.duration_seconds, duration_ticks = 0,
+        products_finished_before = step._baseline.products_finished_total,
+        products_finished_after = step._baseline.products_finished_total, products_finished_delta = 0,
+        character_transfer_actions = step._baseline.character_transfer_actions,
+        topology_ready = false, blockers = blockers,
+        evidence_class = "charted_component_preflight", exact_remote_inventories = false, exact_remote_fluids = false,
+      } }
+    end
+    step._validation_due_tick = game.tick + math.floor(step.duration_seconds * 60)
+    plan.next_check_tick = step._validation_due_tick
+    return nil
+  end
+  if game.tick < step._validation_due_tick then plan.next_check_tick = step._validation_due_tick; return nil end
+  local final = map_summary.factory_component_sample({ source_tick = step.source_tick, positions = step.positions })
+  local delta = final.products_finished_total - step._baseline.products_finished_total
+  local blockers = {}
+  for _, blocker in ipairs(final.blockers or {}) do
+    blockers[#blockers + 1] = type(blocker) == "table" and blocker or { reason = blocker }
+  end
+  if final.component_signature ~= step._baseline.component_signature then
+    blockers[#blockers + 1] = { reason = "component_topology_changed_during_validation" }
+  end
+  if delta <= 0 then blockers[#blockers + 1] = { reason = "bounded_production_delta_not_observed" } end
+  if final.character_transfer_actions > 0 then blockers[#blockers + 1] = { reason = "character_transfer_observed" } end
+  if not final.character_history_complete then blockers[#blockers + 1] = { reason = "character_transfer_history_incomplete" } end
+  local omissions = final.graph_omissions
+  if omissions.nodes > 0 or omissions.edges > 0 or omissions.diagnostics > 0 then
+    blockers[#blockers + 1] = { reason = "relevant_aggregate_omission" }
+  end
+  local proven = final.topology_ready and #blockers == 0
+  local outcome = {
+    code = proven and "FACTORY_COMPONENT_AUTONOMY_PROVEN" or "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN",
+    proven = proven, source_tick = step.source_tick,
+    component_signature = final.component_signature, selected_node_ids = final.selected_node_ids,
+    start_tick = step._baseline.tick, end_tick = final.tick,
+    requested_duration_seconds = step.duration_seconds,
+    duration_ticks = final.tick - step._baseline.tick,
+    products_finished_before = step._baseline.products_finished_total,
+    products_finished_after = final.products_finished_total,
+    products_finished_delta = delta,
+    character_transfer_actions = final.character_transfer_actions,
+    topology_ready = final.topology_ready, blockers = blockers,
+    evidence_class = "bounded_multi_tick_component_validation",
+    exact_remote_inventories = false, exact_remote_fluids = false,
+  }
+  plan.wait_started_tick, plan.next_check_tick = nil, nil
+  if proven then factory_activity.record_validation(outcome) end
+  return { status = proven and "done" or "failed",
+    detail = proven and "factory component autonomy proven" or "factory component autonomy not proven", outcome = outcome }
+end
+
+local PARKED_ACTIONS = { wait_for_item = true, wait_for_research = true, validate_factory_component = true }
 local function wait_timeout_detail(step)
   local start = tonumber(step._starting_count) or 0
   local current = tonumber(step._current_count) or start
@@ -344,12 +465,15 @@ local function expire_parked_waits(tasks)
   for index = #tasks.queue, 1, -1 do
     local plan = tasks.queue[index]
     local step = plan.type == "plan" and plan.status == "waiting" and plan.steps[plan.current_step] or nil
-    if step and step.action == "wait_for_item" and plan.wait_started_tick
+    if step and (step.action == "wait_for_item" or step.action == "wait_for_research") and plan.wait_started_tick
       and game.tick - plan.wait_started_tick >= wait_timeout_ticks(step) then
       table.remove(tasks.queue, index)
-      local detail = wait_timeout_detail(step)
+      local detail = step.action == "wait_for_item" and wait_timeout_detail(step)
+        or string.format("timed out waiting for research %s after %d ticks", step.technology, game.tick - plan.wait_started_tick)
       plan.outcomes[#plan.outcomes + 1] = {
         step = plan.current_step, action = step.action, status = "failed", error = detail,
+        result = step.action == "wait_for_research" and { code = "RESEARCH_WAIT_TIMEOUT",
+          technology = step.technology, elapsed_ticks = game.tick - plan.wait_started_tick } or nil,
       }
       plan.current_task = nil
       plan.wait_started_tick, plan.next_check_tick = nil, nil
@@ -368,9 +492,9 @@ local function tick_plan(plan)
   if not plan.current_task then
     plan.current_step = plan.completed_steps + 1
     local step = plan.steps[plan.current_step]
-    plan.current_task = (step.action == "wait_for_item" or step.action == "inspect_entities")
+    plan.current_task = (PARKED_ACTIONS[step.action] or step.action == "inspect_entities")
       and { type = step.action } or make_step_task(step)
-    if step.action ~= "wait_for_item" and step.action ~= "inspect_entities" then
+    if not PARKED_ACTIONS[step.action] and step.action ~= "inspect_entities" then
       -- Async action events are delivered to the one active queue entry. Give
       -- the nested runner its owning plan ID so it uses that same mailbox.
       plan.current_task.id = plan.id
@@ -380,6 +504,8 @@ local function tick_plan(plan)
   end
   local step, ok, result = plan.steps[plan.current_step]
   if step.action == "wait_for_item" then ok, result = pcall(wait_for_item, plan, step)
+  elseif step.action == "wait_for_research" then ok, result = pcall(wait_for_research, plan, step)
+  elseif step.action == "validate_factory_component" then ok, result = pcall(validate_factory_component, plan, step)
   elseif step.action == "inspect_entities" then
     ok, result = pcall(function()
       local response = inspect.inspect({ targets = step.positions })
@@ -394,7 +520,7 @@ local function tick_plan(plan)
       }
     end)
   else ok, result = pcall(runners[plan.current_task.type].tick, plan.current_task) end
-  if ok and step.action == "wait_for_item" and result == nil then
+  if ok and PARKED_ACTIONS[step.action] and result == nil then
     -- A read-only condition must not occupy the physical body while an
     -- independent action is ready. Park this plan at the tail of the same FIFO;
     -- its elapsed timeout and current step remain intact.

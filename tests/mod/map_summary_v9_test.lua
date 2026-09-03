@@ -97,14 +97,87 @@ for i = 1, 70 do
 end
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return dense end
 local bounded = require("scripts.map_summary").map_summary({})
-check(#bounded.factory.groups == 32 and bounded.factory.omissions.capped_groups == 38
-  and #bounded.factory.material_flow.nodes == 16 and bounded.factory.omissions.capped_flow_nodes == 54
-  and #bounded.factory.force_flows == 32 and bounded.factory.omissions.capped_flows == 38
+check(#bounded.factory.groups == 12 and bounded.factory.omissions.capped_groups == 58
+  and #bounded.factory.material_flow.nodes == 12 and bounded.factory.omissions.capped_flow_nodes == 58
+  and #bounded.factory.force_flows == 12 and bounded.factory.omissions.capped_flows == 58
   and bounded.factory.partial,
   "factory groups, graph nodes, and flow rows have deterministic caps and omission counts")
 local bounded_full = require("scripts.map_summary").map_summary({ detail = "full" })
 local aggregate_bytes, full_bytes = #canonical(bounded), #canonical(bounded_full)
-check(aggregate_bytes < 30000 and aggregate_bytes * 5 < full_bytes * 4,
-  "bounded aggregate stays below 30k fixture bytes and at least 20% smaller than full detail (aggregate="
+check(aggregate_bytes <= 18000 and aggregate_bytes * 5 < full_bytes * 4,
+  "bounded aggregate stays at or below 18k fixture bytes and at least 20% smaller than full detail (aggregate="
     .. aggregate_bytes .. ", full=" .. full_bytes .. ")")
+
+-- A component qualifies only after exact topology and a bounded unattended
+-- production interval. Recipe/source identities prove material provenance;
+-- buffers and finite hand-loaded burner stock never serve as roots.
+local function flow_fixture(buffer_root, burner)
+  local source = { valid = true, name = buffer_root and "wooden-chest" or "electric-mining-drill",
+    type = buffer_root and "container" or "mining-drill", position = { x = 1, y = 1 }, force = force,
+    status = 2, products_finished = 5 }
+  if not buffer_root then source.mining_target = { prototype = { mineable_properties = {
+    products = { { name = "ore", type = "item" } },
+  } } } end
+  local processor = { valid = true, name = "processor", type = "assembling-machine",
+    position = { x = 3, y = 1 }, force = force, status = 2, products_finished = 10,
+    burner = burner and {} or nil, crafting_speed = 1,
+    get_recipe = function() return { name = "process", energy = 1,
+      ingredients = { { name = "ore", type = "item" } }, products = { { name = "plate", type = "item" } } } end }
+  if burner then processor.prototype = { burner_prototype = { fuel_categories = { chemical = true } } } end
+  local sink = { valid = true, name = "lab", type = "lab", position = { x = 5, y = 1 }, force = force, status = 3 }
+  local feed = { valid = true, name = "feed", type = "inserter", position = { x = 2, y = 1 }, force = force,
+    status = 2, pickup_target = source, drop_target = processor }
+  local unload = { valid = true, name = "unload", type = "inserter", position = { x = 4, y = 1 }, force = force,
+    status = 2, pickup_target = processor, drop_target = sink }
+  if not buffer_root then source.drop_target = feed end
+  return { source, feed, processor, unload, sink }, source, processor
+end
+
+_G.prototypes = { item = { coal = { fuel_value = 8, fuel_category = "chemical" } } }
+defines.entity_status.normal = 2
+defines.entity_status.working = 3
+storage = {}
+local flow_entities, flow_source, flow_processor = flow_fixture(false, false)
+surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return flow_entities end
+game.tick = 900
+local ready = require("scripts.map_summary").map_summary({})
+local ready_component = ready.factory.material_flow.components[1]
+check(ready_component.state.autonomy_topology_ready and not ready_component.state.autonomous_end_to_end
+  and ready_component.state.autonomy_evidence == "bounded_multi_tick_production_not_yet_proven",
+  "complete material provenance and downstream path still require bounded production evidence")
+local sample = require("scripts.map_summary").factory_component_sample({ source_tick = 900,
+  positions = { { x = flow_source.position.x, y = flow_source.position.y },
+    { x = flow_processor.position.x, y = flow_processor.position.y } } })
+require("scripts.factory_activity").record_validation({ proven = true, component_signature = sample.component_signature,
+  start_tick = 900, end_tick = 960, duration_ticks = 60, products_finished_delta = 2,
+  character_transfer_actions = 0 })
+game.tick = 960
+local proven = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })
+check(proven.factory.material_flow.components[1].state.autonomous_end_to_end
+  and proven.factory.material_flow.components[1].state.validation.products_finished_delta == 2,
+  "matching bounded multi-tick validation promotes the unchanged component to autonomous end to end")
+require("scripts.factory_activity").record("insert", { target = flow_processor,
+  transfers = { { item = "ore", inserted = 1 } } })
+local touched = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })
+check(not touched.factory.material_flow.components[1].state.autonomous_end_to_end
+  and touched.factory.material_flow.components[1].state.autonomy_evidence == "character_transfer_observed",
+  "a later character transfer revokes unattended autonomy for that component")
+
+storage = {}
+local buffer_entities = flow_fixture(true, false)
+surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return buffer_entities end
+game.tick = 1000
+local buffered = require("scripts.map_summary").map_summary({})
+check(not buffered.factory.material_flow.components[1].state.autonomy_topology_ready
+  and table.concat(buffered.factory.material_flow.components[1].state.autonomy_blockers, ","):match("material_input_provenance_unresolved"),
+  "a buffer root cannot prove non-character material provenance")
+
+storage = {}
+local burner_entities = flow_fixture(false, true)
+surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return burner_entities end
+game.tick = 1100
+local burner_flow = require("scripts.map_summary").map_summary({})
+check(not burner_flow.factory.material_flow.components[1].state.autonomy_topology_ready
+  and table.concat(burner_flow.factory.material_flow.components[1].state.autonomy_blockers, ","):match("fuel_input_provenance_unresolved"),
+  "finite hand-loaded burner fuel cannot prove autonomous fuel provenance")
 os.exit(failures == 0 and 0 or 1)

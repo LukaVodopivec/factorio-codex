@@ -9,7 +9,8 @@ body.cancel_crafting = function(args) table.remove(body.crafting_queue, args.ind
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 local starts = {}
 local queued_place_output_target
-local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_output_target = task.output_target end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; if kind == "mine" and not fails then inventory_count = 5 end; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
+local walk_arrival
+local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_output_target = task.output_target end; if kind == "walk_to" then walk_arrival = { mode = task.arrival_mode, radius = task.arrival_radius } end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; if kind == "mine" and not fails then inventory_count = 5 end; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
 local walk, mine, craft = runner("walk_to"), runner("mine"), runner("craft")
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = walk, mine, runner("pickup"), craft
 package.loaded["scripts.actions.build"] = { place = runner("place"), rotate = runner("rotate"), set_recipe = runner("set_recipe") }
@@ -28,12 +29,19 @@ check(not old_count_ok and not missing_crafts_ok and not fractional_crafts_ok,
   "direct queue_plan rejects old count and requires integer crafts from 1 to 100")
 check(not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 2 } }, observation_detail = "brief" }),
   "direct queue_plan accepts only none, compact, or full terminal observation detail")
-local first = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 2 }, { action = "mine", x = 3, y = 4, count = 1 } }, observation_detail = "compact" })
+check(not pcall(tasks.queue_plan, { steps = { { action = "wait_for_research", technology = "x", timeout_seconds = 1.5 } } })
+  and not pcall(tasks.queue_plan, { steps = { { action = "validate_factory_component", source_tick = 0,
+    positions = {}, duration_seconds = 1 } } }),
+  "parked research and factory validation steps enforce their bounded DTOs in Lua")
+local first = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 2,
+  arrival_mode = "within_radius", arrival_radius = 2 }, { action = "mine", x = 3, y = 4, count = 1 } }, observation_detail = "compact" })
 local successor = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 1, wait_for_completion = false } }, after_plan_id = first.plan_id })
 check(first.plan_id == 1 and successor.plan_id == 2, "queue_plan returns IDs immediately in the flat FIFO")
 for tick = 1, 5 do game.tick = tick; tasks.on_tick() end
 local a, b = tasks.plan_status({ plan_id = 1 }), tasks.plan_status({ plan_id = 2 })
 check(a.status == "completed" and a.completed_steps == 2, "Lua plan executes all steps contiguously")
+check(walk_arrival.mode == "within_radius" and walk_arrival.radius == 2,
+  "queued walk forwards its explicit arrival contract to the physical runner")
 check(a.inventory_delta and a.inventory_delta["iron-plate"] == 3,
   "terminal plan exposes inventory delta independently of its observation")
 check(a.execution.mode == "sequential_nontransactional" and a.execution.rollback == "none"

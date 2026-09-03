@@ -29,4 +29,15 @@ local capped = activity.snapshot(100)
 check(#capped.events == 8 and capped.events_omitted_in_window > 0 and capped.events_omitted_before_window > 0
   and not capped.history_complete and #capped.target_actions == 16 and capped.target_actions_omitted > 0,
   "activity history is capped and reports omissions instead of pretending completeness")
+for i = 1, 33 do activity.record_validation({ proven = true, component_signature = "component-" .. i,
+  start_tick = 300, end_tick = 301, duration_ticks = 1, products_finished_delta = i,
+  character_transfer_actions = 0 }) end
+local validations = activity.snapshot(100)
+check(#validations.validations == 32 and validations.validations_omitted == 1
+  and validations.validations[1].component_signature == "component-2"
+  and validations.validations[32].evidence_class == "bounded_multi_tick_component_validation",
+  "component validations reuse a bounded run-local history with explicit omission count")
+activity.record_validation({ proven = false, component_signature = "not-proven" })
+check(#activity.snapshot(100).validations == 32,
+  "unproven component samples never enter autonomy evidence")
 os.exit(failures == 0 and 0 or 1)

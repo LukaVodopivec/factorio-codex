@@ -5,10 +5,10 @@ local factory_activity = require("scripts.factory_activity")
 local M = {}
 local MAX_EDGES = 256
 local MAX_LANDMARKS = 256
-local MAX_FACTORY_GROUPS = 32
-local MAX_FLOW_ROWS = 32
-local MAX_FLOW_NODES = 16
-local MAX_FLOW_EDGES = 32
+local MAX_FACTORY_GROUPS = 12
+local MAX_FLOW_ROWS = 12
+local MAX_FLOW_NODES = 12
+local MAX_FLOW_EDGES = 24
 
 local MACHINE_TYPES = {
   ["assembling-machine"] = true, furnace = true, ["mining-drill"] = true,
@@ -178,6 +178,53 @@ local function entity_key(entity)
   return string.format("%s\0%s\0%.17g\0%.17g", entity.name, entity.type, entity.position.x, entity.position.y)
 end
 
+local function item_fuel_category(name)
+  local ok, prototype = pcall(function() return prototypes and prototypes.item and prototypes.item[name] end)
+  if not ok or not prototype then return nil end
+  local ok_value, value = pcall(function() return prototype.fuel_value end)
+  local ok_category, category = pcall(function() return prototype.fuel_category end)
+  if ok_value and type(value) == "number" and value > 0 and ok_category and type(category) == "string" then return category end
+  return nil
+end
+
+local function mining_products(entity)
+  local products = {}
+  local ok, target = pcall(function() return entity.mining_target end)
+  local mineable = ok and target and target.prototype and target.prototype.mineable_properties
+  for _, product in pairs(mineable and mineable.products or {}) do
+    if type(product) == "table" and type(product.name) == "string" then
+      products[#products + 1] = { name = product.name, type = product.type == "fluid" and "fluid" or "item",
+        fuel_category = product.type ~= "fluid" and item_fuel_category(product.name) or nil }
+    end
+  end
+  table.sort(products, function(a, b) return a.type == b.type and a.name < b.name or a.type < b.type end)
+  return products
+end
+
+local function products_with_fuel(products)
+  for _, product in ipairs(products or {}) do
+    product.fuel_category = product.type ~= "fluid" and item_fuel_category(product.name) or nil
+  end
+  return products or {}
+end
+
+local function has_burner(entity)
+  local ok, burner = pcall(function() return entity.burner end)
+  return ok and burner ~= nil
+end
+
+local function burner_categories(entity)
+  local result = {}
+  local ok, categories = pcall(function() return entity.prototype.burner_prototype.fuel_categories end)
+  if not ok or type(categories) ~= "table" then return result end
+  for key, value in pairs(categories) do
+    local name = type(key) == "string" and key or type(value) == "string" and value
+      or type(value) == "table" and value.name or nil
+    if name then result[name] = true end
+  end
+  return result
+end
+
 local function build_material_flow(flow_entities, node_by_key, activity, omissions)
   local nodes = sorted_rows(node_by_key, key_position)
   omissions.capped_flow_nodes = cap_rows(nodes, MAX_FLOW_NODES)
@@ -272,20 +319,123 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
     end
   end
   local components = sorted_rows(by_root, function(a, b) return a.node_ids[1] < b.node_ids[1] end)
+  local node_by_id, incoming, outgoing = {}, {}, {}
+  for _, node in ipairs(nodes) do node_by_id[node.id], incoming[node.id], outgoing[node.id] = node, {}, {} end
+  for _, edge in ipairs(edges) do
+    incoming[edge.to][#incoming[edge.to] + 1] = edge.from
+    outgoing[edge.from][#outgoing[edge.from] + 1] = edge.to
+  end
+  local function product_matches(node, ingredient, fuel_only)
+    for _, product in ipairs(node.products or {}) do
+      if fuel_only and product.fuel_category and ingredient[product.fuel_category] then return true end
+      if not fuel_only and product.name == ingredient.name and product.type == ingredient.type then return true end
+    end
+    return false
+  end
+  local function upstream_proven(start_id, ingredient, fuel_only)
+    local queue, seen, head = {}, { [start_id] = true }, 1
+    for _, id in ipairs(incoming[start_id]) do queue[#queue + 1] = id end
+    while head <= #queue do
+      local id = queue[head]; head = head + 1
+      if not seen[id] then
+        seen[id] = true
+        local node = node_by_id[id]
+        if node and node.role ~= "buffer" and product_matches(node, ingredient, fuel_only) then return true end
+        for _, parent_id in ipairs(incoming[id] or {}) do queue[#queue + 1] = parent_id end
+      end
+    end
+    return false
+  end
+  local function reaches_sink(start_id)
+    local queue, seen, head = { start_id }, {}, 1
+    while head <= #queue do
+      local id = queue[head]; head = head + 1
+      if not seen[id] then
+        seen[id] = true
+        if id ~= start_id and node_by_id[id] and node_by_id[id].role == "sink" then return true end
+        for _, next_id in ipairs(outgoing[id] or {}) do queue[#queue + 1] = next_id end
+      end
+    end
+    return false
+  end
   for index, component in ipairs(components) do
     component.component_id = "component-" .. index
-    local has_path_roles = (component.roles.source or 0) > 0 and (component.roles.processor or 0) > 0
-      and ((component.roles.sink or 0) > 0 or (component.roles.buffer or 0) > 0)
     local local_work = (component.status_counts.working or 0) > 0
+    local blockers, signature_rows, producing_nodes, accepting_sinks = {}, {}, 0, 0
+    local component_ids = {}; for _, id in ipairs(component.node_ids) do component_ids[id] = true end
+    for _, id in ipairs(component.node_ids) do
+      local node = node_by_id[id]
+      signature_rows[#signature_rows + 1] = string.format("%s:%s:%.17g:%.17g", node.name, node.type, node.position.x, node.position.y)
+      if node.role == "source" or node.role == "processor" then
+        producing_nodes = producing_nodes + 1
+        if #node.products == 0 then blockers[#blockers + 1] = { node_id = id, reason = "output_identity_unproven" } end
+        if not reaches_sink(id) then blockers[#blockers + 1] = { node_id = id, reason = "downstream_acceptance_path_unproven" } end
+      end
+      if node.role == "sink" and node.status == "working" then accepting_sinks = accepting_sinks + 1 end
+      for _, ingredient in ipairs(node.ingredients or {}) do
+        if not upstream_proven(id, ingredient, false) then
+          blockers[#blockers + 1] = { node_id = id, reason = "material_input_provenance_unresolved", input = ingredient }
+        end
+      end
+      if node.requires_fuel and not upstream_proven(id, node.fuel_categories or {}, true) then
+        blockers[#blockers + 1] = { node_id = id,
+          reason = next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven" }
+      end
+      if node.status == "no_power" or node.status == "low_power" or node.status == "no_fuel"
+        or node.status == "insufficient_input" or node.status == "full_output" then
+        blockers[#blockers + 1] = { node_id = id, reason = "nonproductive_status", status = node.status }
+      end
+    end
+    table.sort(signature_rows)
+    component.component_signature = table.concat(signature_rows, "|")
+    for _, diagnostic in ipairs(diagnostics) do
+      if component_ids[diagnostic.node_id] then blockers[#blockers + 1] = {
+        node_id = diagnostic.node_id, reason = "relationship_diagnostic", diagnostic = diagnostic.reason,
+      } end
+    end
+    if producing_nodes == 0 or (component.roles.source or 0) == 0 or (component.roles.processor or 0) == 0
+      or (component.roles.sink or 0) == 0 then
+      blockers[#blockers + 1] = { reason = "physical_source_processor_sink_path_unproven" }
+    end
+    if accepting_sinks == 0 then blockers[#blockers + 1] = { reason = "downstream_acceptance_not_observed" } end
+    if omissions.capped_flow_nodes > 0 or omissions.capped_flow_edges > 0 or omissions.capped_edge_diagnostics > 0 then
+      -- Once the graph is incomplete, detailed negative claims are not
+      -- authoritative. Emit the omission itself as the sole blocker.
+      blockers = { { reason = "relevant_aggregate_omission" } }
+    end
+    local validation
+    for _, candidate in ipairs(activity.validations or {}) do
+      if candidate.component_signature == component.component_signature and candidate.proven then validation = candidate end
+    end
+    local topology_ready = #blockers == 0 and activity.history_complete and component.character_transfer_actions == 0
+    local autonomous = topology_ready and validation ~= nil
+    local blocker_names, seen_blocker = {}, {}
+    for _, blocker in ipairs(blockers) do
+      local name = blocker.reason
+      if blocker.input then name = name .. ":" .. blocker.input.type .. ":" .. blocker.input.name end
+      if blocker.status then name = name .. ":" .. blocker.status end
+      if blocker.diagnostic then name = name .. ":" .. blocker.diagnostic end
+      if not seen_blocker[name] then seen_blocker[name] = true; blocker_names[#blocker_names + 1] = name end
+    end
+    table.sort(blocker_names)
     component.state = {
       machine_present = true,
       locally_operating = local_work,
-      autonomous_end_to_end = false,
-      autonomy_evidence = component.character_transfer_actions > 0 and "character_transfer_observed"
-        or has_path_roles and "unattended_output_acceptance_not_yet_proven" or "physical_end_to_end_path_not_proven",
+      autonomy_topology_ready = topology_ready,
+      autonomous_end_to_end = autonomous,
+      autonomy_evidence = autonomous and "bounded_multi_tick_no_character_transfer_validation"
+        or component.character_transfer_actions > 0 and "character_transfer_observed"
+        or not activity.history_complete and "character_transfer_history_incomplete"
+        or topology_ready and "bounded_multi_tick_production_not_yet_proven"
+        or "physical_end_to_end_path_not_proven",
+      autonomy_blockers = blocker_names,
+      validation = validation,
     }
+    component.component_signature = nil
   end
-  for _, node in ipairs(nodes) do node._key, node._entity = nil, nil end
+  for _, node in ipairs(nodes) do
+    node._key, node._entity, node.ingredients, node.products, node.requires_fuel, node.fuel_categories = nil, nil, nil, nil, nil, nil
+  end
   return { nodes = nodes, edges = edges, components = components, diagnostics = diagnostics,
     relationship_semantics = "exact_runtime_targets_only; absence_or_unsupported_is_not_a_connection" }
 end
@@ -368,6 +518,11 @@ function M.map_summary(params)
               direction = entity.direction, status = normalize_status(raw_status),
               recipe = recipe and recipe.name or nil,
               products_finished = number_property(entity, "products_finished"),
+              ingredients = recipe and recipe.ingredients or {},
+              products = products_with_fuel(recipe and recipe.products
+                or (entity.type == "mining-drill" and mining_products(entity) or {})),
+              requires_fuel = has_burner(entity),
+              fuel_categories = burner_categories(entity),
               power_state = raw_status == "no_power" and "missing" or raw_status == "low_power" and "low" or "not_exactly_observed",
               fuel_state = raw_status == "no_fuel" and "missing" or "not_exactly_observed",
             }
@@ -505,6 +660,66 @@ function M.map_summary(params)
     water_edges = water_edges, omitted_water_edges = omitted_water_edges,
     factory_landmarks = landmarks, omitted_factory_landmarks = omitted_factory_landmarks,
     factory = factory, summary = summary_text,
+  }
+end
+
+-- Resolve an exact caller-named set of charted factory positions to one
+-- aggregate component. This deliberately returns counters and provenance, not
+-- remote inventories or fluids, so a parked plan can compare two bounded
+-- samples without introducing another observer.
+function M.factory_component_sample(params)
+  if type(params) ~= "table" or type(params.positions) ~= "table"
+    or #params.positions < 1 or #params.positions > 16 then
+    error("factory component sample requires 1-16 positions")
+  end
+  local summary = M.map_summary({ activity_since_tick = params.source_tick })
+  local flow = summary.factory.material_flow
+  local selected_component
+  local selected_ids = {}
+  for _, position in ipairs(params.positions) do
+    local found, matches
+    for _, node in ipairs(flow.nodes) do
+      if node.position.x == position.x and node.position.y == position.y then found, matches = node, (matches or 0) + 1 end
+    end
+    if not found then error(string.format("FACTORY_COMPONENT_TARGET_NOT_FOUND: no retained charted node at %.17g,%.17g", position.x, position.y)) end
+    if matches > 1 then error(string.format("FACTORY_COMPONENT_TARGET_AMBIGUOUS: multiple retained charted nodes at %.17g,%.17g", position.x, position.y)) end
+    local component
+    for _, candidate in ipairs(flow.components) do
+      for _, id in ipairs(candidate.node_ids) do if id == found.id then component = candidate; break end end
+      if component then break end
+    end
+    if not component then error("FACTORY_COMPONENT_TARGET_OMITTED: selected node has no retained component") end
+    if selected_component and selected_component.component_id ~= component.component_id then
+      error("FACTORY_COMPONENT_SPLIT: positions do not belong to one exact physical component")
+    end
+    selected_component = component
+    selected_ids[#selected_ids + 1] = found.id
+  end
+  table.sort(selected_ids)
+  local signature_rows = {}
+  local component_ids = {}; for _, id in ipairs(selected_component.node_ids) do component_ids[id] = true end
+  for _, node in ipairs(flow.nodes) do if component_ids[node.id] then
+    signature_rows[#signature_rows + 1] = string.format("%s:%s:%.17g:%.17g", node.name, node.type, node.position.x, node.position.y)
+  end end
+  table.sort(signature_rows)
+  local signature = table.concat(signature_rows, "|")
+  return {
+    tick = summary.tick, source_tick = params.source_tick,
+    component_id = selected_component.component_id,
+    component_signature = signature,
+    selected_node_ids = selected_ids,
+    products_finished_total = selected_component.products_finished_total,
+    character_transfer_actions = selected_component.character_transfer_actions,
+    character_history_complete = summary.factory.character_transfers.history_complete,
+    topology_ready = selected_component.state.autonomy_topology_ready,
+    blockers = selected_component.state.autonomy_blockers,
+    graph_omissions = {
+      nodes = summary.factory.omissions.capped_flow_nodes,
+      edges = summary.factory.omissions.capped_flow_edges,
+      diagnostics = summary.factory.omissions.capped_edge_diagnostics,
+    },
+    evidence_class = "charted_component_counter_sample",
+    exact_remote_inventories = false, exact_remote_fluids = false,
   }
 end
 

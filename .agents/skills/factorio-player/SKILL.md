@@ -130,6 +130,10 @@ deltas and retain the expected result plus its falsifier.
   `queue_plan`/`plan_status` for a queued successor, recording its returned
   `plan_id` and `after_plan_id` only after `plan_status` confirms `queued`, and `run_plan` for
   synchronous compatibility. `inspect_entity` accepts `positions`.
+- Never physically place a mining drill from a `find_placement` candidate unless
+  `resource_coverage` is present and contains positive compatible coverage.
+  Missing or empty coverage requires more structured observation and
+  revalidation, not placement.
 - The pilot may mine, refuel, collect output, repair routes, or take an approved
   fallback without waiting. Priority is: unblock production; mine the BOM
   bottleneck in batches; build validated automation; physically scout.

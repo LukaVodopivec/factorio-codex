@@ -97,6 +97,14 @@ describe("shared gameplay run contract", () => {
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
   });
 
+  it("requires positive compatible drill coverage before physical placement", () => {
+    for (const text of [skill, pilot]) {
+      expect(text).toMatch(/never physically place a mining drill[\s\S]*`find_placement` candidate[\s\S]*`resource_coverage` is present[\s\S]*positive compatible coverage/i);
+      expect(text).toMatch(/missing or empty coverage requires more structured observation and[\s\S]*revalidation, not placement/i);
+    }
+    expect(performance).toMatch(/omitted uncharted coverage[\s\S]*deterministic rejection of charted candidates with zero compatible\s+resources/i);
+  });
+
   it("teaches a state-driven learning loop without a disguised opening route", () => {
     for (const text of [skill, master, pilot, specialist, knowledge]) {
       for (const phrase of ["authoritative state", "current bottleneck", "falsifiable hypothesis", "measurable effect", "safe action", "retain", "revise", "discard", "provenance", "uncertainty"])

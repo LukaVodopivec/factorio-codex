@@ -23,7 +23,7 @@ changes or failures rather than emitting a packet for every individual action.
 
 Loop:
 1. Revalidate the envelope against the newest observation; invalidate stale coordinates, inventory claims, or completed assumptions, then choose the next safe action serving the highest-value unmet success criterion.
-2. Execute grounded visible actions through the constrained MCP. Never prepend `walk_to` to a positional action that already auto-approaches. Use contiguous positional plans for known dependencies and consume terminal observations without redundant reads.
+2. Execute grounded visible actions through the constrained MCP. Never prepend `walk_to` to a positional action that already auto-approaches. Never physically place a mining drill from a `find_placement` candidate unless `resource_coverage` is present and contains positive compatible coverage; missing or empty coverage requires more structured observation and revalidation, not placement. Use contiguous positional plans for known dependencies and consume terminal observations without redundant reads.
 3. Keep productive work continuous: overlap crafting, movement, machine production, and research; never wait when another safe productive action exists.
 4. After bootstrap, execute a manual mining/crafting batch only when the master supplies its exact net deficit after carried stock, machine buffers/output and WIP; exact machine unlock or fuel consumer and uptime bought; payback in named item/time units with break-even; and numeric stop. Stop the batch at that condition; automate bulk extraction, smelting, intermediates, logistics, and science.
 5. Inspect and fix the dominant bottleneck. Use approved fallbacks in priority order and report any `MCP_GAP` only for its affected branch.

@@ -39,6 +39,12 @@ local function malformed(step)
       return "output_target must be {x, y} with numeric coordinates"
     end
   end
+  if step.input_target ~= nil then
+    local target = step.input_target
+    if type(target) ~= "table" or type(target.x) ~= "number" or type(target.y) ~= "number" then
+      return "input_target must be {x, y} with numeric coordinates"
+    end
+  end
   if step.recipe ~= nil and type(step.recipe) ~= "string" then
     return "recipe must be a recipe name string"
   end
@@ -75,23 +81,33 @@ function M.start(task)
   for index, step in ipairs(task.steps) do
     step.direction = math.floor(tonumber(step.direction) or 0) % 16
     local proto = prototypes.item[step.item]
-    if step.output_target ~= nil then
+    local function prepare_target(target, kind)
       local result = proto and proto.place_result
-      local ok, resolved = pcall(output_targets.resolve, c, step.output_target, "build_plan output_target")
+      if kind == "input" and (not result or result.type ~= "inserter") then
+        error(step.item .. " has no deterministic input target")
+      end
+      local label = "build_plan " .. kind .. "_target"
+      local ok, resolved = pcall(output_targets.resolve, c, target, label)
       if ok then
-        step._output_target = resolved
-        local matches, endpoint = result and output_targets.geometry_matches(c, result,
-          step.position, step.direction, step._output_target.entity)
+        step["_" .. kind .. "_target"] = resolved
+        local matches, endpoint
+        if kind == "input" then
+          matches, endpoint = result and output_targets.input_geometry_matches(c, result,
+            step.position, step.direction, resolved.entity)
+        else
+          matches, endpoint = result and output_targets.geometry_matches(c, result,
+            step.position, step.direction, resolved.entity)
+        end
         if not matches then
-          error(string.format("build_plan output_target is not at the exact output endpoint%s",
+          error(string.format("%s is not at the exact provisional %s endpoint%s", label, kind,
             endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
         end
       else
         local planned_index, planned
         for earlier = 1, index - 1 do
           local candidate = task.steps[earlier]
-          if candidate.position.x == step.output_target.x and candidate.position.y == step.output_target.y then
-            if planned then error("build_plan output_target is ambiguous among earlier placements") end
+          if candidate.position.x == target.x and candidate.position.y == target.y then
+            if planned then error(label .. " is ambiguous among earlier placements") end
             planned_index, planned = earlier, candidate
           end
         end
@@ -100,17 +116,28 @@ function M.start(task)
         if not target_proto or not output_targets.can_receive_type(target_proto.type) then
           error(tostring(resolved))
         end
-        local endpoint = result and output_targets.output_position(result, step.position, step.direction)
-        local tile = endpoint and { left_top = { x = math.floor(endpoint.x), y = math.floor(endpoint.y) },
-          right_bottom = { x = math.floor(endpoint.x) + 1, y = math.floor(endpoint.y) + 1 } }
+        local endpoint
+        if result then
+          if kind == "input" then
+            endpoint = output_targets.input_position(result, step.position, step.direction)
+          else
+            endpoint = output_targets.output_position(result, step.position, step.direction)
+          end
+        end
         local footprint = placement_geometry.footprint(target_proto, planned.position, planned.direction)
-        if not endpoint or not placement_geometry.overlaps(tile, footprint) then
-          error(string.format("build_plan output_target is not at the exact output endpoint%s",
+        local endpoint_tile = endpoint and {
+          left_top = { x = math.floor(endpoint.x), y = math.floor(endpoint.y) },
+          right_bottom = { x = math.floor(endpoint.x) + 1, y = math.floor(endpoint.y) + 1 },
+        }
+        if not endpoint_tile or not placement_geometry.overlaps(endpoint_tile, footprint) then
+          error(string.format("%s is not at the exact provisional %s endpoint%s", label, kind,
             endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
         end
-        step._planned_output_target = { step = planned_index, item = planned.item }
+        step["_planned_" .. kind .. "_target"] = { step = planned_index, item = planned.item }
       end
     end
+    if step.input_target ~= nil then prepare_target(step.input_target, "input") end
+    if step.output_target ~= nil then prepare_target(step.output_target, "output") end
     if step.insert ~= nil then
       -- {"coal":10} → sorted {name, count} list for deterministic messages.
       local list = {}
@@ -331,7 +358,7 @@ local function advance(task, ok, why)
     task._failures[#task._failures + 1] = { index = i, why = why }
   end
   task._built, task._interactions_applied = nil, nil
-  task._expected_output, task._output_verification_tick = nil, nil
+  task._expected_input, task._expected_output, task._output_verification_tick = nil, nil, nil
   task._index = i + 1
   if not ok and task.stop_on_error then
     return { status = "failed", detail = summary(task) .. " — stopped at the first failure (stop_on_error)" }
@@ -346,28 +373,37 @@ end
 -- uses build_distance; recipe/inventory mutations use Factorio's authoritative
 -- entity-reach check through the shared physical approach state machine.
 local function finish_placed_step(task, c, step, built)
-  local binding
+  local input_binding, output_binding = "matched", "matched"
+  if task._expected_input then
+    input_binding = output_targets.binding_status(built, task._expected_input,
+      task._output_verification_tick, "input")
+  end
   if task._expected_output then
-    binding = output_targets.binding_status(built, task._expected_output, task._output_verification_tick)
+    output_binding = output_targets.binding_status(built, task._expected_output,
+      task._output_verification_tick, "output")
+  end
+  local binding, binding_kind = input_binding ~= "matched" and input_binding or output_binding,
+    input_binding ~= "matched" and "input" or "output"
+  if task._expected_input or task._expected_output then
     if binding == "invalid" then
       task._built = nil
-      return advance(task, false, "the exact placed entity vanished before output binding could be verified")
+      return advance(task, false, "the exact placed entity vanished before runtime binding could be verified")
     end
     if binding == "target-invalid" then
       task._built = nil
-      return advance(task, false, "the exact expected output target vanished before its output tile could be verified")
+      return advance(task, false, "the exact expected " .. binding_kind .. " target vanished before runtime binding could be verified")
     end
     if binding == "mismatch" then
       task._built = nil
       return advance(task, false, string.format(
-        "placed %s at (%.1f, %.1f), but Factorio exposed a different runtime output target; recover the exact placed entity before retrying",
-        step.item, built.position.x, built.position.y))
+        "placed %s at (%.1f, %.1f), but Factorio exposed a different runtime %s target; recover the exact placed entity before retrying",
+        step.item, built.position.x, built.position.y, binding_kind))
     end
     if binding ~= "pending" and binding ~= "pending-output" and binding ~= "matched" then
       task._built = nil
       return advance(task, false, string.format(
-        "placed %s at (%.1f, %.1f), but its live output geometry could not verify the expected target (%s); recover the exact placed entity before retrying",
-        step.item, built.position.x, built.position.y, binding))
+        "placed %s at (%.1f, %.1f), but Factorio did not bind the expected runtime %s target (%s); recover the exact placed entity before retrying",
+        step.item, built.position.x, built.position.y, binding_kind, binding))
     end
   end
 
@@ -408,14 +444,14 @@ local function finish_placed_step(task, c, step, built)
     task._interactions_applied = true
   end
 
-  if task._expected_output then
-    if binding == "pending" then return nil end
-    if binding == "pending-output" and built.type == "mining-drill" and step._insert then return nil end
-    task._expected_output, task._output_verification_tick = nil, nil
+  if task._expected_input or task._expected_output then
+    if input_binding == "pending" or output_binding == "pending" then return nil end
+    if output_binding == "pending-output" and built.type == "mining-drill" and step._insert then return nil end
+    task._expected_input, task._expected_output, task._output_verification_tick = nil, nil, nil
   end
   task._built, task._interactions_applied = nil, nil
-  local detail = binding == "pending-output"
-    and "exact output geometry is valid; runtime output target is pending first output" or nil
+  local detail = output_binding == "pending-output"
+    and "provisional output geometry is valid; Factorio's runtime output target is pending first output" or nil
   return advance(task, true, detail)
 end
 
@@ -464,7 +500,22 @@ function M.tick(task)
 
   local entity_name = place_result.name
 
-  local expected_output
+  local expected_input, expected_output
+  if step.input_target then
+    local current = output_targets.resolve(c, step.input_target, "build_plan input_target")
+    if step._input_target and current.entity ~= step._input_target.entity then
+      return advance(task, false, "input_target changed before placement; observe again")
+    end
+    if step._planned_input_target and current.entity.name ~= prototypes.item[step._planned_input_target.item].place_result.name then
+      return advance(task, false, "planned input_target has the wrong runtime identity; observe again")
+    end
+    local matches = output_targets.input_geometry_matches(c, place_result,
+      step.position, step.direction, current.entity)
+    if not matches then
+      return advance(task, false, "provisional input geometry changed before placement; observe again")
+    end
+    expected_input = current.entity
+  end
   if step.output_target then
     local current = output_targets.resolve(c, step.output_target, "build_plan output_target")
     if step._output_target and current.entity ~= step._output_target.entity then
@@ -475,7 +526,7 @@ function M.tick(task)
     end
     local matches = output_targets.geometry_matches(c, place_result, step.position, step.direction, current.entity)
     if not matches then
-      return advance(task, false, "output geometry changed before placement; observe again")
+      return advance(task, false, "provisional output geometry changed before placement; observe again")
     end
     expected_output = current.entity
   end
@@ -501,8 +552,9 @@ function M.tick(task)
   end
   c.remove_item({ name = step.item, count = 1 })
   task._placed = task._placed + 1
-  if expected_output then
-    task._expected_output, task._output_verification_tick = expected_output, game.tick
+  if expected_input or expected_output then
+    task._expected_input, task._expected_output = expected_input, expected_output
+    task._output_verification_tick = game.tick
   end
   task._built = built
   return finish_placed_step(task, c, step, built)

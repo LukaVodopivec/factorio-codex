@@ -81,6 +81,13 @@ function M.output_offset(proto)
   return nil
 end
 
+function M.input_offset(proto)
+  if proto.type ~= "inserter" then return nil end
+  local ok, raw = pcall(function() return proto.inserter_pickup_position end)
+  if ok and raw then return prototype_vector(raw) end
+  return nil
+end
+
 function M.output_position(proto, position, direction)
   local offset = M.output_offset(proto)
   local rotated = offset and rotate(offset, direction)
@@ -88,18 +95,36 @@ function M.output_position(proto, position, direction)
   return { x = position.x + rotated.x, y = position.y + rotated.y }
 end
 
--- Factorio chooses drop_target from entities whose collision box intersects
--- the 1x1 tile box under drop_position. Keep finder prechecks identical to
--- that documented runtime geometry; selection boxes are UI-only.
+function M.input_position(proto, position, direction)
+  local offset = M.input_offset(proto)
+  local rotated = offset and rotate(offset, direction)
+  if not rotated then return nil end
+  return { x = position.x + rotated.x, y = position.y + rotated.y }
+end
+
+local function contains_point(entity, point)
+  local box = entity.bounding_box
+  return box and box.left_top and box.right_bottom
+    and point.x >= box.left_top.x and point.x < box.right_bottom.x
+    and point.y >= box.left_top.y and point.y < box.right_bottom.y
+end
+
+-- Search-time endpoint evidence is deliberately conservative and provisional.
+-- It may reject geometry that Factorio would bind, but must never label an
+-- entire endpoint tile as one exact recipient. Only the entity's collision box
+-- containing the exact prototype-derived point is eligible. Runtime
+-- pickup_target/drop_target remains authoritative after physical placement.
 function M.recipient_at(c, point)
   if not point then return nil, nil, "no-endpoint" end
   if not c.force.is_chunk_charted(c.surface,
     { x = math.floor(point.x / 32), y = math.floor(point.y / 32) }) then return nil, nil, "uncharted" end
-  local tile = { left_top = { x = math.floor(point.x), y = math.floor(point.y) } }
-  tile.right_bottom = { x = tile.left_top.x + 1, y = tile.left_top.y + 1 }
+  local epsilon = 0.001
+  local area = { left_top = { x = point.x - epsilon, y = point.y - epsilon },
+    right_bottom = { x = point.x + epsilon, y = point.y + epsilon } }
   local matches = {}
-  for _, entity in ipairs(c.surface.find_entities_filtered({ area = tile })) do
-    if entity.valid and entity.force == c.force and RECIPIENT_TYPES[entity.type] then
+  for _, entity in ipairs(c.surface.find_entities_filtered({ area = area })) do
+    if entity.valid and entity.force == c.force and RECIPIENT_TYPES[entity.type]
+      and contains_point(entity, point) then
       matches[#matches + 1] = entity
     end
   end
@@ -121,21 +146,27 @@ function M.geometry_matches(c, proto, position, direction, expected)
   return recipient == expected, point
 end
 
-function M.binding_status(built, expected, placed_tick)
+function M.input_geometry_matches(c, proto, position, direction, expected)
+  local point = M.input_position(proto, position, direction)
+  if not point then return false, nil end
+  local source = M.recipient_at(c, point)
+  return source == expected, point
+end
+
+function M.binding_status(built, expected, placed_tick, kind)
+  kind = kind or "output"
   if not built.valid then return "invalid" end
   if not expected.valid then return "target-invalid" end
   if game.tick <= placed_tick then return "pending" end
-  local ok_target, actual_target = pcall(function() return built.drop_target end)
+  local ok_target, actual_target = pcall(function()
+    if kind == "input" then return built.pickup_target end
+    return built.drop_target
+  end)
   if not ok_target then return "unreadable" end
   if actual_target == expected then return "matched" end
   if actual_target ~= nil then return "mismatch" end
-  local ok, point = pcall(function() return built.drop_position end)
-  if not ok or not point or not built.surface or not built.force then return "unreadable" end
-  local geometric_recipient, _, state = M.recipient_at({ surface = built.surface, force = built.force }, point)
-  if geometric_recipient == expected then return "pending-output" end
-  if state == "uncharted" or state == "no-endpoint" then return "unreadable" end
-  if state == "ambiguous" then return "ambiguous" end
-  return "geometry-mismatch"
+  if kind == "output" and built.type == "mining-drill" then return "pending-output" end
+  return "unbound"
 end
 
 return M

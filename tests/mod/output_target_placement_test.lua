@@ -9,7 +9,8 @@ local recipient = { valid = true, name = "stone-furnace", type = "furnace", forc
 local replacement = { valid = true, name = "steel-furnace", type = "furnace", force = force,
   position = { x = 2, y = 0 }, selection_box = recipient.selection_box }
 local source = { valid = true, name = "wooden-chest", type = "container", force = force,
-  position = { x = 0, y = -1 }, selection_box = { left_top = { x = -0.5, y = -1.5 }, right_bottom = { x = 0.5, y = -0.5 } } }
+  position = { x = 1, y = -1 }, selection_box = { left_top = { x = 0.5, y = -1.5 }, right_bottom = { x = 1.5, y = -0.5 } },
+  bounding_box = { left_top = { x = 0.5, y = -1.5 }, right_bottom = { x = 1.5, y = -0.5 } } }
 local target_matches, created, removed, inserted, pickup_target, drop_target, last_built = { recipient }, 0, 0, 0, source, recipient, nil
 local insert_limit
 local planned_recipient
@@ -32,6 +33,10 @@ surface = {
         inserted = inserted + accepted
         return accepted
       end }
+    if built_type == "container" then
+      last_built.bounding_box = { left_top = { x = args.position.x - 0.4, y = args.position.y - 0.4 },
+        right_bottom = { x = args.position.x + 0.4, y = args.position.y + 0.4 } }
+    end
     if built_type == "container" then planned_recipient, target_matches = last_built, { last_built } end
     return last_built
   end,
@@ -48,7 +53,8 @@ _G.game = { tick = 100 }
 _G.prototypes = { item = {
   wood = { name = "wood" },
   ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill", type = "mining-drill", vector_to_place_result = { x = 1, y = 0 } } },
-  ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter", inserter_drop_position = { x = 1, y = 0 } } },
+  ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter",
+    inserter_pickup_position = { x = 0, y = -1 }, inserter_drop_position = { x = 1, y = 0 } } },
   ["wooden-chest"] = { place_result = { name = "wooden-chest", type = "container",
     collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
 } }
@@ -98,9 +104,9 @@ check(place.tick(unbound) == nil, "placement begins later-tick output-tile verif
 target_matches = {}
 game.tick = game.tick + 1
 local unbound_result = place.tick(unbound)
-check(unbound_result and unbound_result.status == "failed" and unbound_result.detail:match("live output tile")
+check(unbound_result and unbound_result.status == "done" and unbound_result.detail:match("pending first output")
   and created == 1 and removed == 1,
-  "placement fails honestly when the live output tile has no recipient")
+  "mining-drill placement keeps nil runtime output binding explicitly pending first output")
 created, removed, drop_target, recipient.valid, target_matches = 0, 0, nil, true, { recipient }
 local target_lost = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
 place.start(target_lost)
@@ -131,8 +137,39 @@ game.tick = game.tick + 1
 local inserter_result = place.tick(inserter)
 check(inserter_result and inserter_result.status == "done" and created == 1 and removed == 1,
   "inserter placement prechecks and verifies its exact output binding")
+created, removed, pickup_target, drop_target, target_matches = 0, 0, source, recipient, { source, recipient }
+local coupled_inserter = { item = "burner-inserter", position = { x = 1, y = 0 },
+  input_target = { x = 1, y = -1 }, output_target = { x = 2, y = 0 } }
+place.start(coupled_inserter)
+check(place.tick(coupled_inserter) == nil and created == 1 and removed == 1,
+  "coupled inserter placement waits for Factorio's runtime input and output targets")
+game.tick = game.tick + 1
+local coupled_inserter_result = place.tick(coupled_inserter)
+check(coupled_inserter_result and coupled_inserter_result.status == "done",
+  "coupled inserter placement completes only when both runtime targets match")
+created, removed, pickup_target, drop_target, target_matches = 0, 0, replacement, recipient, { source, recipient }
+local wrong_input = { item = "burner-inserter", position = { x = 1, y = 0 },
+  input_target = { x = 1, y = -1 }, output_target = { x = 2, y = 0 } }
+place.start(wrong_input)
+check(place.tick(wrong_input) == nil and created == 1 and removed == 1,
+  "coupled inserter commits one physical placement before runtime verification")
+game.tick = game.tick + 1
+local wrong_input_result = place.tick(wrong_input)
+check(wrong_input_result and wrong_input_result.status == "failed"
+  and wrong_input_result.detail:match("different runtime input target") and created == 1 and removed == 1,
+  "wrong runtime input binding fails without rollback or automatic replacement")
 local build_plan = require("scripts.actions.build_plan")
 body.force.recipes, body.crafting_queue_size = {}, 0
+created, removed, pickup_target, drop_target, target_matches = 0, 0, source, recipient, { source, recipient }
+local coupled_plan = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
+  input_target = { x = 1, y = -1 }, output_target = { x = 2, y = 0 } } } }
+build_plan.start(coupled_plan)
+check(build_plan.tick(coupled_plan) == nil and created == 1 and removed == 1,
+  "build_plan carries coupled provisional endpoints into one physical placement")
+game.tick = game.tick + 1
+local coupled_plan_result = build_plan.tick(coupled_plan)
+check(coupled_plan_result and coupled_plan_result.status == "done",
+  "build_plan accepts coupled placement only after both Factorio runtime targets match")
 created, removed, pickup_target, drop_target, target_matches = 0, 0, source, nil, { recipient }
 local planned = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
   output_target = { x = 2, y = 0 } } } }
@@ -143,9 +180,9 @@ check(planned_pending == nil and planned_same_tick == nil and created == 1 and r
   "build_plan preserves the exact new entity through a later-tick output check")
 game.tick = game.tick + 1
 local planned_result = build_plan.tick(planned)
-check(planned_result and planned_result.status == "done" and planned_result.detail:match("pending first output")
+check(planned_result and planned_result.status == "failed" and planned_result.detail:match("did not bind")
   and created == 1 and removed == 1,
-  "build_plan reports valid geometry without claiming runtime binding when no starter material can produce output")
+  "build_plan refuses to infer an inserter binding from provisional geometry when runtime drop_target is nil")
 
 created, removed, drop_target, target_matches, planned_recipient = 0, 0, nil, {}, nil
 local same_plan_target = { steps = {
@@ -206,7 +243,7 @@ game.tick = game.tick + 1
 target_matches = { replacement }
 local planned_mismatch_result = build_plan.tick(planned_mismatch)
 check(planned_mismatch_result and planned_mismatch_result.status == "failed"
-  and planned_mismatch_result.detail:match("live output geometry")
+  and planned_mismatch_result.detail:match("did not bind")
   and created == 1 and removed == 1,
   "build_plan reports a later-tick exact output mismatch without recreating the entity")
 created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
@@ -218,7 +255,7 @@ target_matches = {}
 game.tick = game.tick + 1
 local planned_unbound_result = build_plan.tick(planned_unbound)
 check(planned_unbound_result and planned_unbound_result.status == "failed"
-  and planned_unbound_result.detail:match("live output geometry") and created == 1 and removed == 1,
+  and planned_unbound_result.detail:match("did not bind") and created == 1 and removed == 1,
   "build_plan fails honestly when the live output tile has no recipient")
 
 created, removed, inserted, insert_limit, target_matches = 0, 0, 0, 7, {}

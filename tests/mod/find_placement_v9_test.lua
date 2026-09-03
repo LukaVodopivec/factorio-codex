@@ -57,6 +57,7 @@ local output_tile_override = false
 surface.find_entities_filtered = function(args)
   if args.type == "resource" then resource_calls = resource_calls + 1; return resources end
   if args.position then
+    if args.position.x == 1.5 and args.position.y == 0.5 then return { source } end
     if args.position.x == 1.5 and args.position.y == 2.5 then return { sink } end
     return target_matches
   end
@@ -70,7 +71,9 @@ surface.find_entities_filtered = function(args)
   if x == 1.5 and y == 2.5 then return { sink } end
   local matches = {}
   local right_bottom = args.area.right_bottom or { x = args.area[2][1], y = args.area[2][2] }
-  for _, entity in ipairs(target_matches) do
+  local possible = { source, sink }
+  for _, entity in ipairs(target_matches) do possible[#possible + 1] = entity end
+  for _, entity in ipairs(possible) do
     local box = entity.bounding_box
     if box and box.right_bottom.x > x and box.left_top.x < right_bottom.x
       and box.right_bottom.y > y and box.left_top.y < right_bottom.y then
@@ -97,6 +100,8 @@ _G.prototypes = { item = {
   ["broken-mining-drill"] = { place_result = { name = "broken-mining-drill", type = "mining-drill", tile_width = 2, tile_height = 2,
     mining_drill_radius = 1, resource_categories = { ["basic-solid"] = true },
     collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } } },
+  ["wooden-chest"] = { place_result = { name = "wooden-chest", type = "container", tile_width = 1, tile_height = 1,
+    collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
 } }
 local finder = require("scripts.find_placement")
 local first = finder.find_placement({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 3, directions = { 12, 0, 4 }, limit = 8 })
@@ -140,6 +145,18 @@ local bound_inserter = finder.find_placement({ item = "burner-inserter", preferr
 check(bound_inserter.output_target.name == "iron-chest" and bound_inserter.output_target.type == "container"
   and #bound_inserter.candidates == 1,
   "inserter search uses its drop offset when vector_to_place_result is absent and binds the exact recipient")
+local supplied_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
+  directions = { 0 }, limit = 1, input_target = { x = 1.5, y = 0.5 }, output_target = { x = 1.5, y = 2.5 } })
+check(supplied_inserter.input_target.name == "wooden-chest"
+  and supplied_inserter.candidates[1].input_target.name == "wooden-chest"
+  and supplied_inserter.candidates[1].geometry == "provisional"
+  and supplied_inserter.candidates[1].build_steps[1].input_target.x == 1.5,
+  "inserter search constrains both exact provisional endpoints and emits a canonical producer step")
+local exclusive, exclusive_error = pcall(finder.find_placement, { item = "burner-inserter",
+  preferred = { x = 1.5, y = 1.5 }, output_target = { x = 1.5, y = 2.5 },
+  output_recipient_item = "wooden-chest" })
+check(not exclusive and tostring(exclusive_error):match("not both"),
+  "find_placement rejects mutually exclusive existing and planned output recipients")
 local diagonal_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
   directions = { 2 }, limit = 1 })
 check(#diagonal_inserter.candidates == 0,
@@ -201,11 +218,8 @@ target_matches, output_tile_override = { tile_overlap_recipient }, { tile_overla
 only_position = { x = 19, y = 22 }
 local tile_overlap = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
   radius = 1, directions = { 0 }, limit = 1, output_target = { x = 20, y = 20 } })
-check(tile_overlap.candidates[1]
-  and tile_overlap.candidates[1].output_position.x == 18.5
-  and tile_overlap.candidates[1].output_position.y == 20.7
-  and tile_overlap.candidates[1].output_position.x < tile_overlap_recipient.bounding_box.left_top.x,
-  "output tile overlap binds even when the exact output point lies outside the recipient collision box")
+check(#tile_overlap.candidates == 0,
+  "output preflight never binds a whole endpoint tile when the exact point misses the recipient collision box")
 only_position = { x = 19, y = 22 }
 output_tile_override = {}
 local ground_output = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
@@ -230,6 +244,17 @@ check(#ambiguous_output.candidates == 0,
 prototypes.item["burner-mining-drill"].place_result.vector_to_place_result = real_vector
 only_position = nil
 target_matches, resources, output_tile_override = { recipient }, ore, false
+target_matches = {}
+local coupled = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
+  radius = 2, directions = { 0, 4, 8, 12 }, limit = 1, output_recipient_item = "wooden-chest" })
+check(coupled.output_recipient_item == "wooden-chest" and coupled.geometry == "provisional"
+  and coupled.candidates[1] and coupled.candidates[1].output_recipient_placement.item == "wooden-chest"
+  and #coupled.candidates[1].build_steps == 2
+  and coupled.candidates[1].build_steps[1].name == "wooden-chest"
+  and coupled.candidates[1].build_steps[2].name == "burner-mining-drill"
+  and coupled.candidates[1].build_steps[2].output_target.x == coupled.candidates[1].build_steps[1].x,
+  "planned recipient search emits deterministic recipient-first canonical build steps with provisional geometry")
+target_matches = { recipient }
 resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 8, y = 8 },
     prototype = { resource_category = "basic-solid" } },

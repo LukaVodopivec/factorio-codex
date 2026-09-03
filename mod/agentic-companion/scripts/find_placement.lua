@@ -134,6 +134,10 @@ function M.find_placement(params)
   end
   directions = {}; for direction in pairs(unique) do directions[#directions + 1] = direction end; table.sort(directions)
 
+  if params.output_target ~= nil and params.output_recipient_item ~= nil then
+    error("find_placement accepts output_target or output_recipient_item, not both")
+  end
+
   local inserter_pickup_offset, inserter_drop_offset
   if proto.type == "inserter" then
     local ok_pickup, raw_pickup = pcall(function() return proto.inserter_pickup_position end)
@@ -144,16 +148,37 @@ function M.find_placement(params)
     end
   end
 
-  local output_target = nil
+  local input_target, output_target, output_recipient_item, output_recipient_proto = nil, nil, nil, nil
   local drop_offset = output_targets.output_offset(proto)
   local output_capable = proto.type == "mining-drill" or proto.type == "inserter" or drop_offset ~= nil
+  if params.input_target ~= nil then
+    if proto.type ~= "inserter" or not output_targets.input_offset(proto) then
+      error(params.item .. " has no deterministic input offset")
+    end
+    input_target = output_targets.resolve(c, params.input_target, "find_placement input_target")
+  end
   if params.output_target ~= nil then
     output_target = output_targets.resolve(c, params.output_target, "find_placement output_target")
     if not drop_offset then error(params.item .. " has no deterministic output offset") end
   end
-  if output_target then
+  if params.output_recipient_item ~= nil then
+    if type(params.output_recipient_item) ~= "string" then
+      error("find_placement output_recipient_item must be an item name")
+    end
+    output_recipient_item = prototypes.item[params.output_recipient_item]
+    output_recipient_proto = output_recipient_item and output_recipient_item.place_result
+    if not output_recipient_proto then
+      error(tostring(params.output_recipient_item) .. " is not a placeable recipient item")
+    end
+    if not output_targets.can_receive_type(output_recipient_proto.type) then
+      error(tostring(params.output_recipient_item) .. " cannot receive placed output")
+    end
+    if not drop_offset then error(params.item .. " has no deterministic output offset") end
+  end
+  if input_target or output_target or output_recipient_item then
     for _, direction in ipairs(directions) do
-      if not rotate(drop_offset, direction) then
+      local required_offset = input_target and output_targets.input_offset(proto) or drop_offset
+      if not rotate(required_offset, direction) then
         error("targeted placement directions must be cardinal: 0, 4, 8, or 12")
       end
     end
@@ -182,15 +207,55 @@ function M.find_placement(params)
             local candidate_output_target
             if output_position and recipient_state == "bound" then candidate_output_target = recipient_identity end
             if output_position and recipient_state == "none" then candidate_output_target = false end
+            local input_matches = true
+            local candidate_input_target
+            if input_target then
+              local input_entity, input_identity = output_targets.recipient_at(c, pickup_position)
+              input_matches = input_entity == input_target.entity
+              if input_matches then candidate_input_target = input_identity end
+            end
             local output_matches = not output_target or recipient == output_target.entity
             local output_known = not output_capable or (output_position ~= nil
               and (recipient_state == "bound" or recipient_state == "none"))
             local can_place = placement_geometry.can_place(c, proto, pos, direction)
-            if output_known and output_matches and footprint_charted(c.force, c.surface, area) and can_place then
+            local recipient_placement
+            if output_recipient_item and output_position and recipient_state == "none" then
+              local recipient_width = tonumber(output_recipient_proto.tile_width) or 1
+              local recipient_height = tonumber(output_recipient_proto.tile_height) or 1
+              local recipient_position = {
+                x = snapped(output_position.x, recipient_width),
+                y = snapped(output_position.y, recipient_height),
+              }
+              local recipient_area = placement_geometry.footprint(output_recipient_proto, recipient_position, 0)
+              local endpoint_tile = { left_top = { x = math.floor(output_position.x), y = math.floor(output_position.y) },
+                right_bottom = { x = math.floor(output_position.x) + 1, y = math.floor(output_position.y) + 1 } }
+              local provisional_overlap = placement_geometry.overlaps(endpoint_tile, recipient_area)
+              local recipient_can_place = placement_geometry.can_place(c, output_recipient_proto, recipient_position, 0)
+              if provisional_overlap and recipient_can_place
+                and footprint_charted(c.force, c.surface, recipient_area)
+                and not placement_geometry.overlaps(area, recipient_area) then
+                recipient_placement = { item = params.output_recipient_item,
+                  entity = output_recipient_proto.name, position = recipient_position, direction = 0 }
+              end
+            end
+            local requested_output_ok = not output_recipient_item or recipient_placement ~= nil
+            if input_matches and output_known and output_matches and requested_output_ok
+              and footprint_charted(c.force, c.surface, area) and can_place then
               local resource_coverage = drill_resource_coverage(c.force, c.surface, proto, pos)
               if resource_coverage and #resource_coverage == 0 then
                 rejected_no_compatible_resource = rejected_no_compatible_resource + 1
               else
+                local producer_step = { name = params.item, x = pos.x, y = pos.y, direction = direction }
+                if input_target then producer_step.input_target = input_target.position end
+                if output_target then producer_step.output_target = output_target.position end
+                if recipient_placement then producer_step.output_target = recipient_placement.position end
+                local build_steps = {}
+                if recipient_placement then
+                  build_steps[#build_steps + 1] = { name = recipient_placement.item,
+                    x = recipient_placement.position.x, y = recipient_placement.position.y,
+                    direction = recipient_placement.direction }
+                end
+                build_steps[#build_steps + 1] = producer_step
                 candidates[#candidates + 1] = {
                   item = params.item, entity = proto.name, position = pos, direction = direction,
                   distance = math.sqrt(pdx * pdx + pdy * pdy),
@@ -198,8 +263,12 @@ function M.find_placement(params)
                   terrain = terrain(c.force, c.surface, proto, area),
                   output_position = output_position,
                   output_target = candidate_output_target,
+                  input_target = candidate_input_target,
                   pickup_position = pickup_position,
                   drop_position = drop_position,
+                  geometry = (input_target or output_target or output_recipient_item) and "provisional" or nil,
+                  output_recipient_placement = recipient_placement,
+                  build_steps = build_steps,
                   fluid_connections = fluid_connections.prototype(proto, pos, direction),
                   resource_coverage = resource_coverage,
                 }
@@ -230,7 +299,10 @@ function M.find_placement(params)
   end)
   while #candidates > limit do table.remove(candidates) end
   return { item = params.item, entity = proto.name, preferred = preferred,
+    input_target = input_target and input_target.identity or nil,
     output_target = output_target and output_target.identity or nil,
+    output_recipient_item = params.output_recipient_item,
+    geometry = (input_target or output_target or output_recipient_item) and "provisional" or nil,
     rejected_no_compatible_resource = proto.type == "mining-drill" and rejected_no_compatible_resource or nil,
     candidates = candidates }
 end

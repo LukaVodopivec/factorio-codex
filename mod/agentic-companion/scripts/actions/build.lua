@@ -72,12 +72,22 @@ function M.place.start(task)
   end
   task.direction = math.floor(tonumber(task.direction) or 0) % 16
   task._entity_name = result.name
+  if task.input_target ~= nil then
+    if result.type ~= "inserter" then error(task.item .. " has no deterministic input target") end
+    task._input_target = output_targets.resolve(c, task.input_target, "place input_target")
+    local matches, endpoint = output_targets.input_geometry_matches(c, result, task.position, task.direction,
+      task._input_target.entity)
+    if not matches then
+      error(string.format("place input_target is not at the exact provisional input endpoint%s",
+        endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
+    end
+  end
   if task.output_target ~= nil then
     task._output_target = output_targets.resolve(c, task.output_target, "place output_target")
     local matches, endpoint = output_targets.geometry_matches(c, result, task.position, task.direction,
       task._output_target.entity)
     if not matches then
-      error(string.format("place output_target is not at the exact output endpoint%s",
+      error(string.format("place output_target is not at the exact provisional output endpoint%s",
         endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
     end
   end
@@ -89,35 +99,40 @@ function M.place.tick(task)
 
   if task._placed_entity then
     if game.tick <= task._placed_tick then return nil end
-    local built, expected_output = task._placed_entity, task._expected_output
-    local binding = output_targets.binding_status(built, expected_output, task._placed_tick)
-    if binding == "pending" then return nil end
-    task._placed_entity, task._placed_tick, task._expected_output = nil, nil, nil
+    local built = task._placed_entity
+    local input_binding = task._expected_input
+      and output_targets.binding_status(built, task._expected_input, task._placed_tick, "input") or "matched"
+    local output_binding = task._expected_output
+      and output_targets.binding_status(built, task._expected_output, task._placed_tick, "output") or "matched"
+    if input_binding == "pending" or output_binding == "pending" then return nil end
+    task._placed_entity, task._placed_tick, task._expected_input, task._expected_output = nil, nil, nil, nil
+    local binding, binding_kind = input_binding ~= "matched" and input_binding or output_binding,
+      input_binding ~= "matched" and "input" or "output"
     if binding == "invalid" then
-      return { status = "failed", detail = "the exact placed entity vanished before output binding could be verified" }
+      return { status = "failed", detail = "the exact placed entity vanished before runtime binding could be verified" }
     end
     if binding == "target-invalid" then
-      return { status = "failed", detail = "the exact expected output target vanished before its output tile could be verified" }
+      return { status = "failed", detail = "the exact expected " .. binding_kind .. " target vanished before runtime binding could be verified" }
     end
     if binding == "pending-output" then
       return {
         status = "done",
-        detail = string.format("placed %s at (%.1f, %.1f); exact output geometry is valid, but the runtime output target is pending first output",
+        detail = string.format("placed %s at (%.1f, %.1f); provisional output geometry is valid, but Factorio's runtime output target is pending first output",
           task.item, built.position.x, built.position.y),
       }
     end
     if binding == "mismatch" then
       return {
         status = "failed",
-        detail = string.format("placed %s at (%.1f, %.1f), but Factorio exposed a different runtime output target; recover the exact placed entity before retrying",
-          task.item, built.position.x, built.position.y),
+        detail = string.format("placed %s at (%.1f, %.1f), but Factorio exposed a different runtime %s target; recover the exact placed entity before retrying",
+          task.item, built.position.x, built.position.y, binding_kind),
       }
     end
     if binding ~= "matched" then
       return {
         status = "failed",
-        detail = string.format("placed %s at (%.1f, %.1f), but its live output tile did not resolve to the expected target (%s); recover the exact placed entity before retrying",
-          task.item, built.position.x, built.position.y, binding),
+        detail = string.format("placed %s at (%.1f, %.1f), but Factorio did not bind the expected runtime %s target (%s); recover the exact placed entity before retrying",
+          task.item, built.position.x, built.position.y, binding_kind, binding),
       }
     end
     return {
@@ -136,7 +151,19 @@ function M.place.tick(task)
     return { status = "failed", detail = "I no longer have any " .. task.item .. " in my inventory" }
   end
 
-  local expected_output
+  local expected_input, expected_output
+  if task._input_target then
+    local current = output_targets.resolve(c, task.input_target, "place input_target")
+    if current.entity ~= task._input_target.entity then
+      return { status = "failed", detail = "place input_target changed before placement; observe again" }
+    end
+    local matches = output_targets.input_geometry_matches(c, prototypes.item[task.item].place_result,
+      task.position, task.direction, current.entity)
+    if not matches then
+      return { status = "failed", detail = "place provisional input geometry changed before placement; observe again" }
+    end
+    expected_input = current.entity
+  end
   if task._output_target then
     local current = output_targets.resolve(c, task.output_target, "place output_target")
     if current.entity ~= task._output_target.entity then
@@ -145,7 +172,7 @@ function M.place.tick(task)
     local matches = output_targets.geometry_matches(c, prototypes.item[task.item].place_result,
       task.position, task.direction, current.entity)
     if not matches then
-      return { status = "failed", detail = "place output geometry changed before placement; observe again" }
+      return { status = "failed", detail = "place provisional output geometry changed before placement; observe again" }
     end
     expected_output = current.entity
   end
@@ -176,8 +203,9 @@ function M.place.tick(task)
     }
   end
   c.remove_item({ name = task.item, count = 1 })
-  if expected_output then
-    task._placed_entity, task._placed_tick, task._expected_output = built, game.tick, expected_output
+  if expected_input or expected_output then
+    task._placed_entity, task._placed_tick = built, game.tick
+    task._expected_input, task._expected_output = expected_input, expected_output
     return nil
   end
   return {

@@ -10,7 +10,7 @@ import { executeRunPlan, queuePlanSchema, runPlanSchema, type RunPlanResult } fr
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.13.0";
+export const MCP_SERVER_VERSION = "0.13.1";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -64,7 +64,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
-  server.registerTool("inspect_entity", { description: "Batch-inspect entities at up to 16 exact positions within 30 tiles, including available electrical network, buffer, demand, satisfaction and pole-link facts.", inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
+  server.registerTool("inspect_entity", { description: "Batch-inspect entities at up to 16 exact positions within 30 tiles, including machine state, inventories, belt contents, a drill's current resource target, and an inserter's live pickup/drop positions and valid targets.", inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
     try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions)))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
@@ -74,7 +74,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });
-  server.registerTool("find_placement", { description: "Find stable nearest force-charted positions within 30 tiles of Codex using Factorio's authoritative placement check; optional output_target keeps only directions whose deterministic output reaches that exact recipient.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), output_target: position.optional() }).strict() }, async (p) => {
+  server.registerTool("find_placement", { description: "Find stable nearest force-charted positions within 30 tiles of Codex using Factorio's authoritative placement check; cardinal inserter candidates include deterministic pickup/drop positions, and optional output_target keeps only directions whose deterministic output reaches that exact recipient.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), output_target: position.optional() }).strict() }, async (p) => {
     try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)))); }
     catch (error) { return result(`Error: ${error instanceof Error ? error.message : String(error)}`, true); }
   });

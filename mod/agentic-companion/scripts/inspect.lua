@@ -19,6 +19,19 @@ local function distance(a, b)
   return math.sqrt(dx * dx + dy * dy)
 end
 
+local function entity_identity(entity)
+  local ok, identity = pcall(function()
+    if not entity or not entity.valid then return nil end
+    return {
+      name = entity.name,
+      type = entity.type,
+      position = { x = entity.position.x, y = entity.position.y },
+    }
+  end)
+  if ok then return identity end
+  return nil
+end
+
 -- Probe order matters: several defines.inventory values share the same numeric
 -- index across entity types (e.g. fuel and chest), so each index is probed
 -- once. The fuel slot is relabeled "main" when the entity has no burner.
@@ -234,6 +247,34 @@ local function inspect_one(position, c)
   if next(electrical) ~= nil then out.electrical = electrical end
 
   if e.type == "resource" then out.amount = e.amount end
+
+  if e.type == "inserter" then
+    local ok_pickup_position, pickup_position = pcall(function() return e.pickup_position end)
+    if ok_pickup_position and pickup_position then
+      out.pickup_position = { x = pickup_position.x, y = pickup_position.y }
+    end
+    local ok_drop_position, drop_position = pcall(function() return e.drop_position end)
+    if ok_drop_position and drop_position then
+      out.drop_position = { x = drop_position.x, y = drop_position.y }
+    end
+
+    local ok_pickup_target, pickup_target = pcall(function() return e.pickup_target end)
+    if ok_pickup_target then out.pickup_target = entity_identity(pickup_target) end
+    local ok_drop_target, drop_target = pcall(function() return e.drop_target end)
+    if ok_drop_target then out.drop_target = entity_identity(drop_target) end
+  end
+
+  if e.type == "mining-drill" then
+    local ok_target, target = pcall(function() return e.mining_target end)
+    if ok_target then
+      local identity = entity_identity(target)
+      if identity then
+        local ok_amount, amount = pcall(function() return target.amount end)
+        if ok_amount and type(amount) == "number" then identity.amount = amount end
+        out.mining_target = identity
+      end
+    end
+  end
 
   local inventories = collect_inventories(e)
   if inventories then out.inventories = inventories end

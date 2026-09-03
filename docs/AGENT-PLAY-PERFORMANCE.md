@@ -1,16 +1,17 @@
 # Agent play performance
 
-Release 0.13.0 adds exact observed ground-stack pickup through Factorio's
-physical character picking state while retaining native path-completion events
-inside nested plan actions, deterministic queries, one physical Codex body, one
-task lane, and honest Factorio mechanics.
+Release 0.13.1 adds exact live inserter endpoint/target and mining-drill target
+evidence to entity inspection, plus deterministic cardinal inserter endpoints
+to placement candidates. It retains 0.13.0's physical ground-stack pickup,
+native path-completion events inside nested plan actions, deterministic queries,
+one physical Codex body, one task lane, and honest Factorio mechanics.
 
 ## Recorded baseline and operating model
 
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.13.0 validation.
+0.13.1 validation.
 
 The operating topology and model/effort choice remain benchmark candidates;
 do not predeclare a winner. In every multi-session candidate, the strategist
@@ -148,7 +149,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v10, version 0.13.0, and exactly 25 tools.
+disambiguation, progression, protocol v10, version 0.13.1, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -209,4 +210,4 @@ service, gate, or report bureaucracy.
 Candidate B above supersedes the earlier prospective wave matrix. Do not reuse
 its candidate labels or substitute another topology, model, effort, or fast
 setting. Append the completed result below with exact baseline/release hashes;
-do not present historical timings as 0.13.0 benchmark results.
+do not present historical timings as 0.13.1 benchmark results.

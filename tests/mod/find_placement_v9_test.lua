@@ -30,6 +30,9 @@ _G.prototypes = { item = {
   ["offshore-pump"] = { place_result = { name = "offshore-pump", type = "offshore-pump", tile_width = 1, tile_height = 1, collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
   ["burner-mining-drill"] = { place_result = { name = "burner-mining-drill", type = "mining-drill", tile_width = 2, tile_height = 2,
     vector_to_place_result = { x = 1, y = 0 }, collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } } },
+  ["burner-inserter"] = { place_result = { name = "burner-inserter", type = "inserter", tile_width = 1, tile_height = 1,
+    inserter_pickup_position = { x = 0, y = -1 }, inserter_drop_position = { x = 0, y = 1 },
+    collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
 } }
 local finder = require("scripts.find_placement")
 local first = finder.find_placement({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 3, directions = { 12, 0, 4 }, limit = 8 })
@@ -45,6 +48,19 @@ local edge = finder.find_placement({ item = "pipe", preferred = { x = 31.5, y = 
 local leaked = false; for _, candidate in ipairs(edge.candidates) do if candidate.position.x >= 32 then leaked = true end end
 check(not leaked and charted_calls > 0, "uncharted candidate footprints are never passed through as placements")
 check(placement_calls > 0, "charted candidates use Factorio can_place_entity")
+local inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
+  directions = { 4, 0 }, limit = 2 })
+check(inserter.candidates[1].pickup_position.x == 1.5 and inserter.candidates[1].pickup_position.y == 0.5
+  and inserter.candidates[1].drop_position.x == 1.5 and inserter.candidates[1].drop_position.y == 2.5,
+  "cardinal inserter placements expose deterministic prototype-derived endpoints")
+check(inserter.candidates[2].direction == 4
+  and inserter.candidates[2].pickup_position.x == 2.5 and inserter.candidates[2].pickup_position.y == 1.5
+  and inserter.candidates[2].drop_position.x == 0.5 and inserter.candidates[2].drop_position.y == 1.5,
+  "inserter endpoint evidence rotates with candidate direction")
+local diagonal_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
+  directions = { 2 }, limit = 1 })
+check(diagonal_inserter.candidates[1].pickup_position == nil and diagonal_inserter.candidates[1].drop_position == nil,
+  "non-cardinal inserter placements omit endpoint claims")
 local aligned = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 }, radius = 2,
   directions = { 12, 8, 4, 0 }, limit = 8, output_target = { x = 5.5, y = 1.5 } })
 check(aligned.output_target.name == "stone-furnace" and #aligned.candidates > 0,

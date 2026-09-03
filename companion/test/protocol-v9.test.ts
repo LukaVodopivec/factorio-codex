@@ -9,7 +9,7 @@ const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", r
 describe("protocol v10 DTO and tool registry", () => {
   it("declares v10 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(10);
-    expect(MCP_SERVER_VERSION).toBe("0.13.0");
+    expect(MCP_SERVER_VERSION).toBe("0.13.1");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });
@@ -47,6 +47,8 @@ describe("protocol v10 DTO and tool registry", () => {
   it("retains placement identity and exposes compact electrical/plan diagnostics", () => {
     expect(normalizeCanPlace({ results: [{ can_place: false, reason: "water" }] }, [{ name: "pipe", x: 2, y: 3 }])).toEqual({ results: [{ item: "pipe", position: { x: 2, y: 3 }, direction: 0, can_place: false, reason: "water" }] });
     expect(normalizeInspection({ entities: [{ name: "pole", energy: 12, electric_network_id: 7 }] }).entities[0].electrical).toEqual({ energy: 12, network_id: 7 });
+    const inserterEvidence = { name: "inserter", pickup_position: { x: 1, y: 0 }, drop_position: { x: 1, y: 2 }, pickup_target: { name: "belt", type: "transport-belt", position: { x: 1, y: 0 } } };
+    expect(normalizeInspection({ entities: [inserterEvidence] }).entities[0]).toEqual(inserterEvidence);
     const diagnostics = normalizePlanDiagnostics({ outcomes: [{ step: 2, action: "place_entity", status: "failed", error: "blocked" }], observation: { entities: [{ name: "assembler", position: { x: 1, y: 1 }, status: "no_power" }] } });
     expect(diagnostics.diagnostics.route[0]).toMatchObject({ step: 2, detail: "blocked" });
     expect(diagnostics.diagnostics.machines[0]).toMatchObject({ entity: "assembler", status: "no_power" });

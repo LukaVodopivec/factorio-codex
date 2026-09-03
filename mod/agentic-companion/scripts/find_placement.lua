@@ -113,6 +113,16 @@ function M.find_placement(params)
     end
   end
 
+  local inserter_pickup_offset, inserter_drop_offset
+  if proto.type == "inserter" then
+    local ok_pickup, raw_pickup = pcall(function() return proto.inserter_pickup_position end)
+    local ok_drop, raw_drop = pcall(function() return proto.inserter_drop_position end)
+    if ok_pickup and raw_pickup and ok_drop and raw_drop then
+      inserter_pickup_offset = position(raw_pickup, "inserter pickup offset")
+      inserter_drop_offset = position(raw_drop, "inserter drop offset")
+    end
+  end
+
   local width, height = tonumber(proto.tile_width) or 1, tonumber(proto.tile_height) or 1
   local origin_x, origin_y = snapped(preferred.x, width), snapped(preferred.y, height)
   local candidates = {}
@@ -128,6 +138,8 @@ function M.find_placement(params)
             local area = footprint(proto, pos, direction)
             local output_offset = drop_offset and rotate(drop_offset, direction) or nil
             local output_position = output_offset and { x = x + output_offset.x, y = y + output_offset.y } or nil
+            local pickup_offset = inserter_pickup_offset and rotate(inserter_pickup_offset, direction) or nil
+            local inserter_output_offset = inserter_drop_offset and rotate(inserter_drop_offset, direction) or nil
             local output_matches = not output_target or output_targets.contains(output_target.entity, output_position)
             if output_matches and footprint_charted(c.force, c.surface, area) and c.surface.can_place_entity({
               name = proto.name, position = pos, direction = direction, force = c.force,
@@ -139,6 +151,8 @@ function M.find_placement(params)
                 distance_from_codex = math.sqrt(codex_distance_sq),
                 terrain = terrain(c.force, c.surface, proto, area),
                 output_position = output_position,
+                pickup_position = pickup_offset and { x = x + pickup_offset.x, y = y + pickup_offset.y } or nil,
+                drop_position = inserter_output_offset and { x = x + inserter_output_offset.x, y = y + inserter_output_offset.y } or nil,
               }
             end
           end

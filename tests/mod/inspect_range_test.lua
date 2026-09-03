@@ -24,13 +24,14 @@ local entity = {
     buffer_capacity = 5000, input_flow_limit = 120, output_flow_limit = 0,
   } },
 }
+local found_entity = entity
 local inspection_queries = 0
 local surface = {
   find_entities_filtered = function(filter)
     inspection_queries = inspection_queries + 1
-    check(filter.position.x == entity.position.x and filter.position.y == entity.position.y,
+    check(filter.position.x == found_entity.position.x and filter.position.y == found_entity.position.y,
       "inspection searches only the accepted target coordinate")
-    return { entity }
+    return { found_entity }
   end,
 }
 entity.surface = surface
@@ -80,6 +81,66 @@ check(absent.entities[1].error:match("call observe_local first") ~= nil
   and absent.entities[1].error:match("look_around") == nil,
   "missing-entity guidance names only the public observe_local tool")
 entity.valid = true
+
+local pickup = { valid = true, name = "transport-belt", type = "transport-belt", position = { x = 0.5, y = -1.5 } }
+local drop = { valid = true, name = "stone-furnace", type = "furnace", position = { x = 0.5, y = 1.5 } }
+local inserter = {
+  valid = true, name = "burner-inserter", type = "inserter", direction = 0,
+  position = { x = 0.5, y = 0.5 }, pickup_position = { x = 0.5, y = -0.7 },
+  drop_position = { x = 0.5, y = 1.3 }, pickup_target = pickup, drop_target = drop,
+  prototype = {},
+}
+found_entity = inserter
+local inserter_result = inspect.inspect({ targets = { inserter.position } }).entities[1]
+check(inserter_result.pickup_position.x == 0.5 and inserter_result.pickup_position.y == -0.7
+  and inserter_result.drop_position.x == 0.5 and inserter_result.drop_position.y == 1.3
+  and inserter_result.pickup_target.name == "transport-belt"
+  and inserter_result.pickup_target.type == "transport-belt"
+  and inserter_result.pickup_target.position.y == -1.5
+  and inserter_result.drop_target.name == "stone-furnace"
+  and inserter_result.drop_target.position.y == 1.5,
+  "inserter inspection reports exact runtime endpoints and valid target identities")
+
+inserter.pickup_target = { valid = false }
+inserter.drop_target = nil
+local no_targets = inspect.inspect({ targets = { inserter.position } }).entities[1]
+check(no_targets.pickup_target == nil and no_targets.drop_target == nil,
+  "inserter inspection omits invalid and absent targets")
+
+local ore = { valid = true, name = "iron-ore", type = "resource", position = { x = 2.25, y = 0.25 }, amount = 873 }
+local drill = {
+  valid = true, name = "burner-mining-drill", type = "mining-drill", direction = 4,
+  position = { x = 2, y = 0 }, mining_target = ore, prototype = {},
+}
+found_entity = drill
+local drill_result = inspect.inspect({ targets = { drill.position } }).entities[1]
+check(drill_result.mining_target.name == "iron-ore"
+  and drill_result.mining_target.type == "resource"
+  and drill_result.mining_target.position.x == 2.25
+  and drill_result.mining_target.amount == 873,
+  "mining drill inspection reports its valid current resource target")
+
+drill.mining_target = { valid = false }
+local no_mining_target = inspect.inspect({ targets = { drill.position } }).entities[1]
+check(no_mining_target.mining_target == nil, "mining drill inspection omits an invalid resource target")
+
+local belt = {
+  valid = true, name = "transport-belt", type = "transport-belt", direction = 4,
+  position = { x = 3.5, y = 0.5 }, prototype = {},
+  get_max_transport_line_index = function() return 2 end,
+  get_transport_line = function(index)
+    return { get_contents = function()
+      if index == 1 then return { { name = "iron-ore", count = 3 } } end
+      return { ["iron-ore"] = 2, ["coal"] = 1 }
+    end }
+  end,
+}
+found_entity = belt
+local belt_result = inspect.inspect({ targets = { belt.position } }).entities[1]
+check(belt_result.belt_contents["iron-ore"] == 5 and belt_result.belt_contents.coal == 1,
+  "belt inspection retains contents from every transport line")
+
+found_entity = entity
 
 local queries_before_single = inspection_queries
 local single, single_error = pcall(inspect.inspect, { position = { x = 0, y = 0 } })

@@ -163,7 +163,7 @@ predicted measurable effect, assumptions/preconditions, safe bounds, numeric
 stop, invalidation, and confidence. It is non-executable advice: never an
 envelope, plan enqueue, approval/gate, acknowledgement/resend/debate protocol,
 or exact-coordinate command. The pilot reads at most one unique proposal per
-source tick only at a natural plan boundary, validates save identity and every
+source tick only at a natural decision boundary, validates save identity and every
 precondition exactly once against the latest MCP state, then accepts or discards
 it without acknowledgement or resend. It consumes each `run_plan` terminal
 observation, reports only a material bottleneck, technology, production, or
@@ -184,8 +184,9 @@ bottleneck/action/fallback selection and the current plan plus one grounded
 queued successor, reads the ledger once at startup rather than per MCP call, and
 keeps useful work queued before reporting. Latest MCP
 state always wins. A restarted strategist rebuilds from the ledger without
-pausing the pilot or requesting replay. Strategist silence or ledger read/write
-failure also never pauses or gates gameplay. The pilot alone owns the learning
+pausing the pilot or requesting replay. Strategist silence or an unavailable,
+late, malformed, stale, or wrong-run proposal/ledger/message never pauses or
+gates gameplay. The pilot alone owns the learning
 loop, authoritative calculations, success, plans, fallbacks, batch authorization,
 and milestone completion from later-tick MCP proof; the strategist only offers
 one advisory proposal and mirrors pilot-reported facts.

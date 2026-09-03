@@ -253,8 +253,8 @@ describe("exact local configuration", () => {
     for (const text of [skill, pilot]) {
       expect(text).toMatch(/never wait[\s\S]*safe\s+productive action exists/i);
     }
-    expect(pilot).toMatch(/Attempt the ledger read once at startup[\s\S]*never read it before or after each MCP call/i);
-    expect(pilot).toMatch(/natural boundary[\s\S]*every precondition exactly once[\s\S]*accept or discard[\s\S]*single-use/i);
+    expect(pilot).toMatch(/Attempt the exact ledger[\s\S]*once at startup[\s\S]*never read it before or after each MCP call/i);
+    expect(pilot).toMatch(/natural decision boundary[\s\S]*every precondition exactly once[\s\S]*accept or discard it once[\s\S]*single-use/i);
     expect(pilot).toMatch(/permanently own the learning loop, authoritative calculations, success determination, local bottleneck, action, and fallback choice plus the current plan and one grounded queued successor/i);
     expect(strategist).toMatch(/at most one unique proposal per source tick[\s\S]*never replace or resend[\s\S]*single-use/i);
     expect(strategist).toMatch(/restart[\s\S]*rebuild entirely from the ledger[\s\S]*without requesting replay or pausing the pilot/i);
@@ -264,10 +264,14 @@ describe("exact local configuration", () => {
     expect(strategist).toMatch(/pilot reports, the ledger, and repo-owned knowledge are your complete evidence surface/i);
     expect(strategist).toMatch(/Never command, plan, approve, gate, or define completion criteria/i);
     expect(pilot).toMatch(/permanently own the learning loop, authoritative calculations, success determination/i);
-    expect(pilot).toMatch(/Strategist silence, crash, unavailability, or ledger read\/write failure never pauses, narrows, or gates gameplay[\s\S]*choose the next local action\/fallback from latest MCP state/i);
-    expect(pilot).toMatch(/failed startup or natural-boundary ledger\/proposal read is consumed once, never retried on the gameplay critical path/i);
-    expect(skill).toContain("Strategist silence, unavailability, or ledger read/write");
-    expect(skill).toMatch(/failure never pauses or gates gameplay; the pilot continues from latest MCP\s+state/i);
+    expect(pilot).toMatch(/silent, unavailable, late, malformed, stale, duplicate, wrong-run, or wrong-save proposal\/channel\/ledger\/message is discarded once[\s\S]*never acknowledged, debated, or requested again/i);
+    expect(pilot).toMatch(/never pauses, narrows, or gates gameplay[\s\S]*autonomous current-plus-successor work running[\s\S]*next local action\/fallback from latest MCP state/i);
+    expect(pilot).toMatch(/failed startup or natural-decision-boundary ledger\/proposal read is consumed once, never retried on the gameplay critical path/i);
+    expect(pilot).toMatch(/never send every observation or outcome/i);
+    expect(skill).toMatch(/silent, unavailable, late, malformed, stale, duplicate, wrong-run, or wrong-save[\s\S]*discarded once without acknowledgement,[\s\S]*resend, or debate/i);
+    expect(skill).toMatch(/failure never pauses or gates gameplay[\s\S]*autonomous current-plus-successor work running from latest MCP state/i);
+    expect(skill).toMatch(/pilot permanently owns the success criteria[\s\S]*fallback decisions[\s\S]*current plan[\s\S]*grounded queued successor/i);
+    expect(skill).not.toMatch(/strategist owns[\s\S]{0,100}phase and successor planning/i);
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
     expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
   });

@@ -170,7 +170,7 @@ describe("shared gameplay run contract", () => {
     expect(pilot).toMatch(/strategy_proposal[\s\S]*non-executable advice[\s\S]*never approves, gates, enqueues, commands, plans, or defines completion criteria[\s\S]*no acknowledgement, resend, or debate/i);
     expect(pilot).toContain("`run_plan` terminal");
     expect(pilot).toMatch(/material bottleneck, technology, production, or expansion change[\s\S]*repeated distinct failure/i);
-    expect(pilot).toMatch(/natural boundary[\s\S]*at most one proposal for a source tick[\s\S]*every precondition exactly once[\s\S]*accept or discard[\s\S]*single-use/i);
+    expect(pilot).toMatch(/natural decision boundary[\s\S]*at most one proposal for a source tick[\s\S]*every precondition exactly once[\s\S]*accept or discard it once[\s\S]*single-use/i);
     for (const text of [skill, pilot, roleGuidance]) {
       expect(text).toMatch(/one useful item or incidental\s+non-production loot/i);
       expect(text).toMatch(/automation utilization[\s\S]*current(?:-plus-| plan, and its grounded | plan and its grounded )successor/i);
@@ -197,15 +197,15 @@ describe("shared gameplay run contract", () => {
   });
 
   it("keeps pilot continuity autonomous and proposals advisory single-use", () => {
-    expect(pilot).toMatch(/Attempt the ledger read once at startup[\s\S]*never read it before or after each MCP call/i);
-    expect(pilot).toMatch(/Never wait for the strategist, a proposal, a ledger read, or a ledger write/i);
+    expect(pilot).toMatch(/Attempt the exact ledger[\s\S]*once at startup[\s\S]*never read it before or after each MCP call/i);
+    expect(pilot).toMatch(/Never wait for the strategist, a proposal, a ledger read, a ledger write, or a message/i);
     expect(pilot).toMatch(/permanently own the learning loop, authoritative calculations, success determination, local bottleneck, action, and fallback choice plus the current plan and one grounded queued successor/i);
     expect(pilot).toMatch(/latest MCP result wins/i);
     expect(pilot).toMatch(/Keep useful work queued before reporting/i);
     expect(strategist).toMatch(/restart[\s\S]*rebuild entirely from the ledger[\s\S]*without requesting replay or pausing the pilot/i);
     expect(skill).toMatch(/strategist restarts[\s\S]*rebuilds entirely from the ledger without[\s\S]*pausing the pilot or requesting replay/i);
-    expect(skill).toContain("Strategist silence, unavailability, or ledger read/write");
-    expect(skill).toMatch(/failure never pauses or gates gameplay; the pilot continues from latest MCP\s+state/i);
+    expect(skill).toMatch(/silent, unavailable, late, malformed, stale, duplicate, wrong-run, or wrong-save[\s\S]*discarded once without acknowledgement,[\s\S]*resend, or debate/i);
+    expect(skill).toMatch(/failure never pauses or gates gameplay[\s\S]*autonomous current-plus-successor work running from latest MCP state/i);
     expect(skill).toMatch(/at most one unique,[\s\S]*single-use proposal per source tick/i);
     expect(strategist).toMatch(/at most one unique proposal per source tick/i);
     expect(pilot).toMatch(/at most one proposal for a source tick/i);
@@ -213,7 +213,7 @@ describe("shared gameplay run contract", () => {
     for (const text of [skill, strategist, pilot, roleGuidance])
       expect(text).toMatch(/(?:accepts\s+or\s+discards|accept\s+or\s+discard)/i);
     for (const text of [skill, pilot, roleGuidance])
-      expect(text).toMatch(/natural (?:plan )?boundary/i);
+      expect(text).toMatch(/natural (?:plan |decision )?boundary/i);
     expect(strategist).toMatch(/zero Factorio MCP access/i);
     expect(strategist).toMatch(/never an envelope, executable plan, exact-coordinate command, approval, gate[\s\S]*instruction to enqueue/i);
     expect(strategist).toMatch(/Never approve, authorize, or gate a manual batch[\s\S]*pilot independently decides/i);
@@ -223,9 +223,13 @@ describe("shared gameplay run contract", () => {
     expect(strategist).toMatch(/Never command, plan, approve, gate, or define completion criteria/i);
     expect(strategist).toMatch(/advisory estimates, not authoritative calculations or a plan[\s\S]*pilot alone owns the learning loop/i);
     expect(pilot).toMatch(/permanently own the learning loop, authoritative calculations, success determination/i);
-    expect(pilot).toMatch(/Strategist silence, crash, unavailability, or ledger read\/write failure never pauses, narrows, or gates gameplay[\s\S]*keep the current plan plus grounded successor running[\s\S]*choose the next local action\/fallback from latest MCP state/i);
-    expect(pilot).toMatch(/failed startup or natural-boundary ledger\/proposal read is consumed once, never retried on the gameplay critical path/i);
+    expect(pilot).toMatch(/silent, unavailable, late, malformed, stale, duplicate, wrong-run, or wrong-save proposal\/channel\/ledger\/message is discarded once[\s\S]*never acknowledged, debated, or requested again/i);
+    expect(pilot).toMatch(/never pauses, narrows, or gates gameplay[\s\S]*autonomous current-plus-successor work running[\s\S]*choose the next local action\/fallback from latest MCP state/i);
+    expect(pilot).toMatch(/failed startup or natural-decision-boundary ledger\/proposal read is consumed once, never retried on the gameplay critical path/i);
     expect(pilot).toMatch(/requires no acknowledgement, resend, or debate/i);
+    expect(pilot).toMatch(/never send every observation or outcome/i);
+    expect(skill).toMatch(/pilot permanently owns the success criteria[\s\S]*fallback decisions[\s\S]*current plan[\s\S]*grounded queued successor/i);
+    expect(skill).not.toMatch(/strategist owns[\s\S]{0,100}phase and successor planning/i);
     expect(fs.existsSync(path.join(skillRoot, "GOAL-MASTER-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(skillRoot, "GOAL-SPECIALIST-v1.md"))).toBe(false);
   });

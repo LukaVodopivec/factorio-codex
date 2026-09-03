@@ -31,11 +31,14 @@ passes that exact path verbatim to every role. The parent creates the run
 directory with mode `0700` and initializes the file with mode `0600`; after
 initialization, the strategist is the sole host-ledger writer. The strategist rewrites
 `operations.json` atomically through an adjacent temporary file and rename.
-The pilot attempts one startup read and thereafter reads a proposal only at a
-natural boundary under the bounded single-use rules below. It never reads the
-ledger per MCP call. Strategist silence, unavailability, or ledger read/write
-failure never pauses or gates gameplay; the pilot continues from latest MCP
-state and sends material updates when the advisory route is available. Do
+The pilot does not block startup on the ledger: it attempts one startup read and
+thereafter reads at most one proposal only at a natural decision boundary under
+the bounded single-use rules below. It never reads the ledger per MCP call.
+A silent, unavailable, late, malformed, stale, duplicate, wrong-run, or wrong-save
+proposal/channel/ledger/message is discarded once without acknowledgement,
+resend, or debate. Its failure never pauses or gates gameplay; the pilot keeps
+autonomous current-plus-successor work running from latest MCP state and sends
+only material updates when the advisory route is available. Do
 not create another run file, append log, watcher, broker, service, database,
 or coordination process.
 
@@ -111,7 +114,7 @@ hypothesis, expected measurable effect, assumptions/preconditions, safe bounds,
 numeric stop, invalidation, confidence, and optional next objective. It is not
 an executable envelope, exact-coordinate command, approval, gate, plan enqueue,
 acknowledgement, resend protocol, or debate. The pilot reads at most one proposal
-for a source tick only at a natural plan boundary, revalidates save identity and
+for a source tick only at a natural decision boundary, revalidates save identity and
 every precondition exactly once against the latest MCP state, then accepts or
 discards it permanently. The pilot reports only material bottleneck, technology,
 production, or expansion changes, or a repeated distinct failure; consumes the
@@ -153,8 +156,8 @@ deltas and retain the expected result plus its falsifier.
   queued successor with predecessor
   and preconditions (or the reason none can be queued), prioritized fallbacks,
   current and next bill of materials, and source tick/plan ID.
-- The pilot permanently owns the local bottleneck, action, fallback, current
-  plan, and one grounded queued successor. Latest MCP state wins. It keeps work
+- The pilot permanently owns the success criteria, local bottleneck, action,
+  fallback decisions, current plan, and one grounded queued successor. Latest MCP state wins. It keeps work
   queued before reporting and never reads the ledger per MCP call.
 - Prefer automation. After bootstrap, the pilot executes a manual mining or
   crafting batch only after independently establishing the exact net deficit

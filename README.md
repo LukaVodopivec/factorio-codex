@@ -95,14 +95,15 @@ with fast mode off. The strategist writes coordinate-free non-executable
 Factorio MCP, writes gameplay actions, and owns live-state authority for the one
 physical Codex body and task lane. It never waits for the strategist or ledger,
 owns the local bottleneck/action/fallback plus current plan and one grounded
-successor, reads the ledger once at startup rather than per MCP call, and reads
-at most one tick-keyed proposal only at a natural boundary.
+successor, attempts the ledger once at startup rather than per MCP call, and reads
+at most one tick-keyed proposal only at a natural decision boundary.
 Latest MCP state wins; the pilot validates save identity and every proposal
 precondition once, accepts or discards it, keeps work queued, and reports only
 material changes or a repeated distinct failure. It alone authorizes manual
 batches and owns the learning loop, authoritative calculations, success, plans,
-fallbacks, and milestone completion from MCP proof. Strategist or ledger silence
-or failure never pauses gameplay. A restarted strategist rebuilds
+fallbacks, and milestone completion from MCP proof. An unavailable, late,
+malformed, stale, or wrong-run proposal/ledger/message never pauses gameplay.
+A restarted strategist rebuilds
 from the ledger without pausing play. The first rollout is the next fresh matched run; Candidate
 B and R1-R7 remain historical evidence. Bounded packets prevent strategic drift;
 concurrency removes thinking idle time, not physical walking time. See the

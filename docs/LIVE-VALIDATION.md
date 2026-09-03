@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.14.0**. Prior live evidence remains historical
-until the fresh 0.14.0 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.15.0**. Prior live evidence remains historical
+until the fresh 0.15.0 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -74,7 +74,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.14.0 reliability pass, also record these observable checks without
+For the 0.15.0 reliability pass, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
 
 - A compact observation stays bounded, names every omission count, and appears
@@ -101,77 +101,59 @@ turning them into a fixed opening or map-specific sequence:
   steps.
 - Queue and plan responses carry a self-describing `terminal` state and exact
   `next_action`; a terminal continuation handle is never waited a second time.
-- Send one matching newer material report to the strategist and confirm the one
-  ledger advances exactly one revision even if no advisory proposal changes.
-  Duplicate, stale, malformed, wrong-run, wrong-save, observation-tick-mismatched,
-  and unconfirmed-successor fixtures must leave its bytes unchanged and must
-  never delay the pilot.
+- A plan with `observation_detail=none` returns compact outcomes, execution
+  metadata, and inventory deltas without an embedded observation. Explicit
+  compact/full requests retain bounded detail and omission counts.
+- A bounded `plan_status` wait returns on a meaningful step outcome, waiting
+  state, or terminal result. A monitoring timeout does not cancel the plan and
+  returns a self-describing continuation.
 
-## Two-session pilot contract
+## Persistent single-pilot contract
 
-The same permanent machine boundary applies to every W1C run: the dedicated
-server and agent sessions run on the headless workstation, while the exact
-`Codex` client and the characterless spectator/follower run only on the couch
-PC. Do not launch a local GUI as a recovery or benchmark shortcut.
+The dedicated server and agent session run on the headless workstation, while
+the exact `Codex` client and characterless spectator/follower run only on the
+couch PC. Do not launch a local GUI as a recovery shortcut.
 
-Until the owner explicitly re-enables benchmarking, the active topology is a
-supervised debug run with exactly a Sol-medium read/advice-only strategist and
-the unchanged Terra-low sole-writer pilot, with fast mode off. Give both roles
-the same exact `/run/user/<uid>/factorio-codex/runs/<run-id>/operations.json`
-path. Before `GO`, verify the requested fresh save and release hashes, permanent
-peaceful mode/enemy bases disabled, exact `Codex` native player, characterless
-following couch viewer, and one body/lane/writer. Record `GO` time and Factorio
-tick, but continue past 20 minutes toward the assigned milestone; Candidate B
-and R1-R7 checkpoint/freeze rules are historical unless the owner explicitly starts
-a benchmark.
+The active supervised-debug topology has exactly one persistent pilot. It is
+the sole Factorio MCP user, gameplay writer, live-state authority, planner,
+growth owner, and milestone owner. Do not create a strategist, peer, operations
+ledger, advisory proposal, report channel, acknowledgement, or resend path.
+Before `GO`, verify the requested fresh save and release hashes, permanent
+peaceful mode/enemy bases disabled, exact native player, viewer, and one
+body/lane/writer. Continue past 20 minutes toward the assigned milestone;
+Candidate B and R1-R7 freeze rules are historical unless the owner starts a benchmark.
 
-The parent session is the debug supervisor. It may inspect screenshots or raw
-Factorio state, modify source or save state, move/teleport the body, and restart
-or replace server/client processes when needed for diagnosis or recovery. None
-of that authority passes to either gameplay role. Record the pre-intervention
-tick/error/state, the smallest intervention and reason, and the first fresh
-post-intervention MCP observation; invalidate affected assumptions and never
-present assisted timing or progress as benchmark evidence. Intervene only when
-the same failure survives two materially distinct safe approaches without
-relevant progress, no unrelated productive branch remains, or a structured MCP
-defect prevents physical recovery.
+The parent is the debug supervisor and may diagnose or recover through its
+separate surfaces. That authority does not pass to the pilot. Record each
+intervention and obtain a fresh structured observation before ordinary play.
 
-The strategist
-has zero Factorio MCP access and writes only coordinate-free
-`strategy_proposal` advice to the one operations ledger. One persistent pilot
-remains the sole Factorio MCP user, gameplay writer, and live-state authority
-for one physical Codex body and one task lane. It never waits for the strategist
-or ledger and permanently owns the local bottleneck, action, fallback, current
-plan, and one grounded queued successor. Latest MCP state wins. The pilot reads
-the ledger once at startup rather than per MCP call, then reads at most one
-single-use proposal per source tick at a natural decision boundary and validates
-save identity and every precondition exactly once, then accepts or discards it
-without acknowledgement or resend. It keeps useful work queued before reporting
-and reports only a material bottleneck, technology, production, or expansion
-change, or a repeated distinct failure. The pilot alone authorizes manual
-batches and owns learning, calculations, success, plans, fallbacks, and milestone
-completion from later-tick MCP proof. Strategist silence or an unavailable,
-late, malformed, stale, or wrong-run proposal/ledger/message never pauses or
-gates gameplay. A restarted strategist rebuilds from the ledger
-without pausing the pilot. The pilot may observe, choose exact visible
-coordinates, retry honest pathing, and finish the assigned milestone. End with
-an authoritative observation: consume a fresh `run_plan.observation` directly;
-call `observe_local` only when that observation is missing or became stale
-after a subsequent action. Report position, inventory, active task, result,
-and failure. Concurrency removes thinking idle time, not physical walking time.
-Gameplay roles do not add a second body, raw Lua/console, teleport, hidden map,
-free resources, or a second ordinary RCON path. `stop` is emergency
-cancellation only. If an intervened pilot goal has already terminated, retire
-it and start one replacement Terra-low pilot on the same run/save; never keep
-two active pilots or add a third gameplay role.
+The native `/goal` owns continuation. Waypoints, batches, plans, and progress
+reports are nonterminal. While later-tick milestone proof is absent, immediately
+continue whenever productive work or bounded recovery exists. Keep the current
+plan and one grounded successor when safe.
 
-Use the current public schema shown by `tools/list`. In particular,
-`inspect_entity` accepts `positions`; the removed `targets` input must fail
-before runtime. Keep the same previously `AVAILABLE` persistent pilot across
-packets. A fresh Luna-low or Luna-medium child can produce an empty bootstrap
-turn; treat that as a platform residual and fall back to a previously available
-connected child without bypassing repository ownership or adding an action
-writer.
+After immediate safety and a hard production unblock, evaluate the
+highest-payback expansion of the measured factory bottleneck before another
+manual deficit batch. Record the growth objective, utilization, buffers, WIP,
+service time, power headroom, current and foreseeable unlocked demand,
+production deltas, item/time break-even, expected avoided touches, and expected
+next bottleneck. Count expansion only after later evidence proves sustained
+input, physical transfer, downstream acceptance, increased output, and
+utilization. Reassess factory-wide flow after every material increase. Prefer
+evidence-backed headroom, buffer-aware packets, and clustered trips over exact
+next-task quantities. A progress report states the measured capacity change or
+quantitatively justifies a short manual bridge.
+
+Exactly one physical MCP call may be in flight. Parallelize only read-only
+observations when inconsistent ticks are acceptable, then revalidate the newest
+state before mutation. Do not add another body, lane, RCON path, raw Lua/console,
+teleport, hidden state, or free resources. `stop` is emergency cancellation.
+If a pilot goal terminates after an intervention, retire it before starting one
+replacement; never keep two pilots active.
+
+Use the current public schema shown by `tools/list`. Keep the same persistent
+pilot across packets. An empty intermediate turn or report does not satisfy the
+goal and must not add another action writer.
 
 ## Historical Candidate B R7 verified live result
 
@@ -289,7 +271,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.14.0 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.15.0 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -312,14 +294,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.14.0. They
+The successful observations below were collected before release 0.15.0. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.14.0. Complete the fresh run above after installing 0.14.0 before recording a
+0.15.0. Complete the fresh run above after installing 0.15.0 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.14.0 run must instead report protocol v18 and mod/app 0.14.0.
+  0.8.0. A 0.15.0 run must instead report protocol v19 and mod/app 0.15.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

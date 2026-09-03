@@ -109,8 +109,8 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "mod", ok: false, detail: expect.stringMatching(/RPC unavailable: (unlock|ping) failed/), fix: expect.stringContaining("install and enable") }));
   });
   it.each([
-    { ping: { protocol_version: 6, mod_version: "0.14.0" }, failedCheck: "protocol" },
-    { ping: { protocol_version: 18, mod_version: "0.6.0" }, failedCheck: "mod" },
+    { ping: { protocol_version: 6, mod_version: "0.15.0" }, failedCheck: "protocol" },
+    { ping: { protocol_version: 19, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
@@ -128,7 +128,7 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
     expect(connect).not.toHaveBeenCalled();
   });
-  it("keeps root, package, lockfile, runtime, mod, and docs at 0.14.0", () => {
+  it("keeps root, package, lockfile, runtime, mod, and docs at 0.15.0", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const read = (relative: string) => JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
     const lock = read("package-lock.json");
@@ -140,16 +140,16 @@ describe("exact local configuration", () => {
       lock.packages[""].version,
       lock.packages.companion.version,
       companionVersion(),
-    ]).toEqual(Array(7).fill("0.14.0"));
-    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.14.0**");
-    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.14.0**");
+    ]).toEqual(Array(7).fill("0.15.0"));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.15.0**");
+    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.15.0**");
   });
   it("keeps visible locale title and description aligned with one-body mod metadata", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const info = JSON.parse(fs.readFileSync(path.join(root, "mod/agentic-companion/info.json"), "utf8"));
     const locale = fs.readFileSync(path.join(root, "mod/agentic-companion/locale/en/agentic-companion.cfg"), "utf8");
     const values = [...locale.matchAll(/^agentic-companion=(.+)$/gm)].map((match) => match[1]);
-    expect(info).toMatchObject({ version: "0.14.0", title: "Factorio Codex Companion" });
+    expect(info).toMatchObject({ version: "0.15.0", title: "Factorio Codex Companion" });
     expect(values).toEqual([info.title, info.description]);
     expect(locale).not.toMatch(/movement.speed|multiplier/i);
     expect(locale).not.toMatch(/Agentic Companion|AI companion|companions|characters|vehicles/i);
@@ -170,19 +170,19 @@ describe("exact local configuration", () => {
     expect(modSource).not.toMatch(/movement.speed|movement_speed|runtime_mod_setting/i);
   });
 
-  it("keeps the player skill text-only and aligned with batching and MCP_GAP", () => {
+  it("keeps the player skill text-only and aligned with the single-pilot MCP contract", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
+    const normalizedSkill = skill.replace(/\s+/g, " ");
     const liveValidation = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");
     expect(skill).toMatch(/run_plan/);
     expect(skill).toMatch(/build_plan/);
     expect(skill).toMatch(/MCP_GAP/);
-    expect(skill).toMatch(/never use screenshots or screen capture for live gameplay perception,[\s\S]*navigation,[\s\S]*targeting,[\s\S]*placement choice,[\s\S]*action selection/i);
-    expect(skill).toMatch(/after a\s+scored\s+run is frozen,[\s\S]*structured MCP evidence is insufficient[\s\S]*non-authoritative review evidence[\s\S]*no coordinates, routes,[\s\S]*tactics, or durable knowledge[\s\S]*revalidated through structured in-game MCP data/i);
-    expect(skill).toMatch(/Finish every packet with an authoritative observation[\s\S]*terminal observation[\s\S]*missing or became stale/);
-    expect(skill).not.toMatch(/finish every packet with `observe_local`/i);
+    expect(skill).toMatch(/one persistent pilot[\s\S]*sole Factorio MCP user[\s\S]*growth owner[\s\S]*milestone owner/i);
+    expect(skill).toMatch(/screenshots[\s\S]*never use[\s\S]*gameplay evidence|never use screenshots/i);
+    expect(normalizedSkill).toMatch(/highest-payback capacity expansion.*satisfying only the next deficit is never the default/i);
     expect(skill).toContain("[player knowledge v1](PLAYER-KNOWLEDGE-v1.md)");
-    expect(skill).toMatch(/exactly the active two-role topology[\s\S]*Sol-medium strategist[\s\S]*Terra-low pilot/i);
+    expect(skill).not.toContain("GOAL-STRATEGIST-v1.md");
     expect(liveValidation).toMatch(/Prior-release 0\.7\.0 live evidence/);
     expect(liveValidation).toMatch(/historical 0\.7\.0 evidence[\s\S]*not live validation of[\s\S]*0\.8\.0/);
     expect(liveValidation).toMatch(/Optional couch UI navigation layer/);
@@ -225,89 +225,34 @@ describe("exact local configuration", () => {
     expect(liveValidation).toMatch(/no dedicated[\s\S]*GPU[\s\S]*permanently headless[\s\S]*Both visual Factorio processes run exclusively on the couch PC/);
   });
 
-  it("keeps exactly two active prompts automation-first, adaptive, and authority-separated", () => {
+  it("keeps exactly one active persistent pilot prompt", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
-    const readPrompt = (role: string) => fs.readFileSync(path.join(root, `.agents/skills/factorio-player/GOAL-${role}-v1.md`), "utf8");
-    const strategist = readPrompt("STRATEGIST"), pilot = readPrompt("PILOT");
-    for (const link of ["GOAL-STRATEGIST-v1.md", "GOAL-PILOT-v1.md"])
-      expect(skill).toContain(`](${link})`);
+    const pilot = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/GOAL-PILOT-v1.md"), "utf8");
+    expect(skill).toContain("](GOAL-PILOT-v1.md)");
+    expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-MASTER-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-SPECIALIST-v1.md"))).toBe(false);
-    expect(strategist).toMatch(/read\/advice-only[\s\S]*Sol-medium strategist/i);
-    expect(strategist).not.toMatch(/read\/plan-only/i);
-    expect(strategist).toMatch(/zero Factorio MCP access[\s\S]*pilot is the sole gameplay writer and sole authority for live structured state/i);
-    expect(strategist).toMatch(/`current_plan`[\s\S]*`queued_successor`[\s\S]*pilot-reported MCP facts[\s\S]*never infer them from your proposal/i);
-    expect(strategist).toMatch(/coordinate-free[\s\S]*non-executable advice/i);
-    expect(strategist).toMatch(/recipes, prerequisites, rates, BOMs[\s\S]*capacity[\s\S]*utilization/i);
-    expect(strategist).toMatch(/assumptions[\s\S]*advisory estimates, not authoritative calculations or a plan/i);
-    expect(strategist).toMatch(/PLAYER-KNOWLEDGE-v1\.md[\s\S]*in-game learned recipes, calculations, operations[\s\S]*relative layouts/i);
-    expect(pilot).toMatch(/only Factorio MCP user and ordinary gameplay writer/i);
-    expect(pilot).toMatch(/latest MCP result wins/i);
-    expect(pilot).toMatch(/only source for ledger `current_plan` and `queued_successor`[\s\S]*proposals never populate or change those facts/i);
-    for (const text of [skill, strategist, pilot]) {
-      expect(text).toMatch(/(?:no (?:second|another)|another) body|(?:one|sole) physical Codex body/i);
-      expect(text).toMatch(/never use screenshots or screen capture for live gameplay perception[\s\S]*action selection/i);
-      expect(text).toMatch(/raw Lua\/console/i);
-      expect(text).toMatch(/bounded falsifiable experiment[\s\S]*uncertainty[\s\S]*predicted[\s\S]*safe bound[\s\S]*numeric stop/i);
-      expect(text).toMatch(/copied layouts[\s\S]*tutorials[\s\S]*online sequences/i);
-    }
-    for (const text of [skill, strategist, pilot]) {
-      expect(text).toMatch(/After bootstrap[\s\S]*manual mining(?:\s+or\s+crafting|\/crafting)(?:\s+batch)?/i);
-      expect(text).toMatch(/exact net deficit[\s\S]*carried stock[\s\S]*machine buffers\/output[\s\S]*(?:work in progress|WIP)[\s\S]*machine unlock or fuel consumer[\s\S]*uptime[\s\S]*payback[\s\S]*item\/time units[\s\S]*break-even[\s\S]*numeric stop/i);
-      expect(text).toMatch(/automat(?:e|ion)[\s\S]*(bulk extraction|smelting)[\s\S]*(logistics|science)/i);
-    }
-    for (const text of [skill, pilot]) {
-      expect(text).toMatch(/never wait[\s\S]*safe\s+productive action exists/i);
-    }
-    expect(pilot).toMatch(/Attempt the exact ledger[\s\S]*once at startup[\s\S]*never read it before or after each MCP call/i);
-    expect(pilot).toMatch(/natural decision boundary[\s\S]*every precondition exactly once[\s\S]*accept or discard it once[\s\S]*single-use/i);
-    expect(pilot).toMatch(/permanently own the learning loop, authoritative calculations, success determination, local bottleneck, action, and fallback choice plus the current plan and one grounded queued successor/i);
-    expect(strategist).toMatch(/at most one unique proposal per source tick[\s\S]*never replace or resend[\s\S]*single-use/i);
-    expect(strategist).toMatch(/restart[\s\S]*rebuild entirely from the ledger[\s\S]*without requesting replay or pausing the pilot/i);
-    expect(strategist).toMatch(/Never approve, authorize, or gate a manual batch[\s\S]*pilot independently decides/i);
-    expect(strategist).toMatch(/Never decide, declare, approve, gate, or define gameplay milestone completion criteria[\s\S]*pilot alone owns success/i);
-    expect(strategist).not.toMatch(/Stop complete/i);
-    expect(strategist).toMatch(/pilot reports, the ledger, and repo-owned knowledge are your complete evidence surface/i);
-    expect(strategist).toMatch(/Never command, plan, approve, gate, or define completion criteria/i);
-    expect(pilot).toMatch(/permanently own the learning loop, authoritative calculations, success determination/i);
-    expect(pilot).toMatch(/silent, unavailable, late, malformed, stale, duplicate, wrong-run, or wrong-save proposal\/channel\/ledger\/message is discarded once[\s\S]*never acknowledged, debated, or requested again/i);
-    expect(pilot).toMatch(/never pauses, narrows, or gates gameplay[\s\S]*autonomous current-plus-successor work running[\s\S]*next local action\/fallback from latest MCP state/i);
-    expect(pilot).toMatch(/failed startup or natural-decision-boundary ledger\/proposal read is consumed once, never retried on the gameplay critical path/i);
-    expect(pilot).toMatch(/never send every observation or outcome/i);
-    expect(skill).toMatch(/silent, unavailable, late, malformed, stale, duplicate, wrong-run, or wrong-save[\s\S]*discarded once without acknowledgement,[\s\S]*resend, or debate/i);
-    expect(skill).toMatch(/failure never pauses or gates gameplay[\s\S]*autonomous current-plus-successor work running from latest MCP state/i);
-    expect(skill).toMatch(/pilot permanently owns the success criteria[\s\S]*fallback decisions[\s\S]*current plan[\s\S]*grounded queued successor/i);
-    expect(skill).not.toMatch(/strategist owns[\s\S]{0,100}phase and successor planning/i);
-    expect(skill).toMatch(/strategist may only propose coordinate-free calculations[\s\S]*advisory estimates[\s\S]*pilot owns phase and success interpretation for[\s\S]*gameplay, all action and fallback decisions, the current plan, and the grounded[\s\S]*successor/i);
-    expect(skill).not.toMatch(/strategist (?:owns|controls|selects|chooses) (?:the )?(?:current plan|grounded successor|successor planning)/i);
-    expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
-    expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
+    expect(`${skill}\n${pilot}`).toMatch(/sole Factorio MCP user[\s\S]*live-state authority[\s\S]*planner[\s\S]*growth owner[\s\S]*milestone owner/i);
+    expect(pilot).toMatch(/continuation is the default[\s\S]*progress report is not a completion or pause boundary/i);
+    expect(pilot).toMatch(/highest-payback expansion[\s\S]*before another manual deficit batch/i);
+    expect(pilot).toMatch(/exactly one physical MCP call may be in flight/i);
   });
 
   it("keeps every durable gameplay prompt semantic and route-free", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-    const files = [
-      "SKILL.md", "GOAL-STRATEGIST-v1.md", "GOAL-PILOT-v1.md",
-      "PLAYER-KNOWLEDGE-v1.md",
-    ];
+    const files = ["SKILL.md", "GOAL-PILOT-v1.md", "PLAYER-KNOWLEDGE-v1.md"];
     const texts = files.map((file) => fs.readFileSync(path.join(root, ".agents/skills/factorio-player", file), "utf8"));
-    for (const text of [texts[0], texts[2], texts[3]]) {
-      for (const concept of ["observ", "bottleneck", "falsifiable hypothesis", "predict", "retain", "revise", "discard", "provenance", "uncertainty"])
-        expect(text.toLowerCase()).toContain(concept);
-    }
     for (const text of texts) {
-      for (const rejected of [/(?:timed\s+phase|elapsed-time\s+milestone)/i, /fixed\s+build\s+order/i, /named\s+route/i, /(?:map|cross-run|world)\s+coordinate/i, /prescriptive\s+progression\s+sequence/i])
-        expect(text).toMatch(rejected);
-      for (const rejected of [/cop(?:y|ied) layouts/i, /tutorials/i, /online\s+(?:build\s+)?sequences/i])
-        expect(text).toMatch(rejected);
       expect(text).not.toMatch(/\b(?:first|start by)\s+(?:mine|craft|place|build|research)\b/i);
       expect(text).not.toMatch(/\bthen\s+(?:mine|craft|place|build|research)\b/i);
       expect(text).not.toMatch(/\b(?:at|by|after)\s+(?:minute\s*)?\d+\s*(?:m|min|minutes?)?\s*[,,:-]?\s*(?:mine|craft|place|build|research)\b/i);
       expect(text).not.toMatch(/\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/);
     }
-    expect(texts[0]).toMatch(/observe[\s\S]*bottleneck[\s\S]*falsifiable hypothesis[\s\S]*predict[\s\S]*safe action[\s\S]*compare[\s\S]*retain[\s\S]*revise[\s\S]*discard/i);
-    expect(texts[1]).toMatch(/pilot-reported bottleneck[\s\S]*falsifiable hypothesis[\s\S]*expected measurable effect[\s\S]*advisory estimates, not authoritative calculations or a plan[\s\S]*pilot alone owns the learning loop/i);
+    const combined = texts.join("\n");
+    for (const rejected of [/(?:timed\s+phase|elapsed-time\s+milestone)/i, /fixed\s+build\s+order/i, /named\s+route/i, /(?:map|cross-run|world)\s+coordinate/i, /(?:prescribed technology order|prescriptive\s+progression\s+sequence)/i, /cop(?:y|ied) layouts/i, /tutorials/i, /online\s+(?:build\s+)?sequences/i])
+      expect(combined).toMatch(rejected);
+    expect(texts[0]).toMatch(/state-driven growth loop[\s\S]*observe fresh exact state[\s\S]*measured factory bottleneck/i);
   });
 
   it("documents the W1C research basis as principles rather than a route", () => {
@@ -358,7 +303,7 @@ describe("exact local configuration", () => {
       for (const risk of ["cheats", "hidden map state", "raw console", "imported blueprints", "tutorial sequences"])
         expect(normalized.toLowerCase()).toContain(risk);
       expect(normalized).toMatch(/reuse or adapt the.*smallest maintained compatible path.*design evidence.*patch the smallest existing active path/i);
-      expect(text).toMatch(/not a service, gate, or report workflow|do not create a[\s\S]*service, gate, or report workflow/i);
+      expect(normalized).toMatch(/not a service, gate, or report workflow|do not create a.*service, gate, or report workflow/i);
     }
 
     const normalizedGuidance = `${agentGuide}\n${skill}`.replace(/\s+/g, " ");

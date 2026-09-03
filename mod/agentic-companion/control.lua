@@ -13,7 +13,7 @@ local connect_entities = require("scripts.connect_entities")
 
 rpc.register("ping", function()
   return {
-    protocol_version = 18,
+    protocol_version = 19,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,

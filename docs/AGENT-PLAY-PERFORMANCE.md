@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.14.0 retains each exact placed entity and validates the live output
+Release 0.15.0 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,14 +24,13 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.14.0 validation.
+0.15.0 validation.
 
-The active topology is exactly two roles: a Sol-medium read/advice-only
-strategist and the unchanged Terra-low sole-writer single-pilot baseline, with
-fast mode off. The strategist has zero Factorio MCP access and writes
-coordinate-free `strategy_proposal` advice; the pilot is the sole Factorio MCP
-user, gameplay writer, and live-state authority. The first rollout is the next
-fresh matched run. Plans execute contiguously in Lua and may prepare one successor by
+The active topology is one persistent pilot: the sole Factorio MCP user,
+gameplay writer, live-state authority, planner, growth owner, and milestone
+owner. There is no strategist, operations ledger, advisory proposal, report
+channel, acknowledgement, or resend path. The first rollout is the next fresh
+matched run. Plans execute contiguously in Lua and may prepare one successor by
 predecessor ID. This removes model-thinking idle time; it does not accelerate
 walking, mining, crafting, or any other game tick.
 
@@ -99,25 +98,26 @@ not their commands, coordinates, blueprints, or exact build routes:
   knowledge plus environment feedback and self-verification;
   [Reflexion](https://arxiv.org/abs/2303.11366) supports outcome-labeled verbal
   reflection that improves later decisions.
-- [LLM-Coordination](https://arxiv.org/html/2310.03903v2) supports explicit
-  coordination and grounding modules while warning that partner-intent and
-  joint-planning errors remain material. The active topology therefore
-  separates a read/advice-only strategist from the sole-writer pilot.
+- [LLM-Coordination](https://arxiv.org/html/2310.03903v2) warns that partner
+  intent and joint-planning errors remain material. The selected active design
+  avoids that failure surface by giving one persistent pilot all ordinary
+  gameplay planning, live-state, growth, and completion responsibility.
 
 - [Mineflayer Pathfinder](https://github.com/PrismarineJS/mineflayer-pathfinder):
   adopt explicit goals and reusable physical pathfinding. Reject teleporting,
   direct world mutation, and a parallel movement implementation.
 - [LLM-PySC2](https://arxiv.org/abs/2411.05348): adopt compact textual
-  observations, structured actions, and strategist/pilot separation. Reject
-  image input, multi-body control, and population-scaled agent orchestration.
+  observations and structured actions. Reject image input, multi-body control,
+  strategist/pilot orchestration, and population-scaled agents.
 - [Factorio Learning Environment](https://arxiv.org/abs/2503.09617): adopt
   long-horizon benchmark discipline and honest failure reporting. Reject its
   code-synthesis REPL, privileged game access, free resources, and benchmark
   machinery as runtime dependencies.
 
-The retained design is deliberately smaller: MCP synchronously sequences
-or immediately queues plans, Lua composes the existing physical task runners,
-and every terminal plan path attempts one compact local observation.
+The retained design is deliberately smaller: MCP synchronously sequences or
+immediately queues plans, Lua composes the existing physical task runners, and
+terminal plans return concise deltas unless compact/full observation is
+explicitly requested.
 
 R5's bounded Firecrawl reuse review found maintained agent projects with deterministic
 validator and skill patterns, but no compatible licensed component that owns
@@ -150,55 +150,37 @@ revalidation, not placement. This applies equally to omitted uncharted coverage
 and preserves deterministic rejection of charted candidates with zero compatible
 resources.
 
-For active role coordination, the strategist coalesces superseded pilot reports
-by run and newest source tick and writes one atomic ledger revision for the
-current analysis. `current_plan` and `queued_successor` mirror pilot-reported MCP
-facts rather than strategist commands. The first decision uses one authoritative
-preflight pilot report, immediately writes and sends a coordinate-free
-`strategy_proposal`, and ends the strategist turn so new pilot evidence can
-trigger a fresh turn; it consumes rather than repeats the pilot's initial report, and
-equivalent diagnostics repeat only after action,
-contradiction, or staleness. Each proposal states a falsifiable hypothesis,
-predicted measurable effect, assumptions/preconditions, safe bounds, numeric
-stop, invalidation, and confidence. It is non-executable advice: never an
-envelope, plan enqueue, approval/gate, acknowledgement/resend/debate protocol,
-or exact-coordinate command. The pilot reads at most one unique proposal per
-source tick only at a natural decision boundary, validates save identity and every
-precondition exactly once against the latest MCP state, then accepts or discards
-it without acknowledgement or resend. It consumes each `run_plan` terminal
-observation, reports only a material bottleneck, technology, production, or
-expansion change or a repeated distinct failure, and never repeats an executed
-plan ID. It never stops or reports
-merely for one useful item or incidental non-production loot. Measured
-automation utilization and continuous current-plus-successor work dominate.
-At `GO`, the pilot sends the authoritative initial observation and immediately
-performs bounded safe physical work under the bootstrap policy
-while the strategist reasons without Factorio access. Current structured state selects the work: prefer
-already-carried automation with a verified visible resource and exact sink;
-otherwise scout a visible dry waypoint or gather the nearest measured blocker
-to a numeric stop. The pilot continues without waiting and considers advice only
-under the single-use natural-boundary rule. This creates no second writer, body, or
-lane and prescribes no item, resource, order, coordinate, route, or timed phase.
-The pilot never waits for the strategist or ledger, permanently owns local
-bottleneck/action/fallback selection and the current plan plus one grounded
-queued successor, reads the ledger once at startup rather than per MCP call, and
-keeps useful work queued before reporting. Latest MCP
-state always wins. A restarted strategist rebuilds from the ledger without
-pausing the pilot or requesting replay. Strategist silence or an unavailable,
-late, malformed, stale, or wrong-run proposal/ledger/message never pauses or
-gates gameplay. The pilot alone owns the learning
-loop, authoritative calculations, success, plans, fallbacks, batch authorization,
-and milestone completion from later-tick MCP proof; the strategist only offers
-one advisory proposal and mirrors pilot-reported facts.
-An advisory proposal may flag a material-flow contradiction; the pilot
-distinguishes a game bottleneck from an MCP observability gap and decides what
-to do. Count capacity only after output is
-accepted by its next physical sink and observable there. Upstream fuel/input
-changes end with measured dependent utilization and a bounded corrective
-successor. Rate claims without timing/buffer evidence use measured deltas and
-retain expected/falsifier pairs. These are general learning-loop rules,
-not a timed opening, fixed build order, named route, map coordinates, tutorial,
-copied layout, online sequence, or gameplay-specific action chain.
+For active play, the native `/goal` keeps one pilot running through waypoints,
+batches, plans, and reports until later-tick milestone proof, explicit stop, or
+a genuine exhausted blocker. The pilot permanently owns the local bottleneck,
+growth objective, action and fallback selection, current plan, and one grounded
+successor. Latest structured MCP state wins and every plan ID is copied from the
+tool result rather than reconstructed.
+
+After immediate safety and a hard production unblock, the pilot evaluates the
+highest-payback capacity expansion before another manual deficit batch. It uses
+measured utilization, input/output buffers, WIP, travel/service time, current
+and foreseeable unlocked recipe demand, power headroom, production deltas,
+item/time break-even, and expected future touches. It expands the bottlenecked
+stage until downstream demand, power, supply, or another stage becomes limiting,
+then reassesses factory-wide flow. Repeated manual crafting, fueling, hauling,
+collection, or one-machine service is automation evidence unless remaining
+useful demand cannot repay the investment.
+
+Capacity requires sustained accepted flow, not theoretical machine count: a
+later observation must prove input availability, physical transfer, downstream
+acceptance, increased output, and utilization. Evidence-backed headroom is
+preferred when current demand makes reuse likely. Fuel and input packets are
+sized from observed rates, buffers, WIP, required uptime, and travel/correction
+time. Progress reports state the measured capacity change and next bottleneck,
+or quantitatively explain why a bounded manual bridge still has better payback.
+
+Exactly one physical MCP call may be in flight through the sole FIFO. Read-only
+observations may overlap only when inconsistent ticks are acceptable, followed
+by newest-state revalidation before mutation. These are generic learning and
+growth rules, not a timed opening, fixed build order, named route, technology
+order, map coordinate, tutorial, copied layout, online sequence, or prescribed
+action chain.
 
 ## Peaceful rocket benchmark
 
@@ -224,7 +206,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v18, version 0.14.0, and exactly 25 tools.
+disambiguation, progression, protocol v19, version 0.15.0, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -294,7 +276,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.14.0 benchmark results.
+present historical timings as 0.15.0 benchmark results.
 
 #### Candidate B R7 recorded result
 

@@ -6,10 +6,10 @@ import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v18 DTO and tool registry", () => {
-  it("declares v18 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(18);
-    expect(MCP_SERVER_VERSION).toBe("0.14.0");
+describe("protocol v19 DTO and tool registry", () => {
+  it("declares v19 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(19);
+    expect(MCP_SERVER_VERSION).toBe("0.15.0");
     expect(RPC_METHODS).toHaveLength(18);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "connect_entities"]));
   });

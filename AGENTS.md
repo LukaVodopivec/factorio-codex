@@ -34,93 +34,78 @@
 - Complete private-repository changes on clean, pushed `main` with exact
   remote-SHA readback.
 
-## Two-session gameplay
+## Persistent single-pilot gameplay
 
-Until the owner explicitly re-enables benchmarking, every new live run is a
-supervised debug run. The session that starts the run is the debug supervisor
-and may use any available observation or write surface needed to diagnose and
-recover it, including screenshots, raw Factorio/RCON or console commands,
-direct movement or teleport recovery, save/source edits, and server/client
-restart or replacement. Record every intervention with its reason and affected
-state; assisted progress and timing are never benchmark evidence.
+Until the owner explicitly re-enables benchmarking, every new live run is supervised
+debugging. The initiating session is the debug supervisor and may diagnose or
+rescue through screenshots, raw Factorio/RCON or console, direct movement or
+teleport recovery, save/source edits, and server/client replacement. Record each
+intervention and invalidate affected state; assisted progress and timing are
+never benchmark evidence. None of that authority passes to ordinary gameplay.
 
-The active gameplay topology remains one Sol-medium read/advice-only strategist
-and one persistent Terra-low pilot. The pilot is the sole ordinary MCP action
-writer for the single physical Codex character and flat FIFO lane. Neither
-gameplay role inherits the supervisor's debug authority.
-Keep one ephemeral `operations.json` ledger containing phase and success,
-capacity/utilization, the executing plan, one `plan_status`-confirmed queued
-successor with predecessor and preconditions (or the reason none is queued),
-prioritized fallbacks, current and next bill of materials, and source tick/plan
-ID. The strategist is its sole atomic host writer; the pilot is the sole
-ordinary MCP writer and latest-observation authority. Discard stale advice
-unless the pilot revalidates it.
-The pilot copies plan and predecessor IDs verbatim from returned `queue_plan`
-and `plan_status` structured values and never reconstructs, substitutes, or
-relabels them from memory or prose.
-Immediately after one authoritative preflight packet, the strategist writes and
-sends one coordinate-free strategy proposal, then ends its turn so new pilot
-evidence can trigger a fresh turn; it does not repeat the initial diagnostics
-already supplied by the pilot. At `GO`, after that initial observation, the
-pilot immediately uses its state-driven bootstrap policy: deploy already-carried
-automation only against a verified visible resource and sink, otherwise scout
-a visible dry waypoint or gather the nearest measured blocker to a numeric
-stop. It never waits for or grants control to a proposal. This remains one
-writer/body/lane and never fixes an item, resource,
-order, coordinate, route, or timed phase.
+Start exactly one persistent pilot. It is the sole Factorio MCP user, gameplay
+writer, live-state authority, planner, growth owner, and milestone owner for one
+physical body and FIFO lane. Do not create a strategist, operations ledger,
+advisory proposal, gameplay report/resend channel, second writer, or coordination
+store. Latest structured MCP state wins.
 
-The pilot may mine, refuel, collect output, repair routes, and use an approved
-fallback without waiting. Broad envelopes remain active while their named
-bottleneck and hypothesis remain valid, and the pilot reports material
-bottleneck changes, terminal outcomes, or invalidations instead of narrow
-micro-proofs. It never stops or reports merely for one useful item or incidental
-non-production loot; measured automation utilization and continuous
-current-plus-successor work dominate. After bootstrap,
-manual batches require an exact net
-deficit after carried stock, machine buffers/output and WIP, the exact machine
-unlock or fuel consumer and uptime, automation payback in named item/time units
-with break-even, and a numeric stop. Fallback order is: preserve safety; unblock production; mine the
-BOM bottleneck in batches; build validated automation; physically scout.
-Never idle on a wait while productive work exists. Cluster travel and reuse
-terminal observations. `mine` count means physical mining cycles, not
-guaranteed output items; derive item ceilings and numeric stops from the
-in-game learned per-cycle yield and confirm them with actual inventory deltas.
-Keep the current plan plus one grounded queued successor, and avoid
-micro-packet idle gaps while their shared bottleneck and hypothesis remain
-valid. Count automation capacity only after structured state
-shows output accepted by its next physical sink and observable there. Upstream
-fuel/input changes end with measured dependent utilization and a bounded
-corrective successor when preconditions hold; rate claims without timing or
-buffer evidence use measured deltas only. On the first material-flow
-contradiction, the strategist may advise whether evidence suggests a game
-bottleneck or an MCP observability gap; the pilot decides. Treat one `working`
-status as provisional until a later observation after at least one expected
-production cycle proves input availability, transfer, downstream acceptance,
-and increased output; stored buffers are transient evidence. Recalculate BOMs,
-successors, and waits from actual accepted/produced quantities. Rank placements
-by useful lifetime, compatible coverage, endpoint binding, and safe character
-egress before proximity. After repeated identical path evidence without
-movement, stop arbitrary offset attempts and use one materially distinct route
-or productive fallback. Maintain time-based fuel/input reserves from observed
-deltas, and bound every diagnosis with one falsifiable hypothesis, expected
-measurable effect, and numeric stop. Durable player knowledge may contain only in-game
-learned recipes/calculations and Codex-authored relative layouts—never map
-coordinates, tutorials, external blueprint strings, or online build sequences.
+The native `/goal` owns continuation. Waypoints, batches, individual plans,
+tool results, and progress reports are nonterminal. While later-tick milestone
+proof is absent, immediately continue whenever productive work or bounded
+recovery exists. Keep the current plan and one `plan_status`-confirmed successor
+when safe. Complete only on milestone proof, explicit the owner stop, or a genuine
+exhausted blocker.
 
-Each report carries source tick/plan ID, position, inventory, active plan/step,
-queue depth, crafting, result, and failure. Gameplay roles never use screenshots
-or screen capture for live gameplay perception, navigation, targeting,
-placement choice, or action selection. The debug supervisor may use screenshots
-for diagnosis and intervention, but revalidates affected state through
-structured in-game MCP data before returning ordinary control to the pilot.
-Missing structured state is an `MCP_GAP` that blocks only the affected branch,
-not permission to guess or stop unrelated productive work.
-Concurrency removes thinking idle time, not physical walking time. There is no
-second body, raw Lua/console, teleport, hidden map, free resource, or second
-ordinary RCON path for the gameplay roles; `stop` is emergency cancellation
-only. Debug runs continue past `GO+20m` until their assigned milestone, an
-explicit the owner stop, or a genuine blocker. Candidate B freeze and fresh-baseline
-rules are historical unless the owner explicitly starts a benchmark.
+At each decision boundary, preserve immediate safety and known-good capacity,
+resolve a hard production unblock, then evaluate the highest-payback expansion
+of the measured factory bottleneck before another manual deficit batch. Maintain
+a growth objective alongside the milestone using utilization, input/output
+buffers, WIP, service/travel time, current and foreseeable unlocked recipe
+demand, power headroom, measured deltas, investment cost, item/time break-even,
+expected avoided future touches, and expected next bottleneck.
+
+Expand the bottlenecked stage until downstream demand, power, resource supply,
+or another measured stage becomes limiting, then reassess factory-wide flow.
+Treat repeated manual crafting, fueling, hauling, collection, or one-machine
+service as automation/expansion evidence unless remaining useful demand cannot
+repay it. Prefer sustained accepted flow, evidence-backed headroom, fewer larger
+buffer-aware transfers, and clustered work over satisfying exactly one next
+deficit. Reports state measured capacity change or quantitatively justify why a
+bounded manual bridge still wins.
+
+Count automation capacity only after later structured evidence proves input
+availability, physical transfer, downstream acceptance, increased output, and
+utilization. Preserve verified capacity and shared power until a replacement is
+placed, connected, and proven. Recalculate BOMs, fuel, waits, and successors from
+actual accepted and produced quantities. Size fuel/input packets from observed
+rates, buffers, WIP, required uptime, demand, and travel plus corrective time.
+
+Exactly one physical MCP call may be in flight. Parallelize only read-only
+observations when inconsistent source ticks are acceptable, then revalidate the
+newest state before mutation. Copy plan/predecessor IDs verbatim. `run_plan` is
+sequential and nontransactional; early and partial effects remain committed
+without rollback. During waits, continue independent productive work through the
+same FIFO whenever available.
+
+Coordinates and natural targets are ephemeral. After travel, mutation, route
+failure, or selection contradiction, re-observe locally and cluster work around
+fresh exact targets. On path failure, use only returned charted reachable
+frontiers. Never use screenshots for gameplay, fuzzy selection, hidden map
+state, raw Lua/console, teleport, free resources, imported blueprints, copied
+layouts, tutorials, online sequences, fixed build orders, prescribed technology
+order, named routes, map coordinates, or seed facts.
+
+Use authoritative tool schemas and capability evidence. Confirm recipes through
+`progression_status.enabled_recipes` or `describe_prototype(kind="recipe")`;
+technology names are not assumed recipes. Inspect machines before `set_recipe`;
+furnaces select from inserted input. An invalid schema, wrong machine, unknown
+recipe, identity mismatch, or out-of-range observation is terminal for the
+unchanged request: change evidence or preconditions instead of repeating it.
+
+The supported save is permanently peaceful with enemy bases disabled. `stop` is
+emergency cancellation only. Debug runs continue past `GO+20m` to their assigned
+milestone; Candidate B and fresh-baseline freeze rules are historical unless
+The owner explicitly starts a benchmark.
 
 When a newly observed gameplay difficulty appears to require greenfield code,
 first make one bounded Firecrawl reuse survey for maintained mods, interfaces,

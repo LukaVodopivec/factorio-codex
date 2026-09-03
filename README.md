@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.14.0**.
+Current release: **0.15.0**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -40,10 +40,8 @@ The mod never creates a standalone fallback character. Run
 committed project config starts MCP automatically. Begin with
 `connect_status`, then `observe_local`; `stop` cancels active and queued work.
 
-The built CLI supports `setup`, `doctor [--json]`, `mcp`, and the strategist-only
-atomic mirror writer invoked as
-`node companion/dist/cli.js ledger-apply --ledger <operations.json>`. MCP exposes
-exactly 25 text-only tools through `tools/list`. `observe_local` exposes exact
+The built CLI supports `setup`, `doctor [--json]`, and `mcp`. MCP exposes exactly
+25 text-only tools through `tools/list`. `observe_local` exposes exact
 `ground_items` stacks and `pickup_items` physically collects one still-matching
 stack through the character's normal picking state. Its character record labels
 the existing `inventory` as `main` and reports equipped ammunition separately.
@@ -51,9 +49,13 @@ the existing `inventory` as `main` and reports equipped ammunition separately.
 one Lua-contiguous plan to the sole FIFO; both calls echo the stored
 `after_plan_id`, and `plan_status` retains only assigned `queued`, first
 `running`, first applicable `waiting`, and one truthful final transition after its
-terminal observation, even when a plan completes before its first poll, while
-`run_plan` provides synchronous compatibility. Plans reuse the existing honest
-physical runners and end with a compact or full local observation.
+terminal result, even when a plan completes before its first poll. A bounded
+`plan_status` wait returns on meaningful progress or terminal state without
+canceling work on a monitoring timeout, while `run_plan` provides synchronous
+compatibility. Plans reuse the existing honest physical runners, explicitly
+report sequential nontransactional effects with no rollback, return inventory
+deltas by default, and attach a compact or full local observation only when
+requested.
 `inspect_entity` reports live inserter endpoints and targets, mining-drill output
 position, recipient (explicitly `null` when unbound), and a drill-only
 `drop_target_bound` boolean, current drill resource targets, furnace
@@ -100,34 +102,31 @@ trigger technology with its required in-game action and never reports it as
 queued progress.
 
 Live play is currently supervised debugging, not benchmarking. The initiating
-session may inspect, intervene, modify, rescue, and restart the run through any
-available debug surface, including screenshots and raw Factorio/RCON. Every
-intervention is recorded and assisted progress is never presented as benchmark
-evidence. The two gameplay roles remain constrained: a Sol-medium
-read/advice-only strategist has zero Factorio MCP access, while the unchanged
-Terra-low pilot is the sole ordinary MCP writer and live-state authority for one
-physical Codex body and task lane. Neither role inherits supervisor authority.
-The pilot never waits for the strategist or ledger, owns the local
-bottleneck/action/fallback plus current plan and one grounded successor,
-attempts the ledger once at startup rather than per MCP call, and reads at most
-one tick-keyed proposal only at a natural decision boundary.
-Latest MCP state wins; the pilot validates save identity and every proposal
-precondition once, accepts or discards it, keeps work queued, and reports only
-material changes or a repeated distinct failure. It alone authorizes manual
-batches and owns the learning loop, authoritative calculations, success, plans,
-fallbacks, and milestone completion from MCP proof. An unavailable, late,
-malformed, stale, or wrong-run proposal/ledger/message never pauses gameplay.
-A restarted strategist rebuilds from the ledger without pausing play. Debug
-runs continue past `GO+20m` to their assigned milestone unless the owner stops them;
-Candidate B and R1-R7 remain historical evidence. Bounded packets prevent strategic drift;
-concurrency removes thinking idle time, not physical walking time. See the
-repo-local `factorio-player` skill for the packet and reporting contract. The
-pilot batches read targets, uses direct actions without a redundant `walk_to`,
-uses `build_plan` for layouts, and uses `run_plan` for dependent multi-step
-work. Gameplay roles never use screenshots for perception or action selection;
-the supervisor may use them for debug diagnosis and then revalidates relevant
-state through MCP. See [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md)
-for historical benchmark evidence and adopted research patterns.
+session may inspect, intervene, modify, rescue, and restart the run through its
+separate debug surface. Every intervention is recorded and assisted progress is
+never benchmark evidence. Ordinary gameplay uses one persistent pilot as the
+sole MCP writer, live-state authority, planner, growth owner, and milestone
+owner for one physical body and FIFO lane. There is no strategist or operations
+ledger. The pilot's `/goal` continues after waypoints, batches, plans, and
+progress reports until later-tick milestone proof, an explicit the owner stop, or a
+genuine blocker.
+
+After immediate safety and a hard production unblock, the pilot evaluates the
+highest-payback expansion of the measured factory bottleneck before another
+manual deficit batch. It uses current utilization, buffers, WIP, service time,
+power headroom, unlocked demand, and measured deltas; proves capacity through
+accepted downstream flow; then reassesses the new bottleneck. Repeated manual
+crafting, fueling, hauling, or one-machine service triggers an automation
+payback comparison. The pilot prefers evidence-backed headroom, clustered
+travel, and buffer-aware packets over exact next-task quantities. Exactly one
+physical call may be in flight; only read-only snapshots may overlap when their
+tick inconsistency is acceptable.
+
+Debug runs continue past `GO+20m` to their assigned milestone unless the owner stops
+them; Candidate B and R1-R7 remain historical evidence. Gameplay remains
+text-only and physical. See the repo-local `factorio-player` skill for the
+current contract and [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md)
+for historical evidence.
 
 ## Verification
 

@@ -55,12 +55,29 @@ export function normalizePlacementSearch(value: any): any {
 }
 
 export function normalizeMapSummary(value: any): any {
-  return value && typeof value === "object" ? {
+  if (!value || typeof value !== "object") return value;
+  const factory = value.factory && typeof value.factory === "object" ? value.factory : undefined;
+  const materialFlow = factory?.material_flow && typeof factory.material_flow === "object" ? factory.material_flow : undefined;
+  const transfers = factory?.character_transfers && typeof factory.character_transfers === "object" ? factory.character_transfers : undefined;
+  return {
     ...value,
     resources: luaArray(value.resources),
     water_edges: luaArray(value.water_edges),
     factory_landmarks: luaArray(value.factory_landmarks),
-  } : value;
+    ...(factory ? { factory: {
+      ...factory,
+      groups: luaArray(factory.groups),
+      force_flows: luaArray(factory.force_flows),
+      ...(materialFlow ? { material_flow: { ...materialFlow,
+        nodes: luaArray(materialFlow.nodes), edges: luaArray(materialFlow.edges),
+        components: luaArray(materialFlow.components), diagnostics: luaArray(materialFlow.diagnostics),
+      } } : {}),
+      ...(transfers ? { character_transfers: { ...transfers,
+        inserted_items: luaArray(transfers.inserted_items), extracted_items: luaArray(transfers.extracted_items),
+        target_actions: luaArray(transfers.target_actions), events: luaArray(transfers.events),
+      } } : {}),
+    } } : {}),
+  };
 }
 
 export function normalizeProductionRequirements(value: any): any {
@@ -119,9 +136,22 @@ export function normalizePlanDiagnostics(value: any): any {
     status: "active_target",
     detail: `active ${active.action ?? "plan"} target`,
   });
+  const inspections = Array.isArray(value.outcomes) ? value.outcomes
+    .filter((outcome: any) => outcome?.action === "inspect_entities" && typeof outcome?.result?.tick === "number")
+    .map((outcome: any) => ({ step: outcome.step, inspection_tick: outcome.result.tick,
+      entities: luaArray(outcome.result.entities), omitted_entities: outcome.result.omitted_entities ?? 0 })) : [];
+  const auditTicks = inspections.map((entry: any) => entry.inspection_tick);
+  const physicalAudit = inspections.length > 0 ? {
+    audit_id: typeof value.plan_id === "number" ? `plan-${value.plan_id}` : "run-plan",
+    start_tick: Math.min(...auditTicks), end_tick: Math.max(...auditTicks),
+    snapshot_skew_ticks: Math.max(...auditTicks) - Math.min(...auditTicks), clusters: inspections,
+    partial: value.status !== "completed" || inspections.some((entry: any) => entry.omitted_entities > 0),
+    semantics: "ordinary movement followed by local inspection; snapshots are not simultaneous",
+  } : undefined;
   return {
     ...value,
     ...(value.transitions === undefined ? {} : { transitions: luaArray(value.transitions) }),
     diagnostics: { route, machines },
+    ...(physicalAudit ? { physical_audit: physicalAudit } : {}),
   };
 }

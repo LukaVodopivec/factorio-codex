@@ -40,7 +40,7 @@ describe("bridge protocol v19", () => {
     expect(read("mod/agentic-companion/scripts/spatial.lua")).not.toMatch(/return can_place_one\(c, surface, params\.item/);
     const inspectSource = read("mod/agentic-companion/scripts/inspect.lua");
     expect(inspectSource).not.toMatch(/unit_number|get_entity_by_unit_number|connected_players|params\.position|return inspect_one\(params/);
-    expect(inspectSource).toMatch(/return \{ entities = out \}/);
+    expect(inspectSource).toMatch(/return \{ tick = game\.tick, entities = out \}/);
     expect(read("mod/agentic-companion/scripts/research.lua")).not.toMatch(/companion\.get|game\.forces\.player|connected_players/);
     expect(read("mod/agentic-companion/scripts/research.lua")).toMatch(/companion\.require_companion\(\)\.force/);
     expect(read("mod/agentic-companion/scripts/actions/mine.lua"))

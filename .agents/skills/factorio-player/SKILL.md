@@ -55,6 +55,31 @@ the expected next bottleneck. Foreseeable demand is limited to current
 structured state, the milestone BOM, unlocked recipe evidence, the current plan,
 and its validated successor.
 
+Automation means an autonomous end-to-end material-flow segment, not merely a
+placed or hand-fed machine. The segment must receive material from a physical
+upstream source, move it through ordinary Factorio entities, process it, deliver
+output to a physical downstream sink, remain powered and fueled where needed,
+and run for a bounded validation interval with no character inventory transfer
+touching that segment. Keep `machine_present`, `locally_operating`, and
+`autonomous_end_to_end` distinct. Local operation on cached or hand-inserted
+input never proves autonomy.
+
+Reserve **loop**, **automation**, **continuous**, **self-running**, and
+**fully calibrated** for a segment with current `autonomous_end_to_end`
+evidence. A repeated handcraft/insert/wait/extract/walk sequence is a **manual
+service cycle** or bounded bridge, even when its quantities and timing are
+calibrated. Never use fluent terminology to upgrade local operation into
+autonomy.
+
+Maintain a short prioritized automation-debt list of recurring character-
+mediated edges: manual crafting, insertion, extraction, hauling, fueling, and
+one-machine service. Prefer eliminating the edge with the greatest recurring
+trips, travel time, inventory transfers, lost uptime, and durable throughput
+payback. Track character transfer actions and transferred items against factory
+output over a comparable interval; successful scaling makes character touches
+per output, service trips per interval, and transport time trend downward while
+autonomous physical edges trend upward.
+
 Expand the bottleneck until downstream demand, power, resource supply, or
 another measured stage becomes limiting. Reassess factory-wide flow after every
 material capacity increase. Never scale a stage blindly while its downstream
@@ -72,6 +97,15 @@ utilization. A bounded manual bridge is valid for immediate safety or a hard
 unblock, or when this measured break-even favors it; satisfying only the next
 deficit is never the default strategy.
 
+Bootstrap or recovery hand-feeding has a sunset. Every repeated manual batch
+names the permanent physical connection that will replace it, the currently
+missing capability or item, the bounded number of additional manual batches,
+and the numeric stop condition. After an incidental hard shortage is cleared,
+return to the unfinished automation investment; immediate research progress
+does not cancel work that removes recurring character labor. A queued successor
+may be one grounded multi-step construction plan so this investment survives an
+interruption without increasing physical concurrency.
+
 Build evidence-backed headroom when observed future demand makes reuse likely.
 Prefer fewer, larger, buffer-aware transfers and colocated work over one- or
 two-item oscillation. Size input and fuel packets from actual accepted demand,
@@ -86,11 +120,23 @@ placements by useful lifetime, compatible coverage, endpoint binding, power,
 and safe character egress before proximity. Stored buffers and one `working`
 status are provisional, not sustained-flow proof.
 
+Prefer compact, connectable production and short shared transport corridors
+when current evidence makes them viable. Do not create another disconnected
+production island unless its useful physical transport path can also be
+completed and validated. Validate claimed autonomy over several expected
+production cycles or a bounded interval: upstream arrival, active processing,
+output departure, downstream acceptance or consumption, continuous power/fuel,
+and zero character insert/extract actions for the segment must all hold.
+
 ## Tool and physical discipline
 
 - Start with `connect_status` and `observe_local`. Use only locally visible or
   force-charted structured evidence and real movement, reach, collision,
   inventory, crafting, power, and elapsed time.
+- Use the aggregate `map_summary` factory view to identify capacity, normalized
+  status, force-flow evidence, conservative physical components, automation
+  debt, and missing or ambiguous edges. It never authorizes remote inventories;
+  exact buffers still require ordinary movement followed by local inspection.
 - Exactly one physical Factorio tool call may be in flight. The Lua task queue is
   the sole FIFO lane. Parallelize only read-only observations when inconsistent
   source ticks are acceptable, then revalidate the newest snapshot before any

@@ -48,6 +48,21 @@ describe("persistent single-pilot contract", () => {
       expect(reporting).toContain(evidence);
   });
 
+  it("requires autonomous material flow and declining character labor", () => {
+    const normalized = active.replace(/\s+/g, " ").toLowerCase();
+    expect(normalized).toMatch(/machine_present.*locally_operating.*autonomous_end_to_end/);
+    expect(normalized).toMatch(/physical upstream source.*ordinary factorio entities.*physical downstream sink/);
+    expect(normalized).toMatch(/hand-inserted input never proves autonomy/);
+    expect(normalized).toMatch(/automation-debt list|automation debt/);
+    expect(normalized).toMatch(/character touches per output.*service trips per interval.*trend downward/);
+    expect(normalized).toMatch(/permanent physical connection.*bounded number of additional manual batches.*numeric stop condition/);
+    expect(normalized).toMatch(/several expected production cycles|several measured cycles/);
+    expect(normalized).toMatch(/zero character (?:inventory )?transfers?/);
+    expect(normalized).toMatch(/disconnected production island.*transport path.*completed and validated/);
+    expect(normalized).toMatch(/reserve.*loop.*automation.*continuous.*self-running.*fully calibrated.*autonomous_end_to_end/);
+    expect(normalized).toMatch(/handcraft\/insert\/wait\/extract\/walk.*manual service cycle/);
+  });
+
   it("uses authoritative capabilities and one FIFO physical lane", () => {
     expect(active).toMatch(/exactly one physical Factorio tool call may be in flight/i);
     expect(active).toMatch(/parallelize only read-only observations[\s\S]*revalidate the newest snapshot/i);

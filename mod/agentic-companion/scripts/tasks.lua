@@ -9,6 +9,7 @@ local build = require("scripts.actions.build")
 local craft = require("scripts.actions.craft")
 local transfer = require("scripts.actions.transfer")
 local build_plan = require("scripts.actions.build_plan")
+local factory_activity = require("scripts.factory_activity")
 local M = {}
 local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 local PLAN_BUDGET_TICKS = 570 * 60
@@ -137,7 +138,7 @@ function M.queue_plan(params)
     error("observation_detail must be none, compact, or full")
   end
   for i, step in ipairs(params.steps) do
-    if type(step) ~= "table" or (step.action ~= "wait_for_item" and not ACTIONS[step.action]) then
+    if type(step) ~= "table" or (step.action ~= "wait_for_item" and step.action ~= "inspect_entities" and not ACTIONS[step.action]) then
       error("unknown plan action at step " .. i .. ": " .. tostring(type(step) == "table" and step.action or step))
     end
     if step.action == "craft_items" then
@@ -145,6 +146,16 @@ function M.queue_plan(params)
       local crafts = tonumber(step.crafts)
       if not crafts or crafts % 1 ~= 0 or crafts < 1 or crafts > 100 then
         error("queue_plan craft_items step " .. i .. " requires crafts as an integer from 1 to 100")
+      end
+    end
+    if step.action == "inspect_entities" then
+      if type(step.positions) ~= "table" or #step.positions < 1 or #step.positions > 16 then
+        error("queue_plan inspect_entities step " .. i .. " requires 1-16 positions")
+      end
+      for _, position in ipairs(step.positions) do
+        if type(position) ~= "table" or type(position.x) ~= "number" or type(position.y) ~= "number" then
+          error("queue_plan inspect_entities step " .. i .. " positions require numeric x and y")
+        end
       end
     end
   end
@@ -277,6 +288,7 @@ end
 function M.queue_length() return #storage.tasks.queue end
 
 local function finish_step(plan, result)
+  factory_activity.record(plan.current_task and plan.current_task.type, result.outcome)
   local step = plan.steps[plan.current_step]
   local status = result.status == "done" and "completed" or result.status
   plan.outcomes[#plan.outcomes + 1] = {
@@ -356,8 +368,9 @@ local function tick_plan(plan)
   if not plan.current_task then
     plan.current_step = plan.completed_steps + 1
     local step = plan.steps[plan.current_step]
-    plan.current_task = step.action == "wait_for_item" and { type = "wait_for_item" } or make_step_task(step)
-    if step.action ~= "wait_for_item" then
+    plan.current_task = (step.action == "wait_for_item" or step.action == "inspect_entities")
+      and { type = step.action } or make_step_task(step)
+    if step.action ~= "wait_for_item" and step.action ~= "inspect_entities" then
       -- Async action events are delivered to the one active queue entry. Give
       -- the nested runner its owning plan ID so it uses that same mailbox.
       plan.current_task.id = plan.id
@@ -367,6 +380,18 @@ local function tick_plan(plan)
   end
   local step, ok, result = plan.steps[plan.current_step]
   if step.action == "wait_for_item" then ok, result = pcall(wait_for_item, plan, step)
+  elseif step.action == "inspect_entities" then
+    ok, result = pcall(function()
+      local response = inspect.inspect({ targets = step.positions })
+      local errors = 0
+      for _, entity in ipairs(response.entities or {}) do if entity.error then errors = errors + 1 end end
+      return {
+        status = errors > 0 and "partial" or "done",
+        detail = string.format("inspected %d/%d entities locally at tick %d", #step.positions - errors, #step.positions, response.tick),
+        outcome = { tick = response.tick, entities = response.entities, omitted_entities = errors,
+          scope = "within_30_tiles_after_prior_physical_steps" },
+      }
+    end)
   else ok, result = pcall(runners[plan.current_task.type].tick, plan.current_task) end
   if ok and step.action == "wait_for_item" and result == nil then
     -- A read-only condition must not occupy the physical body while an
@@ -417,7 +442,10 @@ local function dispatch(tasks)
   end
   if task.type == "plan" then tick_plan(task); return end
   local ok, result = pcall(runners[task.type].tick, task)
-  if not ok then finish(task, "failed", tostring(result)) elseif result then finish(task, result.status, result.detail, nil, result.outcome) end
+  if not ok then finish(task, "failed", tostring(result)) elseif result then
+    factory_activity.record(task.type, result.outcome)
+    finish(task, result.status, result.detail, nil, result.outcome)
+  end
 end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end

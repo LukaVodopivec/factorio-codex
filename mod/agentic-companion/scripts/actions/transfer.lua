@@ -47,6 +47,12 @@ local function no_entity(task, action)
   }
 end
 
+local function target_identity(e)
+  local identity = { name = e.name, type = e.type }
+  if type(e.position) == "table" then identity.position = { x = e.position.x, y = e.position.y } end
+  return identity
+end
+
 -- ----------------------------------------------------------------- insert
 
 M.insert = {}
@@ -113,14 +119,14 @@ function M.insert.tick(task)
       status = "failed",
       detail = string.format("couldn't insert anything into the %s — %s",
         e.name, table.concat(problems, "; ")),
-      outcome = { code = "ZERO_PROGRESS", total_inserted = 0, transfers = transfers },
+      outcome = { code = "ZERO_PROGRESS", total_inserted = 0, transfers = transfers, target = target_identity(e) },
     }
   end
   if #problems > 0 then
     return {
       status = "partial",
       detail = string.format("partial insert into the %s — %s", e.name, table.concat(problems, "; ")),
-      outcome = { code = "PARTIAL_INSERT", total_inserted = total, transfers = transfers },
+      outcome = { code = "PARTIAL_INSERT", total_inserted = total, transfers = transfers, target = target_identity(e) },
     }
   end
   -- Automation nudge: hand-feeding smelters is a treadmill.
@@ -131,7 +137,7 @@ function M.insert.tick(task)
   return {
     status = "done",
     detail = string.format("inserted %s into the %s%s", table.concat(moved, ", "), e.name, tip),
-    outcome = { total_inserted = total, transfers = transfers },
+    outcome = { total_inserted = total, transfers = transfers, target = target_identity(e) },
   }
 end
 
@@ -199,13 +205,14 @@ local function extract_all(task, c, e)
     end
   end
 
-  local taken = {}
+  local taken, transfers = {}, {}
   for _, name in ipairs(names) do
     local count = sums[name]
     local kept = pull(c, inv, true, name, count)
     if kept > 0 then
       moved[#moved + 1] = { name = name, count = kept }
       taken[#taken + 1] = string.format("%d %s", kept, name)
+      transfers[#transfers + 1] = { item = name, extracted = kept }
     end
     if kept < count then
       restore_moved()
@@ -218,14 +225,19 @@ local function extract_all(task, c, e)
   return {
     status = "done",
     detail = string.format("took %s from the %s", table.concat(taken, ", "), e.name),
+    outcome = { total_extracted = #moved > 0 and (function()
+      local total = 0; for _, row in ipairs(transfers) do total = total + row.extracted end; return total
+    end)() or 0, transfers = transfers, target = target_identity(e) },
   }
 end
 
 local function extract_items(task, c, e)
-  local taken, problems, total = {}, {}, 0
+  local taken, problems, total, transfers = {}, {}, 0, {}
   for _, it in ipairs(task._items) do
     local kept, removed = pull(c, e, false, it.name, it.count)
     total = total + kept
+    transfers[#transfers + 1] = { item = it.name, requested = it.count, extracted = kept,
+      remainder = it.count - kept }
     if kept >= it.count then
       taken[#taken + 1] = string.format("%d %s", kept, it.name)
     elseif kept > 0 then
@@ -247,6 +259,7 @@ local function extract_items(task, c, e)
   return {
     status = "done",
     detail = string.format("took %s from the %s%s", table.concat(taken, ", "), e.name, extra),
+    outcome = { total_extracted = total, transfers = transfers, target = target_identity(e) },
   }
 end
 

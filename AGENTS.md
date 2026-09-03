@@ -73,6 +73,22 @@ buffer-aware transfers, and clustered work over satisfying exactly one next
 deficit. Reports state measured capacity change or quantitatively justify why a
 bounded manual bridge still wins.
 
+Treat automation as an autonomous physical material-flow segment, never as a
+placed or hand-fed machine. Distinguish `machine_present`, `locally_operating`,
+and `autonomous_end_to_end`. The last requires physical upstream supply,
+ordinary transport, processing, downstream acceptance, continuous power/fuel,
+several measured cycles, and no character inventory transfer touching the
+segment during that interval. Track recurring character-mediated edges as
+automation debt and drive transfer actions, transferred items per output,
+service trips, and transport time downward. Every repeated bootstrap or recovery
+hand-feed names its permanent physical replacement, missing prerequisite,
+bounded remaining batches, and numeric sunset. Resume unfinished compound-growth
+work after an incidental shortage.
+
+Reserve loop, automation, continuous, self-running, and fully calibrated for
+current `autonomous_end_to_end` evidence. A repeated character-mediated recipe
+is a manual service cycle or bounded bridge, even if its timing is calibrated.
+
 Count automation capacity only after later structured evidence proves input
 availability, physical transfer, downstream acceptance, increased output, and
 utilization. Preserve verified capacity and shared power until a replacement is

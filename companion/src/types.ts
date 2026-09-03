@@ -23,10 +23,18 @@ export interface PlacementSearchResult {
   candidates: PlacementCandidate[];
 }
 export interface MapSummary {
-  tick: number; charted_chunks: number;
-  resources: Array<{ name: string; entity_count: number; total_amount: number; nearest: Position; observed_tick: number }>;
-  water_edges: Array<{ land: Position; water: Position; observed_tick: number }>;
-  factory_landmarks: Array<{ name: string; type: string; position: Position; direction?: number; status?: string; recipe?: string; observed_tick: number }>;
+  tick: number; summary?: string; charted_chunks?: number;
+  resources?: Array<{ name: string; entity_count: number; total_amount: number; nearest: Position; observed_tick: number }>;
+  water_edges?: Array<{ land: Position; water: Position; observed_tick: number }>;
+  factory_landmarks?: Array<{ name: string; type: string; position: Position; direction?: number; status?: string; recipe?: string; observed_tick: number }>;
+  factory: {
+    scope: "force_charted"; collected_at_tick: number; consistency: "single_request";
+    charted_chunks: number; currently_visible_charted_chunks: number; machine_count: number;
+    groups: Array<Record<string, unknown>>; force_flows: Array<Record<string, unknown>>;
+    material_flow: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>>;
+      components: Array<Record<string, unknown>>; diagnostics: Array<Record<string, unknown>> };
+    character_transfers: Record<string, unknown>; omissions: Record<string, number>; partial: boolean;
+  };
 }
 export interface ProductionRequirementNode {
   item: string; required_units: number; recipe: string; recipe_executions: number;

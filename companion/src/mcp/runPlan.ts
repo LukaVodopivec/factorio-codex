@@ -15,6 +15,7 @@ export const planStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("extract_items"), ...position, items: items.optional() }).strict(),
   z.object({ action: z.literal("set_recipe"), ...position, recipe: z.string() }).strict(),
   z.object({ action: z.literal("rotate_entity"), ...position, direction: z.number().int().min(0).max(15).optional() }).strict(),
+  z.object({ action: z.literal("inspect_entities"), positions: z.array(z.object(position).strict()).min(1).max(16) }).strict(),
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
 ]);
 export const queuePlanSchema = z.object({

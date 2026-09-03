@@ -9,8 +9,16 @@ local resources = {
 }
 local force = {
   is_chunk_charted = function(_, chunk) return chunk.x == 0 and chunk.y == 0 end,
+  is_chunk_visible = function(_, chunk) return chunk.x == 0 and chunk.y == 0 end,
+  get_item_production_statistics = function() return { get_flow_count = function(params)
+    return params.category == "input" and 2 or 3
+  end } end,
+  get_fluid_production_statistics = function() return { get_flow_count = function() return 0 end } end,
 }
-local machine = { valid = true, name = "assembling-machine-1", type = "assembling-machine", position = { x = 5, y = 5 }, direction = 4, status = 1, get_recipe = function() return { name = "gear" } end }
+local machine = { valid = true, name = "assembling-machine-1", type = "assembling-machine", position = { x = 5, y = 5 }, direction = 4, status = 1, force = force,
+  crafting_speed = 1, get_inventory = function() error("aggregate must not inspect remote inventory") end,
+  get_recipe = function() return { name = "gear", energy = 0.5,
+    ingredients = { { name = "iron", type = "item" } }, products = { { name = "gear", type = "item" } } } end }
 local body = { position = { x = 0, y = 0 }, force = force }
 local surface = {
   get_chunks = function()
@@ -23,8 +31,9 @@ local surface = {
 body.surface = surface
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
 _G.game = { tick = 777 }
-_G.defines = { entity_status = { no_power = 1 } }
-local summary = require("scripts.map_summary").map_summary({})
+_G.storage = {}
+_G.defines = { entity_status = { no_power = 1 }, flow_precision_index = { one_minute = 1 } }
+local summary = require("scripts.map_summary").map_summary({ detail = "full" })
 check(summary.tick == 777 and summary.charted_chunks == 1, "map summary carries source tick and charted chunk count")
 check(#summary.resources == 1 and summary.resources[1].total_amount == 30 and summary.resources[1].nearest.x == 3,
   "resource totals and nearest target are deterministic and exclude uncharted entity centers")
@@ -35,4 +44,25 @@ check(#summary.factory_landmarks == 1 and summary.factory_landmarks[1].status ==
   "factory landmarks include machine facts and observation ticks without characters or ghosts")
 check(force.chart == nil and surface.request_to_generate_chunks == nil, "summary exposes no terrain generation path")
 check(force.get_charted_chunks == nil, "summary uses the Factorio 2.0 surface iterator and force chart filter")
+local aggregate = require("scripts.map_summary").map_summary({})
+check(aggregate.resources == nil and aggregate.water_edges == nil and aggregate.factory_landmarks == nil,
+  "aggregate is the compact default and omits legacy detail")
+check(aggregate.factory.scope == "force_charted" and aggregate.factory.charted_chunks == 1
+  and aggregate.factory.currently_visible_charted_chunks == 1,
+  "aggregate distinguishes charted scope from current visibility")
+check(aggregate.factory.machine_count == 1 and #aggregate.factory.groups == 1
+  and aggregate.factory.groups[1].status_counts.no_power == 1
+  and aggregate.factory.groups[1].theoretical_crafts_per_second == 2,
+  "factory groups expose deterministic installed capacity and normalized status")
+check(#aggregate.factory.force_flows == 2 and aggregate.factory.force_flows[1].window_ticks == 3600
+  and aggregate.factory.force_flows[1].units == "units_per_minute"
+  and aggregate.factory.force_flows[1].source == "force_flow_statistics",
+  "native force flows carry explicit source, precision window, and units")
+check(#aggregate.factory.material_flow.nodes == 1
+  and aggregate.factory.material_flow.components[1].state.machine_present
+  and not aggregate.factory.material_flow.components[1].state.locally_operating
+  and not aggregate.factory.material_flow.components[1].state.autonomous_end_to_end,
+  "machine presence, local operation, and end-to-end autonomy remain distinct")
+check(aggregate.factory.character_transfers.transfer_actions == 0,
+  "aggregate includes bounded run-local character transfer evidence")
 os.exit(failures == 0 and 0 or 1)

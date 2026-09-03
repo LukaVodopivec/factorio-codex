@@ -106,8 +106,15 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)))); }
     catch (error) { return failure(error); }
   });
-  server.registerTool("map_summary", { description: "Summarize only already force-charted chunks: resource totals, shoreline edges, factory landmarks and observation ticks. Never charts or generates terrain.", inputSchema: z.object({}).strict() }, async () => {
-    try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", {}))); }
+  const mapSummarySchema = z.object({
+    detail: z.enum(["aggregate", "full"]).default("aggregate"),
+    flow_precision: z.enum(["five_seconds", "one_minute", "ten_minutes", "one_hour"]).default("one_minute"),
+    flow_items: z.array(z.string().min(1)).max(32).optional(),
+    flow_fluids: z.array(z.string().min(1)).max(32).optional(),
+    activity_since_tick: z.number().int().nonnegative().optional(),
+  }).strict();
+  server.registerTool("map_summary", { description: "Compact aggregate of already charted, player-force factory entities: installed capacity estimates, normalized status, native force/surface flow rates, conservative physical connectivity, and run-local character transfers. It never charts terrain or exposes exact remote inventories. Use detail=full only for bounded legacy landmarks/resources.", inputSchema: mapSummarySchema }, async (p) => {
+    try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", mapSummarySchema.parse(p)))); }
     catch (error) { return failure(error); }
   });
   server.registerTool("production_requirements", { description: 'Expand unlocked production requirements. Canonical input: {"targets":{"automation-science-pack":10}}; use targets, never target/count.', inputSchema: z.object({ targets: z.record(z.string(), z.number().int().positive()).refine((value) => Object.keys(value).length >= 1 && Object.keys(value).length <= 16, "targets must contain 1-16 entries"), recipe_choices: z.record(z.string(), z.string()).optional() }).strict() }, async (p) => {
@@ -180,7 +187,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
   server.registerTool("set_recipe", { description: "Auto-approach and set a player-owned crafting-machine recipe. Furnaces auto-select from inserted input; never call set_recipe on a furnace.", inputSchema: position.extend({ recipe: z.string() }) }, async (p) => task("set_recipe", toolPayloads.recipe(p)));
   server.registerTool("rotate_entity", { description: "Auto-approach and rotate an exact-position entity once, or set Factorio direction 0–15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p) => task("rotate", toolPayloads.rotate(p)));
   server.registerTool("build_plan", { description: "Build layouts of up to 25 sequential placements; optional output_target retains each exact entity, and a mining-drill step with starter insert applies it once then waits for first output to expose the exact runtime target; auto-craft is legitimate and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), output_target: position.strict().optional(), recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }) => task("build_plan", toolPayloads.buildPlan(steps, rest)));
-  server.registerTool("queue_plan", { description: "Queue one contiguous 1–25-step physical plan using steps and documented action discriminators; never use summary/actions. The result carries the exact plan_status next action.", inputSchema: queuePlanSchema }, async (input) => {
+  server.registerTool("queue_plan", { description: "Queue one contiguous 1–25-step physical plan using steps and documented action discriminators; never use summary/actions. A physical audit uses walk_to followed by inspect_entities (1–16 local positions), preserving per-step ticks and truthful partial results. The result carries the exact plan_status next action.", inputSchema: queuePlanSchema }, async (input) => {
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
       return result({ ...queued, status: "queued", terminal: false, summary: `queued plan ${queued.plan_id}`,
@@ -200,7 +207,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
       }), value.status === "failed" || value.status === "cancelled");
     } catch (error) { return failure(error); }
   });
-  server.registerTool("run_plan", { description: 'Run 1–25 dependent physical steps. Canonical input: {"steps":[{"action":"craft_items","recipe":"iron-gear-wheel","crafts":2,"wait_for_completion":true}]}; use steps, never summary/actions.', inputSchema: runPlanSchema }, async (input, extra) => {
+  server.registerTool("run_plan", { description: 'Run 1–25 dependent physical or local-inspection steps. Canonical input: {"steps":[{"action":"craft_items","recipe":"iron-gear-wheel","crafts":2,"wait_for_completion":true}]}; physical audit pattern: walk_to then inspect_entities. Steps commit sequentially without rollback; use steps, never summary/actions.', inputSchema: runPlanSchema }, async (input, extra) => {
     const parsed = runPlanSchema.parse(input);
     try {
       const outcome = await executeRunPlan(await bridge(), parsed, extra?.signal);

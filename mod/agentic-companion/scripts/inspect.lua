@@ -358,7 +358,7 @@ function M.inspect(params)
       }
     end
   end
-  return { entities = out }
+  return { tick = game.tick, entities = out }
 end
 
 return M

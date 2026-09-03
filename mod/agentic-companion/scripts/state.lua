@@ -17,6 +17,9 @@ function M.init()
   storage.path_request = nil
   -- chunked RPC responses: { next_id, by_id = { [id] = { parts = {...}, created_tick } } }
   storage.rpc_outbox = storage.rpc_outbox or { next_id = 1, by_id = {} }
+  storage.factory_activity = storage.factory_activity or {
+    epoch_tick = game and game.tick or 0, events = {}, events_omitted = 0,
+  }
 end
 
 return M

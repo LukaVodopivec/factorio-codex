@@ -70,6 +70,33 @@ local function entity_amount(e)
   return nil
 end
 
+local function entity_snapshot(e)
+  if not (e and e.valid) then return nil end
+  return { name = e.name, type = e.type,
+    position = { x = e.position.x, y = e.position.y } }
+end
+
+local function observation_age(task)
+  if task.observed_tick == nil then return nil end
+  return math.max(0, game.tick - task.observed_tick)
+end
+
+local function target_failure(task, c, code, stage, detail, actual)
+  return {
+    status = "failed",
+    detail = code .. ": " .. detail,
+    outcome = {
+      code = code, stage = stage,
+      requested_position = { x = task.target.x, y = task.target.y },
+      expected_name = task.expected_name,
+      observed_tick = task.observed_tick,
+      observation_age_ticks = observation_age(task),
+      target = actual,
+      character_position = c and { x = c.position.x, y = c.position.y } or nil,
+    },
+  }
+end
+
 local function quality_name(quality)
   if type(quality) == "string" then return quality end
   if quality == nil then return nil end
@@ -166,6 +193,16 @@ function M.start(task)
   if target_kind == "owned" and count ~= 1 then
     error("mine target_kind=owned requires exactly one physical mining cycle")
   end
+  if task.expected_name ~= nil and (type(task.expected_name) ~= "string" or task.expected_name == "") then
+    error("mine expected_name must be a nonempty prototype name")
+  end
+  if task.observed_tick ~= nil then
+    local observed_tick = tonumber(task.observed_tick)
+    if not observed_tick or observed_tick ~= math.floor(observed_tick) or observed_tick < 0 or observed_tick > game.tick then
+      error("mine observed_tick must be an integer from 0 through the current game tick")
+    end
+    task.observed_tick = observed_tick
+  end
   task.allow_fluid_loss = task.allow_fluid_loss == true
   if task.allow_fluid_loss and target_kind ~= "owned" then
     error("mine allow_fluid_loss=true is valid only with target_kind=owned")
@@ -193,7 +230,18 @@ function M.start(task)
   -- recovering an overlapping machine is an explicit one-cycle operation.
   local found
   if target_kind == "owned" then found = owned else found = natural end
-  if not found then error(string.format("no %s minable entity occupies exact coordinate (%.1f, %.1f)", target_kind, target.x, target.y)) end
+  task._target_kind = target_kind
+  task._requested, task._completed, task._actual_gain = count, 0, 0
+  if not found then
+    task._initial_failure = target_failure(task, c, "TARGET_NOT_FOUND_AT_START", "initial_resolution",
+      string.format("no %s minable entity occupies exact coordinate (%.3f, %.3f)", target_kind, target.x, target.y))
+    return
+  end
+  if task.expected_name and found.name ~= task.expected_name then
+    task._initial_failure = target_failure(task, c, "TARGET_IDENTITY_MISMATCH", "initial_resolution",
+      string.format("expected %s but exact coordinate contains %s", task.expected_name, found.name), entity_snapshot(found))
+    return
+  end
   if count > 1 and found.type ~= "resource" then error("mine count greater than 1 is only valid for resources") end
   if found == owned and not recoverable(found, task.allow_fluid_loss) then
     error(task.allow_fluid_loss
@@ -201,10 +249,9 @@ function M.start(task)
       or "refusing to recover a player-owned entity with nonempty inventories or fluids; set allow_fluid_loss=true to discard fluids through ordinary dismantling")
   end
   task._entity, task._entity_name = found, found.name
-  task._target_kind = target_kind
+  task._resolved_target = entity_snapshot(found)
   task._expected_items = expected_item_names(found)
   task._discarded_fluids = task.allow_fluid_loss and fluid_contents(found) or {}
-  task._requested, task._completed, task._actual_gain = count, 0, 0
 end
 
 local function partial_failure(task, reason)
@@ -233,8 +280,10 @@ local function selection_failure(task, c, e, stage, code)
     outcome = {
       code = code, stage = stage,
       requested_position = { x = task.target.x, y = task.target.y },
-      target = e and e.valid and { name = e.name, type = e.type,
-        position = { x = e.position.x, y = e.position.y } } or nil,
+      expected_name = task.expected_name,
+      observed_tick = task.observed_tick,
+      observation_age_ticks = observation_age(task),
+      target = entity_snapshot(e) or task._resolved_target,
       character_position = { x = c.position.x, y = c.position.y },
       can_reach_entity = can_reach, selected = actual,
     },
@@ -243,6 +292,7 @@ end
 
 function M.tick(task)
   local c, e = companion.get(), task._entity
+  if task._initial_failure then return task._initial_failure end
   if not c then return partial_failure(task, "the Codex character is gone") end
   if task._target_kind == "owned" and (tonumber(c.crafting_queue_size) or 0) > 0 then
     c.mining_state = { mining = false }
@@ -251,11 +301,27 @@ function M.tick(task)
   if not task._mining_started then
     if not (e and e.valid) then
       if task._completed > 0 then return partial_failure(task, "the initially selected resource was exhausted") end
-      return partial_failure(task, "the exact target was removed before mining started")
+      return target_failure(task, c, "TARGET_GONE_AFTER_RESOLUTION", task._approach and "during_approach" or "before_approach",
+        "the exact target was removed after resolution and before mining started", task._resolved_target)
     end
     local reached = approach.ensure_entity(task, c, e)
-    if type(reached) == "table" then return reached end
+    if type(reached) == "table" then
+      if not (e and e.valid) then
+        return target_failure(task, c, "TARGET_GONE_AFTER_RESOLUTION", "during_approach",
+          "the exact target was removed during physical approach", task._resolved_target)
+      end
+      if type(reached.detail) == "string" and reached.detail:match("physical reach") then
+        return target_failure(task, c, "TARGET_OUT_OF_REACH", "after_approach",
+          "the resolved exact target remains outside physical character reach", entity_snapshot(e) or task._resolved_target)
+      end
+      return reached
+    end
     if reached ~= "ok" then return nil end
+    local reach_ok, can_reach = pcall(c.can_reach_entity, e)
+    if not reach_ok or can_reach ~= true then
+      return target_failure(task, c, "TARGET_OUT_OF_REACH", "after_approach",
+        "the resolved exact target is outside physical character reach", entity_snapshot(e) or task._resolved_target)
+    end
     if task._target_kind == "owned" and not recoverable(e, task.allow_fluid_loss) then
       c.mining_state = { mining = false }
       return partial_failure(task, "refusing to recover a player-owned entity that gained inventory or fluid contents")

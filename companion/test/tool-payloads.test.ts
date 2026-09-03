@@ -29,6 +29,9 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(toolPayloads.mine({ x: 1, y: 2, count: 3 })).toEqual({ target: { x: 1, y: 2 }, count: 3 });
     expect(toolPayloads.mine({ x: 1, y: 2, count: 1, target_kind: "owned" })).toEqual({ target: { x: 1, y: 2 }, count: 1, target_kind: "owned" });
     expect(toolPayloads.mine({ x: 1, y: 2, count: 1, target_kind: "owned", allow_fluid_loss: true })).toEqual({ target: { x: 1, y: 2 }, count: 1, target_kind: "owned", allow_fluid_loss: true });
+    expect(toolPayloads.mine({ x: 1.25, y: 2.5, count: 1, expected_name: "tree-01", observed_tick: 42 })).toEqual({
+      target: { x: 1.25, y: 2.5 }, count: 1, expected_name: "tree-01", observed_tick: 42,
+    });
     expect(toolPayloads.pickup({ x: 1, y: 2, item: "iron-ore", count: 3 })).toEqual({ target: { x: 1, y: 2 }, item: "iron-ore", count: 3 });
     expect(toolPayloads.place({ x: 1, y: 2, name: "furnace", direction: 4 })).toEqual({ item: "furnace", position: { x: 1, y: 2 }, direction: 4 });
     expect(toolPayloads.insert({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
@@ -116,12 +119,16 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 1, target_kind: "owned" });
     await handlers.mine({ x: 11, y: 12, count: 1, target_kind: "owned", allow_fluid_loss: true });
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 1, target_kind: "owned", allow_fluid_loss: true });
+    await handlers.mine({ x: 11.25, y: 12.5, count: 1, expected_name: "tree-01", observed_tick: 42 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11.25, y: 12.5 }, count: 1, expected_name: "tree-01", observed_tick: 42 });
     expect(schemas.mine.safeParse({ x: 0, y: 0 }).data.count).toBe(1);
     expect(schemas.mine.safeParse({ x: 0, y: 0 }).data.target_kind).toBe("natural");
     expect(schemas.mine.safeParse({ x: 0, y: 0, target_kind: "owned" }).success).toBe(true);
     expect(schemas.mine.safeParse({ x: 0, y: 0, target_kind: "owned", allow_fluid_loss: true }).success).toBe(true);
     expect(schemas.mine.safeParse({ x: 0, y: 0, count: 2 }).success).toBe(true);
     expect(schemas.mine.safeParse({ x: 0, y: 0, count: 201 }).success).toBe(false);
+    expect(schemas.mine.safeParse({ x: 0, y: 0, expected_name: "tree-01", observed_tick: 0 }).success).toBe(true);
+    expect(schemas.mine.safeParse({ x: 0, y: 0, expected_name: "", observed_tick: -1 }).success).toBe(false);
     await handlers.pickup_items({ x: 11.25, y: 12.5, item: "iron-ore", count: 3 });
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "pickup", target: { x: 11.25, y: 12.5 }, item: "iron-ore", count: 3 });
     expect(schemas.pickup_items.safeParse({ x: 0, y: 0, item: "iron-ore", count: 0 }).success).toBe(false);

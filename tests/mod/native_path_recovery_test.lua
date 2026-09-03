@@ -115,14 +115,30 @@ check(walk.step(task._walk, body, task.id) == nil and task._walk.phase == "front
 local frontier_result
 for _ = 1, 8 do
   local goal = requested_goals[storage.path_request.id]
-  deliver({ goal }, false)
+  local path = { goal }
+  if goal.x == 4 and goal.y == 0 then
+    path = {}
+    for index = 1, 14 do path[index] = { x = goal.x * index / 14, y = goal.y } end
+  end
+  deliver(path, false)
   frontier_result = walk.step(task._walk, body, task.id)
 end
 check(frontier_result and frontier_result.failed:match("^PATH_NOT_FOUND:")
   and frontier_result.outcome.diagnostics.path.reachable_frontier.x == 4
   and frontier_result.outcome.diagnostics.path.reachable_frontier.y == 0
-  and #frontier_result.outcome.diagnostics.path.partial_route == 1,
+  and #frontier_result.outcome.diagnostics.path.partial_route == 12
+  and frontier_result.outcome.diagnostics.path.omitted_waypoints == 2,
   "frontier probes return the reachable charted route that most reduces goal distance")
+local alternatives = frontier_result.outcome.diagnostics.path.reachable_frontiers
+check(#alternatives == 8
+  and alternatives[1].position.x == 4 and alternatives[1].position.y == 0
+  and alternatives[1].reduction > alternatives[2].reduction
+  and alternatives[#alternatives].position.x == -4
+  and alternatives[#alternatives].reduction < 0,
+  "frontier diagnostics preserve every bounded charted path including lateral and backward recovery choices")
+check(#alternatives[1].partial_route == 12 and alternatives[1].omitted_waypoints == 2
+  and body.walking_state.walking == false,
+  "frontier alternatives provide capped native routes without automatically walking one")
 body.surface.find_non_colliding_position = nil
 found_blockers, tile_blocks = { { valid = true, name = "stone-furnace", type = "furnace", position = { x = 1, y = 0 } } }, true
 

@@ -2,13 +2,14 @@ local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
+local inventory_count = 2
 local body = { valid = true, position = { x = 0, y = 0 }, walking_state = {}, mining_state = {}, crafting_queue = {}, crafting_queue_size = 0 }
-body.get_main_inventory = function() return { get_contents = function() return { { name = "iron-plate", count = 2 } } end } end
+body.get_main_inventory = function() return { get_contents = function() return { { name = "iron-plate", count = inventory_count } } end } end
 body.cancel_crafting = function(args) table.remove(body.crafting_queue, args.index); body.crafting_queue_size = #body.crafting_queue end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 local starts = {}
 local queued_place_output_target
-local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_output_target = task.output_target end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
+local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_output_target = task.output_target end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; if kind == "mine" and not fails then inventory_count = 5 end; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
 local walk, mine, craft = runner("walk_to"), runner("mine"), runner("craft")
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = walk, mine, runner("pickup"), craft
 package.loaded["scripts.actions.build"] = { place = runner("place"), rotate = runner("rotate"), set_recipe = runner("set_recipe") }
@@ -25,6 +26,8 @@ local missing_crafts_ok = pcall(tasks.queue_plan, { steps = { { action = "craft_
 local fractional_crafts_ok = pcall(tasks.queue_plan, { steps = { { action = "craft_items", recipe = "gear", crafts = 1.5 } } })
 check(not old_count_ok and not missing_crafts_ok and not fractional_crafts_ok,
   "direct queue_plan rejects old count and requires integer crafts from 1 to 100")
+check(not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 2 } }, observation_detail = "brief" }),
+  "direct queue_plan accepts only none, compact, or full terminal observation detail")
 local first = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 2 }, { action = "mine", x = 3, y = 4, count = 1 } }, observation_detail = "compact" })
 local successor = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 1, wait_for_completion = false } }, after_plan_id = first.plan_id })
 check(first.plan_id == 1 and successor.plan_id == 2, "queue_plan returns IDs immediately in the flat FIFO")
@@ -32,7 +35,11 @@ for tick = 1, 5 do game.tick = tick; tasks.on_tick() end
 local a, b = tasks.plan_status({ plan_id = 1 }), tasks.plan_status({ plan_id = 2 })
 check(a.status == "completed" and a.completed_steps == 2, "Lua plan executes all steps contiguously")
 check(a.inventory_delta and a.inventory_delta["iron-plate"] == 3,
-  "terminal plan exposes the relevant observed inventory delta")
+  "terminal plan exposes inventory delta independently of its observation")
+check(a.execution.mode == "sequential_nontransactional" and a.execution.rollback == "none"
+  and #a.execution.committed_steps == 2 and a.execution.committed_steps[1] == 1
+  and a.execution.committed_steps[2] == 2 and a.execution.incomplete_step == nil,
+  "terminal plan declares its committed sequential nontransactional effects")
 check(b.status == "completed" and table.concat(starts, ",") == "walk_to,mine,craft", "successful predecessor releases successor without interleaving")
 check(a.transitions[1].status == "queued" and a.transitions[2].status == "running"
   and a.transitions[3].status == "completed" and #a.transitions == 3
@@ -50,9 +57,12 @@ local pickup_plan = tasks.queue_plan({ steps = { { action = "pickup_items", x = 
 game.tick = 5.5; tasks.on_tick()
 check(tasks.plan_status({ plan_id = pickup_plan.plan_id }).status == "completed" and starts[#starts] == "pickup",
   "queued plans route pickup_items through the same physical FIFO runner")
+check(tasks.plan_status({ plan_id = pickup_plan.plan_id }).observation == nil
+  and tasks.plan_status({ plan_id = pickup_plan.plan_id }).inventory_delta ~= nil,
+  "terminal observation is opt-in while final inventory deltas remain present")
 check(a.observation and a.observation.detail == "compact", "terminal plan includes selected observation")
 local bad = tasks.queue_plan({ steps = { { action = "mine", x = 1, y = 1 } } })
-local blocked = tasks.queue_plan({ steps = { { action = "walk_to", x = 9, y = 9 } }, after_plan_id = bad.plan_id })
+local blocked = tasks.queue_plan({ steps = { { action = "walk_to", x = 9, y = 9 } }, after_plan_id = bad.plan_id, observation_detail = "compact" })
 for tick = 6, 9 do game.tick = tick; tasks.on_tick() end
 check(tasks.plan_status({ plan_id = bad.plan_id }).status == "failed", "plan failure is observable")
 local blocked_status = tasks.plan_status({ plan_id = blocked.plan_id })
@@ -105,6 +115,10 @@ local remote_status = tasks.plan_status({ plan_id = remote.plan_id })
 check(inspected == 0 and remote_status.status == "failed"
   and remote_status.outcomes[1].error:match("TARGET_OUT_OF_OBSERVATION_RANGE"),
   "out-of-range wait rejects immediately without hidden remote inspection")
+check(remote_status.execution.incomplete_step.step == 1
+  and remote_status.execution.incomplete_step.status == "failed"
+  and remote_status.execution.incomplete_step.effects == "unknown",
+  "failed physical step does not claim rollback or zero side effects")
 body.position = { x = 0, y = 0 }
 local output_plan = tasks.queue_plan({ steps = { { action = "place_entity", name = "burner-inserter", x = 1, y = 0, output_target = { x = 2, y = 0 } } } })
 game.tick = 46; tasks.on_tick()
@@ -138,7 +152,7 @@ check(tasks.plan_status({ plan_id = craft_predecessor.plan_id }).status == "comp
   "queued successor still releases after its parked predecessor becomes satisfied")
 
 tasks.set_observer(function() error("terminal observation unavailable") end)
-local observation_failed = tasks.queue_plan({ steps = { { action = "walk_to", x = 12, y = 12 } } })
+local observation_failed = tasks.queue_plan({ steps = { { action = "walk_to", x = 12, y = 12 } }, observation_detail = "compact" })
 game.tick = 171; tasks.on_tick()
 local observation_failed_status = tasks.plan_status({ plan_id = observation_failed.plan_id })
 check(observation_failed_status.status == "failed"

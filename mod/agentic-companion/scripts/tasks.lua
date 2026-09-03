@@ -44,6 +44,7 @@ local function set_plan_status(plan, status)
   plan.transitions[#plan.transitions + 1] = { status = status, tick = game.tick }
 end
 local function observe_terminal(plan)
+  if plan.observation_detail == "none" then return end
   if plan.observation or plan.observation_error or not observer then return end
   local ok, value = pcall(observer, { radius = plan.final_observation_radius, detail = plan.observation_detail })
   if ok then plan.observation = value else plan.observation_error = tostring(value) end
@@ -55,8 +56,8 @@ local function inventory_snapshot(c)
   return out
 end
 local function inventory_delta(plan)
-  if not plan.observation then return nil end
-  local final = plan.observation and plan.observation.character and plan.observation.character.inventory or {}
+  if not plan.start_inventory or not plan.final_inventory then return {} end
+  local final = plan.final_inventory or {}
   local initial, names, seen, delta = plan.start_inventory or {}, {}, {}, {}
   for name in pairs(initial) do seen[name], names[#names + 1] = true, name end
   for name in pairs(final) do if not seen[name] then names[#names + 1] = name end end
@@ -73,6 +74,7 @@ local function finish(task, status, detail, preserve_body, outcome)
   if not preserve_body then stop_body() end
   if task.type == "plan" then
     task.finished_tick = game.tick
+    task.final_inventory = inventory_snapshot(companion.get())
     observe_terminal(task)
     local final_status = status == "done" and "completed" or status
     if final_status == "completed" and task.observation_error then final_status = "failed" end
@@ -110,7 +112,10 @@ local function make_step_task(step)
   local task = { type = kind }
   if kind == "walk_to" or kind == "mine" then
     task.target = { x = step.x, y = step.y }; task.count = step.count
-    if kind == "mine" then task.target_kind, task.allow_fluid_loss = step.target_kind, step.allow_fluid_loss end
+    if kind == "mine" then
+      task.target_kind, task.allow_fluid_loss = step.target_kind, step.allow_fluid_loss
+      task.expected_name, task.observed_tick = step.expected_name, step.observed_tick
+    end
   end
   if kind == "pickup" then task.target, task.item, task.count = { x = step.x, y = step.y }, step.item, step.count end
   if kind == "place" then
@@ -127,6 +132,10 @@ end
 function M.queue_plan(params)
   companion.require_companion()
   if type(params.steps) ~= "table" or #params.steps < 1 or #params.steps > 25 then error("queue_plan requires 1-25 steps") end
+  if params.observation_detail ~= nil and params.observation_detail ~= "none"
+    and params.observation_detail ~= "compact" and params.observation_detail ~= "full" then
+    error("observation_detail must be none, compact, or full")
+  end
   for i, step in ipairs(params.steps) do
     if type(step) ~= "table" or (step.action ~= "wait_for_item" and not ACTIONS[step.action]) then
       error("unknown plan action at step " .. i .. ": " .. tostring(type(step) == "table" and step.action or step))
@@ -144,7 +153,8 @@ function M.queue_plan(params)
   local plan = {
     type = "plan", steps = params.steps, current_step = 0, completed_steps = 0, outcomes = {},
     final_observation_radius = tonumber(params.final_observation_radius) or 15,
-    observation_detail = params.observation_detail == "full" and "full" or "compact",
+    observation_detail = params.observation_detail == "full" and "full"
+      or params.observation_detail == "compact" and "compact" or "none",
     after_plan_id = predecessor,
   }
   return { plan_id = assign(plan), after_plan_id = predecessor }
@@ -174,6 +184,15 @@ local function plan_payload(plan)
   elseif plan.status == "failed" and plan.outcomes[#plan.outcomes] then
     diagnostics = { failure = plan.outcomes[#plan.outcomes].error }
   end
+  local committed_steps = {}
+  local incomplete_step
+  for _, outcome in ipairs(plan.outcomes) do
+    if outcome.status == "completed" or outcome.status == "partial" then
+      committed_steps[#committed_steps + 1] = outcome.step
+    elseif outcome.status == "failed" or outcome.status == "cancelled" then
+      incomplete_step = { step = outcome.step, status = outcome.status, effects = "unknown" }
+    end
+  end
   return {
     plan_id = plan.id, after_plan_id = plan.after_plan_id,
     status = plan.status, source_tick = game.tick,
@@ -183,6 +202,8 @@ local function plan_payload(plan)
     transitions = plan.transitions,
     inventory_delta = inventory_delta(plan),
     observation = plan.observation, observation_error = plan.observation_error,
+    execution = { mode = "sequential_nontransactional", rollback = "none",
+      committed_steps = committed_steps, incomplete_step = incomplete_step },
     diagnostics = diagnostics,
   }
 end

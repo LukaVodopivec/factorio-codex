@@ -164,10 +164,15 @@ local shuffled_observation = spatial.observe_local({ radius = 15, detail = "full
 check(canonical(observation) == canonical(shuffled_observation), "shuffled entity input produces byte-identical canonical output")
 local compact = spatial.observe_local({ radius = 15 })
 check(compact.detail == "compact" and compact.grid == nil and compact.character.crafting.queue_size == 0,
-  "compact is the default and omits only the grid while retaining crafting")
-check(#compact.ground_items == 24 and compact.omitted_ground_items == 235
-  and #compact.entities == 24 and compact.omitted_entities == 238
+  "compact is the default and omits the grid while retaining actionable character state")
+check(#compact.ground_items == 12 and compact.omitted_ground_items == 247
+  and #compact.entities == 12 and compact.omitted_entities == 250
   and compact.omitted_resource_patches == 0,
   "compact observation bounds nearest grounded targets and reports every omission count")
+check(compact.entities[1].bounds == nil and compact.entities[1].selection_box == nil
+  and compact.entities[1].collision_box == nil and compact.entities[1].footprint == nil,
+  "compact entity rows omit placement geometry retained by full observations")
+check(#canonical(compact) < 10000,
+  "dense compact observation remains below the bounded serialized response budget")
 _G.require = parse_require
 os.exit(failures == 0 and 0 or 1)

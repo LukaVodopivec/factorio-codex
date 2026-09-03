@@ -6,7 +6,7 @@ import { RconClient } from "../rcon.js";
 import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../compatibility.js";
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
 import { normalizeObservation } from "./observation.js";
-import { executeRunPlan, queuePlanSchema, runPlanSchema, type RunPlanResult } from "./runPlan.js";
+import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
@@ -170,7 +170,7 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     catch (error) { return failure(error); }
   });
   server.registerTool("walk_to", { description: "Scout or relocate by walking physically to an exact position; no-path/stall failures inspect only the immediate charted collision segment and report stable capped inferred visible collision candidates, not authoritative blockers, or explicit absence; positional actions already auto-approach.", inputSchema: position }, async (p) => task("walk_to", toolPayloads.target(p)));
-  server.registerTool("mine", { description: "Auto-approach and physically mine an exact target. target_kind=owned recovers one player-owned minable entity; allow_fluid_loss=true explicitly permits ordinary dismantling to discard contained fluid, while inventories must remain empty.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).default("natural"), allow_fluid_loss: z.boolean().default(false) }).strict() }, async (p) => task("mine", toolPayloads.mine(p)));
+  server.registerTool("mine", { description: 'Auto-approach and physically mine the exact observed target without substituting a neighbor. Canonical fresh-observation input: {"x":3.25,"y":4.75,"count":1,"expected_name":"tree-01","observed_tick":12345}. target_kind=owned recovers one player-owned minable entity; allow_fluid_loss=true permits ordinary dismantling to discard contained fluid, while inventories must remain empty.', inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).default("natural"), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict() }, async (p) => task("mine", toolPayloads.mine(p)));
   server.registerTool("pickup_items", { description: "Auto-approach and physically pick up one exact item stack reported by observe_local. The item and count must still match, the full stack must fit, and Factorio's normal picking state performs collection.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p) => task("pickup", toolPayloads.pickup(p)));
   server.registerTool("place_entity", { description: 'Auto-approach and place an inventory item. Canonical input: {"name":"wooden-chest","x":1.5,"y":2.5}; use name, never item.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), output_target: position.strict().optional() }).strict() }, async (p) => task("place", toolPayloads.place(p)));
   const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict();
@@ -184,16 +184,19 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
       return result({ ...queued, status: "queued", terminal: false, summary: `queued plan ${queued.plan_id}`,
-        next_action: { tool: "plan_status", arguments: { plan_id: queued.plan_id } } });
+        next_action: { tool: "plan_status", arguments: { plan_id: queued.plan_id, wait_until: "progress", timeout_seconds: 30 } } });
     } catch (error) { return failure(error); }
   });
-  server.registerTool("plan_status", { description: "Read a queued, running, or terminal plan with stored after_plan_id, bounded queued/first-running/first-waiting/truthful-final milestones, step outcomes, and terminal observation.", inputSchema: z.object({ plan_id: z.number().int().positive() }) }, async (p) => {
+  server.registerTool("plan_status", { description: "Read plan state immediately, or wait up to 60 seconds for a completed step, waiting state, or terminal outcome. Waiting monitors only and never cancels physical work.", inputSchema: planStatusSchema }, async (input, extra) => {
     try {
-      const value: any = await (await bridge()).call("plan_status", p);
+      const p = planStatusSchema.parse(input);
+      const value: any = await waitForPlanStatus(await bridge(), p.plan_id, p.wait_until, p.timeout_seconds * 1_000, extra?.signal);
       if (value.observation) value.observation = normalizeObservation(value.observation);
       const terminal = ["completed", "partial", "failed", "cancelled"].includes(value.status);
       return result(normalizePlanDiagnostics({ ...value, terminal,
-        next_action: terminal ? null : { tool: "plan_status", arguments: { plan_id: value.plan_id } },
+        next_action: terminal ? null : { tool: "plan_status", arguments: {
+          plan_id: value.plan_id, wait_until: p.wait_until === "current" ? "progress" : p.wait_until, timeout_seconds: p.timeout_seconds,
+        } },
       }), value.status === "failed" || value.status === "cancelled");
     } catch (error) { return failure(error); }
   });
@@ -207,9 +210,9 @@ export function registerMcpTools(server: ToolRegistrar, bridge: () => Promise<Br
       const status = extra?.signal?.aborted ? "cancelled" : "failed";
       const outcome: RunPlanResult = {
         status,
-        completed_steps: 0,
         outcomes: [],
         observation_error: message,
+        execution: { mode: "sequential_nontransactional", rollback: "none", effects_state: "unknown" },
       };
       return result(normalizePlanDiagnostics({ ...outcome, terminal: true, next_action: null }), true);
     }

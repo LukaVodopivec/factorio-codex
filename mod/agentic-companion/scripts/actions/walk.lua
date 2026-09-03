@@ -197,6 +197,13 @@ local function charted(c, point)
     { x = math.floor(point.x / 32), y = math.floor(point.y / 32) })
 end
 
+local function path_charted(c, path)
+  for _, waypoint in ipairs(path or {}) do
+    if not charted(c, waypoint) then return false end
+  end
+  return true
+end
+
 local function request_next_frontier(state, c, task_id)
   state.frontier_index = state.frontier_index + 1
   local candidate = state.frontier_candidates[state.frontier_index]
@@ -262,23 +269,38 @@ local function frontier_failure(state, c)
       or (entry.reduction == best.reduction and (entry.position.y < best.position.y
         or (entry.position.y == best.position.y and entry.position.x < best.position.x))) then best = entry end
   end
-  local route, omitted = {}, 0
-  if best then
-    omitted = math.max(0, #best.path - 12)
-    for index = 1, math.min(#best.path, 12) do route[index] = best.path[index] end
+  table.sort(state.frontier_paths, function(a, b)
+    if a.reduction ~= b.reduction then return a.reduction > b.reduction end
+    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+    return a.position.x < b.position.x
+  end)
+  local frontiers = {}
+  for _, entry in ipairs(state.frontier_paths or {}) do
+    local partial_route = {}
+    for index = 1, math.min(#entry.path, 12) do partial_route[index] = entry.path[index] end
+    frontiers[#frontiers + 1] = {
+      position = entry.position,
+      reduction = entry.reduction,
+      partial_route = partial_route,
+      omitted_waypoints = math.max(0, #entry.path - 12),
+    }
   end
+  local recommended = frontiers[1]
   local evidence = blocker_evidence(state, c, state.target)
   local collision_candidates, collision_tiles, evidence_error = nearby_collision_evidence(c)
   local diagnostics = { code = "PATH_NOT_FOUND", evidence_scope = "charted_visible_only",
     start = { x = c.position.x, y = c.position.y }, goal = state.target,
-    reachable_frontier = best and best.position or nil, partial_route = route,
-    omitted_waypoints = omitted, blocker_evidence = evidence,
+    reachable_frontier = recommended and recommended.position or nil,
+    reachable_frontiers = frontiers,
+    partial_route = recommended and recommended.partial_route or {},
+    omitted_waypoints = recommended and recommended.omitted_waypoints or 0,
+    blocker_evidence = evidence,
     owned_collision_candidates = collision_candidates, collision_tiles = collision_tiles,
     cage_evidence_error = evidence_error }
   return fail(c, "PATH_NOT_FOUND", string.format(
     "Factorio found no character path to (%.1f, %.1f); %s; reachable_frontier=%s",
     state.target.x, state.target.y, evidence,
-    best and string.format("(%.1f,%.1f)", best.position.x, best.position.y) or "none"),
+    recommended and string.format("(%.1f,%.1f)", recommended.position.x, recommended.position.y) or "none"),
     { code = "PATH_NOT_FOUND", diagnostics = { path = diagnostics } })
 end
 
@@ -389,7 +411,7 @@ function M.step(state, c, task_id)
   if state.phase == "frontier_waiting" then
     local result = take_path_result(state, task_id)
     if result then
-      if result.path and #result.path > 0 then
+      if result.path and #result.path > 0 and path_charted(c, result.path) then
         state.frontier_paths[#state.frontier_paths + 1] = {
           position = state.frontier_candidates[state.frontier_index], path = result.path,
         }

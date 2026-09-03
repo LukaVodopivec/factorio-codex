@@ -53,6 +53,7 @@ try {
   const mineSchema = tools.find((tool: any) => tool.name === "mine")?.inputSchema?.properties ?? {};
   if (mineSchema.count?.default !== 1 || mineSchema.count?.maximum !== 200) throw new Error("mine must expose count 1-200 default 1");
   if (mineSchema.target_kind?.default !== "natural" || JSON.stringify(mineSchema.target_kind?.enum) !== JSON.stringify(["natural", "owned"])) throw new Error("mine must expose explicit natural|owned target identity");
+  if (!mineSchema.expected_name || mineSchema.observed_tick?.minimum !== 0) throw new Error("mine must expose optional exact observation provenance");
   const pickupSchema = tools.find((tool: any) => tool.name === "pickup_items")?.inputSchema ?? {};
   if (!pickupSchema.required?.includes("x") || !pickupSchema.required?.includes("y") || !pickupSchema.required?.includes("item") || !pickupSchema.required?.includes("count")) throw new Error("pickup_items must require exact observed position/item/count");
   const runPlanSchema = tools.find((tool: any) => tool.name === "run_plan")?.inputSchema ?? {};
@@ -65,7 +66,10 @@ try {
   if (!text.startsWith("Offline:") || !text.includes("factorio-codex setup")) throw new Error(`offline status not actionable: ${text}`);
   if (stderr.trim()) throw new Error(`unexpected pre-init/offline stderr: ${stderr}`);
   const queueSchema = tools.find((tool: any) => tool.name === "queue_plan")?.inputSchema?.properties ?? {};
-  if (queueSchema.after_plan_id?.exclusiveMinimum !== 0 || queueSchema.observation_detail?.default !== "compact") throw new Error("queue_plan dependency/detail schema mismatch");
+  if (queueSchema.after_plan_id?.exclusiveMinimum !== 0 || queueSchema.observation_detail?.default !== "none") throw new Error("queue_plan dependency/detail schema mismatch");
+  const statusSchema = tools.find((tool: any) => tool.name === "plan_status")?.inputSchema?.properties ?? {};
+  if (statusSchema.wait_until?.default !== "current" || statusSchema.timeout_seconds?.default !== 30
+    || statusSchema.timeout_seconds?.maximum !== 60) throw new Error("plan_status bounded wait schema mismatch");
   console.log("PASS initialize, exact 25 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
 } finally {
   child.kill();

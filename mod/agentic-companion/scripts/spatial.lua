@@ -158,8 +158,8 @@ function M.observe_local(params)
   local radius = math.floor(tonumber(params.radius) or SCAN_DEFAULT_RADIUS)
   radius = math.max(SCAN_MIN_RADIUS, math.min(radius, SCAN_MAX_RADIUS))
   local compact = params.detail ~= "full"
-  local entity_limit, ground_limit, patch_limit = compact and 24 or 256,
-    compact and 24 or 256, compact and 16 or 256
+  local entity_limit, ground_limit, patch_limit = compact and 12 or 256,
+    compact and 12 or 256, compact and 8 or 256
 
   local center = c.position
   local ox = math.floor(center.x) - radius
@@ -317,7 +317,12 @@ function M.observe_local(params)
     if a.type ~= b.type then return a.type < b.type end
     return a._unit < b._unit
   end)
-  for _, detail in ipairs(details) do detail._distance, detail._unit = nil, nil end
+  for _, detail in ipairs(details) do
+    detail._distance, detail._unit = nil, nil
+    if compact then
+      detail.bounds, detail.selection_box, detail.collision_box, detail.footprint = nil, nil, nil, nil
+    end
+  end
   table.sort(ground_items, function(a, b)
     if a.distance ~= b.distance then return a.distance < b.distance end
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end

@@ -257,6 +257,9 @@ describe("exact local configuration", () => {
     expect(pilot).toMatch(/permanently own the local bottleneck, action, and fallback choice plus the current plan and one grounded queued successor/i);
     expect(strategist).toMatch(/at most one unique proposal per source tick[\s\S]*never replace or resend[\s\S]*single-use/i);
     expect(strategist).toMatch(/restart[\s\S]*rebuild entirely from the ledger[\s\S]*without requesting replay or pausing the pilot/i);
+    expect(strategist).toMatch(/Never approve, authorize, or gate a manual batch[\s\S]*pilot independently decides/i);
+    expect(strategist).toMatch(/Never decide, declare, approve, or gate gameplay milestone completion[\s\S]*pilot alone determines/i);
+    expect(strategist).not.toMatch(/Stop complete/i);
     expect(pilot).toMatch(/Never prepend `walk_to` to a positional action that already auto-approaches/i);
     expect(pilot).toMatch(/call `queue_plan`[\s\S]*returned `plan_id` and `after_plan_id`[\s\S]*`plan_status` confirms status `queued`[\s\S]*`queued_successor: null`/i);
   });

@@ -19,7 +19,8 @@ The parent identifies the shared milestone and communication route, confirms
 that only the pilot has Factorio MCP access or invokes gameplay tools, and lets
 the strategist issue the first operations-ledger revision. The strategist
 offers coordinate-free proposals; the pilot alone selects and executes actions
-from current structured state.
+from current structured state and alone determines milestone completion from
+later-tick MCP proof.
 
 ## Shared-run contract
 
@@ -115,7 +116,7 @@ merely because one useful item or incidental non-production loot was obtained;
 validated automation utilization, the current plan, and its grounded successor
 remain the priority. The strategist owns coordinate-free automation calculations
 and strategic hypothesis framing, never the pilot's phase, plan, successor, or
-fallback choice. On the first material-flow contradiction it
+fallback choice, batch authorization, or completion decision. On the first material-flow contradiction it
 distinguishes the game bottleneck from an MCP observability gap before writing
 the next proposal.
 

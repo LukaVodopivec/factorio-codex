@@ -114,7 +114,8 @@ single-use proposal per source tick at a natural boundary and validates
 save identity and every precondition exactly once, then accepts or discards it
 without acknowledgement or resend. It keeps useful work queued before reporting
 and reports only a material bottleneck, technology, production, or expansion
-change, or a repeated distinct failure. A restarted strategist rebuilds from the ledger
+change, or a repeated distinct failure. The pilot alone authorizes manual
+batches and determines milestone completion from later-tick MCP proof. A restarted strategist rebuilds from the ledger
 without pausing the pilot. The pilot may observe, choose exact visible
 coordinates, retry honest pathing, and finish the assigned milestone. End with
 an authoritative observation: consume a fresh `run_plan.observation` directly;

@@ -99,7 +99,8 @@ successor, reads the ledger once at startup rather than per MCP call, and reads
 at most one tick-keyed proposal only at a natural boundary.
 Latest MCP state wins; the pilot validates save identity and every proposal
 precondition once, accepts or discards it, keeps work queued, and reports only
-material changes or a repeated distinct failure. A restarted strategist rebuilds
+material changes or a repeated distinct failure. It alone authorizes manual
+batches and determines milestone completion from MCP proof. A restarted strategist rebuilds
 from the ledger without pausing play. The first rollout is the next fresh matched run; Candidate
 B and R1-R7 remain historical evidence. Bounded packets prevent strategic drift;
 concurrency removes thinking idle time, not physical walking time. See the

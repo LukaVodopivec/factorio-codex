@@ -214,6 +214,9 @@ describe("shared gameplay run contract", () => {
       expect(text).toMatch(/natural (?:plan )?boundary/i);
     expect(strategist).toMatch(/zero Factorio MCP access/i);
     expect(strategist).toMatch(/never an envelope, plan, exact-coordinate command, approval, gate[\s\S]*instruction to enqueue/i);
+    expect(strategist).toMatch(/Never approve, authorize, or gate a manual batch[\s\S]*pilot independently decides/i);
+    expect(strategist).toMatch(/Never decide, declare, approve, or gate gameplay milestone completion[\s\S]*pilot alone determines milestone completion from later-tick MCP proof/i);
+    expect(strategist).not.toMatch(/Stop complete/i);
     expect(fs.existsSync(path.join(skillRoot, "GOAL-MASTER-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(skillRoot, "GOAL-SPECIALIST-v1.md"))).toBe(false);
   });

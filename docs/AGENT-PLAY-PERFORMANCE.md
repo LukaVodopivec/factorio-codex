@@ -184,7 +184,9 @@ bottleneck/action/fallback selection and the current plan plus one grounded
 queued successor, reads the ledger once at startup rather than per MCP call, and
 keeps useful work queued before reporting. Latest MCP
 state always wins. A restarted strategist rebuilds from the ledger without
-pausing the pilot or requesting replay.
+pausing the pilot or requesting replay. The pilot alone authorizes manual batches
+and determines milestone completion from later-tick MCP proof; the strategist
+only analyzes options and mirrors the result.
 The strategist owns coordinate-free automation calculations in the same decision turn. On the
 first material-flow contradiction it distinguishes a game bottleneck from an
 MCP observability gap before issuing the next proposal. Count capacity only after output is

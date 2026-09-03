@@ -146,6 +146,7 @@ export function normalizePlanDiagnostics(value: any): any {
     start_tick: Math.min(...auditTicks), end_tick: Math.max(...auditTicks),
     snapshot_skew_ticks: Math.max(...auditTicks) - Math.min(...auditTicks), clusters: inspections,
     partial: value.status !== "completed" || inspections.some((entry: any) => entry.omitted_entities > 0),
+    evidence_class: "time_skewed_physical_tour",
     semantics: "ordinary movement followed by local inspection; snapshots are not simultaneous",
   } : undefined;
   return {

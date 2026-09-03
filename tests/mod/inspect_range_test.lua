@@ -55,6 +55,8 @@ body = { valid = true, position = { x = 0, y = 0 }, surface = surface }
 entity.position = { x = 30, y = 0 }
 local at_limit, at_limit_result = pcall(inspect.inspect, { targets = { entity.position } })
 check(at_limit and type(at_limit_result.entities) == "table"
+  and at_limit_result.evidence_class == "fresh_local_exact"
+  and at_limit_result.scope == "within_30_tiles_of_codex_at_source_tick"
   and at_limit_result.entities[1].name == "stone-furnace"
   and at_limit_result.entities[1].electrical.network_id == 17
   and at_limit_result.entities[1].electrical.energy == 2400

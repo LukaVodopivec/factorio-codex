@@ -137,6 +137,11 @@ and zero character insert/extract actions for the segment must all hold.
   status, force-flow evidence, conservative physical components, automation
   debt, and missing or ambiguous edges. It never authorizes remote inventories;
   exact buffers still require ordinary movement followed by local inspection.
+- Keep evidence classes separate: `fresh_local_exact` applies only at the local
+  inspection source tick; `charted_remote_summary` is a current bounded remote
+  aggregate without exact stock; `rolling_force_surface_flow` is a rate over
+  its named window; cached or previously observed facts retain their old tick;
+  and a `time_skewed_physical_tour` is never a simultaneous snapshot.
 - Exactly one physical Factorio tool call may be in flight. The Lua task queue is
   the sole FIFO lane. Parallelize only read-only observations when inconsistent
   source ticks are acceptable, then revalidate the newest snapshot before any

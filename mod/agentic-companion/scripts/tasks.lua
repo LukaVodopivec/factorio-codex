@@ -389,6 +389,7 @@ local function tick_plan(plan)
         status = errors > 0 and "partial" or "done",
         detail = string.format("inspected %d/%d entities locally at tick %d", #step.positions - errors, #step.positions, response.tick),
         outcome = { tick = response.tick, entities = response.entities, omitted_entities = errors,
+          evidence_class = response.evidence_class,
           scope = "within_30_tiles_after_prior_physical_steps" },
       }
     end)

@@ -108,6 +108,13 @@ describe("protocol v19 DTO and tool registry", () => {
     expect(diagnostics.diagnostics.route[0]).toMatchObject({ step: 2, detail: "blocked" });
     expect(diagnostics.diagnostics.machines[0]).toMatchObject({ entity: "assembler", status: "no_power" });
     expect(normalizePlanDiagnostics({ transitions: {} }).transitions).toEqual([]);
+    const audit = normalizePlanDiagnostics({ plan_id: 9, status: "completed", outcomes: [
+      { step: 2, action: "inspect_entities", result: { tick: 100, entities: [{ name: "furnace" }], omitted_entities: 0 } },
+      { step: 4, action: "inspect_entities", result: { tick: 145, entities: [{ name: "lab" }], omitted_entities: 0 } },
+    ] }).physical_audit;
+    expect(audit).toMatchObject({ audit_id: "plan-9", start_tick: 100, end_tick: 145,
+      snapshot_skew_ticks: 45, evidence_class: "time_skewed_physical_tour", partial: false });
+    expect(audit.clusters).toHaveLength(2);
   });
 
   it("keeps payload construction explicit and lossless", () => {

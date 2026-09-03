@@ -75,6 +75,14 @@ describe("persistent single-pilot contract", () => {
     expect(active).toMatch(/sequential and nontransactional[\s\S]*no rollback/i);
   });
 
+  it("keeps local, charted, rolling, cached, and tour evidence semantically distinct", () => {
+    const normalized = active.replace(/\s+/g, " ");
+    for (const evidenceClass of ["fresh_local_exact", "charted_remote_summary", "rolling_force_surface_flow", "time_skewed_physical_tour"])
+      expect(normalized).toContain(evidenceClass);
+    expect(normalized).toMatch(/cached or previously observed facts retain their old tick/i);
+    expect(normalized).toMatch(/time_skewed_physical_tour.*never a simultaneous snapshot/i);
+  });
+
   it("preserves generic physical play and ephemeral coordinates", () => {
     const normalized = `${active}\n${knowledge}`.replace(/\s+/g, " ");
     for (const required of ["one physical character", "raw Lua/console", "hidden map state", "free resources", "exact natural targets", "charted reachable frontier"])

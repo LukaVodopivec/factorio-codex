@@ -358,7 +358,12 @@ function M.inspect(params)
       }
     end
   end
-  return { tick = game.tick, entities = out }
+  return {
+    tick = game.tick,
+    evidence_class = "fresh_local_exact",
+    scope = "within_30_tiles_of_codex_at_source_tick",
+    entities = out,
+  }
 end
 
 return M

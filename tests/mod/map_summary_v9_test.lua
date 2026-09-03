@@ -19,14 +19,18 @@ local machine = { valid = true, name = "assembling-machine-1", type = "assemblin
   crafting_speed = 1, get_inventory = function() error("aggregate must not inspect remote inventory") end,
   get_recipe = function() return { name = "gear", energy = 0.5,
     ingredients = { { name = "iron", type = "item" } }, products = { { name = "gear", type = "item" } } } end }
-local body = { position = { x = 0, y = 0 }, force = force }
+local foreign_force = {}
+local foreign_machine = { valid = true, name = "foreign-machine", type = "assembling-machine",
+  position = { x = 6, y = 5 }, force = foreign_force, status = 1 }
+local invalid_machine = { valid = false, name = "invalid-machine", type = "furnace", position = { x = 7, y = 5 }, force = force }
+local body = { valid = true, name = "character", type = "character", position = { x = 0, y = 0 }, force = force }
 local surface = {
   get_chunks = function()
     local chunks, index = { { x = 1, y = 0 }, { x = 0, y = 0 } }, 0
     return function() index = index + 1; return chunks[index] end
   end,
   get_tile = function(x) return { collides_with = function(layer) return (layer == "water_tile" or layer == "player") and x >= 16 end } end,
-  find_entities_filtered = function(filter) if filter.type == "resource" then return resources end; return { machine, body } end,
+  find_entities_filtered = function(filter) if filter.type == "resource" then return resources end; return { machine, foreign_machine, invalid_machine, body } end,
 }
 body.surface = surface
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
@@ -65,4 +69,28 @@ check(#aggregate.factory.material_flow.nodes == 1
   "machine presence, local operation, and end-to-end autonomy remain distinct")
 check(aggregate.factory.character_transfers.transfer_actions == 0,
   "aggregate includes bounded run-local character transfer evidence")
+check(aggregate.factory.machine_count == 1,
+  "aggregate excludes foreign-force entities (machine_count=" .. tostring(aggregate.factory.machine_count) .. ")")
+check(aggregate.factory.omissions.invalid_entities == 1,
+  "aggregate reports invalid owned candidates (invalid=" .. tostring(aggregate.factory.omissions.invalid_entities) .. ")")
+check(aggregate.factory.evidence.entity_summary.evidence_class == "charted_remote_summary"
+  and not aggregate.factory.evidence.entity_summary.exact_remote_inventories
+  and aggregate.factory.evidence.force_flows.evidence_class == "rolling_force_surface_flow"
+  and aggregate.factory.evidence.cached_or_previously_observed_facts.included == false,
+  "aggregate labels charted, rolling, and absent cached evidence without exposing remote stock")
+
+local dense = {}
+for i = 1, 70 do
+  dense[i] = { valid = true, name = string.format("machine-%02d", i), type = "assembling-machine",
+    position = { x = (i % 28) + 0.1, y = math.floor(i / 28) + 10.1 }, force = force, status = 1,
+    crafting_speed = 1, get_recipe = function() return { name = string.format("recipe-%02d", i), energy = 1,
+      ingredients = {}, products = { { name = string.format("product-%02d", i), type = "item" } } } end }
+end
+surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return dense end
+local bounded = require("scripts.map_summary").map_summary({})
+check(#bounded.factory.groups == 64 and bounded.factory.omissions.capped_groups == 6
+  and #bounded.factory.material_flow.nodes == 32 and bounded.factory.omissions.capped_flow_nodes == 38
+  and #bounded.factory.force_flows == 64 and bounded.factory.omissions.capped_flows == 6
+  and bounded.factory.partial,
+  "factory groups, graph nodes, and flow rows have deterministic caps and omission counts")
 os.exit(failures == 0 and 0 or 1)

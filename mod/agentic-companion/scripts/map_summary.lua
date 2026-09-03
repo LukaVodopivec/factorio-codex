@@ -462,6 +462,24 @@ function M.map_summary(params)
     machine_count = machine_count, groups = groups, force_flows = flows,
     power = { network_count = network_count, status_counts = power_status_counts },
     material_flow = material_flow, character_transfers = activity,
+    evidence = {
+      entity_summary = {
+        evidence_class = "charted_remote_summary", source_tick = game.tick,
+        scope = "currently_existing_player_force_entities_in_already_charted_chunks",
+        exact_remote_inventories = false, exact_remote_fluids = false,
+      },
+      force_flows = {
+        evidence_class = "rolling_force_surface_flow", source_tick = game.tick,
+        precision = precision_name, window_ticks = FLOW_PRECISIONS[precision_name].ticks,
+        exact_stock = false,
+      },
+      character_transfers = {
+        evidence_class = "run_local_history", epoch_tick = activity.epoch_tick,
+        since_tick = activity.since_tick, end_tick = activity.end_tick,
+        history_complete = activity.history_complete,
+      },
+      cached_or_previously_observed_facts = { included = false },
+    },
     omissions = omissions, partial = partial,
   }
 

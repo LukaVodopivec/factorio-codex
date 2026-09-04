@@ -306,6 +306,14 @@ Scheduled Task to launch Steam, then removed that task. Without screenshots,
 confirm that the Factorio client process has `SessionId 1` and that its log
 reaches `InGame`.
 
+The couch display runs at `3840x2160`, and `scripts/launch-native-client.ps1`
+renders the isolated client at that native 16:9 size. A recorder may downscale
+the captured window to `1920x1080`, but it must fit the complete source without
+cropping or enlarging a lower-resolution viewport. Before a timed recording,
+verify the live Factorio client area, capture-source dimensions and aspect
+ratio, crop/transform state, and representative framing. A non-black Factorio
+frame alone is not sufficient evidence of usable framing.
+
 ## Viewer-only couch session
 
 The exact `Codex` client must join first. Every other connected identity is

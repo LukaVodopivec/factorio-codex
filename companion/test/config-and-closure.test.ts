@@ -221,7 +221,8 @@ describe("exact local configuration", () => {
     expect(couchLauncher).toMatch(/LOCALAPPDATA[\s\S]*factorio-codex\\native-client/);
     expect(couchLauncher).toMatch(/service-username.*Codex/);
     expect(couchLauncher).toMatch(/Steam Factorio build replaces the isolated Codex identity/);
-    expect(couchLauncher).toMatch(/--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--window-size 640x480/);
+    expect(couchLauncher).toMatch(/--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--window-size 3840x2160/);
+    expect(couchLauncher).not.toContain("--window-size 640x480");
     expect(couchLauncher).not.toContain("--disable-audio");
     const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
     const liveValidation = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");

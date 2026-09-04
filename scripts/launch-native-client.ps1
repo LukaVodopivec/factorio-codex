@@ -64,6 +64,6 @@ if ($PrepareOnly) {
   --mp-connect $Address `
   --force-graphics-preset very-low `
   --video-memory-usage low `
-  --window-size 640x480 `
+  --window-size 3840x2160 `
   --nogamepad
 exit $LASTEXITCODE

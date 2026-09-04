@@ -10,10 +10,11 @@ local find_placement = require("scripts.find_placement")
 local map_summary = require("scripts.map_summary")
 local production_requirements = require("scripts.production_requirements")
 local connect_entities = require("scripts.connect_entities")
+local run_snapshot = require("scripts.run_snapshot")
 
 rpc.register("ping", function()
   return {
-    protocol_version = 21,
+    protocol_version = 22,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
@@ -30,6 +31,7 @@ rpc.register("can_place", spatial.can_place)
 rpc.register("find_placement", find_placement.find_placement)
 rpc.register("map_summary", map_summary.map_summary)
 rpc.register("production_requirements", production_requirements.production_requirements)
+rpc.register("run_snapshot", run_snapshot.capture)
 rpc.register("connect_entities", connect_entities.connect_entities)
 rpc.register("describe_prototype", spatial.describe_prototype)
 rpc.register("progression_status", research.progression_status)

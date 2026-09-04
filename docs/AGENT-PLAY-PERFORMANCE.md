@@ -190,9 +190,21 @@ action chain.
 
 ## Peaceful rocket benchmark
 
-This is a documentation and results protocol, not runtime machinery. Do not add
-a harness, telemetry, reset automation, benchmark endpoint, couch automation,
-or launcher behavior.
+The foreground `factorio-codex runs record` command is the one retained
+measurement path. It takes the `GO` baseline, then writes cumulative native
+production/consumption counters, run-relative raw resources, and bounded
+factory context at absolute five-minute wall-clock deadlines. It uses one
+internal read-only RPC without adding an MCP tool, gameplay writer, FIFO lane,
+daemon, reset automation, couch automation, or launcher behavior. A failed
+deadline is stored as an error sample and is never backdated or replaced with a
+fabricated checkpoint.
+
+Run manifests copy the immutable identity from `operations.json` and add the
+variant and change under test. Store supervised debug runs, but mark any
+intervention with `runs mark-assisted`; debug and assisted runs are excluded
+from automatic benchmark verdicts. `runs compare` issues `improved` or `worse`
+only for component-wise raw-resource dominance between completed, unassisted
+benchmark runs from the same baseline hash. Resource tradeoffs remain `mixed`.
 
 Create one dedicated Factorio 2.0.x freeplay baseline with an explicitly
 recorded seed, permanent peaceful mode, and enemy bases disabled. Connect the
@@ -212,7 +224,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v21, version 0.16.0, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.16.0, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power

@@ -10,6 +10,9 @@ export interface Settings { rcon: RconSettings }
 export type ConfigDiagnostic = { ok: true; config: AppConfig } | { ok: false; error: string };
 export const configDir = () => path.join(os.homedir(), ".config", "factorio-codex");
 export const configPath = () => path.join(configDir(), "config.json");
+export const dataDir = () => process.env.XDG_DATA_HOME
+  ? path.join(process.env.XDG_DATA_HOME, "factorio-codex")
+  : path.join(os.homedir(), ".local", "share", "factorio-codex");
 function exactConfig(value: unknown): value is AppConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const root = value as Record<string, unknown>;

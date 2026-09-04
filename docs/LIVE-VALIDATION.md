@@ -333,7 +333,7 @@ current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.16.0 run must instead report protocol v21 and mod/app 0.16.0.
+  0.8.0. A 0.16.0 run must instead report protocol v22 and mod/app 0.16.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

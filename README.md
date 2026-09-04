@@ -40,7 +40,8 @@ The mod never creates a standalone fallback character. Run
 committed project config starts MCP automatically. Begin with
 `connect_status`, then `observe_local`; `stop` cancels active and queued work.
 
-The built CLI supports `setup`, `doctor [--json]`, and `mcp`. MCP exposes exactly
+The built CLI supports `setup`, `doctor [--json]`, `mcp`, and durable `runs`
+recording/comparison commands. MCP exposes exactly
 25 text-only tools through `tools/list`. `observe_local` exposes exact
 `ground_items` stacks and `pickup_items` physically collects one still-matching
 stack through the character's normal picking state. Its character record labels
@@ -114,6 +115,26 @@ mechanically read-only MCP surface. Its observations never enter the physical
 lane. Sol atomically writes the one `operations.json`; Luna never writes it and
 continues fail-open when advice is absent, malformed, stale, or unavailable.
 Neither role profile is applied to an active run in place.
+
+Start the foreground recorder immediately before gameplay begins. It takes a
+successful native baseline before printing `GO`, then records cumulative and
+run-relative resources plus diagnostic factory context every five minutes of
+wall time. Stop it with Ctrl-C at the run boundary; that signal captures one
+final sample and closes the manifest.
+
+```sh
+factorio-codex runs record --ledger operations.json \
+  --variant guidance-v2 --change "expand measured bottlenecks before manual batches" \
+  --kind debug
+factorio-codex runs mark-assisted <run-id> --reason "supervisor teleport recovery"
+factorio-codex runs compare <baseline-run-id> <candidate-run-id>
+```
+
+Records live under `~/.local/share/factorio-codex/runs/`. Debug and assisted
+runs remain available for descriptive comparison but are excluded from an
+automatic benchmark verdict. Clean benchmark runs from the same baseline save
+receive a conservative resource-vector verdict at each common five-minute
+checkpoint; mixed resource tradeoffs are never collapsed into one total score.
 
 After immediate safety and a hard production unblock, the pilot evaluates the
 highest-payback expansion of the measured factory bottleneck before another

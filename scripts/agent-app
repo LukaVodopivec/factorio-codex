@@ -1,0 +1,639 @@
+#!/usr/bin/env python3
+"""Bounded repository-owned verification contract."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pwd
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+NATIVE_NODE_VERSION = "v22.23.2"
+VERIFICATION_BASE_PATH = "/usr/local/bin:/usr/bin:/bin"
+DEPENDENCY_DESCRIPTORS = ("package.json", "package-lock.json")
+REQUIRED_PATHS = (
+    "AGENTS.md",
+    "package.json",
+    "package-lock.json",
+    "companion/package.json",
+    "scripts/agent-app",
+    "scripts/run-mod-tests.sh",
+    "scripts/package-mod.sh",
+    "tests/test_agent_app.py",
+)
+REQUIRED_DEPENDENCY_EXECUTABLES = ("tsc", "tsup", "tsx", "vitest")
+PROFILE_COMMANDS = {
+    "focused": [["python3", "-m", "unittest", "tests/test_agent_app.py"]],
+    "quick": [
+        ["npm", "run", "typecheck"],
+        ["npm", "run", "test:unit"],
+        ["npm", "run", "test:mod"],
+        ["npm", "run", "test:mcp"],
+    ],
+    "full": [
+        ["python3", "-m", "unittest", "tests/test_agent_app.py"],
+        ["npm", "ls", "--all"],
+        ["npm", "run", "typecheck"],
+        ["npm", "run", "test:unit"],
+        ["npm", "run", "test:mod"],
+        ["npm", "run", "test:mcp"],
+        ["npm", "run", "test:mcp:readonly", "-w", "companion"],
+        ["npm", "run", "build"],
+        ["npm", "run", "test:mcp:built", "-w", "companion"],
+        ["npm", "run", "test:package"],
+    ],
+}
+QUICK_NOT_EXERCISED = [
+    "live Factorio game and native client behavior",
+    "live RCON, MCP clients, and network services",
+    "dependency installation, synchronization, audits, and network fetching",
+    "credentials, personal data, and persistent gameplay state",
+    "mod package archive layout",
+    "external orchestration and production deployment",
+]
+PROFILE_METADATA = {
+    "focused": {
+        "typical_runtime_seconds": 5,
+        "required_services": [],
+        "target_mode": "forbidden",
+        "scope_selection": "agent-app-contract",
+        "evidence_tier": "structural",
+        "evidence_classes": ["agent-app-contract-tests"],
+    },
+    "quick": {
+        "typical_runtime_seconds": 180,
+        "required_services": [],
+        "target_mode": "forbidden",
+        "scope_selection": "offline-repository-readiness",
+        "scheduled_safe": True,
+        "evidence_tier": "readiness",
+        "evidence_classes": [
+            "typescript-typecheck",
+            "companion-unit-tests",
+            "mod-lua-tests",
+            "offline-mcp-smoke",
+        ],
+        "not_exercised": QUICK_NOT_EXERCISED,
+    },
+    "full": {
+        "typical_runtime_seconds": 240,
+        "required_services": [],
+        "target_mode": "forbidden",
+        "scope_selection": "broadest-safe-offline-repository-gate",
+        "evidence_tier": "readiness",
+        "evidence_classes": [
+            "agent-app-contract-tests",
+            "installed-dependency-tree",
+            "typescript-typecheck",
+            "companion-unit-tests",
+            "mod-lua-tests",
+            "offline-mcp-smoke",
+            "offline-read-only-mcp-smoke",
+            "companion-build",
+            "built-mcp-smoke",
+            "mod-package-layout",
+        ],
+        "not_exercised": [
+            item for item in QUICK_NOT_EXERCISED if item != "mod package archive layout"
+        ],
+    },
+}
+
+
+class VerificationInterrupted(Exception):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+
+
+def emit(payload: dict[str, object], code: int = 0) -> None:
+    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True))
+    raise SystemExit(code)
+
+
+def check(
+    identifier: str,
+    passed: bool,
+    summary: str,
+    evidence: list[str],
+    duration_ms: int = 0,
+) -> dict[str, object]:
+    return {
+        "id": identifier,
+        "status": "pass" if passed else "fail",
+        "duration_ms": duration_ms,
+        "summary": summary[:512],
+        "evidence": [item[:512] for item in evidence[:8]] or ["none"],
+    }
+
+
+def normalized_id(prefix: str, value: str) -> str:
+    fragment = re.sub(r"[^a-z0-9-]+", "-", value.lower().replace("_", "-")).strip("-")
+    return f"{prefix}-{fragment or 'value'}"[:64]
+
+
+def resolve_native_root() -> Path | None:
+    environment = {
+        "PATH": VERIFICATION_BASE_PATH,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        common = Path(completed.stdout.strip()).resolve(strict=True)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0 or common.name != ".git" or not common.is_dir():
+        return None
+    native = common.parent.resolve()
+    try:
+        return native if (native / ".git").resolve(strict=True) == common else None
+    except OSError:
+        return None
+
+
+def resolve_npm_command() -> tuple[list[str], Path] | None:
+    npm = shutil.which("npm", path=VERIFICATION_BASE_PATH)
+    node = shutil.which("node", path=VERIFICATION_BASE_PATH)
+    if npm is not None and node is not None and node_is_version_22(Path(node)):
+        resolved = Path(npm).resolve()
+        npm_bin = Path(npm).parent
+        if shutil.which("npx", path=f"{npm_bin}{os.pathsep}{VERIFICATION_BASE_PATH}") is None:
+            return None
+        return [str(resolved)], npm_bin
+    try:
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
+        installation = account_home / ".nvm" / "versions" / "node" / NATIVE_NODE_VERSION
+        node = (installation / "bin" / "node").resolve(strict=True)
+        npm_cli = (installation / "bin" / "npm").resolve(strict=True)
+        npx_cli = (installation / "bin" / "npx").resolve(strict=True)
+        installation = installation.resolve(strict=True)
+    except (KeyError, OSError):
+        return None
+    if (
+        not node.is_file()
+        or not os.access(node, os.X_OK)
+        or not node_is_version_22(node)
+        or not npm_cli.is_file()
+        or not npx_cli.is_file()
+        or not os.access(npx_cli, os.X_OK)
+        or installation not in node.parents
+        or installation not in npm_cli.parents
+        or installation not in npx_cli.parents
+    ):
+        return None
+    return [str(node), str(npm_cli)], installation / "bin"
+
+
+def node_is_version_22(node: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            [str(node), "--version"],
+            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0 and completed.stdout.startswith("v22.")
+
+
+def dependency_descriptors_match(native_root: Path | None) -> tuple[bool, list[str]]:
+    evidence: list[str] = []
+    all_match = native_root is not None
+    for relative in DEPENDENCY_DESCRIPTORS:
+        try:
+            matched = native_root is not None and (ROOT / relative).read_bytes() == (
+                native_root / relative
+            ).read_bytes()
+        except OSError:
+            matched = False
+        evidence.append(f"{relative}:{'match' if matched else 'missing-or-mismatch'}")
+        all_match = all_match and matched
+    return all_match, evidence
+
+
+def owner_dependencies_ready(native_root: Path | None) -> bool:
+    if native_root is None:
+        return False
+    modules = native_root / "node_modules"
+    if not modules.is_dir() or modules.is_symlink():
+        return False
+    return all(
+        (modules / ".bin" / executable).is_file()
+        and os.access(modules / ".bin" / executable, os.X_OK)
+        for executable in REQUIRED_DEPENDENCY_EXECUTABLES
+    )
+
+
+def describe_payload() -> dict[str, object]:
+    return {
+        "schema": "repo-agent-app-describe/v2",
+        "schema_version": 2,
+        "resource_identity": "factorio-codex",
+        "environment_mode": "isolated-offline-readiness",
+        "profiles": PROFILE_METADATA,
+        "verify_output_schema": "repo-agent-app-verify/v2",
+    }
+
+
+def doctor_payload() -> dict[str, object]:
+    checks: list[dict[str, object]] = []
+    native_root = resolve_native_root()
+    checks.append(
+        check(
+            "git-native-root",
+            native_root is not None,
+            f"Git native root is {'available' if native_root else 'unavailable'}.",
+            ["source:git-common-dir"],
+        )
+    )
+    descriptors_match, descriptor_evidence = dependency_descriptors_match(native_root)
+    checks.append(
+        check(
+            "dependency-descriptors",
+            descriptors_match,
+            "Snapshot package.json and package-lock.json "
+            + ("match" if descriptors_match else "do not match")
+            + " the owning repository.",
+            descriptor_evidence,
+        )
+    )
+    npm = resolve_npm_command()
+    checks.append(
+        check(
+            "command-npm",
+            npm is not None,
+            f"Node 22 npm and npx are {'available' if npm else 'missing'}.",
+            ["node-major:22", "required:npm|npx", f"available:{str(npm is not None).lower()}"],
+        )
+    )
+    for command in ("bash", "git", "python3", "zip", "unzip"):
+        available = shutil.which(command, path=VERIFICATION_BASE_PATH) is not None
+        checks.append(
+            check(
+                normalized_id("command", command),
+                available,
+                f"Required command {command} is {'available' if available else 'missing'}.",
+                [f"command:{command}", f"available:{str(available).lower()}"],
+            )
+        )
+    lua = shutil.which("lua5.4", path=VERIFICATION_BASE_PATH) or shutil.which(
+        "texlua", path=VERIFICATION_BASE_PATH
+    )
+    checks.append(
+        check(
+            "command-lua",
+            lua is not None,
+            f"Compatible Lua runner is {'available' if lua else 'missing'}.",
+            ["accepted:lua5.4|texlua", f"available:{str(lua is not None).lower()}"],
+        )
+    )
+    for relative in REQUIRED_PATHS:
+        path = ROOT / relative
+        regular = path.is_file() and not path.is_symlink()
+        available = regular and (relative != "scripts/agent-app" or os.access(path, os.X_OK))
+        checks.append(
+            check(
+                normalized_id("path", relative),
+                available,
+                f"Required path {relative} is {'available' if available else 'missing or unsafe'}.",
+                [f"path:{relative}", f"available:{str(available).lower()}"],
+            )
+        )
+    dependencies_ready = descriptors_match and owner_dependencies_ready(native_root)
+    checks.append(
+        check(
+            "owner-node-dependencies",
+            dependencies_ready,
+            "Owning-repository Node dependencies are "
+            + ("prepared for the exact descriptors." if dependencies_ready else "missing, stale, or unsafe."),
+            [
+                "source:owning-repository",
+                "required:.bin/tsc|.bin/tsup|.bin/tsx|.bin/vitest",
+                f"available:{str(dependencies_ready).lower()}",
+            ],
+        )
+    )
+    passed = all(item["status"] == "pass" for item in checks)
+    return {
+        "schema": "repo-agent-app-doctor/v2",
+        "schema_version": 2,
+        "status": "pass" if passed else "fail",
+        "checks": checks,
+    }
+
+
+def validate_target(target: str | None) -> None:
+    if target is None:
+        return
+    supplied = Path(target)
+    candidate = ROOT / supplied
+    if supplied.is_absolute() or ".." in supplied.parts or not candidate.exists() or candidate.is_symlink():
+        raise ValueError("target must be an existing non-symlink repository-relative path")
+    resolved = candidate.resolve()
+    if resolved != ROOT and ROOT not in resolved.parents:
+        raise ValueError("target escapes repository")
+    paths = [candidate, *candidate.rglob("*")] if candidate.is_dir() else [candidate]
+    for path in paths:
+        mode = path.lstat().st_mode
+        if path.is_symlink() or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+            raise ValueError("target contains a symlink or special file")
+    raise ValueError("this repository does not support targeted verification")
+
+
+def prepare_workspace(destination: Path, native_root: Path) -> Path:
+    descriptors_match, _ = dependency_descriptors_match(native_root)
+    if not descriptors_match:
+        raise RuntimeError("snapshot dependency descriptors do not match the owning repository")
+    if not owner_dependencies_ready(native_root):
+        raise RuntimeError("owning-repository Node dependencies are unavailable or stale")
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z", "--cached"],
+            cwd=ROOT,
+            env={
+                "PATH": VERIFICATION_BASE_PATH,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+            },
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("snapshot files could not be enumerated") from exc
+    if tracked.returncode != 0:
+        raise RuntimeError("snapshot files could not be enumerated")
+    workspace = destination / "worktree"
+    workspace.mkdir()
+    for encoded in tracked.stdout.split(b"\0"):
+        if not encoded:
+            continue
+        relative = Path(os.fsdecode(encoded))
+        source = ROOT / relative
+        target = workspace / relative
+        try:
+            if source.is_symlink() or not source.is_file():
+                raise OSError("tracked source is not a regular file")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        except OSError as exc:
+            raise RuntimeError("snapshot files could not be copied") from exc
+    dependency_view = workspace / "node_modules"
+    dependency_view.mkdir()
+    for dependency in sorted((native_root / "node_modules").iterdir(), key=lambda path: path.name):
+        link = dependency_view / dependency.name
+        if dependency.name == "factorio-codex":
+            link.symlink_to("../companion", target_is_directory=True)
+        else:
+            link.symlink_to(dependency, target_is_directory=dependency.is_dir())
+    return workspace
+
+
+def verification_environment(temporary: Path, npm_bin: Path | None = None) -> dict[str, str]:
+    directories = {
+        "HOME": temporary / "home",
+        "TMPDIR": temporary / "tmp",
+        "XDG_CACHE_HOME": temporary / "cache",
+        "npm_config_cache": temporary / "npm-cache",
+    }
+    for directory in directories.values():
+        directory.mkdir()
+    path_parts = [str(npm_bin)] if npm_bin is not None else []
+    path_parts.append(VERIFICATION_BASE_PATH)
+    return {
+        **{name: str(path) for name, path in directories.items()},
+        "PATH": os.pathsep.join(path_parts),
+        "CI": "1",
+        "MCP_SMOKE_OFFLINE": "1",
+        "npm_config_audit": "false",
+        "npm_config_fund": "false",
+        "npm_config_offline": "true",
+        "npm_config_update_notifier": "false",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+
+
+def terminate_process_group(process: subprocess.Popen[bytes]) -> bool:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return True
+            kill_deadline = time.monotonic() + 5
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            while True:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    return True
+                kill_remaining = kill_deadline - time.monotonic()
+                if kill_remaining <= 0:
+                    return False
+                time.sleep(min(0.1, kill_remaining))
+        time.sleep(min(0.1, remaining))
+
+
+def execute_command(command: list[str], environment: dict[str, str], cwd: Path) -> int:
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            start_new_session=True,
+        )
+    except OSError:
+        return 127
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+
+    def interrupt(signum: int, _frame: object) -> None:
+        raise VerificationInterrupted(signum)
+
+    for signum in previous:
+        signal.signal(signum, interrupt)
+    try:
+        return process.wait(timeout=1800)
+    except subprocess.TimeoutExpired:
+        if terminate_process_group(process):
+            return 124
+        print("verification process group survived SIGKILL", file=sys.stderr)
+        return 125
+    except VerificationInterrupted as interrupted:
+        if terminate_process_group(process):
+            return 128 + interrupted.signum
+        print("verification process group survived SIGKILL", file=sys.stderr)
+        return 125
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object], int]:
+    try:
+        validate_target(target)
+    except ValueError as exc:
+        summary = str(exc)
+        return (
+            {
+                "schema": "repo-agent-app-verify/v2",
+                "schema_version": 2,
+                "status": "fail",
+                "profile": profile,
+                "target": target,
+                "metadata": PROFILE_METADATA[profile],
+                "checks": [check("target", False, summary, ["target-validation:failed"])],
+                "failure_summary": [summary],
+            },
+            2,
+        )
+    checks: list[dict[str, object]] = []
+    failures: list[str] = []
+    execution_root = ROOT
+    npm_command: list[str] | None = None
+    with tempfile.TemporaryDirectory(prefix="factorio-agent-app-") as temporary_name:
+        temporary = Path(temporary_name)
+        npm_bin: Path | None = None
+        if profile in ("quick", "full"):
+            native_root = resolve_native_root()
+            npm = resolve_npm_command()
+            try:
+                if native_root is None:
+                    raise RuntimeError("owning repository could not be resolved")
+                if npm is None:
+                    raise RuntimeError("Node 22 npm prerequisite is unavailable")
+                npm_command, npm_bin = npm
+                execution_root = prepare_workspace(temporary, native_root)
+            except RuntimeError as exc:
+                summary = str(exc)
+                return (
+                    {
+                        "schema": "repo-agent-app-verify/v2",
+                        "schema_version": 2,
+                        "status": "fail",
+                        "profile": profile,
+                        "target": None,
+                        "metadata": PROFILE_METADATA[profile],
+                        "checks": [
+                            check(
+                                "prerequisites",
+                                False,
+                                summary,
+                                ["acquisition:not-attempted", "source:owning-repository"],
+                            )
+                        ],
+                        "failure_summary": [summary],
+                    },
+                    1,
+                )
+        environment = verification_environment(temporary, npm_bin)
+        last_exit = 0
+        for index, command in enumerate(PROFILE_COMMANDS[profile], start=1):
+            resolved = [*npm_command, *command[1:]] if command[0] == "npm" and npm_command else command
+            started = time.monotonic()
+            last_exit = execute_command(resolved, environment, execution_root)
+            duration = int((time.monotonic() - started) * 1000)
+            summary = f"Verification command {index} {'passed' if last_exit == 0 else 'failed'} with exit {last_exit}."
+            checks.append(
+                check(
+                    f"verify-{index}",
+                    last_exit == 0,
+                    summary,
+                    ["command:" + " ".join(command), f"exit:{last_exit}"],
+                    duration,
+                )
+            )
+            if last_exit != 0:
+                failures.append(summary)
+            if last_exit in (130, 143):
+                break
+    status = "pass" if not failures else "fail"
+    return (
+        {
+            "schema": "repo-agent-app-verify/v2",
+            "schema_version": 2,
+            "status": status,
+            "profile": profile,
+            "target": None,
+            "metadata": PROFILE_METADATA[profile],
+            "checks": checks,
+            "failure_summary": failures,
+        },
+        0 if not failures else last_exit if last_exit in (130, 143) else 1,
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("describe", "doctor"):
+        child = subparsers.add_parser(command)
+        child.add_argument("--json", action="store_true", required=True)
+    verifier = subparsers.add_parser("verify")
+    verifier.add_argument("--profile", choices=tuple(PROFILE_COMMANDS), required=True)
+    verifier.add_argument("--target")
+    arguments = parser.parse_args()
+    if arguments.command == "describe":
+        emit(describe_payload())
+    if arguments.command == "doctor":
+        payload = doctor_payload()
+        emit(payload, 0 if payload["status"] == "pass" else 1)
+    payload, code = verify_payload(arguments.profile, arguments.target)
+    emit(payload, code)
+
+
+if __name__ == "__main__":
+    main()

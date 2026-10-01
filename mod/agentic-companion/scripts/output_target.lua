@@ -1,12 +1,22 @@
--- Exact, read-only recipient resolution shared by placement search and physical
+-- Exact, read-only endpoint resolution shared by placement search and physical
 -- placement verification.
 local M = {}
 
-local RECIPIENT_TYPES = {
+-- Ordinary inserter pickup inventories/transport. Labs can supply science packs.
+local PICKUP_TYPES = {
   ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
   container = true, ["logistic-container"] = true, furnace = true,
-  ["assembling-machine"] = true, ["cargo-wagon"] = true,
+  ["assembling-machine"] = true, ["cargo-wagon"] = true, lab = true,
 }
+
+-- These additional types may receive items (including burner fuel), but are
+-- not pickup inventories. Type eligibility is provisional, not item acceptance.
+local DROP_ONLY_TYPES = { ["mining-drill"] = true, boiler = true, inserter = true }
+
+function M.can_target_type(entity_type, kind)
+  return PICKUP_TYPES[entity_type] == true
+    or (kind ~= "input" and DROP_ONLY_TYPES[entity_type] == true)
+end
 
 local function position(value, label)
   if type(value) ~= "table" or tonumber(value.x) == nil or tonumber(value.y) == nil then
@@ -36,7 +46,7 @@ local function identity(entity)
     position = { x = entity.position.x, y = entity.position.y } }
 end
 
-local function resolve(c, requested, label)
+function M.resolve(c, requested, label, kind)
   local target = position(requested, label or "output_target")
   local dx, dy = c.position.x - target.x, c.position.y - target.y
   if dx * dx + dy * dy > 900 then error((label or "output_target") .. " must be within 30 tiles of Codex") end
@@ -62,23 +72,19 @@ local function resolve(c, requested, label)
   end
   if #matches > 1 then error((label or "output_target") .. " is ambiguous") end
   local entity = matches[1]
-  if not RECIPIENT_TYPES[entity.type] then
-    error((label or "output_target") .. " identifies " .. entity.name .. ", which cannot receive placed output;"
-      .. " target the belt, chest, furnace, or assembler that receives it (a drill or inserter is a source, not a recipient)")
+  if not M.can_target_type(entity.type, kind) then
+    local guidance = kind == "input"
+      and "use a supported belt or pickup inventory (for example a chest, furnace, assembler, wagon, or lab)"
+      or "use a supported belt or item inlet (for example a chest, furnace, assembler, wagon, lab, or burner fuel inlet)"
+    error((label or "output_target") .. " identifies " .. entity.name .. ", which is not a supported "
+      .. (kind == "input" and "pickup source; " or "drop recipient; ") .. guidance
+      .. "; provisional geometry does not prove item acceptance or runtime binding")
   end
   return {
     entity = entity,
     position = target,
     identity = { name = entity.name, type = entity.type, position = { x = entity.position.x, y = entity.position.y } },
   }
-end
-
-function M.resolve(c, requested, label)
-  return resolve(c, requested, label)
-end
-
-function M.can_receive_type(entity_type)
-  return RECIPIENT_TYPES[entity_type] == true
 end
 
 function M.output_offset(proto)
@@ -124,7 +130,7 @@ end
 -- entire endpoint tile as one exact recipient. Only the entity's collision box
 -- containing the exact prototype-derived point is eligible. Runtime
 -- pickup_target/drop_target remains authoritative after physical placement.
-function M.recipient_at(c, point)
+function M.recipient_at(c, point, kind)
   if not point then return nil, nil, "no-endpoint" end
   if not c.force.is_chunk_charted(c.surface,
     { x = math.floor(point.x / 32), y = math.floor(point.y / 32) }) then return nil, nil, "uncharted" end
@@ -133,7 +139,7 @@ function M.recipient_at(c, point)
     right_bottom = { x = point.x + epsilon, y = point.y + epsilon } }
   local matches = {}
   for _, entity in ipairs(c.surface.find_entities_filtered({ area = area })) do
-    if entity.valid and entity.force == c.force and RECIPIENT_TYPES[entity.type]
+    if entity.valid and entity.force == c.force and M.can_target_type(entity.type, kind)
       and contains_point(entity, point) then
       matches[#matches + 1] = entity
     end
@@ -159,7 +165,7 @@ end
 function M.input_geometry_matches(c, proto, position, direction, expected)
   local point = M.input_position(proto, position, direction)
   if not point then return false, nil end
-  local source = M.recipient_at(c, point)
+  local source = M.recipient_at(c, point, "input")
   return source == expected, point
 end
 

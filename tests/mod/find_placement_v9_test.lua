@@ -317,11 +317,48 @@ check(chart_edge_drill.candidates[1] and chart_edge_drill.candidates[1].resource
 target_matches = { pole }
 local invalid, invalid_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })
-check(not invalid and tostring(invalid_error):match("cannot receive placed output") ~= nil,
+check(not invalid and tostring(invalid_error):match("drop recipient") ~= nil,
   "output target rejects an invalid pole recipient")
 target_matches = { recipient, pole }
 local ambiguous, ambiguous_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })
 check(not ambiguous and tostring(ambiguous_error):match("ambiguous") ~= nil,
   "output target rejects every multiple match")
+local original_sink_name, original_sink_type = sink.name, sink.type
+local original_source_name, original_source_type = source.name, source.type
+for _, spec in ipairs({
+  { name = "burner-mining-drill", type = "mining-drill" },
+  { name = "boiler", type = "boiler" },
+  { name = "lab", type = "lab" },
+  { name = "burner-inserter", type = "inserter" },
+}) do
+  sink.name, sink.type = spec.name, spec.type
+  target_matches = {}
+  local existing = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 },
+    radius = 1, directions = { 0 }, limit = 1, input_target = source.position, output_target = sink.position })
+  check(existing.geometry == "provisional" and existing.output_target.type == spec.type
+    and existing.candidates[1] and existing.candidates[1].output_target.name == spec.name
+    and existing.candidates[1].input_target.name == original_source_name,
+    spec.name .. " is a provisional inserter drop recipient with an independent chest pickup source")
+  source.name, source.type = spec.name, spec.type
+  local ok, result = pcall(finder.find_placement, { item = "burner-inserter", preferred = { x = 1.5, y = 1.5 },
+    radius = 1, directions = { 0 }, limit = 1, input_target = source.position })
+  check((spec.type == "lab" and ok and result.candidates[1] and result.candidates[1].input_target.type == "lab")
+    or (spec.type ~= "lab" and not ok and tostring(result):match("pickup source")),
+    spec.name .. " search pickup eligibility follows its ordinary inventory mechanics")
+  source.name, source.type = original_source_name, original_source_type
+  if not prototypes.item[spec.name] then
+    prototypes.item[spec.name] = { place_result = { name = spec.name, type = spec.type, tile_width = 1, tile_height = 1,
+      collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } }
+  end
+  local planned = finder.find_placement({ item = "burner-inserter", preferred = { x = 5.5, y = 5.5 },
+    radius = 1, directions = { 0 }, limit = 1, output_recipient_item = spec.name })
+  local candidate = planned.candidates[1]
+  check(planned.geometry == "provisional" and candidate and candidate.output_recipient_placement.item == spec.name
+    and candidate.build_steps[1].name == spec.name and candidate.build_steps[2].name == "burner-inserter"
+    and candidate.build_steps[2].output_target.x == candidate.build_steps[1].x
+    and candidate.build_steps[2].output_target.y == candidate.build_steps[1].y,
+    spec.name .. " planned drop recipient emits provisional recipient-first build steps")
+end
+sink.name, sink.type = original_sink_name, original_sink_type
 os.exit(failures == 0 and 0 or 1)

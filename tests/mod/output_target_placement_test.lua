@@ -21,8 +21,7 @@ surface = {
   can_place_entity = function() return true end,
   create_entity = function(args)
     created = created + 1
-    local built_type = args.name == "burner-inserter" and "inserter"
-      or args.name == "wooden-chest" and "container" or "mining-drill"
+    local built_type = prototypes.item[args.name].place_result.type
     last_built = { valid = true, name = args.name,
       type = built_type, position = args.position,
       pickup_target = pickup_target, drop_target = drop_target,
@@ -33,11 +32,12 @@ surface = {
         inserted = inserted + accepted
         return accepted
       end }
-    if built_type == "container" then
+    do
       last_built.bounding_box = { left_top = { x = args.position.x - 0.4, y = args.position.y - 0.4 },
         right_bottom = { x = args.position.x + 0.4, y = args.position.y + 0.4 } }
     end
-    if built_type == "container" then planned_recipient, target_matches = last_built, { last_built } end
+    if built_type == "container" then planned_recipient = last_built end
+    target_matches[#target_matches + 1] = last_built
     return last_built
   end,
 }
@@ -281,9 +281,110 @@ target_matches = { recipient }
 local hint_ok, hint_error = pcall(resolver.resolve, hint_body, { x = 1.6, y = 0.2 })
 check(not hint_ok and tostring(hint_error):match("lies inside stone%-furnace, whose exact position is %(2, 0%)") ~= nil,
   "an inexact output_target names the covering entity's exact position")
-local drill = { valid = true, name = "burner-mining-drill", type = "mining-drill", force = force, position = { x = 2, y = 0 } }
-target_matches = { drill }
-local drill_ok, drill_error = pcall(resolver.resolve, hint_body, { x = 2, y = 0 })
-check(not drill_ok and tostring(drill_error):match("a drill or inserter is a source, not a recipient") ~= nil,
-  "a drill output_target explains that it is a source, not a recipient")
+-- Exercise the new recipient types through physical placement, not just the
+-- allowlist. Runtime binding is deliberately independent of eligibility.
+local recipients = {
+  { name = "burner-mining-drill", type = "mining-drill" },
+  { name = "boiler", type = "boiler" },
+  { name = "lab", type = "lab" },
+  { name = "burner-inserter", type = "inserter" },
+}
+for _, spec in ipairs(recipients) do
+  local proto = prototypes.item[spec.name] and prototypes.item[spec.name].place_result
+    or { name = spec.name, type = spec.type }
+  proto.collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } }
+  prototypes.item[spec.name] = { place_result = proto }
+  local target = { valid = true, name = spec.name, type = spec.type, force = force,
+    position = { x = 2, y = 0 }, bounding_box = recipient.bounding_box }
+  target_matches = { target }
+  check(resolver.resolve(body, target.position).entity == target,
+    spec.name .. " resolves as a provisional drop recipient")
+  local pickup_ok, pickup_error = pcall(resolver.resolve, body, target.position, "input_target", "input")
+  check((spec.type == "lab" and pickup_ok)
+    or (spec.type ~= "lab" and not pickup_ok and tostring(pickup_error):match("pickup source")),
+    spec.name .. " has independent mechanically supported pickup eligibility")
+  local pickup_entity = resolver.recipient_at(body, target.position, "input")
+  check((spec.type == "lab" and pickup_entity == target) or (spec.type ~= "lab" and pickup_entity == nil),
+    spec.name .. " endpoint discovery respects the pickup role")
+  if spec.type ~= "lab" then
+    for _, action in ipairs({ place.start, function(task) build_plan.start({ steps = { task } }) end }) do
+      local ok, err = pcall(action, { item = "burner-inserter", position = { x = 1, y = 0 }, input_target = target.position })
+      check(not ok and tostring(err):match("pickup source"), spec.name .. " is rejected as an existing placement pickup source")
+    end
+    target_matches = {}
+    local ok, err = pcall(build_plan.start, { steps = {
+      { item = spec.name, position = target.position },
+      { item = "burner-inserter", position = { x = 1, y = 0 }, input_target = target.position },
+    } })
+    check(not ok and tostring(err):match("pickup source"), spec.name .. " is rejected as a planned pickup source")
+  end
+  for _, mode in ipairs({ "matched", "wrong", "nil" }) do
+    for _, planned in ipairs({ false, true }) do
+      created, removed, target_matches, pickup_target = 0, 0, { source, target }, source
+      drop_target = mode == "matched" and target or mode == "wrong" and replacement or nil
+      local step = { item = "burner-inserter", position = { x = 1, y = 0 },
+        input_target = source.position, output_target = target.position }
+      local task = planned and { steps = { step } } or step
+      local action = planned and build_plan or place
+      action.start(task)
+      check(action.tick(task) == nil and created == 1 and removed == 1,
+        spec.name .. " " .. mode .. " waits for later-tick runtime binding in " .. (planned and "build_plan" or "place"))
+      game.tick = game.tick + 1
+      local result = action.tick(task)
+      check(result and result.status == (mode == "matched" and "done" or "failed")
+        and created == 1 and removed == 1,
+        spec.name .. " " .. mode .. " runtime result preserves committed placement in " .. (planned and "build_plan" or "place"))
+    end
+  end
+  created, removed, target_matches, drop_target = 0, 0, {}, nil
+  local task = { steps = {
+    { item = spec.name, position = target.position },
+    { item = "burner-inserter", position = { x = 1, y = 0 }, output_target = target.position },
+  } }
+  build_plan.start(task)
+  check(build_plan.tick(task) == nil and created == 1, spec.name .. " planned recipient is placed first")
+  local planned_target = last_built
+  check(build_plan.tick(task) == nil and created == 2, spec.name .. " planned recipient is resolved before inserter placement")
+  last_built.drop_target = planned_target
+  game.tick = game.tick + 1
+  local result = build_plan.tick(task)
+  check(result and result.status == "done" and created == 2 and removed == 2,
+    spec.name .. " planned recipient completes only after exact runtime binding")
+end
+-- Revalidation must retain the input role even when an eligible entity's
+-- capabilities change after preflight.
+for _, planned in ipairs({ false, true }) do
+  source.type, target_matches, created = "container", { source, recipient }, 0
+  local step = { item = "burner-inserter", position = { x = 1, y = 0 }, input_target = source.position }
+  local task = planned and { steps = { step } } or step
+  local action = planned and build_plan or place
+  action.start(task)
+  source.type = "boiler"
+  local ok, result = pcall(action.tick, task)
+  check((not ok and tostring(result):match("pickup source"))
+    or (ok and result and result.status == "failed"),
+    "pickup eligibility is revalidated before " .. (planned and "build_plan" or "place") .. " mutation")
+  check(created == 0, "ineligible pickup revalidation creates no entity")
+end
+source.type = "container"
+created, removed, target_matches, pickup_target = 0, 0, {}, nil
+local lab_input_plan = { steps = {
+  { item = "lab", position = source.position },
+  { item = "burner-inserter", position = { x = 1, y = 0 }, input_target = source.position },
+} }
+build_plan.start(lab_input_plan)
+check(build_plan.tick(lab_input_plan) == nil and created == 1, "planned lab pickup inventory is placed first")
+local planned_lab = last_built
+pickup_target = planned_lab
+check(build_plan.tick(lab_input_plan) == nil and created == 2, "planned lab pickup is resolved at the exact input endpoint")
+game.tick = game.tick + 1
+local lab_input_result = build_plan.tick(lab_input_plan)
+check(lab_input_result and lab_input_result.status == "done", "planned lab pickup completes on exact runtime pickup_target")
+local unsupported = { valid = true, name = "small-electric-pole", type = "electric-pole", force = force, position = { x = 2, y = 0 } }
+target_matches = { unsupported }
+for _, kind in ipairs({ "input", "output" }) do
+  local ok, err = pcall(resolver.resolve, body, unsupported.position, kind .. "_target", kind)
+  check(not ok and tostring(err):match(kind == "input" and "pickup source" or "drop recipient"),
+    "unsupported endpoint has useful " .. kind .. " guidance")
+end
 os.exit(failures == 0 and 0 or 1)

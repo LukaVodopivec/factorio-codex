@@ -155,7 +155,7 @@ function M.find_placement(params)
     if proto.type ~= "inserter" or not output_targets.input_offset(proto) then
       error(params.item .. " has no deterministic input offset")
     end
-    input_target = output_targets.resolve(c, params.input_target, "find_placement input_target")
+    input_target = output_targets.resolve(c, params.input_target, "find_placement input_target", "input")
   end
   if params.output_target ~= nil then
     output_target = output_targets.resolve(c, params.output_target, "find_placement output_target")
@@ -170,7 +170,7 @@ function M.find_placement(params)
     if not output_recipient_proto then
       error(tostring(params.output_recipient_item) .. " is not a placeable recipient item")
     end
-    if not output_targets.can_receive_type(output_recipient_proto.type) then
+    if not output_targets.can_target_type(output_recipient_proto.type, "output") then
       error(tostring(params.output_recipient_item) .. " cannot receive placed output")
     end
     if not drop_offset then error(params.item .. " has no deterministic output offset") end
@@ -210,7 +210,7 @@ function M.find_placement(params)
             local input_matches = true
             local candidate_input_target
             if input_target then
-              local input_entity, input_identity = output_targets.recipient_at(c, pickup_position)
+              local input_entity, input_identity = output_targets.recipient_at(c, pickup_position, "input")
               input_matches = input_entity == input_target.entity
               if input_matches then candidate_input_target = input_identity end
             end

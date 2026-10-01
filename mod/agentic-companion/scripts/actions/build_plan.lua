@@ -87,7 +87,7 @@ function M.start(task)
         error(step.item .. " has no deterministic input target")
       end
       local label = "build_plan " .. kind .. "_target"
-      local ok, resolved = pcall(output_targets.resolve, c, target, label)
+      local ok, resolved = pcall(output_targets.resolve, c, target, label, kind)
       if ok then
         step["_" .. kind .. "_target"] = resolved
         local matches, endpoint
@@ -113,8 +113,10 @@ function M.start(task)
         end
         local target_item = planned and prototypes.item[planned.item]
         local target_proto = target_item and target_item.place_result
-        if not target_proto or not output_targets.can_receive_type(target_proto.type) then
-          error(tostring(resolved))
+        if not target_proto then error(tostring(resolved)) end
+        if not output_targets.can_target_type(target_proto.type, kind) then
+          error(label .. " identifies planned " .. target_proto.name .. ", which is not a supported "
+            .. (kind == "input" and "pickup source" or "drop recipient"))
         end
         local endpoint
         if result then
@@ -502,7 +504,7 @@ function M.tick(task)
 
   local expected_input, expected_output
   if step.input_target then
-    local current = output_targets.resolve(c, step.input_target, "build_plan input_target")
+    local current = output_targets.resolve(c, step.input_target, "build_plan input_target", "input")
     if step._input_target and current.entity ~= step._input_target.entity then
       return advance(task, false, "input_target changed before placement; observe again")
     end

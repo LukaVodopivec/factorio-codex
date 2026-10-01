@@ -74,7 +74,7 @@ function M.place.start(task)
   task._entity_name = result.name
   if task.input_target ~= nil then
     if result.type ~= "inserter" then error(task.item .. " has no deterministic input target") end
-    task._input_target = output_targets.resolve(c, task.input_target, "place input_target")
+    task._input_target = output_targets.resolve(c, task.input_target, "place input_target", "input")
     local matches, endpoint = output_targets.input_geometry_matches(c, result, task.position, task.direction,
       task._input_target.entity)
     if not matches then
@@ -153,7 +153,7 @@ function M.place.tick(task)
 
   local expected_input, expected_output
   if task._input_target then
-    local current = output_targets.resolve(c, task.input_target, "place input_target")
+    local current = output_targets.resolve(c, task.input_target, "place input_target", "input")
     if current.entity ~= task._input_target.entity then
       return { status = "failed", detail = "place input_target changed before placement; observe again" }
     end

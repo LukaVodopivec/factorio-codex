@@ -584,7 +584,13 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
         for index, command in enumerate(PROFILE_COMMANDS[profile], start=1):
             resolved = [*npm_command, *command[1:]] if command[0] == "npm" and npm_command else command
             started = time.monotonic()
-            last_exit = execute_command(resolved, environment, execution_root)
+            command_root = execution_root
+            if profile == "full":
+                if command == ["python3", "-m", "unittest", "tests/test_agent_app.py"]:
+                    command_root = ROOT
+                elif command == ["npm", "ls", "--all"]:
+                    command_root = native_root
+            last_exit = execute_command(resolved, environment, command_root)
             duration = int((time.monotonic() - started) * 1000)
             summary = f"Verification command {index} {'passed' if last_exit == 0 else 'failed'} with exit {last_exit}."
             checks.append(

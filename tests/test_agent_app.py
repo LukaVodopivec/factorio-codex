@@ -146,6 +146,35 @@ class AgentAppContractTests(unittest.TestCase):
             self.assertEqual(environment["PYTHONDONTWRITEBYTECODE"], "1")
             self.assertTrue(Path(environment["HOME"]).is_relative_to(Path(environment["TMPDIR"]).parent))
 
+    def test_full_routes_checkout_checks_and_propagates_failures(self) -> None:
+        app = load_agent_app()
+        owner = ROOT / "owning-checkout"
+        prepared = ROOT / "prepared-snapshot"
+        npm = (["/node", "/npm-cli.js"], Path("/npm-bin"))
+        for failing_index in (None, 0, 1):
+            with self.subTest(failing_index=failing_index):
+                exits = [0] * len(app.PROFILE_COMMANDS["full"])
+                if failing_index is not None:
+                    exits[failing_index] = 1
+                with (
+                    mock.patch.object(app, "resolve_native_root", return_value=owner),
+                    mock.patch.object(app, "resolve_npm_command", return_value=npm),
+                    mock.patch.object(app, "prepare_workspace", return_value=prepared) as prepare,
+                    mock.patch.object(app, "execute_command", side_effect=exits) as execute,
+                ):
+                    payload, code = app.verify_payload("full", None)
+                prepare.assert_called_once()
+                self.assertEqual([call.args[2] for call in execute.call_args_list],
+                                 [ROOT, owner, *([prepared] * 8)])
+                self.assertEqual([call.args[0] for call in execute.call_args_list],
+                                 [[*npm[0], *command[1:]] if command[0] == "npm" else command
+                                  for command in app.PROFILE_COMMANDS["full"]])
+                self.assertEqual(code, 0 if failing_index is None else 1)
+                self.assertEqual(payload["status"], "pass" if failing_index is None else "fail")
+                self.assertEqual(len(payload["checks"]), 10)
+                for index, check in enumerate(payload["checks"]):
+                    self.assertEqual(check["status"], "fail" if index == failing_index else "pass")
+
     def test_prepared_workspace_uses_exact_owner_deps_and_snapshot_source(self) -> None:
         app = load_agent_app()
         with tempfile.TemporaryDirectory() as temporary_name:

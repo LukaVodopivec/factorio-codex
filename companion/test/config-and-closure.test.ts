@@ -163,10 +163,12 @@ describe("exact local configuration", () => {
     expect(config).toMatch(/\[mcp_servers\.factorio-readonly\][\s\S]*args = \["--surface", "read-only"\][\s\S]*enabled = false/);
     expect(config).toContain('enabled_tools = ["connect_status", "map_summary", "progression_status", "production_requirements", "describe_prototype", "observe_local", "inspect_entity", "plan_status"]');
     const launcher = fs.readFileSync(path.join(root, "scripts/start-factorio-mcp"), "utf8");
-    expect(launcher).toContain('"$nvm_root"/versions/node/v*/bin/node');
+    expect(launcher).toContain('"$nvm_root/versions/node/v*/bin/node"');
     expect(launcher).not.toContain('source "$nvm_root/nvm.sh"');
     expect(launcher).not.toContain("nvm use --silent 22");
-    expect(launcher).toContain('exec "$node_22" node_modules/.bin/tsx companion/src/cli.ts mcp "${surface_args[@]}"');
+    expect(launcher).toMatch(/a === 22 && b >= 12/);
+    expect(launcher).toMatch(/if \[\[ ! -x node_modules\/\.bin\/tsx \]\][\s\S]*"\$npm_bin" ci [^\n]*1>&2/);
+    expect(launcher).toContain('exec "$node_bin" node_modules/.bin/tsx companion/src/cli.ts mcp "${surface_args[@]}"');
     expect(config).not.toMatch(/^cwd\s*=/m);
     expect(fs.existsSync(path.join(root, "mod/agentic-companion/settings.lua"))).toBe(false);
     const modSource = ["control.lua", "scripts/companion.lua", "locale/en/agentic-companion.cfg"]

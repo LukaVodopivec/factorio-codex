@@ -5,23 +5,56 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 surface_args=("$@")
 
-if node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' 2>/dev/null; then
-  exec node node_modules/.bin/tsx companion/src/cli.ts mcp "${surface_args[@]}"
-fi
+# Native dev dependencies (rolldown) require Node 22.12+; npm silently skips
+# their platform binaries on older runtimes.
+is_node_22() {
+  "$1" -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)' 2>/dev/null
+}
 
 account_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
 nvm_root="${NVM_DIR:-$account_home/.nvm}"
-node_22=""
-for candidate in "$nvm_root"/versions/node/v*/bin/node; do
-  if [[ -x "$candidate" ]] && "$candidate" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' 2>/dev/null; then
-    node_22="$candidate"
+candidates=()
+if command -v node >/dev/null 2>&1; then
+  candidates+=("$(command -v node)")
+fi
+# Newest Node 22 first (the supported runtime), then newer majors.
+mapfile -t nvm_nodes < <(compgen -G "$nvm_root/versions/node/v*/bin/node" | sort -V -r)
+for candidate in "${nvm_nodes[@]}"; do
+  [[ "$candidate" == */v22.* ]] && candidates+=("$candidate")
+done
+for candidate in "${nvm_nodes[@]}"; do
+  [[ "$candidate" == */v22.* ]] || candidates+=("$candidate")
+done
+
+# Prefer a Node 22+ installation that ships npm beside it, so a fresh
+# worktree can install dependencies with the same runtime.
+node_bin=""
+fallback_node=""
+for candidate in "${candidates[@]}"; do
+  [[ -x "$candidate" ]] && is_node_22 "$candidate" || continue
+  [[ -n "$fallback_node" ]] || fallback_node="$candidate"
+  if [[ -x "$(dirname "$candidate")/npm" ]]; then
+    node_bin="$candidate"
     break
   fi
 done
+node_bin="${node_bin:-$fallback_node}"
 
-if [[ -n "$node_22" ]]; then
-  exec "$node_22" node_modules/.bin/tsx companion/src/cli.ts mcp "${surface_args[@]}"
+if [[ -z "$node_bin" ]]; then
+  echo "Factorio Codex MCP requires Node 22.12 or newer; activate it before starting Codex" >&2
+  exit 1
 fi
 
-echo "Factorio Codex MCP requires Node 22 or newer; activate it before starting Codex" >&2
-exit 1
+# Fresh worktrees have no node_modules. Install the locked dependencies first;
+# stdout is the MCP JSON-RPC channel, so npm output goes to stderr only.
+if [[ ! -x node_modules/.bin/tsx ]]; then
+  npm_bin="$(dirname "$node_bin")/npm"
+  if [[ ! -x "$npm_bin" ]]; then
+    echo "Factorio Codex MCP: node_modules is missing and no npm ships with $node_bin; run npm ci" >&2
+    exit 1
+  fi
+  echo "Factorio Codex MCP: installing locked dependencies (npm ci)" >&2
+  PATH="$(dirname "$node_bin"):$PATH" "$npm_bin" ci --no-audit --no-fund --loglevel=error 1>&2
+fi
+
+exec "$node_bin" node_modules/.bin/tsx companion/src/cli.ts mcp "${surface_args[@]}"

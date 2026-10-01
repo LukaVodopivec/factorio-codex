@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { atomicWriteFile } from "../setup/atomic.js";
 
@@ -52,12 +53,11 @@ export const ledgerEnvelopeSchema = z.object({
   run_id: text(160), save_identity: text(240), source_tick: z.number().int().nonnegative(),
   update: mutableSchema,
 }).strict();
-
 /** Creates revision 1 of an absent ledger, so the strategist stays its sole writer. */
 export const ledgerInitSchema = z.object({
-  init: z.literal(true), run: runSchema, source_tick: z.number().int().nonnegative().nullable(),
-  update: mutableSchema,
+  init: z.literal(true), run: runSchema, source_tick: z.number().int().nonnegative().nullable(), update: mutableSchema,
 }).strict();
+const applyEnvelopeSchema = z.union([ledgerEnvelopeSchema, ledgerInitSchema]);
 
 export type OperationsLedger = z.infer<typeof operationsLedgerSchema>;
 export type LedgerApplyResult = { status: "applied"; revision: number; source_tick: number | null }
@@ -83,45 +83,44 @@ export function reduceLedger(existingValue: unknown, envelopeValue: unknown):
   return { result: { status: "applied", revision: ledger.revision, source_tick: ledger.source_tick! }, ledger };
 }
 
-function initLedgerFile(file: string, envelopeValue: unknown): LedgerApplyResult {
-  const init = ledgerInitSchema.safeParse(envelopeValue);
-  if (!init.success) return discard("MALFORMED_REPORT");
-  const ledger: OperationsLedger = {
-    schema_version: 2, run: init.data.run, revision: 1, source_tick: init.data.source_tick, ...init.data.update,
-  };
-  const temp = `${file}.init-${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(temp, `${JSON.stringify(ledger, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    fs.chmodSync(temp, 0o600);
-    // A hard link never replaces an existing file, so a concurrent ledger is never clobbered.
-    try { fs.linkSync(temp, file); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return discard("LEDGER_ALREADY_EXISTS");
-      throw error;
-    }
-  } finally { fs.rmSync(temp, { force: true }); }
-  const readBack = operationsLedgerSchema.safeParse(JSON.parse(fs.readFileSync(file, "utf8")));
-  if (!readBack.success || readBack.data.revision !== 1 || (fs.statSync(file).mode & 0o777) !== 0o600) {
-    throw new Error("ledger initialization verification failed");
-  }
-  return { status: "applied", revision: 1, source_tick: ledger.source_tick };
-}
-
 export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApplyResult {
-  const isInit = typeof envelopeValue === "object" && envelopeValue !== null
-    && (envelopeValue as { init?: unknown }).init === true;
-  if (!fs.existsSync(file)) return isInit ? initLedgerFile(file, envelopeValue) : discard("MALFORMED_OR_UNSUPPORTED_LEDGER");
-  if (isInit) return discard("LEDGER_ALREADY_EXISTS");
-  let existing: unknown;
-  try { existing = JSON.parse(fs.readFileSync(file, "utf8")); }
-  catch { return discard("MALFORMED_OR_UNSUPPORTED_LEDGER"); }
-  const reduced = reduceLedger(existing, envelopeValue);
+  const envelope = applyEnvelopeSchema.safeParse(envelopeValue);
+  if (!envelope.success) return discard("MALFORMED_REPORT");
+  let destination: fs.Stats | undefined;
+  try { destination = fs.lstatSync(file); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return discard("LEDGER_READ_FAILED");
+  }
+  let reduced: { result: LedgerApplyResult; ledger?: OperationsLedger };
+  const isInit = "init" in envelope.data;
+  if ("init" in envelope.data) {
+    if (destination) return discard("LEDGER_ALREADY_EXISTS");
+    const ledger: OperationsLedger = {
+      schema_version: 2, run: envelope.data.run, revision: 1,
+      source_tick: envelope.data.source_tick, ...envelope.data.update,
+    };
+    reduced = { ledger, result: { status: "applied", revision: 1, source_tick: envelope.data.source_tick } };
+  } else {
+    if (!destination) return discard("MISSING_LEDGER");
+    if (!destination.isFile()) return discard("LEDGER_READ_FAILED");
+    if ((destination.mode & 0o7777) !== 0o600) return discard("UNSAFE_LEDGER_MODE");
+    let existing: unknown;
+    let contents: string;
+    try { contents = fs.readFileSync(file, "utf8"); }
+    catch { return discard("LEDGER_READ_FAILED"); }
+    try { existing = JSON.parse(contents); }
+    catch { return discard("MALFORMED_OR_UNSUPPORTED_LEDGER"); }
+    reduced = reduceLedger(existing, envelope.data);
+  }
   if (!reduced.ledger) return reduced.result;
-  if ((fs.statSync(file).mode & 0o777) !== 0o600) return discard("UNSAFE_LEDGER_MODE");
-  atomicWriteFile(file, `${JSON.stringify(reduced.ledger, null, 2)}\n`, 0o600);
+  try { atomicWriteFile(file, `${JSON.stringify(reduced.ledger, null, 2)}\n`, 0o600, !isInit); }
+  catch (error) {
+    if (isInit && (error as NodeJS.ErrnoException).code === "EEXIST") return discard("LEDGER_ALREADY_EXISTS");
+    throw error;
+  }
   const readBack = operationsLedgerSchema.safeParse(JSON.parse(fs.readFileSync(file, "utf8")));
-  if (!readBack.success || readBack.data.revision !== reduced.ledger.revision ||
-      (fs.statSync(file).mode & 0o777) !== 0o600) throw new Error("ledger atomic write verification failed");
+  if (!readBack.success || !isDeepStrictEqual(readBack.data, reduced.ledger) ||
+      (fs.lstatSync(file).mode & 0o7777) !== 0o600) throw new Error("ledger atomic write verification failed");
   return reduced.result;
 }
 

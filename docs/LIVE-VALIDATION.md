@@ -190,14 +190,28 @@ placement, research mutation, plan enqueue/run/cancel, or stop tool before
 
 Before `GO`, verify the requested fresh save and release hashes, permanent
 peaceful mode/enemy bases disabled, exact native player, viewer, and one
-body/lane/writer. Archive the previous run's `operations.json` into its run
-directory, give Sol the new ledger's absolute path and the exact `run` object
+body/lane/writer. Archive the previous run's `operations.json` into that previous
+run's directory and verify the current ledger destination is absent. Give Sol
+the new ledger's absolute path and the exact `run` object
 (`id`, `release_sha`, `baseline_save_sha256`, `save_identity`, `created_at`,
 `roles` per the ledger schema), and have Sol create it by piping an
 `{"init": true, "run": <that object>, "source_tick": null, "update": ...}`
 envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger
-<absolute operations.json path>` from its worktree; it must return `applied`
-with revision 1. On any resumed save or after a mod upgrade,
+<absolute operations.json path>` from its worktree. Supply a fresh observed
+`source_tick` when available; `null` means no observation yet. Fill `update`
+with the validated current mutable fields (`phase`, `bottleneck`,
+`latest_measured_capacity`, `task_list` with NOW/NEXT/LATER, `assumptions`, and
+`pilot_plan_ids`). Verify the receipt returns `status: "applied"`, revision 1,
+and the submitted source tick; verify the persisted schema-2 ledger contains
+the exact run metadata, revision, source tick, mutable content, and mode `0600`.
+The command validates this readback before reporting success. Initialization
+refuses every existing destination, including malformed ledgers, without
+replacement. Subsequent reports use the unchanged
+`{run_id, save_identity, source_tick, update}` envelope and require a newer tick;
+an ordinary update cannot initialize an absent ledger. Never hand-seed revision
+0: Sol is the sole atomic host writer, including initialization, and Luna
+continues fail-open if Sol or the ledger is missing, malformed, stale, or
+unavailable. On any resumed save or after a mod upgrade,
 reconcile retained work: if `observe_local` reports an active task or queue
 depth, call `stop` and re-observe until idle, and treat pre-`GO` plan IDs as
 invalid `after_plan_id` values. Rehearse the stop sequence below on the live

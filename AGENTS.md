@@ -44,13 +44,53 @@ teleport recovery, save/source edits, and server/client replacement. Record each
 intervention and invalidate affected state; assisted progress and timing are
 never benchmark evidence. None of that authority passes to ordinary gameplay.
 
-The supervisor watches for a stalled pilot: `plan_status` shows no current or
-queued plan and the body is not crafting while goals remain open. After about
-two minutes it nudges the pilot once; after about five minutes it replaces the
-pilot with a fresh session from the latest state. Both are recorded
-interventions and need no further approval from the owner during debug runs. Before
-`GO` of a fresh run, archive the previous run's `operations.json` into that
-run's directory; a ledger from another run is archival evidence only.
+The supervisor proves pilot idleness only while milestone goals remain open
+and a fresh, valid `observe_local.character` reports `active_task` absent,
+`queue_depth == 0`, and `crafting.queue_size == 0`. Missing, malformed, stale,
+or failed observations never prove idleness. Parked waiting plans and
+predecessor-blocked queued plans are pending work, even when the body is still;
+they count in `queue_depth`. `plan_status` is only a per-plan read with an exact
+known `plan_id`, never a global work query.
+
+Measure elapsed idle time with observation receipt timestamps in the current
+run. Retain the last evidenced physical change or transition into the current
+idle interval across unchanged samples; never restart the clock at a later
+unchanged sample. Character position, carried inventory, task/queue state,
+and crafting state/progress are physical activity evidence; advancing
+observation ticks and unrelated factory output are not. Use an evidenced start
+only when it establishes this idle interval. If the transition time is unknown
+(including an active-to-idle gap between samples), start a conservative observed
+lower bound at the first valid idle sample, label it as such, and retain it.
+Renewed activity resets the interval and its single-nudge state; a run change
+or uncertain observation invalidates timing, requiring fresh idle evidence.
+
+Before `GO`, verify that this supervisor can deliver a message to the exact
+pilot session with a delivery receipt and can interrupt and retire that session
+with observable confirmation that it cannot resume gameplay writes. Verify the
+retirement route with a disposable non-gameplay session using the same session
+mechanism, and verify its availability for the exact pilot; never retire the
+prepared pilot merely to test the route. Record capability evidence. If either
+capability is unproven, resolve it before `GO`; no presumed fallback suffices.
+
+After about two minutes of evidenced idle time, revalidate idleness and nudge
+that pilot once per idle interval. Record confirmed delivery; failed or
+uncertain delivery is a capability problem, never a successful nudge. Read back
+delivery state before any retry to avoid duplicate nudges. After about five
+minutes, revalidate continued idleness before replacement: interrupt and retire
+the old pilot, confirm it cannot resume writes, settle any in-flight physical
+call, then obtain fresh structured evidence of no active task, no queued work,
+and no character crafting. Session interruption alone does not cancel committed
+plans. Use `stop` only if required as recorded emergency cancellation, then
+re-observe. Do not start a replacement without both proven writer retirement
+and physical quiescence; unconfirmed retirement is a capability problem.
+
+Record every nudge or replacement intervention and invalidate affected state.
+Preserve the strategist, single body, FIFO, and write path; start the replacement
+from the latest structured state and the still-open milestone. Assisted progress
+and timing remain excluded from benchmark evidence. These debug interventions
+need no further approval from the owner. Before `GO` of a fresh run, archive the
+previous run's `operations.json` into that run's directory; a ledger from another
+run is archival evidence only.
 
 Start exactly two persistent reasoning sessions around one physical body and
 FIFO lane. The `gpt-6-luna` pilot uses `low` reasoning with fast mode enabled

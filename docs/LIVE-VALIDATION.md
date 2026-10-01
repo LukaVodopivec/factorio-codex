@@ -190,6 +190,75 @@ The parent is the debug supervisor and may diagnose or recover through its
 separate surfaces. That authority does not pass to the pilot. Record each
 intervention and obtain a fresh structured observation before ordinary play.
 
+### Supervisor stall and replacement validation
+
+Follow the authoritative stall contract in `AGENTS.md`; this is a manual
+supervised procedure, not an executable supervisor. Before `GO`, record a
+confirmed message delivery from the current supervisor to the exact pilot
+session. Verify interrupt/retirement and observable inability to resume using
+a disposable non-gameplay session with the same session mechanism; confirm
+that the route is available for the exact pilot. Do not retire the prepared
+pilot as a capability test. Missing delivery or retirement capability must be
+resolved before `GO`.
+
+While milestone goals remain open, use fresh valid `observe_local.character`:
+`active_task` absent, numeric `queue_depth == 0`, and numeric
+`crafting.queue_size == 0` together prove idle. A missing character or required
+queue/crafting field, malformed response, stale sample, or failed call is
+uncertain, not idle. An absent `active_task` in an otherwise valid complete
+character observation is the normal no-task representation. Parked waiting
+plans and predecessor-blocked queued plans count as pending work. Inspect a
+known plan only with its exact `plan_id`; `plan_status {}` is invalid.
+
+Record receipt timestamps and character position, carried inventory,
+task/queue state, and crafting state/progress in existing run evidence. Retain
+the last evidenced physical-change/idle-transition timestamp that establishes
+the current idle interval across unchanged samples. Advancing ticks and
+unrelated factory output do not reset it. If the transition is unknown, such
+as between an active sample and an idle sample, report a conservative observed
+lower bound starting at the first valid idle sample, not an invented exact
+start or the next unchanged sample. Renewed activity resets timing and the
+single-nudge state; a run change or uncertain observation invalidates timing.
+Re-establish a fresh lower bound after uncertainty rather than counting the gap.
+
+At about two minutes, revalidate idle evidence, deliver one nudge per interval,
+and record its receipt. Failed or uncertain delivery is a capability problem;
+read back delivery state before retrying and do not claim a nudge succeeded.
+At about five minutes, freshly revalidate continued idleness, interrupt and
+retire the old pilot, and confirm it cannot resume gameplay writes. Settle any
+in-flight physical call: wait for its definitive outcome or resolve uncertainty
+through structured state before proceeding. Interruption does not roll back
+committed plans. If emergency cancellation is necessary, record `stop` and its
+effects. Then freshly prove absent active work, zero queued work, and zero
+crafting. Without both retirement proof and physical quiescence, do not launch
+the replacement. Preserve Sol, the one body/FIFO/write path, invalidate affected
+state, and give the replacement latest structured state and the open milestone.
+Record all interventions; assisted progress and timing are not benchmark proof.
+
+Validate these scenarios against the schema offline, then exercise live
+delivery/replacement only in an authorized supervised run:
+
+| Scenario | Required result |
+| --- | --- |
+| Open goals, no active task, queue depth 0, crafting queue size 0 | Valid fresh evidence starts or continues the idle interval. Closed goals do not trigger intervention. |
+| Active work, even with queue depth 0 | No idle claim or intervention; reset the prior interval. |
+| Character crafting with no active task or queued plans | No idle claim; crafting queue size greater than 0 is work. |
+| Parked waiting plan or predecessor-blocked queued plan, body still | Queue depth greater than 0 means pending work; no idle claim. Read status only with a known exact plan ID. |
+| Repeated unchanged character samples while ticks/factory output advance | Retain the original idle timestamp. For an evidenced idle transition at 00:00, unchanged samples at 02:03 and 03:12 report 123 s and 192 s; they do not restart timing. |
+| Unknown transition, first idle observation at 02:03 and unchanged sample at 03:12 | Report at least 69 s observed idle, not an exact start before 02:03. |
+| Renewed movement, carried-inventory, task/queue, or crafting activity | Reset idle timing and nudge state; a later interval needs fresh evidence. |
+| Missing, malformed, failed, stale observation, or run change | Invalidate timing; no intervention based on the uncertain interval. |
+| Failed or uncertain exact-pilot message delivery | Record a capability problem, never successful nudge evidence; establish delivery state before retry. |
+| Interrupted pilot without confirmed retirement, or unresolved physical call/work | No replacement writer starts. Obtain retirement proof, settle the call, and freshly prove all three idle fields first. |
+| Confirmed retirement and fresh physical quiescence after five idle minutes | Record replacement intervention; preserve strategist/body/FIFO, invalidate affected state, and resume from latest structured evidence. |
+
+For this instruction correction, run focused document/schema review and
+`python3 scripts/agent-app verify --profile quick`. Offline verification proves
+neither message delivery nor live retirement/replacement. Claim live behavior
+only with an authorized supervised validation and confirmed delivery and
+retirement receipts. No game deployment or server/client restart is required;
+completion must state whether live deployment or validation was performed.
+
 The native `/goal` owns continuation. Waypoints, batches, plans, and progress
 reports are nonterminal. While later-tick milestone proof is absent, immediately
 continue whenever productive work or bounded recovery exists. Keep the current

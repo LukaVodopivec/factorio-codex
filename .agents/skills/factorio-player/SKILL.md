@@ -26,6 +26,27 @@ before returning control. Assisted progress and timing are never benchmark
 evidence. The pilot never inherits screenshots, raw Lua/console, teleportation,
 hidden map state, free resources, or a second body or write path.
 
+The supervisor follows the stall and replacement contract in `AGENTS.md` and
+the scenarios in `docs/LIVE-VALIDATION.md`. With milestone goals open, only a
+fresh valid `observe_local.character` with `active_task` absent,
+`queue_depth == 0`, and `crafting.queue_size == 0` proves idle. Parked waiting
+and predecessor-blocked plans remain pending; `plan_status` requires an exact
+known `plan_id`. Failed, missing, malformed, or stale evidence invalidates idle
+timing. Retain the evidenced physical-change/idle-transition timestamp across
+unchanged samples, excluding advancing ticks and unrelated factory output. If
+the start is unknown, retain a labeled lower bound from the first valid idle
+sample. Renewed activity resets timing and nudge state; run changes invalidate it.
+
+Before `GO`, prove exact-pilot message delivery and the confirmed retirement
+capability described in `AGENTS.md`. At about two idle minutes revalidate and
+nudge once; failed or uncertain delivery is a capability problem. At about five
+minutes revalidate, interrupt and retire the old pilot with proof it cannot
+resume writes, settle in-flight physical calls, and freshly prove no active or
+queued work or crafting before starting a replacement. `stop` remains recorded
+emergency cancellation only. Record interventions, invalidate affected state,
+preserve Sol and the single body/FIFO/write path, and resume from latest structured
+state. Offline checks do not establish live delivery or replacement behavior.
+
 ## Persistent work
 
 The native `/goal` lifecycle owns continuation. A waypoint, small material

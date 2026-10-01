@@ -128,11 +128,7 @@ function M.start(task)
           end
         end
         local footprint = placement_geometry.footprint(target_proto, planned.position, planned.direction)
-        local endpoint_tile = endpoint and {
-          left_top = { x = math.floor(endpoint.x), y = math.floor(endpoint.y) },
-          right_bottom = { x = math.floor(endpoint.x) + 1, y = math.floor(endpoint.y) + 1 },
-        }
-        if not endpoint_tile or not placement_geometry.overlaps(endpoint_tile, footprint) then
+        if not endpoint or not output_targets.box_contains(footprint, endpoint) then
           error(string.format("%s is not at the exact provisional %s endpoint%s", label, kind,
             endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
         end

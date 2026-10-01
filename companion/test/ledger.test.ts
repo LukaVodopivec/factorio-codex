@@ -35,6 +35,7 @@ function ledger() {
     },
     assumptions: [],
     pilot_plan_ids: { current_plan_id: null, queued_successor_plan_id: null, predecessor_plan_id: null },
+    build_packages: [] as unknown[],
   };
 }
 
@@ -43,7 +44,7 @@ function envelope(sourceTick = 100) {
   return { run_id: current.run.id, save_identity: current.run.save_identity, source_tick: sourceTick,
     update: { phase: current.phase, bottleneck: current.bottleneck,
       latest_measured_capacity: current.latest_measured_capacity, task_list: current.task_list,
-      assumptions: current.assumptions, pilot_plan_ids: current.pilot_plan_ids } };
+      assumptions: current.assumptions, pilot_plan_ids: current.pilot_plan_ids, build_packages: [] as unknown[] } };
 }
 
 function initialization(sourceTick: number | null = 100) {
@@ -62,7 +63,7 @@ describe("compact strategist operations ledger", () => {
     ["wrong run", { ...envelope(), run_id: "other" }, "WRONG_RUN"],
     ["wrong save", { ...envelope(), save_identity: "other" }, "WRONG_SAVE"],
   ])("discards %s evidence without changing the ledger", (_label, report, reason) => {
-    expect(reduceLedger(ledger(), report).result).toEqual({ status: "discarded", reason });
+    expect(reduceLedger(ledger(), report).result).toMatchObject({ status: "discarded", reason });
   });
 
   it("discards duplicate and stale reports without blocking the pilot", () => {
@@ -92,7 +93,7 @@ describe("compact strategist operations ledger", () => {
       [{ ...envelope(101), save_identity: "other" }, "WRONG_SAVE"],
       [{ ...envelope(101), update: {} }, "MALFORMED_REPORT"],
     ] as const) {
-      expect(applyLedgerFile(file, report)).toEqual({ status: "discarded", reason });
+      expect(applyLedgerFile(file, report)).toMatchObject({ status: "discarded", reason });
       expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(expected);
     }
     expect(applyLedgerFile(file, { ...envelope(101), update: { ...envelope().update, phase: "growth" } }))
@@ -109,7 +110,7 @@ describe("compact strategist operations ledger", () => {
     { ...initialization(), run_id: "run-1", save_identity: "fresh-space-age" },
   ])("rejects invalid or ambiguous initialization without creating a file", (report) => {
     const file = ledgerFile();
-    expect(applyLedgerFile(file, report)).toEqual({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(applyLedgerFile(file, report)).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
     expect(fs.existsSync(file)).toBe(false);
     expect(fs.readdirSync(path.dirname(file))).toEqual([]);
   });
@@ -208,5 +209,74 @@ describe("compact strategist operations ledger", () => {
       fs.chmodSync(target, 0o644);
     });
     expect(() => applyLedgerFile(file, initialization())).toThrow("ledger atomic write verification failed");
+  });
+});
+
+describe("validated build packages", () => {
+  const drillPair = (id = "coal-drill-furnace", tick = 100) => ({
+    package_id: id, serves: "NOW" as const, intent: "burner drill feeding a stone furnace on the nearest iron patch",
+    after_package_id: null, source_tick: tick, anchor: { x: 40, y: -30 },
+    required_items: { "burner-mining-drill": 1, "stone-furnace": 1, coal: 10 },
+    steps: [
+      { action: "place_entity", x: 45, y: -30, name: "stone-furnace", direction: 0 },
+      { action: "place_entity", x: 45, y: -32, name: "burner-mining-drill", direction: 8, output_target: { x: 45, y: -30 } },
+      { action: "insert_items", x: 45, y: -32, items: { coal: 5 } },
+    ],
+    validated_place_steps: [0, 1], success_check: "furnace receives ore from the drill without a character transfer",
+  });
+  const withPackages = (packages: unknown[], tick = 101) => ({ ...envelope(tick), update: { ...envelope(tick).update, build_packages: packages } });
+
+  it("stores up to two validated packages and keeps old ledgers without the field valid", () => {
+    const second = { ...drillPair("fuel-loop"), serves: "NEXT" as const, after_package_id: "coal-drill-furnace" };
+    const reduced = reduceLedger(ledger(), withPackages([drillPair(), second]));
+    expect(reduced.result).toMatchObject({ status: "applied", revision: 1 });
+    expect(reduced.ledger?.build_packages.map((entry) => entry.package_id)).toEqual(["coal-drill-furnace", "fuel-loop"]);
+    const { build_packages: _omitted, ...older } = ledger();
+    expect(reduceLedger(older, envelope(101)).result).toMatchObject({ status: "applied" });
+  });
+
+  it("rejects packages it could not execute as written, with the offending path", () => {
+    const cases: Array<[unknown[], string]> = [
+      [[drillPair("a"), drillPair("b"), drillPair("c")], "build_packages"],
+      [[drillPair("a", 500)], "build_packages.0.source_tick"],
+      [[{ ...drillPair(), steps: [{ action: "walk_to", x: 1, y: 2 }] }], "build_packages.0.steps.0"],
+      [[{ ...drillPair(), validated_place_steps: [0] }], "build_packages.0.steps.1"],
+      [[{ ...drillPair(), validated_place_steps: [0, 1, 2] }], "build_packages.0.validated_place_steps"],
+      [[{ ...drillPair("a"), after_package_id: "a" }], "build_packages.0.after_package_id"],
+      [[{ ...drillPair("a"), after_package_id: "b" }, { ...drillPair("b"), after_package_id: "a" }], "depend on themselves or on each other"],
+      [[{ ...drillPair(), steps: [{ action: "craft_items", recipe: "stone-furnace", crafts: 1 }], validated_place_steps: [] }], "build_packages.0.steps.0"],
+      [[drillPair("same"), drillPair("same")], "package ids must be unique"],
+      [[{ ...drillPair(), intent: "x".repeat(240), success_check: "y".repeat(240), steps: Array.from({ length: 25 }, (_, i) =>
+        ({ action: "insert_items", x: i, y: i, items: Object.fromEntries(Array.from({ length: 8 }, (_, j) => [`item-${j}-${"z".repeat(20)}`, 1])) })),
+        validated_place_steps: [] }], "bytes"],
+    ];
+    for (const [packages, path] of cases) {
+      const result = reduceLedger(ledger(), withPackages(packages)).result;
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(path))).toBe(true);
+    }
+  });
+
+  it("accepts a successor of an already-queued package and requires every update to restate packages", () => {
+    const successor = { ...drillPair("fuel-loop"), after_package_id: "coal-drill-furnace" };
+    expect(reduceLedger(ledger(), withPackages([successor])).result).toMatchObject({ status: "applied" });
+    const { build_packages: _omitted, ...update } = envelope(101).update;
+    const result = reduceLedger(ledger(), { ...envelope(101), update }).result;
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("update.build_packages"))).toBe(true);
+  });
+
+  it("stores negative zero as JSON does without failing the readback", () => {
+    const file = ledgerFile();
+    expect(applyLedgerFile(file, initialization())).toMatchObject({ status: "applied", revision: 1 });
+    const zero = { ...drillPair(), anchor: { x: -0, y: 0 }, source_tick: 100 };
+    expect(applyLedgerFile(file, withPackages([zero]))).toMatchObject({ status: "applied", revision: 2 });
+  });
+
+  it("rejects an invalid package at initialization without creating the ledger", () => {
+    const file = ledgerFile();
+    const init = { ...initialization(), update: { ...initialization().update, build_packages: [drillPair("a", 500)] } };
+    expect(applyLedgerFile(file, init)).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(fs.existsSync(file)).toBe(false);
   });
 });

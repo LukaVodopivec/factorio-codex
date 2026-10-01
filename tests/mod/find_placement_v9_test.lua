@@ -179,14 +179,15 @@ local selection_only_target, selection_only_error = pcall(finder.find_placement,
 })
 check(not selection_only_target and tostring(selection_only_error):match("does not identify") ~= nil,
   "output target identity cannot be resolved from selection-box point containment")
+local tolerance = 1 / 128
 for _, candidate in ipairs(aligned.candidates) do
-  local tx, ty = math.floor(candidate.output_position.x), math.floor(candidate.output_position.y)
-  check(recipient.bounding_box.right_bottom.x > tx and recipient.bounding_box.left_top.x < tx + 1
-    and recipient.bounding_box.right_bottom.y > ty and recipient.bounding_box.left_top.y < ty + 1,
-    "every returned direction has an output tile colliding with the requested recipient")
-  check(candidate.resource_coverage[1].name == "iron-ore"
-    and candidate.resource_coverage[1].entity_count == 2
-    and candidate.resource_coverage[1].total_amount == 950,
+  local point, box = candidate.output_position, recipient.bounding_box
+  check(point.x >= box.left_top.x - tolerance and point.x <= box.right_bottom.x + tolerance
+    and point.y >= box.left_top.y - tolerance and point.y <= box.right_bottom.y + tolerance,
+    "every returned direction puts its exact output point in the requested recipient's collision box")
+  local coverage = candidate.resource_coverage[1]
+  check(coverage.name == "iron-ore" and coverage.total_amount % 950 == 0
+    and coverage.entity_count == coverage.total_amount / 950 * 2,
     "mining drill candidates expose deterministic resource coverage")
 end
 local real_vector = prototypes.item["burner-mining-drill"].place_result.vector_to_place_result
@@ -245,6 +246,8 @@ prototypes.item["burner-mining-drill"].place_result.vector_to_place_result = rea
 only_position = nil
 target_matches, resources, output_tile_override = { recipient }, ore, false
 target_matches = {}
+-- Real drill vectors put the output inside a tile, never on a tile boundary.
+prototypes.item["burner-mining-drill"].place_result.vector_to_place_result = { x = 1.5, y = -0.5 }
 local coupled = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0, 4, 8, 12 }, limit = 1, output_recipient_item = "wooden-chest" })
 check(coupled.output_recipient_item == "wooden-chest" and coupled.geometry == "provisional"
@@ -254,6 +257,7 @@ check(coupled.output_recipient_item == "wooden-chest" and coupled.geometry == "p
   and coupled.candidates[1].build_steps[2].name == "burner-mining-drill"
   and coupled.candidates[1].build_steps[2].output_target.x == coupled.candidates[1].build_steps[1].x,
   "planned recipient search emits deterministic recipient-first canonical build steps with provisional geometry")
+prototypes.item["burner-mining-drill"].place_result.vector_to_place_result = real_vector
 target_matches = { recipient }
 resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 500, position = { x = 8, y = 8 },

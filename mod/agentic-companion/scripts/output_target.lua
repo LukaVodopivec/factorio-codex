@@ -118,25 +118,72 @@ function M.input_position(proto, position, direction)
   return { x = position.x + rotated.x, y = position.y + rotated.y }
 end
 
-local function contains_point(entity, point)
-  local box = entity.bounding_box
-  return box and box.left_top and box.right_bottom
-    and point.x >= box.left_top.x and point.x < box.right_bottom.x
-    and point.y >= box.left_top.y and point.y < box.right_bottom.y
+-- Factorio rounds endpoint vectors and collision boxes to 1/256 tiles. A
+-- 2.0.77 probe (burner drills flush against stone furnaces in all directions,
+-- burner inserters around furnaces) bound exactly when the endpoint lay inside
+-- the collision box closed by this tolerance: flush drill outputs land about
+-- 1/256 outside the furnace box yet bind. Boxes of distinct entities are at
+-- least 0.2 tiles apart, so the tolerance never selects a neighbour.
+local ENDPOINT_TOLERANCE = 1 / 128
+
+function M.box_contains(box, point)
+  return box and box.left_top and box.right_bottom and point
+    and point.x >= box.left_top.x - ENDPOINT_TOLERANCE and point.x <= box.right_bottom.x + ENDPOINT_TOLERANCE
+    and point.y >= box.left_top.y - ENDPOINT_TOLERANCE and point.y <= box.right_bottom.y + ENDPOINT_TOLERANCE
+    or false
 end
 
--- Search-time endpoint evidence is deliberately conservative and provisional.
--- It may reject geometry that Factorio would bind, but must never label an
--- entire endpoint tile as one exact recipient. Only the entity's collision box
--- containing the exact prototype-derived point is eligible. Runtime
--- pickup_target/drop_target remains authoritative after physical placement.
+local function contains_point(entity, point)
+  return M.box_contains(entity.bounding_box, point)
+end
+
+-- Grid centres at which a not-yet-placed recipient's collision box contains the
+-- endpoint, nearest the producer first. Callers still check overlap and placement.
+function M.planned_recipient_positions(proto, point, producer_position)
+  local box = proto and proto.collision_box
+  local lt = box and (box.left_top or box[1])
+  local rb = box and (box.right_bottom or box[2])
+  if not (point and lt and rb) then return {} end
+  local function axis(value, tiles, low, high)
+    local offset = tiles % 2 == 1 and 0.5 or 0
+    local values = {}
+    for centre = math.floor(value - high - ENDPOINT_TOLERANCE - offset) + offset,
+      value - low + ENDPOINT_TOLERANCE do
+      if value >= centre + low - ENDPOINT_TOLERANCE and value <= centre + high + ENDPOINT_TOLERANCE then
+        values[#values + 1] = centre
+      end
+    end
+    return values
+  end
+  local lx, ly = tonumber(lt.x or lt[1]), tonumber(lt.y or lt[2])
+  local rx, ry = tonumber(rb.x or rb[1]), tonumber(rb.y or rb[2])
+  local positions = {}
+  for _, y in ipairs(axis(point.y, tonumber(proto.tile_height) or 1, ly, ry)) do
+    for _, x in ipairs(axis(point.x, tonumber(proto.tile_width) or 1, lx, rx)) do
+      positions[#positions + 1] = { x = x, y = y }
+    end
+  end
+  local origin = producer_position or point
+  table.sort(positions, function(a, b)
+    local da = (a.x - origin.x) ^ 2 + (a.y - origin.y) ^ 2
+    local db = (b.x - origin.x) ^ 2 + (b.y - origin.y) ^ 2
+    if da ~= db then return da < db end
+    if a.y ~= b.y then return a.y < b.y end
+    return a.x < b.x
+  end)
+  return positions
+end
+
+-- Search-time endpoint evidence is provisional. Only an entity whose collision
+-- box contains the exact prototype-derived point (within the probed tolerance)
+-- is eligible; never a whole endpoint tile. Runtime pickup_target/drop_target
+-- remains authoritative after physical placement.
 function M.recipient_at(c, point, kind)
   if not point then return nil, nil, "no-endpoint" end
   if not c.force.is_chunk_charted(c.surface,
     { x = math.floor(point.x / 32), y = math.floor(point.y / 32) }) then return nil, nil, "uncharted" end
-  local epsilon = 0.001
-  local area = { left_top = { x = point.x - epsilon, y = point.y - epsilon },
-    right_bottom = { x = point.x + epsilon, y = point.y + epsilon } }
+  local area = { left_top = { x = point.x - ENDPOINT_TOLERANCE, y = point.y - ENDPOINT_TOLERANCE },
+    right_bottom = { x = point.x + ENDPOINT_TOLERANCE, y = point.y + ENDPOINT_TOLERANCE } }
   local matches = {}
   for _, entity in ipairs(c.surface.find_entities_filtered({ area = area })) do
     if entity.valid and entity.force == c.force and M.can_target_type(entity.type, kind)

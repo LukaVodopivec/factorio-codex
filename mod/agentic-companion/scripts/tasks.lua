@@ -123,7 +123,7 @@ local function make_step_task(step)
   if kind == "pickup" then task.target, task.item, task.count = { x = step.x, y = step.y }, step.item, step.count end
   if kind == "place" then
     task.item, task.position, task.direction = step.name, { x = step.x, y = step.y }, step.direction
-    task.output_target = step.output_target
+    task.input_target, task.output_target = step.input_target, step.output_target
   end
   if kind == "craft" then task.recipe, task.count, task.wait_for_completion = step.recipe, step.crafts, step.wait_for_completion end
   if kind == "insert" then task.target, task.items = { x = step.x, y = step.y }, step.items end

@@ -10,7 +10,7 @@ import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitF
 import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.18.0";
+export const MCP_SERVER_VERSION = "0.19.0";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -47,7 +47,7 @@ function failure(error: unknown, prefix = "Error") {
 export type McpSurface = "full" | "read-only";
 export const READ_ONLY_TOOLS = [
   "connect_status", "map_summary", "progression_status", "production_requirements",
-  "describe_prototype", "observe_local", "inspect_entity", "plan_status",
+  "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement",
 ] as const;
 
 export async function connectStatus(
@@ -129,16 +129,14 @@ export function registerMcpTools(
   });
   server.registerTool("describe_prototype", { description: "Batch-describe up to 10 exact item, entity, or recipe prototypes; kind=auto resolves placeable items as entities, then genuine items, then recipes.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
   server.registerTool("progression_status", { description: "Read researched technologies, ordinary queueable research, and action/trigger unlocks with authoritative item/entity quality filters and scripted descriptions from Codex's live force.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
-  if (surface === "full") {
-    server.registerTool("can_place", { description: "Batch-check up to 24 identified placements within 30 tiles without side effects; every result retains the requested item, position, direction and rejection reason.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
-      try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
-      catch (error) { return failure(error); }
-    });
-    server.registerTool("find_placement", { description: "Find stable force-charted placements. Requests containing input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12. Optional input_target constrains an inserter pickup. Use either an existing output_target or output_recipient_item to search a provisional recipient-first pair; geometry never claims runtime binding.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), input_target: position.optional(), output_target: position.optional(), output_recipient_item: z.string().min(1).optional() }).strict().refine((p) => !(p.output_target && p.output_recipient_item), "use output_target or output_recipient_item, not both").refine((p) => !(p.input_target !== undefined || p.output_target !== undefined || p.output_recipient_item !== undefined) || p.directions.every((direction) => direction % 4 === 0), { message: "targeted placement directions must be cardinal: 0, 4, 8, or 12", path: ["directions"] }) }, async (p) => {
-      try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)))); }
-      catch (error) { return failure(error); }
-    });
-  }
+  server.registerTool("can_place", { description: "Batch-check up to 24 identified placements within 30 tiles without side effects; every result retains the requested item, position, direction and rejection reason, and reports overlaps_batch (0-based indexes of other placements in the batch it overlaps), output_position/output_lands_on and pickup_position/pickup_from (a batch_index, an existing entity, null for nothing there, or {state} when out_of_range, uncharted, ambiguous, or unknown).", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
+    try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
+    catch (error) { return failure(error); }
+  });
+  server.registerTool("find_placement", { description: "Find stable force-charted placements, nearest first. Requests containing input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12. Optional input_target constrains an inserter pickup. Use either an existing output_target or output_recipient_item to search a provisional recipient-first pair; geometry never claims runtime binding. Each candidate's plan_steps go verbatim into queue_plan steps (with insert_items for burner inlets when fuel is given). An empty result carries rejections, closest_rejected and a hint: change the request as the hint says and never repeat it unchanged.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), input_target: position.optional(), output_target: position.optional(), output_recipient_item: z.string().min(1).optional(), fuel: items.optional() }).strict().refine((p) => !(p.output_target && p.output_recipient_item), "use output_target or output_recipient_item, not both").refine((p) => !(p.input_target !== undefined || p.output_target !== undefined || p.output_recipient_item !== undefined) || p.directions.every((direction) => direction % 4 === 0), { message: "targeted placement directions must be cardinal: 0, 4, 8, or 12", path: ["directions"] }) }, async (p) => {
+    try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)), p.fuel)); }
+    catch (error) { return failure(error); }
+  });
   const mapSummarySchema = z.object({
     detail: z.enum(["aggregate", "full"]).default("aggregate"),
     flow_precision: z.enum(["five_seconds", "one_minute", "ten_minutes", "one_hour"]).default("one_minute"),

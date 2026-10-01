@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const surface = process.env.MCP_SURFACE ?? "full";
 const expected = (surface === "read-only"
-  ? ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status"]
+  ? ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement"]
   : ["connect_status","observe_local","inspect_entity","describe_prototype","progression_status","can_place","find_placement","map_summary","production_requirements","connect_entities","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","plan_status","run_plan","start_research","stop"]).sort();
 const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = process.env.MCP_ENTRY ?? "src/cli.ts";
@@ -35,7 +35,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.18.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.19.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -45,7 +45,7 @@ try {
     const forbidden = ["walk_to", "mine", "pickup_items", "place_entity", "craft_items", "insert_items", "extract_items",
       "set_recipe", "rotate_entity", "build_plan", "queue_plan", "run_plan", "start_research", "stop"];
     if (forbidden.some((name) => names.includes(name))) throw new Error(`read-only surface exposed mutation: ${names}`);
-    console.log("PASS initialize, exact 8 read-only tools, no physical mutation surface");
+    console.log("PASS initialize, exact 10 read-only tools, no physical mutation surface");
   } else {
   const placementTool = tools.find((tool: any) => tool.name === "find_placement");
   if (!/input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12/.test(placementTool?.description ?? "")) throw new Error("find_placement must disclose the targeted cardinal constraint");

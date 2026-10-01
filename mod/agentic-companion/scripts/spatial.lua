@@ -5,6 +5,7 @@
 local companion = require("scripts.companion")
 local tasks = require("scripts.tasks")
 local placement_geometry = require("scripts.placement_geometry")
+local output_targets = require("scripts.output_target")
 
 local M = {}
 
@@ -475,7 +476,7 @@ local function can_place_one(c, surface, item, position, direction)
     if e.valid then
       if e == c then
         companion_in_way = true
-      elseif e.type ~= "resource" and e.type ~= "item-entity" and not blocker then
+      elseif not placement_geometry.NON_BLOCKING_TYPES[e.type] and not blocker then
         blocker = e
       end
     end
@@ -535,6 +536,50 @@ function M.can_place(params)
       y = tonumber(type(p.position) == "table" and p.position.y or nil),
     }
     out[i] = res
+  end
+  -- Relations inside the batch and to existing entities, so a multi-entity
+  -- design can be checked before anything is built (indexes are 0-based).
+  local planned = {}
+  for i, p in ipairs(params.placements) do
+    local item = prototypes.item[p.item]
+    local proto = item and item.place_result
+    local position = out[i].position
+    if proto and position.x and position.y then
+      planned[i] = { proto = proto, position = position, direction = out[i].direction,
+        area = placement_geometry.footprint(proto, position, out[i].direction) }
+    end
+  end
+  local function lands_on(point, kind, self_index)
+    for j = 1, #params.placements do
+      local other = planned[j]
+      if j ~= self_index and other and output_targets.can_target_type(other.proto.type, kind)
+        and output_targets.box_contains(other.area, point) then
+        return { batch_index = j - 1, name = other.proto.name }
+      end
+    end
+    -- Local perception only: points beyond Codex's 30-tile range stay unreported.
+    local dx, dy = point.x - c.position.x, point.y - c.position.y
+    if dx * dx + dy * dy > 900 then return { state = "out_of_range" } end
+    local ok, _, identity, state = pcall(output_targets.recipient_at, c, point, kind)
+    if not ok then return { state = "unknown" } end
+    if state == "bound" then return identity end
+    if state == "none" then return false end
+    return { state = state }
+  end
+  for i = 1, #params.placements do
+    local entry = planned[i]
+    if entry then
+      local overlaps = {}
+      for j = 1, #params.placements do
+        local other = planned[j]
+        if j ~= i and other and placement_geometry.overlaps(entry.area, other.area) then overlaps[#overlaps + 1] = j - 1 end
+      end
+      if #overlaps > 0 then out[i].overlaps_batch = overlaps end
+      local output = output_targets.output_position(entry.proto, entry.position, entry.direction)
+      if output then out[i].output_position, out[i].output_lands_on = output, lands_on(output, "output", i) end
+      local pickup = output_targets.input_position(entry.proto, entry.position, entry.direction)
+      if pickup then out[i].pickup_position, out[i].pickup_from = pickup, lands_on(pickup, "input", i) end
+    end
   end
   return { results = out }
 end

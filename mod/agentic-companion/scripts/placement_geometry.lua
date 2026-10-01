@@ -13,7 +13,14 @@ function M.footprint(proto, position, direction)
   local lt = box and xy(box.left_top) or { x = -0.1, y = -0.1 }
   local rb = box and xy(box.right_bottom) or { x = 0.1, y = 0.1 }
   direction = math.floor(tonumber(direction) or 0) % 16
-  if direction ~= 0 then
+  -- Cardinal rotations are exact axis swaps; only diagonal directions need trig.
+  if direction == 4 then
+    lt, rb = { x = -rb.y, y = lt.x }, { x = -lt.y, y = rb.x }
+  elseif direction == 8 then
+    lt, rb = { x = -rb.x, y = -rb.y }, { x = -lt.x, y = -lt.y }
+  elseif direction == 12 then
+    lt, rb = { x = lt.y, y = -rb.x }, { x = rb.y, y = -lt.x }
+  elseif direction ~= 0 then
     local angle = direction * math.pi / 8
     local cosine, sine = math.cos(angle), math.sin(angle)
     local min_x, min_y, max_x, max_y
@@ -32,6 +39,11 @@ function M.footprint(proto, position, direction)
     right_bottom = { x = position.x + math.max(lt.x, rb.x), y = position.y + math.max(lt.y, rb.y) },
   }
 end
+
+-- Entity types that never stop a building from being placed.
+M.NON_BLOCKING_TYPES = { character = true, resource = true, ["item-entity"] = true, fish = true,
+  corpse = true, ["character-corpse"] = true, ["entity-ghost"] = true, ["tile-ghost"] = true,
+  ["deconstructible-tile-proxy"] = true, ["item-request-proxy"] = true }
 
 function M.overlaps(a, b)
   return a and b and a.left_top and a.right_bottom and b.left_top and b.right_bottom

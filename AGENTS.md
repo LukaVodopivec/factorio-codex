@@ -118,15 +118,18 @@ FIFO lane. The `gpt-6-luna` pilot uses `low` reasoning with fast mode enabled
 and is the sole gameplay writer, physical controller, immediate-safety
 authority, and source of latest exact local state. The persistent
 `gpt-6.1-sol` strategist uses `medium` reasoning at normal speed, owns coordinate-free long-horizon
-NOW/NEXT/LATER priorities, and may call only the mechanically read-only MCP
-surface. Its reads never enter or delay the physical lane.
+NOW/NEXT/LATER priorities, designs every coupled layout as a validated build
+package that the pilot revalidates and queues unchanged, and may call only the
+mechanically read-only MCP surface, including the side-effect-free placement
+checks. Its reads never enter or delay the physical lane.
 
 Keep one compact `operations.json`. Sol is its sole atomic host writer, including
 its initial revision; Luna never writes it. The ledger is Sol's only channel to
 the pilot: supervisor assignments never ask Sol to message the pilot. Pilot
-reports and ledger updates are material and asynchronous, under about 600 bytes
-(the connected transport rejects messages over 1,000 bytes), not per-call
-acknowledgements or blocking synchronization. Luna validates each unseen
+reports stay under about 600 bytes (the connected transport rejects messages
+over 1,000 bytes); ledger updates stay compact, with build packages capped at
+8 KB. Both are material and asynchronous, not per-call acknowledgements or
+blocking synchronization. Luna validates each unseen
 revision against newer physical evidence and continues fail-open when Sol, a
 report, or the ledger is missing, malformed, stale, or unavailable. Do not add
 another writer, body, lane, ledger, broker, daemon, or control channel.

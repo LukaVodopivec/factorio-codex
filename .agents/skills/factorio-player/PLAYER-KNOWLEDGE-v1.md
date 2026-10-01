@@ -12,8 +12,10 @@ Do not store map coordinates, tutorials, external blueprint strings, or online
 build sequences. No world position, absolute or relative coordinate pair,
 landmark position, entity location, or route belongs in this file. Run-local
 coordinates may exist only in the pilot's ephemeral current working context
-with their source tick and save identity, and expire on reset, contradictory
-observation, referenced-entity mutation, or route failure.
+and in Sol's validated build packages in the current run's ledger, each with
+its source tick and save identity. They expire on reset, contradictory
+observation, referenced-entity mutation, or route failure; the pilot
+revalidates package positions with `can_place` before queueing them.
 Revalidate stale knowledge against current structured game state before using
 it. This file defines the versioned contract; it is not a place to persist
 save-specific observations.

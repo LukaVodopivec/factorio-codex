@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { atomicWriteFile } from "../setup/atomic.js";
+import { planStepSchema } from "../mcp/runPlan.js";
 
 const text = (max: number) => z.string().min(1).max(max);
 const gitSha = z.string().regex(/^[0-9a-f]{40}$/);
@@ -39,6 +40,27 @@ const planIds = z.object({
   }
 });
 
+const PACKAGE_STEP_ACTIONS = new Set(["place_entity", "insert_items", "extract_items", "set_recipe", "rotate_entity",
+  "inspect_entities", "wait_for_item", "validate_factory_component"]);
+const packageId = z.string().regex(/^[a-z0-9-]{1,32}$/, "package ids are 1-32 lowercase letters, digits or dashes");
+// A coupled layout Sol designed and checked with find_placement/can_place; the
+// pilot revalidates it, adds its own travel and gathering, and queues the steps.
+const buildPackage = z.object({
+  package_id: packageId,
+  serves: z.enum(["NOW", "NEXT"]),
+  intent: text(240),
+  after_package_id: packageId.nullable().default(null),
+  source_tick: z.number().int().nonnegative(),
+  anchor: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
+  required_items: z.record(z.string().min(1), z.number().int().positive())
+    .refine((required) => Object.keys(required).length <= 16, "at most 16 required items"),
+  steps: z.array(planStepSchema.refine((step) => PACKAGE_STEP_ACTIONS.has(step.action),
+    "package steps are placement, insertion, extraction, recipe, rotation, inspection, item waits, and validation; the pilot adds its own travel, gathering, and crafting")).min(1).max(25),
+  validated_place_steps: z.array(z.number().int().nonnegative()).max(24),
+  success_check: text(240),
+}).strict();
+const MAX_PACKAGE_BYTES = 8192;
+
 export const operationsLedgerSchema = z.object({
   schema_version: z.literal(2), run: runSchema,
   revision: z.number().int().nonnegative(), source_tick: z.number().int().nonnegative().nullable(),
@@ -46,9 +68,48 @@ export const operationsLedgerSchema = z.object({
   latest_measured_capacity: z.array(capacity).max(12),
   task_list: z.object({ NOW: priority, NEXT: priority, LATER: priority }).strict(),
   assumptions: z.array(assumption).max(8), pilot_plan_ids: planIds,
+  build_packages: z.array(buildPackage).max(2).default([]),
 }).strict();
 
-const mutableSchema = operationsLedgerSchema.omit({ schema_version: true, run: true, revision: true, source_tick: true });
+type BuildPackage = z.infer<typeof buildPackage>;
+/** Cross-field package checks the object schema cannot express. */
+function packageIssues(packages: BuildPackage[], sourceTick: number | null): string[] {
+  const issues: string[] = [];
+  const ids = new Set(packages.map((entry) => entry.package_id));
+  if (ids.size !== packages.length) issues.push("build_packages: package ids must be unique");
+  if (Buffer.byteLength(JSON.stringify(packages), "utf8") > MAX_PACKAGE_BYTES) issues.push(`build_packages: at most ${MAX_PACKAGE_BYTES} bytes`);
+  const after = new Map(packages.map((entry) => [entry.package_id, entry.after_package_id]));
+  packages.forEach((entry, index) => {
+    const at = `build_packages.${index}`;
+    if (sourceTick !== null && entry.source_tick > sourceTick) issues.push(`${at}.source_tick: newer than the revision's source_tick`);
+    // after_package_id may name a package the pilot already queued (and Sol dropped).
+    if (entry.after_package_id === entry.package_id
+      || (entry.after_package_id !== null && after.get(entry.after_package_id) === entry.package_id)) {
+      issues.push(`${at}.after_package_id: packages cannot depend on themselves or on each other`);
+    }
+    if (entry.steps.filter((step) => step.action === "place_entity").length > 24) {
+      issues.push(`${at}.steps: at most 24 placements, so one can_place batch checks them`);
+    }
+    entry.steps.forEach((step, stepIndex) => {
+      if (step.action === "place_entity" && !entry.validated_place_steps.includes(stepIndex)) {
+        issues.push(`${at}.steps.${stepIndex}: placement not listed in validated_place_steps`);
+      }
+    });
+    if (entry.validated_place_steps.some((stepIndex) => entry.steps[stepIndex]?.action !== "place_entity")) {
+      issues.push(`${at}.validated_place_steps: must index place_entity steps`);
+    }
+  });
+  return issues.slice(0, 3);
+}
+
+function schemaIssues(error: z.ZodError): string[] {
+  return error.issues.slice(0, 3).map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`.slice(0, 160));
+}
+
+// Every update restates the pending packages: an omitted list would silently
+// replace them with an empty one.
+const mutableSchema = operationsLedgerSchema.omit({ schema_version: true, run: true, revision: true, source_tick: true })
+  .extend({ build_packages: z.array(buildPackage).max(2) });
 export const ledgerEnvelopeSchema = z.object({
   run_id: text(160), save_identity: text(240), source_tick: z.number().int().nonnegative(),
   update: mutableSchema,
@@ -61,16 +122,19 @@ const applyEnvelopeSchema = z.union([ledgerEnvelopeSchema, ledgerInitSchema]);
 
 export type OperationsLedger = z.infer<typeof operationsLedgerSchema>;
 export type LedgerApplyResult = { status: "applied"; revision: number; source_tick: number | null }
-  | { status: "discarded"; reason: string };
+  | { status: "discarded"; reason: string; issues?: string[] };
 
-const discard = (reason: string): LedgerApplyResult => ({ status: "discarded", reason });
+const discard = (reason: string, issues?: string[]): LedgerApplyResult =>
+  ({ status: "discarded", reason, ...(issues && issues.length > 0 ? { issues } : {}) });
 
 export function reduceLedger(existingValue: unknown, envelopeValue: unknown):
   { result: LedgerApplyResult; ledger?: OperationsLedger } {
   const existing = operationsLedgerSchema.safeParse(existingValue);
   if (!existing.success) return { result: discard("MALFORMED_OR_UNSUPPORTED_LEDGER") };
   const envelope = ledgerEnvelopeSchema.safeParse(envelopeValue);
-  if (!envelope.success) return { result: discard("MALFORMED_REPORT") };
+  if (!envelope.success) return { result: discard("MALFORMED_REPORT", schemaIssues(envelope.error)) };
+  const issues = packageIssues(envelope.data.update.build_packages, envelope.data.source_tick);
+  if (issues.length > 0) return { result: discard("MALFORMED_REPORT", issues) };
   if (envelope.data.run_id !== existing.data.run.id) return { result: discard("WRONG_RUN") };
   if (envelope.data.save_identity !== existing.data.run.save_identity) return { result: discard("WRONG_SAVE") };
   if (existing.data.source_tick !== null && envelope.data.source_tick <= existing.data.source_tick) {
@@ -85,7 +149,11 @@ export function reduceLedger(existingValue: unknown, envelopeValue: unknown):
 
 export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApplyResult {
   const envelope = applyEnvelopeSchema.safeParse(envelopeValue);
-  if (!envelope.success) return discard("MALFORMED_REPORT");
+  if (!envelope.success) {
+    const isInitShape = typeof envelopeValue === "object" && envelopeValue !== null && "init" in envelopeValue;
+    const specific = (isInitShape ? ledgerInitSchema : ledgerEnvelopeSchema).safeParse(envelopeValue);
+    return discard("MALFORMED_REPORT", specific.success ? [] : schemaIssues(specific.error));
+  }
   let destination: fs.Stats | undefined;
   try { destination = fs.lstatSync(file); }
   catch (error) {
@@ -94,6 +162,8 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
   let reduced: { result: LedgerApplyResult; ledger?: OperationsLedger };
   const isInit = "init" in envelope.data;
   if ("init" in envelope.data) {
+    const issues = packageIssues(envelope.data.update.build_packages, envelope.data.source_tick);
+    if (issues.length > 0) return discard("MALFORMED_REPORT", issues);
     if (destination) return discard("LEDGER_ALREADY_EXISTS");
     const ledger: OperationsLedger = {
       schema_version: 2, run: envelope.data.run, revision: 1,
@@ -113,13 +183,16 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
     reduced = reduceLedger(existing, envelope.data);
   }
   if (!reduced.ledger) return reduced.result;
-  try { atomicWriteFile(file, `${JSON.stringify(reduced.ledger, null, 2)}\n`, 0o600, !isInit); }
+  // JSON has no -0; compare the readback with what JSON actually stores.
+  const serialized = JSON.stringify(reduced.ledger, null, 2);
+  const stored = JSON.parse(serialized) as OperationsLedger;
+  try { atomicWriteFile(file, `${serialized}\n`, 0o600, !isInit); }
   catch (error) {
     if (isInit && (error as NodeJS.ErrnoException).code === "EEXIST") return discard("LEDGER_ALREADY_EXISTS");
     throw error;
   }
   const readBack = operationsLedgerSchema.safeParse(JSON.parse(fs.readFileSync(file, "utf8")));
-  if (!readBack.success || !isDeepStrictEqual(readBack.data, reduced.ledger) ||
+  if (!readBack.success || !isDeepStrictEqual(readBack.data, stored) ||
       (fs.lstatSync(file).mode & 0o7777) !== 0o600) throw new Error("ledger atomic write verification failed");
   return reduced.result;
 }

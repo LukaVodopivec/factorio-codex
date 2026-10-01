@@ -9,7 +9,7 @@ const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", r
 describe("protocol v22 DTO and tool registry", () => {
   it("declares v22 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(22);
-    expect(MCP_SERVER_VERSION).toBe("0.18.0");
+    expect(MCP_SERVER_VERSION).toBe("0.19.0");
     expect(RPC_METHODS).toHaveLength(19);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities"]));
   });
@@ -148,5 +148,41 @@ describe("protocol v22 DTO and tool registry", () => {
     } } });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);
     expect(normalizePhysicalRoute({ steps: {} }).steps).toEqual([]);
+  });
+});
+
+describe("placement results an executor can pass through", () => {
+  const drillPair = { candidates: [{ position: { x: 45, y: -32 }, direction: 8, build_steps: [
+    { name: "stone-furnace", x: 45, y: -30, direction: 0, fuel_inlet: true },
+    { name: "burner-mining-drill", x: 45, y: -32, direction: 8, fuel_inlet: true, output_target: { x: 45, y: -30 } },
+  ] }] };
+
+  it("derives queue_plan steps in build order, fuelling burner inlets only when fuel is requested", () => {
+    const fuelled = normalizePlacementSearch(drillPair, { coal: 5 }).candidates[0].plan_steps;
+    expect(fuelled).toEqual([
+      { action: "place_entity", x: 45, y: -30, name: "stone-furnace", direction: 0 },
+      { action: "place_entity", x: 45, y: -32, name: "burner-mining-drill", direction: 8, output_target: { x: 45, y: -30 } },
+      { action: "insert_items", x: 45, y: -30, items: { coal: 5 } },
+      { action: "insert_items", x: 45, y: -32, items: { coal: 5 } },
+    ]);
+    expect(normalizePlacementSearch(drillPair).candidates[0].plan_steps.map((step: any) => step.action))
+      .toEqual(["place_entity", "place_entity"]);
+  });
+
+  it("passes empty-result diagnostics through unchanged", () => {
+    const empty = { evaluated: 40, rejections: { pickup_not_on_source: 30, output_not_on_recipient: 10 },
+      closest_rejected: { reason: "output_not_on_recipient", position: { x: 1.5, y: 2.5 }, direction: 4 },
+      hint: "wooden-chest at (38.5, -47.5) and stone-furnace at (40, -48) are adjacent (0 free tiles)", candidates: {} };
+    expect(normalizePlacementSearch(empty)).toEqual({ ...empty, candidates: [] });
+  });
+
+  it("reports batch relations for can_place with null for nothing found", () => {
+    const placements = [{ name: "stone-furnace", x: 45, y: -30 }, { name: "burner-mining-drill", x: 45, y: -32, direction: 8 }];
+    const results = normalizeCanPlace({ results: [
+      { can_place: true, overlaps_batch: {}, output_lands_on: false },
+      { can_place: true, overlaps_batch: [0], output_position: { x: 45.5, y: -30.7 }, output_lands_on: { batch_index: 0, name: "stone-furnace" } },
+    ] }, placements).results;
+    expect(results[0]).toMatchObject({ overlaps_batch: [], output_lands_on: null });
+    expect(results[1]).toMatchObject({ overlaps_batch: [0], output_lands_on: { batch_index: 0, name: "stone-furnace" } });
   });
 });

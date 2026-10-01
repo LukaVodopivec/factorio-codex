@@ -9,7 +9,7 @@ tool_timeout_sec = 600
 [mcp_servers.factorio-readonly]
 command = "./scripts/start-factorio-mcp"
 args = ["--surface", "read-only"]
-enabled_tools = ["connect_status", "map_summary", "progression_status", "production_requirements", "describe_prototype", "observe_local", "inspect_entity", "plan_status"]
+enabled_tools = ["connect_status", "map_summary", "progression_status", "production_requirements", "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement"]
 enabled = false
 required = false
 startup_timeout_sec = 180

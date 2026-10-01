@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.18.0**.
+Current release: **0.19.0**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -77,15 +77,25 @@ searches authoritative charted candidates, reports compatible mining-drill
 resource coverage and ranks higher useful coverage before proximity, rejects
 charted candidates with no compatible resources with a deterministic count
 while retaining uncharted candidates with coverage omitted, and exposes
-cardinal inserter pickup/drop endpoints plus rotated fluid endpoints.
+cardinal inserter pickup/drop endpoints plus rotated fluid endpoints. It
+evaluates nearest positions first and stops at the requested candidates
+(drills rank coverage among the nearest 2×limit valid positions), 2,048
+position/direction checks, or 600 engine queries (`truncated`), which kept
+every probed call, worst cases included, under 10 ms of game tick. An endpoint binds when it lies in the recipient's
+collision box within 1/128 tile, the rule a Factorio 2.0.77 probe of flush
+burner drills and inserters reproduced exactly. Each candidate carries
+`plan_steps` for `queue_plan` (with fuel insertions when `fuel` is given), and
+an empty result names one rejection reason per evaluation, the deepest
+`closest_rejected`, and a `hint`, including the free-tile gap an inserter
+needs between two endpoints. `can_place` reports batch overlaps and where each
+output and pickup lands.
 Output-capable candidates expose
 their deterministic `output_position` and recipient, explicitly `null` for
 ground output. Its existing `output_target` contract resolves the requested
 recipient by exact entity position, derives the endpoint from prototype geometry
 and direction, and requires that exact point to lie within the eligible entity's
-`bounding_box`. This search-time geometry is conservative and provisional: it
-can reject geometry Factorio would bind and proves neither item acceptance nor
-runtime binding. Physical placement retains the exact created entity without
+`bounding_box` closed by the probed 1/128-tile tolerance. This search-time
+geometry is provisional: it proves neither item acceptance nor runtime binding. Physical placement retains the exact created entity without
 removing or replacing it; later-tick `pickup_target`/`drop_target` identity is
 authoritative, even when a live endpoint differs from the prototype prediction.
 A mining drill's nil `drop_target` is reported as pending first output, never as
@@ -124,8 +134,10 @@ reasoning sessions around one physical body and one FIFO mutation lane. A
 `gpt-6-luna` pilot with `low` reasoning and fast mode enabled is the sole
 gameplay writer, character controller, immediate-safety authority, and source
 of latest exact local state. A persistent `gpt-6.1-sol` strategist with `medium`
-reasoning at normal speed owns compact NOW/NEXT/LATER priorities and may use only the separate
-mechanically read-only MCP surface. Its observations never enter the physical
+reasoning at normal speed owns compact NOW/NEXT/LATER priorities, designs every
+coupled layout as a validated build package that the pilot revalidates and
+queues unchanged, and may use only the separate mechanically read-only MCP
+surface (which includes the side-effect-free `can_place` and `find_placement`). Its observations never enter the physical
 lane. Sol atomically writes the one `operations.json`, including its initial
 revision (`ledger-apply` with an `init` envelope), and it is Sol's only channel
 to the pilot; Luna never writes it and continues fail-open when advice is

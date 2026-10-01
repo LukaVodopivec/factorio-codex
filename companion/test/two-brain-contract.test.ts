@@ -22,7 +22,7 @@ describe("persistent two-brain coordination contract", () => {
 
   it("gives Sol only the named read-only evidence surface and keeps reads outside the physical lane", () => {
     for (const tool of ["connect_status", "map_summary", "progression_status", "production_requirements",
-      "describe_prototype", "observe_local", "inspect_entity", "plan_status"]) {
+      "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement"]) {
       expect(strategist).toContain(`\`${tool}\``);
     }
     expect(strategist).toMatch(/mechanically read-only[\s\S]*(?:never enter|outside)[\s\S]*(?:physical )?FIFO/i);
@@ -87,6 +87,21 @@ describe("persistent two-brain coordination contract", () => {
     expect(live).not.toMatch(/mcp_servers\.[a-z-]+\.enabled=/);
     expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"\][^}]*enabled_tools=/);
     expect(pilot).not.toMatch(/mcp_servers/);
+  });
+
+  it("lets Sol design coupled layouts as validated packages that Luna queues unchanged", () => {
+    const agents = read("AGENTS.md");
+    expect(strategist).toMatch(/design every coupled layout yourself/i);
+    expect(strategist).toMatch(/one `can_place` batch[\s\S]*`overlaps_batch`/);
+    expect(strategist).toMatch(/Coordinates appear only inside validated build packages; NOW, NEXT, and LATER stay coordinate-free/);
+    expect(strategist).toMatch(/never movement, pickup, mining, or crafting/);
+    expect(strategist).toMatch(/Every ledger update restates the pending packages/);
+    expect(pilot).toMatch(/fail open: design that one coupled connection yourself/);
+    expect(pilot).toMatch(/batched `can_place`[\s\S]*`queue_plan` its steps unchanged/);
+    expect(pilot).toMatch(/never repair a package's geometry/);
+    expect(pilot).toMatch(/without a valid package keep working rather than waiting/i);
+    expect(pilot).toMatch(/empty `find_placement` result is terminal for that unchanged request/);
+    expect(agents).toMatch(/designs every coupled layout as a validated build\s+package/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

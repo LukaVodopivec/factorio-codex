@@ -40,6 +40,9 @@ export function normalizeCanPlace(value: any, placements: Array<{ name: string; 
       position: entry?.position ?? { x: requested.x, y: requested.y },
       direction: requested.direction ?? 0,
       ...(entry?.can_place === false && typeof entry.reason !== "string" ? { reason: "placement rejected by Factorio" } : {}),
+      ...(entry?.output_lands_on === false ? { output_lands_on: null } : {}),
+      ...(entry?.pickup_from === false ? { pickup_from: null } : {}),
+      ...(entry?.overlaps_batch === undefined ? {} : { overlaps_batch: luaArray(entry.overlaps_batch) }),
     };
   }) };
 }
@@ -50,11 +53,28 @@ function luaArray(value: unknown): unknown[] {
   return value as unknown[];
 }
 
-export function normalizePlacementSearch(value: any): any {
+// queue_plan/run_plan steps for one candidate: placements in build order, then
+// the requested fuel into every burner inlet among them.
+function placementPlanSteps(value: unknown, fuel?: Record<string, number>): any[] {
+  const buildSteps: any[] = Array.isArray(value) ? value : [];
+  const places = buildSteps.map((step) => ({
+    action: "place_entity", x: step.x, y: step.y, name: step.name,
+    ...(step.direction === undefined ? {} : { direction: step.direction }),
+    ...(step.input_target ? { input_target: step.input_target } : {}),
+    ...(step.output_target ? { output_target: step.output_target } : {}),
+  }));
+  const fuelSteps = fuel && Object.keys(fuel).length > 0
+    ? buildSteps.filter((step) => step.fuel_inlet === true).map((step) => ({ action: "insert_items", x: step.x, y: step.y, items: fuel }))
+    : [];
+  return [...places, ...fuelSteps];
+}
+
+export function normalizePlacementSearch(value: any, fuel?: Record<string, number>): any {
   if (!value || typeof value !== "object") return value;
   return { ...value, candidates: luaArray(value.candidates).map((candidate: any) => ({
     ...candidate,
     build_steps: luaArray(candidate?.build_steps),
+    ...(Array.isArray(luaArray(candidate?.build_steps)) ? { plan_steps: placementPlanSteps(luaArray(candidate?.build_steps), fuel) } : {}),
     ...(candidate?.output_target === false ? { output_target: null } : {}),
     ...(candidate?.output_position === undefined ? {} : { output_precondition: {
       endpoint: candidate.output_position,

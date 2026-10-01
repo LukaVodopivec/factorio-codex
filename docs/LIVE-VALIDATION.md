@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.18.0**. Prior live evidence remains historical
-until the fresh 0.18.0 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.19.0**. Prior live evidence remains historical
+until the fresh 0.19.0 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -83,7 +83,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.18.0 reliability pass, also record these observable checks without
+For the 0.19.0 reliability pass, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
 
 - A compact observation stays bounded, names every omission count, and appears
@@ -160,8 +160,11 @@ strategist as `gpt-6.1-sol` with `medium` reasoning at normal speed and expose o
 by-default `factorio-readonly` MCP server to it; disable the full `factorio`
 server in that Sol session. Sol owns NOW/NEXT/LATER and is the sole atomic writer
 of one compact `operations.json`, including its initial revision. The ledger is
-Sol's only channel to the pilot. Luna owns immediate safety, coordinates,
-physical plans, actions, and latest exact local evidence. Sol reads never enter
+Sol's only channel to the pilot. Sol designs every coupled layout as a build
+package checked with `find_placement` and `can_place` (the only coordinates in
+the ledger); Luna revalidates and queues packages unchanged and owns immediate
+safety, travel, gathering, physical plans, actions, and latest exact local
+evidence. Sol reads never enter
 the physical FIFO, and Luna continues without waiting when Sol or its ledger is
 stale or unavailable. Record both profiles, their MCP surfaces, release SHA,
 archive hash, and save hash before `GO`. Never apply this cutover to the current
@@ -178,13 +181,13 @@ table; a partial `mcp_servers.<name>.enabled` override fails with
 session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on
 session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effort medium --fast off \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
-  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
 `--fast on` maps to `service_tier="priority"` plus `features.fast_mode=true`.
 Start each with its checked-in role goal; the pilot takes no physical action
-before `GO`. Confirm Sol lists exactly the eight
-configured read-only tools and cannot list any movement, transfer, crafting,
+before `GO`. Confirm Sol lists exactly the ten
+configured read-only tools (including the side-effect-free placement checks) and cannot list any movement, transfer, crafting,
 placement, research mutation, plan enqueue/run/cancel, or stop tool before
 `GO`, and that the pilot has the full surface and no read-only server.
 
@@ -200,8 +203,9 @@ envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger
 <absolute operations.json path>` from its worktree. Supply a fresh observed
 `source_tick` when available; `null` means no observation yet. Fill `update`
 with the validated current mutable fields (`phase`, `bottleneck`,
-`latest_measured_capacity`, `task_list` with NOW/NEXT/LATER, `assumptions`, and
-`pilot_plan_ids`). Verify the receipt returns `status: "applied"`, revision 1,
+`latest_measured_capacity`, `task_list` with NOW/NEXT/LATER, `assumptions`,
+`pilot_plan_ids`, and `build_packages`, usually `[]` at init; every later update
+restates it). Verify the receipt returns `status: "applied"`, revision 1,
 and the submitted source tick; verify the persisted schema-2 ledger contains
 the exact run metadata, revision, source tick, mutable content, and mode `0600`.
 The command validates this readback before reporting success. Initialization
@@ -224,6 +228,14 @@ supervisor step. Continue past 20 minutes toward the assigned milestone
 `autonomous_end_to_end` segment that still holds at the next two recorder
 checkpoints, plus useful research consuming produced science); Candidate B and
 R1-R7 freeze rules are historical unless the owner starts a benchmark.
+
+For the 0.19.0 role split, measure at `GO+20m` against the 0.18.0 baseline in
+`docs/AGENT-PLAY-PERFORMANCE.md`: first `queue_plan` within 3 minutes of `GO`
+(was 13.6); pilot model time under 60% of wall time (was 96%); body busy (active
+task or queue depth) at least half the time after the first package; at most 3
+pilot `find_placement` calls and no identical empty retry; at least 80% of
+packages passing pilot revalidation; at least 6 machines and 4 physical edges
+(was 2 and 1); no supervisor nudge; and no Sol-to-pilot message.
 
 The parent is the debug supervisor and may diagnose or recover through its
 separate surfaces. That authority does not pass to the pilot. Record each
@@ -453,7 +465,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.18.0 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.19.0 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -484,14 +496,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.18.0. They
+The successful observations below were collected before release 0.19.0. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.18.0. Complete the fresh run above after installing 0.18.0 before recording a
+0.19.0. Complete the fresh run above after installing 0.19.0 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.18.0 run must instead report protocol v22 and mod/app 0.18.0.
+  0.8.0. A 0.19.0 run must instead report protocol v22 and mod/app 0.19.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

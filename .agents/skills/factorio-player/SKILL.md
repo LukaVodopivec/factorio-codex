@@ -9,9 +9,12 @@ Use only for live play of the one physical character named Codex. Start exactly
 two persistent reasoning sessions: a [Sol strategist](GOAL-STRATEGIST-v1.md)
 and a [Luna pilot](GOAL-PILOT-v1.md). The pilot is the sole gameplay writer,
 physical character controller, and authority for immediate safety, exact local
-state, coordinates, actions, plans, and physical completion evidence. The
-strategist owns coordinate-free long-horizon priorities and may use only the
-mechanically read-only Factorio MCP surface. There is one body, one physical
+state, travel, actions, plans, and physical completion evidence. The
+strategist owns coordinate-free long-horizon priorities, designs every coupled
+layout as a validated build package (the pilot designs one itself only when no
+valid package arrives within two of its report checkpoints) (the only place the ledger carries
+coordinates), and may use only the mechanically read-only Factorio MCP surface,
+which includes the side-effect-free `can_place` and `find_placement`. There is one body, one physical
 FIFO, one mutation path, and one compact `operations.json`.
 
 For the next fresh supervised run, start the pilot as `gpt-6-luna` with
@@ -252,8 +255,18 @@ and zero character insert/extract actions for the segment must all hold.
   change a precondition, or choose a materially different action; never repeat
   the same terminal semantic error.
 - Use `find_placement`, `can_place`, and exact output targets before mutation.
+  A candidate's `plan_steps` go into `queue_plan` unchanged (pass `fuel` to add
+  burner fuel insertions). An empty result carries `rejections`,
+  `closest_rejected`, and a `hint`: change the request as the hint says and
+  never repeat it unchanged. `can_place` reports `overlaps_batch` and where each
+  output and pickup lands, so a multi-entity design is checked before building.
   Use `build_plan` only after those placement and endpoint preconditions are
   known; its steps are sequential physical mutations, not a transaction.
+- Coupled layouts arrive as Sol's build packages in `operations.json`. The pilot
+  revalidates a package with one batched `can_place`, prepends its own
+  gathering, crafting, and travel, queues the steps unchanged, and reports the
+  plan ID or the falsifying step; it never redesigns a package and never waits
+  for one.
   Missing drill coverage requires more structured evidence, not placement.
   Distinguish successful placement from endpoint binding, electrical network
   continuity, power, working state, output acceptance, and useful downstream
@@ -283,7 +296,8 @@ writes the ledger; Sol is the sole atomic host writer.
 
 Follow [player knowledge v1](PLAYER-KNOWLEDGE-v1.md). Durable knowledge may hold
 only in-game learned recipes, calculations, operations, and coordinate-free
-relative layouts. Never persist map coordinates, copied layouts, external
+relative layouts. Never persist map coordinates outside the current run's validated build
+packages, copied layouts, external
 blueprints, tutorials, online sequences, fixed build orders, named routes,
 prescribed technology order, timed phases, or seed/map facts.
 

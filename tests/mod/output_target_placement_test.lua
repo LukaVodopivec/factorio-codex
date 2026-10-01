@@ -273,4 +273,17 @@ check(partial_insert_result and partial_insert_result.status == "partial"
   and partial_insert_result.outcome.transfers[1].remainder == 3
   and created == 1 and inserted == 7,
   "build_plan stops after useful bounded partial insertion and reports its exact remainder")
+-- A tile-corner coordinate inside an owned entity names that entity's exact
+-- position instead of a bare "does not identify" failure.
+local resolver = require("scripts.output_target")
+local hint_body = { position = { x = 0, y = 0 }, force = force, surface = surface }
+target_matches = { recipient }
+local hint_ok, hint_error = pcall(resolver.resolve, hint_body, { x = 1.6, y = 0.2 })
+check(not hint_ok and tostring(hint_error):match("lies inside stone%-furnace, whose exact position is %(2, 0%)") ~= nil,
+  "an inexact output_target names the covering entity's exact position")
+local drill = { valid = true, name = "burner-mining-drill", type = "mining-drill", force = force, position = { x = 2, y = 0 } }
+target_matches = { drill }
+local drill_ok, drill_error = pcall(resolver.resolve, hint_body, { x = 2, y = 0 })
+check(not drill_ok and tostring(drill_error):match("a drill or inserter is a source, not a recipient") ~= nil,
+  "a drill output_target explains that it is a source, not a recipient")
 os.exit(failures == 0 and 0 or 1)

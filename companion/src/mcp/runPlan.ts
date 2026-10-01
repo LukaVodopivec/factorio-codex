@@ -8,7 +8,7 @@ const items = z.record(z.string(), z.number().int().positive());
 export const planStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("walk_to"), ...position,
     arrival_mode: z.enum(["exact", "vicinity"]).default("exact"),
-    arrival_radius: z.number().min(0.5).max(6).default(1) }).strict(),
+    arrival_radius: z.number().min(0.5, "arrival_radius is 0.5–6 tiles").max(6, "arrival_radius is 0.5–6 tiles; for a farther goal walk to the target and use vicinity arrival").default(1) }).strict(),
   z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict(),
   z.object({ action: z.literal("pickup_items"), ...position, item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
   z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: z.object(position).strict().optional(), output_target: z.object(position).strict().optional() }).strict(),
@@ -26,7 +26,7 @@ export const planStepSchema = z.discriminatedUnion("action", [
 ]);
 export const queuePlanSchema = z.object({
   steps: z.array(planStepSchema).min(1).max(25),
-  final_observation_radius: z.number().int().min(5).max(30).default(15),
+  final_observation_radius: z.number().int().min(5, "final_observation_radius is an integer 5–30 (default 15)").max(30, "final_observation_radius is an integer 5–30 (default 15)").default(15),
   observation_detail: z.enum(["none", "compact", "full"]).default("none"),
   after_plan_id: z.number().int().positive().optional(),
 }).strict().superRefine((plan, context) => {

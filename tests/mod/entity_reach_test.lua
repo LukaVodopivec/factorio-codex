@@ -37,9 +37,22 @@ check(reach_ok and reach_result == nil and walked_to and walked_to.x == 7.5 and 
 local checks_before_arrival = reach_checks
 walk_result = "arrived"
 local arrived_result = real_approach.ensure_entity(edge_task, body, edge_entity)
-check(type(arrived_result) == "table" and arrived_result.status == "failed"
-  and reach_checks == checks_before_arrival + 2,
-  "completed approach rechecks Factorio reach and fails closed")
+check(arrived_result == nil and reach_checks == checks_before_arrival + 2 and edge_task._approach_close == true,
+  "a completed approach that Factorio still rejects earns one closer approach")
+walk_goal = nil
+local close_result = real_approach.ensure_entity(edge_task, body, edge_entity)
+check(type(close_result) == "table" and close_result.status == "failed" and walk_goal == 1
+  and edge_task._approach_close == nil,
+  "the closer approach targets the entity itself, then rechecks Factorio reach and fails closed")
+
+local retry_task = { id = 2 }
+local reachable_after_close = false
+body.can_reach_entity = function() return reachable_after_close end
+check(real_approach.ensure_entity(retry_task, body, edge_entity) == nil and retry_task._approach_close == true,
+  "first post-approach reach miss schedules the closer approach")
+reachable_after_close = true
+check(real_approach.ensure_entity(retry_task, body, edge_entity) == "ok" and retry_task._approach_close == nil,
+  "an offset path end recovers once the closer approach reaches the entity")
 
 body.can_reach_entity = function() return true end
 local authority_ok, authority_result = pcall(real_approach.ensure_entity, edge_task, body, edge_entity)

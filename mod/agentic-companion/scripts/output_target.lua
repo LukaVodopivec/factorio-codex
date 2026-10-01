@@ -43,18 +43,28 @@ local function resolve(c, requested, label)
   if not c.force.is_chunk_charted(c.surface, { x = math.floor(target.x / 32), y = math.floor(target.y / 32) }) then
     error((label or "output_target") .. " must be force-charted")
   end
-  local matches = {}
+  local matches, covering = {}, nil
   for _, entity in ipairs(c.surface.find_entities_filtered({ position = target })) do
-    if entity.valid and entity.force == c.force and entity.type ~= "character" and entity.type ~= "resource"
-      and entity.position.x == target.x and entity.position.y == target.y then
-      matches[#matches + 1] = entity
+    if entity.valid and entity.force == c.force and entity.type ~= "character" and entity.type ~= "resource" then
+      if entity.position.x == target.x and entity.position.y == target.y then
+        matches[#matches + 1] = entity
+      else
+        covering = covering or entity
+      end
     end
   end
-  if #matches == 0 then error((label or "output_target") .. " does not identify a player-owned entity") end
+  if #matches == 0 then
+    if covering then
+      error(string.format("%s does not identify a player-owned entity; it lies inside %s, whose exact position is (%.17g, %.17g) — use that position",
+        label or "output_target", covering.name, covering.position.x, covering.position.y))
+    end
+    error((label or "output_target") .. " does not identify a player-owned entity; use the exact entity position from observe_local or inspect_entity")
+  end
   if #matches > 1 then error((label or "output_target") .. " is ambiguous") end
   local entity = matches[1]
   if not RECIPIENT_TYPES[entity.type] then
-    error((label or "output_target") .. " identifies " .. entity.name .. ", which cannot receive placed output")
+    error((label or "output_target") .. " identifies " .. entity.name .. ", which cannot receive placed output;"
+      .. " target the belt, chest, furnace, or assembler that receives it (a drill or inserter is a source, not a recipient)")
   end
   return {
     entity = entity,

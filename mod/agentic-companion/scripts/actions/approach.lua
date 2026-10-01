@@ -66,16 +66,29 @@ function M.ensure_entity(task, c, e)
   if not e.valid then
     return { status = "failed", detail = "the selected entity is gone" }
   end
-  if c.can_reach_entity(e) then return "ok" end
+  if c.can_reach_entity(e) then
+    task._approach_close = nil
+    return "ok"
+  end
 
-  local reached = M.ensure(task, c, e.position, math.max(c.reach_distance - 0.5, 0.5))
+  -- A path can end offset from the entity (obstacles such as trees block the
+  -- goal tile), so one failed reach check earns one closer approach before
+  -- the task fails closed.
+  local radius = task._approach_close and 1.5 or math.max(c.reach_distance - 0.5, 0.5)
+  local reached = M.ensure(task, c, e.position, radius)
   if reached ~= "ok" then return reached end
   if not e.valid then
     return { status = "failed", detail = "the selected entity is gone" }
   end
   if not c.can_reach_entity(e) then
+    if not task._approach_close then
+      task._approach_close = true
+      return nil
+    end
+    task._approach_close = nil
     return { status = "failed", detail = "couldn't get within physical reach of the " .. e.name }
   end
+  task._approach_close = nil
   return "ok"
 end
 

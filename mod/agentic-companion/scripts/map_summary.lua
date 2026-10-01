@@ -53,16 +53,6 @@ local function charted(force, surface, pos)
   return force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) })
 end
 
-local function is_water(surface, x, y)
-  local ok, tile = pcall(surface.get_tile, x, y)
-  if not ok or not tile then return false end
-  for _, layer in ipairs({ "water_tile", "water-tile", "player" }) do
-    local collision_ok, collides = pcall(tile.collides_with, layer)
-    if collision_ok and collides then return true end
-  end
-  return false
-end
-
 local function status_name(entity)
   local ok, status = pcall(function() return entity.status end)
   if not ok or status == nil then return nil end
@@ -589,6 +579,35 @@ local function collect_summary(params, internal)
   end
   table.sort(chunks, function(a, b) return a.y == b.y and a.x < b.x or a.y < b.y end)
 
+  -- Match the predecessor's any-layer classification through prototype masks.
+  -- Name filtering avoids passing unsupported historical collision-layer aliases
+  -- to the native query. All lookup data belongs to this single request.
+  local charted_chunks, water_tiles = {}, {}
+  if detail == "full" then
+    local water_names = {}
+    for name, prototype in pairs(prototypes.tile) do
+      local layers = prototype.collision_mask.layers
+      if layers.water_tile or layers["water-tile"] or layers.player then
+        water_names[#water_names + 1] = name
+      end
+    end
+    table.sort(water_names)
+    for _, chunk in ipairs(chunks) do
+      local chunk_row = charted_chunks[chunk.y] or {}
+      charted_chunks[chunk.y] = chunk_row
+      chunk_row[chunk.x] = true
+      local x0, y0 = chunk.x * 32, chunk.y * 32
+      for _, tile in ipairs(c.surface.find_tiles_filtered({
+        area = { { x0, y0 }, { x0 + 32, y0 + 32 } }, name = water_names,
+      })) do
+        local position = tile.position
+        local row = water_tiles[position.y] or {}
+        water_tiles[position.y] = row
+        row[position.x] = true
+      end
+    end
+  end
+
   local resources_by_name, landmarks, seen_landmark, seen_resource, water_edges, seen_edge = {}, {}, {}, {}, {}, {}
   local groups_by_key, flow_candidates, electric_networks = {}, {}, {}
   local flow_entities, flow_nodes_by_key = {}, {}
@@ -598,6 +617,7 @@ local function collect_summary(params, internal)
   for _, name in ipairs(params.flow_items or {}) do add_flow_candidate(flow_candidates, "item", name) end
   for _, name in ipairs(params.flow_fluids or {}) do add_flow_candidate(flow_candidates, "fluid", name) end
   local explicit_flows = params.flow_items ~= nil or params.flow_fluids ~= nil
+  local edge_directions = { { 1, 0 }, { 0, 1 } }
   for _, chunk in ipairs(chunks) do
     local x0, y0 = chunk.x * 32, chunk.y * 32
     local area = { { x0, y0 }, { x0 + 32, y0 + 32 } }
@@ -690,14 +710,19 @@ local function collect_summary(params, internal)
         end
       end
     end
-    if detail == "full" then for y = y0, y0 + 31 do
+    if detail == "full" then
+      local east_charted = charted_chunks[chunk.y][chunk.x + 1]
+      local south_row = charted_chunks[chunk.y + 1]
+      local south_charted = south_row and south_row[chunk.x]
+      for y = y0, y0 + 31 do
       for x = x0, x0 + 31 do
-        local current = is_water(c.surface, x, y)
-        for _, delta in ipairs({ { 1, 0 }, { 0, 1 } }) do
+        local current = water_tiles[y] and water_tiles[y][x] or false
+        for _, delta in ipairs(edge_directions) do
           local nx, ny = x + delta[1], y + delta[2]
-          local neighbor_chunk = { x = math.floor(nx / 32), y = math.floor(ny / 32) }
-          if c.force.is_chunk_charted(c.surface, neighbor_chunk) then
-            local neighbor = is_water(c.surface, nx, ny)
+          if (nx < x0 + 32 and ny < y0 + 32)
+            or (nx == x0 + 32 and east_charted)
+            or (ny == y0 + 32 and south_charted) then
+            local neighbor = water_tiles[ny] and water_tiles[ny][nx] or false
             if current ~= neighbor then
               local land = current and { x = nx, y = ny } or { x = x, y = y }
               local water = current and { x = x, y = y } or { x = nx, y = ny }

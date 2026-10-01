@@ -174,6 +174,10 @@ check(observation_failed_status.status == "failed"
   and observation_failed_status.transitions[3].tick == 171,
   "terminal observation failure records one truthful failed milestone without a fabricated completed transition")
 
+local unknown_ok, unknown_error = pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 1 } }, after_plan_id = 9999 })
+check(not unknown_ok and tostring(unknown_error):match("PREDECESSOR_UNKNOWN") ~= nil,
+  "an unknown or pruned predecessor is refused at enqueue instead of silently cancelling the successor")
+
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1
 check(tasks.cancel({ all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")
 os.exit(failures == 0 and 0 or 1)

@@ -28,6 +28,7 @@ _G.prototypes = { entity = {
   iron = { type = "resource", mineable_properties = { products = { { name = "iron-ore", type = "item" } } } },
   oil = { type = "resource", mineable_properties = { products = { { name = "crude-oil", type = "fluid" } } } },
   tree = { type = "tree", mineable_properties = { products = { { name = "wood" } } } },
+  wreck = { type = "simple-entity", mineable_properties = { products = { { name = "iron-gear-wheel" } } } },
   water = { type = "resource", mineable_properties = { products = { { name = "water", type = "fluid" } } } },
   assembler = { type = "assembling-machine", mineable_properties = { products = { { name = "assembling-machine-1" } } } },
 } }

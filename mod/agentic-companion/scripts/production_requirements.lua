@@ -49,8 +49,12 @@ end
 local function candidate_recipes(force, product, permitted_locked)
   local candidates, locked = {}, {}
   for name, recipe in pairs(force.recipes or {}) do
+    -- Hidden recipes (quality recycling, debug items) are never production routes.
+    local hidden_ok, hidden = pcall(function() return recipe.hidden end)
     local produces = false
-    for _, candidate in ipairs(recipe.products or {}) do if candidate.name == product then produces = true end end
+    if not (hidden_ok and hidden) then
+      for _, candidate in ipairs(recipe.products or {}) do if candidate.name == product then produces = true end end
+    end
     if produces then
       if recipe.enabled or permitted_locked and permitted_locked[name] then candidates[#candidates + 1] = recipe
       else locked[#locked + 1] = recipe end
@@ -64,10 +68,38 @@ end
 local function expand_targets(force, targets, choices, options)
   local nodes_by_item, raw, all_products, visiting = {}, {}, {}, {}
   local ambiguities, variable = options.ambiguities or {}, options.variable or {}
+  -- Acquisition roots are resources and offshore tile fluids that the surface's own
+  -- map generation places (game settings, not charted or hidden map state). Products
+  -- native to another planet keep their ordinary recipe, ambiguity, or locked handling.
+  -- Unreadable settings give no roots rather than every installed resource.
+  local function surface_autoplaces(kind)
+    local ok, settings = pcall(function()
+      return options.surface.map_gen_settings.autoplace_settings[kind].settings
+    end)
+    if ok and type(settings) == "table" then return settings end
+    return {}
+  end
+  local entity_settings, tile_settings = surface_autoplaces("entity"), surface_autoplaces("tile")
+  local resource_products = {}
+  for name, entity in pairs(prototypes.entity or {}) do
+    if entity.type == "resource" and entity_settings[name] ~= nil then
+      local mining = entity.mineable_properties
+      if mining and mining.minable then
+        for _, product in pairs(mining.products or {}) do resource_products[product.name] = true end
+      end
+    end
+  end
+  for name, tile in pairs(prototypes.tile or {}) do
+    local ok, fluid = pcall(function() return tile.fluid end)
+    if ok and fluid and fluid.name and tile_settings[name] ~= nil then
+      resource_products[fluid.name] = true
+    end
+  end
 
   local function choose(product)
-    local candidates, locked = candidate_recipes(force, product, options.permitted_locked)
     local choice = choices[product]
+    if choice == nil and resource_products[product] then return nil end
+    local candidates, locked = candidate_recipes(force, product, options.permitted_locked)
     if choice ~= nil then
       if type(choice) ~= "string" then error("recipe choice for " .. product .. " must be a recipe name") end
       for _, recipe in ipairs(candidates) do if recipe.name == choice then return recipe end end
@@ -139,7 +171,7 @@ local function expand_targets(force, targets, choices, options)
 end
 
 local function technology_effects(technology)
-  local ok, effects = pcall(function() return technology.effects end)
+  local ok, effects = pcall(function() return technology.prototype.effects end)
   return ok and type(effects) == "table" and effects or {}
 end
 
@@ -165,8 +197,7 @@ local function find_location_unlock(force, location)
   local candidates = {}
   for name, technology in pairs(force.technologies or {}) do
     for _, effect in pairs(technology_effects(technology)) do
-      local location_name = type(effect.space_location) == "table" and effect.space_location.name or effect.space_location
-      if effect.type == "unlock-space-location" and location_name == location then candidates[#candidates + 1] = name end
+      if effect.type == "unlock-space-location" and effect.space_location == location then candidates[#candidates + 1] = name end
     end
   end
   table.sort(candidates)
@@ -241,7 +272,7 @@ local function closure_requirements(params, character, force, target_kind, targe
         reason = "installed prototype did not expose a fixed research unit count and ingredients" }
     end
     for _, effect in pairs(technology_effects(technology)) do
-      local recipe_name = type(effect.recipe) == "table" and effect.recipe.name or effect.recipe
+      local recipe_name = effect.recipe
       if effect.type == "unlock-recipe" and type(recipe_name) == "string" then permitted_locked[recipe_name] = true end
     end
   end
@@ -250,6 +281,7 @@ local function closure_requirements(params, character, force, target_kind, targe
   local credit, remaining = exact_inventory_credit(character, science)
   local deterministic = expand_targets(force, remaining, params.recipe_choices or {}, {
     partial = true, permitted_locked = permitted_locked, ambiguities = ambiguities, variable = variable,
+    surface = character.surface,
   })
   local precision = params.flow_precision or "one_minute"
   local flows, time_estimate = flow_rows(force, character.surface, remaining, precision)
@@ -289,7 +321,7 @@ function M.production_requirements(params)
   if #target_names < 1 or #target_names > 16 then error("production_requirements targets must contain 1-16 entries") end
   local choices = params.recipe_choices or {}
   if type(choices) ~= "table" then error("production_requirements recipe_choices must map product names to recipe names") end
-  local expanded = expand_targets(force, targets, choices, { partial = false })
+  local expanded = expand_targets(force, targets, choices, { partial = false, surface = character.surface })
   return { units = { targets = "item_or_fluid_units", raw = "item_or_fluid_units",
       products = "item_or_fluid_units", time = "seconds_at_crafting_speed_1" },
     targets = targets, nodes = expanded.nodes, raw = expanded.raw, products = expanded.products,

@@ -184,6 +184,17 @@ function M.queue_plan(params)
   end
   local predecessor = params.after_plan_id and tonumber(params.after_plan_id) or nil
   if params.after_plan_id ~= nil and (not predecessor or predecessor < 1) then error("after_plan_id must be a positive plan ID") end
+  if predecessor then
+    local known = storage.tasks.records[predecessor] and storage.tasks.records[predecessor].plan ~= nil
+      or storage.tasks.active and storage.tasks.active.id == predecessor and storage.tasks.active.type == "plan"
+    for _, queued in ipairs(storage.tasks.queue) do
+      if queued.id == predecessor and queued.type == "plan" then known = true end
+    end
+    if not known then
+      error("PREDECESSOR_UNKNOWN: after_plan_id " .. predecessor .. " names no current or retained plan"
+        .. " (pruned, a single task, or never queued); omit it or use a current plan ID")
+    end
+  end
   local plan = {
     type = "plan", steps = params.steps, current_step = 0, completed_steps = 0, outcomes = {},
     final_observation_radius = tonumber(params.final_observation_radius) or 15,

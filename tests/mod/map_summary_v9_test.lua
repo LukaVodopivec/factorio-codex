@@ -38,11 +38,23 @@ local surface = {
     local chunks, index = { { x = 1, y = 0 }, { x = 0, y = 0 } }, 0
     return function() index = index + 1; return chunks[index] end
   end,
-  get_tile = function(x) return { collides_with = function(layer) return (layer == "water_tile" or layer == "player") and x >= 16 end } end,
+  find_tiles_filtered = function(filter)
+    local tiles = {}
+    for y = filter.area[1][2], filter.area[2][2] - 1 do
+      for x = filter.area[1][1], filter.area[2][1] - 1 do
+        if x >= 16 then tiles[#tiles + 1] = { position = { x = x, y = y } } end
+      end
+    end
+    return tiles
+  end,
   find_entities_filtered = function(filter) if filter.type == "resource" then return resources end; return { machine, foreign_machine, invalid_machine, body } end,
 }
 body.surface = surface
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
+_G.prototypes = { tile = {
+  land = { collision_mask = { layers = {} } },
+  water = { collision_mask = { layers = { water_tile = true, player = true } } },
+} }
 _G.game = { tick = 777 }
 _G.storage = {}
 _G.defines = { entity_status = { no_power = 1 }, flow_precision_index = { one_minute = 1 } }
@@ -133,7 +145,7 @@ local function flow_fixture(buffer_root, burner)
   return { source, feed, processor, unload, sink }, source, processor
 end
 
-_G.prototypes = { item = { coal = { fuel_value = 8, fuel_category = "chemical" } } }
+prototypes.item = { coal = { fuel_value = 8, fuel_category = "chemical" } }
 defines.entity_status.normal = 2
 defines.entity_status.working = 3
 storage = {}
@@ -438,4 +450,118 @@ extra[#extra + 1] = duplicate_drill
 local shared_target = map.factory_component_sample({ source_tick = game.tick, positions = { buffer_sink.position } })
 check(not shared_target.topology_ready and canonical(shared_target.blockers):match("shared_mining_target_production_ambiguous"),
   "shared resource depletion cannot be attributed to one drill as independent source evidence")
+-- An independent predecessor oracle enumerates charted east/south boundaries.
+-- Native tile objects are deliberately unavailable to the implementation.
+local collision_layers = {
+  land = {}, water = { water_tile = true }, player_only = { player = true },
+  both = { water_tile = true, player = true }, legacy = { ["water-tile"] = true },
+  unrelated = { object = true },
+}
+prototypes.tile = {}
+for name, layers in pairs(collision_layers) do
+  prototypes.tile[name] = { collision_mask = { layers = layers } }
+end
+local fixture_chunks, tile_name, reverse_results, tile_queries = {}, nil, false, 0
+local function fixture_charted(x, y)
+  for _, chunk in ipairs(fixture_chunks) do if chunk.x == x and chunk.y == y then return true end end
+  return false
+end
+force.is_chunk_charted = function(_, chunk) return fixture_charted(chunk.x, chunk.y) end
+surface.get_chunks = function()
+  local index = 0
+  return function() index = index + 1; return fixture_chunks[index] end
+end
+surface.get_tile = function() error("per-tile get_tile path must be absent") end
+surface.find_entities_filtered = function(filter) return filter.type == "resource" and resources or { machine } end
+surface.find_tiles_filtered = function(filter)
+  tile_queries = tile_queries + 1
+  local x0, y0 = filter.area[1][1], filter.area[1][2]
+  assert(fixture_charted(math.floor(x0 / 32), math.floor(y0 / 32)), "uncharted query")
+  assert(filter.area[2][1] == x0 + 32 and filter.area[2][2] == y0 + 32, "chunk query extent")
+  local names, tiles = {}, {}
+  for _, name in ipairs(filter.name) do names[name] = true end
+  for y = y0, y0 + 31 do
+    for x = x0, x0 + 31 do
+      if names[tile_name(x, y)] then tiles[#tiles + 1] = { position = { x = x, y = y } } end
+    end
+  end
+  if reverse_results then
+    for i = 1, math.floor(#tiles / 2) do tiles[i], tiles[#tiles + 1 - i] = tiles[#tiles + 1 - i], tiles[i] end
+  end
+  return tiles
+end
+local function predecessor_edges()
+  local edges = {}
+  local function water(x, y)
+    local layers = collision_layers[tile_name(x, y)]
+    return layers.water_tile or layers["water-tile"] or layers.player or false
+  end
+  for _, chunk in ipairs(fixture_chunks) do
+    for y = chunk.y * 32, chunk.y * 32 + 31 do
+      for x = chunk.x * 32, chunk.x * 32 + 31 do
+        for _, delta in ipairs({ { 1, 0 }, { 0, 1 } }) do
+          local nx, ny = x + delta[1], y + delta[2]
+          if fixture_charted(math.floor(nx / 32), math.floor(ny / 32)) and water(x, y) ~= water(nx, ny) then
+            edges[#edges + 1] = {
+              land = water(x, y) and { x = nx, y = ny } or { x = x, y = y },
+              water = water(x, y) and { x = x, y = y } or { x = nx, y = ny }, observed_tick = game.tick,
+            }
+          end
+        end
+      end
+    end
+  end
+  table.sort(edges, function(a, b)
+    if a.land.y ~= b.land.y then return a.land.y < b.land.y end
+    if a.land.x ~= b.land.x then return a.land.x < b.land.x end
+    if a.water.y ~= b.water.y then return a.water.y < b.water.y end
+    return a.water.x < b.water.x
+  end)
+  local omitted = math.max(0, #edges - 256)
+  while #edges > 256 do table.remove(edges) end
+  return edges, omitted
+end
+local function equivalence_case(name, chunks, terrain)
+  fixture_chunks, tile_name, reverse_results, tile_queries = chunks, terrain, false, 0
+  local actual = require("scripts.map_summary").map_summary({ detail = "full" })
+  local expected, omitted = predecessor_edges()
+  check(canonical(actual.water_edges) == canonical(expected) and actual.omitted_water_edges == omitted,
+    name .. " matches predecessor coordinates, ordering, cap and omissions")
+  check(tile_queries == #chunks, name .. " uses exactly one tile query per charted chunk")
+  reverse_results, tile_queries = true, 0
+  local shuffled = require("scripts.map_summary").map_summary({ detail = "full" })
+  check(canonical(actual) == canonical(shuffled) and tile_queries == #chunks,
+    name .. " has byte-identical complete output with shuffled tile results")
+  tile_queries = 0
+  local compact = require("scripts.map_summary").map_summary({ detail = "aggregate" })
+  check(tile_queries == 0 and canonical(compact.factory) == canonical(actual.factory)
+    and compact.summary == actual.summary, name .. " preserves aggregate with zero tile queries")
+  return actual
+end
+local adjacent = { { x = 0, y = 1 }, { x = 1, y = 0 }, { x = 0, y = 0 } }
+equivalence_case("adjacent charted east/south chunks", adjacent,
+  function(x, y) return (x >= 32 or y >= 32) and "water" or "land" end)
+equivalence_case("uncharted borders", { { x = 0, y = 0 } },
+  function(x, y) return (x == 31 or y == 31 or x < 0 or y < 0) and "water" or "land" end)
+equivalence_case("negative cross-chunk coordinates", { { x = -1, y = -1 }, { x = 0, y = -1 }, { x = -1, y = 0 } },
+  function(x, y) return (x >= 0 or y >= 0) and "player_only" or "land" end)
+equivalence_case("all land", adjacent, function() return "land" end)
+equivalence_case("all water", adjacent, function() return "water" end)
+local names = { "land", "water", "player_only", "both", "legacy", "unrelated" }
+local dense_edges = equivalence_case("mixed collision masks and over 256 edges", adjacent,
+  function(x, y) return names[(x + y) % #names + 1] end)
+check(#dense_edges.water_edges == 256 and dense_edges.omitted_water_edges > 0, "dense fixture exercises edge cap")
+local changed = equivalence_case("terrain changed in the same tick", adjacent, function() return "land" end)
+check(#changed.water_edges == 0, "request-local classification reflects changed terrain immediately")
+equivalence_case("charting changed in the same tick", { { x = 0, y = 0 }, { x = -1, y = 0 } },
+  function(x) return x < 0 and "water" or "land" end)
+local saved_prototypes = prototypes.tile
+prototypes.tile = { land = saved_prototypes.land }
+equivalence_case("empty matching name list", adjacent, function() return "land" end)
+prototypes.tile = saved_prototypes
+local source_file = assert(io.open(here .. "/../../mod/agentic-companion/scripts/map_summary.lua", "r"))
+local source = source_file:read("*a"); source_file:close()
+check(not source:find("get_tile", 1, true) and not source:find("collides_with", 1, true),
+  "production shoreline scan contains no per-tile native calls")
+
 os.exit(failures == 0 and 0 or 1)

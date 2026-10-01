@@ -5,9 +5,10 @@ local spatial = require("scripts.spatial")
 
 local M = {}
 
+-- Rocks and wrecks (simple-entity) also drop manufactured items, so they are
+-- not raw-resource sources; rock stone and coal are already resource products.
 local NATURAL_SOURCE_TYPES = {
-  resource = true, tree = true, ["simple-entity"] = true,
-  fish = true, plant = true,
+  resource = true, tree = true, fish = true, plant = true,
 }
 local PRIMARY_UTILITY_FLUIDS = { water = true }
 

@@ -5,7 +5,10 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 local function recipe(name, ingredients, products, enabled, energy, category)
   return { name = name, ingredients = ingredients, products = products, enabled = enabled, energy = energy, category = category }
 end
-local character = { surface = { name = "nauvis" } }
+local native_autoplace = { autoplace_settings = {
+  entity = { settings = { deposit = {}, unmineable = {} } }, tile = { settings = { water = {}, grass = {} } },
+} }
+local character = { surface = { name = "nauvis", map_gen_settings = native_autoplace } }
 local force = { recipes = {
   gear = recipe("gear", { { name = "iron-plate", amount = 2 } }, { { name = "gear", amount = 1 } }, true, 0.5, "crafting"),
   widget_a = recipe("widget-a", { { name = "gear", amount = 1 } }, { { name = "widget", amount = 2 } }, true, 1, "crafting"),
@@ -33,6 +36,89 @@ check(result.nodes[1].recipe_executions == 3 and result.nodes[2].recipe_executio
 local progressed, progress_error = pcall(production.production_requirements, { targets = { future = 1 } })
 check(not progressed and tostring(progress_error):match("no progression route") ~= nil, "locked-only products refuse a nonexistent progression route")
 
+local function rejects(params, message, name)
+  local ok, reason = pcall(production.production_requirements, params)
+  check(not ok and tostring(reason):find(message, 1, true) ~= nil, name)
+end
+for _, name in ipairs({ "iron-ore", "custom-mineral", "scrap", "cycle-a", "cycle-b" }) do prototypes.item[name] = {} end
+prototypes.fluid["native-fluid"] = {}
+prototypes.entity = {
+  deposit = { type = "resource", mineable_properties = { minable = true, products = {
+    { type = "item", name = "iron-ore", amount = 1 }, { type = "item", name = "custom-mineral", amount = 1 },
+    { type = "fluid", name = "native-fluid", amount = 10 },
+  } } },
+  machine = { type = "assembling-machine", mineable_properties = { minable = true, products = { { name = "widget", amount = 1 } } } },
+  wreck = { type = "simple-entity", mineable_properties = { minable = true, products = { { name = "widget", amount = 1 } } } },
+  unmineable = { type = "resource", mineable_properties = { minable = false, products = { { name = "future", amount = 1 } } } },
+}
+force.recipes.smelting = recipe("smelting", { { name = "iron-ore", amount = 1 } }, { { name = "iron-plate", amount = 1 } }, true, 3.2, "smelting")
+force.recipes.plate_recycling = recipe("plate-recycling", { { name = "scrap", amount = 1 } }, { { name = "iron-plate", amount = 1 } }, true)
+force.recipes.ore_recycling = recipe("ore-recycling", { { name = "scrap", amount = 2 } }, { { name = "iron-ore", amount = 1 } }, true)
+force.recipes.other_recycling = recipe("other-recycling", { { name = "scrap", amount = 3 } }, { { name = "iron-ore", amount = 1 } }, true)
+force.recipes.custom_recycling = recipe("custom-recycling", {}, { { name = "custom-mineral", amount = 1 } }, false)
+force.recipes.fluid_recycling = recipe("fluid-recycling", {}, { { name = "native-fluid", amount = 10 } }, true)
+local smelted = production.production_requirements({ targets = { ["iron-plate"] = 7 }, recipe_choices = { ["iron-plate"] = "smelting" } })
+check(#smelted.nodes == 1 and smelted.raw["iron-ore"] == 7 and smelted.products["iron-plate"] == 7,
+  "explicit smelting terminates at native ore despite multiple recycling routes")
+local mined = production.production_requirements({ targets = { ["iron-ore"] = 4, ["custom-mineral"] = 2, ["native-fluid"] = 15 } })
+check(#mined.nodes == 0 and mined.raw["iron-ore"] == 4 and mined.raw["custom-mineral"] == 2 and mined.raw["native-fluid"] == 15,
+  "generic item and fluid resource products are roots even with enabled or locked producers")
+local recycled = production.production_requirements({ targets = { ["iron-ore"] = 3 }, recipe_choices = { ["iron-ore"] = "ore-recycling" } })
+check(#recycled.nodes == 1 and recycled.raw.scrap == 6, "explicit native-resource recycling remains selectable")
+rejects({ targets = { ["iron-ore"] = 1 }, recipe_choices = { ["iron-ore"] = "smelting" } }, "not a permitted", "invalid native-resource route remains an error")
+rejects({ targets = { ["iron-ore"] = 1 }, recipe_choices = { ["iron-ore"] = 42 } }, "must be a recipe name", "native-resource choice type is validated")
+rejects({ targets = { ["custom-mineral"] = 1 }, recipe_choices = { ["custom-mineral"] = "custom-recycling" } }, "not a permitted", "explicit locked resource route remains an error")
+rejects({ targets = { widget = 1 } }, "ambiguous production route", "dismantled machines and wreckage do not make manufactured products raw roots")
+rejects({ targets = { future = 1 } }, "no progression route", "unmineable resources do not bypass locked-only refusal")
+force.recipes.cycle_a = recipe("cycle-a", { { name = "cycle-b", amount = 1 } }, { { name = "cycle-a", amount = 1 } }, true)
+force.recipes.cycle_b = recipe("cycle-b", { { name = "cycle-a", amount = 1 } }, { { name = "cycle-b", amount = 1 } }, true)
+rejects({ targets = { ["cycle-a"] = 1 } }, "recipe cycle", "manufactured recipe cycles remain errors")
+force.recipes.other_recycling.products[1].probability = 0.5
+rejects({ targets = { ["iron-ore"] = 1 }, recipe_choices = { ["iron-ore"] = "other-recycling" } }, "probabilistic product", "explicit resource routes retain nondeterministic-product refusal")
+
+-- Factorio 2.0 quality recycling recipes are enabled from tick 0 but hidden; they are never routes.
+for _, name in ipairs({ "steel", "steel-raw" }) do prototypes.item[name] = {} end
+force.recipes.steel = recipe("steel", { { name = "steel-raw", amount = 5 } }, { { name = "steel", amount = 1 } }, true, 16, "smelting")
+force.recipes.steel_recycling = recipe("steel-recycling", { { name = "steel", amount = 1 } }, { { name = "steel", amount = 1, probability = 0.25 } }, true)
+force.recipes.steel_recycling.hidden = true
+force.recipes.raw_steel_recycling = recipe("steel-raw-recycling", { { name = "widget", amount = 1 } }, { { name = "steel-raw", amount = 1 } }, true)
+force.recipes.raw_steel_recycling.hidden = true
+local unhidden = production.production_requirements({ targets = { steel = 2 } })
+check(#unhidden.nodes == 1 and unhidden.nodes[1].recipe == "steel" and unhidden.raw["steel-raw"] == 10,
+  "hidden enabled recycling recipes are neither candidates nor locked producers")
+rejects({ targets = { steel = 1 }, recipe_choices = { steel = "steel-recycling" } }, "not a permitted", "explicitly choosing a hidden recipe is refused")
+-- Offshore-pump tile fluids are acquisition roots even when a locked recipe can also produce them.
+prototypes.fluid.water = {}
+prototypes.tile = { water = { name = "water", fluid = { name = "water" } }, grass = { name = "grass" } }
+force.recipes.ice_melting = recipe("ice-melting", { { name = "custom-mineral", amount = 1 } }, { { name = "water", amount = 20 } }, false)
+local pumped = production.production_requirements({ targets = { water = 100 } })
+check(#pumped.nodes == 0 and pumped.raw.water == 100, "offshore tile fluid is a raw root despite a locked producer")
+force.recipes.ice_melting = nil
+
+-- Roots follow the companion surface's own autoplace settings: another planet's
+-- geyser fluid or ocean fluid keeps its ordinary recipe or ambiguity handling.
+for _, name in ipairs({ "acid", "sulfur", "heavy", "coal-feed", "oil-feed" }) do prototypes.fluid[name] = {}; prototypes.item[name] = {} end
+prototypes.entity.geyser = { type = "resource", mineable_properties = { minable = true, products = { { type = "fluid", name = "acid", amount = 10 } } } }
+prototypes.tile.ocean = { name = "ocean", fluid = { name = "heavy" } }
+force.recipes.acid = recipe("acid", { { name = "sulfur", amount = 5 } }, { { name = "acid", amount = 50, type = "fluid" } }, true, 1, "chemistry")
+force.recipes.heavy_a = recipe("heavy-a", { { name = "oil-feed", amount = 1 } }, { { name = "heavy", amount = 1, type = "fluid" } }, true, 1, "oil-processing")
+force.recipes.heavy_b = recipe("heavy-b", { { name = "coal-feed", amount = 1 } }, { { name = "heavy", amount = 1, type = "fluid" } }, true, 1, "oil-processing")
+character.surface.map_gen_settings = { autoplace_settings = {
+  entity = { settings = { deposit = {} } }, tile = { settings = { water = {}, grass = {} } },
+} }
+local native = production.production_requirements({ targets = { acid = 50, ["iron-ore"] = 2, water = 10 } })
+check(#native.nodes == 1 and native.nodes[1].recipe == "acid" and native.raw.sulfur == 5 and native.raw.acid == nil
+  and native.raw["iron-ore"] == 2 and native.raw.water == 10,
+  "a resource not autoplaced on the companion surface is expanded through its recipe; native roots stay raw")
+rejects({ targets = { heavy = 1 } }, "ambiguous production route", "a tile fluid from another surface keeps ambiguity refusal")
+character.surface.map_gen_settings = nil
+local unreadable = production.production_requirements({ targets = { acid = 10 } })
+check(unreadable.raw.acid == nil and unreadable.raw.sulfur == 5 and unreadable.nodes[1].recipe == "acid",
+  "unreadable surface map generation gives no raw-root shortcut")
+character.surface.map_gen_settings = native_autoplace
+force.recipes.acid, force.recipes.heavy_a, force.recipes.heavy_b = nil, nil, nil
+prototypes.entity.geyser, prototypes.tile.ocean = nil, nil
+
 local science_totals = {
   ["automation-science-pack"] = 21905,
   ["logistic-science-pack"] = 21705,
@@ -53,14 +139,12 @@ for pack, count in pairs(science_totals) do
   prototypes.item[pack .. "-raw"] = {}
   force.recipes[pack] = recipe(pack, { { name = pack .. "-raw", amount = 1 } }, { { name = pack, amount = 1 } }, false, 1, "crafting")
   local technology = { name = pack .. "-closure", researched = false, prerequisites = {},
-    effects = { { type = "unlock-recipe", recipe = pack } },
-    prototype = { research_unit_count = count, research_unit_ingredients = { { name = pack, amount = 1 } } } }
+    prototype = { effects = { { type = "unlock-recipe", recipe = pack } }, research_unit_count = count, research_unit_ingredients = { { name = pack, amount = 1 } } } }
   force.technologies[technology.name] = technology
   prerequisites[technology.name] = technology
 end
 force.technologies["edge-closure"] = { name = "edge-closure", researched = false, prerequisites = prerequisites,
-  effects = { { type = "unlock-space-location", space_location = { name = "solar-system-edge" } } },
-  prototype = { research_unit_count = 0, research_unit_ingredients = {} } }
+  prototype = { effects = { { type = "unlock-space-location", space_location = "solar-system-edge" } }, research_unit_count = 0, research_unit_ingredients = {} } }
 prototypes.space_location["solar-system-edge"] = { name = "solar-system-edge" }
 force.current_research = nil
 force.research_progress = 0
@@ -90,15 +174,44 @@ check(progressed_closure.remaining_science_packs["automation-science-pack"] == n
   "current-force researched prerequisites are credited without inspecting remote stock")
 force.technologies["automation-science-pack-closure"].researched = false
 
-force.technologies["trigger-path"] = { name = "trigger-path", researched = false, prerequisites = {}, effects = {},
-  prototype = { research_trigger = { type = "craft-item", item = "gear", count = 3 } } }
+force.technologies["trigger-path"] = { name = "trigger-path", researched = false, prerequisites = {},
+  prototype = { effects = {}, research_trigger = { type = "craft-item", item = "gear", count = 3 } } }
 local triggered = production.production_requirements({ technology = "trigger-path" })
 check(triggered.partial == true and #triggered.trigger_conditions == 1
   and triggered.trigger_conditions[1].action:match("craft%-item 3 gear") ~= nil,
   "trigger technologies remain explicit variable conditions rather than fabricated science")
-force.technologies["formula-path"] = { name = "formula-path", researched = false, prerequisites = {}, effects = {},
-  prototype = { research_unit_count_formula = "2^L", research_unit_ingredients = { { name = "automation-science-pack", amount = 1 } } } }
+force.technologies["formula-path"] = { name = "formula-path", researched = false, prerequisites = {},
+  prototype = { effects = {}, research_unit_count_formula = "2^L", research_unit_ingredients = { { name = "automation-science-pack", amount = 1 } } } }
 local formula = production.production_requirements({ technology = "formula-path" })
 check(formula.partial == true and formula.variable_operating_requirements[1].kind == "technology_research_cost_unavailable",
   "non-fixed research formulas remain explicit rather than falsely exact")
+
+-- LuaTechnology has no effects field: unlock modifiers live on its prototype.
+force.technologies["mineral-science"] = { name = "mineral-science", researched = false, prerequisites = {}, prototype = {
+  effects = { { type = "unlock-recipe", recipe = "mineral-pack" }, { type = "unlock-space-location", space_location = "mineral-world" } },
+  research_unit_count = 5, research_unit_ingredients = { { name = "mineral-pack", amount = 2 } },
+} }
+prototypes.space_location["mineral-world"] = { name = "mineral-world" }
+force.recipes["mineral-pack"] = recipe("mineral-pack", { { name = "iron-ore", amount = 2 } }, { { name = "mineral-pack", amount = 1 } }, false, 1)
+for _, technology in pairs(force.technologies) do
+  setmetatable(technology, { __index = function(_, key) if key == "effects" then error("LuaTechnology has no effects field") end end })
+end
+for _, params in ipairs({ { technology = "mineral-science" }, { location = "mineral-world" } }) do
+  local mineral = production.production_requirements(params)
+  check(mineral.partial == false and #mineral.ambiguities == 0 and mineral.remaining_science_packs["mineral-pack"] == 10
+    and #mineral.deterministic_requirements.nodes == 1 and mineral.deterministic_requirements.raw["iron-ore"] == 20,
+    params.technology and "technology closure permits prototype-unlocked recipe and terminates at mined ore"
+      or "location closure uses prototype string unlock and has no resource recycling ambiguity")
+end
+rejects({ location = "unknown-world" }, "unknown space location", "unknown locations remain explicit errors")
+prototypes.space_location["no-unlock"] = {}
+rejects({ location = "no-unlock" }, "no installed technology unlocks", "installed locations without unlocks remain explicit errors")
+force.technologies["second-unlock"] = { name = "second-unlock", prototype = {
+  effects = { { type = "unlock-space-location", space_location = "mineral-world" } },
+} }
+local multiple = production.production_requirements({ location = "mineral-world" })
+check(multiple.partial == true and multiple.ambiguities[1].kind == "location_unlock_technology"
+  and multiple.ambiguities[1].candidates[1] == "mineral-science" and multiple.ambiguities[1].candidates[2] == "second-unlock"
+  and next(multiple.remaining_science_packs) == nil and #multiple.missing_technologies == 0,
+  "multiple location unlocks require a choice without fabricated science or technologies")
 os.exit(failures == 0 and 0 or 1)

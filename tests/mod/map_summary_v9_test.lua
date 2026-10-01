@@ -176,12 +176,53 @@ storage.factory_activity.events[#storage.factory_activity.events + 1] = {
 local bootstrapped = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })
 check(bootstrapped.factory.material_flow.components[1].state.autonomous_end_to_end,
   "a proven interval can sunset earlier bootstrap transfers without calling a hand-fed loop autonomous")
-require("scripts.factory_activity").record("insert", { target = flow_processor,
-  transfers = { { item = "ore", inserted = 1 } } })
+-- Produce the transfer through real build-plan placement and starter insertion.
+package.loaded["scripts.companion"].get = function() return body end
+package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end, ensure_entity = function() return "ok" end }
+prototypes.item.processor = { place_result = { name = "processor", type = "assembling-machine" } }
+prototypes.item.ore = { name = "ore" }
+defines.build_check_type = { manual = 1 }
+body.build_distance = 6
+local starter_stock = { processor = 1, ore = 2 }
+body.get_item_count = function(name) return starter_stock[name] or 0 end
+body.remove_item = function(stack) starter_stock[stack.name] = starter_stock[stack.name] - stack.count end
+surface.can_place_entity = function() return true end
+surface.create_entity = function() return flow_processor end
+flow_processor.insert = function(stack) return stack.count end
+local build_plan = require("scripts.actions.build_plan")
+local starter_plan = { steps = { { item = "processor", position = flow_processor.position, insert = { ore = 2 } } } }
+build_plan.start(starter_plan)
+local starter_result = build_plan.tick(starter_plan)
+check(starter_result.status == "done" and starter_stock.processor == 0 and starter_stock.ore == 0,
+  "offline build-plan fixture commits placement and conserved starter insertion")
 local touched = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })
 check(not touched.factory.material_flow.components[1].state.autonomous_end_to_end
   and touched.factory.material_flow.components[1].state.autonomy_evidence == "character_transfer_observed",
   "a later character transfer revokes unattended autonomy for that component")
+local transfers = touched.factory.character_transfers
+check(transfers.transfer_actions == 2 and transfers.transferred_items == 3
+  and transfers.inserted_items[1].name == "ore" and transfers.inserted_items[1].count == 3
+  and transfers.target_actions[1].transfer_actions == 2
+  and transfers.target_actions[1].target.name == flow_processor.name
+  and transfers.target_actions[1].target.type == flow_processor.type
+  and transfers.target_actions[1].target.position.x == flow_processor.position.x
+  and transfers.target_actions[1].last_transfer_tick == 960 and transfers.history_complete,
+  "map summary includes build-plan accepted items and exact target actions in the requested interval")
+local touched_sample = require("scripts.map_summary").factory_component_sample({ source_tick = 960,
+  positions = { flow_processor.position } })
+check(touched_sample.character_transfer_actions == 1 and touched_sample.character_history_complete,
+  "component evidence includes build-plan transfer at the assessed interval boundary")
+game.tick = 961
+check(require("scripts.map_summary").map_summary({ activity_since_tick = 961 }).factory.character_transfers.transfer_actions == 0,
+  "map summary excludes starter insertion from a later interval")
+force.recipes = { process = { enabled = true } }
+flow_processor.set_recipe = function(name) assert(name == "process"); return {} end
+starter_stock.processor = 1
+local recipe_only = { steps = { { item = "processor", position = flow_processor.position, recipe = "process" } } }
+build_plan.start(recipe_only)
+check(build_plan.tick(recipe_only).status == "done"
+  and require("scripts.factory_activity").snapshot(961).transfer_actions == 0,
+  "recipe-only build-plan interaction creates no insertion telemetry")
 
 storage = {}
 local buffer_entities = flow_fixture(true, false)

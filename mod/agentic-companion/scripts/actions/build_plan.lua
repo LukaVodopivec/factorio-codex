@@ -10,6 +10,7 @@ local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local output_targets = require("scripts.output_target")
 local placement_geometry = require("scripts.placement_geometry")
+local factory_activity = require("scripts.factory_activity")
 
 local M = {}
 
@@ -429,6 +430,9 @@ local function finish_placed_step(task, c, step, built)
       end
       if step._insert then
         local problems, inserted, transfers = insert_items(c, built, step._insert)
+        factory_activity.record("insert", { target = {
+          name = built.name, type = built.type, position = built.position,
+        }, transfers = transfers })
         for _, problem in ipairs(problems) do issues[#issues + 1] = problem end
         if #problems > 0 and inserted > 0 then
           task._built = nil

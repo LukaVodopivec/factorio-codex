@@ -3,6 +3,8 @@ local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
 local failures = 0
+_G.storage = {}
+_G.game = { tick = 100 }
 local function check(cond, what)
   if cond then print("ok   " .. what) else failures = failures + 1 print("FAIL " .. what) end
 end

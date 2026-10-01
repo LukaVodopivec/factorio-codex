@@ -12,6 +12,8 @@ game.tick = 120
 activity.record("extract", { target = { name = "furnace", type = "furnace", position = { x = 1, y = 2 } },
   transfers = { { item = "plate", extracted = 3 } } })
 activity.record("craft", { transfers = { { item = "plate", extracted = 99 } } })
+activity.record("build_plan", { transfers = { { item = "ore", inserted = 99 } } })
+activity.record("insert", { transfers = { { item = "ore", inserted = 0 } } })
 local snapshot = activity.snapshot(100)
 check(snapshot.transfer_actions == 2 and snapshot.transferred_items == 8,
   "activity counts only successful queued character transfers")

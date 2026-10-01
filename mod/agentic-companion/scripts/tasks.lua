@@ -368,6 +368,8 @@ local function validate_factory_component(plan, step)
       for _, blocker in ipairs(step._baseline.blockers or {}) do
         blockers[#blockers + 1] = type(blocker) == "table" and blocker or { reason = blocker }
       end
+      local omitted_blockers = math.max(0, #blockers - 24)
+      while #blockers > 24 do table.remove(blockers) end
       plan.wait_started_tick, plan.next_check_tick = nil, nil
       return { status = "failed", detail = "factory component autonomy preflight not proven", outcome = {
         code = "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN", proven = false, stage = "preflight",
@@ -377,32 +379,90 @@ local function validate_factory_component(plan, step)
         products_finished_before = step._baseline.products_finished_total,
         products_finished_after = step._baseline.products_finished_total, products_finished_delta = 0,
         character_transfer_actions = step._baseline.character_transfer_actions,
-        topology_ready = false, blockers = blockers,
+        downstream_kind = step._baseline.downstream_kind, blocked_output = step._baseline.blocked_output,
+        source_cycles_observed = 0, downstream_acceptance_samples = 0, topology_ready = false, blockers = blockers, omitted_blockers = omitted_blockers,
         evidence_class = "charted_component_preflight", exact_remote_inventories = false, exact_remote_fluids = false,
       } }
     end
     step._validation_due_tick = game.tick + math.floor(step.duration_seconds * 60)
-    plan.next_check_tick = step._validation_due_tick
+    step._sample_interval = math.max(1, math.min(30, math.floor(step.duration_seconds * 60 / 3)))
+    step._sample_phase = 0
+    step._previous, step._acceptance_counts = step._baseline, {}
+    for key, downstream in pairs(step._baseline._downstream) do
+      step._acceptance_counts[key] = {}
+      if downstream.kind == "consumer" then step._acceptance_counts[key].consumer = 0
+      else for product in pairs(downstream.stock) do step._acceptance_counts[key][product] = 0 end end
+    end
+    step._source_cycles = {}
+    for key in pairs(step._baseline._source_production) do step._source_cycles[key] = 0 end
+    plan.next_check_tick = math.min(step._validation_due_tick, game.tick + step._sample_interval)
     return nil
   end
-  if game.tick < step._validation_due_tick then plan.next_check_tick = step._validation_due_tick; return nil end
   local final = map_summary.factory_component_sample({ source_tick = step.source_tick, positions = step.positions })
   local delta = final.products_finished_total - step._baseline.products_finished_total
   local blockers = {}
   for _, blocker in ipairs(final.blockers or {}) do
     blockers[#blockers + 1] = type(blocker) == "table" and blocker or { reason = blocker }
   end
-  if final.component_signature ~= step._baseline.component_signature then
+  if final._signature ~= step._baseline._signature then
     blockers[#blockers + 1] = { reason = "component_topology_changed_during_validation" }
   end
-  if delta <= 0 then blockers[#blockers + 1] = { reason = "bounded_production_delta_not_observed" } end
   if final.character_transfer_actions > 0 then blockers[#blockers + 1] = { reason = "character_transfer_observed" } end
   if not final.character_history_complete then blockers[#blockers + 1] = { reason = "character_transfer_history_incomplete" } end
-  local omissions = final.graph_omissions
-  if omissions.nodes > 0 or omissions.edges > 0 or omissions.diagnostics > 0 then
-    blockers[#blockers + 1] = { reason = "relevant_aggregate_omission" }
+  for key, downstream in pairs(final._downstream) do
+    local previous, counts = step._previous._downstream[key], step._acceptance_counts[key]
+    if counts and downstream.accepting then
+      if downstream.kind == "consumer" then counts.consumer = counts.consumer + 1
+      elseif previous then
+        for product, count in pairs(downstream.stock) do
+          if counts[product] and previous.stock[product] and count > previous.stock[product] then
+            counts[product] = counts[product] + 1
+          end
+        end
+      end
+    end
+  end
+  for key, source in pairs(final._source_production) do
+    local previous = step._previous._source_production[key]
+    -- products_finished is a CraftingMachine counter, not a drill counter.
+    -- A progress wrap plus depletion of the same charted mining target proves
+    -- at least one completed source cycle; aliased/unsupported samples do not.
+    if previous and source.working and source.resource_key and source.resource_key == previous.resource_key
+      and type(source.progress) == "number" and type(previous.progress) == "number"
+      and source.progress < previous.progress
+      and type(source.remaining) == "number" and type(previous.remaining) == "number"
+      and source.remaining < previous.remaining then
+      step._source_cycles[key] = step._source_cycles[key] + 1
+    end
+  end
+  step._previous = final
+  if game.tick < step._validation_due_tick and #blockers == 0 then
+    -- Alternate adjacent intervals so a mining period dividing the nominal
+    -- cadence does not keep every sample at the same phase indefinitely.
+    step._sample_phase = 1 - step._sample_phase
+    plan.next_check_tick = math.min(step._validation_due_tick, game.tick + math.max(1, step._sample_interval - step._sample_phase))
+    return nil
+  end
+  local acceptance_samples
+  for _, counts in pairs(step._acceptance_counts) do
+    for _, count in pairs(counts) do acceptance_samples = math.min(acceptance_samples or count, count) end
+  end
+  acceptance_samples = acceptance_samples or 0
+  local source_cycles
+  for _, count in pairs(step._source_cycles) do source_cycles = math.min(source_cycles or count, count) end
+  source_cycles = source_cycles or 0
+  if source_cycles < 3 then blockers[#blockers + 1] = { reason = "several_source_cycles_not_observed" } end
+  if acceptance_samples < 3 then blockers[#blockers + 1] = { reason = "bounded_downstream_acceptance_not_observed" } end
+  if delta <= 0 then blockers[#blockers + 1] = { reason = "bounded_production_delta_not_observed" } end
+  for key, count in pairs(final._production) do
+    local before = step._baseline._production[key]
+    if type(count) ~= "number" or type(before) ~= "number" or count - before < 3 then
+      blockers[#blockers + 1] = { reason = "several_processor_cycles_not_observed" }
+    end
   end
   local proven = final.topology_ready and #blockers == 0
+  local omitted_blockers = math.max(0, #blockers - 24)
+  while #blockers > 24 do table.remove(blockers) end
   local outcome = {
     code = proven and "FACTORY_COMPONENT_AUTONOMY_PROVEN" or "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN",
     proven = proven, source_tick = step.source_tick,
@@ -414,12 +474,14 @@ local function validate_factory_component(plan, step)
     products_finished_after = final.products_finished_total,
     products_finished_delta = delta,
     character_transfer_actions = final.character_transfer_actions,
-    topology_ready = final.topology_ready, blockers = blockers,
+    downstream_kind = final.downstream_kind, blocked_output = final.blocked_output,
+    source_cycles_observed = source_cycles, downstream_acceptance_samples = acceptance_samples,
+    topology_ready = final.topology_ready, blockers = blockers, omitted_blockers = omitted_blockers,
     evidence_class = "bounded_multi_tick_component_validation",
     exact_remote_inventories = false, exact_remote_fluids = false,
   }
   plan.wait_started_tick, plan.next_check_tick = nil, nil
-  if proven then factory_activity.record_validation(outcome) end
+  if proven then factory_activity.record_validation(outcome, final._signature) end
   return { status = proven and "done" or "failed",
     detail = proven and "factory component autonomy proven" or "factory component autonomy not proven", outcome = outcome }
 end

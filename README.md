@@ -169,6 +169,48 @@ text-only and physical. See the repo-local `factorio-player` skill for the
 current contract and [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md)
 for historical evidence.
 
+`map_summary` computes connectivity, components, provenance, diagnostics,
+production counters, signatures, transfer attribution and autonomy over every
+eligible existing player-force entity in already charted chunks. Presentation
+alone is capped: 12 nodes, 24 edges, 24 diagnostics and 8 components. Each
+component returns at most 12 node IDs and 24 blocker names, with nested omission
+counts; `factory.omissions` counts omitted graph rows. These omissions make the
+presentation partial, not the physical evidence incomplete. Exact component
+sampling for `validate_factory_component` resolves 1–16 caller-named positions
+against the complete graph, including nodes and components absent from the
+response. Missing, ambiguous and split-component selections fail structurally.
+
+Component state and validation evidence carry `downstream_kind`: `buffer`,
+`consumer`, `mixed` or `none`. A buffer stores output; it is not a consuming
+sink, and its stock never proves an upstream production source. The agent
+chooses whether buffer-ended capacity fits the current game stage. A full or
+otherwise nonaccepting output buffer (including intermediate storage) reports
+`blocked_output` and cannot claim current `autonomous_end_to_end`. Unsupported acceptance remains unproven.
+
+`validate_factory_component` uses the existing parked plan step to sample a
+bounded 1–300 second unattended interval. It requires unchanged physical
+relationships and recipe identities, complete transfer history, proven material
+and fuel supply, productive power/fuel status at every sample, at least three
+processor cycles, three observed source cycles and three downstream acceptance
+samples per output item at each endpoint. Buffer acceptance requires increases
+in each matching output stock across distinct samples; a working consumer
+supplies consumer acceptance evidence. Drill source cycles use a mining-progress
+wrap accompanied by depletion of the
+same already charted target. Adjacent sampling intervals vary the phase to
+reduce cadence aliasing. Shared-target attribution, unavailable counters or
+remaining sampling aliasing stay unproven; longer duration alone need not resolve
+every alias.
+[Factorio's API](https://lua-api.factorio.com/2.0.72/classes/LuaEntity.html#mining_progress)
+provides drill progress; `products_finished` applies to crafting machines.
+Private inventory/resource samples and exact internal identity strings are never
+returned. Validation returns aggregate production deltas,
+`source_cycles_observed`, `downstream_acceptance_samples` and structured blockers, with at most 24 blocker rows and an omission count.
+Serialization omissions alone do not reject validation. Character transfers,
+changed topology, missing fuel, no production or unobserved downstream acceptance
+do reject it. A prior proof also loses current autonomy when a new transfer,
+nonproductive status or blocked output appears. These are sampled bounded
+claims, not a guarantee about every intervening tick or unlimited future demand.
+
 ## Verification
 
 ```sh

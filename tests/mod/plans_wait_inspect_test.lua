@@ -37,10 +37,13 @@ package.loaded["scripts.map_summary"] = { factory_component_sample = function(pa
   component_sample_count = component_sample_count + 1
   return { tick = game.tick, source_tick = params.source_tick, component_id = "component-1",
     component_signature = "source:0:0|processor:1:0|sink:2:0", selected_node_ids = { "node-1" },
-    products_finished_total = component_sample_count == 1 and 10 or 12,
+    products_finished_total = 9 + component_sample_count,
+    _signature = "exact", _production = { processor = 9 + component_sample_count },
+    _source_production = { source = { working = true, progress = 1 - component_sample_count / 10, remaining = 100 - component_sample_count, resource_key = "ore" } },
+    _downstream = { sink = { kind = "consumer", accepting = true } }, downstream_kind = "consumer", blocked_output = false,
     character_transfer_actions = 0, character_history_complete = true,
     topology_ready = component_ready, blockers = component_ready and {} or { "material_input_provenance_unresolved:item:ore" },
-    graph_omissions = { nodes = 0, edges = 0, diagnostics = 0 }, exact_remote_inventories = false,
+    graph_omissions = { nodes = 20, edges = 30, diagnostics = 40 }, exact_remote_inventories = false,
   }
 end }
 _G.defines = { inventory = { fuel = 1, furnace_result = 2 }, entity_status = {}, shooting = { not_shooting = 0 } }
@@ -126,16 +129,17 @@ local validation = tasks.queue_plan({ steps = { { action = "validate_factory_com
 game.tick = 101; tasks.on_tick()
 check(tasks.plan_status({ plan_id = validation.plan_id }).status == "waiting",
   "factory validation parks between bounded charted counter samples")
+game.tick = 121; tasks.on_tick(); game.tick = 141; tasks.on_tick()
 game.tick = 160; tasks.on_tick()
 check(tasks.plan_status({ plan_id = validation.plan_id }).status == "waiting",
-  "factory validation does not sample before its requested interval")
+  "factory validation remains pending until its full requested interval")
 game.tick = 161; tasks.on_tick()
 local validation_done = tasks.plan_status({ plan_id = validation.plan_id })
 check(validation_done.status == "completed" and validation_done.outcomes[1].result.proven
-  and validation_done.outcomes[1].result.products_finished_delta == 2
+  and validation_done.outcomes[1].result.products_finished_delta == 3
   and validation_done.outcomes[1].result.character_transfer_actions == 0
   and validation_done.outcomes[1].result.exact_remote_inventories == false,
-  "factory validation proves bounded production without remote inventory access")
+  "consumer validation proves several cycles despite serialization omissions, without remote inventory access")
 local activity = require("scripts.factory_activity").snapshot(100)
 check(#activity.validations == 1 and activity.validations[1].component_signature == validation_done.outcomes[1].result.component_signature,
   "successful validation is retained in the existing bounded activity evidence")

@@ -24,6 +24,26 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(output.structuredContent).toEqual({ tick: 2, entities: [], resource_patches: [], ground_items: [] });
     expect(output.content[0].text).toBe("observation tick 2; entities 0; resources 0; ground items 0");
   });
+  it("preserves buffer and consumer evidence through the registered map summary normalization", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const components = ["buffer", "consumer"].map(downstream_kind => ({
+      component_id: downstream_kind, node_count: 17, omitted_node_ids: 5,
+      state: { downstream_kind, blocked_output: downstream_kind === "buffer",
+        autonomous_end_to_end: downstream_kind === "consumer",
+        validation: { downstream_kind, downstream_acceptance_samples: 3 } },
+    }));
+    const value = { tick: 42, factory: { groups: {}, force_flows: {},
+      material_flow: { nodes: {}, edges: {}, diagnostics: {}, components },
+      omissions: { capped_flow_nodes: 5, capped_flow_edges: 7, capped_flow_components: 2 },
+      character_transfers: { target_actions: {}, validations: [components[1].state.validation] } } };
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call: vi.fn(async () => value) } as unknown as Bridge), validConfig);
+    const output = await handlers.map_summary({});
+    expect(output.structuredContent.factory.material_flow.components).toEqual(components);
+    expect(output.structuredContent.factory.material_flow.nodes).toEqual([]);
+    expect(output.structuredContent.factory.omissions).toEqual(value.factory.omissions);
+    expect(output.structuredContent.factory.character_transfers.validations[0]).toEqual(components[1].state.validation);
+  });
   it("maps every coordinate action to the retained Lua DTO", () => {
     expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 }, arrival_mode: "exact", arrival_radius: 1 });
     expect(toolPayloads.target({ x: 1, y: 2, arrival_mode: "vicinity", arrival_radius: 4 })).toEqual({

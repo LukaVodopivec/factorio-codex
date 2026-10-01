@@ -31,14 +31,30 @@ check(#capped.events == 8 and capped.events_omitted_in_window > 0 and capped.eve
   and not capped.history_complete and #capped.target_actions == 16 and capped.target_actions_omitted > 0,
   "activity history is capped and reports omissions instead of pretending completeness")
 for i = 1, 33 do activity.record_validation({ proven = true, component_signature = "component-" .. i,
-  start_tick = 300, end_tick = 301, duration_ticks = 1, products_finished_delta = i,
-  character_transfer_actions = 0 }) end
+  start_tick = 300, end_tick = 301, duration_ticks = 1, products_finished_delta = i + 2,
+  downstream_kind = "consumer", downstream_acceptance_samples = 3, source_cycles_observed = 3,
+  character_transfer_actions = 0 }, "exact-component-" .. i) end
 local validations = activity.snapshot(100)
 check(#validations.validations == 32 and validations.validations_omitted == 1
   and validations.validations[1].component_signature == "component-2"
+  and validations.validations[32]._signature == nil
+  and activity.snapshot(100, true).validations[1]._signature == "exact-component-2"
   and validations.validations[32].evidence_class == "bounded_multi_tick_component_validation",
   "component validations reuse a bounded run-local history with explicit omission count")
 activity.record_validation({ proven = false, component_signature = "not-proven" })
 check(#activity.snapshot(100).validations == 32,
   "unproven component samples never enter autonomy evidence")
+
+storage = {}; game.tick = 500
+activity.record("insert", { target = { name = "selected", type = "furnace", position = { x = 0, y = 0 } },
+  transfers = { { item = "ore", inserted = 1 } } })
+for i = 1, 128 do
+  activity.record("insert", { target = { name = "other", type = "container", position = { x = i, y = 0 } },
+    transfers = { { item = "ore", inserted = 1 } } })
+end
+check(not activity.snapshot(500, true).history_complete and activity.snapshot(500, true).events_omitted_before_window == 1,
+  "eviction of a same-tick transfer keeps the selected interval's history incomplete")
+game.tick = 501
+check(activity.snapshot(501, true).history_complete,
+  "a later interval beyond the latest evicted tick remains complete")
 os.exit(failures == 0 and 0 or 1)

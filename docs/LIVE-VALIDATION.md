@@ -117,6 +117,36 @@ turning them into a fixed opening or map-specific sequence:
   state, or terminal result. A monitoring timeout does not cancel the plan and
   returns a self-describing continuation.
 
+## Full graph and downstream acceptance validation
+
+Offline Lua fixtures and MCP tests verify graph computation versus capped
+presentation and validation failure cases; they are stub evidence, not live
+Factorio evidence. Live confirmation requires an installed supported Factorio
+2.0.x game. No deployment or server/client replacement is implied by offline
+checks.
+
+- Observe an already charted connected segment exceeding 12 nodes and 24 edges.
+  Confirm full component counts and accurate presentation omissions. Select
+  exact positions beyond returned rows with `validate_factory_component`; an
+  unrelated component's presentation omissions must not reject the segment.
+- Observe a physically supplied drill–furnace–chest segment with ordinary fuel
+  supply and power. Confirm `downstream_kind=buffer`, then validate an unattended
+  interval with at least three processor cycles, three observed drill cycles
+  (progress wrap plus depletion of the same charted resource) and three distinct
+  arrival samples for each relevant output item. Sampling aliasing, unsupported
+  source counters and shared mining-target attribution remain unproven. Contrast with a working consumer-ended segment reporting
+  `downstream_kind=consumer`. A buffer is storage, never a consuming sink or a
+  production source inferred from existing stock; agents decide its usefulness.
+- Make the buffer full or nonaccepting. Confirm `blocked_output` and revoked
+  current autonomy. Buffer capacity alone and production without accepted
+  arrivals must never establish autonomous operation. Unsupported buffer
+  acceptance remains unproven; no exact remote inventory/fluid counts appear.
+- During separate validation intervals, interrupt fuel/power, change a physical
+  relationship, stop production, or perform a character transfer. Each must
+  produce structured rejection. Check complete transfer attribution even when
+  the public target-action rows are omitted. Bounded validation samples the
+  interval; it cannot guarantee every intervening tick or future buffer demand.
+
 ## Persistent two-brain, one-writer contract
 
 The dedicated server and agent session run on the headless workstation, while

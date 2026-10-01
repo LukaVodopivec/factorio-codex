@@ -16,14 +16,18 @@ local function ensure()
   return storage.factory_activity
 end
 
-function M.record_validation(result)
-  if type(result) ~= "table" or type(result.component_signature) ~= "string"
+function M.record_validation(result, signature)
+  if type(signature) ~= "string" or type(result) ~= "table" or type(result.component_signature) ~= "string"
     or result.proven ~= true or (tonumber(result.duration_ticks) or 0) < 1
-    or (tonumber(result.products_finished_delta) or 0) < 1
+    or (tonumber(result.products_finished_delta) or 0) < 3
+    or (tonumber(result.downstream_acceptance_samples) or 0) < 3
+    or (tonumber(result.source_cycles_observed) or 0) < 3
     or (tonumber(result.character_transfer_actions) or 0) ~= 0 then return end
   local activity = ensure()
   activity.validations[#activity.validations + 1] = {
-    component_signature = result.component_signature,
+    component_signature = result.component_signature, _signature = signature,
+    downstream_kind = result.downstream_kind, downstream_acceptance_samples = result.downstream_acceptance_samples,
+    source_cycles_observed = result.source_cycles_observed,
     start_tick = result.start_tick, end_tick = result.end_tick,
     duration_ticks = result.duration_ticks, products_finished_delta = result.products_finished_delta,
     character_transfer_actions = result.character_transfer_actions,
@@ -62,12 +66,13 @@ function M.record(kind, outcome)
     target = target_identity(outcome.target), items = items,
   }
   if #activity.events > MAX_EVENTS then
-    table.remove(activity.events, 1)
+    local evicted = table.remove(activity.events, 1)
+    activity.latest_evicted_tick = evicted.tick
     activity.events_omitted = activity.events_omitted + 1
   end
 end
 
-function M.snapshot(since_tick)
+function M.snapshot(since_tick, internal)
   local activity = ensure()
   since_tick = tonumber(since_tick) or activity.epoch_tick
   if since_tick < activity.epoch_tick or since_tick > game.tick then
@@ -97,19 +102,25 @@ function M.snapshot(since_tick)
     table.sort(rows, function(a, b) return a.name < b.name end)
     return rows
   end
-  local complete = activity.events_omitted == 0 or since_tick >= oldest
+  local complete = activity.events_omitted == 0 or since_tick > (activity.latest_evicted_tick or oldest)
   local target_rows = {}; for _, row in pairs(targets) do target_rows[#target_rows + 1] = row end
   table.sort(target_rows, function(a, b)
     local ap, bp = a.target.position, b.target.position
     return ap.y == bp.y and (ap.x == bp.x and (a.target.name or "") < (b.target.name or "") or ap.x < bp.x) or ap.y < bp.y
   end)
   local omitted_targets = math.max(0, #target_rows - MAX_TARGET_ROWS)
-  while #target_rows > MAX_TARGET_ROWS do table.remove(target_rows) end
+  if not internal then while #target_rows > MAX_TARGET_ROWS do table.remove(target_rows) end end
   local omitted_events = math.max(0, #events - MAX_RETURNED_EVENTS)
   while #events > MAX_RETURNED_EVENTS do table.remove(events, 1) end
   local validations = {}
   for _, validation in ipairs(activity.validations) do
-    if validation.end_tick >= since_tick then validations[#validations + 1] = validation end
+    if validation.end_tick >= since_tick then
+      if internal then validations[#validations + 1] = validation
+      else
+        local public = {}; for key, value in pairs(validation) do if key ~= "_signature" then public[key] = value end end
+        validations[#validations + 1] = public
+      end
+    end
   end
   return {
     epoch_tick = activity.epoch_tick, since_tick = since_tick, end_tick = game.tick,

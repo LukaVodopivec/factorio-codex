@@ -9,6 +9,7 @@ local MAX_FACTORY_GROUPS = 12
 local MAX_FLOW_ROWS = 12
 local MAX_FLOW_NODES = 12
 local MAX_FLOW_EDGES = 24
+local MAX_FLOW_COMPONENTS = 8
 
 local MACHINE_TYPES = {
   ["assembling-machine"] = true, furnace = true, ["mining-drill"] = true,
@@ -225,13 +226,11 @@ local function burner_categories(entity)
   return result
 end
 
-local function build_material_flow(flow_entities, node_by_key, activity, omissions)
+local function build_material_flow(flow_entities, node_by_key, activity)
   local nodes = sorted_rows(node_by_key, key_position)
-  omissions.capped_flow_nodes = cap_rows(nodes, MAX_FLOW_NODES)
-  local retained, key_to_id = {}, {}
+  local retained = {}
   for index, node in ipairs(nodes) do
     node.id = "node-" .. index
-    key_to_id[node._key] = node.id
     retained[node._key] = node
   end
   local edges, seen_edges, diagnostics = {}, {}, {}
@@ -285,11 +284,6 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
     if a.to ~= b.to then return a.to < b.to end
     return a.kind < b.kind
   end)
-  omissions.capped_flow_edges = cap_rows(edges, MAX_FLOW_EDGES)
-  table.sort(diagnostics, function(a, b)
-    return a.node_id == b.node_id and a.reason < b.reason or a.node_id < b.node_id
-  end)
-  omissions.capped_edge_diagnostics = cap_rows(diagnostics, MAX_FLOW_EDGES)
 
   local parent = {}; for _, node in ipairs(nodes) do parent[node.id] = node.id end
   local function root(id)
@@ -302,14 +296,18 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
   for _, node in ipairs(nodes) do
     local r = root(node.id)
     local component = by_root[r] or { node_ids = {}, roles = {}, status_counts = {}, edge_count = 0,
-      products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil }
+      products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil, _edges = {}, _diagnostics = {} }
     by_root[r] = component
     component.node_ids[#component.node_ids + 1] = node.id
     component.roles[node.role] = (component.roles[node.role] or 0) + 1
     component.status_counts[node.status] = (component.status_counts[node.status] or 0) + 1
     component.products_finished_total = component.products_finished_total + (node.products_finished or 0)
   end
-  for _, edge in ipairs(edges) do by_root[root(edge.from)].edge_count = by_root[root(edge.from)].edge_count + 1 end
+  for _, edge in ipairs(edges) do
+    local component = by_root[root(edge.from)]
+    component.edge_count = component.edge_count + 1
+    component._edges[#component._edges + 1] = edge
+  end
   for _, event in ipairs(activity.target_actions or {}) do
     if event.target then
       local key = string.format("%s\0%s\0%.17g\0%.17g", event.target.name, event.target.type,
@@ -346,35 +344,110 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
         seen[id] = true
         local node = node_by_id[id]
         if node and node.role ~= "buffer" and product_matches(node, ingredient, fuel_only) then return true end
-        for _, parent_id in ipairs(incoming[id] or {}) do queue[#queue + 1] = parent_id end
+        -- A processor transforms its inputs; an ancestor's product cannot
+        -- stand in for this node's different physical output.
+        if node and (node.role == "transport" or node.role == "buffer") then
+          for _, parent_id in ipairs(incoming[id] or {}) do queue[#queue + 1] = parent_id end
+        end
       end
     end
     return false
   end
-  local function reaches_sink(start_id)
+  local function reaches_downstream(start_id)
     local queue, seen, head = { start_id }, {}, 1
     while head <= #queue do
       local id = queue[head]; head = head + 1
       if not seen[id] then
         seen[id] = true
-        if id ~= start_id and node_by_id[id] and node_by_id[id].role == "sink" then return true end
+        if id ~= start_id and node_by_id[id] and (node_by_id[id].role == "sink" or node_by_id[id]._downstream_buffer) then return true end
         for _, next_id in ipairs(outgoing[id] or {}) do queue[#queue + 1] = next_id end
       end
     end
     return false
   end
+  local source_by_resource = {}
+  for _, node in ipairs(nodes) do
+    local source = node._source_production
+    if source and source.resource_key then
+      local previous = source_by_resource[source.resource_key]
+      if previous then
+        diagnostic(previous, "shared_mining_target_production_ambiguous", "ambiguous")
+        diagnostic(node, "shared_mining_target_production_ambiguous", "ambiguous")
+      else source_by_resource[source.resource_key] = node end
+    end
+  end
+  for _, node in ipairs(nodes) do
+    if node.role == "buffer" then
+      node._downstream_buffer = #outgoing[node.id] == 0
+      local products, queue, seen, head = {}, { node.id }, {}, 1
+      while head <= #queue do
+        local id = queue[head]; head = head + 1
+        if not seen[id] then
+          seen[id] = true
+          local upstream = node_by_id[id]
+          if upstream.role == "source" or upstream.role == "processor" then
+            for _, product in ipairs(upstream.products) do products[product.type .. ":" .. product.name] = product end
+          elseif upstream.role == "transport" or upstream.role == "buffer" then
+            for _, parent_id in ipairs(incoming[id]) do queue[#queue + 1] = parent_id end
+          end
+        end
+      end
+      node._accepted_stock, node._accepting = {}, next(products) ~= nil
+      for key, product in pairs(products) do
+        -- Inventory values are private interval samples, never serialized.
+        -- Unsupported fluid buffers remain unproven rather than guessing capacity.
+        local ok, count, accepting = pcall(function()
+          if product.type ~= "item" then error("unsupported fluid buffer acceptance") end
+          local inventory = node._entity.get_inventory(defines.inventory.chest)
+          return inventory.get_item_count(product.name), inventory.can_insert({ name = product.name, count = 1 })
+        end)
+        if not ok or type(count) ~= "number" or type(accepting) ~= "boolean" then
+          node._accepting = false
+          diagnostic(node, "downstream_buffer_acceptance_unproven", "unsupported")
+        else
+          node._accepted_stock[key] = count
+          if not accepting then node._accepting = false; node._blocked_output = true end
+        end
+      end
+    end
+  end
+  table.sort(diagnostics, function(a, b)
+    return a.node_id == b.node_id and a.reason < b.reason or a.node_id < b.node_id
+  end)
+  for _, diagnostic in ipairs(diagnostics) do
+    local component = by_root[root(diagnostic.node_id)]
+    component._diagnostics[#component._diagnostics + 1] = diagnostic
+  end
   for index, component in ipairs(components) do
     component.component_id = "component-" .. index
     local local_work = (component.status_counts.working or 0) > 0
     local blockers, signature_rows, producing_nodes, accepting_sinks = {}, {}, 0, 0
-    local component_ids = {}; for _, id in ipairs(component.node_ids) do component_ids[id] = true end
+    local buffers, consumers, blocked_output = 0, 0, false
+    component._downstream, component._production, component._source_production = {}, {}, {}
     for _, id in ipairs(component.node_ids) do
       local node = node_by_id[id]
-      signature_rows[#signature_rows + 1] = string.format("%s:%s:%.17g:%.17g", node.name, node.type, node.position.x, node.position.y)
+      signature_rows[#signature_rows + 1] = node._key .. ":" .. tostring(node.direction) .. ":"
+        .. tostring(number_property(node._entity, "unit_number")) .. ":" .. tostring(node.recipe)
+      for _, ingredient in ipairs(node.ingredients) do signature_rows[#signature_rows + 1] = node._key .. ":input:" .. ingredient.type .. ":" .. ingredient.name end
+      for _, product in ipairs(node.products) do signature_rows[#signature_rows + 1] = node._key .. ":output:" .. product.type .. ":" .. product.name end
+      if node.role == "sink" then
+        consumers = consumers + 1
+        component._downstream[node._key] = { kind = "consumer", accepting = node.status == "working" }
+      elseif node._downstream_buffer then
+        buffers = buffers + 1
+        component._downstream[node._key] = { kind = "buffer", accepting = node._accepting, stock = node._accepted_stock }
+        if node._accepting then accepting_sinks = accepting_sinks + 1 end
+      end
+      if node._blocked_output or node.status == "full_output" then blocked_output = true end
       if node.role == "source" or node.role == "processor" then
         producing_nodes = producing_nodes + 1
+        if node.role == "source" then
+          component._source_production[node._key] = node._source_production
+          if not node._source_production.working then blockers[#blockers + 1] = { node_id = id, reason = "source_not_locally_operating" } end
+        end
+        if node.role == "processor" then component._production[node._key] = node.products_finished or false end
         if #node.products == 0 then blockers[#blockers + 1] = { node_id = id, reason = "output_identity_unproven" } end
-        if not reaches_sink(id) then blockers[#blockers + 1] = { node_id = id, reason = "downstream_acceptance_path_unproven" } end
+        if not reaches_downstream(id) then blockers[#blockers + 1] = { node_id = id, reason = "downstream_acceptance_path_unproven" } end
       end
       if node.role == "sink" and node.status == "working" then accepting_sinks = accepting_sinks + 1 end
       for _, ingredient in ipairs(node.ingredients or {}) do
@@ -387,30 +460,35 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
           reason = next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven" }
       end
       if node.status == "no_power" or node.status == "low_power" or node.status == "no_fuel"
-        or node.status == "insufficient_input" or node.status == "full_output" then
+        or node.status == "insufficient_input" or node.status == "full_output"
+        or node.status == "disabled" or node.status == "no_resources" then
         blockers[#blockers + 1] = { node_id = id, reason = "nonproductive_status", status = node.status }
       end
     end
+    for _, edge in ipairs(component._edges) do
+      signature_rows[#signature_rows + 1] = node_by_id[edge.from]._key .. "->" .. node_by_id[edge.to]._key .. ":" .. edge.kind
+    end
     table.sort(signature_rows)
-    component.component_signature = table.concat(signature_rows, "|")
-    for _, diagnostic in ipairs(diagnostics) do
-      if component_ids[diagnostic.node_id] then blockers[#blockers + 1] = {
-        node_id = diagnostic.node_id, reason = "relationship_diagnostic", diagnostic = diagnostic.reason,
-      } end
+    component._signature = table.concat(signature_rows, "|")
+    -- Compact presentation identifier; exact private identity is compared for validation.
+    local h1, h2 = 0, 0
+    for i = 1, #component._signature do
+      local byte = component._signature:byte(i)
+      h1, h2 = (h1 * 31 + byte) % 4294967291, (h2 * 37 + byte) % 4294967279
+    end
+    component.component_signature = string.format("%08x%08x", h1, h2)
+    for _, diagnostic in ipairs(component._diagnostics) do
+      blockers[#blockers + 1] = { node_id = diagnostic.node_id, reason = "relationship_diagnostic", diagnostic = diagnostic.reason }
     end
     if producing_nodes == 0 or (component.roles.source or 0) == 0 or (component.roles.processor or 0) == 0
-      or (component.roles.sink or 0) == 0 then
+      or buffers + consumers == 0 then
       blockers[#blockers + 1] = { reason = "physical_source_processor_sink_path_unproven" }
     end
     if accepting_sinks == 0 then blockers[#blockers + 1] = { reason = "downstream_acceptance_not_observed" } end
-    if omissions.capped_flow_nodes > 0 or omissions.capped_flow_edges > 0 or omissions.capped_edge_diagnostics > 0 then
-      -- Once the graph is incomplete, detailed negative claims are not
-      -- authoritative. Emit the omission itself as the sole blocker.
-      blockers = { { reason = "relevant_aggregate_omission" } }
-    end
+    if blocked_output then blockers[#blockers + 1] = { reason = "blocked_output" } end
     local validation
     for _, candidate in ipairs(activity.validations or {}) do
-      if candidate.component_signature == component.component_signature and candidate.proven then validation = candidate end
+      if candidate._signature == component._signature and candidate.proven then validation = candidate end
     end
     -- Bootstrap transfers before a successful bounded validation are historical
     -- debt, not evidence that the now-connected component still needs the
@@ -431,6 +509,8 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
     end
     table.sort(blocker_names)
     component.state = {
+      downstream_kind = buffers > 0 and (consumers > 0 and "mixed" or "buffer") or (consumers > 0 and "consumer" or "none"),
+      blocked_output = blocked_output,
       machine_present = true,
       locally_operating = local_work,
       autonomy_topology_ready = topology_ready,
@@ -443,16 +523,46 @@ local function build_material_flow(flow_entities, node_by_key, activity, omissio
       autonomy_blockers = blocker_names,
       validation = validation,
     }
-    component.component_signature = nil
-  end
-  for _, node in ipairs(nodes) do
-    node._key, node._entity, node.ingredients, node.products, node.requires_fuel, node.fuel_categories = nil, nil, nil, nil, nil, nil
   end
   return { nodes = nodes, edges = edges, components = components, diagnostics = diagnostics,
     relationship_semantics = "exact_runtime_targets_only; absence_or_unsupported_is_not_a_connection" }
 end
 
-function M.map_summary(params)
+-- Caps are a presentation concern. Never mutate the graph used by sampling.
+local function present_flow(flow, omissions)
+  local result = { relationship_semantics = flow.relationship_semantics }
+  for _, field in ipairs({ "nodes", "edges", "components", "diagnostics" }) do
+    result[field] = {}
+    local limit = field == "components" and MAX_FLOW_COMPONENTS
+      or (field == "edges" or field == "diagnostics") and MAX_FLOW_EDGES or MAX_FLOW_NODES
+    for i = 1, math.min(limit, #flow[field]) do
+      local row = {}; for key, value in pairs(flow[field][i]) do
+        if key:sub(1, 1) ~= "_" and key ~= "ingredients" and key ~= "products" and key ~= "requires_fuel" and key ~= "fuel_categories" then row[key] = value end
+      end
+      if field == "components" then
+        row.node_count = #row.node_ids
+        row.node_ids = { table.unpack(row.node_ids, 1, math.min(MAX_FLOW_NODES, #row.node_ids)) }
+        row.omitted_node_ids = row.node_count - #row.node_ids
+        local state = {}; for key, value in pairs(row.state) do state[key] = value end
+        state.autonomy_blockers = { table.unpack(state.autonomy_blockers, 1, math.min(MAX_FLOW_EDGES, #state.autonomy_blockers)) }
+        state.omitted_autonomy_blockers = #row.state.autonomy_blockers - #state.autonomy_blockers
+        if state.validation then
+          local validation = {}; for key, value in pairs(state.validation) do if key ~= "_signature" then validation[key] = value end end
+          state.validation = validation
+        end
+        row.state = state
+      end
+      result[field][#result[field] + 1] = row
+    end
+  end
+  omissions.capped_flow_nodes = #flow.nodes - #result.nodes
+  omissions.capped_flow_edges = #flow.edges - #result.edges
+  omissions.capped_flow_components = #flow.components - #result.components
+  omissions.capped_edge_diagnostics = #flow.diagnostics - #result.diagnostics
+  return result
+end
+
+local function collect_summary(params, internal)
   params = type(params) == "table" and params or {}
   local detail = params.detail or "aggregate"
   if detail ~= "aggregate" and detail ~= "full" then error("map_summary detail must be aggregate or full") end
@@ -538,6 +648,14 @@ function M.map_summary(params)
               power_state = raw_status == "no_power" and "missing" or raw_status == "low_power" and "low" or "not_exactly_observed",
               fuel_state = raw_status == "no_fuel" and "missing" or "not_exactly_observed",
             }
+            if role == "source" then
+              node._source_production = { working = node.status == "working", progress = number_property(entity, "mining_progress") }
+              local ok, target = pcall(function() return entity.mining_target end)
+              if ok and entity_key(target) and charted(c.force, c.surface, target.position) then
+                node._source_production.resource_key = entity_key(target)
+                node._source_production.remaining = number_property(target, "amount")
+              end
+            end
             flow_entities[#flow_entities + 1] = entity
             flow_nodes_by_key[key] = node
           end
@@ -620,8 +738,13 @@ function M.map_summary(params)
     end
   end
   local network_count = 0; for _ in pairs(electric_networks) do network_count = network_count + 1 end
-  local activity = factory_activity.snapshot(params.activity_since_tick)
-  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity, omissions)
+  local activity = factory_activity.snapshot(params.activity_since_tick, true)
+  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity)
+  local public_flow = present_flow(material_flow, omissions)
+  if not internal then
+    material_flow = public_flow
+    activity = factory_activity.snapshot(params.activity_since_tick)
+  end
   local partial = false; for _, count in pairs(omissions) do if count > 0 then partial = true end end
   local factory = {
     scope = "force_charted", collected_at_tick = game.tick, consistency = "single_request",
@@ -675,6 +798,8 @@ function M.map_summary(params)
   }
 end
 
+function M.map_summary(params) return collect_summary(params, false) end
+
 -- Resolve an exact caller-named set of charted factory positions to one
 -- aggregate component. This deliberately returns counters and provenance, not
 -- remote inventories or fluids, so a parked plan can compare two bounded
@@ -684,7 +809,7 @@ function M.factory_component_sample(params)
     or #params.positions < 1 or #params.positions > 16 then
     error("factory component sample requires 1-16 positions")
   end
-  local summary = M.map_summary({ activity_since_tick = params.source_tick })
+  local summary = collect_summary({ activity_since_tick = params.source_tick }, true)
   local flow = summary.factory.material_flow
   local selected_component
   local selected_ids = {}
@@ -693,14 +818,14 @@ function M.factory_component_sample(params)
     for _, node in ipairs(flow.nodes) do
       if node.position.x == position.x and node.position.y == position.y then found, matches = node, (matches or 0) + 1 end
     end
-    if not found then error(string.format("FACTORY_COMPONENT_TARGET_NOT_FOUND: no retained charted node at %.17g,%.17g", position.x, position.y)) end
-    if matches > 1 then error(string.format("FACTORY_COMPONENT_TARGET_AMBIGUOUS: multiple retained charted nodes at %.17g,%.17g", position.x, position.y)) end
+    if not found then error(string.format("FACTORY_COMPONENT_TARGET_NOT_FOUND: no charted node at %.17g,%.17g", position.x, position.y)) end
+    if matches > 1 then error(string.format("FACTORY_COMPONENT_TARGET_AMBIGUOUS: multiple charted nodes at %.17g,%.17g", position.x, position.y)) end
     local component
     for _, candidate in ipairs(flow.components) do
       for _, id in ipairs(candidate.node_ids) do if id == found.id then component = candidate; break end end
       if component then break end
     end
-    if not component then error("FACTORY_COMPONENT_TARGET_OMITTED: selected node has no retained component") end
+    if not component then error("FACTORY_COMPONENT_TARGET_OMITTED: selected node has no component") end
     if selected_component and selected_component.component_id ~= component.component_id then
       error("FACTORY_COMPONENT_SPLIT: positions do not belong to one exact physical component")
     end
@@ -708,17 +833,14 @@ function M.factory_component_sample(params)
     selected_ids[#selected_ids + 1] = found.id
   end
   table.sort(selected_ids)
-  local signature_rows = {}
-  local component_ids = {}; for _, id in ipairs(selected_component.node_ids) do component_ids[id] = true end
-  for _, node in ipairs(flow.nodes) do if component_ids[node.id] then
-    signature_rows[#signature_rows + 1] = string.format("%s:%s:%.17g:%.17g", node.name, node.type, node.position.x, node.position.y)
-  end end
-  table.sort(signature_rows)
-  local signature = table.concat(signature_rows, "|")
   return {
     tick = summary.tick, source_tick = params.source_tick,
     component_id = selected_component.component_id,
-    component_signature = signature,
+    component_signature = selected_component.component_signature,
+    _signature = selected_component._signature, _downstream = selected_component._downstream,
+    _production = selected_component._production, _source_production = selected_component._source_production,
+    downstream_kind = selected_component.state.downstream_kind,
+    blocked_output = selected_component.state.blocked_output,
     selected_node_ids = selected_ids,
     products_finished_total = selected_component.products_finished_total,
     character_transfer_actions = selected_component.character_transfer_actions,

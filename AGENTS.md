@@ -44,6 +44,14 @@ teleport recovery, save/source edits, and server/client replacement. Record each
 intervention and invalidate affected state; assisted progress and timing are
 never benchmark evidence. None of that authority passes to ordinary gameplay.
 
+The supervisor watches for a stalled pilot: `plan_status` shows no current or
+queued plan and the body is not crafting while goals remain open. After about
+two minutes it nudges the pilot once; after about five minutes it replaces the
+pilot with a fresh session from the latest state. Both are recorded
+interventions and need no further approval from the owner during debug runs. Before
+`GO` of a fresh run, archive the previous run's `operations.json` into that
+run's directory; a ledger from another run is archival evidence only.
+
 Start exactly two persistent reasoning sessions around one physical body and
 FIFO lane. The `gpt-6-luna` pilot uses `low` reasoning with fast mode enabled
 and is the sole gameplay writer, physical controller, immediate-safety

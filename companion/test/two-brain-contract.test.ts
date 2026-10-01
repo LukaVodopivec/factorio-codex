@@ -61,6 +61,34 @@ describe("persistent two-brain coordination contract", () => {
     expect(active).toMatch(/reserve[\s\S]*loop[\s\S]*automation[\s\S]*continuous[\s\S]*autonomous_end_to_end/i);
   });
 
+  it("yields at report checkpoints without pausing, and keeps Sol on the ledger only", () => {
+    const agents = read("AGENTS.md");
+    const live = read("docs/LIVE-VALIDATION.md");
+    for (const text of [pilot, skill]) {
+      expect(text).toMatch(/end (?:your|the) turn[\s\S]*neither a pause nor a completion/i);
+      expect(text).toMatch(/1,000 bytes/);
+    }
+    expect(pilot).toMatch(/never calls `update_goal`/);
+    expect(agents).toMatch(/native goal continuation, not a supervisor assignment per batch/i);
+    expect(strategist).toMatch(/ledger is your only channel to the pilot; never message the pilot/i);
+    expect(agents).toMatch(/ledger is Sol's only channel to\s+the pilot/i);
+    expect(`${pilot}\n${strategist}`).toMatch(/never mark the goal complete without milestone proof/i);
+    expect(agents).toMatch(/calls factorio\s+`stop`[\s\S]*pauses both role goals/i);
+    expect(live).toMatch(/call factorio `stop`[\s\S]*`\/goal pause`[\s\S]*`turn\/interrupt`[\s\S]*server stop/i);
+    expect(live).toMatch(/resume both role goals[\s\S]*before|resume both role goals[\s\S]*only then start the recorder/i);
+    expect(`${strategist}\n${live}`).not.toMatch(/companion\/dist\/cli\.js ledger-apply/);
+  });
+
+  it("states which physical calls hold the only slot and keeps the launch block transport-complete", () => {
+    const server = read("companion/src/mcp/server.ts");
+    expect(server).toMatch(/run_plan[\s\S]*block until the plan is terminal/);
+    expect(server).toMatch(/queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot/);
+    const live = read("docs/LIVE-VALIDATION.md");
+    expect(live).not.toMatch(/mcp_servers\.[a-z-]+\.enabled=/);
+    expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"\][^}]*enabled_tools=/);
+    expect(pilot).not.toMatch(/mcp_servers/);
+  });
+
   it("keeps durable gameplay instructions generic and text-only", () => {
     for (const text of [skill, pilot, strategist]) {
       expect(text).not.toMatch(/\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/);

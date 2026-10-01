@@ -68,4 +68,35 @@ describe("compact strategist operations ledger", () => {
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({ revision: 1, source_tick: 100,
       run: { id: "run-1", roles: ledger().run.roles } });
   });
+
+  function init(sourceTick: number | null = null) {
+    const { update } = envelope();
+    return { init: true, run: ledger().run, source_tick: sourceTick, update };
+  }
+
+  it("lets the strategist create an absent ledger as revision 1 with mode 0600", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-ledger-")); temporary.push(dir);
+    const file = path.join(dir, "operations.json");
+    expect(applyLedgerFile(file, init())).toEqual({ status: "applied", revision: 1, source_tick: null });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(file, "utf8")))).toMatchObject({ revision: 1, source_tick: null,
+      run: { id: "run-1" } });
+    expect(fs.readdirSync(dir)).toEqual(["operations.json"]);
+    expect(applyLedgerFile(file, envelope(200))).toEqual({ status: "applied", revision: 2, source_tick: 200 });
+  });
+
+  it("never replaces an existing ledger and never creates one from an ordinary update", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-ledger-")); temporary.push(dir);
+    const file = path.join(dir, "operations.json");
+    expect(applyLedgerFile(file, envelope())).toEqual({ status: "discarded", reason: "MALFORMED_OR_UNSUPPORTED_LEDGER" });
+    expect(fs.existsSync(file)).toBe(false);
+    expect(applyLedgerFile(file, { ...init(), run: { ...ledger().run, release_sha: "bad" } }))
+      .toEqual({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(fs.existsSync(file)).toBe(false);
+    fs.writeFileSync(file, `${JSON.stringify(ledger())}\n`, { mode: 0o600 });
+    const before = fs.readFileSync(file, "utf8");
+    expect(applyLedgerFile(file, init())).toEqual({ status: "discarded", reason: "LEDGER_ALREADY_EXISTS" });
+    expect(applyLedgerFile(file, { ...init(), init: false })).toEqual({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
 });

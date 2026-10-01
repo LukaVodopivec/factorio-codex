@@ -53,8 +53,14 @@ export const ledgerEnvelopeSchema = z.object({
   update: mutableSchema,
 }).strict();
 
+/** Creates revision 1 of an absent ledger, so the strategist stays its sole writer. */
+export const ledgerInitSchema = z.object({
+  init: z.literal(true), run: runSchema, source_tick: z.number().int().nonnegative().nullable(),
+  update: mutableSchema,
+}).strict();
+
 export type OperationsLedger = z.infer<typeof operationsLedgerSchema>;
-export type LedgerApplyResult = { status: "applied"; revision: number; source_tick: number }
+export type LedgerApplyResult = { status: "applied"; revision: number; source_tick: number | null }
   | { status: "discarded"; reason: string };
 
 const discard = (reason: string): LedgerApplyResult => ({ status: "discarded", reason });
@@ -77,7 +83,35 @@ export function reduceLedger(existingValue: unknown, envelopeValue: unknown):
   return { result: { status: "applied", revision: ledger.revision, source_tick: ledger.source_tick! }, ledger };
 }
 
+function initLedgerFile(file: string, envelopeValue: unknown): LedgerApplyResult {
+  const init = ledgerInitSchema.safeParse(envelopeValue);
+  if (!init.success) return discard("MALFORMED_REPORT");
+  const ledger: OperationsLedger = {
+    schema_version: 2, run: init.data.run, revision: 1, source_tick: init.data.source_tick, ...init.data.update,
+  };
+  const temp = `${file}.init-${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(ledger, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    fs.chmodSync(temp, 0o600);
+    // A hard link never replaces an existing file, so a concurrent ledger is never clobbered.
+    try { fs.linkSync(temp, file); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return discard("LEDGER_ALREADY_EXISTS");
+      throw error;
+    }
+  } finally { fs.rmSync(temp, { force: true }); }
+  const readBack = operationsLedgerSchema.safeParse(JSON.parse(fs.readFileSync(file, "utf8")));
+  if (!readBack.success || readBack.data.revision !== 1 || (fs.statSync(file).mode & 0o777) !== 0o600) {
+    throw new Error("ledger initialization verification failed");
+  }
+  return { status: "applied", revision: 1, source_tick: ledger.source_tick };
+}
+
 export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApplyResult {
+  const isInit = typeof envelopeValue === "object" && envelopeValue !== null
+    && (envelopeValue as { init?: unknown }).init === true;
+  if (!fs.existsSync(file)) return isInit ? initLedgerFile(file, envelopeValue) : discard("MALFORMED_OR_UNSUPPORTED_LEDGER");
+  if (isInit) return discard("LEDGER_ALREADY_EXISTS");
   let existing: unknown;
   try { existing = JSON.parse(fs.readFileSync(file, "utf8")); }
   catch { return discard("MALFORMED_OR_UNSUPPORTED_LEDGER"); }

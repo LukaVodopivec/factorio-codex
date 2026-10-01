@@ -9,8 +9,8 @@ Both visual Factorio processes run exclusively on the couch PC. The
 `scripts/launch-native-client.ps1` entrypoint is couch-only; the repository does
 not provide a Linux visual client launcher.
 
-1. On the couch PC, install the full standalone Factorio 2.0.x build under
-   `%LOCALAPPDATA%\factorio-codex\standalone`, or pass its executable as
+1. On the couch PC, install the full standalone Factorio 2.0.x Space Age build under
+   `%LOCALAPPDATA%\factorio-codex\standalone-space-age`, or pass its executable as
    `-FactorioBinary`. The Steam build is intentionally rejected for the Codex
    client because it replaces the isolated LAN identity.
 2. Run `nvm use 22 && npm ci && npm run build && node companion/dist/cli.js setup`.

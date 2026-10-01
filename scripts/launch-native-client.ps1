@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)][string]$Address,
-  [string]$FactorioBinary = "$env:LOCALAPPDATA\factorio-codex\standalone\bin\x64\factorio.exe",
+  [string]$FactorioBinary = "$env:LOCALAPPDATA\factorio-codex\standalone-space-age\bin\x64\factorio.exe",
   [string]$StateRoot = "$env:LOCALAPPDATA\factorio-codex\native-client",
   [switch]$PrepareOnly
 )
@@ -13,15 +13,16 @@ if (-not (Test-Path -LiteralPath $FactorioBinary -PathType Leaf)) {
   throw "Standalone Factorio executable not found: $FactorioBinary"
 }
 $version = (& $FactorioBinary --version | Select-Object -First 1)
-if ($version -match ', steam\)') {
+if ($version -match ', steam[,)]') {
   throw "The Steam Factorio build replaces the isolated Codex identity; use the full standalone build."
-}
-if ($version -notmatch 'space-age') {
-  throw "Factorio Codex runs Space Age; install the standalone build with the Space Age expansion: $version"
 }
 
 $installRoot = Split-Path (Split-Path (Split-Path $FactorioBinary -Parent) -Parent) -Parent
 $dataRoot = Join-Path $installRoot "data"
+# The version line never names the expansion; its data directory does.
+if (-not (Test-Path -LiteralPath (Join-Path $dataRoot "space-age") -PathType Container)) {
+  throw "Factorio Codex runs Space Age; install the standalone Space Age build: $installRoot has no data\space-age"
+}
 $configRoot = Join-Path $StateRoot "config"
 $modsRoot = Join-Path $StateRoot "mods"
 New-Item -ItemType Directory -Force -Path $configRoot, $modsRoot | Out-Null

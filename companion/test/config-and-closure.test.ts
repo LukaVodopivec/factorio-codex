@@ -225,7 +225,7 @@ describe("exact local configuration", () => {
     expect(couchLauncher).toMatch(/Steam Factorio build replaces the isolated Codex identity/);
     expect(couchLauncher).toMatch(/\[Parameter\(Mandatory = \$true\)\]\[string\]\$Address,/);
     expect(couchLauncher).not.toMatch(/\d+\.\d+\.\d+\.\d+:34197/);
-    expect(couchLauncher).toMatch(/-notmatch 'space-age'/);
+    expect(couchLauncher).toMatch(/Join-Path \$dataRoot "space-age"\) -PathType Container/);
     for (const name of ["elevated-rails", "quality", "space-age", "agentic-companion"]) {
       expect(couchLauncher).toContain(`{"name":"${name}","enabled":true}`);
     }

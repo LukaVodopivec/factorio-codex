@@ -37,8 +37,8 @@ The server-and-agent workstation has no dedicated GPU and is permanently
 headless. Run only the dedicated server, Node bridge, and agent tooling there;
 never start a Factorio GUI/client or any other visual GUI workload on it during
 rollout, validation, or benchmarks. All visual workloads run on the couch PC.
-There, install the full standalone Factorio build under
-`%LOCALAPPDATA%\factorio-codex\standalone` and run the couch-only
+There, install the full standalone Factorio Space Age build under
+`%LOCALAPPDATA%\factorio-codex\standalone-space-age` and run the couch-only
 `scripts/launch-native-client.ps1 -Address <server:port>` to connect its isolated
 low-resource client as the real player named `Codex`. Then connect the separate
 normal couch Factorio client as the characterless spectator/follower. The

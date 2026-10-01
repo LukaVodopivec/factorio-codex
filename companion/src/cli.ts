@@ -7,13 +7,15 @@ import { runWizard } from "./setup/wizard.js";
 import { assertNodeRuntime } from "./runtime.js";
 import { runLedgerApply } from "./coordination/ledger.js";
 import { compareRuns, markRunAssisted, recordRun, renderComparison, runRoot } from "./runs/telemetry.js";
+import { createServerSave, startServer, stopServer } from "./server/server.js";
 
-const HELP = `factorio-codex — text-only Factorio control for Codex\n\nUsage:\n  factorio-codex setup\n  factorio-codex doctor [--json]\n  factorio-codex mcp [--surface full|read-only]\n  factorio-codex ledger-apply --ledger <operations.json>\n  factorio-codex runs record --ledger <operations.json> --variant <name> --change <description> [--kind debug|benchmark]\n  factorio-codex runs mark-assisted <run-id> --reason <text>\n  factorio-codex runs compare <baseline-run-id> <candidate-run-id> [--json]`;
+const HELP = `factorio-codex — text-only Factorio control for Codex\n\nUsage:\n  factorio-codex setup\n  factorio-codex doctor [--json]\n  factorio-codex mcp [--surface full|read-only]\n  factorio-codex ledger-apply --ledger <operations.json>\n  factorio-codex runs record --ledger <operations.json> --variant <name> --change <description> [--kind debug|benchmark]\n  factorio-codex runs mark-assisted <run-id> --reason <text>\n  factorio-codex runs compare <baseline-run-id> <candidate-run-id> [--json]\n  factorio-codex server create <run-dir> [--seed <n>] [--factorio <path>]\n  factorio-codex server start <run-dir> [--bind <address>] [--factorio <path>]\n  factorio-codex server stop <run-dir>`;
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({ options: {
     json: { type: "boolean" }, ledger: { type: "string" }, surface: { type: "string" },
     variant: { type: "string" }, change: { type: "string" }, kind: { type: "string" }, reason: { type: "string" },
+    factorio: { type: "string" }, bind: { type: "string" }, seed: { type: "string" },
     help: { type: "boolean", short: "h" },
   }, allowPositionals: true });
   const command = positionals[0];
@@ -48,6 +50,19 @@ async function main(): Promise<void> {
       console.log(values.json ? JSON.stringify(comparison, null, 2) : renderComparison(comparison)); return;
     }
     throw new Error(`unknown runs command: ${action ?? "missing"}`);
+  }
+  if (command === "server") {
+    const action = positionals[1], runDir = positionals[2];
+    if (!runDir) throw new Error("server commands require <run-dir>");
+    if (action === "create") {
+      const seed = values.seed === undefined ? undefined : Number(values.seed);
+      if (seed !== undefined && !(Number.isInteger(seed) && seed >= 0 && seed < 2 ** 32)) throw new Error("server create --seed must be an unsigned 32-bit integer");
+      const paths = createServerSave(runDir, { factorio: values.factorio, seed });
+      console.log(JSON.stringify({ save: paths.save, mods: paths.mods }, null, 2)); return;
+    }
+    if (action === "start") { console.log(JSON.stringify(await startServer(runDir, { factorio: values.factorio, bind: values.bind }), null, 2)); return; }
+    if (action === "stop") { console.log(JSON.stringify(await stopServer(runDir), null, 2)); return; }
+    throw new Error(`unknown server command: ${action ?? "missing"}`);
   }
   console.error(`Unknown command: ${command}\n${HELP}`);
   process.exitCode = 1;

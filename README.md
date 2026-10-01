@@ -7,12 +7,14 @@ through deterministic, text-only local perception. The only active path is the
 project MCP server → serialized RCON bridge → Factorio mod. Movement, reach,
 inventory, crafting, placement, research and elapsed game time remain real.
 
-Requirements: Factorio 2.0.x, Node.js 22, and a dedicated save. The fixed
+Requirements: Factorio 2.0.x with the Space Age expansion, Node.js 22.12+,
+and a dedicated save. The fixed
 `/silent-command remote.call` bridge means Factorio disables achievements for
 that save. The interface never exposes Lua, arbitrary console commands, images,
 global-map state, teleportation of the Codex body or free resources. Connected
 spectator cameras follow Codex without affecting its physical movement. Every
-supported save is permanently peaceful with enemy bases disabled.
+supported save is permanently peaceful with enemy bases disabled. Play is
+Nauvis-first: there are no rocket, space-platform, or planet-travel tools yet.
 
 ## Install and use
 
@@ -21,7 +23,15 @@ nvm use 22
 npm ci
 npm run build
 node companion/dist/cli.js setup
+node companion/dist/cli.js server create <run-dir>
+node companion/dist/cli.js server start <run-dir> [--bind <lan-address>]
+node companion/dist/cli.js server stop <run-dir>
 ```
+
+Each run directory owns its fresh peaceful Space Age save, logs, PID, and a
+run-local mod directory (base, elevated-rails, quality, space-age, and the
+companion). `server start` verifies the mod protocol and version before
+returning; `server stop` saves over RCON before shutting down.
 
 The server-and-agent workstation has no dedicated GPU and is permanently
 headless. Run only the dedicated server, Node bridge, and agent tooling there;
@@ -40,7 +50,7 @@ The mod never creates a standalone fallback character. Run
 committed project config starts MCP automatically. Begin with
 `connect_status`, then `observe_local`; `stop` cancels active and queued work.
 
-The built CLI supports `setup`, `doctor [--json]`, `mcp`, and durable `runs`
+The built CLI supports `setup`, `doctor [--json]`, `mcp`, `server`, and durable `runs`
 recording/comparison commands. MCP exposes exactly
 25 text-only tools through `tools/list`. `observe_local` exposes exact
 `ground_items` stacks and `pickup_items` physically collects one still-matching

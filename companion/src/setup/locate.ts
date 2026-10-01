@@ -25,6 +25,25 @@ export function factorioUserDir(): string | null {
   }
 }
 
+/** Factorio executable: FACTORIO_BIN, then the standard Linux Steam installs. */
+export function factorioBinary(): string | null {
+  const candidates = [
+    process.env.FACTORIO_BIN,
+    path.join(os.homedir(), ".steam", "debian-installation", "steamapps", "common", "Factorio", "bin", "x64", "factorio"),
+    path.join(os.homedir(), ".local", "share", "Steam", "steamapps", "common", "Factorio", "bin", "x64", "factorio"),
+    path.join(os.homedir(), ".steam", "steam", "steamapps", "common", "Factorio", "bin", "x64", "factorio"),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
 export function factorioConfigPath(userDir: string): string {
   return path.join(userDir, "config", "config.ini");
 }

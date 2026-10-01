@@ -1,5 +1,5 @@
 param(
-  [string]$Address = "192.0.2.117:34197",
+  [Parameter(Mandatory = $true)][string]$Address,
   [string]$FactorioBinary = "$env:LOCALAPPDATA\factorio-codex\standalone\bin\x64\factorio.exe",
   [string]$StateRoot = "$env:LOCALAPPDATA\factorio-codex\native-client",
   [switch]$PrepareOnly
@@ -15,6 +15,9 @@ if (-not (Test-Path -LiteralPath $FactorioBinary -PathType Leaf)) {
 $version = (& $FactorioBinary --version | Select-Object -First 1)
 if ($version -match ', steam\)') {
   throw "The Steam Factorio build replaces the isolated Codex identity; use the full standalone build."
+}
+if ($version -notmatch 'space-age') {
+  throw "Factorio Codex runs Space Age; install the standalone build with the Space Age expansion: $version"
 }
 
 $installRoot = Split-Path (Split-Path (Split-Path $FactorioBinary -Parent) -Parent) -Parent
@@ -40,7 +43,7 @@ $playerTmp = Join-Path $StateRoot "player-data.json.tmp"
 Move-Item -Force $playerTmp (Join-Path $StateRoot "player-data.json")
 
 $modListTmp = Join-Path $modsRoot "mod-list.json.tmp"
-$modList = '{"mods":[{"name":"base","enabled":true},{"name":"elevated-rails","enabled":false},{"name":"quality","enabled":false},{"name":"space-age","enabled":false},{"name":"agentic-companion","enabled":true}]}'
+$modList = '{"mods":[{"name":"base","enabled":true},{"name":"elevated-rails","enabled":true},{"name":"quality","enabled":true},{"name":"space-age","enabled":true},{"name":"agentic-companion","enabled":true}]}'
 [IO.File]::WriteAllText($modListTmp, $modList + "`n")
 Move-Item -Force $modListTmp (Join-Path $modsRoot "mod-list.json")
 

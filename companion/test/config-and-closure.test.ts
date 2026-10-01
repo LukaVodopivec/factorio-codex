@@ -223,6 +223,12 @@ describe("exact local configuration", () => {
     expect(couchLauncher).toMatch(/LOCALAPPDATA[\s\S]*factorio-codex\\native-client/);
     expect(couchLauncher).toMatch(/service-username.*Codex/);
     expect(couchLauncher).toMatch(/Steam Factorio build replaces the isolated Codex identity/);
+    expect(couchLauncher).toMatch(/\[Parameter\(Mandatory = \$true\)\]\[string\]\$Address,/);
+    expect(couchLauncher).not.toMatch(/\d+\.\d+\.\d+\.\d+:34197/);
+    expect(couchLauncher).toMatch(/-notmatch 'space-age'/);
+    for (const name of ["elevated-rails", "quality", "space-age", "agentic-companion"]) {
+      expect(couchLauncher).toContain(`{"name":"${name}","enabled":true}`);
+    }
     expect(couchLauncher).toMatch(/--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--window-size 3840x2160/);
     expect(couchLauncher).not.toContain("--window-size 640x480");
     expect(couchLauncher).not.toContain("--disable-audio");

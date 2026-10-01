@@ -14,10 +14,19 @@ not provide a Linux visual client launcher.
    `-FactorioBinary`. The Steam build is intentionally rejected for the Codex
    client because it replaces the isolated LAN identity.
 2. Run `nvm use 22 && npm ci && npm run build && node companion/dist/cli.js setup`.
-3. Enable **Factorio Codex Companion** and host a dedicated base-game fresh
-   freeplay save with permanent peaceful mode and enemy bases disabled. Keep
-   elevated-rails, quality, and space-age disabled in both server and client.
-   Console-backed RCON disables achievements for the save.
+3. Host a dedicated Space Age fresh freeplay save from one run directory with
+   permanent peaceful mode and enemy bases disabled:
+   `node companion/dist/cli.js server create <run-dir>`, then
+   `node companion/dist/cli.js server start <run-dir> [--bind <lan-address>]`.
+   The run directory owns its save, logs, PID, and a run-local mod directory
+   with base, elevated-rails, quality, space-age, and the companion enabled, so
+   stale global mods never load. `server start` refuses a protocol or mod
+   version mismatch before `GO`; `server stop <run-dir>` saves over RCON and
+   shuts the server down at the run boundary instead of leaving it idle. Both
+   server and couch client run the identical Space Age mod set.
+   Console-backed RCON disables achievements for the save. Play is
+   Nauvis-first: the MCP has no rocket, space-platform, or planet-travel tools
+   yet.
 4. From the couch PC, run
    `scripts/launch-native-client.ps1 -Address <server:port>` to connect the
    isolated low-resource native client as the real player named `Codex`, before

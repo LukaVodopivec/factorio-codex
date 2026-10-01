@@ -126,8 +126,10 @@ gameplay writer, character controller, immediate-safety authority, and source
 of latest exact local state. A persistent `gpt-6.1-sol` strategist with `medium`
 reasoning at normal speed owns compact NOW/NEXT/LATER priorities and may use only the separate
 mechanically read-only MCP surface. Its observations never enter the physical
-lane. Sol atomically writes the one `operations.json`; Luna never writes it and
-continues fail-open when advice is absent, malformed, stale, or unavailable.
+lane. Sol atomically writes the one `operations.json`, including its initial
+revision (`ledger-apply` with an `init` envelope), and it is Sol's only channel
+to the pilot; Luna never writes it and continues fail-open when advice is
+absent, malformed, stale, or unavailable.
 Neither role profile is applied to an active run in place.
 
 Start the foreground recorder immediately before gameplay begins. It takes a
@@ -161,7 +163,9 @@ travel, and buffer-aware packets over exact next-task quantities. Exactly one
 physical call may be in flight; only read-only snapshots may overlap when their
 tick inconsistency is acceptable.
 
-`production_requirements` also accepts one technology or space-location target.
+`production_requirements` treats mined resources and offshore-pump fluids as
+raw roots unless `recipe_choices` names a recipe, and never routes through hidden
+recycling recipes. It also accepts one technology or space-location target.
 It derives missing current-force prerequisites, remaining science, trigger
 conditions, permitted locked-recipe arithmetic, bounded force-flow rates, and
 time estimates while separating probabilistic or operational requirements and

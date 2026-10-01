@@ -159,36 +159,74 @@ sessions and one physical writer. Start the sole gameplay pilot as
 strategist as `gpt-6.1-sol` with `medium` reasoning at normal speed and expose only the disabled-
 by-default `factorio-readonly` MCP server to it; disable the full `factorio`
 server in that Sol session. Sol owns NOW/NEXT/LATER and is the sole atomic writer
-of one compact `operations.json`. Luna owns immediate safety, coordinates,
+of one compact `operations.json`, including its initial revision. The ledger is
+Sol's only channel to the pilot. Luna owns immediate safety, coordinates,
 physical plans, actions, and latest exact local evidence. Sol reads never enter
 the physical FIFO, and Luna continues without waiting when Sol or its ledger is
 stale or unavailable. Record both profiles, their MCP surfaces, release SHA,
 archive hash, and save hash before `GO`. Never apply this cutover to the current
 run.
 
-At cutover, launch the two sessions with role-specific project overrides (or
-the equivalent supervised UI selections):
+Launch the two connected sessions from the repository with `session-launcher`.
+The pilot needs no MCP override: the project `.codex/config.toml` defaults are
+already its surface. Connected (`--remote`) clients validate `-c` overrides
+before the project layer loads, so a role override must name a complete server
+table; a partial `mcp_servers.<name>.enabled` override fails with
+`invalid transport`.
 
 ```sh
-codex -m gpt-6-luna -c 'model_reasoning_effort="low"' -c 'service_tier="fast"' \
-  -c mcp_servers.factorio.enabled=true -c mcp_servers.factorio-readonly.enabled=false
-codex -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' -c 'service_tier="default"' \
-  -c mcp_servers.factorio.enabled=false -c mcp_servers.factorio-readonly.enabled=true
+session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on
+session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effort medium --fast off \
+  -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
-Start each with its checked-in role goal. Confirm Sol lists exactly the eight
+`--fast on` maps to `service_tier="priority"` plus `features.fast_mode=true`.
+Start each with its checked-in role goal; the pilot takes no physical action
+before `GO`. Confirm Sol lists exactly the eight
 configured read-only tools and cannot list any movement, transfer, crafting,
 placement, research mutation, plan enqueue/run/cancel, or stop tool before
-`GO`.
+`GO`, and that the pilot has the full surface and no read-only server.
 
 Before `GO`, verify the requested fresh save and release hashes, permanent
 peaceful mode/enemy bases disabled, exact native player, viewer, and one
-body/lane/writer. Continue past 20 minutes toward the assigned milestone;
-Candidate B and R1-R7 freeze rules are historical unless the owner starts a benchmark.
+body/lane/writer. Archive the previous run's `operations.json` into its run
+directory, give Sol the new ledger's absolute path and the exact `run` object
+(`id`, `release_sha`, `baseline_save_sha256`, `save_identity`, `created_at`,
+`roles` per the ledger schema), and have Sol create it by piping an
+`{"init": true, "run": <that object>, "source_tick": null, "update": ...}`
+envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger
+<absolute operations.json path>` from its worktree; it must return `applied`
+with revision 1. On any resumed save or after a mod upgrade,
+reconcile retained work: if `observe_local` reports an active task or queue
+depth, call `stop` and re-observe until idle, and treat pre-`GO` plan IDs as
+invalid `after_plan_id` values. Rehearse the stop sequence below on the live
+role sessions without stopping the server; a role turn must end within about
+five seconds of pause plus interrupt. Then resume both role goals with the same
+native controls, read back each goal as active and each role idle with no
+stray turn, and only then start the recorder and send `GO` in the same
+supervisor step. Continue past 20 minutes toward the assigned milestone
+(currently sustained autonomous Nauvis production: a validated
+`autonomous_end_to_end` segment that still holds at the next two recorder
+checkpoints, plus useful research consuming produced science); Candidate B and
+R1-R7 freeze rules are historical unless the owner starts a benchmark.
 
 The parent is the debug supervisor and may diagnose or recover through its
 separate surfaces. That authority does not pass to the pilot. Record each
 intervention and obtain a fresh structured observation before ordinary play.
+The supervisor yields its own turn between recorder checkpoints and records the
+structural-growth deltas defined in `AGENTS.md` at each one.
+
+For an explicit the owner stop, record each step: call factorio `stop` (cancels the
+active task and every queued plan within seconds); in each role TUI run
+`/goal pause` and read back the paused state; interrupt any active role turn
+with the native TUI stop control or app-server `turn/interrupt` for that role's
+exact `threadId` and `turnId`, and read back the interrupted turn; check
+separately that no task-owned command or job is still running; confirm Sol
+makes no further ledger write; then run recorder FINISH and
+`server stop <run-dir>`. The debug supervisor of this contract may use these
+native controls on its own role sessions as recorded interventions. A steered
+`CANCEL` reaches a busy role at its next step but stops nothing by itself.
 
 ### Supervisor stall and replacement validation
 
@@ -252,40 +290,38 @@ delivery/replacement only in an authorized supervised run:
 | Interrupted pilot without confirmed retirement, or unresolved physical call/work | No replacement writer starts. Obtain retirement proof, settle the call, and freshly prove all three idle fields first. |
 | Confirmed retirement and fresh physical quiescence after five idle minutes | Record replacement intervention; preserve strategist/body/FIFO, invalidate affected state, and resume from latest structured evidence. |
 
-For this instruction correction, run focused document/schema review and
-`python3 scripts/agent-app verify --profile quick`. Offline verification proves
-neither message delivery nor live retirement/replacement. Claim live behavior
-only with an authorized supervised validation and confirmed delivery and
-retirement receipts. No game deployment or server/client restart is required;
-completion must state whether live deployment or validation was performed.
+Offline verification proves neither message delivery nor live
+retirement/replacement. Claim live behavior only with an authorized supervised
+validation and confirmed delivery and retirement receipts.
 
 The native `/goal` owns continuation. Waypoints, batches, plans, and progress
 reports are nonterminal. While later-tick milestone proof is absent, immediately
 continue whenever productive work or bounded recovery exists. Keep the current
-plan and one grounded successor when safe.
-
-After immediate safety and a hard production unblock, evaluate the
-highest-payback expansion of the measured factory bottleneck before another
-manual deficit batch. Record the growth objective, utilization, buffers, WIP,
-service time, power headroom, current and foreseeable unlocked demand,
-production deltas, item/time break-even, expected avoided touches, and expected
-next bottleneck. Count expansion only after later evidence proves sustained
-input, physical transfer, downstream acceptance, increased output, and
-utilization. Reassess factory-wide flow after every material increase. Prefer
-evidence-backed headroom, buffer-aware packets, and clustered trips over exact
-next-task quantities. A progress report states the measured capacity change or
-quantitatively justifies a short manual bridge.
+plan and one grounded successor when safe, and end the turn at report
+checkpoints with work queued; native goal continuation starts the next batch.
+Growth, automation, and packet-sizing policy lives in
+`.agents/skills/factorio-player/SKILL.md`; a progress report states the measured
+capacity change or quantitatively justifies a short manual bridge.
 
 Exactly one physical MCP call may be in flight. Parallelize only read-only
 observations when inconsistent ticks are acceptable, then revalidate the newest
 state before mutation. Do not add another body, lane, RCON path, raw Lua/console,
-teleport, hidden state, or free resources. `stop` is emergency cancellation.
+teleport, hidden state, or free resources. `stop` is emergency cancellation, in the cases `AGENTS.md` lists.
 If a pilot goal terminates after an intervention, retire it before starting one
 replacement; never keep two pilots active.
 
 Use the current public schema shown by `tools/list`. Keep the same persistent
 pilot across packets. An empty intermediate turn or report does not satisfy the
 goal and must not add another action writer.
+
+Watch the run through the ordinary couch viewer client, which the mod makes a
+characterless spectator that follows Codex, not through the native `Codex`
+client window. The `Codex` client's own character is moved by the mod, and
+Factorio client latency hiding mispredicts script-driven walking of a client's
+own character, which shows as stutter and snapping on that window only. The
+`Codex` client can stay minimized; it must remain connected. During a debug
+run, keep the couch client log's `Latency changed to (N)` values below 60 ticks;
+a spike to the 254-tick ceiling marks a long server tick.
 
 ## Historical Candidate B R7 verified live result
 

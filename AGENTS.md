@@ -88,9 +88,30 @@ Record every nudge or replacement intervention and invalidate affected state.
 Preserve the strategist, single body, FIFO, and write path; start the replacement
 from the latest structured state and the still-open milestone. Assisted progress
 and timing remain excluded from benchmark evidence. These debug interventions
-need no further approval from the owner. Before `GO` of a fresh run, archive the
-previous run's `operations.json` into that run's directory; a ledger from another
-run is archival evidence only.
+need no further approval from the owner.
+
+Idleness is not low growth, and physical activity (movement, inventory change)
+is not growth. At each recorder checkpoint the supervisor records structural
+growth from `map_summary` with `activity_since_tick` and recorder deltas:
+machines, physical edges, validated or autonomous components, character
+transfers per finished product, and production. Sol, not the supervisor, turns
+low growth into NOW; the supervisor never replaces a pilot for low growth alone.
+
+`stop` is recorded emergency cancellation, used only for an explicit the owner stop,
+retained-work reconciliation, or a replacement that cannot otherwise reach
+physical quiescence. For an explicit the owner stop the supervisor, recording each
+step: calls factorio `stop`; pauses both role goals natively (`/goal pause`,
+read back) and interrupts any active role turn (TUI stop control or app-server
+`turn/interrupt` for the exact thread and turn, read back); checks that no
+task-owned command still runs; ensures Sol makes no further ledger write; then
+finishes the recorder and stops the server. `docs/LIVE-VALIDATION.md` holds the
+pre-`GO` stop rehearsal, which resumes both goals before `GO`.
+
+Before `GO` of a fresh run, archive the previous run's `operations.json` into
+that run's directory and have Sol initialise the new one; a ledger from another
+run is archival evidence only. Before `GO` on any resumed save or after a mod
+upgrade, reconcile retained work: if `observe_local` shows an active task or
+queue depth, call `stop` and re-observe until idle.
 
 Start exactly two persistent reasoning sessions around one physical body and
 FIFO lane. The `gpt-6-luna` pilot uses `low` reasoning with fast mode enabled
@@ -100,59 +121,40 @@ authority, and source of latest exact local state. The persistent
 NOW/NEXT/LATER priorities, and may call only the mechanically read-only MCP
 surface. Its reads never enter or delay the physical lane.
 
-Keep one compact `operations.json`. Sol is its sole atomic host writer; Luna
-never writes it. Reports and ledger updates are material and asynchronous, not
-per-call acknowledgements or blocking synchronization. Luna validates each
-unseen revision against newer physical evidence and continues fail-open when
-Sol, a report, or the ledger is missing, malformed, stale, or unavailable. Do
-not add another writer, body, lane, ledger, broker, daemon, or control channel.
+Keep one compact `operations.json`. Sol is its sole atomic host writer, including
+its initial revision; Luna never writes it. The ledger is Sol's only channel to
+the pilot: supervisor assignments never ask Sol to message the pilot. Pilot
+reports and ledger updates are material and asynchronous, under about 600 bytes
+(the connected transport rejects messages over 1,000 bytes), not per-call
+acknowledgements or blocking synchronization. Luna validates each unseen
+revision against newer physical evidence and continues fail-open when Sol, a
+report, or the ledger is missing, malformed, stale, or unavailable. Do not add
+another writer, body, lane, ledger, broker, daemon, or control channel.
 
 The native `/goal` owns continuation. Waypoints, batches, individual plans,
 tool results, and progress reports are nonterminal. While later-tick milestone
 proof is absent, immediately continue whenever productive work or bounded
 recovery exists. Keep the current plan and one `plan_status`-confirmed successor
-when safe. Complete only on milestone proof, explicit the owner stop, or a genuine
-exhausted blocker.
+when safe: `queue_plan` returns immediately, while `run_plan` and single
+physical tools hold the only physical slot until they finish. Roles end their
+turn at a report checkpoint with work queued; a turn end is neither pause nor
+completion, and native goal continuation, not a supervisor assignment per batch,
+starts the next batch after delivering queued messages. The supervisor also
+yields between checkpoints instead of sleeping inside one turn. Complete only on
+milestone proof, explicit the owner stop, or a genuine exhausted blocker; a stop
+never marks a goal complete.
 
-At each decision boundary, preserve immediate safety and known-good capacity,
-resolve a hard production unblock, then evaluate the highest-payback expansion
-of the measured factory bottleneck before another manual deficit batch. Maintain
-a growth objective alongside the milestone using utilization, input/output
-buffers, WIP, service/travel time, current and foreseeable unlocked recipe
-demand, power headroom, measured deltas, investment cost, item/time break-even,
-expected avoided future touches, and expected next bottleneck.
-
-Expand the bottlenecked stage until downstream demand, power, resource supply,
-or another measured stage becomes limiting, then reassess factory-wide flow.
-Treat repeated manual crafting, fueling, hauling, collection, or one-machine
-service as automation/expansion evidence unless remaining useful demand cannot
-repay it. Prefer sustained accepted flow, evidence-backed headroom, fewer larger
-buffer-aware transfers, and clustered work over satisfying exactly one next
-deficit. Reports state measured capacity change or quantitatively justify why a
-bounded manual bridge still wins.
-
-Treat automation as an autonomous physical material-flow segment, never as a
-placed or hand-fed machine. Distinguish `machine_present`, `locally_operating`,
-and `autonomous_end_to_end`. The last requires physical upstream supply,
-ordinary transport, processing, downstream acceptance, continuous power/fuel,
-several measured cycles, and no character inventory transfer touching the
-segment during that interval. Track recurring character-mediated edges as
-automation debt and drive transfer actions, transferred items per output,
-service trips, and transport time downward. Every repeated bootstrap or recovery
-hand-feed names its permanent physical replacement, missing prerequisite,
-bounded remaining batches, and numeric sunset. Resume unfinished compound-growth
-work after an incidental shortage.
-
-Reserve loop, automation, continuous, self-running, and fully calibrated for
-current `autonomous_end_to_end` evidence. A repeated character-mediated recipe
-is a manual service cycle or bounded bridge, even if its timing is calibrated.
-
-Count automation capacity only after later structured evidence proves input
-availability, physical transfer, downstream acceptance, increased output, and
-utilization. Preserve verified capacity and shared power until a replacement is
-placed, connected, and proven. Recalculate BOMs, fuel, waits, and successors from
-actual accepted and produced quantities. Size fuel/input packets from observed
-rates, buffers, WIP, required uptime, demand, and travel plus corrective time.
+Gameplay strategy lives in `.agents/skills/factorio-player/SKILL.md`, the single
+canonical growth and autonomy text. In short: at each decision boundary preserve
+immediate safety and known-good capacity, resolve a hard production unblock,
+then evaluate the highest-payback expansion of the measured factory bottleneck
+before another manual deficit batch. Treat automation as an autonomous physical
+material-flow segment, never as a placed or hand-fed machine; distinguish
+`machine_present`, `locally_operating`, and `autonomous_end_to_end`, whose
+downstream acceptance is a consumer or a terminal buffer with space, reported as
+`downstream_kind`. Reserve loop, automation, continuous, self-running, and fully
+calibrated for current `autonomous_end_to_end` evidence. Every repeated manual
+bridge names its permanent physical replacement and numeric sunset.
 
 Exactly one physical MCP call may be in flight. Parallelize only read-only
 observations when inconsistent source ticks are acceptable, then revalidate the
@@ -161,9 +163,11 @@ sequential and nontransactional; early and partial effects remain committed
 without rollback. During waits, continue independent productive work through the
 same FIFO whenever available.
 
-Coordinates and natural targets are ephemeral. After travel, mutation, route
-failure, or selection contradiction, re-observe locally and cluster work around
-fresh exact targets. On path failure, use only returned charted reachable
+Coordinates and natural targets are ephemeral. Re-observe locally before
+targeting entities not yet observed at a new position, and after a route
+failure, selection contradiction, or partial or unexpected result; a successful
+plan result with a compact observation is the post-action state. Cluster work
+around fresh exact targets. On path failure, use only returned charted reachable
 frontiers. Never use screenshots for gameplay, fuzzy selection, hidden map
 state, raw Lua/console, teleport, free resources, imported blueprints, copied
 layouts, tutorials, online sequences, fixed build orders, prescribed technology
@@ -177,7 +181,7 @@ recipe, identity mismatch, or out-of-range observation is terminal for the
 unchanged request: change evidence or preconditions instead of repeating it.
 
 The supported save is permanently peaceful with enemy bases disabled. `stop` is
-emergency cancellation only. Debug runs continue past `GO+20m` to their assigned
+recorded emergency cancellation only, in the cases listed above. Debug runs continue past `GO+20m` to their assigned
 milestone; Candidate B and fresh-baseline freeze rules are historical unless
 The owner explicitly starts a benchmark.
 

@@ -55,6 +55,39 @@ inventory, and any `MCP_GAP`. Compare the same fresh-save milestone against the
 22-call baseline. Historical measurements remain bounded evidence; Candidate B
 and R1-R7 below do not select the active topology.
 
+## 2026-10-01 supervised debug run (0.17.0) and measurement method
+
+Run `debug-20261001T190246Z` was supervised and assisted, so it is never
+benchmark evidence. It produced 11 iron plates by `GO+20m` and 22 by the final
+24.55-minute sample, with no autonomous segment. Measured from the role session
+transcripts between `GO` and the pause (1,398 s):
+
+- The pilot never ended its gameplay turn (one 25.8-minute turn), so no queued
+  strategist or supervisor message, including cancellation, reached it.
+- A physical MCP call was in flight for 195 s (14%); model time between calls
+  was 1,165 s (83%). It made 0 `queue_plan` calls and 42 synchronous physical
+  calls, and followed 41 of them with a read. The longest physical idle gap was
+  192 s of deliberation.
+- Fourteen character transfers moved 44 items for 23 plates; every ore was hand
+  mined and inserted, and a one-coal fuel seed starved the coal drill.
+- Each `map_summary` `detail=full` call held one game tick for about 4.5 s, which
+  cost about 1.5% of simulation time and showed as freezes and catch-up jumps on
+  the couch client.
+
+Measure later runs the same way, without new instrumentation: per-call timing
+comes from the role transcript records (tool call start/end, reasoning items,
+turn start/end and abort events) joined with plan `transitions` ticks read back
+before the record TTL expires, plus recorder samples and the couch client log's
+`Latency changed to (N)` lines. Report turn lengths, message send-to-delivery
+latency, physical-busy share, steps per decision boundary, observations after
+successful actions, transfer actions per product, and the longest idle gap.
+
+The viewer camera reuse survey for that run found no maintained follow-camera
+mod that fits: Item Cam 2 follows items, Multi-Team Support adds forces and
+surfaces, and Better Spectator targets Factorio 2.1 only. The native
+`LuaPlayer.centered_on` field is the candidate if the existing spectator
+follow ever judders; no candidate code was imported.
+
 ## Prior 0.8.0 structured timings
 
 All gameplay perception and action below used the Factorio MCP text surface.

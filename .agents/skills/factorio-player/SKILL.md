@@ -43,7 +43,7 @@ nudge once; failed or uncertain delivery is a capability problem. At about five
 minutes revalidate, interrupt and retire the old pilot with proof it cannot
 resume writes, settle in-flight physical calls, and freshly prove no active or
 queued work or crafting before starting a replacement. `stop` remains recorded
-emergency cancellation only. Record interventions, invalidate affected state,
+emergency cancellation, in the cases `AGENTS.md` lists. Record interventions, invalidate affected state,
 preserve Sol and the single body/FIFO/write path, and resume from latest structured
 state. Offline checks do not establish live delivery or replacement behavior.
 
@@ -55,7 +55,13 @@ pause boundary. While milestone proof is absent, immediately continue whenever
 a productive action or bounded recovery exists. Keep the current plan plus one
 `plan_status`-confirmed successor when safe. A terminal host continuation handle
 is closed; follow its `next_action` or make a fresh call instead of waiting on it
-again.
+again. After a material report with work queued (or the reason none is safe),
+end the turn: a turn end is neither a pause nor a completion, and native goal
+continuation resumes the role at once after delivering queued supervisor
+messages. The pilot takes no physical action before the supervisor's `GO`. On an
+explicit the owner stop the supervisor calls `stop`; a role told of it does not call
+`stop`, reports in one line, and ends its turn, and no goal is marked complete
+without milestone proof.
 
 Complete only from later-tick structured proof of the assigned milestone. Stop
 only on an explicit the owner request. Declare a blocker only after the loaded
@@ -64,7 +70,8 @@ unrelated productive branch remains.
 
 ## Shared priority and state-driven growth loop
 
-Sol owns one short `NOW`/`NEXT`/`LATER` list in the ledger. Each entry contains
+Sol owns one short `NOW`/`NEXT`/`LATER` list in the ledger, which is its only
+channel to the pilot; Sol never messages the pilot. Each entry contains
 only an objective, strategic reason, measurable completion condition, and any
 essential prerequisite. NOW is a broad capacity or infrastructure outcome;
 NEXT is the bottleneck expected after it succeeds; LATER is the next major
@@ -81,11 +88,16 @@ The broad horizon is sustained Nauvis production, a functional orbital platform,
 the capabilities of Vulcanus, Fulgora, and Gleba in an evidence-selected order,
 the Aquilo expedition, cryogenic and fusion-capable platform infrastructure,
 and travel to the Solar System Edge. Never prescribe a fixed planetary order.
+This release is Nauvis-first with no travel tools: planetary phases stay LATER
+until travel exists, and sustained autonomous Nauvis production is the current
+milestone.
 
 At each natural decision boundary:
 
-1. Observe fresh exact state and invalidate stale coordinates, identities,
-   inventory claims, and completed assumptions.
+1. Observe fresh exact state when travel, a route failure, a contradiction, or
+   a partial or unexpected result invalidates it; otherwise a successful plan
+   result with a compact observation is the current state. Invalidate stale
+   coordinates, identities, inventory claims, and completed assumptions.
 2. Preserve immediate safety and known-good capacity.
 3. Resolve a hard production unblock when useful work is otherwise stopped.
 4. Before another manual deficit batch, evaluate the highest-payback capacity
@@ -104,11 +116,16 @@ and its validated successor.
 Automation means an autonomous end-to-end material-flow segment, not merely a
 placed or hand-fed machine. The segment must receive material from a physical
 upstream source, move it through ordinary Factorio entities, process it, deliver
-output to a physical downstream sink, remain powered and fueled where needed,
+output to physical downstream acceptance, remain powered and fueled where needed,
 and run for a bounded validation interval with no character inventory transfer
 touching that segment. Keep `machine_present`, `locally_operating`, and
 `autonomous_end_to_end` distinct. Local operation on cached or hand-inserted
-input never proves autonomy.
+input never proves autonomy. Downstream acceptance is either a consumer
+(`downstream_kind` consumer, such as a working lab or generator) or a terminal
+buffer that still has space (`downstream_kind` buffer); a full buffer blocks the
+segment. The tools report which kind holds; whether a terminal buffer is good
+enough for the current stage is a strategic choice, and emptying it by hand is
+automation debt that is eventually replaced by a consumer or onward transport.
 Every consumed recipe material and every fuel input must arrive from a proven
 non-character physical source. A finite chest, machine buffer, or burner stock
 loaded by the character is a buffer root, not autonomous supply, regardless of
@@ -184,8 +201,10 @@ and zero character insert/extract actions for the segment must all hold.
   force-charted structured evidence and real movement, reach, collision,
   inventory, crafting, power, and elapsed time.
 - Use the aggregate `map_summary` factory view to identify capacity, normalized
-  status, force-flow evidence, conservative physical components, automation
-  debt, and missing or ambiguous edges. It never authorizes remote inventories;
+  status, force-flow evidence, conservative physical components
+  (`material_flow.components[].state` blockers and `downstream_kind`),
+  automation debt (`character_transfers`), and missing or ambiguous edges.
+  Reserve `detail=full` for rare landmark, resource, or shoreline scouting. It never authorizes remote inventories;
   exact buffers still require ordinary movement followed by local inspection.
 - Keep evidence classes separate: `fresh_local_exact` applies only at the local
   inspection source tick; `charted_remote_summary` is a current bounded remote
@@ -205,11 +224,17 @@ and zero character insert/extract actions for the segment must all hold.
   distinct from route failure. Let one bounded tool-owned recovery track net distance and visited
   frontiers; never wrap `walk_to` in a programmatic retry loop or revisit a
   frontier after progress stalls.
-- Exact natural targets are ephemeral. After travel, mutation, selection
-  contradiction, or route failure, take a fresh local observation and cluster
-  nearby work. Never substitute a nearby entity or replay stale coordinates.
+- Exact natural targets are ephemeral. Take a fresh local observation before
+  targeting entities not yet observed at a new position, and after a route
+  failure, selection contradiction, or partial or unexpected result; a
+  successful plan result with a compact observation is the post-action state,
+  so do not follow each success with another read. Cluster nearby work. Never
+  substitute a nearby entity or replay stale coordinates.
 - Use `queue_plan`/`plan_status` for current-plus-successor work and bounded
-  meaningful-transition waits. Copy returned plan and predecessor IDs verbatim.
+  meaningful-transition waits. `queue_plan` returns immediately; `run_plan` and
+  single physical tools hold the only physical slot until they finish, so the
+  FIFO is empty while the pilot reasons after them. Copy returned plan and
+  predecessor IDs verbatim; an unknown or pruned `after_plan_id` is refused.
   Keep the current plan plus one grounded queued successor and avoid
   micro-packet idle gaps while their shared bottleneck remains valid.
   `run_plan` is sequential and nontransactional: completed and partial effects
@@ -247,15 +272,14 @@ and zero character insert/extract actions for the segment must all hold.
 
 ## Reporting and knowledge
 
-Pilot reports to Sol are nonterminal and material, never one per tool call. Before reporting,
-keep useful work queued or name the exact reason no successor is safe. Include
-source tick/plan ID, position, inventory, active step, queue/crafting, current
-bottleneck and growth objective, current/next BOM, buffers/WIP, capacity and
-utilization before/after, accepted downstream output, the resulting bottleneck,
-successor/preconditions, invalidated assumptions, and residual failure. State either the measured
-capacity increase and avoided future touches or quantitatively why a short
-manual bridge still beats automation payback. The pilot never writes the ledger;
-Sol is the sole atomic host writer.
+Pilot reports to Sol are nonterminal and material, never one per tool call, and
+stay under about 600 bytes because the connected transport rejects messages over
+1,000 bytes. Before reporting, keep useful work queued or name the exact reason
+no successor is safe. Include run/save identity, source tick, active and queued
+plan IDs, what changed (accepted downstream output, new physical edges, measured
+capacity or avoided touches, or the quantitative reason a short manual bridge
+still wins), any falsified ledger assumption, and next intent. The pilot never
+writes the ledger; Sol is the sole atomic host writer.
 
 Follow [player knowledge v1](PLAYER-KNOWLEDGE-v1.md). Durable knowledge may hold
 only in-game learned recipes, calculations, operations, and coordinate-free
@@ -271,7 +295,7 @@ work and never use screenshots or guesses as gameplay evidence.
 
 The supported baseline is peaceful with enemy bases disabled. Concurrency
 removes thinking idle time, never physical travel. `stop` is emergency
-cancellation only. Candidate B and other multi-role/frozen benchmark procedures
+cancellation only, in the cases `AGENTS.md` lists. Candidate B and other multi-role/frozen benchmark procedures
 are historical unless the owner explicitly starts a benchmark.
 
 If a newly observed gameplay difficulty appears to require greenfield code,

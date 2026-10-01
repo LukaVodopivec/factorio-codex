@@ -1,3 +1,6 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
 import { connectStatus, normalizeObservation, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
@@ -77,6 +80,64 @@ describe("public MCP to Lua DTO mappings", () => {
 });
 
 describe("registered MCP handler parity with the current Lua protocol", () => {
+  it("validates targeted placement directions before acquiring the bridge and preserves valid payloads", async () => {
+    const schemas: Record<string, any> = {};
+    registerMcpTools({ registerTool(name, config) { schemas[name] = config.inputSchema; } },
+      async () => { throw new Error("schema inspection must not acquire the bridge"); }, validConfig);
+    const base = { item: "inserter", preferred: { x: 1, y: 2 } };
+    const targets = [
+      { input_target: { x: 0, y: 2 } },
+      { output_target: { x: 2, y: 2 } },
+      { output_recipient_item: "wooden-chest" },
+      { input_target: { x: 0, y: 2 }, output_target: { x: 2, y: 2 } },
+      { input_target: { x: 0, y: 2 }, output_recipient_item: "wooden-chest" },
+    ];
+    const schema = schemas.find_placement;
+    for (const directions of [[], Array(17).fill(0), [-1], [16], [1.5]]) {
+      expect(schema.safeParse({ ...base, directions }).success).toBe(false);
+    }
+    expect(schema.safeParse({ ...base, unexpected: true }).success).toBe(false);
+    expect(schema.safeParse({ ...base, output_target: { x: 2, y: 2 }, output_recipient_item: "wooden-chest" }).success).toBe(false);
+    const call = vi.fn(async () => ({ candidates: [] }));
+    const bridge = vi.fn(async () => ({ call } as unknown as Bridge));
+    const server = new McpServer({ name: "placement-test", version: "1" });
+    registerMcpTools(server, bridge, validConfig);
+    const client = new Client({ name: "placement-test", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      for (const target of targets) {
+        for (const directions of [[1], [0, 4, 7, 12]]) {
+          const input = { ...base, ...target, directions };
+          const parsed = schema.safeParse(input);
+          expect(parsed.success).toBe(false);
+          expect(parsed.error.issues).toContainEqual(expect.objectContaining({ path: ["directions"], message: expect.stringContaining("cardinal: 0, 4, 8, or 12") }));
+          const output = await client.callTool({ name: "find_placement", arguments: input });
+          expect(output.isError).toBe(true);
+          expect(JSON.stringify(output.content)).toContain("cardinal: 0, 4, 8, or 12");
+        }
+      }
+      expect(bridge).not.toHaveBeenCalled();
+      expect(call).not.toHaveBeenCalled();
+      for (const target of [{}, ...targets]) {
+        for (const directions of [undefined, [0, 4, 8, 12], [12, 0]]) {
+          const input = { ...base, ...target, ...(directions ? { directions } : {}) };
+          const output = await client.callTool({ name: "find_placement", arguments: input });
+          expect(output.isError).not.toBe(true);
+          expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, ...target, radius: 10, limit: 8, directions: directions ?? [0, 4, 8, 12] });
+        }
+      }
+      const directions = Array.from({ length: 16 }, (_, direction) => direction);
+      expect(schema.safeParse({ ...base, directions }).success).toBe(true);
+      expect((await client.callTool({ name: "find_placement", arguments: { ...base, directions } })).isError).not.toBe(true);
+      expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, radius: 10, limit: 8, directions });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("preserves useful partial completion as a non-error structured terminal result", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "partial" as const,

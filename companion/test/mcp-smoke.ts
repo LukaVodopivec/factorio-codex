@@ -47,6 +47,13 @@ try {
     if (forbidden.some((name) => names.includes(name))) throw new Error(`read-only surface exposed mutation: ${names}`);
     console.log("PASS initialize, exact 8 read-only tools, no physical mutation surface");
   } else {
+  const placementTool = tools.find((tool: any) => tool.name === "find_placement");
+  if (!/input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12/.test(placementTool?.description ?? "")) throw new Error("find_placement must disclose the targeted cardinal constraint");
+  const rejectedPlacement = await request("tools/call", { name: "find_placement", arguments: {
+    item: "inserter", preferred: { x: 0, y: 0 }, input_target: { x: 1, y: 0 }, directions: [0, 1],
+  } });
+  const placementText = rejectedPlacement.result?.content?.[0]?.text ?? "";
+  if (!rejectedPlacement.result?.isError || !placementText.includes("cardinal: 0, 4, 8, or 12") || /Offline:/.test(placementText)) throw new Error(`targeted noncardinal placement reached connection handling instead of validation: ${placementText}`);
   const rotateSchema = tools.find((tool: any) => tool.name === "rotate_entity")?.inputSchema?.properties ?? {};
   if (!rotateSchema.direction || rotateSchema.reverse) throw new Error("rotate_entity must expose Lua direction, never reverse");
   const describeSchema = tools.find((tool: any) => tool.name === "describe_prototype")?.inputSchema?.properties ?? {};

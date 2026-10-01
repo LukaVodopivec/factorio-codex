@@ -81,12 +81,16 @@ cardinal inserter pickup/drop endpoints plus rotated fluid endpoints.
 Output-capable candidates expose
 their deterministic `output_position` and recipient, explicitly `null` for
 ground output. Its existing `output_target` contract resolves the requested
-recipient by exact entity position, floors the predicted or live output point
-to Factorio's 1×1 output tile, and uses the entities returned for that tile—never
-selection-box point containment. Physical placement retains the exact created
-entity and checks its live `drop_position` geometry and runtime `drop_target`
-without removing or replacing it. Exact geometry with a nil runtime target is
-reported as pending first output, never as bound; a non-nil wrong target fails.
+recipient by exact entity position, derives the endpoint from prototype geometry
+and direction, and requires that exact point to lie within the eligible entity's
+`bounding_box`. This search-time geometry is conservative and provisional: it
+can reject geometry Factorio would bind and proves neither item acceptance nor
+runtime binding. Physical placement retains the exact created entity without
+removing or replacing it; later-tick `pickup_target`/`drop_target` identity is
+authoritative, even when a live endpoint differs from the prototype prediction.
+A mining drill's nil `drop_target` is reported as pending first output, never as
+bound; an unbound inserter or a non-nil wrong runtime target fails the requested
+binding check.
 For mining-drill `build_plan` steps with starter insertion, the items are
 legitimately inserted once before the step waits for first output to expose the
 exact runtime recipient. Inspect the placed inserter's

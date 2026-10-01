@@ -20,29 +20,40 @@ local add_research_calls = 0
 local prerequisite = { name = "electronics", researched = true }
 local technology = { name = "automation", researched = false, enabled = true,
   prerequisites = { electronics = prerequisite },
-  prototype = { research_unit_ingredients = { { name = "logistic-science-pack", amount = 1 }, { name = "automation-science-pack", amount = 2 } }, research_unit_count = 10, research_unit_energy = 30 },
-  effects = { { type = "unlock-recipe", recipe = "long-handed-inserter" }, { type = "unlock-recipe", recipe = "assembling-machine-1" } } }
+  prototype = { research_unit_ingredients = { { name = "logistic-science-pack", amount = 1 }, { name = "automation-science-pack", amount = 2 } }, research_unit_count = 10, research_unit_energy = 30,
+    effects = { { type = "unlock-recipe", recipe = "long-handed-inserter" },
+      { type = "laboratory-speed", modifier = 0.1, recipe = "ignored-ordinary" },
+      { type = "unlock-recipe", recipe = "assembling-machine-1" } } } }
 local completed = { name = "steam-power", researched = true, enabled = true, prerequisites = {}, prototype = {} }
 local trigger_technology = { name = "trigger-alpha", researched = false, enabled = true,
   prerequisites = {}, prototype = { research_trigger = {
     type = "craft-item", item = { name = "iron-gear-wheel", quality = "rare", comparator = ">=" }, count = 12,
-  } }, effects = {} }
+  }, effects = { { type = "unlock-recipe", recipe = "steel-plate" },
+    { type = "laboratory-productivity", modifier = 0.1, recipe = "ignored-trigger" },
+    { type = "unlock-recipe", recipe = "steel-chest" } } } }
 local later_trigger = { name = "trigger-zeta", researched = false, enabled = true,
   prerequisites = {}, prototype = { research_trigger = {
     type = "scripted", trigger_description = { "", "Launch ", { "item-name.rocket-part" }, 1 },
-  } }, effects = {} }
+  }, effects = {} } }
 local platform_trigger = { name = "trigger-platform", researched = false, enabled = true,
-  prerequisites = {}, prototype = { research_trigger = { type = "create-space-platform" } }, effects = {} }
+  prerequisites = {}, prototype = { research_trigger = { type = "create-space-platform" }, effects = {} } }
 local build_trigger = { name = "trigger-build", researched = false, enabled = true,
   prerequisites = {}, prototype = { research_trigger = {
     type = "build-entity", entity = { name = "lab", quality = "epic", comparator = "=" },
-  } }, effects = {} }
+  }, effects = {} } }
 local send_trigger = { name = "trigger-send", researched = false, enabled = true,
   prerequisites = {}, prototype = { research_trigger = {
     type = "send-item-to-orbit", item = { name = "space-science-pack", quality = "uncommon", comparator = ">" },
-  } }, effects = {} }
+  }, effects = {} } }
 local blocked = { name = "advanced", researched = false, enabled = true,
-  prerequisites = { missing = { researched = false } }, prototype = {}, effects = {} }
+  prerequisites = { missing = { researched = false } }, prototype = { effects = {} } }
+local direct_effect_reads = 0
+local technology_api = { __index = function(_, key)
+  if key == "effects" then
+    direct_effect_reads = direct_effect_reads + 1
+    error("LuaTechnology effects must be read from its prototype")
+  end
+end }
 local codex_force = {
   name = "codex-force", technologies = { advanced = blocked, automation = technology,
     ["steam-power"] = completed, ["trigger-alpha"] = trigger_technology,
@@ -53,6 +64,7 @@ local codex_force = {
   current_research = technology, research_progress = 0.25,
   add_research = function(name) add_research_calls = add_research_calls + 1; queued = name; return true end,
 }
+for _, tech in pairs(codex_force.technologies) do setmetatable(tech, technology_api) end
 _G.game = { forces = { player = {
   technologies = { automation = technology },
   research_queue = {},
@@ -82,6 +94,7 @@ check(not trigger_ok and add_research_calls == before_trigger
   and tostring(trigger_error):match("quality >= rare")
   and tostring(trigger_error):match("progression_status"),
   "start_research refuses trigger technology with actionable evidence before queueing")
+codex_force.research_queue = { technology, completed }
 local progression = research.progression_status()
 check(progression.force == "codex-force" and progression.current_research == "automation"
   and progression.research_progress == 0.25 and progression.researched[1] == "steam-power"
@@ -92,6 +105,8 @@ check(progression.force == "codex-force" and progression.current_research == "au
   and progression.available[1].science_count == 10 and progression.available[1].science_time == 30
   and progression.available[1].unlocks[1] == "assembling-machine-1"
   and progression.available[1].unlocks[2] == "long-handed-inserter"
+  and #progression.available[1].unlocks == 2
+  and progression.research_queue[1] == "automation" and progression.research_queue[2] == "steam-power"
   and progression.trigger_unlocks[1].name == "trigger-alpha"
   and progression.trigger_unlocks[1].trigger.type == "craft-item"
   and progression.trigger_unlocks[1].trigger.item == "iron-gear-wheel"
@@ -99,12 +114,17 @@ check(progression.force == "codex-force" and progression.current_research == "au
   and progression.trigger_unlocks[1].trigger.item_filter.quality == "rare"
   and progression.trigger_unlocks[1].trigger.item_filter.comparator == ">="
   and progression.trigger_unlocks[1].trigger.count == 12
+  and progression.trigger_unlocks[1].unlocks[1] == "steel-chest"
+  and progression.trigger_unlocks[1].unlocks[2] == "steel-plate"
+  and #progression.trigger_unlocks[1].unlocks == 2
   and progression.trigger_unlocks[2].name == "trigger-build"
   and progression.trigger_unlocks[2].trigger.entity == "lab"
   and progression.trigger_unlocks[2].trigger.entity_filter.quality == "epic"
   and progression.trigger_unlocks[2].trigger.entity_filter.comparator == "="
   and progression.trigger_unlocks[3].name == "trigger-platform"
   and progression.trigger_unlocks[3].trigger.type == "create-space-platform"
+  and type(progression.trigger_unlocks[3].unlocks) == "table"
+  and next(progression.trigger_unlocks[3].unlocks) == nil
   and progression.trigger_unlocks[4].name == "trigger-send"
   and progression.trigger_unlocks[4].trigger.item == "space-science-pack"
   and progression.trigger_unlocks[4].trigger.item_filter.quality == "uncommon"
@@ -117,13 +137,20 @@ check(progression.force == "codex-force" and progression.current_research == "au
   and progression.enabled_recipes[1] == "alpha" and progression.enabled_recipes[2] == "zeta",
   "progression_status separates deterministic queueable and trigger unlock records")
 
+technology.prototype.effects = {}
+local empty_progression = research.progression_status()
+check(type(empty_progression.available[1].unlocks) == "table"
+  and next(empty_progression.available[1].unlocks) == nil,
+  "ordinary technology with empty prototype effects preserves empty unlocks")
+check(direct_effect_reads == 0, "progression never accesses unsupported direct technology.effects")
+
 local trigger_prereq = { researched = false, prototype = { research_trigger = {
   type = "build-entity", entity = { name = "lab", quality = "epic", comparator = "=" },
 } } }
 local ordinary_prereq = { researched = false, prototype = {} }
 local gated = { name = "gated", researched = false, enabled = true,
-  prerequisites = { zeta = ordinary_prereq, alpha = trigger_prereq }, prototype = {}, effects = {} }
-codex_force.technologies.gated = gated
+  prerequisites = { zeta = ordinary_prereq, alpha = trigger_prereq }, prototype = { effects = {} } }
+codex_force.technologies.gated = setmetatable(gated, technology_api)
 codex_force.add_research = function() add_research_calls = add_research_calls + 1; return false end
 local gated_ok, gated_error = pcall(research.start_research, { technology = "gated" })
 local gated_message = tostring(gated_error)

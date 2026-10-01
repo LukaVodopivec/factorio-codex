@@ -154,7 +154,7 @@ function M.progression_status()
       table.sort(science, function(a, b) return a.name < b.name end)
     end
     local unlocks = {}
-    ok, effects = pcall(function() return technology.effects end)
+    ok, effects = pcall(function() return technology.prototype.effects end)
     if ok then
       for _, effect in ipairs(effects or {}) do
         if effect.type == "unlock-recipe" and effect.recipe then unlocks[#unlocks + 1] = effect.recipe end

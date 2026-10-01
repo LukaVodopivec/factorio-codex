@@ -241,8 +241,8 @@ describe("exact local configuration", () => {
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md"))).toBe(true);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-MASTER-v1.md"))).toBe(false);
     expect(fs.existsSync(path.join(root, ".agents/skills/factorio-player/GOAL-SPECIALIST-v1.md"))).toBe(false);
-    expect(`${skill}\n${pilot}`).toMatch(/gpt-5\.6-luna[\s\S]*high[\s\S]*fast mode enabled/i);
-    expect(strategist).toMatch(/gpt-5\.6-sol[\s\S]*high[\s\S]*mechanically read-only/i);
+    expect(`${skill}\n${pilot}`).toMatch(/gpt-6-luna[\s\S]*low[\s\S]*fast mode enabled/i);
+    expect(strategist).toMatch(/gpt-6\.1-sol[\s\S]*medium[\s\S]*mechanically read-only/i);
     expect(`${skill}\n${pilot}\n${strategist}`).toMatch(/sole (?:Factorio )?(?:MCP|gameplay) writer[\s\S]*(?:the )?latest exact local state/i);
     expect(pilot).toMatch(/continuation is the default[\s\S]*progress report is not a completion or pause boundary/i);
     expect(pilot).toMatch(/highest-payback expansion[\s\S]*before another manual deficit batch/i);

@@ -12,9 +12,9 @@ const active = `${skill}\n${pilot}\n${strategist}`;
 const normalized = active.replace(/\s+/g, " ").toLowerCase();
 
 describe("persistent two-brain coordination contract", () => {
-  it("selects Luna-high-fast and Sol-high while preserving one writer, body, and FIFO lane", () => {
-    expect(active).toMatch(/gpt-5\.6-luna[\s\S]*high[\s\S]*fast mode enabled/i);
-    expect(active).toMatch(/gpt-5\.6-sol[\s\S]*high/i);
+  it("selects Luna-low-fast and Sol-medium-normal while preserving one writer, body, and FIFO lane", () => {
+    expect(active).toMatch(/gpt-6-luna[\s\S]*low[\s\S]*fast mode enabled/i);
+    expect(active).toMatch(/gpt-6\.1-sol[\s\S]*medium[\s\S]*normal[- ]speed/i);
     expect(active).toMatch(/pilot[\s\S]*sole (?:Factorio )?(?:MCP|gameplay) writer/i);
     expect(active).toMatch(/one body, one physical\s+FIFO/i);
     expect(strategist).toMatch(/never (?:call|use)[\s\S]*(?:movement|mine|mining|craft|placement|insert|extract|recipe mutation|research mutation|queue|cancel|stop)/i);

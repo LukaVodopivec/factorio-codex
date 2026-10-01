@@ -45,10 +45,10 @@ intervention and invalidate affected state; assisted progress and timing are
 never benchmark evidence. None of that authority passes to ordinary gameplay.
 
 Start exactly two persistent reasoning sessions around one physical body and
-FIFO lane. The `gpt-5.6-luna` pilot uses `high` reasoning with fast mode enabled
+FIFO lane. The `gpt-6-luna` pilot uses `low` reasoning with fast mode enabled
 and is the sole gameplay writer, physical controller, immediate-safety
 authority, and source of latest exact local state. The persistent
-`gpt-5.6-sol` strategist uses `high` reasoning, owns coordinate-free long-horizon
+`gpt-6.1-sol` strategist uses `medium` reasoning at normal speed, owns coordinate-free long-horizon
 NOW/NEXT/LATER priorities, and may call only the mechanically read-only MCP
 surface. Its reads never enter or delay the physical lane.
 

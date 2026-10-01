@@ -116,8 +116,8 @@ couch PC. Do not launch a local GUI as a recovery shortcut.
 
 The next fresh supervised-debug topology has exactly two persistent reasoning
 sessions and one physical writer. Start the sole gameplay pilot as
-`gpt-5.6-luna` with `high` reasoning and fast mode enabled. Start the persistent
-strategist as `gpt-5.6-sol` with `high` reasoning and expose only the disabled-
+`gpt-6-luna` with `low` reasoning and fast mode enabled. Start the persistent
+strategist as `gpt-6.1-sol` with `medium` reasoning at normal speed and expose only the disabled-
 by-default `factorio-readonly` MCP server to it; disable the full `factorio`
 server in that Sol session. Sol owns NOW/NEXT/LATER and is the sole atomic writer
 of one compact `operations.json`. Luna owns immediate safety, coordinates,
@@ -131,9 +131,9 @@ At cutover, launch the two sessions with role-specific project overrides (or
 the equivalent supervised UI selections):
 
 ```sh
-codex -m gpt-5.6-luna -c 'model_reasoning_effort="high"' -c fast_mode=true \
+codex -m gpt-6-luna -c 'model_reasoning_effort="low"' -c 'service_tier="fast"' \
   -c mcp_servers.factorio.enabled=true -c mcp_servers.factorio-readonly.enabled=false
-codex -m gpt-5.6-sol -c 'model_reasoning_effort="high"' -c fast_mode=false \
+codex -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' -c 'service_tier="default"' \
   -c mcp_servers.factorio.enabled=false -c mcp_servers.factorio-readonly.enabled=true
 ```
 

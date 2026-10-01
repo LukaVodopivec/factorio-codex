@@ -27,9 +27,9 @@ came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
 0.16.0 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
-physical writer. The `gpt-5.6-luna` pilot uses `high` reasoning with fast mode
+physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
 enabled and is the sole gameplay writer, character controller, and exact-local-
-state authority. The persistent `gpt-5.6-sol` strategist uses `high` reasoning,
+state authority. The persistent `gpt-6.1-sol` strategist uses `medium` reasoning at normal speed,
 owns one compact NOW/NEXT/LATER list, atomically writes `operations.json`, and
 receives only the separate read-only MCP surface. Strategist reads never enter
 the physical FIFO. Luna validates advice against newer physical evidence and

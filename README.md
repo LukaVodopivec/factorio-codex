@@ -107,10 +107,10 @@ session may inspect, intervene, modify, rescue, and restart the run through its
 separate debug surface. Every intervention is recorded and assisted progress is
 never benchmark evidence. Ordinary gameplay uses exactly two persistent
 reasoning sessions around one physical body and one FIFO mutation lane. A
-`gpt-5.6-luna` pilot with `high` reasoning and fast mode enabled is the sole
+`gpt-6-luna` pilot with `low` reasoning and fast mode enabled is the sole
 gameplay writer, character controller, immediate-safety authority, and source
-of latest exact local state. A persistent `gpt-5.6-sol` strategist with `high`
-reasoning owns compact NOW/NEXT/LATER priorities and may use only the separate
+of latest exact local state. A persistent `gpt-6.1-sol` strategist with `medium`
+reasoning at normal speed owns compact NOW/NEXT/LATER priorities and may use only the separate
 mechanically read-only MCP surface. Its observations never enter the physical
 lane. Sol atomically writes the one `operations.json`; Luna never writes it and
 continues fail-open when advice is absent, malformed, stale, or unavailable.

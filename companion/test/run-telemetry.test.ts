@@ -19,7 +19,7 @@ function snapshot(tick: number, iron: number, copper = 0): RunSnapshot {
 function manifest(id: string, variant: string, baseline = "b".repeat(64)): RunManifest {
   return { schema_version: 1, run: { id, release_sha: "a".repeat(40), baseline_save_sha256: baseline,
     save_identity: "fresh-save", created_at: "2026-09-04T08:00:00Z",
-    roles: { pilot: { model: "gpt-5.6-luna", reasoning: "high", fast: true }, strategist: { model: "gpt-5.6-sol", reasoning: "high" } } },
+    roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6.1-sol", reasoning: "medium", fast: false } } },
     variant, change: `${variant} change`, kind: "benchmark", status: "finished", assisted: false,
     app_version: "0.17.0", mod_version: "0.17.0", factorio_version: "2.0.77",
     started_at: "2026-09-04T08:00:00Z", start_tick: 100, ended_at: "2026-09-04T08:20:00Z", end_tick: 72100 };

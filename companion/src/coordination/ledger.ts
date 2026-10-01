@@ -15,8 +15,8 @@ const runSchema = z.object({
   id: text(160), release_sha: gitSha, baseline_save_sha256: sha256,
   save_identity: text(240), created_at: text(80),
   roles: z.object({
-    pilot: z.object({ model: z.literal("gpt-5.6-luna"), reasoning: z.literal("high"), fast: z.literal(true) }).strict(),
-    strategist: z.object({ model: z.literal("gpt-5.6-sol"), reasoning: z.literal("high") }).strict(),
+    pilot: z.object({ model: z.literal("gpt-6-luna"), reasoning: z.literal("low"), fast: z.literal(true) }).strict(),
+    strategist: z.object({ model: z.literal("gpt-6.1-sol"), reasoning: z.literal("medium"), fast: z.literal(false) }).strict(),
   }).strict(),
 }).strict();
 const capacity = z.object({

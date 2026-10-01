@@ -14,9 +14,9 @@ strategist owns coordinate-free long-horizon priorities and may use only the
 mechanically read-only Factorio MCP surface. There is one body, one physical
 FIFO, one mutation path, and one compact `operations.json`.
 
-For the next fresh supervised run, start the pilot as `gpt-5.6-luna` with
-`high` reasoning and fast mode enabled, and the strategist as `gpt-5.6-sol`
-with `high` reasoning and the default service tier. These profiles apply only
+For the next fresh supervised run, start the pilot as `gpt-6-luna` with
+`low` reasoning and fast mode enabled, and the strategist as `gpt-6.1-sol`
+with `medium` reasoning and the default service tier. These profiles apply only
 at the safe fresh-run cutover; never reconfigure or replace a live role in place.
 
 Until the owner explicitly re-enables benchmarking, the parent session is a debug

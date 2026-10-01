@@ -142,3 +142,15 @@ raw console, imported blueprints, or tutorial sequences. Reuse or adapt the
 smallest maintained compatible path; otherwise retain candidates only as design
 evidence, record why they do not fit, and patch the smallest existing active
 path. This is engineering guidance, not a service, gate, or report workflow.
+
+<!-- agent-artifacts-conventions -->
+## Artifact conventions
+
+Durable agent output (plans, analyses, handoffs) lives in `./.agent/{plans,analysis,handoffs}/`: a symlink to a workspace-owned external artifact root keyed by repository and worktree. Private uses the XDG-backed store; client workspaces use their own `.agent-runtime/artifacts` root. This keeps artifacts outside `git clean -fdx` and worktree teardown blast radius without crossing workspace boundaries.
+
+Untracked or generated `.claude/` scratch is disposable. Committed `.claude/rules/` and other explicitly repo-owned files remain source; never use `.claude/reports/` or `.claude/analysis/` for durable task evidence.
+
+When concurrent work needs artifacts, use unique descriptive names to prevent
+clobbering. Routine work does not require an artifact.
+
+Discovery from cold start: `ls -t .agent/plans/ | head`.

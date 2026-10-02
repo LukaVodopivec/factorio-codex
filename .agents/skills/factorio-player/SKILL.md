@@ -251,10 +251,17 @@ assumption or note, and next intent.
   nudges or replaces an idle pilot under `AGENTS.md`.
 - Complete only from later-tick structured milestone proof. Declare a blocker
   only after materially distinct safe fallbacks are exhausted and no unrelated
-  productive branch remains. Stop only on an explicit the owner request. The
-  supervisor then calls `stop`; a role told of it never calls `stop`, makes no
-  further write, reports in one line, ends its turn, and never marks the goal
-  complete.
+  productive branch remains. An explicit the owner request ends gameplay; the
+  supervisor executes the recorded stop sequence. A role told of it never
+  calls `stop`, makes no further write, reports in one line, ends its turn,
+  and never marks the goal complete.
+- The pilot never calls the `stop` tool: not during ordinary gameplay, report
+  checkpoints, turn endings, monitoring timeouts, package changes, or routine
+  recovery from failed or partially committed plans. A TUI interruption alone
+  does not authorize physical cancellation. Under `AGENTS.md`, the supervisor
+  alone may use `stop` for an explicit the owner stop, retained-work reconciliation,
+  or recorded emergency cancellation needed for physical quiescence during
+  replacement. Supervisor rescue authority never passes to the pilot.
 
 ## Engineering reuse
 

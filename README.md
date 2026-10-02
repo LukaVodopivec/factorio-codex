@@ -48,7 +48,16 @@ client launcher in this repository.
 The mod never creates a standalone fallback character. Run
 `node companion/dist/cli.js doctor`, then start `codex` at this root. The
 committed project config starts MCP automatically. Begin with
-`connect_status`, then `observe_local`; `stop` cancels active and queued work.
+`connect_status`, then `observe_local`. The pilot never calls `stop` during
+ordinary gameplay, report checkpoints, turn endings, monitoring timeouts,
+package changes, or routine plan recovery. Under `AGENTS.md`, the supervisor
+alone uses this emergency tool for an explicit the owner stop, retained-work
+reconciliation, or recorded emergency quiescence during replacement. A TUI
+interruption alone does not authorize cancellation. `stop` takes `{}` and calls
+`cancel` with `all:true`, cancelling active tasks, queued plans, and character
+crafting; committed physical effects remain. Recover ordinary unexpected or
+partial results from fresh structured state and exact known plan IDs, then
+resume remaining safe work through the existing FIFO.
 
 The built CLI supports `setup`, `doctor [--json]`, `mcp`, `server`, and durable `runs`
 recording/comparison commands. MCP exposes exactly

@@ -47,7 +47,12 @@ not provide a Linux visual client launcher.
    later enqueue after failure, and a final observation on completed, failed,
    and cancelled paths. Confirm Codex walks at ordinary Factorio speed and no
    global game-speed setting changes.
-7. Interrupt a long action in the TUI, then call `stop`.
+7. In the supervisor's recorded emergency-quiescence rehearsal, interrupt a
+   long action in the TUI, observe retained work, then have the supervisor call
+   `stop` if cancellation is required. Verify active tasks, queued plans, and
+   character crafting are cancelled and re-observe physical quiescence. The
+   interruption alone grants no cancellation authority to the pilot; ordinary
+   recovery retains committed effects and reconciles pending work.
 8. Exercise `find_placement` at a shoreline; confirm `map_summary` reads only
    force-charted chunks; verify deterministic production arithmetic and
    ambiguity refusal. Find a cardinal inserter placement with an exact
@@ -982,11 +987,16 @@ current-release result.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and
-  completed the task. `stop` is safe cleanup when a task is still active.
-- If an action reports `empty response from the game` while `stop` can still
-  see the task, restart the CLI from the build containing the RCON
-  response-order fix, then retry. Do not assume that an empty response means
-  the enqueue did not mutate state.
+  completed the task. This historical cleanup advice does not authorize pilot
+  cancellation: only the supervisor uses `stop` in the cases `AGENTS.md` lists;
+  an active task alone is not a reason for ordinary recovery to cancel it.
+- If an action reports `empty response from the game` while `observe_local`
+  still shows the task, the supervisor restarts the CLI from the build containing
+  the RCON response-order fix. Restarting the CLI does not settle physical work.
+  Obtain fresh structured state, inspect exact known task or plan IDs through
+  the appropriate surface when available, account for pending work and committed
+  effects, and resume only the safe remainder. Do not assume that an empty
+  response means the enqueue did not mutate state or retry a pending mutation.
 - Physical mining requires the selected entity to be updated before
   `mining_state` is enabled. A task that approaches indefinitely with no
   inventory gain indicates a stale mod build; reinstall the current archive
@@ -1236,3 +1246,38 @@ Review regressions additionally cover bounds at adjacent chunks, mixed existing
 and planned ambiguity, and same-name replacement of an earlier committed pickup
 or drop recipient. Build plans retain that exact created entity and refuse a
 replacement before committing the producer; prior effects remain recorded.
+
+## Release 0.19.7 cycle-7 accidental pilot cancellation
+
+The captured incident evidence for an earlier issue reports a supervised debug run on
+release 0.19.7, source commit `0777538bb4eaadef6bea89eb18b44d5fbcf27845`.
+The pilot invoked `stop` during ordinary gameplay without a the owner stop request.
+The native completed result at `2026-10-02T18:45:04.326Z` was `cancelled2`;
+the pilot then reported plans 31/32 cancelled. A subsequent fresh structured
+character observation at tick `141409` showed pending physical work and resumed
+continuation. These are attributed incident facts, not a new live reproduction
+or proof of physical quiescence. The run remains assisted; its progress and
+timing are excluded from benchmark evidence.
+
+The source guidance offered ambiguous cues: the shared skill said “Stop only
+on an explicit the owner request,” while the tool description suggested cancellation
+after a TUI interruption. Those are instruction defects; whether either caused
+this model's tool selection is a hypothesis, not established by the cancellation
+receipt. The correction reserves the tool to the supervisor, prohibits its
+ordinary pilot use, and directs recovery to fresh state, exact known plan IDs,
+retained effects, and remaining safe FIFO work without rollback.
+
+Offline verification covers contract consistency and retained cancellation
+mechanics, not improved live model behavior. Review ordinary continuation,
+monitoring timeout, and partial-plan recovery as non-cancelling pilot paths;
+review explicit the owner stop, pre-`GO` retained-work reconciliation, and emergency
+replacement as the existing recorded supervisor paths. Startup still loads the
+role goal and hard skill; after compaction roles re-read them before other calls.
+
+Source publication, loaded role guidance, installation, and observed gameplay
+results are separate evidence. This instruction/tool-description correction
+requires no mod deployment, server replacement, or active-run restart. Any live
+effectiveness validation requires an authorized fresh supervised run recording
+exact loaded source/runtime identity and all interventions; it remains excluded
+from benchmark evidence. Publishing corrected source does not establish that
+an existing role or MCP process has loaded it.

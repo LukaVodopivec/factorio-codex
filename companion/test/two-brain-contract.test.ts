@@ -87,6 +87,22 @@ describe("persistent two-brain coordination contract", () => {
     expect(`${strategist}\n${live}`).not.toMatch(/companion\/dist\/cli\.js ledger-apply/);
   });
 
+  it("reserves emergency cancellation to the supervisor and recovers through retained FIFO state", () => {
+    const flatSkill = skill.replace(/\s+/g, " ");
+    expect(flatSkill).toMatch(/pilot never calls the `stop` tool/);
+    for (const boundary of ["ordinary gameplay", "report checkpoints", "turn endings",
+      "monitoring timeouts", "package changes", "recovery from failed or partially committed plans"])
+      expect(flatSkill).toContain(boundary);
+    expect(flatSkill).toMatch(/supervisor alone may use `stop` for an explicit the owner stop, retained-work reconciliation, or recorded emergency cancellation needed for physical quiescence during replacement/);
+    expect(flatSkill).toMatch(/A TUI interruption alone does not authorize physical cancellation/);
+    expect(flatSkill).toMatch(/a role told of it never calls `stop`, makes no further write/i);
+    expect(pilot).toMatch(/If the supervisor says the owner stopped the run, do not call `stop`/);
+    expect(pilot).toMatch(/obtain fresh structured state and inspect exact known plan IDs with `plan_status`/);
+    expect(pilot).toMatch(/A monitoring timeout leaves the plan pending/);
+    expect(pilot).toMatch(/Retain completed physical effects; there is no rollback/);
+    expect(pilot).toMatch(/Reconcile active and queued work[\s\S]*existing FIFO[\s\S]*without duplicating committed or pending steps or blanket-cancelling queued work/);
+  });
+
   it("forbids thread polling and re-reads the hard rules after compaction", () => {
     const agents = read("AGENTS.md").replace(/\s+/g, " ");
     const live = read("docs/LIVE-VALIDATION.md").replace(/\s+/g, " ");

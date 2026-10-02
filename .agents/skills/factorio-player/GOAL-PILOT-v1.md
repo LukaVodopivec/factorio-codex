@@ -19,10 +19,12 @@
 - Take the first unqueued package whose `after_package_id` is null or already queued by you. Read the notes it names (paths relative to the ledger's directory) and no other notebook file.
 - If its anchor or any position is more than 30 tiles away, walk to the anchor first; a range error is not falsification. Check its placements with one batched `can_place` (`CODEX_BODY_OVERLAP` passes).
 - Gather or craft any `required_items` shortfall first in a preceding plan. Then `queue_plan` its steps unchanged, and queue a package that depends on it as the successor.
-- After an interrupted plan, skip steps already done (a placement standing exactly as specified, or a removal whose target is gone) and queue the rest in order.
+- After an interrupted plan, reconcile fresh state as below; skip steps already done (a placement standing exactly as specified, or a removal whose target is gone) and queue the rest in order once safe.
 - Report "package <id> → plan <n>" or "package <id> falsified at step <k>: <reason>", and never repair a package's geometry.
 - When NOW's `essential_prerequisite` names a site away from you, travel there so Astra can design within 30 tiles of the body.
 - Fail open only after about 30,000 game ticks pass with no valid package for the current NOW, counted from the last revision that changed NOW or your last queued package. Re-read the ledger just before; if there is still no package, design that one coupled connection yourself from `find_placement` `plan_steps`, favouring one that expands input capacity, queue it, and say so in your report.
+
+**Recovery.** After an unexpected, failed, interrupted, or partial result, obtain fresh structured state and inspect exact known plan IDs with `plan_status` as needed. A monitoring timeout leaves the plan pending. Retain completed physical effects; there is no rollback. Reconcile active and queued work before resuming the remaining safe work through the existing FIFO, without duplicating committed or pending steps or blanket-cancelling queued work.
 
 **Validation results.** Stay at the site and change no geometry there except through a package or the fail-open rule, and then only at a located structural blocker and its `related_edge`. Report a structural row as `reason@position`. Treat an evidence row as a hypothesis to inspect, never as a reason to rotate, remove, or move. When every row is throughput, transient, or evidence and output rose with zero character transfers, queue one re-validation with a longer `duration_seconds` (at most 300); if it fails again, report `false-negative <package>`. For `FACTORY_COMPONENT_NOT_READY`, report the missing edge it names. Inventory-proven `blocked_output` means the terminal buffer is full: empty it as a named bridge or report it, and never add a chest or sink.
 
@@ -30,4 +32,4 @@
 
 **Reports** go to Astra only, under about 300 bytes; the transport rejects messages over 1,000 bytes. A report checkpoint is a package queued or falsified, a validation result, a falsified ledger assumption or note, a supervisor stop, or about three minutes of game time (10,800 ticks) since your last report. Send at most one report per checkpoint and never a correction or follow-up. Never write `operations.json` or the notebook.
 
-**Stop and completion.** If the supervisor says the owner stopped the run, do not call `stop`: report in one line and end your turn. Never mark the goal complete without milestone proof. Mark blocked only after the SKILL blocker rule is met.
+**Stop and completion.** Never call `stop` during ordinary gameplay, report checkpoints, turn endings, monitoring timeouts, package changes, or routine plan recovery; the SKILL reserves emergency cancellation to the supervisor. If the supervisor says the owner stopped the run, do not call `stop`: report in one line and end your turn. Never mark the goal complete without milestone proof. Mark blocked only after the SKILL blocker rule is met.

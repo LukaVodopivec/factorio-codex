@@ -270,7 +270,7 @@ export function registerMcpTools(
     }
   });
   server.registerTool("start_research", { description: "Start ordinary unlocked research using the force's real queue; requested trigger technologies and missing trigger prerequisites return explicit in-game action guidance.", inputSchema: z.object({ technology: z.string() }) }, async (p) => rpc("start_research", p));
-  server.registerTool("stop", { description: "Cancel active and queued work after a TUI interruption.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true }));
+  server.registerTool("stop", { description: "Emergency cancellation of active tasks, queued plans, and character crafting. Supervisor only: explicit the owner stop, retained-work reconciliation, or recorded emergency quiescence under AGENTS.md. Never for pilot gameplay or routine recovery; a TUI interruption alone is not authorization.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true }));
 }
 
 type Connection = { rcon: RconClient; bridge: Bridge };

@@ -1,5 +1,6 @@
 -- Deterministic, side-effect-free placement search over already charted terrain.
 local companion = require("scripts.companion")
+local build = require("scripts.actions.build")
 local output_targets = require("scripts.output_target")
 local placement_geometry = require("scripts.placement_geometry")
 local fluid_connections = require("scripts.fluid_connections")
@@ -204,6 +205,8 @@ function M.find_placement(params)
   local item = prototypes.item[params.item]
   if not item or not item.place_result then error(params.item .. " is not a placeable item") end
   local proto = item.place_result
+  local belt_error = build.belt_to_ground_error(params.item, proto, params.belt_to_ground_type)
+  if belt_error then error(belt_error) end
   local preferred = position(params.preferred, "find_placement preferred")
   local radius = math.floor(tonumber(params.radius) or 10)
   local limit = math.floor(tonumber(params.limit) or 8)
@@ -408,6 +411,7 @@ function M.find_placement(params)
           goto continue
         end
         local producer_step = { name = params.item, x = pos.x, y = pos.y, direction = direction }
+        producer_step.belt_to_ground_type = params.belt_to_ground_type
         if fuel_inlet(proto) then producer_step.fuel_inlet = true end
         if input_target then producer_step.input_target = input_target.position end
         if output_target then producer_step.output_target = output_target.position end

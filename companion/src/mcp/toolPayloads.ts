@@ -14,12 +14,13 @@ export const toolPayloads = {
   placement: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
   canPlace: (placements: Array<{ x: number; y: number; name: string; direction?: number }>) => ({ placements: placements.map((placement) => toolPayloads.placement(placement)) }),
   buildPlan: (steps: Array<{ x: number; y: number; name: string; [key: string]: unknown }>, rest: Record<string, unknown>) => ({ ...rest, steps: steps.map(({ x, y, name, ...step }) => ({ ...step, item: name, position: { x, y } })) }),
-  findPlacement: ({ item, preferred, radius, directions, limit, input_target, output_target, output_recipient_item }: {
+  findPlacement: ({ item, preferred, radius, directions, limit, input_target, output_target, output_recipient_item, belt_to_ground_type }: {
     item: string; preferred: { x: number; y: number }; radius: number; directions: number[]; limit: number;
-    input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; output_recipient_item?: string;
+    input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; output_recipient_item?: string; belt_to_ground_type?: "input" | "output";
   }) => ({ item, preferred, radius, directions, limit,
     ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}),
-    ...(output_recipient_item ? { output_recipient_item } : {}) }),
+    ...(output_recipient_item ? { output_recipient_item } : {}),
+    ...(belt_to_ground_type === undefined ? {} : { belt_to_ground_type }) }),
   productionRequirements: ({ targets, technology, location, recipe_choices, flow_precision }: {
     targets?: Record<string, number>; technology?: string; location?: string;
     recipe_choices?: Record<string, string>; flow_precision?: string;

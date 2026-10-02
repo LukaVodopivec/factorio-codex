@@ -59,6 +59,32 @@ describe("protocol v22 DTO and tool registry", () => {
     expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 26 }).success).toBe(false);
   });
 
+  it("parses and forwards both underground ends through placement search and returns verbatim plan steps", async () => {
+    const schemas: Record<string, any> = {};
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const call = vi.fn(async (_method: string, payload: any) => ({ candidates: [{ build_steps: [{
+      name: payload.item, x: payload.preferred.x, y: payload.preferred.y,
+      direction: payload.directions[0], belt_to_ground_type: payload.belt_to_ground_type,
+    }] }] }));
+    registerMcpTools({ registerTool(name, config, handler) { schemas[name] = config.inputSchema; handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig);
+    const base = { item: "underground-belt", preferred: { x: 2.5, y: 3.5 }, directions: [4] };
+    for (const belt_to_ground_type of ["input", "output"]) {
+      const request = schemas.find_placement.parse({ ...base, belt_to_ground_type });
+      const output = await handlers.find_placement(request);
+      expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, radius: 10, limit: 8, belt_to_ground_type });
+      const candidate = output.structuredContent.candidates[0];
+      expect(candidate.build_steps).toEqual([{ name: base.item, x: 2.5, y: 3.5, direction: 4, belt_to_ground_type }]);
+      expect(candidate.plan_steps).toEqual([{ action: "place_entity", ...candidate.build_steps[0] }]);
+      for (const tool of ["queue_plan", "run_plan"]) {
+        expect(schemas[tool].parse({ steps: candidate.plan_steps }).steps).toEqual(candidate.plan_steps);
+      }
+    }
+    for (const belt_to_ground_type of ["sideways", "", null, 0, false]) {
+      expect(schemas.find_placement.safeParse({ ...base, belt_to_ground_type }).success).toBe(false);
+    }
+  });
+
   it("never equates complete power-pole placement with electrical continuity", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const networks = new Map([ ["0,0", 1], ["4,0", 1], ["8,0", 9] ]);

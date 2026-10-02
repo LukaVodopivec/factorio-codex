@@ -137,8 +137,15 @@ the body on the belt until the next `walk_to` off it.
 omitted otherwise; recorder samples always state it, as `null` when absent.
 `place_entity`, `build_plan` steps and `queue_plan`/`run_plan` `place_entity`
 steps accept `belt_to_ground_type` (`input` or `output`) for underground belts
-only (any other item fails before walking), and `find_placement` `plan_steps`
-carry it through. A placed underground belt reports its end and paired
+only (any other item fails before walking). `find_placement` accepts the same
+optional field to select an explicit underground end, for example
+`{ "item": "underground-belt", "preferred": { "x": 1.5, "y": 2.5 },
+"directions": [4], "belt_to_ground_type": "output" }`. Every candidate retains
+the selected end in its `build_steps` and `plan_steps`, which can be passed
+verbatim to `build_plan` and `queue_plan`/`run_plan`, respectively. Omitting
+the field preserves existing behavior. Placement geometry is provisional and
+does not prove underground pairing; observe pairing after physical construction.
+A placed underground belt reports its end and paired
 neighbour (`outcome.underground`), or that no pair exists yet. Every read-only
 result (`connect_status`, `map_summary`, `progression_status`,
 `production_requirements`, `describe_prototype`, `observe_local`,

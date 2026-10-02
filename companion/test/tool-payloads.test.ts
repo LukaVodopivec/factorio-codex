@@ -339,8 +339,20 @@ describe("underground belt end selection", () => {
     await handlers.build_plan({ steps: [{ ...placement, belt_to_ground_type: "input" }], auto_craft: true, stop_on_error: true });
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
       steps: [{ item: "underground-belt", position: { x: 1.5, y: 2.5 }, direction: 4, belt_to_ground_type: "input" }] });
-    const search = normalizePlacementSearch({ candidates: [{ build_steps: [{ ...placement, belt_to_ground_type: "input" }] }] });
-    expect(search.candidates[0].plan_steps).toEqual([{ action: "place_entity", ...placement, belt_to_ground_type: "input" }]);
+    for (const belt_to_ground_type of ["input", "output"] as const) {
+      const request = { item: placement.name, preferred: { x: placement.x, y: placement.y },
+        radius: 3, directions: [4], limit: 8, belt_to_ground_type };
+      expect(toolPayloads.findPlacement(request)).toEqual(request);
+      const buildStep = { ...placement, belt_to_ground_type };
+      const search = normalizePlacementSearch({ candidates: [{ build_steps: [buildStep] }] });
+      const candidate = search.candidates[0];
+      expect(candidate.plan_steps).toEqual([{ action: "place_entity", ...buildStep }]);
+      expect(schemas.queue_plan.parse({ steps: candidate.plan_steps }).steps).toEqual(candidate.plan_steps);
+      expect(schemas.run_plan.parse({ steps: candidate.plan_steps }).steps).toEqual(candidate.plan_steps);
+      await handlers.build_plan(schemas.build_plan.parse({ steps: candidate.build_steps }));
+      expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
+        steps: [{ item: placement.name, position: { x: placement.x, y: placement.y }, direction: 4, belt_to_ground_type }] });
+    }
   });
 });
 

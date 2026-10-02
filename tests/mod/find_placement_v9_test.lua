@@ -103,7 +103,42 @@ _G.prototypes = { item = {
   ["wooden-chest"] = { place_result = { name = "wooden-chest", type = "container", tile_width = 1, tile_height = 1,
     collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
 } }
+prototypes.item["underground-belt"] = { place_result = {
+  name = "underground-belt", type = "underground-belt", tile_width = 1, tile_height = 1,
+  collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } },
+} }
 local finder = require("scripts.find_placement")
+local underground_request = { item = "underground-belt", preferred = { x = 4.5, y = 4.5 },
+  radius = 2, directions = { 12, 4 }, limit = 8 }
+local omitted = finder.find_placement(underground_request)
+check(#omitted.candidates > 0 and omitted.candidates[1].build_steps[1].belt_to_ground_type == nil,
+  "omitted underground end retains existing steps")
+for _, end_type in ipairs({ "input", "output" }) do
+  underground_request.belt_to_ground_type = end_type
+  local result = finder.find_placement(underground_request)
+  check(#result.candidates == #omitted.candidates, end_type .. " end preserves candidate count")
+  for i, candidate in ipairs(result.candidates) do
+    local step = candidate.build_steps[1]
+    check(step.belt_to_ground_type == end_type, end_type .. " end retained in every build step")
+    step.belt_to_ground_type = nil
+    check(canonical(candidate) == canonical(omitted.candidates[i]), end_type .. " end preserves candidate geometry and order")
+  end
+end
+for _, invalid in ipairs({ "sideways", "", false, 0 }) do
+  underground_request.belt_to_ground_type = invalid
+  local before_charted, before_placement = charted_calls, placement_calls
+  local ok, err = pcall(finder.find_placement, underground_request)
+  check(not ok and tostring(err):find('belt_to_ground_type must be', 1, true), "invalid end rejected")
+  check(charted_calls == before_charted and placement_calls == before_placement, "invalid end rejected before candidate evaluation")
+end
+for _, end_type in ipairs({ "input", "output" }) do
+  local before_charted, before_placement = charted_calls, placement_calls
+  local ok, err = pcall(finder.find_placement, { item = "pipe", preferred = { x = 4.5, y = 4.5 },
+    belt_to_ground_type = end_type })
+  check(not ok and tostring(err):find('applies only to underground belts', 1, true), "non-underground end rejected")
+  check(charted_calls == before_charted and placement_calls == before_placement, "misuse rejected before candidate evaluation")
+end
+
 local first = finder.find_placement({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 3, directions = { 12, 0, 4 }, limit = 8 })
 local second = finder.find_placement({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 3, directions = { 4, 12, 0 }, limit = 8 })
 check(canonical(first) == canonical(second), "placement search is stable across direction input order")

@@ -242,6 +242,34 @@ check(not burner_flow.factory.material_flow.components[1].state.autonomy_topolog
   and table.concat(burner_flow.factory.material_flow.components[1].state.autonomy_blockers, ","):match("fuel_input_provenance_unresolved"),
   "finite hand-loaded burner fuel cannot prove autonomous fuel provenance")
 
+-- A burner drill drops its mined output into a chest; a return inserter
+-- feeds the chest back into the drill's fuel slot.
+local function self_fed_fixture(ore)
+local coal_drill = { valid = true, name = "burner-mining-drill", type = "mining-drill", position = { x = 1, y = 1 },
+  force = force, status = 3, products_finished = 5, burner = {},
+  prototype = { burner_prototype = { fuel_categories = { chemical = true } } } }
+coal_drill.mining_target = { valid = true, name = ore, type = "resource", position = coal_drill.position, amount = 100,
+  prototype = { mineable_properties = { products = { { name = ore, type = "item" } } } } }
+local coal_chest = { valid = true, name = "wooden-chest", type = "container", position = { x = 5, y = 1 }, force = force, status = 3,
+  get_inventory = function() return { get_contents = function() return { { name = ore, count = 10 } } end, is_full = function() return false end, can_insert = function() return true end } end }
+local refuel = { valid = true, name = "refuel", type = "inserter", position = { x = 2, y = 2 }, force = force,
+  status = 2, pickup_target = coal_chest, drop_target = coal_drill }
+coal_drill.drop_target = coal_chest
+storage = {}
+local self_fed = { coal_drill, refuel, coal_chest }
+surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return self_fed end
+local blockers = {}
+for _, component in ipairs(require("scripts.map_summary").map_summary({}).factory.material_flow.components) do
+  for _, blocker in ipairs(component.state.autonomy_blockers) do blockers[#blockers + 1] = blocker end
+end
+return table.concat(blockers, ",")
+end
+game.tick = 1150
+check(not self_fed_fixture("coal"):match("fuel_input_provenance_unresolved"),
+  "a burner drill refuelled from its own mined coal through a chest has physical fuel provenance")
+check(self_fed_fixture("iron-ore"):match("fuel_input_provenance_unresolved") ~= nil,
+  "the same loop returning a non-fuel product never proves fuel provenance")
+
 -- More than both graph response caps, all in one physically connected component.
 storage = {}
 game.tick = 1200

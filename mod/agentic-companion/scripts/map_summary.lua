@@ -332,6 +332,10 @@ local function build_material_flow(flow_entities, node_by_key, activity)
     for _, id in ipairs(incoming[start_id]) do queue[#queue + 1] = id end
     while head <= #queue do
       local id = queue[head]; head = head + 1
+      -- A burner source may physically refuel itself from its own output
+      -- (a coal drill feeding back through transport): that loop is fuel
+      -- provenance. Its own product never stands in for another input.
+      if id == start_id and fuel_only and product_matches(node_by_id[id], ingredient, true) then return true end
       if not seen[id] then
         seen[id] = true
         local node = node_by_id[id]

@@ -109,6 +109,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(strategist).toMatch(/completes a segment ends with a `wait_for_item` on the segment's terminal output[\s\S]*followed by a validation step/);
     expect(skill).toMatch(/transfer window opens\s+when the step starts/);
     for (const text of [agents, skill, pilot]) expect(text).toMatch(/under about 300 bytes/);
+    expect(pilot).toMatch(/A report checkpoint is a package queued or falsified, a validation result, a falsified ledger assumption, no safe successor, or a supervisor stop, or else about three minutes of game time \(10,800 ticks\) since your last report/);
+    expect(pilot).toMatch(/never send a correction or follow-up/);
     expect(skill).toMatch(/one\s+exact node position is enough/);
     expect(strategist).toMatch(/A segment is complete only when every node has a physical feed, fuel included/);
     expect(pilot).toMatch(/After `GO`, never call `read_thread` or `wait_threads`, and call `list_threads` only once if you lack Sol's thread ID/);

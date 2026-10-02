@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.3 retains each exact placed entity and validates the live output
+Release 0.19.4 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.3 validation.
+0.19.4 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -176,6 +176,28 @@ byte-identical output at 36 to 48 ms. `plan_status` also reports `fifo_empty`
 and says so when a terminal plan leaves the body idle, the pilot no longer
 reads threads after `GO`, and validation steps close only segments whose every
 node has a physical feed.
+
+## 2026-10-02 debug cycle 4 (0.19.3) and the 0.19.4 self-fuel provenance
+
+Run `debug-20261002T015403Z` (fresh game, seed 747930220) stopped at `GO+20m`
+with 6 machines, 15 physical edges, 53 finished products, and no nudge. The
+couch client logged no latency change in the whole run (cycles 2 and 3 held
+60 to 90 ticks), confirming the `observe_local` cost fix, and the server ran
+at about 100% of real time. The pilot read no threads after `GO`. Sol's
+packages built the first self-fuelling coal loop: a burner coal drill refuelled
+by a return inserter from its own output while its buffer grew from 4 to 50
+with zero character transfers. Validation still reported
+`fuel_input_provenance_unresolved`, because the provenance walk never accepted
+a node as its own fuel source. The iron chain starved meanwhile, holding
+finished products at 53 from minute 15, and the pilot sent 17 reports in one
+20-minute turn because almost every new edge counted as reportable.
+
+Release 0.19.4 accepts a burner source that physically refuels itself from
+its own output as fuel provenance (never as another input's provenance), and
+defines the pilot's report checkpoint as a package queued or falsified, a
+validation result, a falsified ledger assumption, no safe successor, a
+supervisor stop, or otherwise about three minutes of game time since the last
+report, with no corrections or follow-ups.
 
 ## Prior 0.8.0 structured timings
 
@@ -346,7 +368,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.3, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.19.4, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -416,7 +438,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.3 benchmark results.
+present historical timings as 0.19.4 benchmark results.
 
 #### Candidate B R7 recorded result
 

@@ -418,7 +418,8 @@ local function validate_factory_component(plan, step)
     step._previous, step._acceptance_counts = step._baseline, {}
     for key, downstream in pairs(step._baseline._downstream) do
       step._acceptance_counts[key] = {}
-      if downstream.kind == "consumer" then step._acceptance_counts[key].consumer = 0
+      if downstream.kind == "consumer" then
+        for product in pairs(downstream.products) do step._acceptance_counts[key][product] = 0 end
       else for product in pairs(downstream.stock) do step._acceptance_counts[key][product] = 0 end end
     end
     step._source_cycles = {}
@@ -440,7 +441,10 @@ local function validate_factory_component(plan, step)
   for key, downstream in pairs(final._downstream) do
     local previous, counts = step._previous._downstream[key], step._acceptance_counts[key]
     if counts and downstream.accepting then
-      if downstream.kind == "consumer" then counts.consumer = counts.consumer + 1
+      if downstream.kind == "consumer" then
+        for product, accepting in pairs(downstream.products) do
+          if counts[product] and accepting then counts[product] = counts[product] + 1 end
+        end
       elseif previous then
         for product, count in pairs(downstream.stock) do
           if counts[product] and previous.stock[product] and count > previous.stock[product] then
@@ -481,7 +485,9 @@ local function validate_factory_component(plan, step)
   source_cycles = source_cycles or 0
   if source_cycles < 3 then blockers[#blockers + 1] = { reason = "several_source_cycles_not_observed" } end
   if acceptance_samples < 3 then blockers[#blockers + 1] = { reason = "bounded_downstream_acceptance_not_observed" } end
-  if delta <= 0 then blockers[#blockers + 1] = { reason = "bounded_production_delta_not_observed" } end
+  if next(step._baseline._production) and delta <= 0 then
+    blockers[#blockers + 1] = { reason = "bounded_production_delta_not_observed" }
+  end
   for key, count in pairs(final._production) do
     local before = step._baseline._production[key]
     if type(count) ~= "number" or type(before) ~= "number" or count - before < 3 then

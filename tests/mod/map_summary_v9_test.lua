@@ -136,7 +136,9 @@ local function flow_fixture(buffer_root, burner)
     get_recipe = function() return { name = "process", energy = 1,
       ingredients = { { name = "ore", type = "item" } }, products = { { name = "plate", type = "item" } } } end }
   if burner then processor.prototype = { burner_prototype = { fuel_categories = { chemical = true } } } end
-  local sink = { valid = true, name = "lab", type = "lab", position = { x = 5, y = 1 }, force = force, status = 3 }
+  local sink = { valid = true, name = "lab", type = "lab", position = { x = 5, y = 1 }, force = force, status = 3, get_inventory = function() return {
+      can_insert = function(stack) return stack.name == "plate" end,
+    } end }
   local feed = { valid = true, name = "feed", type = "inserter", position = { x = 2, y = 1 }, force = force,
     status = 2, pickup_target = source, drop_target = processor }
   local unload = { valid = true, name = "unload", type = "inserter", position = { x = 4, y = 1 }, force = force,
@@ -148,6 +150,7 @@ end
 prototypes.item = { coal = { fuel_value = 8, fuel_category = "chemical" } }
 defines.entity_status.normal = 2
 defines.entity_status.working = 3
+defines.inventory = { lab_input = 2 }
 storage = {}
 local flow_entities, flow_source, flow_processor = flow_fixture(false, false)
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return flow_entities end
@@ -344,7 +347,7 @@ buffer_sink.get_inventory = function(index)
   return { get_item_count = function(name) assert(name == "plate"); return buffer_stock end,
     can_insert = function(stack) assert(stack.name == "plate" and stack.count == 1); return buffer_accepting end }
 end
-defines.inventory = { chest = 1 }
+defines.inventory = { chest = 1, lab_input = 2 }
 surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or buffer_segment end
 local buffer_summary = map.map_summary({})
 check(buffer_summary.factory.material_flow.components[1].state.downstream_kind == "buffer"
@@ -674,6 +677,161 @@ extra[#extra + 1] = duplicate_drill
 local shared_target = map.factory_component_sample({ source_tick = game.tick, positions = { buffer_sink.position } })
 check(not shared_target.topology_ready and canonical(shared_target.blockers):match("shared_mining_target_production_ambiguous"),
   "shared resource depletion cannot be attributed to one drill as independent source evidence")
+-- Source-only proof uses the same real graph, parked sampler and transfer ledger.
+-- Exact runtime bindings are simulated; no fixture is live autonomy evidence.
+local previous_entities = surface.find_entities_filtered
+local function source_only_validation(mode)
+  game.tick = game.tick + 100
+  local start = game.tick
+  storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+  local stock, accepting = 0, true
+  local target = { valid = true, name = "coal", type = "resource", position = { x = 1, y = 4 }, amount = 100,
+    prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } }
+  local source = { valid = true, name = "source-only-drill", type = "mining-drill", force = force,
+    position = { x = 1, y = 4 }, status = 3, mining_target = target, mining_progress = 0.9,
+    prototype = burner_prototype, burner = { currently_burning = { name = "coal" }, remaining_burning_fuel = 4 },
+    get_fuel_inventory = function() return {
+      get_item_count = function() return 5 end, can_insert = function() return true end,
+    } end }
+  local middle = { valid = true, name = "source-relay-chest", type = "container", force = force,
+    position = { x = 2, y = 4 }, status = 2, get_inventory = function() return {
+      get_item_count = function() return 10 end, can_insert = function() return true end,
+    } end }
+  local sink = { valid = true, name = "source-terminal-chest", type = "container", force = force,
+    position = { x = 4, y = 4 }, status = 2, get_inventory = function() return {
+      get_item_count = function() return stock end, can_insert = function() return accepting end,
+    } end }
+  local unload = { valid = true, name = "source-unload", type = "inserter", force = force,
+    position = { x = 3, y = 4 }, status = 3, pickup_target = middle, drop_target = sink }
+  local refill = { valid = true, name = "source-self-return", type = "inserter", force = force,
+    position = { x = 2, y = 5 }, status = 5, pickup_target = middle, drop_target = source,
+    held_stack = { valid_for_read = true, name = "coal", quality = { name = "normal" }, count = 1 } }
+  source.drop_target = middle
+  local entities = { source, middle, unload, sink, refill }
+  if mode == "electric" then
+    source.burner, source.prototype = nil, nil
+    entities[5] = nil
+  elseif mode == "starter_only" then entities[5] = nil
+  elseif mode == "missing_return" then refill.drop_target = nil
+  elseif mode == "wrong_return" then refill.drop_target = sink
+  elseif mode == "missing_pickup" then refill.pickup_target = nil
+  elseif mode == "stock_root" then source.drop_target = sink; unload.pickup_target = source
+  elseif mode == "transformed_return" then
+    middle.type = "assembling-machine"
+    middle.get_recipe = function() return { name = "transform-coal", ingredients = { { name = "coal", type = "item" } },
+      products = { { name = "plate", type = "item" } } } end
+  elseif mode == "no_energy" then source.burner.remaining_burning_fuel = 0
+  elseif mode == "incompatible_fuel" then refill.held_stack.name = "incompatible"
+  elseif mode == "full_fuel" then source.get_fuel_inventory = function() return {
+    get_item_count = function() return 5 end, can_insert = function() return false end,
+  } end
+  elseif mode == "unsupported_fuel" then source.get_fuel_inventory = function() error("unsupported") end
+  elseif mode == "generic_full" then refill.status = 6
+  elseif mode == "shared_target" then
+    entities[6] = { valid = true, name = "other-source", type = "mining-drill", force = force,
+      position = { x = 1, y = 5 }, status = 3, mining_target = target, mining_progress = 0.9, drop_target = middle }
+  elseif mode == "orientation" then
+    local belt = { valid = true, name = "unrepaired-terminal", type = "transport-belt", force = force,
+      position = { x = 2, y = 6 }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } }
+    source.drop_target, unload.pickup_target, refill.pickup_target = belt, belt, belt
+    entities[2] = belt
+  end
+  if mode == "consumer" or mode == "consumer_wrong_output" or mode == "consumer_multi_output" or mode == "consumer_full"
+    or mode == "consumer_interruption" or mode == "consumer_unavailable" then
+    sink.type, sink.name, sink.status = "burner-generator", "source-consumer", 3
+    sink.prototype, sink.burner = burner_prototype, { currently_burning = { name = "coal" }, remaining_burning_fuel = 4 }
+    sink.get_fuel_inventory = function() return {
+      can_insert = function(stack) return stack.name == "coal" and mode ~= "consumer_full" and accepting end,
+    } end
+    if mode == "consumer_unavailable" then sink.get_fuel_inventory = function() error("unsupported") end end
+    if mode == "consumer_wrong_output" then
+      sink.type, sink.name, sink.burner, sink.prototype = "lab", "incompatible-science-consumer", nil, nil
+      sink.get_inventory = function(index)
+        assert(index == defines.inventory.lab_input)
+        return { can_insert = function(stack) return stack.name == "automation-science-pack" end }
+      end
+    elseif mode == "consumer_multi_output" then
+      target.prototype.mineable_properties.products[2] = { name = "ore", type = "item" }
+    end
+  end
+  if mode == "unavailable" then source.mining_progress = nil end
+  if mode == "unavailable_target" then source.mining_target = nil end
+  if mode == "unsupported_buffer" then sink.get_inventory = function() error("unsupported") end end
+  surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
+  map.map_summary({}) -- open complete run-local transfer history
+  if mode == "incomplete_history" then
+    storage.factory_activity.events_omitted, storage.factory_activity.latest_evicted_tick = 1, start + 1
+  end
+  local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
+    source_tick = start, positions = { sink.position }, duration_seconds = 1 } } })
+  game.tick = start + 1; tasks.on_tick()
+  local preflight = map.factory_component_sample({ source_tick = game.tick, positions = { sink.position } })
+  for i = 1, 3 do
+    game.tick = start + 1 + i * 20
+    if mode ~= "unavailable" and mode ~= "aliased" then source.mining_progress = 0.9 - i * 0.1 end
+    if mode ~= "no_depletion" then target.amount = target.amount - 1 end
+    if mode ~= "stagnant" then stock = stock + 1 end
+    if i == 2 then
+      if mode == "full_buffer" or mode == "consumer_interruption" then accepting = false end
+      if mode == "fuel_interruption" then source.status = 4 end
+      if mode == "power_interruption" then source.status = 1 end
+      if mode == "topology" then unload.direction = 2 end
+      if mode == "target_change" then target.position = { x = 1, y = 6 } end
+      if mode == "transfer" then
+        require("scripts.factory_activity").record("insert", { target = middle, transfers = { { item = "coal", inserted = 1 } } })
+      end
+    end
+    tasks.on_tick()
+  end
+  return tasks.plan_status({ plan_id = queued.plan_id }), preflight, map.map_summary({})
+end
+for _, mode in ipairs({ "self_return", "electric", "consumer" }) do
+  local result, preflight, final = source_only_validation(mode)
+  check(preflight.topology_ready and next(preflight._production) == nil and result.status == "completed"
+    and result.outcomes[1].result.products_finished_delta == 0
+    and result.outcomes[1].result.source_cycles_observed == 3
+    and result.outcomes[1].result.downstream_acceptance_samples == 3
+    and final.factory.material_flow.components[1].state.autonomous_end_to_end,
+    "source-only " .. mode .. " proves three unattended source cycles and endpoint samples with no processor production")
+  check(not canonical(result):match('"stock"') and not canonical(result):match('"remaining"')
+    and not canonical(final):match('"resource_key"') and not canonical(final):match('"_signature"'),
+    "source-only " .. mode .. " exposes no private inventory, resource samples or exact signatures")
+end
+for _, case in ipairs({
+  { "consumer_wrong_output", "blocked_output" },
+  { "consumer_multi_output", "blocked_output" }, { "consumer_full", "blocked_output" },
+  { "consumer_interruption", "blocked_output" },
+  { "consumer_unavailable", "downstream_consumer_acceptance_unproven" },
+  { "starter_only", "fuel_input_provenance_unresolved" },
+  { "missing_return", "fuel_input_provenance_unresolved" },
+  { "wrong_return", "fuel_input_provenance_unresolved" },
+  { "missing_pickup", "fuel_input_provenance_unresolved" },
+  { "stock_root", "fuel_input_provenance_unresolved" },
+  { "transformed_return", "fuel_input_provenance_unresolved" },
+  { "no_energy", "blocked_output" }, { "incompatible_fuel", "blocked_output" },
+  { "full_fuel", "blocked_output" }, { "unsupported_fuel", "blocked_output" },
+  { "generic_full", "blocked_output" },
+  { "unavailable", "several_source_cycles_not_observed" },
+  { "unavailable_target", "output_identity_unproven" },
+  { "aliased", "several_source_cycles_not_observed" },
+  { "no_depletion", "several_source_cycles_not_observed" },
+  { "shared_target", "shared_mining_target_production_ambiguous" },
+  { "stagnant", "bounded_downstream_acceptance_not_observed" },
+  { "full_buffer", "blocked_output" }, { "unsupported_buffer", "downstream_buffer_acceptance_unproven" },
+  { "fuel_interruption", "nonproductive_status:no_fuel" },
+  { "power_interruption", "missing_power" },
+  { "topology", "component_topology_changed_during_validation" },
+  { "target_change", "several_source_cycles_not_observed" },
+  { "transfer", "character_transfer_observed" },
+  { "incomplete_history", "character_transfer_history_incomplete" },
+  { "orientation", "belt_orientation_does_not_reach_consumer" },
+}) do
+  local result = source_only_validation(case[1])
+  check(result.status == "failed" and canonical(result.outcomes[1].result.blockers):match(case[2]),
+    "source-only rejects " .. case[1] .. " with " .. case[2])
+end
+surface.find_entities_filtered = previous_entities
+
 -- An independent predecessor oracle enumerates charted east/south boundaries.
 -- Native tile objects are deliberately unavailable to the implementation.
 local collision_layers = {

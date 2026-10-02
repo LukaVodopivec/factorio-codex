@@ -232,10 +232,13 @@ topology and complete character-transfer history requirements still apply.
 bounded 1–300 second unattended interval. It requires unchanged physical
 relationships and recipe identities, complete transfer history, proven material
 and fuel supply, productive power/fuel status at every sample, at least three
-processor cycles, three observed source cycles and three downstream acceptance
+cycles for every processor present, three observed cycles for every source and three downstream acceptance
 samples per output item at each endpoint. Buffer acceptance requires increases
 in each matching output stock across distinct samples; a working consumer
-supplies consumer acceptance evidence. Drill source cycles use a mining-progress
+must also accept every relevant output through its native input inventory
+at each counted sample. Supported item probes use lab input or burner-generator
+fuel inventories; unsupported consumer or fluid acceptance stays unproven.
+Drill source cycles use a mining-progress
 wrap accompanied by depletion of the
 same already charted target. Adjacent sampling intervals vary the phase to
 reduce cadence aliasing. Shared-target attribution, unavailable counters or
@@ -243,6 +246,13 @@ remaining sampling aliasing stay unproven; longer duration alone need not resolv
 every alias.
 [Factorio's API](https://lua-api.factorio.com/2.0.72/classes/LuaEntity.html#mining_progress)
 provides drill progress; `products_finished` applies to crafting machines.
+Source-to-transport-to-buffer or consumer segments need no processor. Their
+source and acceptance proof requirements are identical, and a successful
+source-only interval may report `products_finished_delta=0`. A source's own
+compatible fuel product proves replenishment only through a directed physical
+return path with exact runtime bindings; compatible output or starter fuel
+stock alone does not suffice. Topology readiness and local operation precede
+bounded proof and never establish `autonomous_end_to_end` on their own.
 Private inventory/resource samples and exact internal identity strings are never
 returned. Validation returns aggregate production deltas,
 `source_cycles_observed`, `downstream_acceptance_samples` and structured blockers, with at most 24 blocker rows and an omission count.

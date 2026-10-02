@@ -137,6 +137,23 @@ checks.
   source counters and shared mining-target attribution remain unproven. Contrast with a working consumer-ended segment reporting
   `downstream_kind=consumer`. A buffer is storage, never a consuming sink or a
   production source inferred from existing stock; agents decide its usefulness.
+- Also check a processor-free source-to-transport-to-buffer or consumer segment.
+  Require three observed mining-progress wraps with same-target depletion per
+  source and three distinct acceptance samples per relevant output at every
+  endpoint, unchanged topology, complete transfer history and zero component
+  transfers. Require processor cycles only for processors actually present;
+  source-only proof may have `products_finished_delta=0`. For a burner mining
+  its own fuel, record the exact directed physical return bindings. Compatible
+  mined output and finite starter stock alone cannot prove replenishment.
+  Topology readiness and local operation alone are not `autonomous_end_to_end`.
+  A working consumer must accept every relevant output through its native input
+  inventory at each counted sample. Reject incompatible outputs, full inputs,
+  and unsupported consumer or fluid acceptance; unrelated stocked inputs and
+  working status alone cannot prove endpoint acceptance.
+  The historical coal-buffer increase and offline fixtures do not prove live
+  autonomy; live evidence needs the exact deployed source/archive identity and
+  a fresh structured multi-tick interval. A queued terminal belt rotation is
+  not a completed repair; retain its orientation diagnostic until re-observed.
 - Make the buffer full or nonaccepting. Confirm `blocked_output` and revoked
   current autonomy. Buffer capacity alone and production without accepted
   arrivals must never establish autonomous operation. Unsupported buffer

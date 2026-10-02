@@ -33,15 +33,16 @@ package.loaded["scripts.actions.build"] = { place = runner(), rotate = runner(),
 package.loaded["scripts.actions.transfer"] = { insert = runner(), extract = runner() }
 package.loaded["scripts.actions.build_plan"] = runner()
 local component_sample_count, component_ready, component_transfers, sampled_since = 0, true, 0, {}
+local source_only = false
 package.loaded["scripts.map_summary"] = { factory_component_sample = function(params)
   component_sample_count = component_sample_count + 1
   sampled_since[#sampled_since + 1] = params.source_tick
   return { tick = game.tick, source_tick = params.source_tick, component_id = "component-1",
     component_signature = "source:0:0|processor:1:0|sink:2:0", selected_node_ids = { "node-1" },
-    products_finished_total = 9 + component_sample_count,
-    _signature = "exact", _production = { processor = 9 + component_sample_count },
+    products_finished_total = source_only and 0 or 9 + component_sample_count,
+    _signature = "exact", _production = source_only and {} or { processor = 9 + component_sample_count },
     _source_production = { source = { working = true, progress = 1 - component_sample_count / 10, remaining = 100 - component_sample_count, resource_key = "ore" } },
-    _downstream = { sink = { kind = "consumer", accepting = true } }, downstream_kind = "consumer", blocked_output = false,
+    _downstream = { sink = { kind = "consumer", accepting = true, products = { ["item:plate"] = true } } }, downstream_kind = "consumer", blocked_output = false,
     character_transfer_actions = component_transfers, character_history_complete = true,
     topology_ready = component_ready, blockers = component_ready and {} or { "material_input_provenance_unresolved:item:ore" },
     graph_omissions = { nodes = 20, edges = 30, diagnostics = 40 }, exact_remote_inventories = false,
@@ -148,6 +149,20 @@ check(sampled_since[1] == 101 and sampled_since[#sampled_since] == 101
 local activity = require("scripts.factory_activity").snapshot(100)
 check(#activity.validations == 1 and activity.validations[1].component_signature == validation_done.outcomes[1].result.component_signature,
   "successful validation is retained in the existing bounded activity evidence")
+
+source_only, component_sample_count = true, 0
+storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+local source_validation = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 161,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+for _, tick in ipairs({ 162, 182, 202, 222 }) do game.tick = tick; tasks.on_tick() end
+local source_done = tasks.plan_status({ plan_id = source_validation.plan_id })
+check(source_done.status == "completed" and source_done.outcomes[1].result.products_finished_delta == 0
+  and source_done.outcomes[1].result.source_cycles_observed == 3,
+  "source-only parked proof requires source cycles and acceptance without processor counters")
+check(#storage.factory_activity.validations == 1 and storage.factory_activity.validations[1].products_finished_delta == 0,
+  "existing validation recorder retains source-only proof with zero crafting production")
+source_only = false
+game.tick = 161
 
 storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
 component_sample_count, component_ready = 0, false

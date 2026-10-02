@@ -19,7 +19,9 @@ end
 function M.record_validation(result, signature)
   if type(signature) ~= "string" or type(result) ~= "table" or type(result.component_signature) ~= "string"
     or result.proven ~= true or (tonumber(result.duration_ticks) or 0) < 1
-    or (tonumber(result.products_finished_delta) or 0) < 3
+    -- The parked validator checks every processor present. Source-only proof
+    -- has source cycles and acceptance evidence without crafting production.
+    or (tonumber(result.products_finished_delta) or -1) < 0
     or (tonumber(result.downstream_acceptance_samples) or 0) < 3
     or (tonumber(result.source_cycles_observed) or 0) < 3
     or (tonumber(result.character_transfer_actions) or 0) ~= 0 then return end

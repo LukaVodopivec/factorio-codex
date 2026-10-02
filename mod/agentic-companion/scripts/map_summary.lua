@@ -335,7 +335,8 @@ local function build_material_flow(flow_entities, node_by_key, activity)
       -- A burner source may physically refuel itself from its own output
       -- (a coal drill feeding back through transport): that loop is fuel
       -- provenance. Its own product never stands in for another input.
-      if id == start_id and fuel_only and product_matches(node_by_id[id], ingredient, true) then return true end
+      if id == start_id and fuel_only and node_by_id[id].role == "source"
+        and product_matches(node_by_id[id], ingredient, true) then return true end
       if not seen[id] then
         seen[id] = true
         local node = node_by_id[id]
@@ -418,8 +419,8 @@ local function build_material_flow(flow_entities, node_by_key, activity)
     end
   end
   for _, node in ipairs(nodes) do
-    if node.role == "buffer" then
-      node._downstream_buffer = #outgoing[node.id] == 0
+    if node.role == "buffer" or node.role == "sink" then
+      node._downstream_buffer = node.role == "buffer" and #outgoing[node.id] == 0
       local products, queue, seen, head = {}, { node.id }, {}, 1
       while head <= #queue do
         local id = queue[head]; head = head + 1
@@ -428,25 +429,33 @@ local function build_material_flow(flow_entities, node_by_key, activity)
           local upstream = node_by_id[id]
           if upstream.role == "source" or upstream.role == "processor" then
             for _, product in ipairs(upstream.products) do products[product.type .. ":" .. product.name] = product end
-          elseif upstream.role == "transport" or upstream.role == "buffer" then
+          elseif upstream.role == "transport" or upstream.role == "buffer" or id == node.id then
             for _, parent_id in ipairs(incoming[id]) do queue[#queue + 1] = parent_id end
           end
         end
       end
-      node._accepted_stock, node._accepting = {}, next(products) ~= nil
+      node._accepted_stock, node._accepted_products = {}, {}
+      node._accepting = next(products) ~= nil and (node.role == "buffer" or node.status == "working")
       for key, product in pairs(products) do
         -- Inventory values are private interval samples, never serialized.
-        -- Unsupported fluid buffers remain unproven rather than guessing capacity.
+        -- Unsupported fluid endpoints remain unproven rather than guessing capacity.
         local ok, count, accepting = pcall(function()
-          if product.type ~= "item" then error("unsupported fluid buffer acceptance") end
-          local inventory = node._entity.get_inventory(defines.inventory.chest)
+          if product.type ~= "item" then error("unsupported fluid endpoint acceptance") end
+          local inventory
+          if node.role == "buffer" then inventory = node._entity.get_inventory(defines.inventory.chest)
+          elseif node.type == "lab" then inventory = node._entity.get_inventory(defines.inventory.lab_input)
+          elseif node.type == "burner-generator" then inventory = node._entity.get_fuel_inventory()
+          else error("unsupported consumer acceptance") end
+          if node.role == "sink" then return 0, inventory.can_insert({ name = product.name, count = 1 }) end
           return inventory.get_item_count(product.name), inventory.can_insert({ name = product.name, count = 1 })
         end)
         if not ok or type(count) ~= "number" or type(accepting) ~= "boolean" then
           node._accepting = false
-          diagnostic(node, "downstream_buffer_acceptance_unproven", "unsupported")
+          diagnostic(node, node.role == "buffer" and "downstream_buffer_acceptance_unproven"
+            or "downstream_consumer_acceptance_unproven", "unsupported")
         else
           node._accepted_stock[key] = count
+          node._accepted_products[key] = accepting
           if not accepting then node._accepting = false; node._blocked_output = true end
         end
       end
@@ -478,7 +487,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
       for _, product in ipairs(node.products) do signature_rows[#signature_rows + 1] = node._key .. ":output:" .. product.type .. ":" .. product.name end
       if node.role == "sink" then
         consumers = consumers + 1
-        component._downstream[node._key] = { kind = "consumer", accepting = node.status == "working" }
+        component._downstream[node._key] = { kind = "consumer", accepting = node._accepting, products = node._accepted_products }
       elseif node._downstream_buffer then
         buffers = buffers + 1
         component._downstream[node._key] = { kind = "buffer", accepting = node._accepting, stock = node._accepted_stock }
@@ -495,7 +504,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
         if #node.products == 0 then blockers[#blockers + 1] = { node_id = id, reason = "output_identity_unproven" } end
         if not reaches_downstream(id) then blockers[#blockers + 1] = { node_id = id, reason = "downstream_acceptance_path_unproven" } end
       end
-      if node.role == "sink" and node.status == "working" then accepting_sinks = accepting_sinks + 1 end
+      if node.role == "sink" and node._accepting then accepting_sinks = accepting_sinks + 1 end
       for _, ingredient in ipairs(node.ingredients or {}) do
         if not upstream_proven(id, ingredient, false) then
           blockers[#blockers + 1] = { node_id = id, reason = "material_input_provenance_unresolved", input = ingredient }
@@ -528,9 +537,9 @@ local function build_material_flow(flow_entities, node_by_key, activity)
         blockers[#blockers + 1] = { node_id = diagnostic.node_id, reason = "relationship_diagnostic", diagnostic = diagnostic.reason }
       end
     end
-    if producing_nodes == 0 or (component.roles.source or 0) == 0 or (component.roles.processor or 0) == 0
+    if producing_nodes == 0 or (component.roles.source or 0) == 0
       or buffers + consumers == 0 then
-      blockers[#blockers + 1] = { reason = "physical_source_processor_sink_path_unproven" }
+      blockers[#blockers + 1] = { reason = "physical_source_downstream_path_unproven" }
     end
     if accepting_sinks == 0 then blockers[#blockers + 1] = { reason = "downstream_acceptance_not_observed" } end
     if blocked_output then blockers[#blockers + 1] = { reason = "blocked_output" } end

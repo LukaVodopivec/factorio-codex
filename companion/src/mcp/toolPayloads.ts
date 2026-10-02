@@ -203,3 +203,11 @@ export function normalizePlanDiagnostics(value: any): any {
     ...(physicalAudit ? { physical_audit: physicalAudit } : {}),
   };
 }
+
+// The body idled while the caller reasoned; say so where the pilot looks next.
+export function queuedPlanSummary(queued: { plan_id: number; body_idle_ticks?: number }): string {
+  const idle = Math.floor((queued.body_idle_ticks ?? 0) / 60);
+  return idle >= 10
+    ? `queued plan ${queued.plan_id}; the body sat idle ${idle} s before it: queue work that outlasts your next decision and keep a successor queued`
+    : `queued plan ${queued.plan_id}`;
+}

@@ -239,7 +239,11 @@ and zero character insert/extract actions for the segment must all hold.
   FIFO is empty while the pilot reasons after them. Copy returned plan and
   predecessor IDs verbatim; an unknown or pruned `after_plan_id` is refused.
   Keep the current plan plus one grounded queued successor and avoid
-  micro-packet idle gaps while their shared bottleneck remains valid.
+  micro-packet idle gaps while their shared bottleneck remains valid. While
+  preconditions stay valid, size each plan to outlast the pilot's next decision
+  (a minute or more of body work, such as a larger mining or crafting batch for
+  the next package's items); a `queue_plan` summary naming idle seconds means
+  the body sat idle during the decision.
   `run_plan` is sequential and nontransactional: completed and partial effects
   remain committed when a later step fails, with no rollback.
 - `inspect_entity` requires `positions`. `production_requirements` accepts

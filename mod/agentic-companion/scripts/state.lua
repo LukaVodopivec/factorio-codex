@@ -11,6 +11,7 @@ function M.init()
     records = tasks.records or {},
     queue = tasks.queue or {},
     active = tasks.active,
+    last_finished_tick = tasks.last_finished_tick,
   }
 
   -- At most one path request exists because only the sole active task runs.

@@ -7,10 +7,10 @@ import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../co
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
 import { normalizeObservation } from "./observation.js";
 import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
-import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "./toolPayloads.js";
+import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.19.1";
+export const MCP_SERVER_VERSION = "0.19.2";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -244,7 +244,7 @@ export function registerMcpTools(
   server.registerTool("queue_plan", { description: "Queue one contiguous 1–25-step physical plan and return immediately, so the body works while you read, reason, and queue one grounded successor with after_plan_id (a current plan ID). Use steps and documented action discriminators; never use summary/actions. A physical audit uses walk_to followed by inspect_entities (1–16 local positions), preserving per-step ticks and truthful partial results. The result carries the exact plan_status next action.", inputSchema: queuePlanSchema }, async (input) => {
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
-      return result({ ...queued, status: "queued", terminal: false, summary: `queued plan ${queued.plan_id}`,
+      return result({ ...queued, status: "queued", terminal: false, summary: queuedPlanSummary(queued),
         next_action: { tool: "plan_status", arguments: { plan_id: queued.plan_id, wait_until: "progress", timeout_seconds: 30 } } });
     } catch (error) { return failure(error); }
   });

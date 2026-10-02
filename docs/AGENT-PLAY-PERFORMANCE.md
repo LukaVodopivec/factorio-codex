@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.1 retains each exact placed entity and validates the live output
+Release 0.19.2 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.1 validation.
+0.19.2 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -133,6 +133,26 @@ position validates its whole component, makes every segment-completing package
 end with a validation step whose named blockers become the next repair, and
 tightens the pilot loop: queue before reading or reporting, read only the
 ledger fields it needs, and report material events in about 300 bytes.
+
+## 2026-10-02 debug cycle 2 (0.19.1) and the 0.19.2 idle feedback
+
+Run `debug-20261002T003357Z` (fresh game, seed 747930220) stopped at `GO+20m`
+with 2 machines, 1 physical edge, about 33 finished products, and no autonomous
+component. It was assisted by a GO delivery recovery (the stop rehearsal left
+both roles interrupted and idle, so the queued GO waited 70 s for a native turn
+start) and one steered idle nudge. A provider-wide stall of 5 minutes left all
+sessions without reasoning. Sol's build packages flowed: the pilot queued three
+(drill into furnace, plate export to a chest, coal drill into a chest), and the
+first validation failed its preflight on fuel, as every burner node needs a
+physical fuel edge. The decisive measurement is body busy time: plan running
+intervals covered about 14% of the run (12% in cycle 1), because most plans
+lasted seconds while each pilot decision took 20 to 85 s.
+
+Release 0.19.2 makes that cost visible where the pilot looks: `queue_plan`
+returns `body_idle_ticks`, the time the FIFO sat empty before the plan, and its
+summary names idle seconds from 10 s on. The pilot sizes each plan to outlast
+its next decision, and the runbook delivers `GO` as a native turn start on each
+role thread with a running turn read back.
 
 ## Prior 0.8.0 structured timings
 
@@ -303,7 +323,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.1, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.19.2, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -373,7 +393,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.1 benchmark results.
+present historical timings as 0.19.2 benchmark results.
 
 #### Candidate B R7 recorded result
 

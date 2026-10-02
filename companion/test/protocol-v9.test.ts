@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
 import { MCP_SERVER_VERSION, registerMcpTools } from "../src/mcp/server.js";
-import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, toolPayloads } from "../src/mcp/toolPayloads.js";
+import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
 import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
@@ -9,7 +9,7 @@ const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", r
 describe("protocol v22 DTO and tool registry", () => {
   it("declares v22 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(22);
-    expect(MCP_SERVER_VERSION).toBe("0.19.1");
+    expect(MCP_SERVER_VERSION).toBe("0.19.2");
     expect(RPC_METHODS).toHaveLength(19);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities"]));
   });
@@ -184,5 +184,13 @@ describe("placement results an executor can pass through", () => {
     ] }, placements).results;
     expect(results[0]).toMatchObject({ overlaps_batch: [], output_lands_on: null });
     expect(results[1]).toMatchObject({ overlaps_batch: [0], output_lands_on: { batch_index: 0, name: "stone-furnace" } });
+  });
+});
+
+describe("queued plan idle feedback", () => {
+  it("names the body's idle time before a plan once it reaches ten seconds", () => {
+    expect(queuedPlanSummary({ plan_id: 4, body_idle_ticks: 0 })).toBe("queued plan 4");
+    expect(queuedPlanSummary({ plan_id: 4, body_idle_ticks: 599 })).toBe("queued plan 4");
+    expect(queuedPlanSummary({ plan_id: 5, body_idle_ticks: 2700 })).toMatch(/^queued plan 5; the body sat idle 45 s before it: queue work that outlasts your next decision/);
   });
 });

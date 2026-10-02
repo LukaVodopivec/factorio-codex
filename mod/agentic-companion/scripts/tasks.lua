@@ -73,6 +73,7 @@ end
 local function finish(task, status, detail, preserve_body, outcome)
   if status == "cancelled" and task_crafts(task) then cancel_crafting() end
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
+  storage.tasks.last_finished_tick = game.tick
   if not preserve_body then stop_body() end
   if task.type == "plan" then
     task.finished_tick = game.tick
@@ -202,7 +203,13 @@ function M.queue_plan(params)
       or params.observation_detail == "compact" and "compact" or "none",
     after_plan_id = predecessor,
   }
-  return { plan_id = assign(plan), after_plan_id = predecessor }
+  -- Ticks the FIFO sat empty before this plan: the body's idle time while the
+  -- caller reasoned, so a short plan's cost is visible in the next result.
+  local tasks, body = storage.tasks, companion.get()
+  local crafting = body and body.valid and (body.crafting_queue_size or 0) > 0
+  local body_idle_ticks = (not tasks.active and #tasks.queue == 0 and not crafting and tasks.last_finished_tick)
+    and math.max(0, game.tick - tasks.last_finished_tick) or 0
+  return { plan_id = assign(plan), after_plan_id = predecessor, body_idle_ticks = body_idle_ticks }
 end
 local function plan_payload(plan)
   local c = companion.get()
@@ -297,6 +304,8 @@ function M.cancel(params)
       finish(tasks.active, "cancelled", ""); n = n + 1
     end
     cancel_crafting()
+    -- Emergency cancellation is not the next plan's idle time.
+    tasks.last_finished_tick = nil
     return { cancelled = n }
   end
   local id = tonumber(params.task_id or params.plan_id)

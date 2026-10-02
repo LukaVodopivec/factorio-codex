@@ -167,4 +167,26 @@ game.tick = 223; tasks.on_tick()
 local fed_blockers = {}
 for _, blocker in ipairs(tasks.plan_status({ plan_id = fed.plan_id }).outcomes[1].result.blockers) do fed_blockers[blocker.reason] = true end
 check(fed_blockers.character_transfer_observed, "a preflight refused for character transfers names that blocker")
+game.tick = 400
+local idle_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 400,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+local busy_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 400,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+check(idle_queued.body_idle_ticks == 400 - 223 and busy_queued.body_idle_ticks == 0,
+  "queue_plan reports how long the FIFO sat empty before it, and zero while work is pending")
+storage.tasks.queue, storage.tasks.last_finished_tick = {}, 500
+game.tick, body.crafting_queue_size = 700, 2
+local crafting_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 700,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+body.crafting_queue_size = nil
+storage.tasks.queue, storage.tasks.last_finished_tick = {}, nil
+local fresh_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 700,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+check(crafting_queued.body_idle_ticks == 0 and fresh_queued.body_idle_ticks == 0,
+  "hand-crafting in progress and a cleared or pre-upgrade clock are not idle time")
+tasks.cancel({ all = true })
+game.tick = 900
+check(tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 900,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } }).body_idle_ticks == 0,
+  "emergency cancel-all clears the idle clock, so the first plan after it is not blamed")
 os.exit(failures == 0 and 0 or 1)

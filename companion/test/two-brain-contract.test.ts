@@ -110,6 +110,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(skill).toMatch(/transfer window opens\s+when the step starts/);
     for (const text of [agents, skill, pilot]) expect(text).toMatch(/under about 300 bytes/);
     expect(skill).toMatch(/one\s+exact node position is enough/);
+    expect(pilot).toMatch(/size each queued plan to outlast the next one[\s\S]*rather than a lone one-rock or one-item plan/);
+    expect(skill).toMatch(/size each plan to outlast the pilot's next decision/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

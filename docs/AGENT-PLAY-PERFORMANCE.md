@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.5 retains each exact placed entity and validates the live output
+Release 0.19.6 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.5 validation.
+0.19.6 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -218,6 +218,64 @@ profile-evidence procedure before `GO`, report, observe once, and end its
 turn; later pre-`GO` turns do only what their message asks, and the
 thread-read ban covers the whole run.
 
+## 2026-10-02 debug cycle 5 continuation and the 0.19.6 validator audit
+
+Cycle 5 continued open-ended as run `debug-20261002T055630Z-continue`. An
+audit of its transcripts and recorder samples together with cycles 1 to 5
+found 18 `validate_factory_component` attempts, none proven and all failing at
+preflight, although 13 of them targeted segments that were delivering
+material. The continuation pilot also read threads 32 times despite the ban.
+Four validator defects were confirmed in source:
+
+- A belt counted an output only from `belt_neighbours`, which never includes
+  inserters, so every correct belt ending at an inserter pickup reported
+  `belt_orientation_does_not_reach_consumer`, and a fixture asserted it.
+- One sample of `insufficient_input` or `full_output` failed preflight or ended
+  the window, so supply-limited segments, whose burner inserters wait most of
+  the time, could never pass.
+- In Factorio 2.0 `LuaBurner.currently_burning.name` is an item prototype, not
+  a string, so the fuel-return saturation exemption never applied live
+  and `inspect_entity` showed `currently_burning: null`.
+- Blockers reached the agents as deduplicated names without positions, and the
+  pilot once repaired an unreported coordinate and broke a working loop.
+
+Chests accumulated because the instructions turned these false signals into
+work. Sol repaired every named blocker before any other objective, the pilot
+cleared `full_output` and `blocked_output` by adding sinks, every package ended
+in a new terminal chest, and no package step could remove an obsolete entity,
+so later packages were chained through the leftovers.
+
+Release 0.19.6 judges validation by throughput. Belt dead ends are decided per
+belt run, including underground pairs and loader containers, as
+`belt_dead_end_without_consumer` at the run's last tile. Blocker rows carry
+`class`, `position`, `entity` and `related_edge`; status waits are transient,
+and `blocked_output` requires an inventory that refuses the item. Preflight is
+topology only, and a segment missing its fuel edge or downstream path is
+refused as `FACTORY_COMPONENT_NOT_READY` with located rows. A window fails
+structurally only on `persistent_nonproductive_status:<status>` after a
+20-second stall, and the burner read accepts the prototype object. Replays of
+the recorded cycle-5 coal loop and the continuation's coal-return buffer now
+pass offline, while a surplus takeoff upstream of the fuel takeoff still fails
+at its drill. Sol and the pilot now repair only located structural rows, re-run
+a flow-only failure once with a longer window, redesign after two strikes, give
+each segment one terminal buffer, and may remove owned obsolete entities
+through guarded package `mine` steps. Belt orientation in `find_placement` and
+other geometry helpers wait for cycle-6 data.
+
+The release folds in the parallel fixes for several issues that landed
+first. It keeps their quality-aware pole reach, their prototype-shaped burner
+reads and the empty-hand `burning_and_stocked_fuel` return identity. Their
+per-sample transport and fuel-return obligations are replaced by window rules.
+An inserter still waiting for source items at the end, past the path recency
+limit, fails as `transport_starved_before_end` unless its drop target already
+names a longer window. This also catches a hand-stocked fuel chest behind a
+surplus takeoff that took every coal, which the audit had proven falsely,
+even after the feeder swung once early. An unreadable burner fuel stock fails as
+`fuel_stock_unreadable`. Window samples alternate 29 and 28 ticks apart so short swings are not
+aliased away. Known limit: a long belt feeding several burners from a cold
+start can fail a 60-second window and pass at 300 seconds, so use the longer
+window there.
+
 ## Prior 0.8.0 structured timings
 
 All gameplay perception and action below used the Factorio MCP text surface.
@@ -387,7 +445,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.5, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.19.6, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -457,7 +515,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.5 benchmark results.
+present historical timings as 0.19.6 benchmark results.
 
 #### Candidate B R7 recorded result
 

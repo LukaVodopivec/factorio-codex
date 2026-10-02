@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.19.5**.
+Current release: **0.19.6**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -200,12 +200,32 @@ sampling for `validate_factory_component` resolves 1–16 caller-named positions
 against the complete graph, including nodes and components absent from the
 response. Missing, ambiguous and split-component selections fail structurally.
 
+Blocker rows are classed and located. `structural` rows describe the build
+itself (a missing edge or path, inventory-proven `blocked_output`, or a raw
+status such as `no_minable_resources`, disabled or unplugged); `transient` rows
+are single status samples such as `insufficient_input`, `full_output`,
+`no_fuel` or `no_power` waits; `evidence` rows (ambiguous relationships, and
+in validation outcomes character transfers or a topology change) call for local
+inspection; in validation outcomes, `throughput` rows name window counts that
+fell short. Only non-transient names enter
+`autonomy_blockers`, and each component adds up to three `blocker_details`
+rows, one per distinct position, with `reason`, `class`, `position`, `entity`
+and `related_edge`. A belt run is the tiles joined by `belt_direction` edges,
+including an underground entrance to its exit; a consumer may pick up anywhere
+along it, through an inserter pickup or a `loader_container` edge. Only a run
+with no such outgoing edge reports `belt_dead_end_without_consumer`, at its
+last tile.
+
 Component state and validation evidence carry `downstream_kind`: `buffer`,
 `consumer`, `mixed` or `none`. A buffer stores output; it is not a consuming
 sink, and its stock never proves an upstream production source. The agent
-chooses whether buffer-ended capacity fits the current game stage. A full or
-otherwise nonaccepting output buffer (including intermediate storage) reports
-`blocked_output` and cannot claim current `autonomous_end_to_end`. Unsupported acceptance remains unproven.
+chooses whether buffer-ended capacity fits the current game stage. A buffer is
+terminal when nothing leaves it, or when everything that leaves it only refuels
+producers upstream of it (a self-fuelling coal drill's chest). A full or
+otherwise nonaccepting terminal buffer or consumer reports `blocked_output` and
+cannot claim current `autonomous_end_to_end`; a full intermediate buffer is
+ordinary backpressure judged by throughput, and a `full_output` status sample
+alone does not prove blocked output. Unsupported acceptance remains unproven.
 
 A narrowly proven fuel-replenishment branch may wait without blocking useful
 material output. Its inserter keeps normalized `status=full_output`; the node's
@@ -219,10 +239,10 @@ energy, matching stocked fuel, and supported fuel-inventory space for that
 quality. Destination compartment evidence requires a mining drill or successfully
 observed recipe ingredients. A held fuel that is also a destination recipe
 ingredient remains ambiguous. No stock threshold is hard-coded. Missing or
-incompatible evidence,
-physically full inventories, other full-output entities, and unrelated
-relationship diagnostics still block. In particular,
-`belt_orientation_does_not_reach_consumer` remains effective.
+incompatible evidence, inventory-proven `blocked_output` and unrelated
+structural relationship diagnostics still block; other `full_output` samples
+are transient. In particular,
+`belt_dead_end_without_consumer` remains effective.
 
 `identity_source=held_stack` uses a readable held item. When the stack is empty,
 `identity_source=burning_and_stocked_fuel` instead requires exactly one stocked
@@ -231,32 +251,116 @@ qualities are never read. These are supported Factorio 2.0 APIs:
 [LuaBurner.currently_burning](https://lua-api.factorio.com/2.0.72/classes/LuaBurner.html#currently_burning),
 [LuaInventory.get_contents](https://lua-api.factorio.com/2.0.72/classes/LuaInventory.html#get_contents)
 and [LuaItemStack.valid_for_read](https://lua-api.factorio.com/2.0.72/classes/LuaItemStack.html#valid_for_read).
-Conflicting or multiple stocked pairs remain unproven. Compatible burning
-energy and matching stocked fuel are checked on every validation sample for
-each identified fuel-return branch, including when its inserter resumes working.
+Conflicting or multiple stocked pairs remain unproven. During a validation
+window every sampled burner's stored fuel must stay readable; an unreadable
+fuel inventory fails the window with `fuel_stock_unreadable` (class `evidence`)
+at that burner.
 
 This distinction clears only the branch's output blockers; it never establishes
 `autonomous_end_to_end`. The existing bounded production, downstream acceptance,
 topology and complete character-transfer history requirements still apply.
 
-An inserter's exact `waiting_for_source_items` snapshot stays normalized as
-`insufficient_input`, with its input diagnostic visible. If its empty stack,
-exact pickup/drop bindings and compatible physical supply are proven, the node
-also carries `transport_wait`; the diagnostic explains provisional sampling
-through `validation_nonblocking_reason`. Only the parked validator defers these
-status-only blockers to collect later flow. Every observed wait must be followed
-by a working snapshot of that same inserter before the interval can pass.
-Persistent starvation fails even if another branch increases downstream stock.
-Other insufficient-input statuses, unsupported relationships and unrelated
-diagnostics remain hard blockers. A current source-item wait still revokes the
-public autonomy claim until fresh working evidence is observed.
+An inserter's `waiting_for_source_items` snapshot is normalized as
+`insufficient_input` and stays visible as a `transient` row; one sample never
+fails preflight or revokes a validated proof. An inserter still waiting for
+source items at the end of the window for longer than the path recency limit
+(the stall interval, or the last third of a shorter window) carried nothing
+there, so downstream growth beyond it came from stock: the window fails with
+the located row `transport_starved_before_end` (class `throughput`,
+`related_edge` `inserter_pickup`). One early swing does not clear it. It is
+not raised when the inserter's drop target already carries an evidence row
+naming a longer window, because a takeoff later in belt order waits while the
+burners ahead of it fill. Window samples alternate 29 and 28 ticks apart, so a
+short swing is not aliased away against 60-tick machine periods.
 
 `validate_factory_component` uses the existing parked plan step to sample a
-bounded 1–300 second unattended interval. It requires unchanged physical
+bounded 1–300 second unattended interval. Its preflight is topology only. When
+the first sorted row is a readiness row (unresolved fuel provenance or
+compatibility, a missing source-to-downstream or downstream acceptance
+path, or a furnace that has not smelted yet), the step is refused at once with `FACTORY_COMPONENT_NOT_READY`,
+`stage=readiness`, `refused=true` and located rows naming what to build; any
+other structural or evidence row fails `stage=preflight`. The window judges
+throughput, not single status samples. It requires unchanged physical
 relationships and recipe identities, complete transfer history, proven material
-and fuel supply, productive power/fuel status at every sample, at least three
-cycles for every processor present, three observed cycles for every source and three downstream acceptance
-samples per output item at each endpoint. Buffer acceptance requires increases
+and fuel supply, at least three cycles for every processor present, three
+observed cycles for every source and three downstream acceptance samples per
+output item at each endpoint. A source whose output only refuels other
+producers runs at their burn rate (about one coal per 27 s per burner drill):
+one cycle suffices while every producer it fuels shows three, and it is
+reported as `fuel_source_cycles_observed` instead of lowering
+`source_cycles_observed`. When none of its consumers fell below the top-up
+stock, or their draws were met from fuel already downstream while it sat
+output-blocked, it reports `fuel_demand_not_yet_exercised` (class `evidence`,
+with `suggested_duration_seconds`) instead of a cycle shortfall; one seen out
+of fuel, power, resources or enabled state keeps the throughput row. An idle furnace keeps its output identity from
+`previous_recipe` (whose 2.0 name reads back as a prototype object); one that
+never crafted has none. With material arriving from an upstream producer that is
+the readiness row `furnace_recipe_not_yet_established` (class `evidence`): start
+the window after its first smelt. Without a material feed it stays the
+structural `output_identity_unproven`. Waits never fail a window. Once nothing has
+progressed for 20 seconds, a source or processor that is nonproductive in at
+least 90% of at least three samples since the last progress ends the window
+early with `persistent_nonproductive_status:<status>`; a producer out of fuel,
+power, resources or enabled state carries that row ahead of producers that only
+wait. A window never ends proven once it has stalled (`progress_stalled`, kept
+even when progress later resumes). Independently of any stall, a source,
+transport or processor out of fuel, power (low power included), resources or
+enabled state in at least 90% of the window's samples (an inserter on an
+unpowered pole island, say), or still in one at the end for at least 180 ticks
+(and three samples), fails it with `persistent_nonproductive_status:<status>`
+at that node; a burner out of fuel no longer than its refill bound below is
+waiting for a refill. Each endpoint, each
+processor and each source that is not fuel-only that met its count must still
+have accepted, finished or mined something within four of its own observed
+event periods before the end, and within the stall interval (the last third of
+a shorter window), or the window fails with `path_stalled_before_end` at that
+node and its `last_event_tick`, so one branch that keeps moving cannot hide
+another that stopped. A burner
+producer that consumed fuel (stored energy fell, the burning remainder
+included) must be seen refilled. Consumption below the top-up stock of about
+five items with no refill for longer than its supply bound is a starved fuel
+return (`fuel_replenishment_not_observed`, with `fuel_items` and
+`fuel_draws`). The bound is the longest of 180 ticks, the longest supply
+interval its return has already shown plus one sample while the burner kept
+demanding, and one nominal mining period of its fuel source (its observed
+cycle interval when the prototype gives none) for every burner sharing that
+source, plus 180 ticks; a younger draw at the end is still in flight. A fuel
+loop must also sustain itself: when the observed burn rate of every burner a
+source fuels (split evenly among each burner's sources) exceeds what that
+source mines at full duty, the window fails with `fuel_supply_deficit` (class
+`throughput`, with `fuel_demand_watts` and `fuel_supply_watts`) at the source,
+whatever starter stock or loaded returns carried the window. A burner whose starter stock kept
+it at or above the top-up stock, so that no refill was yet due, reports
+`fuel_return_not_yet_exercised` (class `evidence`, with `fuel_items` and a
+`suggested_duration_seconds` from its observed burn rate): starter fuel cannot
+stand in for a fuel loop, and this is not a fuel-edge defect. When that
+projection exceeds 300 s it reports `fuel_return_beyond_window` (class
+`evidence`, with `projected_seconds`) instead: take its starter fuel down to two
+or three items, then rerun. A burner past its supply bound that never ran out
+while the other burners on its source were refilled and gained stock, none of
+them out of fuel, is behind a loop still converging in belt order:
+`fuel_return_not_yet_exercised` with a `suggested_duration_seconds`, not
+`fuel_replenishment_not_observed`. A supplied
+return inserter seen during the window holding compatible fuel and waiting at
+that working burner (the `supplied_working_burner_with_fuel_inventory_space`
+evidence) is the return already loaded and counts as exercised. Starter stock
+in an intermediate buffer cannot carry a window either: a non-terminal buffer
+whose stock of an item fell with no observed inflow fails
+`intermediate_buffer_draining` (class `throughput`) at that buffer, and a
+furnace or assembler whose input stock fell with no observed inflow fails
+`processor_input_draining`, so do not hand-insert input packets larger than a
+few crafts before a window. A non-terminal buffer that is not fuel-only and
+gained stock with no release within the stall interval (the last third of a
+shorter window) before the end fails
+`intermediate_buffer_outflow_not_observed`: its outlet is dead. A terminal fuel
+buffer that only receives the surplus behind fuel takeoffs on its supply line
+and saw no acceptance while a burner it sits behind was refilled and gained
+stock reports `surplus_fuel_endpoint_not_yet_reached` (class `evidence`, with
+`suggested_duration_seconds`) instead of an acceptance shortfall. Bootstrap burners
+with at most two or three fuel items when a fuel return exists, and size
+windows to cover one fuel item per burner (a burner drill burns a coal in about
+27 s, a stone furnace in about 45 s at full duty and proportionally longer
+below it). Buffer acceptance requires increases
 in each matching output stock across distinct samples; a working consumer
 must also accept every relevant output through its native input inventory
 at each counted sample. Supported item probes use lab input or burner-generator
@@ -277,12 +381,23 @@ return path with exact runtime bindings; compatible output or starter fuel
 stock alone does not suffice. Topology readiness and local operation precede
 bounded proof and never establish `autonomous_end_to_end` on their own.
 Private inventory/resource samples and exact internal identity strings are never
-returned. Validation returns aggregate production deltas,
-`source_cycles_observed`, `downstream_acceptance_samples` and structured blockers, with at most 24 blocker rows and an omission count.
+returned. Validation returns `stage` (`readiness`, `preflight` or `window`),
+aggregate production deltas, `source_cycles_observed`,
+`fuel_source_cycles_observed` when a fuel-only source was judged by its
+consumers, `downstream_acceptance_samples`, `samples_observed`,
+`last_progress_tick`, and located blocker rows (`reason`, `class`, `position`,
+`entity`, `related_edge`, plus `last_event_tick`, `fuel_items`, `fuel_draws`,
+`fuel_demand_watts`, `fuel_supply_watts`, `suggested_duration_seconds` or
+`projected_seconds` where
+they apply), readiness first, deduplicated by reason and position, at
+most 12 with an `omitted_blockers` count. Up to eight `transient_conditions`
+rows report waits that did not fail it.
 Serialization omissions alone do not reject validation. Character transfers,
-changed topology, missing fuel, no production or unobserved downstream acceptance
-do reject it. A prior proof also loses current autonomy when a new transfer,
-nonproductive status or blocked output appears. These are sampled bounded
+changed topology, persistent missing fuel or power, no production or unobserved
+downstream acceptance do reject it. A prior proof also loses current autonomy
+when a new transfer or blocked output appears, or when a source or processor is
+at `no_fuel`, `no_power`, `no_resources` or disabled
+(`validated_producer_nonproductive`); input and output waits do not revoke it. These are sampled bounded
 claims, not a guarantee about every intervening tick or unlimited future demand.
 
 ## Verification

@@ -41,7 +41,14 @@ const planIds = z.object({
 });
 
 const PACKAGE_STEP_ACTIONS = new Set(["place_entity", "insert_items", "extract_items", "set_recipe", "rotate_entity",
-  "inspect_entities", "wait_for_item", "validate_factory_component"]);
+  "mine", "inspect_entities", "wait_for_item", "validate_factory_component"]);
+// A package may remove one owned entity it supersedes; resource mining stays the pilot's.
+const packageStep = planStepSchema
+  .refine((step) => PACKAGE_STEP_ACTIONS.has(step.action),
+    "package steps are placement, insertion, extraction, recipe, rotation, owned-entity removal, inspection, item waits, and validation; the pilot adds its own travel, gathering, and crafting")
+  .refine((step) => step.action !== "mine" || (step.target_kind === "owned" && step.expected_name !== undefined
+    && step.count === 1 && !step.allow_fluid_loss),
+  "package mine steps remove one owned entity: target_kind owned, expected_name, count 1, no fluid loss");
 const packageId = z.string().regex(/^[a-z0-9-]{1,32}$/, "package ids are 1-32 lowercase letters, digits or dashes");
 // A coupled layout Sol designed and checked with find_placement/can_place; the
 // pilot revalidates it, adds its own travel and gathering, and queues the steps.
@@ -54,8 +61,7 @@ const buildPackage = z.object({
   anchor: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
   required_items: z.record(z.string().min(1), z.number().int().positive())
     .refine((required) => Object.keys(required).length <= 16, "at most 16 required items"),
-  steps: z.array(planStepSchema.refine((step) => PACKAGE_STEP_ACTIONS.has(step.action),
-    "package steps are placement, insertion, extraction, recipe, rotation, inspection, item waits, and validation; the pilot adds its own travel, gathering, and crafting")).min(1).max(25),
+  steps: z.array(packageStep).min(1).max(25),
   validated_place_steps: z.array(z.number().int().nonnegative()).max(24),
   success_check: text(240),
 }).strict();
@@ -90,9 +96,13 @@ function packageIssues(packages: BuildPackage[], sourceTick: number | null): str
     if (entry.steps.filter((step) => step.action === "place_entity").length > 24) {
       issues.push(`${at}.steps: at most 24 placements, so one can_place batch checks them`);
     }
+    const removed = new Set(entry.steps.flatMap((step) => step.action === "mine" ? [`${step.x},${step.y}`] : []));
     entry.steps.forEach((step, stepIndex) => {
       if (step.action === "place_entity" && !entry.validated_place_steps.includes(stepIndex)) {
         issues.push(`${at}.steps.${stepIndex}: placement not listed in validated_place_steps`);
+      }
+      if (step.action === "place_entity" && removed.has(`${step.x},${step.y}`)) {
+        issues.push(`${at}.steps.${stepIndex}: placement targets the position of this package's own mine step`);
       }
     });
     if (entry.validated_place_steps.some((stepIndex) => entry.steps[stepIndex]?.action !== "place_entity")) {

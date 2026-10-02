@@ -242,6 +242,34 @@ describe("validated build packages", () => {
     expect(reduceLedger(ledger(), withPackages([validated])).result).toMatchObject({ status: "applied", revision: 1 });
   });
 
+  it("accepts a package that empties and removes one owned entity it supersedes", () => {
+    const removal = { ...drillPair(), steps: [...drillPair().steps,
+      { action: "extract_items", x: 48, y: -30, items: { "iron-plate": 10 } },
+      { action: "mine", x: 48, y: -30, target_kind: "owned", expected_name: "wooden-chest" }] };
+    const reduced = reduceLedger(ledger(), withPackages([removal]));
+    expect(reduced.result).toMatchObject({ status: "applied", revision: 1 });
+    expect(reduced.ledger?.build_packages[0].steps.at(-1)).toMatchObject({ action: "mine", count: 1, allow_fluid_loss: false });
+  });
+
+  it("rejects package removals that are not one guarded owned entity, or that it places on", () => {
+    const mine = { action: "mine", x: 48, y: -30, target_kind: "owned", expected_name: "wooden-chest" };
+    const removal = (step: Record<string, unknown>) => ({ ...drillPair(), steps: [step], validated_place_steps: [] });
+    const { target_kind: _kind, ...untargeted } = mine;
+    const { expected_name: _name, ...unnamed } = mine;
+    for (const step of [untargeted, { ...mine, target_kind: "natural" }, unnamed, { ...mine, count: 2 }, { ...mine, allow_fluid_loss: true }]) {
+      const result = reduceLedger(ledger(), withPackages([removal(step)])).result;
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("build_packages.0.steps.0")
+        && issue.includes("one owned entity"))).toBe(true);
+    }
+    const replaced = { ...drillPair(), steps: [{ ...mine, x: 45, y: -30, expected_name: "wooden-chest" }, ...drillPair().steps],
+      validated_place_steps: [1, 2] };
+    const result = reduceLedger(ledger(), withPackages([replaced])).result;
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("build_packages.0.steps.1")
+      && issue.includes("own mine step"))).toBe(true);
+  });
+
   it("rejects packages it could not execute as written, with the offending path", () => {
     const cases: Array<[unknown[], string]> = [
       [[drillPair("a"), drillPair("b"), drillPair("c")], "build_packages"],

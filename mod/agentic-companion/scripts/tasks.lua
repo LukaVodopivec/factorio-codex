@@ -379,6 +379,201 @@ local function wait_for_research(plan, step)
   plan.next_check_tick = game.tick + 30
 end
 
+-- Validation judges throughput, never a single status sample. A component
+-- passes on several downstream/production events with no character transfer
+-- and unchanged topology; it fails structurally early only when a producer
+-- stays nonproductive while nothing has moved for the stall interval, and it
+-- never ends proven while stalled.
+local VALIDATION_MIN_EVENTS = 3
+local VALIDATION_STALL_TICKS = 20 * 60
+local VALIDATION_STRUCTURAL_NONPRODUCTIVE_SHARE = 0.9
+-- Odd, so its phase drifts across the 60-tick-multiple machine periods and a
+-- short inserter swing cannot alias between every sample.
+local VALIDATION_MAX_SAMPLE_TICKS = 29
+local VALIDATION_MAX_ROWS = 12
+local VALIDATION_MAX_TRANSIENT_ROWS = 8
+local VALIDATION_MAX_DURATION_SECONDS = 300
+-- An inserter tops up a burner's fuel inventory only below this stock, and
+-- answers a draw within about a swing, or within the supply interval its
+-- return has already shown; a younger unrefilled draw at the end of the window
+-- is still in flight.
+local VALIDATION_FUEL_TOP_UP_ITEMS = 5
+local VALIDATION_REFILL_GRACE_TICKS = 180
+-- A path that kept a regular event period is stopped once its last event is
+-- older than this many of its own periods.
+local VALIDATION_RECENCY_PERIODS = 4
+local NONPRODUCTIVE_STATUSES = {
+  insufficient_input = true, full_output = true, no_fuel = true, no_power = true,
+  low_power = true, no_resources = true, disabled = true,
+}
+-- A stalled producer out of fuel, power, resources or enabled state is the
+-- cause; its neighbours' input and output waits are symptoms.
+local VALIDATION_CAUSE_STATUSES = { no_fuel = true, no_power = true, no_resources = true, disabled = true }
+-- Any node held in one of these for nearly the whole window is dead on its
+-- own path, whatever the rest of the component did.
+local VALIDATION_DEAD_STATUSES = { no_fuel = true, no_power = true, low_power = true, no_resources = true, disabled = true }
+
+-- Non-transient graph rows, plus transfer evidence. Older or stubbed samples
+-- carry bare blocker names, which are treated as structural.
+local function hard_rows(sample)
+  local rows = {}
+  if sample._blocker_rows then
+    for _, row in ipairs(sample._blocker_rows) do if row.class ~= "transient" then rows[#rows + 1] = row end end
+  else
+    for _, blocker in ipairs(sample.blockers or {}) do
+      rows[#rows + 1] = type(blocker) == "table" and blocker or { reason = blocker, class = "structural" }
+    end
+  end
+  if (sample.character_transfer_actions or 0) > 0 then rows[#rows + 1] = { reason = "character_transfer_observed", class = "evidence" } end
+  if not sample.character_history_complete then rows[#rows + 1] = { reason = "character_transfer_history_incomplete", class = "evidence" } end
+  return rows
+end
+
+-- Readiness rows first, one row per (reason, position), bounded for plan_status.
+-- Rows are copied without internal graph ids; the third result says whether
+-- the first row is a readiness row.
+local function outcome_rows(rows, limit)
+  local ordered, seen, readiness_first = {}, {}, false
+  for pass = 1, 2 do
+    for _, row in ipairs(rows) do
+      local key = row.reason .. (row.position and string.format("\0%.17g\0%.17g", row.position.x, row.position.y) or "")
+      if (row.gate == "readiness") == (pass == 1) and not seen[key] then
+        seen[key] = true
+        if #ordered == 0 then readiness_first = pass == 1 end
+        ordered[#ordered + 1] = { reason = row.reason, class = row.class, position = row.position, entity = row.entity,
+          related_edge = row.related_edge, samples = row.samples, nonproductive_samples = row.nonproductive_samples,
+          last_event_tick = row.last_event_tick, fuel_items = row.fuel_items, fuel_draws = row.fuel_draws,
+          fuel_demand_watts = row.fuel_demand_watts, fuel_supply_watts = row.fuel_supply_watts,
+          suggested_duration_seconds = row.suggested_duration_seconds, projected_seconds = row.projected_seconds }
+      end
+    end
+  end
+  local omitted = math.max(0, #ordered - limit)
+  while #ordered > limit do table.remove(ordered) end
+  return ordered, omitted, readiness_first
+end
+
+-- Each counter keeps whole-window counts and a stall interval reset by any
+-- progress, so a segment that worked early and then stopped is judged on the
+-- stop. Burner producers also track stored fuel: a rise in energy or items is
+-- a refill, a fall is consumption (the burning remainder counts, so a burner
+-- with an empty fuel inventory still consumes). Consumption below the top-up
+-- stock owes a refill until one arrives. A supply-limited return answers once
+-- per supply period: while each refill still leaves the burner below the
+-- top-up stock, demand is continuous, and the gap since the previous refill
+-- (or since the first unanswered draw) is the longest wait it has shown.
+local function observe_statuses(step, sample, progressed)
+  step._samples = step._samples + 1
+  for key, info in pairs(sample._node_status or {}) do
+    local counter = step._status_counts[key] or { samples = 0, nonproductive = 0, statuses = {} }
+    step._status_counts[key] = counter
+    if progressed or not counter.stall then counter.stall = { samples = 0, nonproductive = 0, statuses = {} } end
+    counter.role, counter.position, counter.entity = info.role, info.position, info.entity
+    counter.fuel_sources, counter.fuel_supply_unmodelled = info.fuel_sources, info.fuel_supply_unmodelled
+    counter.fuel_unreadable = counter.fuel_unreadable or info.fuel_unreadable
+    counter.drop_to = info.drop_to
+    for _, counts in ipairs({ counter, counter.stall }) do
+      counts.samples = counts.samples + 1
+      if NONPRODUCTIVE_STATUSES[info.status] and not info.saturated then
+        counts.nonproductive = counts.nonproductive + 1
+        counts.statuses[info.status] = (counts.statuses[info.status] or 0) + 1
+      end
+    end
+    -- The current dead streak: the tick the node entered a dead status,
+    -- reset by any sample outside that set.
+    if VALIDATION_DEAD_STATUSES[info.status] then
+      counter.dead_since, counter.dead_status = counter.dead_since or game.tick, info.status
+    else counter.dead_since, counter.dead_status = nil, nil end
+    -- The current starved streak: waiting for source items since this tick.
+    if info.status == "insufficient_input" and not info.saturated then
+      counter.starved_since = counter.starved_since or game.tick
+    else counter.starved_since = nil end
+    if type(info.fuel_energy) == "number" and type(info.fuel_items) == "number" then
+      if counter.fuel_energy then
+        if info.fuel_energy > counter.fuel_energy + 1 or info.fuel_items > counter.fuel_items then
+          local since = counter.refill_left_demand and counter.refill_tick or counter.refill_owed_tick
+          if since then counter.refill_interval = math.max(counter.refill_interval or 0, game.tick - since) end
+          counter.refill_tick, counter.refill_left_demand = game.tick, info.fuel_items < VALIDATION_FUEL_TOP_UP_ITEMS
+          counter.refuelled, counter.refill_owed_tick = true, nil
+        else
+          counter.burn_energy = (counter.burn_energy or 0) + counter.fuel_energy - info.fuel_energy
+          counter.burn_ticks = (counter.burn_ticks or 0) + game.tick - counter.fuel_tick
+          if info.fuel_items < counter.fuel_items then counter.fuel_draws = (counter.fuel_draws or 0) + 1 end
+          if info.fuel_energy < counter.fuel_energy or info.fuel_items < counter.fuel_items then
+            counter.consumed = true
+            if info.fuel_items < VALIDATION_FUEL_TOP_UP_ITEMS then
+              counter.refill_owed_tick, counter.demanded = counter.refill_owed_tick or game.tick, true
+            end
+          end
+        end
+      end
+      counter.fuel_energy, counter.fuel_items, counter.fuel_tick = info.fuel_energy, info.fuel_items, game.tick
+      counter.first_fuel_items = counter.first_fuel_items or info.fuel_items
+      counter.fuel_item_energy = info.fuel_item_energy or counter.fuel_item_energy
+    end
+  end
+  -- A supplied return inserter holding compatible fuel and waiting at a
+  -- working burner with fuel inventory space is the return, already loaded.
+  for _, info in pairs(sample._node_status or {}) do
+    local counter = info.fuel_return_to and step._status_counts[info.fuel_return_to]
+    if counter then counter.return_waiting = true end
+  end
+end
+
+local function status_row(counter, class, counts)
+  counts = counts or counter
+  local dominant, most
+  for status, count in pairs(counts.statuses) do
+    if not most or count > most or count == most and status < dominant then dominant, most = status, count end
+  end
+  return { reason = (class == "structural" and "persistent_nonproductive_status:" or "nonproductive_status:") .. dominant,
+    class = class, position = counter.position, entity = counter.entity,
+    samples = counts.samples, nonproductive_samples = counts.nonproductive }, dominant
+end
+
+-- Seconds a window started from the current stock needs, whatever the
+-- burning phase, for this burner to fall below the top-up limit and be
+-- answered at its observed burn rate; capped at the longest window. The
+-- second result is the uncapped projection, when a burn rate is known.
+local function refill_due_seconds(counter, requested, wait)
+  local rate = (counter.burn_ticks or 0) > 0 and (counter.burn_energy or 0) / counter.burn_ticks or 0
+  local item = counter.fuel_item_energy
+  if rate <= 0 or not item then return VALIDATION_MAX_DURATION_SECONDS end
+  local draws = math.max(1, counter.fuel_items - VALIDATION_FUEL_TOP_UP_ITEMS + 1)
+  local ticks = draws * item / rate + math.max(VALIDATION_REFILL_GRACE_TICKS, wait or 0) + 2 * VALIDATION_MAX_SAMPLE_TICKS
+  local seconds = math.ceil(ticks / 60)
+  return math.min(VALIDATION_MAX_DURATION_SECONDS, math.max(requested, seconds)), seconds
+end
+
+-- The first, last and number of sampled event ticks per path (endpoint
+-- acceptance, processor crafts, source cycles), at most one per sample.
+local function note_event(step, key)
+  local stats = step._events[key] or { count = 0 }
+  step._events[key] = stats
+  if stats.last == game.tick then return end
+  stats.first, stats.last, stats.count = stats.first or game.tick, game.tick, stats.count + 1
+end
+
+-- Rises of sampled stock between consecutive samples, and the tick of the
+-- last fall.
+local function track_stock(current, previous, inflow, outflow)
+  for key, stock in pairs(current or {}) do
+    local before = (previous or {})[key]
+    for product, count in pairs(stock) do
+      if before and before[product] and count > before[product] then
+        inflow[key] = inflow[key] or {}
+        inflow[key][product] = true
+      elseif before and before[product] and count < before[product] then outflow[key] = game.tick end
+    end
+  end
+end
+
+local function by_position(a, b)
+  if not a.position or not b.position then return a.position ~= nil and b.position == nil end
+  if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+  return a.position.x < b.position.x
+end
+
 local function validate_factory_component(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
   step._wait_started_tick = step._wait_started_tick or plan.wait_started_tick
@@ -388,19 +583,20 @@ local function validate_factory_component(plan, step)
     -- Bootstrap insertions queued before this step (fuel, input packets) are
     -- historical debt; the transfer window opens when validation starts.
     step._window_tick = math.max(step.source_tick, game.tick)
-    step._baseline = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions, sample_transport_waits = true })
-    if not step._baseline.topology_ready then
-      local blockers = {}
-      for _, blocker in ipairs(step._baseline.blockers or {}) do
-        blockers[#blockers + 1] = type(blocker) == "table" and blocker or { reason = blocker }
-      end
-      if step._baseline.character_transfer_actions > 0 then blockers[#blockers + 1] = { reason = "character_transfer_observed" } end
-      if not step._baseline.character_history_complete then blockers[#blockers + 1] = { reason = "character_transfer_history_incomplete" } end
-      local omitted_blockers = math.max(0, #blockers - 24)
-      while #blockers > 24 do table.remove(blockers) end
+    step._baseline = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions })
+    local rows = hard_rows(step._baseline)
+    if not step._baseline.topology_ready or #rows > 0 then
+      -- Preflight is topology only. A missing fuel edge or downstream path is
+      -- a readiness refusal naming what to build, not a geometry defect.
+      local blockers, omitted_blockers, not_ready = outcome_rows(rows, VALIDATION_MAX_ROWS)
+      local first = blockers[1]
       plan.wait_started_tick, plan.next_check_tick = nil, nil
-      return { status = "failed", detail = "factory component autonomy preflight not proven", outcome = {
-        code = "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN", proven = false, stage = "preflight",
+      return { status = "failed", detail = not_ready and (first.position
+          and string.format("factory component not ready for validation: %s at %.1f,%.1f", first.reason, first.position.x, first.position.y)
+          or "factory component not ready for validation: " .. first.reason)
+          or "factory component autonomy preflight not proven", outcome = {
+        code = not_ready and "FACTORY_COMPONENT_NOT_READY" or "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN", proven = false,
+        stage = not_ready and "readiness" or "preflight", refused = not_ready or nil,
         source_tick = step.source_tick, transfer_window_start_tick = step._window_tick, component_signature = step._baseline.component_signature,
         selected_node_ids = step._baseline.selected_node_ids, start_tick = step._baseline.tick,
         end_tick = step._baseline.tick, requested_duration_seconds = step.duration_seconds, duration_ticks = 0,
@@ -413,11 +609,9 @@ local function validate_factory_component(plan, step)
       } }
     end
     step._validation_due_tick = game.tick + math.floor(step.duration_seconds * 60)
-    step._sample_interval = math.max(1, math.min(30, math.floor(step.duration_seconds * 60 / 3)))
+    step._sample_interval = math.max(1, math.min(VALIDATION_MAX_SAMPLE_TICKS, math.floor(step.duration_seconds * 60 / 3)))
     step._sample_phase = 0
     step._previous, step._acceptance_counts = step._baseline, {}
-    step._waiting_transports = {}
-    for key in pairs(step._baseline._transport_waits or {}) do step._waiting_transports[key] = false end
     for key, downstream in pairs(step._baseline._downstream) do
       step._acceptance_counts[key] = {}
       if downstream.kind == "consumer" then
@@ -426,39 +620,36 @@ local function validate_factory_component(plan, step)
     end
     step._source_cycles = {}
     for key in pairs(step._baseline._source_production) do step._source_cycles[key] = 0 end
+    step._buffer_inflow, step._buffer_outflow, step._input_inflow, step._input_outflow = {}, {}, {}, {}
+    step._samples, step._status_counts, step._last_progress_tick = 0, {}, game.tick
+    -- Per-path recency: when each endpoint accepted, each processor finished
+    -- a product and each source cycled, so one live branch cannot hide
+    -- another branch that stopped.
+    step._events = {}
+    observe_statuses(step, step._baseline, false)
     plan.next_check_tick = math.min(step._validation_due_tick, game.tick + step._sample_interval)
     return nil
   end
-  local final = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions, sample_transport_waits = true })
+  local final = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions })
   local delta = final.products_finished_total - step._baseline.products_finished_total
-  local blockers = {}
-  for _, blocker in ipairs(final.blockers or {}) do
-    blockers[#blockers + 1] = type(blocker) == "table" and blocker or { reason = blocker }
-  end
+  local progressed = final.products_finished_total > step._previous.products_finished_total
+  local blockers = hard_rows(final)
   if final._signature ~= step._baseline._signature then
-    blockers[#blockers + 1] = { reason = "component_topology_changed_during_validation" }
-  end
-  if final.character_transfer_actions > 0 then blockers[#blockers + 1] = { reason = "character_transfer_observed" } end
-  if not final.character_history_complete then blockers[#blockers + 1] = { reason = "character_transfer_history_incomplete" } end
-  for key in pairs(final._transport_waits or {}) do
-    -- Every newly observed shortage opens a resumption obligation. Other
-    -- branches' production cannot conceal this transport's persistent wait.
-    step._waiting_transports[key] = false
-  end
-  for key in pairs(final._transport_working or {}) do
-    if step._waiting_transports[key] ~= nil then step._waiting_transports[key] = true end
+    blockers[#blockers + 1] = { reason = "component_topology_changed_during_validation", class = "evidence" }
   end
   for key, downstream in pairs(final._downstream) do
     local previous, counts = step._previous._downstream[key], step._acceptance_counts[key]
     if counts and downstream.accepting then
       if downstream.kind == "consumer" then
         for product, accepting in pairs(downstream.products) do
-          if counts[product] and accepting then counts[product] = counts[product] + 1 end
+          if counts[product] and accepting then counts[product] = counts[product] + 1; note_event(step, key) end
         end
       elseif previous then
         for product, count in pairs(downstream.stock) do
           if counts[product] and previous.stock[product] and count > previous.stock[product] then
             counts[product] = counts[product] + 1
+            note_event(step, key)
+            progressed = true
           end
         end
       end
@@ -468,51 +659,360 @@ local function validate_factory_component(plan, step)
     local previous = step._previous._source_production[key]
     -- products_finished is a CraftingMachine counter, not a drill counter.
     -- A progress wrap plus depletion of the same charted mining target proves
-    -- at least one completed source cycle; aliased/unsupported samples do not.
-    if previous and source.working and source.resource_key and source.resource_key == previous.resource_key
+    -- at least one completed source cycle, whatever the sampled status was;
+    -- aliased/unsupported samples do not.
+    if previous and source.resource_key and source.resource_key == previous.resource_key
       and type(source.progress) == "number" and type(previous.progress) == "number"
       and source.progress < previous.progress
       and type(source.remaining) == "number" and type(previous.remaining) == "number"
       and source.remaining < previous.remaining then
       step._source_cycles[key] = step._source_cycles[key] + 1
+      note_event(step, key)
+      progressed = true
     end
   end
+  for key, count in pairs(final._production) do
+    local before = step._previous._production[key]
+    if type(count) == "number" and type(before) == "number" and count > before then note_event(step, key) end
+  end
+  track_stock(final._buffers, step._previous._buffers, step._buffer_inflow, step._buffer_outflow)
+  track_stock(final._inputs, step._previous._inputs, step._input_inflow, step._input_outflow)
   step._previous = final
-  if game.tick < step._validation_due_tick and #blockers == 0 then
+  if progressed then step._last_progress_tick = game.tick end
+  observe_statuses(step, final, progressed)
+  local persistent, stalled = {}, game.tick - step._last_progress_tick >= VALIDATION_STALL_TICKS
+  -- A stall once seen stays seen: later trickle progress cannot erase it.
+  if stalled then step._stalled_once = true end
+  if stalled then
+    local causes, waits = {}, {}
+    for _, counter in pairs(step._status_counts) do
+      local stall = counter.stall
+      if (counter.role == "source" or counter.role == "processor") and stall.samples >= VALIDATION_MIN_EVENTS
+        and stall.nonproductive / stall.samples >= VALIDATION_STRUCTURAL_NONPRODUCTIVE_SHARE then
+        local row, dominant = status_row(counter, "structural", stall)
+        local list = VALIDATION_CAUSE_STATUSES[dominant] and causes or waits
+        list[#list + 1] = { counter = counter, row = row }
+      end
+    end
+    -- Wait-only producers carry the row only when no stalled producer has a cause.
+    for _, entry in ipairs(#causes > 0 and causes or waits) do
+      entry.counter.persistent = true
+      persistent[#persistent + 1] = entry.row
+    end
+    table.sort(persistent, by_position)
+  end
+  if game.tick < step._validation_due_tick and #blockers == 0 and #persistent == 0 then
     -- Alternate adjacent intervals so a mining period dividing the nominal
     -- cadence does not keep every sample at the same phase indefinitely.
     step._sample_phase = 1 - step._sample_phase
     plan.next_check_tick = math.min(step._validation_due_tick, game.tick + math.max(1, step._sample_interval - step._sample_phase))
     return nil
   end
+  for _, row in ipairs(persistent) do blockers[#blockers + 1] = row end
+  local pending = {}
+  local function throughput(reason, key, related_edge, fields)
+    local info = key and final._node_status and final._node_status[key]
+    local row = { reason = reason, class = "throughput", position = info and info.position, entity = info and info.entity,
+      related_edge = related_edge }
+    for field, value in pairs(fields or {}) do row[field] = value end
+    if key and row.class == "evidence" then pending[key] = true end
+    blockers[#blockers + 1] = row
+  end
+  -- A supply-limited source hands its burners one fuel item per mining
+  -- period, so an unanswered draw may first wait for every other burner on
+  -- that source: the wait bound is their count times the source's nominal
+  -- period (its observed cycle interval when no nominal is known), plus the
+  -- swing and transport grace, or the longest supply interval its return has
+  -- already shown plus a sample. A younger unanswered draw is still in flight.
+  local sharing = {}
+  for _, counter in pairs(step._status_counts) do
+    for _, source in ipairs(counter.fuel_sources or {}) do sharing[source] = (sharing[source] or 0) + 1 end
+  end
+  local window_ticks = math.max(1, final.tick - step._baseline.tick)
+  local function source_period(key)
+    local production = final._source_production[key] or {}
+    if production.mining_period_ticks then return production.mining_period_ticks end
+    local cycles = step._source_cycles[key] or 0
+    if cycles > 0 then return window_ticks / cycles end
+  end
+  local function supply_wait(counter)
+    local best
+    for _, source in ipairs(counter.fuel_sources or {}) do
+      local period = source_period(source)
+      if period then best = math.min(best or math.huge, sharing[source] * period + VALIDATION_REFILL_GRACE_TICKS) end
+    end
+    return best or VALIDATION_REFILL_GRACE_TICKS
+  end
+  local function refill_wait(counter)
+    return math.max(supply_wait(counter), (counter.refill_interval or 0) + step._sample_interval)
+  end
+  -- A source, transport or processor out of fuel, power, resources or enabled
+  -- state in nearly every window sample, or still in one at the end for
+  -- longer than an inserter swing and a few samples, is dead on its own path
+  -- although another branch kept the component progressing (an inserter on an
+  -- unpowered pole island, say). A burner out of fuel no longer than its
+  -- refill bound is waiting for a refill in flight. Full output stays a
+  -- throughput question.
+  local dead, dead_limit = {}, math.max(VALIDATION_REFILL_GRACE_TICKS, 3 * step._sample_interval)
+  for _, counter in pairs(step._status_counts) do
+    if not counter.persistent and counter.role ~= "buffer" and counter.role ~= "sink" then
+      local caused, dominant, most = 0, nil, nil
+      for status, count in pairs(counter.statuses) do
+        if VALIDATION_DEAD_STATUSES[status] then
+          caused = caused + count
+          if not most or count > most or count == most and status < dominant then dominant, most = status, count end
+        end
+      end
+      local streak = counter.dead_since and final.tick - counter.dead_since or 0
+      local refilling = counter.dead_status == "no_fuel" and counter.fuel_energy ~= nil
+        and final.tick - (counter.refill_owed_tick or counter.dead_since) <= refill_wait(counter)
+      if counter.samples < VALIDATION_MIN_EVENTS or caused / counter.samples < VALIDATION_STRUCTURAL_NONPRODUCTIVE_SHARE then
+        dominant = streak >= dead_limit and not refilling and counter.dead_status or nil
+      end
+      if dominant then
+        counter.persistent = true
+        dead[#dead + 1] = { reason = "persistent_nonproductive_status:" .. dominant, class = "structural",
+          position = counter.position, entity = counter.entity, samples = counter.samples, nonproductive_samples = caused }
+      end
+    end
+  end
+  -- Unreadable burner fuel cannot show the fuel supply continuing.
+  for _, counter in pairs(step._status_counts) do
+    if counter.fuel_unreadable then
+      dead[#dead + 1] = { reason = "fuel_stock_unreadable", class = "evidence", position = counter.position, entity = counter.entity }
+    end
+  end
+  table.sort(dead, by_position)
+  for _, row in ipairs(dead) do blockers[#blockers + 1] = row end
+  if step._stalled_once and #persistent == 0 then throughput("progress_stalled") end
+  -- Starter fuel can outlast the window. A burner that consumed fuel must be
+  -- seen refilled; one whose consumption left it below the top-up stock with
+  -- no refill for longer than its refill bound has a starved fuel loop. One
+  -- that never fell below the top-up stock has not exercised its return yet
+  -- unless its supplied return was seen loaded and waiting: that is
+  -- inconclusive, not a geometry defect, and names a longer window, or the
+  -- projected time when no window reaches the draw.
+  --
+  -- Takeoffs on a belt are served in belt order, so a burner may wait for
+  -- every burner ahead of it to reach the top-up stock: one that never ran
+  -- out while others on its source were refilled and gained stock, none of
+  -- them out of fuel, is behind a loop still converging, evidence naming a
+  -- window that lets them fill.
+  local function converging(counter)
+    local ticks
+    for _, other in pairs(step._status_counts) do
+      local shared = false
+      for _, source in ipairs(other ~= counter and other.fuel_sources or {}) do
+        for _, mine in ipairs(counter.fuel_sources or {}) do shared = shared or source == mine end
+      end
+      if shared then
+        if other.statuses.no_fuel then return nil end
+        local rise = other.refuelled and other.fuel_items and other.first_fuel_items and other.fuel_items - other.first_fuel_items or 0
+        if rise > 0 then
+          ticks = math.max(ticks or 0, (math.max(0, VALIDATION_FUEL_TOP_UP_ITEMS - other.fuel_items) + 1) * window_ticks / rise)
+        end
+      end
+    end
+    return ticks
+  end
+  for key, counter in pairs(step._status_counts) do
+    local supply = supply_wait(counter)
+    if counter.refill_owed_tick and final.tick - counter.refill_owed_tick > refill_wait(counter) then
+      local filling = not counter.statuses.no_fuel and converging(counter)
+      if filling then
+        throughput("fuel_return_not_yet_exercised", key, nil, { class = "evidence", fuel_items = counter.fuel_items,
+          fuel_draws = counter.fuel_draws or 0,
+          suggested_duration_seconds = math.min(VALIDATION_MAX_DURATION_SECONDS, math.ceil(filling / 60) + step.duration_seconds) })
+      else
+        throughput("fuel_replenishment_not_observed", key, { kind = "fuel_input" },
+          { fuel_items = counter.fuel_items, fuel_draws = counter.fuel_draws or 0 })
+      end
+    elseif counter.consumed and not counter.refuelled
+      and not (counter.return_waiting and counter.fuel_items >= VALIDATION_FUEL_TOP_UP_ITEMS) then
+      local due, projected = refill_due_seconds(counter, step.duration_seconds, supply)
+      if projected and projected > VALIDATION_MAX_DURATION_SECONDS then
+        throughput("fuel_return_beyond_window", key, nil, { class = "evidence", fuel_items = counter.fuel_items,
+          fuel_draws = counter.fuel_draws or 0, projected_seconds = projected })
+      else
+        throughput("fuel_return_not_yet_exercised", key, nil, { class = "evidence", fuel_items = counter.fuel_items,
+          fuel_draws = counter.fuel_draws or 0, suggested_duration_seconds = due })
+      end
+    end
+  end
+  -- A fuel loop must also be able to sustain itself: the observed burn rate
+  -- of every burner a source fuels (split evenly among that burner's
+  -- sources) cannot exceed what the source can mine at full duty. Starter
+  -- stock and loaded returns hide a deficit only until the stock runs out.
+  local demand = {}
+  for _, counter in pairs(step._status_counts) do
+    if counter.fuel_sources and not counter.fuel_supply_unmodelled and (counter.burn_ticks or 0) > 0 then
+      local rate = (counter.burn_energy or 0) / counter.burn_ticks
+      for _, source in ipairs(counter.fuel_sources) do demand[source] = (demand[source] or 0) + rate / #counter.fuel_sources end
+    end
+  end
+  for key, need in pairs(demand) do
+    local production, supply = final._source_production[key] or {}, nil
+    if production.fuel_value and production.mining_period_ticks then
+      supply = production.fuel_value / production.mining_period_ticks
+    elseif production.fuel_value and (step._source_cycles[key] or 0) > 0
+      and not ((step._status_counts[key] or {}).statuses or {}).full_output then
+      supply = production.fuel_value * step._source_cycles[key] / window_ticks
+    end
+    if supply and need > supply then
+      throughput("fuel_supply_deficit", key, { kind = "fuel_input" },
+        { fuel_demand_watts = math.floor(need * 60), fuel_supply_watts = math.floor(supply * 60) })
+    end
+  end
+  -- Every endpoint and processor must still be moving near the end: within
+  -- the stall interval, or the last third of a shorter window. A component
+  -- stall already names the stop.
+  -- A path with a regular period must also have moved within a few of its
+  -- own periods.
+  local recency = math.min(VALIDATION_STALL_TICKS, math.max(1, math.floor(step.duration_seconds * 60 / 3)))
+  local function recent(key, count)
+    if step._stalled_once or count < VALIDATION_MIN_EVENTS or (step._status_counts[key] or {}).persistent then return end
+    local stats = step._events[key] or { count = 0 }
+    local last, limit = stats.last or step._baseline.tick, recency
+    if stats.count >= VALIDATION_MIN_EVENTS then
+      local period = (stats.last - stats.first) / (stats.count - 1)
+      limit = math.min(recency, math.max(VALIDATION_REFILL_GRACE_TICKS, math.ceil(VALIDATION_RECENCY_PERIODS * period)))
+    end
+    if final.tick - last > limit then
+      throughput("path_stalled_before_end", key, nil, { last_event_tick = last })
+    end
+  end
   local acceptance_samples
-  for _, counts in pairs(step._acceptance_counts) do
-    for _, count in pairs(counts) do acceptance_samples = math.min(acceptance_samples or count, count) end
+  for key, counts in pairs(step._acceptance_counts) do
+    local endpoint
+    for _, count in pairs(counts) do
+      acceptance_samples = math.min(acceptance_samples or count, count)
+      endpoint = math.min(endpoint or count, count)
+    end
+    if (endpoint or 0) < VALIDATION_MIN_EVENTS then
+      -- A terminal fuel buffer behind fuel takeoffs gets only their surplus:
+      -- while a burner it sits behind was refilled and gained stock, the
+      -- loop is still converging, which is evidence naming a longer window.
+      local filling
+      for _, consumer in ipairs((step._baseline._downstream[key] or {}).fuel_takeoffs or {}) do
+        local counter = step._status_counts[consumer]
+        local rise = counter and counter.refuelled and counter.fuel_items and counter.first_fuel_items
+          and counter.fuel_items - counter.first_fuel_items or 0
+        if rise > 0 then
+          local remaining = math.max(0, VALIDATION_FUEL_TOP_UP_ITEMS - counter.fuel_items) + 1
+          filling = math.max(filling or 0, remaining * window_ticks / rise)
+        end
+      end
+      if filling then
+        throughput("surplus_fuel_endpoint_not_yet_reached", key, nil, { class = "evidence",
+          suggested_duration_seconds = math.min(VALIDATION_MAX_DURATION_SECONDS, math.ceil(filling / 60) + step.duration_seconds) })
+      else throughput("bounded_downstream_acceptance_not_observed", key) end
+    else recent(key, endpoint) end
   end
+  if not acceptance_samples then throughput("bounded_downstream_acceptance_not_observed") end
   acceptance_samples = acceptance_samples or 0
-  local source_cycles
-  for _, count in pairs(step._source_cycles) do source_cycles = math.min(source_cycles or count, count) end
-  source_cycles = source_cycles or 0
-  for _, resumed in pairs(step._waiting_transports) do
-    if not resumed then blockers[#blockers + 1] = { reason = "transport_resumption_not_observed" }; break end
+  -- A source that only refuels other producers cycles at their burn rate: one
+  -- cycle suffices when every producer it fuels shows several cycles. Such a
+  -- source is reported separately and never lowers source_cycles_observed.
+  local function producer_cycles(key)
+    if step._source_cycles[key] then return step._source_cycles[key] end
+    local count, before = final._production[key], step._baseline._production[key]
+    return type(count) == "number" and type(before) == "number" and count - before or 0
   end
-  if source_cycles < 3 then blockers[#blockers + 1] = { reason = "several_source_cycles_not_observed" } end
-  if acceptance_samples < 3 then blockers[#blockers + 1] = { reason = "bounded_downstream_acceptance_not_observed" } end
-  if next(step._baseline._production) and delta <= 0 then
-    blockers[#blockers + 1] = { reason = "bounded_production_delta_not_observed" }
+  -- When none of its consumers drew below the top-up stock, or every draw was
+  -- met from fuel already downstream while the source sat output-blocked,
+  -- nothing has needed it to cycle yet: inconclusive evidence naming a window
+  -- that reaches a draw. A source that showed a cause status stays a defect.
+  local source_cycles, fuel_source_cycles
+  for key, count in pairs(step._source_cycles) do
+    local fuel_consumers = (final._source_production[key] or {}).fuel_consumers
+    local fuelled = fuel_consumers ~= nil and count >= 1 and count < VALIDATION_MIN_EVENTS
+    local demanded, due = false, nil
+    for _, consumer in ipairs(fuel_consumers or {}) do
+      if producer_cycles(consumer) < VALIDATION_MIN_EVENTS then fuelled = false end
+      local counter = step._status_counts[consumer]
+      if counter and (counter.demanded or counter.refuelled) then demanded = true end
+      due = math.max(due or 0, counter and refill_due_seconds(counter, step.duration_seconds, supply_wait(counter))
+        or VALIDATION_MAX_DURATION_SECONDS)
+    end
+    local statuses = (step._status_counts[key] or {}).statuses or {}
+    local caused, backpressured = false, (statuses.full_output or 0) > 0
+    for status in pairs(statuses) do
+      if VALIDATION_CAUSE_STATUSES[status] then caused = true end
+      if status ~= "full_output" then backpressured = false end
+    end
+    if fuelled then fuel_source_cycles = math.min(fuel_source_cycles or count, count)
+    elseif fuel_consumers and count < VALIDATION_MIN_EVENTS and not caused and (not demanded or backpressured) then
+      throughput("fuel_demand_not_yet_exercised", key, nil, { class = "evidence", suggested_duration_seconds = due })
+    else
+      source_cycles = math.min(source_cycles or count, count)
+      if count < VALIDATION_MIN_EVENTS then throughput("several_source_cycles_not_observed", key)
+      elseif not fuel_consumers then recent(key, count) end
+    end
+  end
+  if not source_cycles then throughput("several_source_cycles_not_observed") end
+  source_cycles = source_cycles or 0
+  if next(step._baseline._production) and delta <= 0 then throughput("bounded_production_delta_not_observed") end
+  -- Starter stock in an intermediate buffer, or a packet in a processor's
+  -- input, can carry its consumers through a window: a stage whose stock fell
+  -- with no inflow is draining, not fed. A non-fuel intermediate buffer that
+  -- gained stock and released none within the path recency limit before the
+  -- end has a dead outlet.
+  local function draining(current, baseline, inflow, reason)
+    for key, stock in pairs(current or {}) do
+      local before = (baseline or {})[key]
+      for product, count in pairs(stock) do
+        if before and before[product] and count < before[product] and not (inflow[key] or {})[product] then
+          throughput(reason, key)
+          break
+        end
+      end
+    end
+  end
+  draining(final._buffers, step._baseline._buffers, step._buffer_inflow, "intermediate_buffer_draining")
+  draining(final._inputs, step._baseline._inputs, step._input_inflow, "processor_input_draining")
+  for key, stock in pairs(final._buffers or {}) do
+    local before = (step._baseline._buffers or {})[key]
+    if before and step._buffer_inflow[key] and final.tick - (step._buffer_outflow[key] or step._baseline.tick) > recency
+      and not (final._fuel_buffers or {})[key] then
+      for product, count in pairs(stock) do
+        if before[product] and count > before[product] then throughput("intermediate_buffer_outflow_not_observed", key); break end
+      end
+    end
   end
   for key, count in pairs(final._production) do
     local before = step._baseline._production[key]
-    if type(count) ~= "number" or type(before) ~= "number" or count - before < 3 then
-      blockers[#blockers + 1] = { reason = "several_processor_cycles_not_observed" }
+    if type(count) ~= "number" or type(before) ~= "number" or count - before < VALIDATION_MIN_EVENTS then
+      throughput("several_processor_cycles_not_observed", key)
+    else recent(key, count - before) end
+  end
+  -- An inserter still waiting for source items past the path recency limit
+  -- at the end carries nothing: growth beyond it came from stock. A wait at
+  -- a drop target whose own evidence row names a longer window is a loop
+  -- still filling in belt order, not a dead edge.
+  for key, counter in pairs(step._status_counts) do
+    if counter.role == "transport" and not counter.persistent and counter.samples >= VALIDATION_MIN_EVENTS
+      and counter.starved_since and final.tick - counter.starved_since > recency
+      and not (counter.drop_to and pending[counter.drop_to]) then
+      throughput("transport_starved_before_end", key, { kind = "inserter_pickup" },
+        { samples = counter.samples, nonproductive_samples = counter.nonproductive })
     end
   end
   local proven = final.topology_ready and #blockers == 0
-  local omitted_blockers = math.max(0, #blockers - 24)
-  while #blockers > 24 do table.remove(blockers) end
+  local transient = {}
+  for _, counter in pairs(step._status_counts) do
+    if counter.nonproductive > 0 and not counter.persistent then transient[#transient + 1] = status_row(counter, "transient") end
+  end
+  table.sort(transient, function(a, b)
+    local share_a, share_b = a.nonproductive_samples / a.samples, b.nonproductive_samples / b.samples
+    if share_a ~= share_b then return share_a > share_b end
+    return by_position(a, b)
+  end)
+  local omitted_blockers
+  blockers, omitted_blockers = outcome_rows(blockers, VALIDATION_MAX_ROWS)
+  while #transient > VALIDATION_MAX_TRANSIENT_ROWS do table.remove(transient) end
   local outcome = {
     code = proven and "FACTORY_COMPONENT_AUTONOMY_PROVEN" or "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN",
-    proven = proven, source_tick = step.source_tick, transfer_window_start_tick = step._window_tick,
+    proven = proven, stage = "window", source_tick = step.source_tick, transfer_window_start_tick = step._window_tick,
     component_signature = final.component_signature, selected_node_ids = final.selected_node_ids,
     start_tick = step._baseline.tick, end_tick = final.tick,
     requested_duration_seconds = step.duration_seconds,
@@ -522,8 +1022,11 @@ local function validate_factory_component(plan, step)
     products_finished_delta = delta,
     character_transfer_actions = final.character_transfer_actions,
     downstream_kind = final.downstream_kind, blocked_output = final.blocked_output,
-    source_cycles_observed = source_cycles, downstream_acceptance_samples = acceptance_samples,
+    source_cycles_observed = source_cycles, fuel_source_cycles_observed = fuel_source_cycles,
+    downstream_acceptance_samples = acceptance_samples,
     topology_ready = final.topology_ready, blockers = blockers, omitted_blockers = omitted_blockers,
+    transient_conditions = #transient > 0 and transient or nil,
+    samples_observed = step._samples, last_progress_tick = step._last_progress_tick,
     evidence_class = "bounded_multi_tick_component_validation",
     exact_remote_inventories = false, exact_remote_fluids = false,
   }

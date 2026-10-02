@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.19.5**. Prior live evidence remains historical
-until the fresh 0.19.5 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.19.6**. Prior live evidence remains historical
+until the fresh 0.19.6 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -83,7 +83,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.19.5 reliability pass, also record these observable checks without
+For the 0.19.6 reliability pass, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
 
 - A compact observation stays bounded, names every omission count, and appears
@@ -173,8 +173,11 @@ checks.
   working status alone cannot prove endpoint acceptance.
   The historical coal-buffer increase and offline fixtures do not prove live
   autonomy; live evidence needs the exact deployed source/archive identity and
-  a fresh structured multi-tick interval. A queued terminal belt rotation is
-  not a completed repair; retain its orientation diagnostic until re-observed.
+  a fresh structured multi-tick interval. A belt run that ends at an inserter
+  pickup, an underground pair, or a loader into a container must not report
+  `belt_dead_end_without_consumer`; a run with no consumer reports it once, at
+  its last tile, with a position. A queued repair is not complete until
+  re-observed.
 - Make the buffer full or nonaccepting. Confirm `blocked_output` and revoked
   current autonomy. Buffer capacity alone and production without accepted
   arrivals must never establish autonomous operation. Unsupported buffer
@@ -194,26 +197,27 @@ checks.
   as working. Unsupported or ambiguous compartment/fuel evidence stays blocked.
 - Observe exact `waiting_for_source_items` snapshots at preflight and during
   sampling on both a fuel-return and a material-transport inserter. Confirm the
-  normalized shortage and diagnostic remain visible, with `transport_wait`
-  evidence and `validation_nonblocking_reason` explaining provisional sampling.
-  Record later working resumption of each waiting inserter, all required source
-  and processor cycles, matching acceptance at every endpoint and zero transfers.
-  Persistent waiting must fail even when independent downstream stock grows;
-  generic `insufficient_input` must still fail preflight. A current waiting
-  snapshot must revoke an existing public autonomy claim.
+  status stays visible as a `transient` row and never refuses preflight. Record
+  all required source and processor cycles, matching acceptance at every
+  endpoint and zero transfers. A node nonproductive for the stall interval, or
+  still dead at the window end, must fail as `persistent_nonproductive_status`
+  even when independent downstream stock grows. Starve one takeoff from the
+  window's first third to its end while stock carries its consumers; it must
+  fail as `transport_starved_before_end` at that inserter.
 - Observe fuel consumption, resumed ordinary replenishment, and renewed waiting
   with unchanged topology. Record continued source/processor production,
   downstream acceptance and zero character transfers across the bounded
   validation interval. Then independently exercise genuine productive-output
-  and full/nonaccepting buffer blockage, incompatible/unresolved fuel, and the
-  end-belt orientation diagnostic; each must still reject autonomy. Do not
-  repair a belt layout merely to remove that diagnostic in this check.
-- Check positive burning energy and matching compatible stocked fuel at every
-  sample, including after the return inserter resumes working. Independently
-  remove stock, interrupt burning energy, make fuel evidence unsupported or
-  contradictory, and keep downstream output growing through another branch.
-  Each broken return must still reject validation and revoke current proof;
-  aggregate output growth is not continuous fuel evidence.
+  and full/nonaccepting buffer blockage, incompatible/unresolved fuel, and a
+  belt run without a consumer; each must still reject autonomy with a located
+  row. A segment without a fuel edge or downstream buffer must be refused as
+  `FACTORY_COMPONENT_NOT_READY` (`stage=readiness`) before any window.
+- Check positive burning energy and matching compatible stocked fuel during
+  the window, including after the return inserter resumes working. Independently
+  remove stock, interrupt burning energy, or make fuel evidence unsupported,
+  and keep downstream output growing through another branch. Each broken return
+  must still fail validation with a located fuel row; aggregate output growth is
+  not continuous fuel evidence.
 - Record the exact deployed source revision and mod archive digest with live
   structured observations. The Lua saturation/replenishment fixture is offline
   simulated evidence, not confirmation of the reported release 0.19.5 live
@@ -222,7 +226,15 @@ checks.
   altering an unrelated active run.
 - During separate validation intervals, interrupt fuel/power, change a physical
   relationship, stop production, or perform a character transfer. Each must
-  produce structured rejection. Check complete transfer attribution even when
+  produce structured rejection. Hold a fuel/power interruption past the
+  20-second stall, or until throughput stops: a short interruption while output
+  continues is a transient wait that passes and appears only in
+  `transient_conditions`. The sustained one must end the window with
+  `persistent_nonproductive_status:no_fuel` or `:no_power` at the producer, and
+  a validated producer at that status must lose `autonomous_end_to_end`. A
+  burner loop running on starter fuel with its fuel return starved must fail
+  with that stall row or `fuel_replenishment_not_observed`, even when it
+  produced earlier in the window. Check complete transfer attribution even when
   the public target-action rows are omitted. Bounded validation samples the
   interval; it cannot guarantee every intervening tick or future buffer demand.
 
@@ -765,7 +777,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.19.5 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.19.6 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -796,14 +808,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.19.5. They
+The successful observations below were collected before release 0.19.6. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.19.5. Complete the fresh run above after installing 0.19.5 before recording a
+0.19.6. Complete the fresh run above after installing 0.19.6 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.19.5 run must instead report protocol v22 and mod/app 0.19.5.
+  0.8.0. A 0.19.6 run must instead report protocol v22 and mod/app 0.19.6.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

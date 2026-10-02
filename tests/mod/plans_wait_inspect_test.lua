@@ -173,6 +173,9 @@ local rejected_status = tasks.plan_status({ plan_id = rejected.plan_id })
 check(rejected_status.status == "failed" and rejected_status.outcomes[1].result.proven == false
   and rejected_status.outcomes[1].result.blockers[1].reason:match("material_input_provenance_unresolved"),
   "unproven material provenance fails with its structured diagnostic instead of advancing successors")
+check(rejected_status.outcomes[1].result.blockers[1].class == "structural"
+  and rejected_status.outcomes[1].result.stage == "preflight" and rejected_status.outcomes[1].result.refused == nil,
+  "bare blocker names from an older sample shape are wrapped as structural preflight rows")
 
 storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
 component_sample_count, component_ready, component_transfers = 0, false, 2

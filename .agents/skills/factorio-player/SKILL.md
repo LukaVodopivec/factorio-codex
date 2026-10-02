@@ -297,17 +297,74 @@ and zero character insert/extract actions for the segment must all hold.
 - A `validate_factory_component` plan step proves autonomy for one whole
   physical component: its 1-16 `positions` only identify the component (one
   exact node position is enough), and it samples the component for
-  `duration_seconds` (long enough for several processor cycles). Queue it only once every
-  node of the segment has a physical feed, fuel included; a hand-fuelled burner
-  always fails on `fuel_input_provenance_unresolved`. Its transfer window opens
+  `duration_seconds` (long enough for several processor cycles and one fuel
+  item per burner: a burner drill burns a coal in about 27 s, a stone furnace in
+  about 45 s at full duty and longer when it waits on input; a source that only
+  refuels other burners cycles at their burn rate). Bootstrap burners with at
+  most two or three fuel items when a fuel return exists, so the return is
+  exercised inside the window. Queue it only once every
+  node of the segment has a physical feed, fuel included; otherwise it is
+  refused as `FACTORY_COMPONENT_NOT_READY` (stage `readiness`) with located rows
+  naming the missing edge: a fuel edge, or a path from the producer to the
+  segment's existing buffer or consumer (`furnace_recipe_not_yet_established`
+  only means the furnace has not smelted yet: queue the window after its first
+  plate); only `physical_source_downstream_path_unproven`
+  means the segment has no buffer or consumer yet (a chest whose only outlet
+  refuels its own upstream drill is that loop's terminal buffer). Its transfer window opens
   when the step starts, so queue it after a `wait_for_item` on the segment's
   terminal output, once bootstrap insertions are done and the segment produces.
-  A failed preflight lists named blockers such as
-  `relationship_diagnostic:belt_orientation_does_not_reach_consumer` or
-  `relationship_diagnostic:downstream_inventory_blocked`; those are the next
-  repair at that site, before anyone leaves it: the pilot clears
-  `nonproductive_status:*` and `blocked_output`; Sol packages every other
-  blocker, including fuel and input provenance, which need a physical feed.
+  A failed result lists blocker rows (`reason`, `position`, `entity`,
+  `related_edge`, `class` structural, throughput, transient, or evidence); a window's
+  structural failure is `persistent_nonproductive_status:<status>`, and waits
+  appear only in `transient_conditions`; `throughput` rows name window counts
+  that fell short, such as `progress_stalled`, `path_stalled_before_end` (an
+  endpoint, processor or source that stopped, for more than a few of its own
+  periods, before the end while another branch kept moving),
+  `fuel_replenishment_not_observed` (a burner below its top-up stock was not
+  refilled), `fuel_supply_deficit` (the burners a fuel source feeds burn more
+  than it can mine: add fuel supply or remove burners from that loop),
+  `intermediate_buffer_draining` or `processor_input_draining` (a non-terminal
+  chest or a machine's input fell with no inflow: starter stock carried the
+  window, so its feed is dead or starved; never hand-insert more than a few
+  crafts of input before a window) or `intermediate_buffer_outflow_not_observed`
+  (a non-terminal chest only filled near the end: its outlet is dead). A node
+  out of fuel or power for nearly the whole window or for the last few seconds,
+  such as an unpowered inserter, fails as
+  `persistent_nonproductive_status:<status>` even while other branches move.
+  `fuel_return_not_yet_exercised`, `fuel_demand_not_yet_exercised` and
+  `surplus_fuel_endpoint_not_yet_reached` are evidence, not defects: starter
+  fuel kept the burner above its top-up stock (or burners ahead of it on its
+  fuel belt are still filling), nothing yet drew on a fuel-only source, or the
+  burners ahead of an overflow chest are still filling, so rerun
+  once with its `suggested_duration_seconds` and change no geometry.
+  `fuel_return_beyond_window` (with `projected_seconds`) means no window
+  reaches that burner's first top-up: take its starter fuel down to two or
+  three items, then rerun.
+  Check a structural relationship diagnostic against the component's edges
+  first; once the edge is confirmed missing it is a located structural row. An
+  evidence row (an ambiguous diagnostic included) is never repaired: inspect
+  locally without changing geometry. A located
+  structural row (such as `relationship_diagnostic:belt_dead_end_without_consumer`
+  at a belt run's last tile) always wins: Sol packages its repair at that
+  position and `related_edge`, and the pilot changes no geometry at a failed
+  site except through that package or the fail-open rule. Only when every
+  remaining row is throughput, transient, or evidence and output rose with zero
+  character transfers does nobody rotate or remove anything: the pilot runs one
+  longer re-validation (at most 300 seconds), and if it fails again Sol records
+  a suspected validator false negative in `assumptions`. The same structural
+  blocker failing a segment twice means redesign, not a third repair.
+- Each segment ends in a consumer or at most one terminal buffer. Fix full or
+  inventory-proven `blocked_output` at its cause (empty the buffer as a named
+  bridge, or extend the segment to a consumer), never by adding a chest or sink.
+  A package removes what it makes obsolete with an owned-entity removal step
+  (`expected_name`, count 1). Removal is refused while the entity holds items,
+  fuel included, or while hand-crafting is queued: its feeding inserter is
+  removed first, then an extraction naming every item it may hold, with counts
+  at or above its capacity, precedes the removal. A replacement on a removed
+  entity's tiles goes in a successor package, since `can_place` still sees the
+  standing entity. On a
+  belt shared by a burner's fuel takeoff and a surplus takeoff, the fuel takeoff
+  sits upstream so surplus never starves the fuel loop.
 - `mine` count means physical mining cycles, not guaranteed items. Recalculate
   BOMs, successors, fuel, and waits from actual accepted/produced quantities. Derive
   item ceilings from the in-game learned per-cycle yield and confirm them with

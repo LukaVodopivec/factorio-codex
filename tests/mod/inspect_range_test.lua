@@ -21,8 +21,11 @@ local entity = {
   power_usage = 90, power_production = 0,
   burner = { remaining_burning_fuel = 1250, currently_burning = { name = { name = "coal", fuel_value = 4000 }, quality = { name = "normal" } } },
   prototype = { burner_prototype = { effectivity = 0.8 }, electric_energy_source_prototype = {
-    buffer_capacity = 5000, input_flow_limit = 120, output_flow_limit = 0,
+    buffer_capacity = 5000,
+    get_input_flow_limit = function(quality) return quality and quality.name == "uncommon" and 156 or nil end,
+    get_output_flow_limit = function(quality) return quality and quality.name == "uncommon" and 0 or nil end,
   } },
+  quality = { name = "uncommon" },
 }
 local found_entity = entity
 local inspection_queries = 0
@@ -61,6 +64,8 @@ check(at_limit and type(at_limit_result.entities) == "table"
   and at_limit_result.entities[1].electrical.network_id == 17
   and at_limit_result.entities[1].electrical.energy == 2400
   and at_limit_result.entities[1].electrical.buffer_capacity == 5000
+  and at_limit_result.entities[1].electrical.input_flow_limit == 156
+  and at_limit_result.entities[1].electrical.output_flow_limit == 0
   and at_limit_result.entities[1].burner.remaining_burning_fuel == 1250
   and at_limit_result.entities[1].burner.currently_burning == "coal"
   and at_limit_result.entities[1].burner.current_fuel_value == 4000

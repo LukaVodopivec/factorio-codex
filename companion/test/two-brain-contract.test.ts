@@ -94,7 +94,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(strategist).toMatch(/design every coupled layout yourself/i);
     expect(strategist).toMatch(/one `can_place` batch[\s\S]*`overlaps_batch`/);
     expect(strategist).toMatch(/Coordinates appear only inside validated build packages; NOW, NEXT, and LATER stay coordinate-free/);
-    expect(strategist).toMatch(/never movement, pickup, mining, or crafting/);
+    expect(strategist).toMatch(/owned-entity removal[\s\S]*never movement, pickup, resource mining, or crafting/);
     expect(strategist).toMatch(/Every ledger update restates the pending packages/);
     expect(pilot).toMatch(/fail open: design that one coupled connection yourself/);
     expect(pilot).toMatch(/batched `can_place`[\s\S]*`queue_plan` its steps unchanged/);
@@ -104,8 +104,9 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/designs every coupled layout as a validated build\s+package/);
     expect(pilot).toMatch(/After `GO`, before any ledger read, report, or long deliberation, make sure a plan is queued/);
     expect(pilot).toMatch(/jq -c '\{revision, source_tick, run, assumptions, NOW: \.task_list\.NOW, build_packages\}'/);
-    expect(pilot).toMatch(/When a validation fails, stay at that site: queue the fixes for its `nonproductive_status:\*`[\s\S]*`blocked_output` blockers yourself[\s\S]*which a hand insertion cannot clear/);
-    expect(strategist).toMatch(/next package repairs the layout blockers it names[\s\S]*at that site before any other objective/);
+    expect(pilot).toMatch(/When a validation fails, stay at that site and change no geometry there except through Sol's package or the fail-open rule, and then only at a located structural blocker and its `related_edge`/);
+    expect(pilot).not.toMatch(/queue the fixes for its `nonproductive_status/);
+    expect(normalized).not.toMatch(/before any other objective|those are the next repair at that site/);
     expect(strategist).toMatch(/completes a segment ends with a `wait_for_item` on the segment's terminal output[\s\S]*followed by a validation step/);
     expect(skill).toMatch(/transfer window opens\s+when the step starts/);
     for (const text of [agents, skill, pilot]) expect(text).toMatch(/under about 300 bytes/);
@@ -118,6 +119,49 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/a `plan_status` summary saying the FIFO is empty means it is not/);
     expect(pilot).toMatch(/size each queued plan to outlast the next one[\s\S]*rather than a lone one-rock or one-item plan/);
     expect(skill).toMatch(/size each plan to outlast the pilot's next decision/);
+  });
+
+  it("lets a located structural row win and treats flow-only failures as one longer re-validation", () => {
+    for (const text of [pilot, strategist, skill].map((entry) => entry.replace(/\s+/g, " "))) {
+      expect(text).toMatch(/located structural (?:row|blocker)[\s\S]*always wins/);
+      expect(text).toMatch(/every (?:remaining )?row is throughput, transient, or evidence/);
+      expect(text).toMatch(/(?:`duration_seconds` at most 300|\(at most 300 seconds\)|longer `duration_seconds` \(at most 300\))/);
+    }
+    expect(strategist).toMatch(/check a structural `relationship_diagnostic:\*` against the edges first, and once the edge is confirmed missing it is a located structural row; an `evidence` row \(an ambiguous diagnostic included\) is never repaired/);
+    expect(skill.replace(/\s+/g, " ")).toMatch(/Check a structural relationship diagnostic against the component's edges first; once the edge is confirmed missing it is a located structural row/);
+    expect(skill).toMatch(/`class` structural, throughput, transient, or evidence/);
+    expect(strategist).toMatch(/repairs it at its `position` and `related_edge`/);
+    expect(strategist).toMatch(/report[s]? `false-negative <package>`[\s\S]*suspected validator false negative in `assumptions`/);
+    expect(pilot).toMatch(/if it fails again, report `false-negative <package>`/);
+    expect(pilot).toMatch(/an `evidence` row \(an ambiguous diagnostic included\) is a hypothesis: inspect locally, never rotate, remove, or move for it/);
+    expect(skill).toMatch(/Sol records\s+a suspected validator false negative in `assumptions`/);
+    expect(strategist).toMatch(/`FACTORY_COMPONENT_NOT_READY` refusal \(stage `readiness`\) names the missing edge: package a fuel edge, or connect the producer to the segment's existing buffer or consumer; add a buffer only when the row is `physical_source_downstream_path_unproven`/);
+    expect(pilot).toMatch(/`FACTORY_COMPONENT_NOT_READY` refusal names the missing edge \(a fuel edge, or a path to the segment's existing buffer or consumer\)/);
+    expect(skill).toMatch(/refused as `FACTORY_COMPONENT_NOT_READY` \(stage `readiness`\)[\s\S]*segment's existing buffer or consumer[\s\S]*only `physical_source_downstream_path_unproven`/);
+    expect(normalized).not.toMatch(/names what to build/);
+  });
+
+  it("ends each segment in a consumer or at most one terminal buffer and fixes full output at its cause", () => {
+    expect(strategist).toMatch(/End each segment in a consumer or at most one terminal buffer; fix full or blocked output at its cause[\s\S]*never by adding another chest or sink/);
+    expect(skill.replace(/\s+/g, " ")).toMatch(/Each segment ends in a consumer or at most one terminal buffer[\s\S]*never by adding a chest or sink/);
+    expect(normalized).not.toMatch(/exactly one terminal buffer/);
+    expect(pilot).toMatch(/Inventory-proven `blocked_output` means the terminal buffer is full: empty it as a named bridge or report it so Sol extends to a consumer; never add a chest or sink/);
+    expect(`${strategist}\n${skill}`).toMatch(/fuel takeoff sits upstream so surplus never starves the fuel loop/);
+    const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ");
+    expect(knowledge).toMatch(/fuel-return inserter over a full fuel slot\) is normal/);
+    expect(knowledge).toMatch(/zero utilization at that sample only/);
+  });
+
+  it("redesigns after two strikes and removes superseded entities only through guarded package steps", () => {
+    expect(strategist).toMatch(/same structural blocker fails the same segment twice[\s\S]*redesign that segment from fresh reads instead of a third repair/);
+    expect(pilot).toMatch(/same structural blocker fails the same segment twice, report `redesign <package>` instead of repairing again/);
+    expect(skill).toMatch(/same structural\s+blocker failing a segment twice means redesign/);
+    expect(strategist).toMatch(/owned-entity removal steps \(`target_kind` `owned`, `expected_name`, count 1\)/);
+    expect(strategist).toMatch(/Removal is refused while the entity holds items, fuel included, or while hand-crafting is still queued: remove its feeding inserter first \(extracting that inserter's fuel\), then put an extraction step ahead of the removal naming every item the entity may hold, with counts at or above what it can hold/);
+    expect(strategist).toMatch(/place a replacement on a removed entity's tiles in a successor package \(`after_package_id`\)/);
+    expect(normalized).not.toMatch(/removed or stopped|remove or stop its feeding inserter/);
+    expect(strategist).toMatch(/Never remove a node of a segment with recent accepted output before its replacement proves output/);
+    expect(pilot).toMatch(/or a removal whose target is gone\) and queue the remaining steps in order/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

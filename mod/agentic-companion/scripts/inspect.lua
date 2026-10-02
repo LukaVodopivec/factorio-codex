@@ -275,8 +275,9 @@ local function inspect_one(position, c)
   local ok_source, source = pcall(function() return e.prototype.electric_energy_source_prototype end)
   if ok_source and source then
     electrical_number("buffer_capacity", function() return source.buffer_capacity end)
-    electrical_number("input_flow_limit", function() return source.input_flow_limit end)
-    electrical_number("output_flow_limit", function() return source.output_flow_limit end)
+    -- Factorio 2.0 flow limits are quality-dependent prototype methods.
+    electrical_number("input_flow_limit", function() return source.get_input_flow_limit(e.quality) end)
+    electrical_number("output_flow_limit", function() return source.get_output_flow_limit(e.quality) end)
   end
   if next(electrical) ~= nil then out.electrical = electrical end
 

@@ -25,8 +25,13 @@ save-specific observations.
 - `observed-success-condition`: A machine output needs a free physical
   destination that actually accepts the produced item. Count capacity only
   after structured state observes output at that destination.
-- `observed-zero-utilization`: `waiting_for_space_in_destination` means the
-  producing machine has zero current utilization even if it produced earlier.
+- `observed-zero-utilization`: `waiting_for_space_in_destination` means zero
+  utilization at that sample only, even if it produced earlier; a status is one
+  sample, so judge a segment by downstream output over a window.
+- `observed-normal-backpressure`: an inserter waiting for space while its
+  destination is stocked (such as a fuel-return inserter over a full fuel slot)
+  is normal; mining or rotating it breaks a working loop. Fix a persistently
+  full destination at its consumer.
 - `retained-scaling-check`: Validate and capture existing output before scaling
   upstream input, fuel, or machine count. A destination type or direction that
   failed once is a falsifier for that arrangement, not a universal rule.

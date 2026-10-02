@@ -50,7 +50,9 @@ local surface = {
   find_entities_filtered = function(filter) if filter.type == "resource" then return resources end; return { machine, foreign_machine, invalid_machine, body } end,
 }
 body.surface = surface
-package.loaded["scripts.companion"] = { require_companion = function() return body end }
+package.loaded["scripts.companion"] = { require_companion = function() return body end,
+  -- The real dependency-free burner reader, not a stub of it.
+  burning_item = dofile(here .. "/../../mod/agentic-companion/scripts/companion.lua").burning_item }
 _G.prototypes = { tile = {
   land = { collision_mask = { layers = {} } },
   water = { collision_mask = { layers = { water_tile = true, player = true } } },
@@ -420,13 +422,42 @@ check(not saturation_component.state.blocked_output and saturation_component.sta
   and saturation_node.status == "full_output" and saturation_node.fuel_return_saturation.fuel == "coal"
   and canonical(saturated.factory.material_flow.diagnostics):match("proven_fuel_return_saturation"),
   "proven ordinary replenishment saturation clears all three blockers, preserves waiting status and does not establish autonomy")
+local function saturation_rows()
+  local rows = {}
+  for _, row in ipairs(map.factory_component_sample({ source_tick = game.tick, positions = { buffer_source.position } })._blocker_rows) do
+    rows[#rows + 1] = row.reason .. ":" .. row.class
+  end
+  return table.concat(rows, ",")
+end
+check(not saturation_rows():match("full_output"), "a proven fuel-return saturation is not even a transient wait")
+local string_burning = buffer_source.burner.currently_burning
+buffer_source.burner.currently_burning = { name = { name = "coal", fuel_value = 4000000 }, quality = { name = "normal" } }
+local object_saturated
+for _, node in ipairs(map.map_summary({}).factory.material_flow.nodes) do
+  if node.name == "fuel-feed" then object_saturated = node.fuel_return_saturation end
+end
+check(object_saturated and object_saturated.fuel == "coal",
+  "saturation reads the Factorio 2.0 prototype-object currently_burning shape")
+buffer_source.burner.currently_burning = string_burning
 local fuel_inventory = buffer_source.get_fuel_inventory
+-- Without proof the wait stays a transient status sample: it never proves
+-- blocked output or a topology blocker, and never earns the exemption.
 local function rejects_saturation(label, mutate, restore)
   mutate()
-  local component = map.map_summary({}).factory.material_flow.components[1]
-  check(component.state.blocked_output and not component.state.autonomy_topology_ready
-    and canonical(component.state.autonomy_blockers):match("nonproductive_status:full_output")
-    and canonical(component.state.autonomy_blockers):match("relationship_diagnostic:downstream_inventory_blocked"), label)
+  local summary = map.map_summary({})
+  local component = summary.factory.material_flow.components[1]
+  local feed_id, feed_saturation, wait_class, wait_exempt
+  for _, node in ipairs(summary.factory.material_flow.nodes) do
+    if node.name == "fuel-feed" then feed_id, feed_saturation = node.id, node.fuel_return_saturation end
+  end
+  for _, row in ipairs(summary.factory.material_flow.diagnostics) do
+    if row.node_id == feed_id and row.reason == "downstream_inventory_blocked" then wait_class, wait_exempt = row.class, row.nonblocking_reason end
+  end
+  check(feed_saturation == nil and wait_class == "transient" and wait_exempt == nil
+    and not component.state.blocked_output
+    and not canonical(component.state.autonomy_blockers):match("full_output")
+    and not canonical(component.state.autonomy_blockers):match("downstream_inventory_blocked")
+    and saturation_rows():match("nonproductive_status:full_output:transient"), label)
   restore()
 end
 rejects_saturation("unavailable destination fuel inventory remains blocked",
@@ -562,8 +593,8 @@ rejects_saturation("nonoperating destination remains blocked",
 rejects_saturation("no remaining burning energy is not supplied saturation",
   function() buffer_source.burner.remaining_burning_fuel = 0 end,
   function() buffer_source.burner.remaining_burning_fuel = 4 end)
--- A real reported end-belt diagnostic must remain effective independently
--- of the now-proven replenishment branch.
+-- A belt run ending at an inserter pickup is consumed there; only a run with
+-- no consumer anywhere along it is a dead end, reported at its last tile.
 local coal_belt = { valid = true, name = "transport-belt", type = "transport-belt", position = { x = 1, y = 4 },
   force = force, status = 2, belt_neighbours = { inputs = {}, outputs = {} } }
 coal_source.drop_target, fuel_feed.pickup_target, furnace_fuel.pickup_target = coal_belt, coal_belt, coal_belt
@@ -571,10 +602,27 @@ buffer_segment[9] = coal_belt
 -- Match the reported self-return binding as well as the useful furnace branch.
 coal_source.burner, coal_source.prototype, coal_source.get_fuel_inventory = buffer_source.burner, burner_prototype, fuel_inventory
 fuel_feed.drop_target = coal_source
-local oriented = map.map_summary({}).factory.material_flow.components[1]
-check(not oriented.state.blocked_output and not oriented.state.autonomy_topology_ready
-  and canonical(oriented.state.autonomy_blockers):match("belt_orientation_does_not_reach_consumer"),
-  "exact drill-to-belt-to-fuel-inserter bindings preserve the independent end-belt orientation blocker")
+local picked = map.map_summary({})
+check(not canonical(picked.factory.material_flow.diagnostics):match("belt_")
+  and not canonical(picked.factory.material_flow.components[1].state.autonomy_blockers):match("belt_"),
+  "exact drill-to-belt-to-fuel-inserter bindings ending at an inserter pickup are not a dead end")
+fuel_feed.pickup_target, furnace_fuel.pickup_target = coal_source, coal_source
+local dead_end = map.map_summary({})
+local dead_row, dead_node
+for _, row in ipairs(dead_end.factory.material_flow.diagnostics) do
+  if row.reason == "belt_dead_end_without_consumer" then dead_row = row end
+end
+for _, node in ipairs(dead_end.factory.material_flow.nodes) do if dead_row and node.id == dead_row.node_id then dead_node = node end end
+local dead_sample = map.factory_component_sample({ source_tick = game.tick, positions = { coal_belt.position } })
+local dead_located
+for _, row in ipairs(dead_sample._blocker_rows) do
+  if row.reason == "relationship_diagnostic:belt_dead_end_without_consumer" and row.class == "structural"
+    and row.position.x == 1 and row.position.y == 4 and row.entity == "transport-belt" then dead_located = true end
+end
+check(dead_row and dead_row.class == "structural" and dead_row.related_edge.kind == "belt_or_pickup"
+  and dead_node.position.x == 1 and dead_node.position.y == 4 and dead_located and not dead_sample.topology_ready
+  and canonical(dead_sample.blockers):match("relationship_diagnostic:belt_dead_end_without_consumer"),
+  "a belt run with no consumer anywhere is a structural dead end located at its last tile")
 coal_source.drop_target, fuel_feed.pickup_target, furnace_fuel.pickup_target = fuel_feed, coal_source, coal_source
 buffer_segment[9] = nil
 coal_source.burner, coal_source.prototype, coal_source.get_fuel_inventory = nil, nil, nil
@@ -631,8 +679,9 @@ local function simulate_validation(mode)
       buffer_source.mining_target.amount = buffer_source.mining_target.amount - 1
       coal_source.mining_target.amount = coal_source.mining_target.amount - 1
     end
-    if mode ~= "no_production" then buffer_processor.products_finished = buffer_processor.products_finished + 1 end
-    if mode ~= "no_acceptance" and mode ~= "wrong_product" then buffer_stock = buffer_stock + 1 end
+    local halted = mode == "no_fuel" and i >= 2
+    if mode ~= "no_production" and not halted then buffer_processor.products_finished = buffer_processor.products_finished + 1 end
+    if mode ~= "no_acceptance" and mode ~= "wrong_product" and not halted then buffer_stock = buffer_stock + 1 end
     if mode == "wrong_product" then bypass_stock = bypass_stock + 1 end
     if mode == "blocked" and i == 2 then buffer_accepting = false end
     if mode == "no_fuel" and i == 2 then buffer_processor.status = 4 end
@@ -682,56 +731,60 @@ check(replenished_interval.status == "completed",
 local empty_interval = simulate_validation("empty_wait")
 check(empty_interval.status == "completed" and map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
   "empty-stack waiting permits independent multi-tick production and acceptance in the parked validator")
+fuel_feed.held_stack = empty_held
+fuel_feed.status = 5
+local empty_wait_node
+for _, node in ipairs(map.map_summary({}).factory.material_flow.nodes) do if node.name == "fuel-feed" then empty_wait_node = node end end
+check(empty_wait_node.fuel_return_saturation and empty_wait_node.fuel_return_saturation.identity_source == "burning_and_stocked_fuel",
+  "an empty-hand return waiting at a stocked working burner derives identity from the burning and stocked pair")
+fuel_feed.held_stack, fuel_feed.status = held_fuel, 3
 for _, count in ipairs({ 1, 17 }) do
   fuel_count = count
   check(map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
-    "positive compatible stock proves replenishment without a hard-coded stock threshold: " .. count)
+    "positive compatible stock keeps the proof without a hard-coded stock threshold: " .. count)
 end
-fuel_count = 0
-check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
-  "loss of matching stocked fuel revokes the current empty-stack proof")
 fuel_count, fuel_feed.status = 5, 7
 local waiting_summary = map.map_summary({})
-check(not waiting_summary.factory.material_flow.components[1].state.autonomous_end_to_end
-  and canonical(waiting_summary.factory.material_flow.nodes):match('"transport_wait"')
-  and canonical(waiting_summary.factory.material_flow.diagnostics):match("provisional_transport_wait_requires_bounded_resumption"),
-  "a current exact source-item wait preserves status and provisional diagnostics while revoking public proof")
+check(waiting_summary.factory.material_flow.components[1].state.autonomous_end_to_end
+  and canonical(waiting_summary.factory.material_flow.diagnostics):match('"class":"transient"'),
+  "a current source-item wait is one transient sample and does not revoke a validated proof")
 fuel_feed.status = 3
-fuel_count = 0
-check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
-  "loss of matching stocked fuel also revokes proof when the return inserter reports working")
-fuel_count = 5
-for _, mode in ipairs({ "fuel_wait_preflight", "material_wait_preflight", "output_wait_preflight", "fuel_wait_later", "material_wait_later" }) do
+-- One wait at preflight or mid-window is a sample; the window judges flow.
+for _, mode in ipairs({ "fuel_wait_preflight", "material_wait_preflight", "output_wait_preflight", "fuel_wait_later",
+  "material_wait_later", "persistent_later_wait" }) do
   local interval = simulate_validation(mode)
   check(interval.status == "completed" and interval.outcomes[1].result.source_cycles_observed == 3
-    and interval.outcomes[1].result.downstream_acceptance_samples == 3,
-    "bounded validator collects later flow and exact transport resumption after " .. mode)
+    and interval.outcomes[1].result.downstream_acceptance_samples == 3
+    and canonical(interval.outcomes[1].result.transient_conditions):match("nonproductive_status:insufficient_input"),
+    "bounded validator judges throughput, reporting the wait only as a transient condition, after " .. mode)
 end
-for _, mode in ipairs({ "persistent_fuel_wait", "persistent_material_wait", "persistent_later_wait" }) do
+-- An inserter starved in every sample carried nothing: growth came from stock.
+for _, mode in ipairs({ "persistent_fuel_wait", "persistent_material_wait", "generic_shortage" }) do
   local interval = simulate_validation(mode)
-  check(interval.status == "failed" and canonical(interval.outcomes[1].result.blockers):match("transport_resumption_not_observed")
-    and buffer_stock == 3,
+  check(interval.status == "failed" and buffer_stock == 3
+    and canonical(interval.outcomes[1].result.blockers):match('"position":{"x":2,"y":%d},"reason":"transport_starved_before_end"'),
     "productive sources and rising downstream stock cannot conceal " .. mode)
 end
-for _, mode in ipairs({ "empty_stock_later", "no_energy_later", "unsupported_fuel_later", "incompatible_held_later" }) do
-  local interval = simulate_validation(mode)
-  check(interval.status == "failed" and canonical(interval.outcomes[1].result.blockers):match("fuel_return_supply_unproven")
-    and buffer_stock > 0,
-    "rising downstream stock cannot conceal broken working fuel return: " .. mode)
+for _, case in ipairs({ { "empty_stock_later", "fuel_return_not_yet_exercised" }, { "no_energy_later", "fuel_return_not_yet_exercised" },
+  { "unsupported_fuel_later", "fuel_stock_unreadable" }, { "compartment_missing", "fuel_stock_unreadable" },
+  { "compartment_unreadable", "fuel_stock_unreadable" }, { "compartment_malformed", "fuel_stock_unreadable" },
+  { "compartment_later", "fuel_stock_unreadable" } }) do
+  local interval = simulate_validation(case[1])
+  check(interval.status == "failed" and buffer_stock > 0
+    and canonical(interval.outcomes[1].result.blockers):match(case[2]),
+    "rising downstream stock cannot conceal unproven burner fuel: " .. case[1])
 end
-for _, mode in ipairs({ "compartment_missing", "compartment_unreadable", "compartment_malformed", "compartment_later" }) do
-  local interval = simulate_validation(mode)
-  check(interval.status == "failed" and canonical(interval.outcomes[1].result.blockers):match("fuel_return_supply_unproven")
-    and buffer_stock > 0,
-    "growing downstream stock cannot erase a fuel-return obligation with " .. mode)
-end
-local generic_shortage = simulate_validation("generic_shortage")
-check(generic_shortage.status == "failed" and generic_shortage.outcomes[1].result.stage == "preflight",
-  "generic insufficient_input remains a hard preflight blocker")
-for _, mode in ipairs({ "ambiguous_return", "incompatible_return", "blocked_output" }) do
-  local rejected = simulate_validation(mode)
-  check(rejected.status == "failed" and rejected.outcomes[1].result.blocked_output,
-    "parked validator rejects " .. mode .. " despite a productive material path")
+local unreadable_return = simulate_validation("ambiguous_return")
+check(unreadable_return.status == "failed"
+  and canonical(unreadable_return.outcomes[1].result.blockers):match("fuel_stock_unreadable"),
+  "an unreadable burner fuel inventory fails the window closed despite downstream growth")
+-- An unproven inserter wait is one status sample; flow decides the window.
+for _, mode in ipairs({ "incompatible_return", "blocked_output" }) do
+  local waited = simulate_validation(mode)
+  check(waited.status == "completed" and waited.outcomes[1].result.blocked_output == false
+    and canonical(waited.outcomes[1].result.transient_conditions):match("nonproductive_status:full_output")
+    and not canonical(waited.outcomes[1].result.blockers):match("full_output"),
+    "parked validator proves " .. mode .. " from throughput and reports the wait only as a transient condition")
 end
 simulate_validation("accept") -- restore the ordinary productive fixture
 local regular_inventory = buffer_sink.get_inventory
@@ -756,8 +809,9 @@ check(relayed_output.status == "completed" and relayed_output.outcomes[1].result
   "ordinary intermediate buffers transport proven upstream product identities without becoming production roots")
 middle_chest.get_inventory = function() return { get_item_count = function() return 10 end, can_insert = function() return false end } end
 local blocked_middle = simulate_validation("accept")
-check(blocked_middle.status == "failed" and blocked_middle.outcomes[1].result.blocked_output,
-  "a full intermediate downstream buffer also blocks current autonomy")
+check(blocked_middle.status == "completed" and not blocked_middle.outcomes[1].result.blocked_output
+  and blocked_middle.outcomes[1].result.proven,
+  "a full intermediate buffer is backpressure, not blocked output, while the terminal buffer accepts")
 buffer_segment[4].drop_target, buffer_segment[9], buffer_segment[10] = buffer_sink, nil, nil
 local stationary_sources = simulate_validation("no_source_production")
 check(stationary_sources.status == "failed" and canonical(stationary_sources.outcomes[1].result.blockers):match("several_source_cycles_not_observed"),
@@ -769,11 +823,17 @@ local no_production = simulate_validation("no_production")
 check(no_production.status == "failed" and canonical(no_production.outcomes[1].result.blockers):match("bounded_production_delta_not_observed"),
   "downstream stock changes cannot replace later processor production evidence")
 local blocked_interval = simulate_validation("blocked")
-check(blocked_interval.status == "failed" and blocked_interval.outcomes[1].result.blocked_output,
-  "a nonaccepting buffer during the unattended interval prevents validation")
+local blocked_row
+for _, row in ipairs(blocked_interval.outcomes[1].result.blockers) do
+  if row.reason == "blocked_output" and row.position.x == buffer_sink.position.x and row.position.y == buffer_sink.position.y then blocked_row = row end
+end
+check(blocked_interval.status == "failed" and blocked_interval.outcomes[1].result.blocked_output and blocked_row,
+  "a nonaccepting buffer during the unattended interval prevents validation at the buffer's position")
 local interrupted_fuel = simulate_validation("no_fuel")
-check(interrupted_fuel.status == "failed" and canonical(interrupted_fuel.outcomes[1].result.blockers):match("nonproductive_status:no_fuel"),
-  "fuel interruption during the interval fails continuous supplied operation")
+check(interrupted_fuel.status == "failed"
+  and canonical(interrupted_fuel.outcomes[1].result.blockers):match("several_processor_cycles_not_observed")
+  and canonical(interrupted_fuel.outcomes[1].result.transient_conditions):match("nonproductive_status:no_fuel"),
+  "fuel interruption that stops production fails on throughput and names the no_fuel wait as transient")
 local transferred_interval = simulate_validation("transfer")
 check(transferred_interval.status == "failed" and canonical(transferred_interval.outcomes[1].result.blockers):match("character_transfer_observed"),
   "a character transfer during the real unattended interval invalidates acceptance")
@@ -781,7 +841,7 @@ check(not canonical(accepted_buffer):match('"stock"') and not canonical(accepted
   and not canonical(map.map_summary({})):match('"_signature"'),
   "public validation and retained history expose no private stock samples or exact identity strings")
 
--- A period dividing the nominal 30-tick interval must not stay phase-locked.
+-- A 30-tick machine period near the sample interval must not stay phase-locked.
 storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
 game.tick = 3000
 buffer_accepting, buffer_processor.status, buffer_source.status = true, 3, 3
@@ -839,6 +899,7 @@ local function source_only_validation(mode)
     position = { x = 1, y = 4 }, status = 3, mining_target = target, mining_progress = 0.9,
     prototype = burner_prototype, burner = { currently_burning = { name = prototypes.item.coal, quality = { name = "normal" } }, remaining_burning_fuel = 4 },
     get_fuel_inventory = function() return {
+      get_contents = function() return { { name = "coal", quality = "normal", count = 5 } } end,
       get_item_count = function() return 5 end, can_insert = function() return true end,
     } end }
   local middle = { valid = true, name = "source-relay-chest", type = "container", force = force,
@@ -871,6 +932,7 @@ local function source_only_validation(mode)
   elseif mode == "no_energy" then source.burner.remaining_burning_fuel = 0
   elseif mode == "incompatible_fuel" then refill.held_stack.name = "incompatible"
   elseif mode == "full_fuel" then source.get_fuel_inventory = function() return {
+    get_contents = function() return { { name = "coal", quality = "normal", count = 5 } } end,
     get_item_count = function() return 5 end, can_insert = function() return false end,
   } end
   elseif mode == "unsupported_fuel" then source.get_fuel_inventory = function() error("unsupported") end
@@ -878,11 +940,16 @@ local function source_only_validation(mode)
   elseif mode == "shared_target" then
     entities[6] = { valid = true, name = "other-source", type = "mining-drill", force = force,
       position = { x = 1, y = 5 }, status = 3, mining_target = target, mining_progress = 0.9, drop_target = middle }
-  elseif mode == "orientation" then
-    local belt = { valid = true, name = "unrepaired-terminal", type = "transport-belt", force = force,
+  elseif mode == "belt_pickup_end" then
+    local belt = { valid = true, name = "pickup-terminal", type = "transport-belt", force = force,
       position = { x = 2, y = 6 }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } }
     source.drop_target, unload.pickup_target, refill.pickup_target = belt, belt, belt
     entities[2] = belt
+  elseif mode == "belt_dead_end" then
+    entities[6] = { valid = true, name = "spill-belt", type = "transport-belt", force = force,
+      position = { x = 3, y = 6 }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } }
+    entities[7] = { valid = true, name = "spill", type = "inserter", force = force,
+      position = { x = 3, y = 5 }, status = 3, pickup_target = middle, drop_target = entities[6] }
   end
   if mode == "consumer" or mode == "consumer_wrong_output" or mode == "consumer_multi_output" or mode == "consumer_full"
     or mode == "consumer_interruption" or mode == "consumer_unavailable" then
@@ -916,9 +983,11 @@ local function source_only_validation(mode)
   local preflight = map.factory_component_sample({ source_tick = game.tick, positions = { sink.position } })
   for i = 1, 3 do
     game.tick = start + 1 + i * 20
-    if mode ~= "unavailable" and mode ~= "aliased" then source.mining_progress = 0.9 - i * 0.1 end
-    if mode ~= "no_depletion" then target.amount = target.amount - 1 end
-    if mode ~= "stagnant" then stock = stock + 1 end
+    -- An interruption that matters stops progress, stock and depletion.
+    local halted = (mode == "fuel_interruption" or mode == "power_interruption") and i >= 2
+    if mode ~= "unavailable" and mode ~= "aliased" and not halted then source.mining_progress = 0.9 - i * 0.1 end
+    if mode ~= "no_depletion" and not halted then target.amount = target.amount - 1 end
+    if mode ~= "stagnant" and not halted then stock = stock + 1 end
     if i == 2 then
       if mode == "full_buffer" or mode == "consumer_interruption" then accepting = false end
       if mode == "fuel_interruption" then source.status = 4 end
@@ -933,7 +1002,10 @@ local function source_only_validation(mode)
   end
   return tasks.plan_status({ plan_id = queued.plan_id }), preflight, map.map_summary({})
 end
-for _, mode in ipairs({ "self_return", "electric", "consumer" }) do
+-- An unproven refill wait (no energy, other fuel, full fuel inventory,
+-- generic full_output) is a transient status, not a defect.
+for _, mode in ipairs({ "self_return", "electric", "consumer", "belt_pickup_end",
+  "no_energy", "incompatible_fuel", "full_fuel", "generic_full" }) do
   local result, preflight, final = source_only_validation(mode)
   check(preflight.topology_ready and next(preflight._production) == nil and result.status == "completed"
     and result.outcomes[1].result.products_finished_delta == 0
@@ -946,6 +1018,7 @@ for _, mode in ipairs({ "self_return", "electric", "consumer" }) do
     "source-only " .. mode .. " exposes no private inventory, resource samples or exact signatures")
 end
 for _, case in ipairs({
+  { "unsupported_fuel", "fuel_stock_unreadable" },
   { "consumer_wrong_output", "blocked_output" },
   { "consumer_multi_output", "blocked_output" }, { "consumer_full", "blocked_output" },
   { "consumer_interruption", "blocked_output" },
@@ -956,9 +1029,6 @@ for _, case in ipairs({
   { "missing_pickup", "fuel_input_provenance_unresolved" },
   { "stock_root", "fuel_input_provenance_unresolved" },
   { "transformed_return", "fuel_input_provenance_unresolved" },
-  { "no_energy", "blocked_output" }, { "incompatible_fuel", "blocked_output" },
-  { "full_fuel", "blocked_output" }, { "unsupported_fuel", "blocked_output" },
-  { "generic_full", "blocked_output" },
   { "unavailable", "several_source_cycles_not_observed" },
   { "unavailable_target", "output_identity_unproven" },
   { "aliased", "several_source_cycles_not_observed" },
@@ -966,17 +1036,446 @@ for _, case in ipairs({
   { "shared_target", "shared_mining_target_production_ambiguous" },
   { "stagnant", "bounded_downstream_acceptance_not_observed" },
   { "full_buffer", "blocked_output" }, { "unsupported_buffer", "downstream_buffer_acceptance_unproven" },
-  { "fuel_interruption", "nonproductive_status:no_fuel" },
-  { "power_interruption", "missing_power" },
+  { "fuel_interruption", "several_source_cycles_not_observed" },
+  { "power_interruption", "several_source_cycles_not_observed" },
   { "topology", "component_topology_changed_during_validation" },
   { "target_change", "several_source_cycles_not_observed" },
   { "transfer", "character_transfer_observed" },
   { "incomplete_history", "character_transfer_history_incomplete" },
-  { "orientation", "belt_orientation_does_not_reach_consumer" },
+  { "belt_dead_end", "relationship_diagnostic:belt_dead_end_without_consumer" },
 }) do
   local result = source_only_validation(case[1])
   check(result.status == "failed" and canonical(result.outcomes[1].result.blockers):match(case[2]),
     "source-only rejects " .. case[1] .. " with " .. case[2])
+end
+for _, case in ipairs({ { "no_energy", "full_output" }, { "generic_full", "full_output" },
+  { "fuel_interruption", "no_fuel" }, { "power_interruption", "no_power" } }) do
+  local result = source_only_validation(case[1])
+  check(canonical(result.outcomes[1].result.transient_conditions):match("nonproductive_status:" .. case[2]),
+    "source-only " .. case[1] .. " reports its " .. case[2] .. " samples only as a transient condition")
+end
+local spill_result = source_only_validation("belt_dead_end")
+local spill_row
+for _, row in ipairs(spill_result.outcomes[1].result.blockers) do
+  if row.reason:match("belt_dead_end_without_consumer") then spill_row = row end
+end
+check(spill_row and spill_row.position.x == 3 and spill_row.position.y == 6 and spill_row.class == "structural"
+  and spill_result.outcomes[1].result.stage == "preflight" and not spill_result.outcomes[1].result.refused,
+  "a dead-end belt is a located structural preflight failure, not a readiness refusal")
+-- Belt dead ends are decided per run after every exact edge exists: a pickup
+-- anywhere along the run, an underground exit or a loader container counts.
+local many_rows_fixture
+do
+  local function belt(x, y, kind)
+    return { valid = true, name = kind or "transport-belt", type = kind or "transport-belt", force = force,
+      position = { x = x, y = y }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } }
+  end
+  local function link(a, b)
+    a.belt_neighbours.outputs[#a.belt_neighbours.outputs + 1] = b
+    b.belt_neighbours.inputs[#b.belt_neighbours.inputs + 1] = a
+  end
+  local function drill(x, y, drop)
+    return { valid = true, name = "electric-mining-drill", type = "mining-drill", force = force, position = { x = x, y = y },
+      status = 3, drop_target = drop, mining_target = { valid = true, name = "coal", type = "resource", position = { x = x, y = y },
+        amount = 100, prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } } }
+  end
+  local function chest(x, y)
+    return { valid = true, name = "wooden-chest", type = "container", force = force, position = { x = x, y = y }, status = 2,
+      get_inventory = function() return { get_item_count = function() return 0 end, can_insert = function() return true end } end }
+  end
+  local function inserter(x, y, pickup, drop)
+    return { valid = true, name = "inserter", type = "inserter", force = force, position = { x = x, y = y }, status = 3,
+      pickup_target = pickup, drop_target = drop }
+  end
+  local function dead_ends(entities)
+    storage = {}
+    surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
+    local summary = map.map_summary({})
+    local positions, by_id = {}, {}
+    for _, node in ipairs(summary.factory.material_flow.nodes) do by_id[node.id] = node.position end
+    for _, row in ipairs(summary.factory.material_flow.diagnostics) do
+      if row.reason == "belt_dead_end_without_consumer" then positions[#positions + 1] = by_id[row.node_id] end
+    end
+    return positions, summary.factory.material_flow.components[1].state, summary
+  end
+
+  local b1, b2, b3, sink = belt(1, 11), belt(2, 11), belt(3, 11), chest(2, 13)
+  link(b1, b2); link(b2, b3)
+  local mid_dead, mid_state = dead_ends({ drill(1, 10, b1), b1, b2, b3, inserter(2, 12, b2, sink), sink })
+  check(#mid_dead == 0 and mid_state.autonomy_topology_ready,
+    "a belt line picked up partway along is consumed although its last tile backs up")
+
+  local u1, entrance, exit, u_end, u_sink = belt(1, 21), belt(2, 21, "underground-belt"), belt(5, 21, "underground-belt"), belt(6, 21), chest(6, 23)
+  entrance.belt_to_ground_type, entrance.neighbours, exit.belt_to_ground_type = "input", exit, "output"
+  link(u1, entrance); link(exit, u_end)
+  local underground = { drill(1, 20, u1), u1, entrance, exit, u_end, inserter(6, 22, u_end, u_sink), u_sink }
+  local under_dead, under_state = dead_ends(underground)
+  check(#under_dead == 0 and under_state.autonomy_topology_ready and under_state.downstream_kind == "buffer",
+    "an underground pair joins its entrance to its exit through LuaEntity.neighbours")
+  entrance.neighbours = nil
+  local split_dead = dead_ends(underground)
+  check(#split_dead == 1 and split_dead[1].x == 2 and split_dead[1].y == 21,
+    "an underground entrance without a readable exit is the dead end of its run")
+
+  local l1, loader, l_sink = belt(1, 31), belt(2, 31, "loader-1x1"), chest(3, 31)
+  loader.loader_type, loader.loader_container = "input", l_sink
+  link(l1, loader)
+  local loader_dead, loader_state = dead_ends({ drill(1, 30, l1), l1, loader, l_sink })
+  check(#loader_dead == 0 and loader_state.autonomy_topology_ready and loader_state.downstream_kind == "buffer",
+    "a loader feeding a container is the consumer edge of its belt run")
+
+  local o_source, o_loader, o_belt, o_sink = chest(1, 15), belt(2, 15, "loader-1x1"), belt(3, 15), chest(3, 17)
+  o_loader.loader_type, o_loader.loader_container = "output", o_source
+  link(o_loader, o_belt)
+  local output_dead, output_state, output_summary = dead_ends({ drill(1, 14, o_source), o_source, o_loader, o_belt,
+    inserter(3, 16, o_belt, o_sink), o_sink })
+  local ids, container_edge = {}, false
+  for _, node in ipairs(output_summary.factory.material_flow.nodes) do ids[node.position.x .. "," .. node.position.y] = node.id end
+  for _, edge in ipairs(output_summary.factory.material_flow.edges) do
+    if edge.kind == "loader_container" and edge.from == ids["1,15"] and edge.to == ids["2,15"] then container_edge = true end
+  end
+  check(#output_dead == 0 and container_edge and output_state.autonomy_topology_ready and output_state.downstream_kind == "buffer",
+    "an output loader takes from its container onto a run that an inserter consumes")
+
+  -- Many located rows: thirteen inserters lift from a chest and drop nowhere.
+  local hub = chest(1, 5)
+  many_rows_fixture = { drill(1, 4, hub), hub }
+  for x = 2, 14 do many_rows_fixture[#many_rows_fixture + 1] = inserter(x, 6, hub, nil) end
+  local _, many_state = dead_ends(many_rows_fixture)
+  check(#many_state.blocker_details == 3 and #many_state.autonomy_blockers >= 2,
+    "a component with more than three blocker sites keeps three located details")
+
+  local d1, d2 = belt(1, 26), belt(2, 26)
+  link(d1, d2)
+  local true_dead, dead_state = dead_ends({ drill(1, 25, d1), d1, d2 })
+  local detail
+  for _, row in ipairs(dead_state.blocker_details) do
+    if row.reason == "relationship_diagnostic:belt_dead_end_without_consumer" then detail = row end
+  end
+  check(#true_dead == 1 and true_dead[1].x == 2 and true_dead[1].y == 26
+    and detail and detail.position.x == 2 and detail.position.y == 26 and detail.class == "structural"
+    and detail.entity == "transport-belt" and detail.related_edge.kind == "belt_or_pickup"
+    and #dead_state.blocker_details <= 3 and dead_state.blocker_details[1].reason == "downstream_acceptance_path_unproven",
+    "a run with no consumer is flagged once at its last tile and readiness rows lead the located details")
+end
+
+-- Parked validation windows over the real graph. Statuses vary per tick the
+-- way supply-limited machines do; progress counters advance at that rate.
+local function run_window(entities, position, duration, advance)
+  game.tick = game.tick + 100
+  local start = game.tick
+  storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+  surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
+  advance(0)
+  map.map_summary({}) -- open complete run-local transfer history
+  local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
+    source_tick = start, positions = { position }, duration_seconds = duration } } })
+  local result
+  for tick = start + 1, start + 1 + duration * 60 do
+    game.tick = tick
+    advance(tick - start - 1)
+    tasks.on_tick()
+    result = tasks.plan_status({ plan_id = queued.plan_id })
+    if result.status == "completed" or result.status == "failed" then break end
+  end
+  return result, result.outcomes and result.outcomes[1].result
+end
+defines.entity_status.no_ingredients, defines.entity_status.waiting_for_source_items = 7, 8
+
+do
+  local segment = { buffer_source, buffer_segment[2], buffer_processor, buffer_segment[4], buffer_sink, coal_source, fuel_feed, furnace_fuel }
+  buffer_sink.get_inventory, buffer_accepting = regular_inventory, true
+  local function supply_limited(elapsed)
+    local waiting, cycles = elapsed % 10 < 7, math.floor(elapsed / 90)
+    buffer_processor.status = waiting and 7 or 3
+    buffer_segment[2].status = waiting and 8 or 3
+    -- The drill backs up and is sampled waiting for output space every time,
+    -- yet its progress wraps and its target depletes: that is a cycle.
+    buffer_source.status = 5
+    buffer_source.mining_progress, coal_source.mining_progress = (elapsed % 90) / 90, (elapsed % 90) / 90
+    buffer_source.mining_target.amount, coal_source.mining_target.amount = 1000 - cycles, 1000 - cycles
+    buffer_processor.products_finished, buffer_stock = 10 + cycles, cycles
+  end
+  local limited, outcome = run_window(segment, buffer_sink.position, 60, supply_limited)
+  local furnace_wait
+  for _, row in ipairs(outcome.transient_conditions or {}) do
+    if row.position.x == buffer_processor.position.x and row.position.y == buffer_processor.position.y then furnace_wait = row end
+  end
+  check(limited.status == "completed" and outcome.proven and outcome.stage == "window"
+    and furnace_wait and furnace_wait.reason == "nonproductive_status:insufficient_input" and furnace_wait.class == "transient"
+    and furnace_wait.nonproductive_samples / furnace_wait.samples > 0.5 and furnace_wait.nonproductive_samples / furnace_wait.samples < 0.9
+    and outcome.samples_observed > 100 and #outcome.transient_conditions <= 8 and outcome.source_cycles_observed >= 3
+    and map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+    "a supply-limited furnace waiting on input about 70% of samples proves autonomy from throughput")
+
+  buffer_source.status = 4
+  local dry = map.map_summary({}).factory.material_flow.components[1].state
+  buffer_source.status, buffer_processor.status = 3, 7
+  local waiting_state = map.map_summary({}).factory.material_flow.components[1].state
+  check(dry.autonomy_topology_ready and not dry.autonomous_end_to_end and dry.autonomy_evidence == "validated_producer_nonproductive"
+    and not canonical(dry.autonomy_blockers):match("no_fuel")
+    and waiting_state.autonomous_end_to_end,
+    "a validated drill at no_fuel loses current autonomy while an input wait does not")
+
+  local function starved(elapsed)
+    buffer_processor.status, buffer_source.status = 4, 3
+    buffer_source.mining_progress, coal_source.mining_progress = 0.5, 0.5
+    buffer_processor.products_finished, buffer_stock = 10, 0
+  end
+  local stalled, stall = run_window(segment, buffer_sink.position, 60, starved)
+  local persistent
+  for _, row in ipairs(stall.blockers) do
+    if row.reason == "persistent_nonproductive_status:no_fuel" then persistent = row end
+  end
+  check(stalled.status == "failed" and persistent and persistent.class == "structural"
+    and persistent.position.x == buffer_processor.position.x and persistent.position.y == buffer_processor.position.y
+    and stall.duration_ticks >= 1200 and stall.duration_ticks < 3600 and #stall.blockers <= 12,
+    "a processor at no_fuel through a 20 s stall fails early as a located persistent nonproductive status")
+
+  -- The stall share counts only samples since the last progress: a segment
+  -- that worked for 25 s and then stopped is judged on the stop, and the
+  -- producer out of fuel carries the row, not the drill backed up behind it.
+  local function runs_dry(drill_status)
+    return function(elapsed)
+      supply_limited(math.min(elapsed, 1499))
+      if elapsed >= 1500 then buffer_processor.status, buffer_segment[2].status, buffer_source.status = 4, 8, drill_status end
+    end
+  end
+  local function rows_at(outcome, rows, entity)
+    local found = {}
+    for _, row in ipairs(outcome[rows] or {}) do
+      if row.position and row.position.x == entity.position.x and row.position.y == entity.position.y then found[#found + 1] = row.reason end
+    end
+    return table.concat(found, ",")
+  end
+  local late_plan, late = run_window(segment, buffer_sink.position, 60, runs_dry(4))
+  check(late_plan.status == "failed" and not late.proven and late.stage == "window"
+    and rows_at(late, "blockers", buffer_processor):match("persistent_nonproductive_status:no_fuel")
+    and late.source_cycles_observed >= 3 and late.downstream_acceptance_samples >= 3
+    and late.last_progress_tick - late.start_tick > 1400 and late.duration_ticks < 3600,
+    "a segment productive for 25 s that then runs out of fuel fails on the stall, not the whole-window share")
+  local backed_plan, backed = run_window(segment, buffer_sink.position, 60, runs_dry(5))
+  check(backed_plan.status == "failed"
+    and rows_at(backed, "blockers", buffer_processor) == "persistent_nonproductive_status:no_fuel"
+    and rows_at(backed, "blockers", buffer_source) == ""
+    and rows_at(backed, "transient_conditions", buffer_source) == "nonproductive_status:full_output",
+    "the furnace out of fuel carries the stall row while the drill backed up behind it stays a transient symptom")
+  local still_plan, still = run_window(segment, buffer_sink.position, 60, function(elapsed)
+    supply_limited(math.min(elapsed, 1799))
+    buffer_processor.status, buffer_segment[2].status, buffer_source.status = 3, 3, 3
+  end)
+  local stalled_row
+  for _, row in ipairs(still.blockers) do if row.reason == "progress_stalled" then stalled_row = row end end
+  check(still_plan.status == "failed" and not still.proven and stalled_row and stalled_row.class == "throughput"
+    and still.source_cycles_observed >= 3 and still.duration_ticks >= 3600,
+    "a window never ends proven while nothing has progressed for the stall interval")
+
+  -- Premature segments are refused before any window, with located rows.
+  local premature = flow_fixture(false, true)
+  local refused_plan, refused = run_window(premature, premature[3].position, 60, function() end)
+  local first, located = refused.blockers[1], true
+  for _, row in ipairs(refused.blockers) do if not row.position then located = false end end
+  check(refused_plan.status == "failed" and refused.code == "FACTORY_COMPONENT_NOT_READY" and refused.stage == "readiness"
+    and refused.refused == true and refused.duration_ticks == 0 and located
+    and first.reason == "fuel_input_provenance_unresolved" and first.class == "structural"
+    and first.gate == nil and first.node_id == nil
+    and first.position.x == 3 and first.position.y == 1 and first.entity == "processor" and first.related_edge.kind == "fuel_input"
+    and refused_plan.outcomes[1].error:match("not ready for validation: fuel_input_provenance_unresolved at 3.0,1.0"),
+    "a burner segment without a fuel edge is refused as not ready at the burner's position")
+  local capped_plan, capped = run_window(many_rows_fixture, many_rows_fixture[2].position, 60, function() end)
+  local capped_sites = {}
+  for _, row in ipairs(capped.blockers) do capped_sites[row.reason .. "@" .. canonical(row.position)] = true end
+  local distinct = 0
+  for _ in pairs(capped_sites) do distinct = distinct + 1 end
+  check(capped_plan.status == "failed" and capped.stage == "readiness" and #capped.blockers == 12 and distinct == 12
+    and capped.omitted_blockers > 0,
+    "a refusal with more than twelve located rows keeps twelve distinct rows and counts the rest")
+  local open_ended = flow_fixture(false, false)
+  local open_plan, open = run_window({ open_ended[1], open_ended[2], open_ended[3] }, open_ended[3].position, 60, function() end)
+  local path_row
+  located = true
+  for _, row in ipairs(open.blockers) do
+    if not row.position then located = false end
+    if row.reason == "physical_source_downstream_path_unproven" then path_row = row end
+  end
+  check(open_plan.status == "failed" and open.code == "FACTORY_COMPONENT_NOT_READY" and located
+    and path_row and path_row.related_edge.kind == "downstream_path",
+    "a segment without a terminal buffer or consumer is refused with every readiness row located")
+end
+
+-- Replays of recorded material_flow graphs. Nodes are {name, type, x, y,
+-- direction, normalized status}; edges are {from, to, kind} node indexes.
+-- Status timing is simulated; the topology is what the live game reported.
+do
+  -- The recorded loop sits in a chunk this fixture force has not charted.
+  local fixture_charted = force.is_chunk_charted
+  force.is_chunk_charted = function() return true end
+  local RAW_STATUS = { working = 3, idle = 2, insufficient_input = 8, full_output = 5, no_fuel = 4 }
+  local function replay(recorded)
+    local entities = {}
+    for index, row in ipairs(recorded.nodes) do
+      local entity = { valid = true, name = row[1], type = row[2], position = { x = row[3], y = row[4] },
+        direction = row[5], status = RAW_STATUS[row[6]], force = force, _stock = 0 }
+      if entity.type == "transport-belt" then entity.belt_neighbours = { inputs = {}, outputs = {} } end
+      if entity.type == "inserter" then entity.burner, entity.prototype = {}, burner_prototype end
+      if entity.type == "container" then
+        entity.get_inventory = function() return { get_item_count = function() return entity._stock end,
+          can_insert = function() return true end } end
+      end
+      if entity.type == "mining-drill" then
+        entity.prototype, entity.mining_progress = burner_prototype, 0
+        entity.mining_target = { valid = true, name = "coal", type = "resource", position = { x = row[3] - 0.5, y = row[4] + 0.5 },
+          amount = 3838, prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } }
+        entity.burner = { remaining_burning_fuel = 8,
+          currently_burning = { name = { name = "coal", fuel_value = 4000000 }, quality = { name = "normal" } } }
+        entity._fuel = 5
+        entity.get_fuel_inventory = function() return { get_item_count = function() return entity._fuel end,
+          can_insert = function() return true end,
+          get_contents = function() return entity._fuel > 0 and { { name = "coal", quality = "normal", count = entity._fuel } } or {} end } end
+      end
+      entities[index] = entity
+    end
+    for _, edge in ipairs(recorded.edges) do
+      local from, to, kind = entities[edge[1]], entities[edge[2]], edge[3]
+      if kind == "belt_direction" then
+        from.belt_neighbours.outputs[#from.belt_neighbours.outputs + 1] = to
+        to.belt_neighbours.inputs[#to.belt_neighbours.inputs + 1] = from
+      elseif kind == "inserter_pickup" then to.pickup_target = from
+      else from.drop_target = to end
+    end
+    return entities
+  end
+  -- One coal (fuel_value 8 here) burns for BURN ticks; each burn start draws
+  -- an item from the fuel inventory.
+  local BURN = 400
+  local function burn(drill, elapsed, fuel)
+    drill.burner.remaining_burning_fuel, drill._fuel = 8 * (1 - (elapsed % BURN) / BURN), fuel
+  end
+  local function coal_loop(entities, drill, terminal, buffer, fuel_return)
+    fuel_return.held_stack = { valid_for_read = true, name = "coal", quality = { name = "normal" }, count = 1 }
+    return function(elapsed)
+      local cycles = math.floor(elapsed / 120)
+      drill.status, drill.mining_progress, drill.mining_target.amount = 3, (elapsed % 120) / 120, 3838 - cycles
+      -- The fuel return refills each drawn coal a moment after the draw.
+      burn(drill, elapsed, elapsed % BURN < 20 and 4 or 5)
+      terminal.status = elapsed % 10 < 7 and 8 or 3
+      fuel_return.status = elapsed % 10 < 8 and 5 or 3
+      buffer._stock = cycles
+    end
+  end
+  local function replay_passes(label, recorded, drill, terminal, buffer, fuel_return)
+    local entities = replay(recorded)
+    local advance = coal_loop(entities, entities[drill], entities[terminal], entities[buffer], entities[fuel_return])
+    advance(0)
+    storage = {}
+    surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
+    local preflight = map.factory_component_sample({ source_tick = game.tick, positions = { entities[buffer].position } })
+    local plan, outcome = run_window(entities, entities[buffer].position, 60, advance)
+    check(preflight.topology_ready and #preflight.blockers == 0 and not preflight.blocked_output
+      and plan.status == "completed" and outcome.proven and outcome.source_cycles_observed >= 3
+      and outcome.downstream_acceptance_samples >= 3 and outcome.character_transfer_actions == 0
+      and not canonical(outcome):match("belt_dead_end") and not canonical(outcome):match("full_output")
+      and not canonical(outcome):match("fuel_replenishment"),
+      label .. " passes preflight and a supply-limited window")
+  end
+  -- Cycle 5 plan 36 coal loop (material_flow at tick 88854). The live
+  -- validator refused it at preflight with blocked_output, full_output and an
+  -- end-belt orientation row at the tile the chest inserter picks up from.
+  replay_passes("recorded cycle-5 plan-36 coal loop", {
+    nodes = {
+      { "wooden-chest", "container", 34.5, -59.5, 0, "idle" },
+      { "burner-inserter", "inserter", 34.5, -58.5, 8, "insufficient_input" },
+      { "transport-belt", "transport-belt", 34.5, -57.5, 0, "working" },
+      { "burner-mining-drill", "mining-drill", 32, -57, 8, "working" },
+      { "burner-inserter", "inserter", 33.5, -56.5, 4, "insufficient_input" },
+      { "transport-belt", "transport-belt", 34.5, -56.5, 0, "working" },
+      { "transport-belt", "transport-belt", 32.5, -55.5, 4, "working" },
+      { "transport-belt", "transport-belt", 33.5, -55.5, 4, "working" },
+      { "transport-belt", "transport-belt", 34.5, -55.5, 0, "working" },
+    },
+    edges = {
+      { 2, 1, "inserter_drop" }, { 3, 2, "inserter_pickup" }, { 4, 7, "machine_output" }, { 5, 4, "inserter_drop" },
+      { 6, 3, "belt_direction" }, { 6, 5, "inserter_pickup" }, { 7, 8, "belt_direction" }, { 8, 9, "belt_direction" },
+      { 9, 6, "belt_direction" },
+    },
+  }, 4, 2, 1, 5)
+  -- Continuation coal-return-buffer (material_flow snapshot at tick 152241,
+  -- component signature d5d77a374040576b; 149331 is its last character
+  -- transfer tick). The fuel pickup sits on the run's last tile, downstream of
+  -- the surplus pickup: this layout is itself surplus-upstream-of-fuel and
+  -- passes only because its scripted timeline keeps the drill refuelled.
+  -- Topology-level surplus-before-fuel detection is deferred.
+  replay_passes("recorded continuation coal-return-buffer", {
+    nodes = {
+      { "burner-mining-drill", "mining-drill", 32, -57, 8, "working" },
+      { "burner-inserter", "inserter", 33.5, -56.5, 4, "full_output" },
+      { "transport-belt", "transport-belt", 34.5, -56.5, 4, "working" },
+      { "transport-belt", "transport-belt", 32.5, -55.5, 4, "working" },
+      { "transport-belt", "transport-belt", 33.5, -55.5, 4, "working" },
+      { "transport-belt", "transport-belt", 34.5, -55.5, 0, "working" },
+      { "burner-inserter", "inserter", 35.5, -55.5, 12, "insufficient_input" },
+      { "wooden-chest", "container", 36.5, -55.5, 0, "idle" },
+    },
+    edges = {
+      { 5, 6, "belt_direction" }, { 6, 7, "inserter_pickup" }, { 6, 3, "belt_direction" }, { 7, 8, "inserter_drop" },
+      { 1, 4, "machine_output" }, { 2, 1, "inserter_drop" }, { 3, 2, "inserter_pickup" }, { 4, 5, "belt_direction" },
+    },
+  }, 1, 7, 8, 2)
+  -- The same loop with the surplus takeoff upstream of the fuel takeoff: the
+  -- surplus inserter empties the belt, so the fuel return starves. The drill
+  -- starts on bootstrap fuel and produces; topology is complete, so only the
+  -- window can fail it: on the stall once the fuel runs out, or on the
+  -- missing refill while the starter fuel outlasts the window.
+  local surplus_layout = {
+    nodes = {
+      { "burner-mining-drill", "mining-drill", 32, -57, 8, "working" },
+      { "transport-belt", "transport-belt", 32.5, -55.5, 4, "working" },
+      { "transport-belt", "transport-belt", 33.5, -55.5, 4, "working" },
+      { "transport-belt", "transport-belt", 34.5, -55.5, 0, "working" },
+      { "transport-belt", "transport-belt", 34.5, -56.5, 0, "working" },
+      { "burner-inserter", "inserter", 32.5, -54.5, 8, "insufficient_input" },
+      { "wooden-chest", "container", 32.5, -53.5, 0, "idle" },
+      { "burner-inserter", "inserter", 33.5, -56.5, 12, "insufficient_input" },
+    },
+    edges = {
+      { 1, 2, "machine_output" }, { 2, 3, "belt_direction" }, { 3, 4, "belt_direction" }, { 4, 5, "belt_direction" },
+      { 2, 6, "inserter_pickup" }, { 6, 7, "inserter_drop" }, { 5, 8, "inserter_pickup" }, { 8, 1, "inserter_drop" },
+    },
+  }
+  local function surplus_window(bootstrap)
+    local surplus = replay(surplus_layout)
+    local drill, chest = surplus[1], surplus[7]
+    local burnt_out = (bootstrap + 1) * BURN
+    local plan, outcome = run_window(surplus, chest.position, 60, function(elapsed)
+      local active = math.min(elapsed, burnt_out - 1)
+      local cycles = math.floor(active / 120)
+      drill.mining_progress, drill.mining_target.amount, chest._stock = (active % 120) / 120, 3838 - cycles, cycles
+      surplus[6].status = elapsed % 10 < 5 and 3 or 8
+      if elapsed < burnt_out then
+        drill.status = 3
+        burn(drill, elapsed, bootstrap - math.floor(elapsed / BURN))
+      else
+        drill.status, drill.burner.remaining_burning_fuel, drill._fuel = 4, 0, 0
+      end
+    end)
+    local rows = {}
+    for _, row in ipairs(outcome.blockers) do
+      if row.position and row.position.x == 32 and row.position.y == -57 and row.entity == "burner-mining-drill" then rows[row.reason] = row end
+    end
+    return plan, outcome, rows
+  end
+  local dry_plan, dry_outcome, dry_rows = surplus_window(2)
+  check(dry_plan.status == "failed" and dry_outcome.stage == "window" and not dry_outcome.proven
+    and dry_rows["persistent_nonproductive_status:no_fuel"] and dry_outcome.source_cycles_observed >= 3
+    and dry_outcome.downstream_acceptance_samples >= 3 and dry_outcome.duration_ticks < 3600,
+    "surplus takeoff upstream of the fuel takeoff produces on starter fuel, then fails honestly as a persistent no_fuel drill")
+  local starter_plan, starter_outcome, starter_rows = surplus_window(10)
+  local refill = starter_rows.fuel_replenishment_not_observed
+  check(starter_plan.status == "failed" and not starter_outcome.proven and refill and refill.class == "throughput"
+    and refill.related_edge.kind == "fuel_input" and not starter_rows["persistent_nonproductive_status:no_fuel"]
+    and starter_outcome.source_cycles_observed >= 3 and starter_outcome.downstream_acceptance_samples >= 3,
+    "starter fuel outlasting the window cannot prove a fuel loop that never refills the drill")
+  force.is_chunk_charted = fixture_charted
 end
 surface.find_entities_filtered = previous_entities
 

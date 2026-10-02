@@ -83,13 +83,15 @@ local function recipe_fact(entity)
   local function collect(source, destination)
     local ok_rows, rows = pcall(function() return recipe[source] end)
     if not ok_rows or type(rows) ~= "table" then return end
+    local complete = true
     for _, row in pairs(rows) do
       if type(row) == "table" and type(row.name) == "string" then
         destination[#destination + 1] = { name = row.name, type = row.type == "fluid" and "fluid" or "item" }
-      end
+      else complete = false end
     end
+    return complete
   end
-  collect("ingredients", fact.ingredients)
+  fact.ingredients_proven = collect("ingredients", fact.ingredients)
   collect("products", fact.products)
   return fact
 end
@@ -343,6 +345,51 @@ local function build_material_flow(flow_entities, node_by_key, activity)
     end
     return false
   end
+  -- A replenishment inserter may wait at the ordinary fuel target while
+  -- the burner continues working and its fuel inventory still has space.
+  -- Prove the specific held fuel and physical supply, never infer a limit
+  -- from a hard-coded stock count or exempt other full-output entities.
+  for _, node in ipairs(nodes) do
+    if node.type == "inserter" and node._waiting_for_destination then
+      local pickup, destination
+      for _, edge in ipairs(edges) do
+        if edge.from == node.id and edge.kind == "inserter_drop" then destination = node_by_id[edge.to] end
+        if edge.to == node.id and edge.kind == "inserter_pickup" then pickup = node_by_id[edge.from] end
+      end
+      if pickup and destination and destination._fuel_destination_proven
+        and destination.requires_fuel and destination.status == "working" then
+        local ok, fuel, quality = pcall(function()
+          local held = node._entity.held_stack
+          if not held.valid_for_read or held.count <= 0 then return end
+          local category = item_fuel_category(held.name)
+          if not category or not destination.fuel_categories[category] then return end
+          -- A fuel that is also a recipe ingredient could be waiting on
+          -- material input instead; the destination compartment is ambiguous.
+          for _, ingredient in ipairs(destination.ingredients) do
+            if ingredient.type == "item" and ingredient.name == held.name then return end
+          end
+          local burner = destination._entity.burner
+          local burning = burner.currently_burning
+          if not burning or not destination.fuel_categories[item_fuel_category(burning.name)]
+            or not (burner.remaining_burning_fuel > 0) then return end
+          local inventory = destination._entity.get_fuel_inventory()
+          local item = { name = held.name, quality = held.quality.name, count = 1 }
+          if inventory.get_item_count({ name = item.name, quality = item.quality }) > 0
+            and inventory.can_insert(item) == true then
+            return held.name, held.quality.name
+          end
+        end)
+        local product = { name = fuel, type = "item" }
+        local supplied = (pickup.role == "source" or pickup.role == "processor") and product_matches(pickup, product, false)
+          or (pickup.role == "transport" or pickup.role == "buffer") and upstream_proven(pickup.id, product, false)
+        if ok and fuel and supplied then
+          node.fuel_return_saturation = { destination_node_id = destination.id, fuel = fuel, quality = quality,
+            observed_status = "waiting_for_space_in_destination",
+            evidence = "supplied_working_burner_with_fuel_inventory_space" }
+        end
+      end
+    end
+  end
   local function reaches_downstream(start_id)
     local queue, seen, head = { start_id }, {}, 1
     while head <= #queue do
@@ -401,6 +448,11 @@ local function build_material_flow(flow_entities, node_by_key, activity)
       end
     end
   end
+  for _, row in ipairs(diagnostics) do
+    if row.reason == "downstream_inventory_blocked" and node_by_id[row.node_id].fuel_return_saturation then
+      row.nonblocking_reason = "proven_fuel_return_saturation"
+    end
+  end
   table.sort(diagnostics, function(a, b)
     return a.node_id == b.node_id and a.reason < b.reason or a.node_id < b.node_id
   end)
@@ -428,7 +480,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
         component._downstream[node._key] = { kind = "buffer", accepting = node._accepting, stock = node._accepted_stock }
         if node._accepting then accepting_sinks = accepting_sinks + 1 end
       end
-      if node._blocked_output or node.status == "full_output" then blocked_output = true end
+      if node._blocked_output or node.status == "full_output" and not node.fuel_return_saturation then blocked_output = true end
       if node.role == "source" or node.role == "processor" then
         producing_nodes = producing_nodes + 1
         if node.role == "source" then
@@ -450,7 +502,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
           reason = next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven" }
       end
       if node.status == "no_power" or node.status == "low_power" or node.status == "no_fuel"
-        or node.status == "insufficient_input" or node.status == "full_output"
+        or node.status == "insufficient_input" or node.status == "full_output" and not node.fuel_return_saturation
         or node.status == "disabled" or node.status == "no_resources" then
         blockers[#blockers + 1] = { node_id = id, reason = "nonproductive_status", status = node.status }
       end
@@ -468,7 +520,9 @@ local function build_material_flow(flow_entities, node_by_key, activity)
     end
     component.component_signature = string.format("%08x%08x", h1, h2)
     for _, diagnostic in ipairs(component._diagnostics) do
-      blockers[#blockers + 1] = { node_id = diagnostic.node_id, reason = "relationship_diagnostic", diagnostic = diagnostic.reason }
+      if diagnostic.reason ~= "downstream_inventory_blocked" or not node_by_id[diagnostic.node_id].fuel_return_saturation then
+        blockers[#blockers + 1] = { node_id = diagnostic.node_id, reason = "relationship_diagnostic", diagnostic = diagnostic.reason }
+      end
     end
     if producing_nodes == 0 or (component.roles.source or 0) == 0 or (component.roles.processor or 0) == 0
       or buffers + consumers == 0 then
@@ -658,6 +712,8 @@ local function collect_summary(params, internal)
               _key = key, _entity = entity, name = entity.name, type = entity.type,
               role = role, position = { x = entity.position.x, y = entity.position.y },
               direction = entity.direction, status = normalize_status(raw_status),
+              _waiting_for_destination = raw_status == "waiting_for_space_in_destination",
+              _fuel_destination_proven = entity.type == "mining-drill" or recipe and recipe.ingredients_proven,
               recipe = recipe and recipe.name or nil,
               products_finished = number_property(entity, "products_finished"),
               ingredients = recipe and recipe.ingredients or {},

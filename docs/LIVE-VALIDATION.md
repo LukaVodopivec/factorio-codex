@@ -141,6 +141,29 @@ checks.
   current autonomy. Buffer capacity alone and production without accepted
   arrivals must never establish autonomous operation. Unsupported buffer
   acceptance remains unproven; no exact remote inventory/fluid counts appear.
+- In an authorized supported Factorio 2.0.x run, observe an exact connected
+  fuel-return inserter waiting at the burner's ordinary replenishment target
+  while useful production continues. Capture its held fuel/quality, pickup/drop
+  bindings, compatible upstream production, working burner with remaining
+  energy, matching stocked fuel and fuel-inventory space. Confirm the waiting
+  status stays visible with `fuel_return_saturation` and the corresponding
+  diagnostic's `nonblocking_reason`, while that branch alone does not set
+  component `blocked_output` or either other output blocker. Do not infer the
+  normal replenishment target from a hard-coded count or relabel the inserter
+  as working. Unsupported or ambiguous compartment/fuel evidence stays blocked.
+- Observe fuel consumption, resumed ordinary replenishment, and renewed waiting
+  with unchanged topology. Record continued source/processor production,
+  downstream acceptance and zero character transfers across the bounded
+  validation interval. Then independently exercise genuine productive-output
+  and full/nonaccepting buffer blockage, incompatible/unresolved fuel, and the
+  end-belt orientation diagnostic; each must still reject autonomy. Do not
+  repair a belt layout merely to remove that diagnostic in this check.
+- Record the exact deployed source revision and mod archive digest with live
+  structured observations. The Lua saturation/replenishment fixture is offline
+  simulated evidence, not confirmation of the reported release 0.19.2 live
+  observation. This source change has no live confirmation or deployment;
+  perform that check only in a separately authorized run, without restarting or
+  altering an unrelated active run.
 - During separate validation intervals, interrupt fuel/power, change a physical
   relationship, stop production, or perform a character transfer. Each must
   produce structured rejection. Check complete transfer attribution even when

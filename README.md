@@ -207,6 +207,27 @@ chooses whether buffer-ended capacity fits the current game stage. A full or
 otherwise nonaccepting output buffer (including intermediate storage) reports
 `blocked_output` and cannot claim current `autonomous_end_to_end`. Unsupported acceptance remains unproven.
 
+A narrowly proven fuel-replenishment branch may wait without blocking useful
+material output. Its inserter keeps normalized `status=full_output`; the node's
+`fuel_return_saturation` records the exact destination, held fuel and quality,
+observed `waiting_for_space_in_destination`, and evidence kind. The existing
+`downstream_inventory_blocked` diagnostic remains visible with
+`nonblocking_reason=proven_fuel_return_saturation`. This distinction requires
+exact runtime pickup/drop relationships and upstream production of the held
+fuel, compatibility with the working destination burner, remaining burning
+energy, matching stocked fuel, and supported fuel-inventory space for that
+quality. Destination compartment evidence requires a mining drill or successfully
+observed recipe ingredients. A held fuel that is also a destination recipe
+ingredient remains ambiguous. No stock threshold is hard-coded. Missing or
+incompatible evidence,
+physically full inventories, other full-output entities, and unrelated
+relationship diagnostics still block. In particular,
+`belt_orientation_does_not_reach_consumer` remains effective.
+
+This distinction clears only the branch's output blockers; it never establishes
+`autonomous_end_to_end`. The existing bounded production, downstream acceptance,
+topology and complete character-transfer history requirements still apply.
+
 `validate_factory_component` uses the existing parked plan step to sample a
 bounded 1–300 second unattended interval. It requires unchanged physical
 relationships and recipe identities, complete transfer history, proven material

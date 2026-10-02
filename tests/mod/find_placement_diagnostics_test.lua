@@ -251,4 +251,71 @@ local far_body = finder.find_placement({ item = "wooden-chest", preferred = { x 
 check(#far_body.candidates == 0 and far_body.hint:find("30 tiles", 1, true),
   "a search beyond Codex reach says so")
 
+-- 2.0.77: adjacent narrow burner recipients accept fuel in every cardinal
+-- rotation although the 1.2-tile drop lies outside their collision box.
+blocked_areas, entities = {}, {}
+body.position = { x = 0.5, y = 0.5 }
+for _, dir in ipairs({ 0, 4, 8, 12 }) do
+  entities = {}
+  local producer = { x = 0.5, y = 0.5 }
+  local point = output_targets.output_position(protos["burner-inserter"], producer, dir)
+  local target_position = { x = math.floor(point.x) + 0.5, y = math.floor(point.y) + 0.5 }
+  local target = add_entity("burner-inserter", target_position)
+  check(not output_targets.box_contains(target.bounding_box, point)
+    and output_targets.recipient_at(body, point, "output", "inserter") == target,
+    "narrow native fuel recipient resolves beyond collision containment facing " .. dir)
+  local existing = finder.find_placement({ item = "burner-inserter", preferred = producer,
+    radius = 1, directions = { dir }, limit = 1, output_target = target_position })
+  check(existing.geometry == "provisional" and existing.candidates[1]
+    and existing.candidates[1].position.x == producer.x and existing.candidates[1].position.y == producer.y,
+    "search finds the native adjacent existing fuel recipient facing " .. dir)
+  entities = {}
+  local planned = finder.find_placement({ item = "burner-inserter", preferred = producer,
+    radius = 1, directions = { dir }, limit = 1, output_recipient_item = "burner-inserter" })
+  local candidate = planned.candidates[1]
+  check(candidate and candidate.output_recipient_placement.position.x == target_position.x
+    and candidate.output_recipient_placement.position.y == target_position.y,
+    "search proposes the native adjacent planned fuel recipient facing " .. dir)
+end
+
+-- The inset is a native boundary, not an entire-tile or selection-box fallback.
+entities = {}
+local point = { x = 1, y = 0.5 }
+for _, case in ipairs({ { x = 1.0390625, bound = false }, { x = 1.04296875, bound = true },
+  { x = 1.95703125, bound = true }, { x = 1.9609375, bound = false } }) do
+  local target = { valid = true, name = "tiny-chest", type = "container", force = force,
+    position = { x = case.x, y = 0.5 }, bounding_box = box_at({ x = case.x, y = 0.5 }, 1 / 256),
+    selection_box = box_at({ x = case.x, y = 0.5 }, 0.5) }
+  -- Native queries include boxes touching the closed inset edges.
+  local old_query = surface.find_entities_filtered
+  surface.find_entities_filtered = function(args)
+    if args.area and target.bounding_box.right_bottom.x >= args.area.left_top.x
+      and target.bounding_box.left_top.x <= args.area.right_bottom.x then return { target } end
+    return {}
+  end
+  local found = output_targets.recipient_at(body, point, "output", "inserter")
+  check((found == target) == case.bound, "native closed inset boundary at " .. case.x)
+  surface.find_entities_filtered = old_query
+end
+entities = {}
+local target = add_entity("burner-inserter", { x = 1.5, y = 0.5 })
+add_entity("burner-inserter", { x = 2.5, y = 0.5 })
+check(output_targets.recipient_at(body, { x = 1.7, y = 0.5 }, "output", "inserter") == target,
+  "nearby next-tile burner is not a recipient")
+local _, _, pickup_state = output_targets.recipient_at(body, { x = 1.7, y = 0.5 }, "input", "inserter")
+check(pickup_state == "none", "native inserter geometry does not enable burner pickup inventories")
+add_entity("wooden-chest", { x = 1.5, y = 0.5 })
+local _, _, ambiguous = output_targets.recipient_at(body, { x = 1.7, y = 0.5 }, "output", "inserter")
+check(ambiguous == "ambiguous", "multiple native geometry matches remain ambiguous")
+entities = {}; local foreign = add_entity("burner-inserter", { x = 1.5, y = 0.5 }); foreign.force = {}
+check(select(3, output_targets.recipient_at(body, { x = 1.7, y = 0.5 }, "output", "inserter")) == "none",
+  "foreign-force native geometry cannot become a recipient")
+entities = {}; add_entity("burner-inserter", { x = 30.75, y = 0.5 })
+check(select(3, output_targets.recipient_at(body, { x = 30.2, y = 0.5 }, "output", "inserter")) == "none",
+  "expanded query does not expose a recipient centre beyond local range")
+force.is_chunk_charted = function() return false end
+check(select(3, output_targets.recipient_at(body, point, "output", "inserter")) == "uncharted",
+  "native endpoint tile must remain force-charted")
+force.is_chunk_charted = function() return true end
+
 if failures > 0 then error(failures .. " find_placement diagnostics checks failed") end

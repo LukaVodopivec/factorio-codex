@@ -44,9 +44,14 @@ local result = spatial.can_place({ placements = {
   { item = "stone-furnace", position = { x = 45.5, y = -30.5 } },
   { item = "burner-inserter", position = { x = 40.5, y = -49.5 }, direction = 0 },
 } }).results
-check(result[2].output_lands_on and result[2].output_lands_on.batch_index == 0
-  and result[2].output_lands_on.name == "stone-furnace",
-  "a planned drill output lands on the planned furnace earlier in the batch")
+check(result[2].output_lands_on and result[2].output_lands_on.state == "ambiguous",
+  "overlapping planned recipient boxes are ambiguous instead of selecting the first")
+local unique = spatial.can_place({ placements = {
+  { item = "stone-furnace", position = { x = 45, y = -30 } },
+  { item = "burner-mining-drill", position = { x = 45, y = -32 }, direction = 8 },
+} }).results
+check(unique[2].output_lands_on and unique[2].output_lands_on.batch_index == 0,
+  "a unique planned drill output lands on the earlier furnace")
 local overlaps = result[1].overlaps_batch or {}
 check(#overlaps == 1 and overlaps[1] == 2, "two planned furnaces on overlapping footprints report each other")
 check(result[4].pickup_from and result[4].pickup_from.name == "wooden-chest",
@@ -74,5 +79,41 @@ local clear = spatial.can_place({ placements = {
 check(clear.output_lands_on == false and clear.pickup_from == false, "endpoints with nothing there are false (null over MCP)")
 check(geometry.NON_BLOCKING_TYPES.fish and geometry.NON_BLOCKING_TYPES["item-entity"] and not geometry.NON_BLOCKING_TYPES.container,
   "placement tools share one list of entity types that never block building")
+
+body.position = { x = 0.5, y = 0.5 }
+for _, direction in ipairs({ 0, 4, 8, 12 }) do
+  local proto = prototypes.item["burner-inserter"].place_result
+  local resolver = require("scripts.output_target")
+  local point = resolver.output_position(proto, body.position, direction)
+  local target = { x = math.floor(point.x) + 0.5, y = math.floor(point.y) + 0.5 }
+  local rows = spatial.can_place({ placements = {
+    { item = "burner-inserter", position = target },
+    { item = "burner-inserter", position = body.position, direction = direction },
+  } }).results
+  check(rows[2].output_lands_on and rows[2].output_lands_on.batch_index == 0,
+    "batch resolves narrow planned fuel recipient facing " .. direction)
+  local ambiguous = spatial.can_place({ placements = {
+    { item = "burner-inserter", position = target },
+    { item = "burner-inserter", position = target },
+    { item = "burner-inserter", position = body.position, direction = direction },
+  } }).results
+  check(ambiguous[3].output_lands_on and ambiguous[3].output_lands_on.state == "ambiguous",
+    "batch never chooses the first of ambiguous narrow fuel recipients facing " .. direction)
+end
+
+local range_edge = spatial.can_place({ placements = {
+  { item = "burner-inserter", position = { x = 30.75, y = 0.5 } },
+  { item = "burner-inserter", position = { x = 29, y = 0.5 }, direction = 12 },
+} }).results
+check(not range_edge[1].can_place and range_edge[2].output_lands_on == false,
+  "planned recipient centre beyond local range is omitted like an existing recipient")
+force.is_chunk_charted = function(_, chunk) return chunk.x == 0 end
+local chart_edge = spatial.can_place({ placements = {
+  { item = "burner-inserter", position = { x = -0.05, y = 0.5 } },
+  { item = "burner-inserter", position = { x = -0.5, y = 0.5 }, direction = 12 },
+} }).results
+check(chart_edge[2].output_lands_on == false,
+  "planned recipient centre in an uncharted adjacent chunk remains omitted")
+force.is_chunk_charted = function() return true end
 
 if failures > 0 then error(failures .. " can_place relation checks failed") end

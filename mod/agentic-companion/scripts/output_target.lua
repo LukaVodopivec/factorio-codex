@@ -118,13 +118,31 @@ function M.input_position(proto, position, direction)
   return { x = position.x + rotated.x, y = position.y + rotated.y }
 end
 
--- Factorio rounds endpoint vectors and collision boxes to 1/256 tiles. A
--- 2.0.77 probe (burner drills flush against stone furnaces in all directions,
--- burner inserters around furnaces) bound exactly when the endpoint lay inside
--- the collision box closed by this tolerance: flush drill outputs land about
--- 1/256 outside the furnace box yet bind. Boxes of distinct entities are at
--- least 0.2 tiles apart, so the tolerance never selects a neighbour.
+-- Drill outputs use point/collision containment; retain the measured rounding
+-- allowance for flush drill/furnace boundaries (Factorio 2.0.77).
 local ENDPOINT_TOLERANCE = 1 / 128
+
+-- Inserters query the endpoint tile inset by 12/256, then intersect recipient
+-- collision boxes (closed edges). Native 2.0.77 probes include narrow inserters,
+-- off-grid recipients touching either inset edge, and same-tile nonrecipients.
+-- This is a producer-specific native query, never a whole-tile fallback.
+function M.endpoint_area(point, producer_type, kind)
+  if producer_type == "inserter" or kind == "input" then
+    local x, y, inset = math.floor(point.x), math.floor(point.y), 12 / 256
+    return { left_top = { x = x + inset, y = y + inset },
+      right_bottom = { x = x + 1 - inset, y = y + 1 - inset } }
+  end
+  return { left_top = { x = point.x - ENDPOINT_TOLERANCE, y = point.y - ENDPOINT_TOLERANCE },
+    right_bottom = { x = point.x + ENDPOINT_TOLERANCE, y = point.y + ENDPOINT_TOLERANCE } }
+end
+
+function M.recipient_contains(box, point, producer_type, kind)
+  if not (box and box.left_top and box.right_bottom and point) then return false end
+  if producer_type ~= "inserter" and kind ~= "input" then return M.box_contains(box, point) end
+  local area = M.endpoint_area(point, producer_type, kind)
+  return box.left_top.x <= area.right_bottom.x and box.right_bottom.x >= area.left_top.x
+    and box.left_top.y <= area.right_bottom.y and box.right_bottom.y >= area.left_top.y
+end
 
 function M.box_contains(box, point)
   return box and box.left_top and box.right_bottom and point
@@ -133,33 +151,27 @@ function M.box_contains(box, point)
     or false
 end
 
-local function contains_point(entity, point)
-  return M.box_contains(entity.bounding_box, point)
-end
-
--- Grid centres at which a not-yet-placed recipient's collision box contains the
--- endpoint, nearest the producer first. Callers still check overlap and placement.
-function M.planned_recipient_positions(proto, point, producer_position)
+-- Grid centres whose collision box intersects the native endpoint query,
+-- nearest the producer first. Callers still check overlap and placement.
+function M.planned_recipient_positions(proto, point, producer_position, producer_type)
   local box = proto and proto.collision_box
   local lt = box and (box.left_top or box[1])
   local rb = box and (box.right_bottom or box[2])
   if not (point and lt and rb) then return {} end
-  local function axis(value, tiles, low, high)
+  local area = M.endpoint_area(point, producer_type)
+  local function axis(low_query, high_query, tiles, low, high)
     local offset = tiles % 2 == 1 and 0.5 or 0
     local values = {}
-    for centre = math.floor(value - high - ENDPOINT_TOLERANCE - offset) + offset,
-      value - low + ENDPOINT_TOLERANCE do
-      if value >= centre + low - ENDPOINT_TOLERANCE and value <= centre + high + ENDPOINT_TOLERANCE then
-        values[#values + 1] = centre
-      end
+    for centre = math.ceil(low_query - high - offset) + offset, high_query - low do
+      values[#values + 1] = centre
     end
     return values
   end
   local lx, ly = tonumber(lt.x or lt[1]), tonumber(lt.y or lt[2])
   local rx, ry = tonumber(rb.x or rb[1]), tonumber(rb.y or rb[2])
   local positions = {}
-  for _, y in ipairs(axis(point.y, tonumber(proto.tile_height) or 1, ly, ry)) do
-    for _, x in ipairs(axis(point.x, tonumber(proto.tile_width) or 1, lx, rx)) do
+  for _, y in ipairs(axis(area.left_top.y, area.right_bottom.y, tonumber(proto.tile_height) or 1, ly, ry)) do
+    for _, x in ipairs(axis(area.left_top.x, area.right_bottom.x, tonumber(proto.tile_width) or 1, lx, rx)) do
       positions[#positions + 1] = { x = x, y = y }
     end
   end
@@ -174,21 +186,24 @@ function M.planned_recipient_positions(proto, point, producer_position)
   return positions
 end
 
--- Search-time endpoint evidence is provisional. Only an entity whose collision
--- box contains the exact prototype-derived point (within the probed tolerance)
--- is eligible; never a whole endpoint tile. Runtime pickup_target/drop_target
--- remains authoritative after physical placement.
-function M.recipient_at(c, point, kind)
+-- Geometry is provisional; later-tick pickup_target/drop_target is authoritative.
+function M.recipient_at(c, point, kind, producer_type)
   if not point then return nil, nil, "no-endpoint" end
   if not c.force.is_chunk_charted(c.surface,
     { x = math.floor(point.x / 32), y = math.floor(point.y / 32) }) then return nil, nil, "uncharted" end
-  local area = { left_top = { x = point.x - ENDPOINT_TOLERANCE, y = point.y - ENDPOINT_TOLERANCE },
-    right_bottom = { x = point.x + ENDPOINT_TOLERANCE, y = point.y + ENDPOINT_TOLERANCE } }
+  local dx, dy = point.x - c.position.x, point.y - c.position.y
+  if dx * dx + dy * dy > 900 then return nil, nil, "out_of_range" end
+  local area = M.endpoint_area(point, producer_type, kind)
   local matches = {}
   for _, entity in ipairs(c.surface.find_entities_filtered({ area = area })) do
-    if entity.valid and entity.force == c.force and M.can_target_type(entity.type, kind)
-      and contains_point(entity, point) then
-      matches[#matches + 1] = entity
+    if entity.valid then
+      local dx, dy = entity.position.x - c.position.x, entity.position.y - c.position.y
+      if entity.force == c.force and dx * dx + dy * dy <= 900
+        and c.force.is_chunk_charted(c.surface, { x = math.floor(entity.position.x / 32), y = math.floor(entity.position.y / 32) })
+        and M.can_target_type(entity.type, kind)
+        and M.recipient_contains(entity.bounding_box, point, producer_type, kind) then
+        matches[#matches + 1] = entity
+      end
     end
   end
   table.sort(matches, function(a, b)
@@ -205,14 +220,14 @@ end
 function M.geometry_matches(c, proto, position, direction, expected)
   local point = M.output_position(proto, position, direction)
   if not point then return false, nil end
-  local recipient = M.recipient_at(c, point)
+  local recipient = M.recipient_at(c, point, "output", proto.type)
   return recipient == expected, point
 end
 
 function M.input_geometry_matches(c, proto, position, direction, expected)
   local point = M.input_position(proto, position, direction)
   if not point then return false, nil end
-  local source = M.recipient_at(c, point, "input")
+  local source = M.recipient_at(c, point, "input", proto.type)
   return source == expected, point
 end
 

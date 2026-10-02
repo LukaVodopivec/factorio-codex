@@ -1135,3 +1135,104 @@ revalidation assertions; it passes with the repaired helper. The existing search
 harness additionally rejects replacement-only candidates while retaining clear
 neighbors, and the range harness still verifies rejection before any engine
 queries for invalid or out-of-range requests.
+
+
+## Adjacent burner-inserter fuel feed (2026-10-02)
+
+Isolated Factorio **2.0.77** headless fixtures reproduced the exact reported
+producer `(46.5,-40.5)`, direction `12`, and recipient `(47.5,-40.5)`,
+direction `8`. The native drop position was `(47.69921875,-40.5)`.
+The recipient collision box was `[(47.3515625,-40.6484375),
+(47.6484375,-40.3515625)]`; its rotated selection box was
+`[(47.1015625,-40.94921875),(47.8984375,-40.15234375)]`.
+Its prototype collision box was `[-38/256,38/256]` on both axes;
+prototype selection corners were `(-102/256,-89/256)` and `(102/256,115/256)`.
+The producer prototype drop vector was `(0,1.2)` before rotation.
+
+At tick 600, native `drop_target` exactly matched the original recipient unit,
+its fuel inventory had risen from zero to **five coal**, and the source chest
+had declined from ten to five. The producer began with five legitimate fixture
+coal as starter fuel. Separate cardinal copies gave the same later-tick binding
+and five-coal transfer, with no character transfers during the measured interval:
+
+| Producer direction | Runtime drop relative to producer | Recipient relative to producer | Recipient direction |
+| --- | --- | --- | --- |
+| 0 | `(0,1.19921875)` | `(0,1)` | 12 |
+| 4 | `(-1.19921875,0)` | `(-1,0)` | 0 |
+| 8 | `(0,-1.19921875)` | `(0,-1)` | 4 |
+| 12 | `(1.19921875,0)` | `(1,0)` | 8 |
+
+### Native recipient query and limits
+
+Collision-box containment rejects these fuel edges: the drop overhang is
+`13/256`, exceeding the predecessor's `1/128` rounding allowance. Selection-box
+containment is also insufficient to describe the native query. Custom-vector
+probes moved only diagnostic endpoints and measured binding without claiming
+item transfer. Burner inserters and chests remained targets up to the last
+1/256 position before the next tile; selection boxes differed between them.
+
+The engine intersects collision boxes with the endpoint tile inset by
+**12/256 tile**, including touching edges. Tiny off-grid chest collision boxes
+of half-width `1/256`, with much larger selection boxes, discriminate the inset:
+for endpoint `(1,y+0.5)`, target centres `1.0390625` and `1.9609375` did not bind,
+while `1.04296875` and `1.95703125` bound at the exact closed edges.
+Same-tile location and selection overlap alone therefore do not suffice.
+This agrees with the [Factorio staff explanation of the inset query](https://forums.factorio.com/viewtopic.php?p=703599#p703599);
+the measurements here independently establish it for 2.0.77.
+
+The existing shared resolver now applies this query to inserter pickup/drop
+geometry. Mining-drill point containment retains its measured rounding allowance
+and the existing cardinal drill/furnace boundary regressions. Planned recipient
+search, batch relations, and existing/earlier-planned build targets use the same
+geometry; physical collision and placement clearance remain separate.
+Multiple eligible recipients stay ambiguous, and burner inserters remain
+ineligible pickup inventories. Preflight remains provisional: neither binding
+nor geometry proves acceptance of an arbitrary item, factory connectivity, or
+autonomy. Later-tick exact runtime identity still determines physical success;
+nil, wrong or invalidated inserter targets fail while committed effects remain.
+
+### Fixture identity and source readiness
+
+The minimal diagnostic mod depended only on base 2.0.77. It created peaceful dry
+ground with enemy bases disabled, test entities and finite fixture inventory.
+No gameplay client participated. Each owned server bound only to loopback on
+port zero, with no RCON, public or LAN advertisement, and exited after its
+receipt. No active save, installed companion, gameplay writer or client was
+modified or restarted. These are assisted engineering results, not gameplay
+or benchmark evidence.
+
+The final comparison evaluated 78 later-tick native cases. The candidate query
+agreed with native target identity in all 78; the predecessor rejected all five
+adjacent fuel-feed examples. Entity counts and recipient fuel counts were
+unchanged across every read-only query. The resolver context used the source's
+position and actual native force/surface, without introducing a gameplay body.
+Because disconnected headless fixtures do not process player chart requests,
+the comparison copies substituted generated-chunk checks for chart checks.
+That fixture-only substitution is absent from source; force ownership and all
+collision geometry remained native. Initial unmodified checks honestly reported
+`uncharted`; they were not counted as successful geometry comparisons.
+
+Source baseline: `0777538bb4eaadef6bea89eb18b44d5fbcf27845`, version 0.19.7.
+The following hashes identify the final candidate mod snapshot and the exact
+instrumented fixture loaded for comparison. Source publication and deployment
+are separate; the candidate companion archive was packaged offline, not installed
+in an active run.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Official 2.0.77 headless archive | `c4efc11529f74d37c96933e291e0db73fd9f5aa4738913d9301b24680b3e947f` |
+| Candidate source mod ZIP | `3f605743123c9c4e07aad842b23c2220c7f6b85739967470f5381b6fae419da7` |
+| Candidate source endpoint helper | `a4ac02fd5253b5d6d3aed52352124262e75ff47d6fad9dbf4763a127f73feb1c` |
+| Instrumented diagnostic mod ZIP | `f9500a3c8423635777dcf973a6b4f8350fe6cb040001662ffff004d143aa964d` |
+| Fresh comparison seed save ZIP | `204872c122ed655a384d3305f705562b67b5fbf9afd7783e956b3094d4e17684` |
+
+The new Lua regression fails against the predecessor for all four existing and
+planned adjacent fuel arrangements and the discriminating inset-edge cases.
+Physical-action regressions retain exact later-tick binding failures and item
+consumption for existing and earlier-planned narrow recipients in every cardinal
+rotation. The old action fixture was shifted to tile centres so its synthetic
+one-tile inventories no longer straddle four native query tiles.
+Review regressions additionally cover bounds at adjacent chunks, mixed existing
+and planned ambiguity, and same-name replacement of an earlier committed pickup
+or drop recipient. Build plans retain that exact created entity and refuse a
+replacement before committing the producer; prior effects remain recorded.

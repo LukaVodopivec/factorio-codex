@@ -81,9 +81,9 @@ cardinal inserter pickup/drop endpoints plus rotated fluid endpoints. It
 evaluates nearest positions first and stops at the requested candidates
 (drills rank coverage among the nearest 2×limit valid positions), 2,048
 position/direction checks, or 600 engine queries (`truncated`), which kept
-every probed call, worst cases included, under 10 ms of game tick. An endpoint binds when it lies in the recipient's
-collision box within 1/128 tile, the rule a Factorio 2.0.77 probe of flush
-burner drills and inserters reproduced exactly. Each candidate carries
+every probed call, worst cases included, under 10 ms of game tick. Drill preflight uses collision-box point containment within 1/128 tile.
+Inserter preflight intersects recipient collision boxes with the endpoint tile
+inset by 12/256 tile, as isolated Factorio 2.0.77 probes establish. Each candidate carries
 `plan_steps` for `queue_plan` (with fuel insertions when `fuel` is given), and
 an empty result names one rejection reason per evaluation, the deepest
 `closest_rejected`, and a `hint`, including the free-tile gap an inserter
@@ -93,8 +93,8 @@ Output-capable candidates expose
 their deterministic `output_position` and recipient, explicitly `null` for
 ground output. Its existing `output_target` contract resolves the requested
 recipient by exact entity position, derives the endpoint from prototype geometry
-and direction, and requires that exact point to lie within the eligible entity's
-`bounding_box` closed by the probed 1/128-tile tolerance. This search-time
+and direction, and applies the producer-specific recipient query above.
+Multiple eligible matches are ambiguous. This search-time
 geometry is provisional: it proves neither item acceptance nor runtime binding. Physical placement retains the exact created entity without
 removing or replacing it; later-tick `pickup_target`/`drop_target` identity is
 authoritative, even when a live endpoint differs from the prototype prediction.

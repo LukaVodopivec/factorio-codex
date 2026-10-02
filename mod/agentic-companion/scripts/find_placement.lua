@@ -353,12 +353,12 @@ function M.find_placement(params)
         local candidate_input_target
         if input_target then
           engine_calls = engine_calls + 1
-          local input_entity, input_identity = output_targets.recipient_at(c, pickup_position, "input")
+          local input_entity, input_identity = output_targets.recipient_at(c, pickup_position, "input", proto.type)
           if input_entity ~= input_target.entity then reject("pickup_not_on_source", pos, direction); goto continue end
           candidate_input_target = input_identity
         end
         if output_position then engine_calls = engine_calls + 1 end
-        local recipient, recipient_identity, recipient_state = output_targets.recipient_at(c, output_position)
+        local recipient, recipient_identity, recipient_state = output_targets.recipient_at(c, output_position, "output", proto.type)
         if output_capable and not (output_position ~= nil and (recipient_state == "bound" or recipient_state == "none")) then
           reject("output_endpoint_unknown", pos, direction); goto continue
         end
@@ -372,7 +372,7 @@ function M.find_placement(params)
         if output_recipient_item then
           if output_position and recipient_state == "none" then
             for _, recipient_position in ipairs(output_targets.planned_recipient_positions(
-              output_recipient_proto, output_position, pos)) do
+              output_recipient_proto, output_position, pos, proto.type)) do
               local recipient_area = placement_geometry.footprint(output_recipient_proto, recipient_position, 0)
               if not placement_geometry.overlaps(area, recipient_area)
                 and footprint_charted(c.force, c.surface, recipient_area) then

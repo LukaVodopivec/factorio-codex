@@ -96,17 +96,37 @@ function M.start(task)
         error(step.item .. " has no deterministic input target")
       end
       local label = "build_plan " .. kind .. "_target"
+      local function earlier_matches(endpoint)
+        local count, match_index = 0, nil
+        for earlier = 1, index - 1 do
+          local candidate = task.steps[earlier]
+          local item = prototypes.item[candidate.item]
+          local target_proto = item and item.place_result
+          local dx, dy = candidate.position.x - c.position.x, candidate.position.y - c.position.y
+          if target_proto and dx * dx + dy * dy <= 900
+            and c.force.is_chunk_charted(c.surface, { x = math.floor(candidate.position.x / 32), y = math.floor(candidate.position.y / 32) })
+            and output_targets.can_target_type(target_proto.type, kind)
+            and output_targets.recipient_contains(placement_geometry.footprint(target_proto,
+              candidate.position, candidate.direction), endpoint, result.type, kind) then
+            count, match_index = count + 1, earlier
+          end
+        end
+        return count, match_index
+      end
       local ok, resolved = pcall(output_targets.resolve, c, target, label, kind)
       if ok then
         step["_" .. kind .. "_target"] = resolved
         local matches, endpoint
-        if kind == "input" then
-          matches, endpoint = result and output_targets.input_geometry_matches(c, result,
-            step.position, step.direction, resolved.entity)
-        else
-          matches, endpoint = result and output_targets.geometry_matches(c, result,
-            step.position, step.direction, resolved.entity)
+        if result then
+          if kind == "input" then
+            matches, endpoint = output_targets.input_geometry_matches(c, result,
+              step.position, step.direction, resolved.entity)
+          else
+            matches, endpoint = output_targets.geometry_matches(c, result,
+              step.position, step.direction, resolved.entity)
+          end
         end
+        if endpoint and earlier_matches(endpoint) > 0 then error(label .. " is ambiguous among existing and earlier placements") end
         if not matches then
           error(string.format("%s is not at the exact provisional %s endpoint%s", label, kind,
             endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
@@ -136,11 +156,16 @@ function M.start(task)
           end
         end
         local footprint = placement_geometry.footprint(target_proto, planned.position, planned.direction)
-        if not endpoint or not output_targets.box_contains(footprint, endpoint) then
+        if not endpoint or not output_targets.recipient_contains(footprint, endpoint, result.type, kind) then
           error(string.format("%s is not at the exact provisional %s endpoint%s", label, kind,
             endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
         end
-        step["_planned_" .. kind .. "_target"] = { step = planned_index, item = planned.item }
+        local _, _, state = output_targets.recipient_at(c, endpoint, kind, result.type)
+        local count, match_index = earlier_matches(endpoint)
+        if state ~= "none" or count ~= 1 or match_index ~= planned_index then
+          error(label .. " is ambiguous or unavailable among existing and earlier placements")
+        end
+        step["_planned_" .. kind .. "_target"] = { step = planned_index }
       end
     end
     if step.input_target ~= nil then prepare_target(step.input_target, "input") end
@@ -521,7 +546,7 @@ function M.tick(task)
     if step._input_target and current.entity ~= step._input_target.entity then
       return advance(task, false, "input_target changed before placement; observe again")
     end
-    if step._planned_input_target and current.entity.name ~= prototypes.item[step._planned_input_target.item].place_result.name then
+    if step._planned_input_target and current.entity ~= task.steps[step._planned_input_target.step]._placed_entity then
       return advance(task, false, "planned input_target has the wrong runtime identity; observe again")
     end
     local matches = output_targets.input_geometry_matches(c, place_result,
@@ -536,7 +561,7 @@ function M.tick(task)
     if step._output_target and current.entity ~= step._output_target.entity then
       return advance(task, false, "output_target changed before placement; observe again")
     end
-    if step._planned_output_target and current.entity.name ~= prototypes.item[step._planned_output_target.item].place_result.name then
+    if step._planned_output_target and current.entity ~= task.steps[step._planned_output_target.step]._placed_entity then
       return advance(task, false, "planned output_target has the wrong runtime identity; observe again")
     end
     local matches = output_targets.geometry_matches(c, place_result, step.position, step.direction, current.entity)
@@ -567,6 +592,7 @@ function M.tick(task)
       step.item, step.position.x, step.position.y))
   end
   c.remove_item({ name = step.item, count = 1 })
+  step._placed_entity = built
   task._placed = task._placed + 1
   if expected_input or expected_output then
     task._expected_input, task._expected_output = expected_input, expected_output

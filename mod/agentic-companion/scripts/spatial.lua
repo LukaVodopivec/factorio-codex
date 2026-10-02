@@ -591,22 +591,30 @@ function M.can_place(params)
         area = placement_geometry.footprint(proto, position, out[i].direction) }
     end
   end
-  local function lands_on(point, kind, self_index)
-    for j = 1, #params.placements do
-      local other = planned[j]
-      if j ~= self_index and other and output_targets.can_target_type(other.proto.type, kind)
-        and output_targets.box_contains(other.area, point) then
-        return { batch_index = j - 1, name = other.proto.name }
-      end
-    end
-    -- Local perception only: points beyond Codex's 30-tile range stay unreported.
+  local function lands_on(point, kind, self_index, producer_type)
+    -- Local perception bounds apply to planned and existing relations alike.
     local dx, dy = point.x - c.position.x, point.y - c.position.y
     if dx * dx + dy * dy > 900 then return { state = "out_of_range" } end
-    local ok, _, identity, state = pcall(output_targets.recipient_at, c, point, kind)
+    local match, count = nil, 0
+    for j = 1, #params.placements do
+      local other = planned[j]
+      local dx, dy = other and other.position.x - c.position.x, other and other.position.y - c.position.y
+      if j ~= self_index and other and dx * dx + dy * dy <= 900
+        and c.force.is_chunk_charted(c.surface, { x = math.floor(other.position.x / 32), y = math.floor(other.position.y / 32) })
+        and output_targets.can_target_type(other.proto.type, kind)
+        and output_targets.recipient_contains(other.area, point, producer_type, kind) then
+        match, count = { batch_index = j - 1, name = other.proto.name }, count + 1
+      end
+    end
+    local ok, _, identity, state = pcall(output_targets.recipient_at, c, point, kind, producer_type)
     if not ok then return { state = "unknown" } end
-    if state == "bound" then return identity end
-    if state == "none" then return false end
-    return { state = state }
+    if state == "ambiguous" or count > 1 or (count == 1 and state == "bound") then
+      return { state = "ambiguous" }
+    end
+    if state ~= "bound" and state ~= "none" then return { state = state } end
+    if match then return match end
+    if identity then return identity end
+    return false
   end
   for i = 1, #params.placements do
     local entry = planned[i]
@@ -618,9 +626,9 @@ function M.can_place(params)
       end
       if #overlaps > 0 then out[i].overlaps_batch = overlaps end
       local output = output_targets.output_position(entry.proto, entry.position, entry.direction)
-      if output then out[i].output_position, out[i].output_lands_on = output, lands_on(output, "output", i) end
+      if output then out[i].output_position, out[i].output_lands_on = output, lands_on(output, "output", i, entry.proto.type) end
       local pickup = output_targets.input_position(entry.proto, entry.position, entry.direction)
-      if pickup then out[i].pickup_position, out[i].pickup_from = pickup, lands_on(pickup, "input", i) end
+      if pickup then out[i].pickup_position, out[i].pickup_from = pickup, lands_on(pickup, "input", i, entry.proto.type) end
     end
   end
   return { results = out }

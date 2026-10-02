@@ -4,18 +4,18 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 local force = { is_chunk_charted = function() return true end }
 local recipient = { valid = true, name = "stone-furnace", type = "furnace", force = force,
-  position = { x = 2, y = 0 }, selection_box = { left_top = { x = 1.5, y = -0.5 }, right_bottom = { x = 2.5, y = 0.5 } },
-  bounding_box = { left_top = { x = 1.5, y = -0.5 }, right_bottom = { x = 2.5, y = 0.5 } } }
+  position = { x = 2.5, y = 0.5 }, selection_box = { left_top = { x = 2.0, y = 0.0 }, right_bottom = { x = 3.0, y = 1.0 } },
+  bounding_box = { left_top = { x = 2.0, y = 0.0 }, right_bottom = { x = 3.0, y = 1.0 } } }
 local replacement = { valid = true, name = "steel-furnace", type = "furnace", force = force,
-  position = { x = 2, y = 0 }, selection_box = recipient.selection_box }
+  position = { x = 2.5, y = 0.5 }, selection_box = recipient.selection_box }
 local source = { valid = true, name = "wooden-chest", type = "container", force = force,
-  position = { x = 1, y = -1 }, selection_box = { left_top = { x = 0.5, y = -1.5 }, right_bottom = { x = 1.5, y = -0.5 } },
-  bounding_box = { left_top = { x = 0.5, y = -1.5 }, right_bottom = { x = 1.5, y = -0.5 } } }
+  position = { x = 1.5, y = -0.5 }, selection_box = { left_top = { x = 1.0, y = -1.0 }, right_bottom = { x = 2.0, y = 0.0 } },
+  bounding_box = { left_top = { x = 1.0, y = -1.0 }, right_bottom = { x = 2.0, y = 0.0 } } }
 local target_matches, created, removed, inserted, pickup_target, drop_target, last_built = { recipient }, 0, 0, 0, source, recipient, nil
 local insert_limit
 local rejected_item
 local planned_recipient
-local runtime_drop_position = { x = 2, y = 0 }
+local runtime_drop_position = { x = 2.5, y = 0.5 }
 local surface
 surface = {
   find_entities_filtered = function() return target_matches end,
@@ -42,7 +42,7 @@ surface = {
     return last_built
   end,
 }
-local body = { valid = true, position = { x = 0, y = 0 }, build_distance = 6, force = force, surface = surface,
+local body = { valid = true, position = { x = 0.5, y = 0.5 }, build_distance = 6, force = force, surface = surface,
   get_item_count = function() return 1 end, remove_item = function(args) removed = removed + args.count end }
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 package.loaded["scripts.actions.approach"] = {
@@ -63,7 +63,7 @@ _G.prototypes = { item = {
 } }
 local place = require("scripts.actions.build").place
 drop_target = nil
-local valid = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+local valid = { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(valid)
 local placed_pending = place.tick(valid)
 local same_tick_pending = place.tick(valid)
@@ -74,23 +74,23 @@ local valid_result = place.tick(valid)
 check(valid_result and valid_result.status == "done" and valid_result.detail:match("pending first output")
   and created == 1 and removed == 1,
   "placement preserves truthful pending output while exact geometry is valid and drop_target is nil")
-created, removed, drop_target, runtime_drop_position = 0, 0, recipient, { x = 2.25, y = 0 }
-local wrong_geometry = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+created, removed, drop_target, runtime_drop_position = 0, 0, recipient, { x = 2.75, y = 0.5 }
+local wrong_geometry = { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(wrong_geometry)
 check(place.tick(wrong_geometry) == nil, "placement retains an entity whose runtime endpoint still needs verification")
 game.tick = game.tick + 1
 local wrong_geometry_result = place.tick(wrong_geometry)
 check(wrong_geometry_result and wrong_geometry_result.status == "done" and created == 1,
   "authoritative exact runtime binding outranks a prototype/runtime endpoint discrepancy")
-runtime_drop_position = { x = 2, y = 0 }
+runtime_drop_position = { x = 2.5, y = 0.5 }
 created, removed, target_matches, recipient.valid = 0, 0, { recipient }, true
-local invalidated = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+local invalidated = { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(invalidated)
 recipient.valid, target_matches = false, { replacement }
 local invalidated_result = place.tick(invalidated)
 check(invalidated_result and invalidated_result.status == "failed" and invalidated_result.detail:match("changed before placement") and created == 0 and removed == 0, "placement refuses an output recipient invalidated after search")
 recipient.valid, target_matches, drop_target = true, { recipient }, nil
-local mismatch = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+local mismatch = { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(mismatch)
 check(place.tick(mismatch) == nil and created == 1 and removed == 1,
   "placement does not report an immediate false output mismatch")
@@ -101,7 +101,7 @@ check(mismatch_result and mismatch_result.status == "failed" and mismatch_result
   and created == 1 and removed == 1,
   "a non-nil wrong runtime target fails even when exact geometry still points at the requested recipient")
 created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
-local unbound = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+local unbound = { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(unbound)
 check(place.tick(unbound) == nil, "placement begins later-tick output-tile verification")
 target_matches = {}
@@ -111,7 +111,7 @@ check(unbound_result and unbound_result.status == "done" and unbound_result.deta
   and created == 1 and removed == 1,
   "mining-drill placement keeps nil runtime output binding explicitly pending first output")
 created, removed, drop_target, recipient.valid, target_matches = 0, 0, nil, true, { recipient }
-local target_lost = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+local target_lost = { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(target_lost)
 check(place.tick(target_lost) == nil, "placement retains the exact target during output binding verification")
 recipient.valid = false
@@ -122,7 +122,7 @@ check(target_lost_result and target_lost_result.status == "failed"
   "placement fails immediately when the exact expected output target is invalidated")
 recipient.valid = true
 created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
-local placed_lost = { item = "burner-mining-drill", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } }
+local placed_lost = { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(placed_lost)
 check(place.tick(placed_lost) == nil, "placement retains the exact new entity during output binding verification")
 last_built.valid = false
@@ -132,8 +132,8 @@ check(placed_lost_result and placed_lost_result.status == "failed"
   and placed_lost_result.detail:match("exact placed entity vanished") and created == 1 and removed == 1,
   "placement fails immediately when the exact new entity is invalidated")
 created, removed, pickup_target, drop_target, target_matches = 0, 0, source, recipient, { recipient }
-local inserter = { item = "burner-inserter", position = { x = 1, y = 0 },
-  output_target = { x = 2, y = 0 } }
+local inserter = { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
+  output_target = { x = 2.5, y = 0.5 } }
 place.start(inserter)
 check(place.tick(inserter) == nil, "inserter placement also defers exact output verification")
 game.tick = game.tick + 1
@@ -141,8 +141,8 @@ local inserter_result = place.tick(inserter)
 check(inserter_result and inserter_result.status == "done" and created == 1 and removed == 1,
   "inserter placement prechecks and verifies its exact output binding")
 created, removed, pickup_target, drop_target, target_matches = 0, 0, source, recipient, { source, recipient }
-local coupled_inserter = { item = "burner-inserter", position = { x = 1, y = 0 },
-  input_target = { x = 1, y = -1 }, output_target = { x = 2, y = 0 } }
+local coupled_inserter = { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
+  input_target = { x = 1.5, y = -0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(coupled_inserter)
 check(place.tick(coupled_inserter) == nil and created == 1 and removed == 1,
   "coupled inserter placement waits for Factorio's runtime input and output targets")
@@ -151,8 +151,8 @@ local coupled_inserter_result = place.tick(coupled_inserter)
 check(coupled_inserter_result and coupled_inserter_result.status == "done",
   "coupled inserter placement completes only when both runtime targets match")
 created, removed, pickup_target, drop_target, target_matches = 0, 0, replacement, recipient, { source, recipient }
-local wrong_input = { item = "burner-inserter", position = { x = 1, y = 0 },
-  input_target = { x = 1, y = -1 }, output_target = { x = 2, y = 0 } }
+local wrong_input = { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
+  input_target = { x = 1.5, y = -0.5 }, output_target = { x = 2.5, y = 0.5 } }
 place.start(wrong_input)
 check(place.tick(wrong_input) == nil and created == 1 and removed == 1,
   "coupled inserter commits one physical placement before runtime verification")
@@ -164,8 +164,8 @@ check(wrong_input_result and wrong_input_result.status == "failed"
 local build_plan = require("scripts.actions.build_plan")
 body.force.recipes, body.crafting_queue_size = {}, 0
 created, removed, pickup_target, drop_target, target_matches = 0, 0, source, recipient, { source, recipient }
-local coupled_plan = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
-  input_target = { x = 1, y = -1 }, output_target = { x = 2, y = 0 } } } }
+local coupled_plan = { steps = { { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
+  input_target = { x = 1.5, y = -0.5 }, output_target = { x = 2.5, y = 0.5 } } } }
 build_plan.start(coupled_plan)
 check(build_plan.tick(coupled_plan) == nil and created == 1 and removed == 1,
   "build_plan carries coupled provisional endpoints into one physical placement")
@@ -174,8 +174,8 @@ local coupled_plan_result = build_plan.tick(coupled_plan)
 check(coupled_plan_result and coupled_plan_result.status == "done",
   "build_plan accepts coupled placement only after both Factorio runtime targets match")
 created, removed, pickup_target, drop_target, target_matches = 0, 0, source, nil, { recipient }
-local planned = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
-  output_target = { x = 2, y = 0 } } } }
+local planned = { steps = { { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
+  output_target = { x = 2.5, y = 0.5 } } } }
 build_plan.start(planned)
 local planned_pending = build_plan.tick(planned)
 local planned_same_tick = build_plan.tick(planned)
@@ -189,8 +189,8 @@ check(planned_result and planned_result.status == "failed" and planned_result.de
 
 created, removed, drop_target, target_matches, planned_recipient = 0, 0, nil, {}, nil
 local same_plan_target = { steps = {
-  { item = "wooden-chest", position = { x = 2, y = 0 } },
-  { item = "burner-inserter", position = { x = 1, y = 0 }, output_target = { x = 2, y = 0 } },
+  { item = "wooden-chest", position = { x = 2.5, y = 0.5 } },
+  { item = "burner-inserter", position = { x = 1.5, y = 0.5 }, output_target = { x = 2.5, y = 0.5 } },
 } }
 local same_plan_ok, same_plan_error = pcall(build_plan.start, same_plan_target)
 check(same_plan_ok, "build_plan preflight accepts one eligible earlier planned output recipient: " .. tostring(same_plan_error))
@@ -208,8 +208,8 @@ storage = {}
 local insertion_tick = game.tick
 created, removed, inserted, drop_target, target_matches = 0, 0, 0, nil, { recipient }
 body.get_item_count = function(_, name) return name == "wood" and 1 or 1 end
-local planned_flow = { steps = { { item = "burner-mining-drill", position = { x = 1, y = 0 },
-  insert = { wood = 1 }, output_target = { x = 2, y = 0 } } } }
+local planned_flow = { steps = { { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 },
+  insert = { wood = 1 }, output_target = { x = 2.5, y = 0.5 } } } }
 build_plan.start(planned_flow)
 local planned_flow_initial = build_plan.tick(planned_flow)
 check(planned_flow_initial == nil and created == 1 and inserted == 1,
@@ -219,7 +219,7 @@ check(starter.transfer_actions == 1 and starter.transferred_items == 1
   and starter.events[1].tick == insertion_tick and starter.events[1].action == "insert"
   and starter.target_actions[1].target.name == "burner-mining-drill"
   and starter.target_actions[1].target.type == "mining-drill"
-  and starter.target_actions[1].target.position.x == 1 and starter.target_actions[1].target.position.y == 0,
+  and starter.target_actions[1].target.position.x == 1.5 and starter.target_actions[1].target.position.y == 0.5,
   "starter transfer is visible at its physical tick with exact placed identity while binding waits")
 for _ = 1, 5 do
   game.tick = game.tick + 1
@@ -236,8 +236,8 @@ check(activity.snapshot(insertion_tick).transfer_actions == 1
   "waiting ticks and completion retain one event in only the insertion interval")
 
 created, removed, inserted, drop_target, target_matches = 0, 0, 0, nil, { recipient }
-local planned_wrong_flow = { steps = { { item = "burner-mining-drill", position = { x = 1, y = 0 },
-  insert = { wood = 1 }, output_target = { x = 2, y = 0 } } } }
+local planned_wrong_flow = { steps = { { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 },
+  insert = { wood = 1 }, output_target = { x = 2.5, y = 0.5 } } } }
 build_plan.start(planned_wrong_flow)
 check(build_plan.tick(planned_wrong_flow) == nil and inserted == 1,
   "build_plan fuels once before a mining drill exposes a runtime target")
@@ -251,8 +251,8 @@ check(activity.snapshot(insertion_tick).transfer_actions == 2,
   "later binding failure retains its earlier starter transfer")
 
 created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
-local planned_mismatch = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
-  output_target = { x = 2, y = 0 } } } }
+local planned_mismatch = { steps = { { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
+  output_target = { x = 2.5, y = 0.5 } } } }
 build_plan.start(planned_mismatch)
 check(build_plan.tick(planned_mismatch) == nil and created == 1 and removed == 1,
   "build_plan does not report an immediate false output mismatch")
@@ -264,8 +264,8 @@ check(planned_mismatch_result and planned_mismatch_result.status == "failed"
   and created == 1 and removed == 1,
   "build_plan reports a later-tick exact output mismatch without recreating the entity")
 created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
-local planned_unbound = { steps = { { item = "burner-inserter", position = { x = 1, y = 0 },
-  output_target = { x = 2, y = 0 } } } }
+local planned_unbound = { steps = { { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
+  output_target = { x = 2.5, y = 0.5 } } } }
 build_plan.start(planned_unbound)
 check(build_plan.tick(planned_unbound) == nil, "build_plan begins later-tick output-tile verification")
 target_matches = {}
@@ -278,8 +278,8 @@ check(planned_unbound_result and planned_unbound_result.status == "failed"
 created, removed, inserted, insert_limit, target_matches = 0, 0, 0, 7, {}
 body.get_item_count = function(name) return name == "wood" and 10 or 1 end
 local partial_insert_plan = { steps = {
-  { item = "burner-mining-drill", position = { x = 1, y = 0 }, insert = { wood = 10 } },
-  { item = "wooden-chest", position = { x = 3, y = 0 } },
+  { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, insert = { wood = 10 } },
+  { item = "wooden-chest", position = { x = 3.5, y = 0.5 } },
 } }
 build_plan.start(partial_insert_plan)
 local partial_insert_result = build_plan.tick(partial_insert_plan)
@@ -303,7 +303,7 @@ local function starter_case(items, stock, limit, rejected, later_steps, stop_on_
     stock[stack.name] = stock[stack.name] - stack.count
     removed = removed + stack.count
   end
-  local steps = { { item = "burner-mining-drill", position = { x = 1, y = 0 }, insert = items } }
+  local steps = { { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, insert = items } }
   for _, step in ipairs(later_steps or {}) do steps[#steps + 1] = step end
   local task = { steps = steps, stop_on_error = stop_on_error }
   build_plan.start(task)
@@ -339,14 +339,14 @@ for _, stock in ipairs({ { ["burner-mining-drill"] = 1, wood = 2 }, { ["burner-m
 end
 local multi, multi_activity = starter_case({ wood = 1 },
   { ["burner-mining-drill"] = 2, wood = 2 }, nil, nil,
-  { { item = "burner-mining-drill", position = { x = 3, y = 0 }, insert = { wood = 1 } } })
+  { { item = "burner-mining-drill", position = { x = 3.5, y = 0.5 }, insert = { wood = 1 } } })
 check(multi.status == "done" and multi_activity.transfer_actions == 2 and multi_activity.transferred_items == 2
-  and #multi_activity.target_actions == 2 and multi_activity.target_actions[2].target.position.x == 3,
+  and #multi_activity.target_actions == 2 and multi_activity.target_actions[2].target.position.x == 3.5,
   "multiple placed entities retain separate exact insertion interactions")
 for _, stop_on_error in ipairs({ false, true }) do
   local failed, failed_activity = starter_case({ wood = 1 },
     { ["burner-mining-drill"] = 1, wood = 1 }, nil, nil,
-    { { item = "wooden-chest", position = { x = 3, y = 0 } } }, stop_on_error)
+    { { item = "wooden-chest", position = { x = 3.5, y = 0.5 } } }, stop_on_error)
   check(failed.status == (stop_on_error and "failed" or "done") and failed.detail:match("step 2 failed")
     and failed_activity.transfer_actions == 1 and inserted == 1,
     "later-step failure retains committed starter transfer with stop_on_error=" .. tostring(stop_on_error))
@@ -362,7 +362,7 @@ for _, terminal in ipairs({ "cancel", "target-invalid", "entity-invalid", "compl
   body.get_item_count = function(name) return stock[name] or 0 end
   body.remove_item = function(stack) stock[stack.name] = stock[stack.name] - stack.count end
   local id = tasks.enqueue({ task = { type = "build_plan", steps = {
-    { item = "burner-mining-drill", position = { x = 1, y = 0 }, insert = { wood = 1 }, output_target = { x = 2, y = 0 } },
+    { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, insert = { wood = 1 }, output_target = { x = 2.5, y = 0.5 } },
   } } }).task_id
   local tick = game.tick
   tasks.on_tick()
@@ -388,10 +388,10 @@ body.remove_item = function(stack) removed = removed + stack.count end
 -- A tile-corner coordinate inside an owned entity names that entity's exact
 -- position instead of a bare "does not identify" failure.
 local resolver = require("scripts.output_target")
-local hint_body = { position = { x = 0, y = 0 }, force = force, surface = surface }
+local hint_body = { position = { x = 0.5, y = 0.5 }, force = force, surface = surface }
 target_matches = { recipient }
-local hint_ok, hint_error = pcall(resolver.resolve, hint_body, { x = 1.6, y = 0.2 })
-check(not hint_ok and tostring(hint_error):match("lies inside stone%-furnace, whose exact position is %(2, 0%)") ~= nil,
+local hint_ok, hint_error = pcall(resolver.resolve, hint_body, { x = 2.1, y = 0.7 })
+check(not hint_ok and tostring(hint_error):match("lies inside stone%-furnace, whose exact position is %(2.5, 0.5%)") ~= nil,
   "an inexact output_target names the covering entity's exact position")
 -- Exercise the new recipient types through physical placement, not just the
 -- allowlist. Runtime binding is deliberately independent of eligibility.
@@ -407,7 +407,7 @@ for _, spec in ipairs(recipients) do
   proto.collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } }
   prototypes.item[spec.name] = { place_result = proto }
   local target = { valid = true, name = spec.name, type = spec.type, force = force,
-    position = { x = 2, y = 0 }, bounding_box = recipient.bounding_box }
+    position = { x = 2.5, y = 0.5 }, bounding_box = recipient.bounding_box }
   target_matches = { target }
   check(resolver.resolve(body, target.position).entity == target,
     spec.name .. " resolves as a provisional drop recipient")
@@ -420,13 +420,13 @@ for _, spec in ipairs(recipients) do
     spec.name .. " endpoint discovery respects the pickup role")
   if spec.type ~= "lab" then
     for _, action in ipairs({ place.start, function(task) build_plan.start({ steps = { task } }) end }) do
-      local ok, err = pcall(action, { item = "burner-inserter", position = { x = 1, y = 0 }, input_target = target.position })
+      local ok, err = pcall(action, { item = "burner-inserter", position = { x = 1.5, y = 0.5 }, input_target = target.position })
       check(not ok and tostring(err):match("pickup source"), spec.name .. " is rejected as an existing placement pickup source")
     end
     target_matches = {}
     local ok, err = pcall(build_plan.start, { steps = {
       { item = spec.name, position = target.position },
-      { item = "burner-inserter", position = { x = 1, y = 0 }, input_target = target.position },
+      { item = "burner-inserter", position = { x = 1.5, y = 0.5 }, input_target = target.position },
     } })
     check(not ok and tostring(err):match("pickup source"), spec.name .. " is rejected as a planned pickup source")
   end
@@ -434,7 +434,7 @@ for _, spec in ipairs(recipients) do
     for _, planned in ipairs({ false, true }) do
       created, removed, target_matches, pickup_target = 0, 0, { source, target }, source
       drop_target = mode == "matched" and target or mode == "wrong" and replacement or nil
-      local step = { item = "burner-inserter", position = { x = 1, y = 0 },
+      local step = { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
         input_target = source.position, output_target = target.position }
       local task = planned and { steps = { step } } or step
       local action = planned and build_plan or place
@@ -451,7 +451,7 @@ for _, spec in ipairs(recipients) do
   created, removed, target_matches, drop_target = 0, 0, {}, nil
   local task = { steps = {
     { item = spec.name, position = target.position },
-    { item = "burner-inserter", position = { x = 1, y = 0 }, output_target = target.position },
+    { item = "burner-inserter", position = { x = 1.5, y = 0.5 }, output_target = target.position },
   } }
   build_plan.start(task)
   check(build_plan.tick(task) == nil and created == 1, spec.name .. " planned recipient is placed first")
@@ -467,7 +467,7 @@ end
 -- capabilities change after preflight.
 for _, planned in ipairs({ false, true }) do
   source.type, target_matches, created = "container", { source, recipient }, 0
-  local step = { item = "burner-inserter", position = { x = 1, y = 0 }, input_target = source.position }
+  local step = { item = "burner-inserter", position = { x = 1.5, y = 0.5 }, input_target = source.position }
   local task = planned and { steps = { step } } or step
   local action = planned and build_plan or place
   action.start(task)
@@ -482,7 +482,7 @@ source.type = "container"
 created, removed, target_matches, pickup_target = 0, 0, {}, nil
 local lab_input_plan = { steps = {
   { item = "lab", position = source.position },
-  { item = "burner-inserter", position = { x = 1, y = 0 }, input_target = source.position },
+  { item = "burner-inserter", position = { x = 1.5, y = 0.5 }, input_target = source.position },
 } }
 build_plan.start(lab_input_plan)
 check(build_plan.tick(lab_input_plan) == nil and created == 1, "planned lab pickup inventory is placed first")
@@ -492,11 +492,109 @@ check(build_plan.tick(lab_input_plan) == nil and created == 2, "planned lab pick
 game.tick = game.tick + 1
 local lab_input_result = build_plan.tick(lab_input_plan)
 check(lab_input_result and lab_input_result.status == "done", "planned lab pickup completes on exact runtime pickup_target")
-local unsupported = { valid = true, name = "small-electric-pole", type = "electric-pole", force = force, position = { x = 2, y = 0 } }
+local unsupported = { valid = true, name = "small-electric-pole", type = "electric-pole", force = force, position = { x = 2.5, y = 0.5 } }
 target_matches = { unsupported }
 for _, kind in ipairs({ "input", "output" }) do
   local ok, err = pcall(resolver.resolve, body, unsupported.position, kind .. "_target", kind)
   check(not ok and tostring(err):match(kind == "input" and "pickup source" or "drop recipient"),
     "unsupported endpoint has useful " .. kind .. " guidance")
 end
+-- Real narrow burner geometry and 1.2-tile vectors: both existing and earlier
+-- planned recipients retain exact later-tick binding and committed consumption.
+local narrow = { name = "burner-inserter", type = "inserter", tile_width = 1, tile_height = 1,
+  inserter_pickup_position = { 0, -1 }, inserter_drop_position = { 0, 1.2 },
+  collision_box = { left_top = { x = -38/256, y = -38/256 }, right_bottom = { x = 38/256, y = 38/256 } } }
+prototypes.item["burner-inserter"].place_result = narrow
+for _, direction in ipairs({ 0, 4, 8, 12 }) do
+  for _, planned in ipairs({ false, true }) do
+    for _, mode in ipairs({ "matched", "wrong", "nil", "vanished" }) do
+      local position = { x = 0.5, y = 0.5 }
+      local point = resolver.output_position(narrow, position, direction)
+      local target_position = { x = math.floor(point.x) + 0.5, y = math.floor(point.y) + 0.5 }
+      local target = { valid = true, name = "burner-inserter", type = "inserter", force = force,
+        position = target_position, bounding_box = require("scripts.placement_geometry").footprint(narrow, target_position, 0) }
+      created, removed, target_matches, drop_target = 0, 0, planned and {} or { target }, nil
+      local step = { item = "burner-inserter", position = position, direction = direction, output_target = target_position }
+      local task = planned and { steps = { { item = "burner-inserter", position = target_position }, step } } or step
+      local action = planned and build_plan or place
+      action.start(task)
+      if planned then
+        check(action.tick(task) == nil and created == 1, "narrow earlier recipient commits first " .. direction .. " " .. mode)
+        target = last_built
+        -- Model the actual prototype collision box of the committed recipient.
+        target.bounding_box = require("scripts.placement_geometry").footprint(narrow, target_position, 0)
+      end
+      check(action.tick(task) == nil and created == (planned and 2 or 1)
+        and removed == created, "narrow fuel edge remains provisional on creation tick " .. direction .. " " .. mode)
+      if mode == "matched" then last_built.drop_target = target
+      elseif mode == "wrong" then last_built.drop_target = replacement
+      elseif mode == "vanished" then target.valid = false end
+      game.tick = game.tick + 1
+      local result = action.tick(task)
+      check(result and result.status == (mode == "matched" and "done" or "failed")
+        and created == (planned and 2 or 1) and removed == created,
+        "narrow " .. (planned and "planned" or "existing") .. " " .. mode .. " preserves runtime truth and consumption " .. direction)
+    end
+  end
+end
+created, removed, target_matches = 0, 0, {}
+local ambiguous_ok, ambiguous_error = pcall(build_plan.start, { steps = {
+  { item = "burner-inserter", position = { x = 1.5, y = 0.5 } },
+  { item = "wooden-chest", position = { x = 1.5, y = 0.5 } },
+  { item = "burner-inserter", position = { x = 0.5, y = 0.5 }, direction = 12, output_target = { x = 1.5, y = 0.5 } },
+} })
+check(not ambiguous_ok and tostring(ambiguous_error):match("ambiguous") and created == 0 and removed == 0,
+  "ambiguous earlier narrow recipients are refused before any committed effect")
+
+local remote_plan_ok = pcall(build_plan.start, { steps = {
+  { item = "burner-inserter", position = { x = 30.75, y = 0.5 } },
+  { item = "burner-inserter", position = { x = 29, y = 0.5 }, direction = 12, output_target = { x = 30.75, y = 0.5 } },
+} })
+check(not remote_plan_ok and created == 0 and removed == 0,
+  "earlier planned recipient beyond local range cannot bypass exact target bounds")
+
+local geometry = require("scripts.placement_geometry")
+local existing = { valid = true, name = "burner-inserter", type = "inserter", force = force,
+  position = { x = 1.25, y = 0.5 }, bounding_box = geometry.footprint(narrow, { x = 1.25, y = 0.5 }, 0) }
+target_matches = { existing }
+local mixed_ok, mixed_error = pcall(build_plan.start, { steps = {
+  { item = "burner-inserter", position = { x = 1.75, y = 0.5 } },
+  { item = "burner-inserter", position = { x = 0.5, y = 0.5 }, direction = 12, output_target = existing.position },
+} })
+check(not mixed_ok and tostring(mixed_error):match("ambiguous") and created == 0 and removed == 0,
+  "existing and non-overlapping earlier planned recipients remain ambiguous before mutation")
+for _, kind in ipairs({ "input", "output" }) do
+  created, removed, target_matches = 0, 0, {}
+  local position = { x = 0.5, y = 0.5 }
+  local endpoint = kind == "input" and resolver.input_position(narrow, position, 0)
+    or resolver.output_position(narrow, position, 0)
+  local target_position = { x = math.floor(endpoint.x) + 0.5, y = math.floor(endpoint.y) + 0.5 }
+  local step = { item = "burner-inserter", position = position, direction = 0 }
+  step[kind .. "_target"] = target_position
+  local task = { steps = {
+    { item = kind == "input" and "wooden-chest" or "burner-inserter", position = target_position }, step,
+  } }
+  build_plan.start(task)
+  check(build_plan.tick(task) == nil and created == 1 and removed == 1,
+    "exact earlier " .. kind .. " recipient commits once before substitution")
+  local original = last_built
+  original.valid = false
+  local changed = { valid = true, name = original.name, type = original.type, force = force,
+    position = original.position, bounding_box = original.bounding_box }
+  target_matches = { changed }
+  local result = build_plan.tick(task)
+  check(result and result.status == "failed" and result.detail:match("wrong runtime identity")
+    and result.detail:match("placed 1/2") and created == 1 and removed == 1,
+    "same-name changed earlier " .. kind .. " target fails without another committed placement")
+end
+
+created, removed, target_matches = 0, 0, {}
+local wrong_bounded_plan = pcall(build_plan.start, { steps = {
+  { item = "burner-inserter", position = { x = 30.75, y = 0.5 } },
+  { item = "burner-inserter", position = { x = 30.25, y = 0.5 } },
+  { item = "burner-inserter", position = { x = 29, y = 0.5 }, direction = 12, output_target = { x = 30.75, y = 0.5 } },
+} })
+check(not wrong_bounded_plan and created == 0 and removed == 0,
+  "a different bounded recipient cannot admit the exact out-of-range planned target")
+
 os.exit(failures == 0 and 0 or 1)

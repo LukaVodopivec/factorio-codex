@@ -36,11 +36,18 @@ export function parseRunSnapshot(value: any): RunSnapshot {
     }
     value.statistics.raw_resources = luaArray(value.statistics.raw_resources);
   }
+  // Lua omits a nil standing_on; a sample always states it.
+  if (value?.character && typeof value.character === "object" && value.character.standing_on === undefined) value.character.standing_on = null;
   return runSnapshotSchema.parse(value);
 }
 
+// A manifest keeps the role profiles its run recorded, so runs from earlier
+// role pairs stay readable; only a new ledger pins the current pair.
+const recordedRole = z.object({ model: z.string().min(1).max(80), reasoning: z.string().min(1).max(40),
+  fast: z.boolean().optional() }).strict();
 const manifestSchema = z.object({
-  schema_version: z.literal(1), run: operationsLedgerSchema.shape.run,
+  schema_version: z.literal(1), run: operationsLedgerSchema.shape.run.extend({
+    roles: z.object({ pilot: recordedRole, strategist: recordedRole }).strict() }),
   variant: z.string().min(1), change: z.string().min(1), kind: z.enum(["debug", "benchmark"]),
   status: z.enum(["recording", "finished", "interrupted"]), assisted: z.boolean(),
   app_version: z.string(), mod_version: z.string(), factorio_version: z.string(),

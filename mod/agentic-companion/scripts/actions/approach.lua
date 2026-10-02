@@ -24,6 +24,30 @@ function M.ensure(task, c, target_pos, reach)
   if dist_sq(c.position, target_pos) <= reach * reach
     and evidence.clear then
     local active = task._approach
+    -- A belt carries a standing body, so "in reach" first means off the belt,
+    -- with the off-belt tile still within reach of the target.
+    if active and active.walk.phase == "settling" then
+      local r = walk.step(active.walk, c, task.id)
+      if r == "arrived" then
+        task._approach = nil
+        return "ok"
+      elseif type(r) == "table" then
+        task._approach = nil
+        return { status = "failed", detail = "couldn't get in range: " .. r.failed, outcome = r.outcome }
+      end
+      return nil
+    end
+    if placement_geometry.conveyor_under(c) then
+      local a = { target = { x = target_pos.x, y = target_pos.y }, reach = reach, walk = {} }
+      task._approach = a
+      walk.begin(a.walk, c, a.target, math.max(reach - 0.5, 0.5), "reach")
+      local failure = walk.begin_settle(a.walk, c, a.target, reach)
+      if failure then
+        task._approach = nil
+        return { status = "failed", detail = "couldn't get in range: " .. failure.failed, outcome = failure.outcome }
+      end
+      return nil
+    end
     if active and active.target.x == target_pos.x and active.target.y == target_pos.y
       and active.reach == reach then
       task._approach = nil
@@ -37,7 +61,8 @@ function M.ensure(task, c, target_pos, reach)
     and (a.target.x ~= target_pos.x or a.target.y ~= target_pos.y or a.reach ~= reach)) then
     a = { target = { x = target_pos.x, y = target_pos.y }, reach = reach, walk = {} }
     task._approach = a
-    walk.begin(a.walk, c, a.target, math.max(reach - 0.5, 0.5))
+    walk.begin(a.walk, c, a.target, math.max(reach - 0.5, 0.5), "reach")
+    a.walk.settle_anchor, a.walk.settle_limit = a.target, reach
   end
 
   local r = walk.step(a.walk, c, task.id)
@@ -46,7 +71,7 @@ function M.ensure(task, c, target_pos, reach)
     return "ok"
   elseif type(r) == "table" then
     if a.walk.phase ~= "escaping" and not a.walk.escape_failed then task._approach = nil end
-    return { status = "failed", detail = "couldn't get in range: " .. r.failed }
+    return { status = "failed", detail = "couldn't get in range: " .. r.failed, outcome = r.outcome }
   end
   return nil
 end
@@ -77,7 +102,9 @@ function M.ensure_entity(task, c, e)
   if not e.valid then
     return { status = "failed", detail = "the selected entity is gone" }
   end
-  if c.can_reach_entity(e) and placement_geometry.path_start(c).clear then
+  if c.can_reach_entity(e) and placement_geometry.path_start(c).clear
+    and not (task._approach and task._approach.walk.phase == "settling")
+    and not placement_geometry.conveyor_under(c) then
     if task._approach then
       task._approach = nil
       c.walking_state = { walking = false }

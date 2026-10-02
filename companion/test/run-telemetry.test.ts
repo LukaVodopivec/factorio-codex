@@ -19,7 +19,7 @@ function snapshot(tick: number, iron: number, copper = 0): RunSnapshot {
 function manifest(id: string, variant: string, baseline = "b".repeat(64)): RunManifest {
   return { schema_version: 1, run: { id, release_sha: "a".repeat(40), baseline_save_sha256: baseline,
     save_identity: "fresh-save", created_at: "2026-09-04T08:00:00Z",
-    roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6.1-sol", reasoning: "medium", fast: false } } },
+    roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6-astra", reasoning: "medium", fast: false } } },
     variant, change: `${variant} change`, kind: "benchmark", status: "finished", assisted: false,
     app_version: "0.17.0", mod_version: "0.17.0", factorio_version: "2.0.77",
     started_at: "2026-09-04T08:00:00Z", start_tick: 100, ended_at: "2026-09-04T08:20:00Z", end_tick: 72100 };
@@ -56,6 +56,13 @@ describe("five-minute run telemetry", () => {
       fluids: { produced: [], consumed: [] }, raw_resources: [] });
   });
 
+  it("records standing_on as null when Lua omits it and keeps a reported conveyor", () => {
+    expect(parseRunSnapshot(snapshot(100, 0)).character.standing_on).toBeNull();
+    const onBelt: any = snapshot(100, 0);
+    onBelt.character.standing_on = { name: "transport-belt", type: "transport-belt", direction: 4 };
+    expect(parseRunSnapshot(onBelt).character.standing_on).toEqual({ name: "transport-belt", type: "transport-belt", direction: 4 });
+  });
+
   it("uses conservative vector dominance instead of summing resources", () => {
     const base = snapshot(100, 0), lower = checkpoint(snapshot(200, 10, 10), base);
     expect(resourceVerdict(lower, checkpoint(snapshot(200, 11, 10), base))).toBe("improved");
@@ -80,6 +87,15 @@ describe("five-minute run telemetry", () => {
     expect(readManifest(store, "run-b").assisted).toBe(true);
     expect(compareRuns(store, "run-a", "run-b")).toMatchObject({ eligible: false, verdict: "ineligible",
       descriptive_verdict: "improved", reasons: ["candidate was assisted"] });
+  });
+
+  it("keeps runs recorded with an earlier strategist profile readable", () => {
+    const store = root(), zero = snapshot(100, 0), earlier = manifest("run-a", "old");
+    earlier.run.roles.strategist = { model: "gpt-6.1-sol", reasoning: "medium", fast: false };
+    storedRun(store, earlier, checkpoint(snapshot(18100, 10), zero));
+    storedRun(store, manifest("run-b", "new"), checkpoint(snapshot(18100, 12), zero));
+    expect(readManifest(store, "run-a").run.roles.strategist.model).toBe("gpt-6.1-sol");
+    expect(compareRuns(store, "run-a", "run-b")).toMatchObject({ eligible: true, verdict: "improved" });
   });
 
   it("rejects automatic verdicts across different baseline saves", () => {

@@ -761,7 +761,10 @@ local function simulate_validation(mode)
     fuel_feed.status, fuel_feed.held_stack = 7, empty_held
   elseif mode == "material_wait_preflight" or mode == "persistent_material_wait" then buffer_segment[2].status = 7
   elseif mode == "output_wait_preflight" then buffer_segment[4].status = 7
-  elseif mode == "generic_shortage" then buffer_segment[2].status = 8 end
+  elseif mode == "generic_shortage" then buffer_segment[2].status = 8
+  elseif mode == "stocked_fuel_wait" then fuel_feed.status, fuel_feed.held_stack = 7, empty_held end
+  -- A fuel feeder waiting at a burner below its top-up stock owes it fuel.
+  if mode:match("fuel_wait") and mode ~= "stocked_fuel_wait" or mode == "persistent_later_wait" then fuel_count = 4 end
   buffer_source.mining_progress, coal_source.mining_progress = 0.9, 0.9
   map.map_summary({}) -- establish the run-local epoch before source_tick
   if mode == "older_eviction" then
@@ -827,15 +830,18 @@ check(accepted_buffer.status == "completed" and accepted_buffer.outcomes[1].resu
   and accepted_buffer.outcomes[1].result.downstream_acceptance_samples == 3
   and map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
   "real graph and validator prove supplied burner drill-furnace-chest acceptance across three unattended cycles")
+do
 local later_buffer = simulate_validation("older_eviction")
 local later_buffer_summary = map.map_summary({})
 check(later_buffer.status == "completed"
   and later_buffer_summary.factory.material_flow.components[1].state.autonomous_end_to_end
   and not later_buffer_summary.factory.character_transfers.history_complete,
   "real parked validation proves a later interval after bootstrap transfer eviction")
+end
 simulate_validation("accept") -- retain the ordinary harvesting fixture below
 -- Harvest only after a real unattended validation; keep production and the
 -- terminal inventory physically progressing for ten minutes of fixture time.
+do
 local harvest_start, produced_before = game.tick, buffer_processor.products_finished
 for i = 1, 20 do
   require("scripts.factory_activity").record("insert", { target = { name = "unrelated", type = "container",
@@ -861,6 +867,7 @@ check(game.tick - harvest_start == 36000 and buffer_processor.products_finished 
   and harvested.factory.material_flow.components[1].character_transfer_actions == 60
   and harvested.factory.character_transfers.target_actions_omitted > 0,
   "ten minutes of production and capped public telemetry retain honest harvesting counts")
+end
 for _, case in ipairs({
   { "terminal insertion", "insert", buffer_sink, { { item = "plate", inserted = 1 } } },
   { "processor extraction", "extract", buffer_processor, { { item = "plate", extracted = 1 } } },
@@ -941,6 +948,15 @@ for _, mode in ipairs({ "persistent_fuel_wait", "persistent_material_wait", "gen
   check(interval.status == "failed" and buffer_stock == 3
     and canonical(interval.outcomes[1].result.blockers):match('"position":{"x":2,"y":%d},"reason":"transport_starved_before_end"'),
     "productive sources and rising downstream stock cannot conceal " .. mode)
+end
+-- A fuel-only feeder waiting at a burner that still holds its top-up stock
+-- owes it nothing: neither a starved edge nor a nonproductive wait.
+do
+local stocked_wait = simulate_validation("stocked_fuel_wait")
+check(stocked_wait.status == "completed"
+  and not canonical(stocked_wait.outcomes[1].result):match("transport_starved_before_end")
+  and not canonical(stocked_wait.outcomes[1].result.transient_conditions or {}):match('"x":2,"y":%d},"reason":"nonproductive_status:insufficient_input"'),
+  "a fuel feeder waiting at a burner holding its top-up stock is satisfied, not starved")
 end
 for _, case in ipairs({ { "empty_stock_later", "fuel_return_not_yet_exercised" }, { "no_energy_later", "fuel_return_not_yet_exercised" },
   { "unsupported_fuel_later", "fuel_stock_unreadable" }, { "compartment_missing", "fuel_stock_unreadable" },
@@ -1487,6 +1503,117 @@ do
   check(open_plan.status == "failed" and open.code == "FACTORY_COMPONENT_NOT_READY" and located
     and path_row and path_row.related_edge.kind == "downstream_path",
     "a segment without a terminal buffer or consumer is refused with every readiness row located")
+
+  -- A lab with no research selected consumes nothing: the window is refused
+  -- at the lab, naming the missing research. A lab short of science packs
+  -- takes any pack it can insert.
+  defines.entity_status.no_research_in_progress, defines.entity_status.missing_science_packs = 40, 41
+  local idle_lab_line = flow_fixture(false, false)
+  local idle_lab = idle_lab_line[5]
+  idle_lab.status = defines.entity_status.no_research_in_progress
+  local idle_plan, idle = run_window(idle_lab_line, idle_lab_line[3].position, 60, function() end)
+  local idle_first = idle.blockers[1]
+  check(idle_plan.status == "failed" and idle.code == "FACTORY_COMPONENT_NOT_READY" and idle.stage == "readiness"
+    and idle_first.reason == "consumer_idle_no_research" and idle_first.class == "evidence"
+    and idle_first.position.x == idle_lab.position.x and idle_first.position.y == idle_lab.position.y
+    and idle_first.entity == "lab"
+    and idle_plan.outcomes[1].error:match("not ready for validation: consumer_idle_no_research at 5.0,1.0"),
+    "a lab with no research in progress refuses validation as not ready at the lab")
+  local plate_research = { research_unit_ingredients = { { type = "item", name = "plate", amount = 1 } } }
+  local two_pack_research = { research_unit_ingredients = { { type = "item", name = "plate", amount = 1 },
+    { type = "item", name = "green-pack", amount = 1 } } }
+  force.current_research = plate_research
+  local function lab_accepting(status, insertable, research)
+    force.current_research = research or plate_research
+    local line = flow_fixture(false, false)
+    line[5].status = status
+    line[5].get_inventory = function(index)
+      assert(index == defines.inventory.lab_input)
+      return { can_insert = function(stack) return insertable and stack.name == "plate" end }
+    end
+    surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or line end
+    local sample = map.factory_component_sample({ source_tick = game.tick, positions = { line[5].position } })
+    local key = string.format("%s\0%s\0%.17g\0%.17g", "lab", "lab", line[5].position.x, line[5].position.y)
+    return sample._downstream[key].accepting, table.concat(sample.blockers or {}, ",")
+  end
+  local waiting_accepts, waiting_blockers = lab_accepting(defines.entity_status.missing_science_packs, true)
+  local full_accepts = lab_accepting(defines.entity_status.missing_science_packs, false)
+  local unselected_accepts, unselected_blockers = lab_accepting(defines.entity_status.no_research_in_progress, true)
+  check(waiting_accepts == true and full_accepts == false and not waiting_blockers:match("consumer_idle_no_research")
+    and unselected_accepts == false and unselected_blockers:match("consumer_idle_no_research"),
+    "a lab missing science packs accepts per can_insert, and only a lab without research is idle")
+  -- A lab whose research needs a pack the line never supplies consumes
+  -- nothing, however much of the supplied pack it could still insert.
+  local short_accepts, short_blockers = lab_accepting(defines.entity_status.missing_science_packs, true, two_pack_research)
+  check(short_accepts == false and short_blockers:match("consumer_missing_required_science_pack")
+    and not waiting_blockers:match("consumer_missing_required_science_pack"),
+    "a lab missing a pack its research needs and the line never supplies does not accept")
+  force.current_research = two_pack_research
+  local short_line = flow_fixture(false, false)
+  short_line[5].status = defines.entity_status.missing_science_packs
+  local short_plan, short = run_window(short_line, short_line[3].position, 60, function() end)
+  check(short_plan.status == "failed" and short.code == "FACTORY_COMPONENT_NOT_READY" and short.stage == "readiness"
+    and short.blockers[1].reason == "consumer_missing_required_science_pack"
+    and short.blockers[1].position.x == short_line[5].position.x,
+    "a single-pack line under two-pack research is refused as not ready at the lab")
+  -- Hand-stocked packs only defer the wait: a working lab still names the
+  -- pack its research needs and the line never supplies. A lab that never
+  -- works during the window proves no consumption, whatever it could insert.
+  local function lab_window(lab_status, research)
+    force.current_research = research
+    local line, source, processor = flow_fixture(false, false)
+    local lab = line[5]
+    lab.get_inventory = function()
+      return { can_insert = function(stack) return stack.name == "plate" or stack.name == "green-pack" end }
+    end
+    return run_window(line, line[3].position, 30, function(elapsed)
+      source.status, processor.status, line[2].status, line[4].status = 3, 3, 3, 3
+      source.mining_progress = (elapsed % 40) / 40
+      source.mining_target.amount = 1000 - math.floor(elapsed / 40)
+      processor.products_finished = 10 + math.floor(elapsed / 40)
+      lab.status = lab_status(elapsed)
+    end)
+  end
+  local working = function() return 3 end
+  local stocked_plan, stocked = lab_window(working, two_pack_research)
+  check(stocked_plan.status == "failed" and stocked.stage == "readiness"
+    and stocked.blockers[1].reason == "consumer_missing_required_science_pack" and stocked.blockers[1].entity == "lab",
+    "a working lab on hand-stocked packs is refused when its research needs a pack the line never supplies")
+  local waiting_plan, waiting = lab_window(function() return defines.entity_status.missing_science_packs end, plate_research)
+  check(waiting_plan.status == "failed" and not waiting.proven and waiting.downstream_acceptance_samples == 0
+    and canonical(waiting.blockers):find("bounded_downstream_acceptance_not_observed", 1, true),
+    "a lab that never works during the window counts no acceptance")
+  local started_plan, started = lab_window(function(elapsed)
+    return elapsed < 600 and defines.entity_status.missing_science_packs or 3 end, plate_research)
+  check(started_plan.status == "completed" and started.proven and started.downstream_acceptance_samples >= 3,
+    "a lab counts acceptance once the window has seen it working")
+  -- An inserter relays the line's packs from one lab into the next: the
+  -- chained lab is supplied through the first, working or waiting.
+  local function lab_chain(status, research)
+    force.current_research = research
+    local line = flow_fixture(false, false)
+    local first = line[5]
+    first.status = status
+    local second = { valid = true, name = "lab", type = "lab", position = { x = 7, y = 1 }, force = force, status = status,
+      get_inventory = function() return { can_insert = function(stack) return stack.name == "plate" end } end }
+    line[#line + 1] = { valid = true, name = "relay", type = "inserter", position = { x = 6, y = 1 }, force = force,
+      status = 3, pickup_target = first, drop_target = second }
+    line[#line + 1] = second
+    surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or line end
+    local sample = map.factory_component_sample({ source_tick = game.tick, positions = { first.position } })
+    local key = string.format("%s\0%s\0%.17g\0%.17g", "lab", "lab", 7, 1)
+    local missing = {}
+    for _, row in ipairs(sample._blocker_rows) do
+      if row.reason == "consumer_missing_required_science_pack" then missing[#missing + 1] = row.position.x end
+    end
+    table.sort(missing)
+    return table.concat(missing, ","), sample._downstream[key].accepting, sample.topology_ready
+  end
+  check(canonical({ lab_chain(3, plate_research) }) == '["",true,true]'
+    and canonical({ lab_chain(defines.entity_status.missing_science_packs, plate_research) }) == '["",true,true]'
+    and canonical({ lab_chain(3, two_pack_research) }) == '["5,7",true,false]',
+    "a chained lab receives the line's packs through the first lab, working or waiting")
+  force.current_research = nil
 end
 
 -- Replays of recorded material_flow graphs. Nodes are {name, type, x, y,
@@ -1982,6 +2109,93 @@ do
       end
       link(previous, 1, generator, 1)
     end
+    local line_mine, line_to, line_far, supply
+    if mode == "chain_line" then
+      -- Supply D: its own water source, boiler, pipe and generator on
+      -- network 9, while its coal drill and inserters draw from the plant's
+      -- network 7. The plant powers D; D powers the line below.
+      local d_fuel, d_coal, d_accepted, d_generated = 5, 10, 0, 0
+      local d_source = make("offshore-pump", 51, { box("output", "aqua", 1) })
+      d_source.get_fluid_source_fluid, d_source.pumped_last_tick = source.get_fluid_source_fluid, 4
+      local d_boiler = make("boiler", 52, { box("input", "aqua", 1), box("output", "vapor", 2) }, boiler.prototype)
+      d_boiler.burner = { remaining_burning_fuel = 10000, currently_burning = boiler.burner.currently_burning }
+      d_boiler.get_fuel_inventory = function() return {
+        get_contents = function() return { { name = "coal", quality = "normal", count = d_fuel } } end,
+        get_item_count = function() return d_fuel end, can_insert = function() return d_fuel < 10 end } end
+      local d_pipe = make("pipe-to-ground", 53, { box("none", nil, 2) })
+      local d_generator = make("generator", 54, { box("input", "vapor", 2) }, generator.prototype)
+      d_generator.electric_network_id, d_generator.energy_generated_last_tick = 9, 450
+      link(d_source, 1, d_boiler, 1); link(d_boiler, 2, d_pipe, 1); link(d_pipe, 1, d_generator, 1)
+      local d_pole = make("electric-pole", 55)
+      d_pole.electric_network_id = 9
+      d_pole.electric_network_statistics = setmetatable({}, { __index = function(_, key)
+        if key == "input_counts" then return { [d_generator.name] = d_generated } end
+      end })
+      local d_target = { valid = true, name = "coal", type = "resource", position = { x = 56, y = 12 }, amount = 1000,
+        prototype = { mineable_properties = { mining_time = 5 / 60, products = { { name = "coal", type = "item" } } } } }
+      local d_mine = make("mining-drill", 56, nil, mine.prototype)
+      d_mine.electric_network_id, d_mine.energy, d_mine.mining_target, d_mine.mining_progress = 7, 1000, d_target, 0
+      local d_chest = make("container", 57)
+      d_chest.get_inventory = function() return { get_item_count = function() return d_coal end, can_insert = function() return true end } end
+      d_mine.drop_target = d_chest
+      local d_refill = make("inserter", 58, nil, electric)
+      d_refill.electric_network_id, d_refill.energy, d_refill.pickup_target, d_refill.drop_target = 7, 1000, d_chest, d_boiler
+      local d_unload, d_terminal = make("inserter", 59, nil, electric), make("container", 60)
+      d_terminal.get_inventory = function() return { get_item_count = function() return d_accepted end, can_insert = function() return true end } end
+      d_unload.electric_network_id, d_unload.energy, d_unload.pickup_target, d_unload.drop_target = 7, 1000, d_chest, d_terminal
+      local function d_burn(amount)
+        d_boiler.burner.remaining_burning_fuel = d_boiler.burner.remaining_burning_fuel - amount
+        if d_boiler.burner.remaining_burning_fuel <= 0 and d_fuel > 0 then
+          d_boiler.burner.remaining_burning_fuel, d_fuel = d_boiler.burner.remaining_burning_fuel + 10000, d_fuel - 1
+        end
+      end
+      supply = { boiler = d_boiler, refill = d_refill, fuel = function() return d_fuel end,
+        -- D's own proof: the plant's proof dynamics on D's nodes.
+        prove_tick = function(tick)
+          d_mine.mining_progress = (tick % 5) / 5
+          if tick % 5 == 0 then d_target.amount, d_coal = d_target.amount - 1, d_coal + 2 end
+          if tick % 5 == 2 then d_coal, d_accepted = d_coal - 1, d_accepted + 1 end
+          d_burn(600)
+          if tick % 5 == 4 and d_fuel < 5 then d_fuel, d_coal = d_fuel + 1, d_coal - 1 end
+          steam, d_generated = steam + 1, d_generated + d_generator.energy_generated_last_tick
+          for _, consumer in ipairs({ d_mine, d_refill, d_unload }) do consumer.energy = tick % 2 == 0 and 1000 or 850 end
+        end,
+        -- A later line window: D keeps burning and is refilled throughout.
+        window_tick = function(tick)
+          d_burn(17)
+          if tick % 20 == 4 and d_fuel < 5 then d_fuel = d_fuel + 1 end
+        end }
+    end
+    if mode == "plus_line" or mode == "plus_line_dead" or mode == "chain_line" then
+      -- Lines with no material or fluid link to the plant, on its network
+      -- or, in a chain, on supply D's network 9.
+      local line_network = mode == "chain_line" and 9 or 7
+      local from, to = make("container", 40), make("container", 42)
+      for _, box in ipairs({ from, to }) do
+        box.get_inventory = function() return { get_item_count = function() return 1 end, can_insert = function() return true end } end
+      end
+      local far = make("inserter", 41, nil, electric)
+      far.electric_network_id, far.energy, far.pickup_target, far.drop_target = line_network, 1000, from, to
+      if mode == "plus_line_dead" then far.status = defines.entity_status.no_power end
+      line_mine = make("mining-drill", 44, nil, { mining_speed = 1, electric_energy_source_prototype = electric.electric_energy_source_prototype })
+      line_mine.electric_network_id, line_mine.energy, line_mine.mining_progress = line_network, 1000, 0
+      line_mine.mining_target = { valid = true, name = "iron-ore", type = "resource", position = { x = 44, y = 12 }, amount = 1000,
+        prototype = { mineable_properties = { mining_time = 1, products = { { name = "iron-ore", type = "item" } } } } }
+      line_mine.drop_target, line_to, line_far = to, to, far
+    end
+    if mode == "cross_supply" or mode == "chain_supply" then
+      -- A second steam engine on network 9 behind a pump on network 7: each
+      -- component supplies a consumer in the other. A chain's dependent
+      -- supply sorts before the plant, so it is judged after it.
+      local other = make("generator", 50, { box("input", "vapor", 5) }, generator.prototype)
+      other.electric_network_id, other.energy_generated_last_tick = 9, 0
+      local relay = make("pump", 51, { box("input", "vapor", 6), box("output", "vapor", 5) }, electric)
+      relay.electric_network_id, relay.energy, relay.pumped_last_tick = 7, 1000, 0
+      link(relay, 2, other, 1)
+      if mode == "cross_supply" then unload.electric_network_id = 9
+      else other.position, relay.position = { x = 50, y = 4 }, { x = 51, y = 4 } end
+      line_mine = relay
+    end
     if mode == "disconnected" then connections[pipe][1], connections[generator][1] = {}, {} end
     if mode == "wrong_fluid" then boxes_by_entity[generator][1].filter.name = "aqua" end
     if mode == "wrong_temperature" then boxes_by_entity[generator][1].minimum_temperature = 200 end
@@ -1994,6 +2208,7 @@ do
     if mode == "unreadable_source" then source.get_fluid_source_fluid = function() error("unreadable source") end end
     surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
     map.map_summary({})
+    local before_mine = line_mine and map.factory_component_sample({ source_tick = start, positions = { line_mine.position } })
     local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
       source_tick = start, positions = { water_buffer and source.position or boiler.position }, duration_seconds = 1 } } })
     game.tick = start + 1; tasks.on_tick()
@@ -2040,7 +2255,17 @@ do
     end
     local result = tasks.plan_status({ plan_id = queued.plan_id })
     local summary = map.map_summary({})
-    return result, preflight, summary, { generator = generator, source = source, boiler = boiler, unload = unload, steam_pump = steam_pump }
+    return result, preflight, summary, { generator = generator, source = source, boiler = boiler, unload = unload, steam_pump = steam_pump,
+      target = target,
+      before_mine = before_mine, line_mine = line_mine, line_to = line_to, line_far = line_far, refill = refill, supply = supply,
+      set_fuel = function(items, chest_coal) fuel_items, coal = items, chest_coal or coal end,
+      fuel = function() return fuel_items end,
+      burn = function(amount)
+        boiler.burner.remaining_burning_fuel = boiler.burner.remaining_burning_fuel - (amount or 17)
+        if boiler.burner.remaining_burning_fuel <= 0 and fuel_items > 0 then
+          boiler.burner.remaining_burning_fuel, fuel_items = boiler.burner.remaining_burning_fuel + 10000, fuel_items - 1
+        end
+      end }
   end
   local result, preflight, final, plant = steam_validation("supplied")
   check(preflight.topology_ready and result.status == "completed", "genuinely supplied native steam-power and accepted material segment proves autonomy")
@@ -2057,6 +2282,207 @@ do
   plant.source.pumped_last_tick, plant.unload.energy = 4, 0
   check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
     "current native autonomy revokes when its material consumer loses electrical energy")
+  -- Power is a dependency, not a material path: an unrelated line on the
+  -- plant's network stays its own component, so an idle or unpowered line
+  -- never fails the plant, and a powered line names the supply's proof.
+  local plant_nodes = #final.factory.material_flow.components[1].node_ids
+  for _, mode in ipairs({ "plus_line", "plus_line_dead" }) do
+    local line_result, line_preflight, line_final, line_plant = steam_validation(mode)
+    local plant_component = line_final.factory.material_flow.components[1]
+    local mine_before = line_plant.before_mine
+    local mine_after = map.factory_component_sample({ source_tick = game.tick, positions = { line_plant.line_mine.position } })
+    local plant_sample = map.factory_component_sample({ source_tick = game.tick, positions = { line_plant.boiler.position } })
+    check(line_result.status == "completed" and #line_preflight.selected_node_ids == 1 and #plant_component.node_ids == plant_nodes
+      and plant_component.state.autonomous_end_to_end and mine_after.component_id ~= plant_sample.component_id,
+      "the steam component stays separate from a powered line on its network: " .. mode)
+    if line_result.status ~= "completed" then print("  " .. canonical(line_result.outcomes[1].result.blockers)) end
+    check(canonical(mine_before.blockers):match("power_supply_component_not_proven")
+      and not canonical(mine_after.blockers):match("power_supply_component_not_proven"),
+      "a powered line names its supply until the supplying steam component is currently proven: " .. mode)
+    -- A later line window or recorder checkpoint starts after the plant's
+    -- proof ended; the supply is still judged on its full retained history.
+    game.tick = game.tick + 30
+    local later = map.factory_component_sample({ source_tick = game.tick, positions = { line_plant.line_mine.position } })
+    local checkpoint = map.map_summary({ activity_since_tick = game.tick })
+    check(not canonical(later.blockers):match("power_supply_component_not_proven")
+      and not canonical(checkpoint):match("power_supply_component_not_proven"),
+      "a supply proven before a later window still supplies that window and recorder checkpoint: " .. mode)
+    require("scripts.factory_activity").record("insert", { target = line_plant.boiler,
+      transfers = { { item = "coal", inserted = 1 } } })
+    game.tick = game.tick + 30
+    local revoked = map.factory_component_sample({ source_tick = game.tick, positions = { line_plant.line_mine.position } })
+    check(canonical(revoked.blockers):match("power_supply_component_not_proven"),
+      "a character transfer into the supply after its proof revokes it for later windows: " .. mode)
+  end
+  -- Supplies are judged in any component order: two plants that each power
+  -- a consumer in the other stay unproven without a sampling fault.
+  do
+    local ok, cross_result, cross_preflight = pcall(steam_validation, "cross_supply")
+    check(ok and cross_result.status ~= "completed"
+      and canonical(cross_preflight.blockers):find("power_supply_component_not_proven", 1, true) ~= nil,
+      "cross-supplying plants name each other's unproven supply without a sampling fault")
+    if not ok then print("  " .. tostring(cross_result)) end
+    -- A supply powered by another is judged after it whatever their order.
+    local chain_result, _, _, chain = steam_validation("chain_supply")
+    local dependent = map.factory_component_sample({ source_tick = game.tick, positions = { chain.line_mine.position } })
+    local plant = map.factory_component_sample({ source_tick = game.tick, positions = { chain.boiler.position } })
+    check(chain_result.status == "completed" and dependent.component_id < plant.component_id
+      and not canonical(dependent.blockers):find("power_supply_component_not_proven", 1, true),
+      "a supply powered by a proven supply that sorts after it names no unproven supply")
+  end
+  -- A window on the powered line itself: the line has no fluid nodes, so its
+  -- proof is retained without fluid samples, and the window judges the
+  -- supplying boiler's refill continuity with the line's own nodes.
+  local function line_window(prepare, refill_boiler, mode)
+    local _, _, _, p = steam_validation(mode or "plus_line")
+    prepare(p)
+    local stock, start = 1, game.tick
+    p.line_to.get_inventory = function()
+      return { get_item_count = function() return stock end, can_insert = function() return true end }
+    end
+    local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
+      source_tick = start, positions = { p.line_mine.position }, duration_seconds = 30 } } })
+    local result
+    for t = 1, 30 * 60 + 2 do
+      game.tick = start + t
+      p.line_mine.mining_progress = (t % 20) / 20
+      if t % 20 == 0 then p.line_mine.mining_target.amount, stock = p.line_mine.mining_target.amount - 1, stock + 1 end
+      p.line_mine.energy, p.line_far.energy = t % 2 == 0 and 1000 or 850, t % 2 == 0 and 1000 or 850
+      p.burn()
+      if refill_boiler and refill_boiler(t) and p.fuel() < 5 then p.set_fuel(p.fuel() + 1) end
+      if p.supply then p.supply.window_tick(t) end
+      tasks.on_tick()
+      result = tasks.plan_status({ plan_id = queued.plan_id })
+      if result.status == "completed" or result.status == "failed" then break end
+    end
+    local line_component
+    for _, component in ipairs(map.map_summary({}).factory.material_flow.components) do
+      if #component.node_ids < plant_nodes then line_component = component end
+    end
+    return result, result.outcomes[1].result, line_component, p
+  end
+  local fed_result, fed, fed_line = line_window(function() end, function(t) return t % 20 == 4 end)
+  check(fed_result.status == "completed" and fed.fluid_activity_samples == nil and fed.power_delivery_samples >= 3
+    and fed_line and fed_line.state.autonomous_end_to_end,
+    "a proven electric line with no fluid nodes keeps its proof on a refilled supply")
+  local dry_result, dry, _, dry_plant = line_window(function(p)
+    p.set_fuel(5, 0); p.refill.status = defines.entity_status.waiting_for_source_items
+  end, false)
+  local starved_boiler, starved_refill
+  for _, row in ipairs(dry.blockers) do
+    if row.reason == "fuel_replenishment_not_observed" and row.position.x == dry_plant.boiler.position.x then starved_boiler = true end
+    if row.reason == "transport_starved_before_end" and row.position.x == dry_plant.refill.position.x then starved_refill = true end
+  end
+  check(dry_result.status == "failed" and dry_plant.fuel() < 5 and starved_boiler and starved_refill,
+    "a line window fails when its supplying boiler burns stored fuel behind a dead refill")
+  -- A supplying boiler's fuel source keeps its own refill bound in the line
+  -- window: a draw younger than its mining period plus grace is still in
+  -- flight, however quickly earlier draws were answered.
+  local owed, slow_plant = nil, nil
+  local slow_result, slow = line_window(function(p)
+    slow_plant = p
+    p.target.prototype.mineable_properties.mining_time = 4
+    p.boiler.burner.remaining_burning_fuel = 10000 - 17 * 215
+    p.set_fuel(5)
+  end, function(t)
+    if slow_plant.fuel() < 5 then owed = owed or t else owed = nil end
+    return owed and t - owed >= (owed > 1500 and 1000 or 100)
+  end)
+  check(slow_result.status == "completed" and slow_plant.fuel() < 5
+    and not canonical(slow.blockers):find("fuel_replenishment_not_observed", 1, true),
+    "a line window bounds its supplying boiler's refill wait by the supply's mining period")
+  if slow_result.status ~= "completed" then print("  " .. canonical(slow.blockers)) end
+  -- The supply's fuel source must also sustain the supply's burn: a boiler
+  -- burning faster than its source mines fails the line window with the
+  -- supply's deficit, whatever its refills carried the window.
+  local hungry_plant
+  local hungry_result, hungry = line_window(function(p)
+    hungry_plant = p
+    p.target.prototype.mineable_properties.mining_time = 4
+    local burn = p.burn
+    p.burn = function() burn(); burn(); burn() end
+  end, function(t) return t % 240 == 0 end)
+  local deficit
+  for _, row in ipairs(hungry.blockers) do
+    if row.reason == "fuel_supply_deficit" and row.position.x == hungry_plant.target.position.x then deficit = row end
+  end
+  check(hungry_result.status == "failed" and deficit and deficit.fuel_demand_watts > deficit.fuel_supply_watts,
+    "a line window fails when its supplying boiler burns faster than the supply's fuel source mines")
+  if not deficit then print("  " .. canonical(hungry.blockers)) end
+  do
+    -- A chain: plant P powers supply D's drill and inserters, and D powers the
+    -- line. The line's window samples D's continuity and, transitively, P's:
+    -- P's stored fuel outlasting its dead refill fails the line although D is
+    -- fed. D is proven, as a power supply, while P is healthy.
+    local function prove_supply(p)
+      local start, result = game.tick, nil
+      local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
+        source_tick = start, positions = { p.supply.boiler.position }, duration_seconds = 1 } } })
+      for t = 1, 3 * 60 do
+        game.tick = start + t
+        p.supply.prove_tick(t); p.burn(600)
+        if t % 5 == 4 and p.fuel() < 5 then p.set_fuel(p.fuel() + 1) end
+        tasks.on_tick()
+        result = tasks.plan_status({ plan_id = queued.plan_id })
+        if result.status == "completed" or result.status == "failed" then break end
+      end
+      return result
+    end
+    local chain_supply, chain_plant = {}, nil
+    local chain_fed_result, chain_fed, chain_fed_line = line_window(function(p) chain_supply.fed = prove_supply(p) end,
+      function(t) return t % 20 == 4 end, "chain_line")
+    check(chain_supply.fed.status == "completed" and chain_fed_result.status == "completed"
+      and chain_fed_line and chain_fed_line.state.autonomous_end_to_end,
+      "a line powered through a proven chain of fed supplies is proven")
+    if chain_fed_result.status ~= "completed" then print("  " .. canonical(chain_fed.blockers)) end
+    local chain_dry_result, chain_dry = line_window(function(p)
+      chain_plant, chain_supply.dry = p, prove_supply(p)
+      p.set_fuel(5, 0); p.refill.status = defines.entity_status.waiting_for_source_items
+    end, false, "chain_line")
+    local at_plant, at_supply = false, false
+    for _, row in ipairs(chain_dry.blockers or {}) do
+      if row.reason == "fuel_replenishment_not_observed" or row.reason == "transport_starved_before_end" then
+        local x = row.position.x
+        if x == chain_plant.boiler.position.x or x == chain_plant.refill.position.x then at_plant = true end
+        if x == chain_plant.supply.boiler.position.x or x == chain_plant.supply.refill.position.x then at_supply = true end
+      end
+    end
+    check(chain_supply.dry.status == "completed" and chain_dry_result.status == "failed" and chain_plant.fuel() < 5
+      and chain_plant.supply.fuel() == 5 and at_plant and not at_supply,
+      "a line window fails when its supply's own supply burns stored fuel behind a dead refill")
+    if not at_plant then print("  " .. canonical(chain_dry.blockers)) end
+  end
+  -- Supply proofs survive unrelated transfer-history eviction; a transfer into
+  -- the supply revokes its proof even after that event itself is evicted.
+  do
+    local _, _, _, p = steam_validation("plus_line")
+    local activity = require("scripts.factory_activity")
+    local function elsewhere(count)
+      for _ = 1, count do
+        game.tick = game.tick + 1
+        activity.record("insert", { target = { name = "elsewhere", type = "container", position = { x = 500, y = 500 } },
+          transfers = { { item = "iron-plate", inserted = 1 } } })
+      end
+    end
+    elsewhere(129)
+    local kept = map.factory_component_sample({ source_tick = game.tick, positions = { p.line_mine.position } })
+    activity.record("insert", { target = p.boiler, transfers = { { item = "coal", inserted = 1 } } })
+    elsewhere(129)
+    local revoked = map.factory_component_sample({ source_tick = game.tick, positions = { p.line_mine.position } })
+    check(not canonical(kept.blockers):find("power_supply_component_not_proven", 1, true)
+      and canonical(revoked.blockers):find("power_supply_component_not_proven", 1, true),
+      "only a transfer into the supply revokes its proof, whatever unrelated transfer history was evicted")
+    -- Nor do unrelated later proofs evict the supply's retained proof.
+    local _, _, _, q = steam_validation("plus_line")
+    for i = 1, 33 do
+      activity.record_validation({ proven = true, component_signature = "unrelated-" .. i, duration_ticks = 60,
+        products_finished_delta = 1, downstream_acceptance_samples = 3, source_cycles_observed = 3,
+        character_transfer_actions = 0, start_tick = game.tick, end_tick = game.tick }, "exact-unrelated-" .. i, i % 2 == 0)
+    end
+    local retained = map.factory_component_sample({ source_tick = game.tick, positions = { q.line_mine.position } })
+    check(not canonical(retained.blockers):find("power_supply_component_not_proven", 1, true),
+      "a supply's proof survives eviction of its validation by unrelated later proofs")
+  end
   for _, mode in ipairs({ "multiple_generators", "steam_pump", "fluid_buffer" }) do
     local valid = steam_validation(mode)
     check(valid.status == "completed", "native proof supports " .. mode .. " with actual aggregate attribution/connectivity")

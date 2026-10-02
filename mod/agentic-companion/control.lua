@@ -12,7 +12,35 @@ local production_requirements = require("scripts.production_requirements")
 local connect_entities = require("scripts.connect_entities")
 local run_snapshot = require("scripts.run_snapshot")
 
-rpc.register("ping", function()
+-- Every read-only RPC result carries the body's FIFO state from the same Lua
+-- read, so a reader sees an idle body without another round trip.
+-- idle_seconds is 0 while work or hand-crafting runs, counts from when the
+-- last of either ended, and is absent when no physical task has finished
+-- since load or the last emergency stop.
+local function fifo_state()
+  local t = storage.tasks
+  if not t then return nil end
+  local active, depth = t.active, #(t.queue or {})
+  local body = companion.get()
+  local crafting = body and body.valid and (body.crafting_queue_size or 0) > 0
+  local idle_seconds
+  if active or depth > 0 or crafting then
+    idle_seconds = 0
+  elseif t.last_finished_tick then
+    idle_seconds = math.floor(math.max(0, game.tick - t.last_finished_tick) / 60)
+  end
+  return { active_plan_id = active and active.type == "plan" and active.id or nil,
+    queue_depth = depth, idle_seconds = idle_seconds }
+end
+local function read(handler)
+  return function(params)
+    local result = handler(params)
+    if type(result) == "table" and result[1] == nil then result.fifo = fifo_state() end
+    return result
+  end
+end
+
+rpc.register("ping", read(function()
   return {
     protocol_version = 22,
     mod_version = script.active_mods["agentic-companion"],
@@ -22,23 +50,23 @@ rpc.register("ping", function()
     companion_ever_created = companion.record() ~= nil,
     companion_dead = companion.record() ~= nil and companion.get() == nil,
   }
-end)
+end))
 rpc.register("spawn_companion", companion.connect)
-rpc.register("observe_local", spatial.observe_local)
-rpc.register("inspect", inspect.inspect)
+rpc.register("observe_local", read(spatial.observe_local))
+rpc.register("inspect", read(inspect.inspect))
 rpc.register("start_research", research.start_research)
-rpc.register("can_place", spatial.can_place)
-rpc.register("find_placement", find_placement.find_placement)
-rpc.register("map_summary", map_summary.map_summary)
-rpc.register("production_requirements", production_requirements.production_requirements)
+rpc.register("can_place", read(spatial.can_place))
+rpc.register("find_placement", read(find_placement.find_placement))
+rpc.register("map_summary", read(map_summary.map_summary))
+rpc.register("production_requirements", read(production_requirements.production_requirements))
 rpc.register("run_snapshot", run_snapshot.capture)
 rpc.register("connect_entities", connect_entities.connect_entities)
-rpc.register("describe_prototype", spatial.describe_prototype)
-rpc.register("progression_status", research.progression_status)
+rpc.register("describe_prototype", read(spatial.describe_prototype))
+rpc.register("progression_status", read(research.progression_status))
 rpc.register("enqueue", tasks.enqueue)
 rpc.register("get_task", tasks.get)
 rpc.register("queue_plan", tasks.queue_plan)
-rpc.register("plan_status", tasks.plan_status)
+rpc.register("plan_status", read(tasks.plan_status))
 rpc.register("cancel", tasks.cancel)
 -- get_chunk is registered inside rpc.lua itself.
 

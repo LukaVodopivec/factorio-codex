@@ -21,7 +21,7 @@ function ledger() {
     run: { id: "run-1", release_sha: "a".repeat(40), baseline_save_sha256: "b".repeat(64),
       save_identity: "fresh-space-age", created_at: "2026-09-03T20:00:00Z",
       roles: { pilot: { model: "gpt-6-luna" as const, reasoning: "low" as const, fast: true as const },
-        strategist: { model: "gpt-6.1-sol" as const, reasoning: "medium" as const, fast: false as const } } },
+        strategist: { model: "gpt-6-astra" as const, reasoning: "medium" as const, fast: false as const } } },
     revision: 0, source_tick: null,
     phase: "bootstrap", bottleneck: "sustained power",
     latest_measured_capacity: [],
@@ -306,6 +306,50 @@ describe("validated build packages", () => {
     expect(applyLedgerFile(file, initialization())).toMatchObject({ status: "applied", revision: 1 });
     const zero = { ...drillPair(), anchor: { x: -0, y: 0 }, source_tick: 100 };
     expect(applyLedgerFile(file, withPackages([zero]))).toMatchObject({ status: "applied", revision: 2 });
+  });
+
+  it("keeps essential_prerequisite to one short outcome sentence", () => {
+    const update = envelope(101).update;
+    const long = { ...envelope(101), update: { ...update, task_list: { ...update.task_list,
+      NOW: { ...update.task_list.NOW, essential_prerequisite: "x".repeat(161) } } } };
+    const result = reduceLedger(ledger(), long).result;
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result.status === "discarded" && result.issues?.some((issue) =>
+      issue.includes("update.task_list.NOW.essential_prerequisite") && issue.includes("one outcome sentence"))).toBe(true);
+  });
+
+  it("lets a package name up to three existing notebook notes beside the ledger", () => {
+    const file = ledgerFile();
+    expect(applyLedgerFile(file, initialization())).toMatchObject({ status: "applied", revision: 1 });
+    const notebook = path.join(path.dirname(file), "notebook");
+    fs.mkdirSync(path.join(notebook, "templates"), { recursive: true });
+    for (const note of ["README.md", "fuel-loop.md", "templates/smelter.md"]) fs.writeFileSync(path.join(notebook, note), "# note\n");
+    const notes = ["notebook/fuel-loop.md", "notebook/templates/smelter.md", "notebook/README.md"];
+    expect(applyLedgerFile(file, withPackages([{ ...drillPair(), notes }]))).toMatchObject({ status: "applied", revision: 2 });
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).build_packages[0].notes).toEqual(notes);
+  });
+
+  it.each([
+    [["/tmp/notebook/a.md"], "build_packages.0.notes.0"],
+    [["notebook/../operations.md"], "build_packages.0.notes.0"],
+    [["notebook/a.txt"], "build_packages.0.notes.0"],
+    [["notes/a.md"], "build_packages.0.notes.0"],
+    [["notebook/.hidden.md"], "build_packages.0.notes.0"],
+    [["notebook/a.md", "notebook/b.md", "notebook/c.md", "notebook/d.md"], "build_packages.0.notes"],
+  ])("rejects package notes %j outside the bounded notebook shape", (notes, issuePath) => {
+    const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), notes }])).result;
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(issuePath))).toBe(true);
+  });
+
+  it("rejects a package note that does not exist without changing the ledger", () => {
+    const file = ledgerFile();
+    expect(applyLedgerFile(file, initialization())).toMatchObject({ status: "applied", revision: 1 });
+    const before = fs.readFileSync(file, "utf8");
+    const result = applyLedgerFile(file, withPackages([{ ...drillPair(), notes: ["notebook/absent.md"] }]));
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT",
+      issues: ["build_packages.0.notes.0: notebook/absent.md is not a file beside the ledger"] });
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
 
   it("rejects an invalid package at initialization without creating the ledger", () => {

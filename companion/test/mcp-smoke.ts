@@ -35,7 +35,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.19.6") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.19.7") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -63,6 +63,10 @@ try {
   if ((extractSchema.required ?? []).includes("items")) throw new Error("extract_items must allow omitted items for all=true extraction");
   const planSchema = tools.find((tool: any) => tool.name === "build_plan")?.inputSchema?.properties ?? {};
   if (planSchema.stop_on_error?.default !== true || planSchema.steps?.maxItems !== 25) throw new Error("build_plan must default fail-fast and cap steps at 25");
+  for (const name of ["place_entity", "build_plan", "queue_plan", "run_plan"]) {
+    const schema = JSON.stringify(tools.find((tool: any) => tool.name === name)?.inputSchema ?? {});
+    if (!schema.includes('"belt_to_ground_type":{"type":"string","enum":["input","output"]}')) throw new Error(`${name} must expose optional belt_to_ground_type input|output`);
+  }
   const tooManySteps = Array.from({ length: 26 }, (_, x) => ({ x, y: 0, name: "transport-belt" }));
   const rejectedPlan = await request("tools/call", { name: "build_plan", arguments: { steps: tooManySteps } });
   const rejectedText = rejectedPlan.result?.content?.[0]?.text ?? "";

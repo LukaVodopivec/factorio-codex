@@ -29,7 +29,8 @@ local physical_runner = {
   tick = function() physical_ticks = physical_ticks + 1 end,
 }
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.craft"] = physical_runner, runner(), runner()
-package.loaded["scripts.actions.build"] = { place = runner(), rotate = runner(), set_recipe = runner() }
+local place_runner = runner()
+package.loaded["scripts.actions.build"] = { place = place_runner, rotate = runner(), set_recipe = runner() }
 package.loaded["scripts.actions.transfer"] = { insert = runner(), extract = runner() }
 package.loaded["scripts.actions.build_plan"] = runner()
 local component_sample_count, component_ready, component_transfers, sampled_since = 0, true, 0, {}
@@ -196,7 +197,14 @@ storage.tasks.queue, storage.tasks.last_finished_tick = {}, 500
 game.tick, body.crafting_queue_size = 700, 2
 local crafting_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 700,
   positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+storage.tasks.queue = {}
+tasks.on_tick()
 body.crafting_queue_size = nil
+game.tick = 760
+local after_craft = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 760,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+check(after_craft.body_idle_ticks == 60,
+  "idle time after asynchronous hand-crafting counts from when crafting ended, not from the task that queued it")
 storage.tasks.queue, storage.tasks.last_finished_tick = {}, nil
 local fresh_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 700,
   positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
@@ -212,4 +220,20 @@ local emptied = tasks.queue_plan({ steps = { { action = "validate_factory_compon
 check(tasks.plan_status({ plan_id = emptied.plan_id }).fifo_empty == false, "a queued plan keeps the FIFO non-empty")
 tasks.cancel({ all = true })
 check(tasks.plan_status({ plan_id = emptied.plan_id }).fifo_empty == true, "plan_status reports an empty FIFO once nothing is pending")
+
+-- A queued placement carries the underground belt end it asks for into the
+-- physical place task; an ordinary placement carries none.
+local placed = {}
+place_runner.start = function(task) placed[#placed + 1] = task end
+body.walking_state = {}
+local undergrounds = tasks.queue_plan({ steps = {
+  { action = "place_entity", name = "underground-belt", x = 4, y = 0, direction = 4, belt_to_ground_type = "input" },
+  { action = "place_entity", name = "underground-belt", x = 4, y = 4, direction = 4, belt_to_ground_type = "output" },
+  { action = "place_entity", name = "transport-belt", x = 4, y = 5, direction = 4 },
+} })
+for tick = 1000, 1010 do game.tick = tick; tasks.on_tick() end
+check(tasks.plan_status({ plan_id = undergrounds.plan_id }).status == "completed" and #placed == 3
+  and placed[1].belt_to_ground_type == "input" and placed[2].belt_to_ground_type == "output"
+  and placed[3].belt_to_ground_type == nil,
+  "queued place_entity steps pass belt_to_ground_type through to the place task")
 os.exit(failures == 0 and 0 or 1)

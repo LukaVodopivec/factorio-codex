@@ -11,6 +11,7 @@ local approach = require("scripts.actions.approach")
 local output_targets = require("scripts.output_target")
 local placement_geometry = require("scripts.placement_geometry")
 local factory_activity = require("scripts.factory_activity")
+local build = require("scripts.actions.build")
 
 local M = {}
 
@@ -45,6 +46,9 @@ local function malformed(step)
     if type(target) ~= "table" or type(target.x) ~= "number" or type(target.y) ~= "number" then
       return "input_target must be {x, y} with numeric coordinates"
     end
+  end
+  if step.belt_to_ground_type ~= nil and step.belt_to_ground_type ~= "input" and step.belt_to_ground_type ~= "output" then
+    return 'belt_to_ground_type must be "input" or "output"'
   end
   if step.recipe ~= nil and type(step.recipe) ~= "string" then
     return "recipe must be a recipe name string"
@@ -82,6 +86,10 @@ function M.start(task)
   for index, step in ipairs(task.steps) do
     step.direction = math.floor(tonumber(step.direction) or 0) % 16
     local proto = prototypes.item[step.item]
+    if step.belt_to_ground_type ~= nil and proto and proto.place_result then
+      local belt_error = build.belt_to_ground_error(step.item, proto.place_result, step.belt_to_ground_type)
+      if belt_error then error(string.format("step %d is malformed: %s", index, belt_error)) end
+    end
     local function prepare_target(target, kind)
       local result = proto and proto.place_result
       if kind == "input" and (not result or result.type ~= "inserter") then
@@ -454,6 +462,11 @@ local function finish_placed_step(task, c, step, built)
   task._built, task._interactions_applied = nil, nil
   local detail = output_binding == "pending-output"
     and "provisional output geometry is valid; Factorio's runtime output target is pending first output" or nil
+  local pairing = build.underground_pairing(built)
+  if pairing then
+    local note = "placed " .. step.item .. build.pairing_note(pairing)
+    detail = detail and (detail .. "; " .. note) or note
+  end
   return advance(task, true, detail)
 end
 
@@ -544,6 +557,7 @@ function M.tick(task)
     name = entity_name,
     position = step.position,
     direction = step.direction,
+    type = step.belt_to_ground_type,
     force = c.force,
     raise_built = true,
   })

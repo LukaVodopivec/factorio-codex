@@ -7,21 +7,24 @@ import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../co
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
 import { normalizeObservation } from "./observation.js";
 import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
-import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
+import { normalizeCanPlace, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.19.6";
+export const MCP_SERVER_VERSION = "0.19.7";
 
 const position = z.object({ x: z.number(), y: z.number() });
+const beltToGroundType = z.enum(["input", "output"]).optional();
 const items = z.record(z.string(), z.number().int().positive());
 const walkInput = position.extend({ arrival_mode: z.enum(["exact", "vicinity"]).default("exact"),
   arrival_radius: z.number().min(0.5).max(6).default(1) }).strict()
   .refine((p) => p.arrival_mode === "vicinity" || p.arrival_radius === 1,
     { message: "exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius", path: ["arrival_radius"] });
 export function result(value: unknown, isError = false) {
-  const structured = value && typeof value === "object" && !Array.isArray(value)
+  const raw = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : { status: isError ? "failed" : "completed", terminal: true, summary: String(value), next_action: null };
+  const fifo = normalizeFifo(raw.fifo);
+  const structured = fifo ? { ...raw, fifo } : raw;
   const observationSummary = typeof structured.tick === "number" && Array.isArray(structured.entities)
     ? `observation tick ${structured.tick}; entities ${structured.entities.length}` +
       `${typeof structured.omitted_entities === "number" ? ` (+${structured.omitted_entities} omitted)` : ""}; ` +
@@ -36,7 +39,8 @@ export function result(value: unknown, isError = false) {
     : typeof observationSummary === "string" ? observationSummary
     : typeof structured.status === "string" ? structured.status
     : "structured result";
-  return { content: [{ type: "text" as const, text: summary.slice(0, 500) }], structuredContent: structured, isError };
+  const text = fifo?.hint ? `${fifo.hint}; ${summary}` : summary;
+  return { content: [{ type: "text" as const, text: text.slice(0, 500) }], structuredContent: structured, isError };
 }
 
 function failure(error: unknown, prefix = "Error") {
@@ -66,7 +70,7 @@ export async function connectStatus(
         status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version,
         mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick,
         companion_exists: false, companion_ever_created: ping.companion_ever_created,
-        companion_dead: ping.companion_dead, read_only: true,
+        companion_dead: ping.companion_dead, read_only: true, ...(ping.fifo ? { fifo: ping.fifo } : {}),
         summary: "Connected read-only; no living Codex character is currently available",
       });
     }
@@ -79,7 +83,7 @@ export async function connectStatus(
     status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version,
     mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick,
     companion_exists: ping.companion_exists, companion_ever_created: ping.companion_ever_created,
-    companion_dead: ping.companion_dead,
+    companion_dead: ping.companion_dead, ...(ping.fifo ? { fifo: ping.fifo } : {}),
   });
 }
 
@@ -233,14 +237,14 @@ export function registerMcpTools(
   server.registerTool("walk_to", { description: "Scout or relocate through ordinary native walking. exact uses the fixed 1-tile goal tolerance; vicinity explicitly permits a reported collision-free point within arrival_radius only after native path confirmation. Goal collisions and route failures are distinct, and recovery is capped at three progress-monotonic nonrepeated frontiers. Positional actions already auto-approach.", inputSchema: walkInput }, async (p, extra) => task("walk_to", toolPayloads.target(p), extra?.signal));
   server.registerTool("mine", { description: 'Auto-approach and physically mine the exact observed target without substituting a neighbor. Canonical fresh-observation input: {"x":3.25,"y":4.75,"count":1,"expected_name":"tree-01","observed_tick":12345}. Overlapping natural/owned targets require explicit target_kind; target_kind=owned recovers one empty player-owned entity through ordinary mining.', inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict() }, async (p, extra) => task("mine", toolPayloads.mine(p), extra?.signal));
   server.registerTool("pickup_items", { description: "Auto-approach and physically pick up one exact item stack reported by observe_local. The item and count must still match, the full stack must fit, and Factorio's normal picking state performs collection.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) => task("pickup", toolPayloads.pickup(p), extra?.signal));
-  server.registerTool("place_entity", { description: 'Auto-approach and place one inventory item. Optional input_target/output_target require exact runtime binding after placement; a failure leaves the placed entity committed. Canonical input: {"name":"wooden-chest","x":1.5,"y":2.5}; use name, never item.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional() }).strict() }, async (p, extra) => task("place", toolPayloads.place(p), extra?.signal));
+  server.registerTool("place_entity", { description: 'Auto-approach and place one inventory item. Optional input_target/output_target require exact runtime binding after placement; a failure leaves the placed entity committed. Canonical input: {"name":"wooden-chest","x":1.5,"y":2.5}; use name, never item. Underground belts take belt_to_ground_type input|output and report the paired end.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType }).strict() }, async (p, extra) => task("place", toolPayloads.place(p), extra?.signal));
   const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict();
   server.registerTool("craft_items", { description: 'Queue exact recipe crafts, not output items. Canonical input: {"recipe":"iron-gear-wheel","crafts":2}; use recipe/crafts, never items.', inputSchema: craftInput }, async (p, extra) => task("craft", toolPayloads.craft(p), extra?.signal));
   server.registerTool("insert_items", { description: "Auto-approach and insert exact carried item counts into an exact-position entity. Reports full completion, useful bounded partial completion with the truthful remainder, or zero-progress failure; dependent plan steps stop after a partial result.", inputSchema: position.extend({ items }) }, async (p, extra) => task("insert", toolPayloads.insert(p), extra?.signal));
   server.registerTool("extract_items", { description: "Auto-approach and extract named items, or everything when items is omitted, from an exact-position entity.", inputSchema: position.extend({ items: items.optional() }) }, async (p, extra) => task("extract", toolPayloads.extract(p), extra?.signal));
   server.registerTool("set_recipe", { description: "Auto-approach and set a player-owned crafting-machine recipe. Furnaces auto-select from inserted input; never call set_recipe on a furnace.", inputSchema: position.extend({ recipe: z.string() }) }, async (p, extra) => task("set_recipe", toolPayloads.recipe(p), extra?.signal));
   server.registerTool("rotate_entity", { description: "Auto-approach and rotate an exact-position entity once, or set Factorio direction 0–15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate", toolPayloads.rotate(p), extra?.signal));
-  server.registerTool("build_plan", { description: "Build up to 25 sequential placements. Optional input_target/output_target require exact runtime binding; use recipient-first build_steps returned by find_placement for coupled construction. Geometry is provisional, failures leave earlier placements committed, and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
+  server.registerTool("build_plan", { description: "Build up to 25 sequential placements. Optional input_target/output_target require exact runtime binding; use recipient-first build_steps returned by find_placement for coupled construction. Geometry is provisional, failures leave earlier placements committed, and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
   server.registerTool("queue_plan", { description: "Queue one contiguous 1–25-step physical plan and return immediately, so the body works while you read, reason, and queue one grounded successor with after_plan_id (a current plan ID). Use steps and documented action discriminators; never use summary/actions. A physical audit uses walk_to followed by inspect_entities (1–16 local positions), preserving per-step ticks and truthful partial results. The result carries the exact plan_status next action.", inputSchema: queuePlanSchema }, async (input) => {
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));

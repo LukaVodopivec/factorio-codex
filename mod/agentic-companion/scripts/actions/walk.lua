@@ -17,6 +17,10 @@ local MAX_RECOVERIES = 1
 local MAX_FRONTIER_SEGMENTS = 3
 local MIN_FRONTIER_PROGRESS_SQ = 0.01
 local ESCAPE_TICKS = 90
+local FRONTIER_RADIUS = 0.5 -- each probe must reach its own frontier point
+local MAX_FRONTIER_PROBES = 16
+local SETTLE_RADIUS_SQ = 4 -- off-belt tiles within 2 tiles of the body's tile
+local SETTLE_TICKS = 60
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
 local OCTANT_RATIO = 0.41421356
@@ -43,7 +47,13 @@ local function dist_sq(a, b)
   return dx * dx + dy * dy
 end
 
-local function request_path(state, c, task_id, target, phase)
+-- Entity searches take the layer dictionary, not the whole CollisionMask.
+local function character_layers()
+  local mask = prototypes.entity["character"].collision_mask
+  return mask and mask.layers or mask
+end
+
+local function request_path(state, c, task_id, target, phase, radius)
   target = target or state.target
   local id = c.surface.request_path({
     bounding_box = { { -0.2, -0.2 }, { 0.2, 0.2 } },
@@ -51,7 +61,7 @@ local function request_path(state, c, task_id, target, phase)
     start = c.position,
     goal = target,
     force = c.force,
-    radius = math.max(state.arrive_within, 0.5),
+    radius = radius or math.max(state.arrive_within, 0.5),
     can_open_gates = true,
     entity_to_ignore = c,
     path_resolution_modifier = 0,
@@ -137,7 +147,7 @@ local function blocker_evidence(state, c, goal)
   end
   local ok_entities, found = pcall(c.surface.find_entities_filtered, {
     area = area,
-    collision_mask = prototypes.entity["character"].collision_mask,
+    collision_mask = character_layers(),
   })
   if ok_entities and type(found) == "table" then
     for _, entity in ipairs(found) do
@@ -201,10 +211,13 @@ local function blocker_evidence(state, c, goal)
   return evidence
 end
 
+-- Unit octant offsets; ring 1 probes them at 4 tiles, ring 2 at 8 tiles
+-- only when ring 1 returned no charted path.
 local FRONTIER_OFFSETS = {
-  { x = 0, y = -4 }, { x = 4, y = -4 }, { x = 4, y = 0 }, { x = 4, y = 4 },
-  { x = 0, y = 4 }, { x = -4, y = 4 }, { x = -4, y = 0 }, { x = -4, y = -4 },
+  { x = 0, y = -1 }, { x = 1, y = -1 }, { x = 1, y = 0 }, { x = 1, y = 1 },
+  { x = 0, y = 1 }, { x = -1, y = 1 }, { x = -1, y = 0 }, { x = -1, y = -1 },
 }
+local FRONTIER_RING_DISTANCE = { 4, 8 }
 
 local function charted(c, point)
   return c.force.is_chunk_charted(c.surface,
@@ -234,7 +247,7 @@ local function goal_occupancy(c, point)
   end
   local entities, tiles = {}, {}
   local ok, found = pcall(c.surface.find_entities_filtered, {
-    area = area, collision_mask = prototypes.entity["character"].collision_mask,
+    area = area, collision_mask = character_layers(),
   })
   if ok then
     for _, entity in ipairs(found or {}) do
@@ -274,26 +287,54 @@ local function path_charted(c, path)
   return true
 end
 
+-- Each probe keeps its own outcome so an empty frontier list says why.
+local function add_frontier_ring(state, c, ring)
+  local distance = FRONTIER_RING_DISTANCE[ring]
+  for _, offset in ipairs(FRONTIER_OFFSETS) do
+    if #state.frontier_probes >= MAX_FRONTIER_PROBES then return end
+    local requested = { x = c.position.x + offset.x * distance, y = c.position.y + offset.y * distance }
+    local probe = { ring = ring, requested = requested }
+    state.frontier_probes[#state.frontier_probes + 1] = probe
+    if not charted(c, requested) then
+      probe.reason = "uncharted"
+    else
+      local ok, clear = pcall(c.surface.find_non_colliding_position,
+        c.name or "character", requested, 0.5, 0.1, false)
+      if ok and clear and charted(c, clear) then
+        probe.candidate = { x = clear.x, y = clear.y }
+        state.frontier_candidates[#state.frontier_candidates + 1] = { x = clear.x, y = clear.y }
+        state.frontier_candidate_probes[#state.frontier_candidates] = #state.frontier_probes
+      else
+        probe.reason = "no_clear_candidate"
+      end
+    end
+  end
+end
+
+local function current_probe(state)
+  return state.frontier_probes[state.frontier_candidate_probes[state.frontier_index]]
+end
+
+local function request_frontier(state, c, task_id)
+  request_path(state, c, task_id, state.frontier_candidates[state.frontier_index], "frontier_waiting", FRONTIER_RADIUS)
+end
+
 local function request_next_frontier(state, c, task_id)
   state.frontier_index = state.frontier_index + 1
-  local candidate = state.frontier_candidates[state.frontier_index]
-  if not candidate then return false end
-  request_path(state, c, task_id, candidate, "frontier_waiting")
+  if not state.frontier_candidates[state.frontier_index] and state.frontier_ring == 1
+    and #state.frontier_paths == 0 then
+    state.frontier_ring = 2
+    add_frontier_ring(state, c, 2)
+  end
+  if not state.frontier_candidates[state.frontier_index] then return false end
+  request_frontier(state, c, task_id)
   return true
 end
 
 local function begin_frontier_diagnostics(state, c, task_id)
   state.frontier_candidates, state.frontier_paths, state.frontier_index = {}, {}, 0
-  for _, offset in ipairs(FRONTIER_OFFSETS) do
-    local requested = { x = c.position.x + offset.x, y = c.position.y + offset.y }
-    if charted(c, requested) then
-      local ok, clear = pcall(c.surface.find_non_colliding_position,
-        c.name or "character", requested, 0.5, 0.1, false)
-      if ok and clear and charted(c, clear) then
-        state.frontier_candidates[#state.frontier_candidates + 1] = { x = clear.x, y = clear.y }
-      end
-    end
-  end
+  state.frontier_probes, state.frontier_candidate_probes, state.frontier_ring = {}, {}, 1
+  add_frontier_ring(state, c, 1)
   return request_next_frontier(state, c, task_id)
 end
 
@@ -305,7 +346,7 @@ local function nearby_collision_evidence(c)
   end
   local entities, tiles = {}, {}
   local ok, found = pcall(c.surface.find_entities_filtered, {
-    area = area, collision_mask = prototypes.entity["character"].collision_mask,
+    area = area, collision_mask = character_layers(),
   })
   if ok then for _, entity in ipairs(found or {}) do
     if entity.valid and entity ~= c and entity.type ~= "resource" and entity.type ~= "item-entity" then
@@ -319,7 +360,6 @@ local function nearby_collision_evidence(c)
     if a.position.x ~= b.position.x then return a.position.x < b.position.x end
     return a.name < b.name
   end)
-  while #entities > 16 do table.remove(entities) end
   for y = math.floor(area.left_top.y), math.ceil(area.right_bottom.y) - 1 do
     for x = math.floor(area.left_top.x), math.ceil(area.right_bottom.x) - 1 do
       local tile_ok, tile = pcall(c.surface.get_tile, x, y)
@@ -377,6 +417,40 @@ local function resolve_frontiers(state, c)
   local evidence = blocker_evidence(state, c, state.target)
   local collision_candidates, collision_tiles, evidence_error = nearby_collision_evidence(c)
   local code = occupancy and occupancy.state == "occupied" and "GOAL_OCCUPIED" or "PATH_NOT_FOUND"
+  -- The pathfinder refused every probe it answered, and none ended
+  -- inconclusive (timeout, backpressure, uncharted route): the body is
+  -- enclosed. Name an owned blocker so ordinary owned mining, not a
+  -- teleport, can open it: one on the line toward the target first, then the
+  -- nearest. Otherwise an empty frontier list stays PATH_NOT_FOUND.
+  local suggested
+  local refused, inconclusive = false, false
+  for _, probe in ipairs(state.frontier_probes or {}) do
+    if probe.reason == "path_failed" then refused = true end
+    if probe.reason == "timeout" or probe.reason == "transient" or probe.reason == "path_uncharted" then inconclusive = true end
+  end
+  if code == "PATH_NOT_FOUND" and #(state.frontier_paths or {}) == 0 and refused and not inconclusive then
+    local dx, dy = state.target.x - c.position.x, state.target.y - c.position.y
+    local length = math.sqrt(dx * dx + dy * dy)
+    local best, best_line, best_distance
+    for _, candidate in ipairs(collision_candidates) do
+      if candidate.player_owned then
+        local ox, oy = candidate.position.x - c.position.x, candidate.position.y - c.position.y
+        local on_line = length > 0 and (ox * dx + oy * dy) > 0 and math.abs(ox * dy - oy * dx) / length <= 1.5
+        local distance = dist_sq(c.position, candidate.position)
+        if not best or on_line and not best_line or on_line == best_line and distance < best_distance then
+          best, best_line, best_distance = candidate, on_line, distance
+        end
+      end
+    end
+    if best then
+      code = "BODY_ENCLOSED"
+      suggested = { tool = "mine", target_kind = "owned", x = best.position.x, y = best.position.y,
+        expected_name = best.name,
+        hint = "mine this owned blocker (extract its contents first if it holds items), then retry the walk" }
+    end
+  end
+  -- The suggestion considers every collider found; the report keeps 16.
+  while #collision_candidates > 16 do table.remove(collision_candidates) end
   local diagnostics = { code = code, evidence_scope = "charted_visible_only",
     start = { x = c.position.x, y = c.position.y }, requested_goal = state.requested_goal,
     resolved_goal = state.target, arrival_mode = state.arrival_mode, arrival_radius = state.arrival_radius,
@@ -389,11 +463,16 @@ local function resolve_frontiers(state, c)
     recovery = { segments_completed = state.frontier_segments or 0,
       limit = MAX_FRONTIER_SEGMENTS, history = state.recovery_history },
     owned_collision_candidates = collision_candidates, collision_tiles = collision_tiles,
-    cage_evidence_error = evidence_error }
+    cage_evidence_error = evidence_error,
+    frontier_probes = state.frontier_probes,
+    failure_class = code == "BODY_ENCLOSED" and "PATH_NOT_FOUND" or nil,
+    suggested_recovery = suggested }
   return fail(c, code, string.format(
-    "Factorio found no character path to resolved goal (%.1f, %.1f) after %d bounded monotonic frontier segment(s); %s; reachable_frontier=%s",
+    "Factorio found no character path to resolved goal (%.1f, %.1f) after %d bounded monotonic frontier segment(s); %s; reachable_frontier=%s%s",
     state.target.x, state.target.y, state.frontier_segments or 0, evidence,
-    recommended and string.format("(%.1f,%.1f)", recommended.position.x, recommended.position.y) or "none"),
+    recommended and string.format("(%.1f,%.1f)", recommended.position.x, recommended.position.y) or "none",
+    suggested and string.format("; enclosed by owned entities: mine owned %s at (%.1f,%.1f) to open a route",
+      suggested.expected_name, suggested.x, suggested.y) or ""),
     { code = code, diagnostics = { path = diagnostics } })
 end
 
@@ -405,6 +484,99 @@ local function retry_or_fail(state, c, code, detail)
   state.phase = "retry_wait"
   state.retry_at = game.tick + RETRY_DELAY_TICKS
   stop(c)
+  return nil
+end
+
+local function conveyor_label(conveyor)
+  return { name = conveyor.name, type = conveyor.type, direction = conveyor.direction,
+    position = { x = conveyor.position.x, y = conveyor.position.y } }
+end
+
+-- Nearest charted tile centre within 2 tiles whose body box touches no
+-- conveyor and no character collider, optionally within `limit` of `anchor`.
+local function settle_cell(c, anchor, limit)
+  local pos = c.position
+  local tx, ty = math.floor(pos.x), math.floor(pos.y)
+  local cells = {}
+  for dy = -2, 2 do
+    for dx = -2, 2 do
+      if dx * dx + dy * dy <= SETTLE_RADIUS_SQ then
+        local cell = { x = tx + dx + 0.5, y = ty + dy + 0.5 }
+        cells[#cells + 1] = { position = cell, distance = dist_sq(pos, cell) }
+      end
+    end
+  end
+  table.sort(cells, function(a, b)
+    if a.distance ~= b.distance then return a.distance < b.distance end
+    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+    return a.position.x < b.position.x
+  end)
+  local box = placement_geometry.character_box(c)
+  local rejected = { out_of_range = 0, uncharted = 0, conveyor = 0, collision = 0 }
+  for _, entry in ipairs(cells) do
+    local cell = entry.position
+    if anchor and dist_sq(cell, anchor) > limit * limit + 1e-6 then
+      rejected.out_of_range = rejected.out_of_range + 1
+    elseif not charted(c, cell) then
+      rejected.uncharted = rejected.uncharted + 1
+    else
+      local dx, dy = cell.x - pos.x, cell.y - pos.y
+      local shifted = box and { left_top = { x = box.left_top.x + dx, y = box.left_top.y + dy },
+        right_bottom = { x = box.right_bottom.x + dx, y = box.right_bottom.y + dy } }
+      if not shifted or placement_geometry.conveyor_under(c, shifted) then
+        rejected.conveyor = rejected.conveyor + 1
+      elseif goal_occupancy(c, cell).state ~= "clear" then
+        rejected.collision = rejected.collision + 1
+      else
+        return cell, rejected
+      end
+    end
+  end
+  return nil, rejected
+end
+
+-- Belts carry a standing body, so a walk never finishes on one. Step once by
+-- ordinary walking to the nearest clear off-belt tile, or fail truthfully.
+function M.begin_settle(state, c, anchor, limit)
+  local conveyor = placement_geometry.conveyor_under(c)
+  if not conveyor then return nil end
+  state.settle_anchor = anchor and { x = anchor.x, y = anchor.y } or nil
+  state.settle_limit = limit
+  state.settle_attempted = true
+  local cell, rejected = settle_cell(c, state.settle_anchor, limit)
+  if not cell then
+    return fail(c, "BODY_ON_CONVEYOR", string.format(
+      "the body stands on %s at (%.1f, %.1f) and no charted clear off-belt tile lies within 2 tiles%s",
+      conveyor.name, conveyor.position.x, conveyor.position.y, anchor and " and within reach of the target" or ""),
+      { code = "BODY_ON_CONVEYOR", diagnostics = { path = { evidence_scope = "charted_visible_only",
+        start = { x = c.position.x, y = c.position.y }, conveyor = conveyor_label(conveyor),
+        settle_rejected = rejected, settle_anchor = state.settle_anchor, settle_limit = limit } } })
+  end
+  state.phase = "settling"
+  state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
+    conveyor = conveyor_label(conveyor), started_tick = game.tick }
+  c.walking_state = { walking = true, direction = direction_toward(c.position, cell) }
+  return nil
+end
+
+local function step_settle(state, c)
+  local pos, settle = c.position, state.settle
+  local anchored = not state.settle_anchor
+    or dist_sq(pos, state.settle_anchor) <= state.settle_limit * state.settle_limit + 1e-6
+  if anchored and not placement_geometry.conveyor_under(c) then
+    stop(c)
+    settle.final = { x = pos.x, y = pos.y }
+    settle.ticks = game.tick - settle.started_tick
+    return "arrived"
+  end
+  if game.tick - settle.started_tick >= SETTLE_TICKS then
+    return fail(c, "BODY_ON_CONVEYOR", string.format(
+      "ordinary walking did not leave %s toward (%.1f, %.1f) within %d ticks",
+      settle.conveyor.name, settle.to.x, settle.to.y, SETTLE_TICKS),
+      { code = "BODY_ON_CONVEYOR", diagnostics = { path = { evidence_scope = "charted_visible_only",
+        start = { x = pos.x, y = pos.y }, settle = settle } } })
+  end
+  c.walking_state = { walking = true, direction = direction_toward(pos, settle.to) }
   return nil
 end
 
@@ -421,6 +593,8 @@ end
 
 -- (Re)initialize a walker. `state` must be a plain table stored on the task;
 -- all fields are plain data. The first step() issues the pathfinder request.
+-- arrival_mode "reach" (embedded approaches) aims at an occupied entity centre,
+-- so goal occupancy never short-circuits its frontier recovery.
 function M.begin(state, c, target, arrive_within, arrival_mode, arrival_radius)
   -- Walking tasks take over from driving: hop out first.
   pcall(function()
@@ -498,8 +672,20 @@ function M.step(state, c, task_id)
     return nil
   end
 
-  -- Arrival requires current proven clearance, including during an escape.
+  if state.phase == "settling" then return step_settle(state, c) end
+
+  -- Arrival requires current proven clearance, including during an escape,
+  -- and a body that no belt can carry away.
   if dist_sq(pos, state.target) <= state.arrive_within * state.arrive_within then
+    local conveyor = placement_geometry.conveyor_under(c)
+    if conveyor then
+      if state.settle_attempted then
+        return fail(c, "BODY_ON_CONVEYOR", "the body still stands on " .. conveyor.name
+          .. " after its bounded off-belt step", { code = "BODY_ON_CONVEYOR",
+            diagnostics = { path = { start = { x = pos.x, y = pos.y }, conveyor = conveyor_label(conveyor) } } })
+      end
+      return M.begin_settle(state, c, state.settle_anchor, state.settle_limit)
+    end
     stop(c)
     return "arrived"
   end
@@ -547,18 +733,37 @@ function M.step(state, c, task_id)
 
   if state.phase == "frontier_waiting" then
     local result = take_path_result(state, task_id)
+    local probe = current_probe(state)
     if result then
-      if result.path and #result.path > 0 and path_charted(c, result.path) then
+      if result.try_again_later and not probe.retried then
+        -- One bounded re-request for pathfinder backpressure.
+        probe.retried = true
+        state.phase, state.retry_at = "frontier_retry_wait", game.tick + RETRY_DELAY_TICKS
+        stop(c)
+        return nil
+      elseif result.try_again_later then
+        probe.reason = "transient"
+      elseif result.path and #result.path > 0 and path_charted(c, result.path) then
+        probe.reason = "path_found"
         state.frontier_paths[#state.frontier_paths + 1] = {
           position = state.frontier_candidates[state.frontier_index], path = result.path,
         }
+      else
+        probe.reason = result.path and #result.path > 0 and "path_uncharted" or "path_failed"
       end
       if not request_next_frontier(state, c, task_id) then return resolve_frontiers(state, c) end
       return nil
     elseif game.tick - state.request_tick > PATH_WAIT_TICKS then
+      probe.reason = "timeout"
       if not request_next_frontier(state, c, task_id) then return resolve_frontiers(state, c) end
       return nil
     end
+    stop(c)
+    return nil
+  end
+
+  if state.phase == "frontier_retry_wait" then
+    if game.tick >= state.retry_at then request_frontier(state, c, task_id) end
     stop(c)
     return nil
   end
@@ -682,10 +887,13 @@ function M.tick(task)
   end
   local r = M.step(task._walk, c, task.id)
   if r == "arrived" then
-    return { status = "done", detail = string.format("arrived at (%.1f, %.1f)", c.position.x, c.position.y),
+    local settle = task._walk.settle
+    return { status = "done", detail = string.format("arrived at (%.1f, %.1f)%s", c.position.x, c.position.y,
+        settle and string.format("; stepped off %s at (%.1f, %.1f)", settle.conveyor.name,
+          settle.conveyor.position.x, settle.conveyor.position.y) or ""),
       outcome = { requested_goal = task._walk.requested_goal, resolved_goal = task._walk.target,
         arrival_mode = task._walk.arrival_mode, arrival_radius = task._walk.arrival_radius,
-        recovery_segments = task._walk.frontier_segments } }
+        recovery_segments = task._walk.frontier_segments, settle = settle } }
   elseif type(r) == "table" then
     return { status = "failed", detail = r.failed, outcome = r.outcome }
   end

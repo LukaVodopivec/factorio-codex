@@ -438,6 +438,8 @@ function M.observe_local(params)
     crafting.queue[#crafting.queue + 1] = { recipe = recipe, count = entry.count }
   end
   local path_start = placement_geometry.path_start(c)
+  -- A belt under the body carries it while idle; the recorder samples this too.
+  local conveyor = placement_geometry.conveyor_under(c)
   local result = {
     tick = game.tick, radius = radius, detail = params.detail == "full" and "full" or "compact",
     character = { position = { x = c.position.x, y = c.position.y }, health = c.health,
@@ -445,7 +447,9 @@ function M.observe_local(params)
       active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
       crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance,
       collision_box = plain_box(placement_geometry.character_box(c)),
-      path_start = path_start },
+      path_start = path_start,
+      standing_on = conveyor and { name = conveyor.name, type = conveyor.type, direction = conveyor.direction,
+        position = { x = conveyor.position.x, y = conveyor.position.y } } or nil },
     entities = details, resource_patches = patches, ground_items = ground_items,
     omitted_entities = omitted, omitted_ground_items = omitted_ground_items,
     omitted_resource_patches = omitted_resource_patches,

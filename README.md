@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.19.6**.
+Current release: **0.19.7**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -109,7 +109,36 @@ Native no-path and repeated-stall failures inspect only the immediate charted
 collision segment and report stable, capped local candidate identities and
 colliding tiles as inferred visible collision candidates, not authoritative
 blockers (or explicitly say none was identified); they never expand or search
-the map. Placement checks share exact collision geometry and explicitly reject
+the map. When the native path fails, up to 16 frontier probes (eight at 4
+tiles, eight more at 8 tiles only when the first ring found no charted path)
+each record a `frontier_probes` reason, and one `try_again_later` reply is
+re-requested once. If the pathfinder refused every probe it answered (at least
+one `path_failed`, none `timeout`, `transient` or `path_uncharted`) and an
+owned collider stands in the local cage, the failure is `BODY_ENCLOSED`
+(`failure_class` `PATH_NOT_FOUND`) with a `suggested_recovery` naming an owned
+blocker to `mine`, one on the line toward the target first; otherwise it stays
+`PATH_NOT_FOUND` with the probe reasons.
+Embedded approaches use frontier recovery instead of ending on an occupied
+entity centre. A successful walk or approach never finishes with the body on a
+belt: it takes one bounded ordinary-walking step to the nearest charted clear
+off-belt tile within 2 tiles (still within reach for an approach), reported as
+the `walk_to` outcome's `settle`, or fails with `BODY_ON_CONVEYOR`, which leaves
+the body on the belt until the next `walk_to` off it.
+`observe_local.character.standing_on` names the conveyor under the body and is
+omitted otherwise; recorder samples always state it, as `null` when absent.
+`place_entity`, `build_plan` steps and `queue_plan`/`run_plan` `place_entity`
+steps accept `belt_to_ground_type` (`input` or `output`) for underground belts
+only (any other item fails before walking), and `find_placement` `plan_steps`
+carry it through. A placed underground belt reports its end and paired
+neighbour (`outcome.underground`), or that no pair exists yet. Every read-only
+result (`connect_status`, `map_summary`, `progression_status`,
+`production_requirements`, `describe_prototype`, `observe_local`,
+`inspect_entity`, `plan_status`, `can_place`, `find_placement`) carries
+`fifo` with `active_plan_id`, `queue_depth` and `idle_seconds` from the same
+read (in `describe_prototype`, whose rows are keyed by prototype name, `fifo`
+is that state, not a prototype); after more than 30 idle seconds it adds the `hint` "body idle: queue
+bounded work before further reads" and leads its text with it. The read-only
+strategist, which cannot queue, sees the hint too. Placement checks share exact collision geometry and explicitly reject
 the Codex body footprint. If a route begins inside a collision, Codex uses
 ordinary walking toward Factorio's bounded nearest clear position before
 requesting a new native path. Partial inserts fail with requested, moved, and
@@ -133,16 +162,27 @@ never benchmark evidence. Ordinary gameplay uses exactly two persistent
 reasoning sessions around one physical body and one FIFO mutation lane. A
 `gpt-6-luna` pilot with `low` reasoning and fast mode enabled is the sole
 gameplay writer, character controller, immediate-safety authority, and source
-of latest exact local state. A persistent `gpt-6.1-sol` strategist with `medium`
+of latest exact local state. A persistent `gpt-6-astra` strategist with `medium`
 reasoning at normal speed owns compact NOW/NEXT/LATER priorities, designs every
 coupled layout as a validated build package that the pilot revalidates and
 queues unchanged, and may use only the separate mechanically read-only MCP
 surface (which includes the side-effect-free `can_place` and `find_placement`). Its observations never enter the physical
-lane. Sol atomically writes the one `operations.json`, including its initial
-revision (`ledger-apply` with an `init` envelope), and it is Sol's only channel
+lane. Astra atomically writes the one `operations.json`, including its initial
+revision (`ledger-apply` with an `init` envelope), and it is Astra's only channel
 to the pilot; Luna never writes it and continues fail-open when advice is
-absent, malformed, stale, or unavailable.
-Neither role profile is applied to an active run in place.
+absent, malformed, stale, or unavailable. A task-list `essential_prerequisite`
+is one outcome sentence of at most 160 characters. Each run has an
+Astra-written markdown notebook at `<run_dir>/notebook/` (a `README.md` index of
+at most 2 KB, about 64 KB in total, no imported external content); a build
+package may name up to three `notes` (`notebook/<name>.md` paths that
+`ledger-apply` requires to exist beside the ledger), and the pilot reads only
+those. The ledger stays the only command channel. Neither role calls
+`list_threads`, `read_thread`, or `wait_threads`, and after a context
+compaction each re-reads its goal file and `SKILL.md` first.
+Neither role profile is applied to an active run in place. The
+repo-local `factorio-player` skill holds only the hard rules both roles obey
+(`SKILL.md`), a short Factorio intro whose hints evidence may override
+(`PLAYER-KNOWLEDGE-v1.md`), and one goal file per role.
 
 Start the foreground recorder immediately before gameplay begins. It takes a
 successful native baseline before printing `GO`, then records cumulative and
@@ -158,7 +198,9 @@ factorio-codex runs mark-assisted <run-id> --reason "supervisor teleport recover
 factorio-codex runs compare <baseline-run-id> <candidate-run-id>
 ```
 
-Records live under `~/.local/share/factorio-codex/runs/`. Debug and assisted
+Records live under `~/.local/share/factorio-codex/runs/`. A run manifest keeps
+the role profiles its run recorded, so runs from earlier role pairs remain
+readable and comparable. Debug and assisted
 runs remain available for descriptive comparison but are excluded from an
 automatic benchmark verdict. Clean benchmark runs from the same baseline save
 receive a conservative resource-vector verdict at each common five-minute
@@ -171,7 +213,11 @@ power headroom, unlocked demand, and measured deltas; proves capacity through
 accepted downstream flow; then reassesses the new bottleneck. Repeated manual
 crafting, fueling, hauling, or one-machine service triggers an automation
 payback comparison. The pilot prefers evidence-backed headroom, clustered
-travel, and buffer-aware packets over exact next-task quantities. Exactly one
+travel, and buffer-aware packets over exact next-task quantities. Growth is
+input first: raw extraction, smelting, fuel and power stay ahead of demand,
+progress is judged first by input rate (ore and plates per minute), and science
+is never hand-crafted to push research while raw input is the bottleneck. This
+is a principle, not a build or technology order. Exactly one
 physical call may be in flight; only read-only snapshots may overlap when their
 tick inconsistency is acceptable.
 
@@ -183,10 +229,11 @@ conditions, permitted locked-recipe arithmetic, bounded force-flow rates, and
 time estimates while separating probabilistic or operational requirements and
 never crediting exact remote inventories.
 
-Debug runs continue past `GO+20m` to their assigned milestone unless the owner stops
-them; Candidate B and R1-R7 remain historical evidence. Gameplay remains
-text-only and physical. See the repo-local `factorio-player` skill for the
-current contract and [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md)
+Debug runs record the `GO+20m` recorder checkpoint as a comparison snapshot
+without stopping anything, then continue to their assigned milestone unless
+The owner stops them; Candidate B and R1-R7 remain historical evidence. Gameplay
+remains text-only and physical. See the repo-local `factorio-player` skill for
+the current contract and [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md)
 for historical evidence.
 
 `map_summary` computes connectivity, components, provenance, diagnostics,
@@ -267,17 +314,40 @@ source items at the end of the window for longer than the path recency limit
 (the stall interval, or the last third of a shorter window) carried nothing
 there, so downstream growth beyond it came from stock: the window fails with
 the located row `transport_starved_before_end` (class `throughput`,
-`related_edge` `inserter_pickup`). One early swing does not clear it. It is
-not raised when the inserter's drop target already carries an evidence row
+`related_edge` `inserter_pickup`). One early swing does not clear it. A
+fuel-only feeder, whose pickup is proven to supply only fuel for the burner it
+feeds and no recipe ingredient, and which is that burner's only physical fuel
+inlet of any provenance (an inserter from a hand-stocked chest counts), is
+neither starved nor nonproductive in a sample where that burner still holds its
+top-up stock of five items, so a lazy furnace or drill fuel feeder that swings
+less often than the recency limit does not fail a healthy loop. Once the
+burner's draw below the top-up stock stays unanswered past its refill bound,
+the feeder's whole wait counts as starved, so a dead feeder or source still
+fails although stock hid its wait; a competing inactive feeder is never
+excused by another inlet's refills. A burner with two supplied fuel feeders
+excuses neither: the one that never swings cannot be told from a dead return,
+so give a burner one fuel inlet. It is not raised when the inserter's drop target already carries an evidence row
 naming a longer window, because a takeoff later in belt order waits while the
 burners ahead of it fill. Window samples alternate 29 and 28 ticks apart, so a
-short swing is not aliased away against 60-tick machine periods.
+short swing is not aliased away against 60-tick machine periods. A sample whose
+component signature or hard rows differ from the window's baseline is re-checked
+one sample later and ends the window only when the difference persists; a
+recovered one is listed first in `transient_conditions` as
+`topology_sample_flicker` (with `samples` and `first_tick`). A persistent
+signature change ends the window with
+`component_topology_changed_during_validation` and a `topology_diff` of at most
+four removed and four added component rows (plus an `omitted` count). Within a
+window, a drill whose `mining_target` reads nil keeps the products it last
+mined.
 
 `validate_factory_component` uses the existing parked plan step to sample a
 bounded 1–300 second unattended interval. Its preflight is topology only. When
 the first sorted row is a readiness row (unresolved fuel provenance or
 compatibility, a missing source-to-downstream or downstream acceptance
-path, or a furnace that has not smelted yet), the step is refused at once with `FACTORY_COMPONENT_NOT_READY`,
+path, a furnace that has not smelted yet, a lab with no research in progress
+(`consumer_idle_no_research`) or whose research needs a pack the segment
+never supplies (`consumer_missing_required_science_pack`), or an electric consumer whose supply is not
+proven (`power_supply_component_not_proven`)), the step is refused at once with `FACTORY_COMPONENT_NOT_READY`,
 `stage=readiness`, `refused=true` and located rows naming what to build; any
 other structural or evidence row fails `stage=preflight`. The window judges
 throughput, not single status samples. It requires unchanged physical
@@ -304,12 +374,14 @@ early with `persistent_nonproductive_status:<status>`; a producer out of fuel,
 power, resources or enabled state carries that row ahead of producers that only
 wait. A window never ends proven once it has stalled (`progress_stalled`, kept
 even when progress later resumes). Independently of any stall, a source,
-transport or processor out of fuel, power (low power included), resources or
-enabled state in at least 90% of the window's samples (an inserter on an
-unpowered pole island, say), or still in one at the end for at least 180 ticks
-(and three samples), fails it with `persistent_nonproductive_status:<status>`
-at that node; a burner out of fuel no longer than its refill bound below is
-waiting for a refill. Each endpoint, each
+transport or processor out of fuel, power (low power included for sources and
+processors), resources or enabled state in at least 90% of the window's
+samples (an inserter on an unpowered pole island, say), or still in one at the
+end for at least 180 ticks (and three samples), fails it with
+`persistent_nonproductive_status:<status>` at that node; a burner out of fuel
+no longer than its refill bound below is waiting for a refill. An inserter or
+belt on `low_power` still moves items, so its throughput, not that status,
+decides. Each endpoint, each
 processor and each source that is not fuel-only that met its count must still
 have accepted, finished or mined something within four of its own observed
 event periods before the end, and within the stall interval (the last third of
@@ -364,7 +436,16 @@ below it). Buffer acceptance requires increases
 in each matching output stock across distinct samples; a working consumer
 must also accept every relevant output through its native input inventory
 at each counted sample. Supported item probes use lab input or burner-generator
-fuel inventories. Native thermal generators and terminal storage tanks support
+fuel inventories. A lab with research in progress, whatever its status, must
+have every pack that research needs supplied by the segment (a lab fed by an
+inserter from another lab is supplied through it); otherwise it is
+refused at readiness as `consumer_missing_required_science_pack`, so
+hand-stocked packs never stand in for a missing pack line. A lab waiting for
+packs (`missing_science_packs`) accepts whatever its input inventory can still
+insert, but a lab's acceptance counts only from its first `working` sample in
+the window. A lab with no research in
+progress accepts nothing, so research must be active before a lab-ended
+segment is validated, and a lab left without research mid-window ends it. Native thermal generators and terminal storage tanks support
 fluid acceptance; other consumer types remain unproven.
 The retained graph also supports native offshore-pump supply, separate-pipe
 boiler transformation, pipes (including underground connections), two-box pumps,
@@ -376,9 +457,28 @@ Connections retain both fluidbox indices and native flow direction. Only valid,
 same-force targets on the current surface in charted chunks participate;
 unsupported machinery, merged boxes or unreadable connections stay unproven.
 
-Electrical dependencies join the exact private component but never transport
-items/fluids, satisfy ingredients or fuel provenance, or substitute an unrelated
-endpoint for material acceptance. Three eight-tick bursts inside the existing
+Electrical dependency is not a material path. `electrical_dependency` edges stay
+in the presented `material_flow.edges` but never join components, count in a
+component's edges or signature, transport items/fluids, satisfy ingredients or
+fuel provenance, or substitute an unrelated endpoint for material acceptance.
+A consumer keeps its own material component, and the generators sharing one
+network form one power component. A consumer whose network's generators sit in
+another component carries the located readiness row
+`power_supply_component_not_proven` (class `evidence`, `related_edge`
+`{kind: electrical_supply}`) until that component is proven: a retained
+validation of its exact topology, no character transfer into it since that
+validation began, and still generating. The supply is judged on run history,
+so a later window or an `activity_since_tick` checkpoint still sees it; its
+latest proof is kept per exact topology and its last transfer tick per target,
+so eviction of unrelated validations or transfer events never revokes it. A consumer's window also samples the burners and feeders of
+every component that supplies it, directly or through another supply, with its own nodes, so a supply burning stored fuel
+behind a dead refill fails that window (`fuel_replenishment_not_observed`,
+`transport_starved_before_end`); their refill bound uses the supply's fuel
+sources as in its own window, and a supply burning faster than those sources
+mine fails it with `fuel_supply_deficit`. A supply powered by another supply
+is judged after it; supplies that power each other stay unproven. An electric component with no fluid nodes is
+proven without fluid samples. An
+idle or unpowered line on the network neither fails nor merges with the plant. Three eight-tick bursts inside the existing
 1–300 s parked validation window collect consecutive native pump movement and
 generator output; sparse gaps are never integrated. Each boiler needs three
 uniquely attributable output mass balances with actual fuel consumption and
@@ -418,7 +518,8 @@ return path with exact runtime bindings; compatible output or starter fuel
 stock alone does not suffice. Topology readiness and local operation precede
 bounded proof and never establish `autonomous_end_to_end` on their own.
 Private inventory/resource samples and exact internal identity strings are never
-returned. Validation returns `stage` (`readiness`, `preflight` or `window`),
+returned, except the bounded readable `topology_diff` rows of a persistent
+topology change. Validation returns `stage` (`readiness`, `preflight` or `window`),
 aggregate production deltas, `source_cycles_observed`,
 `fuel_source_cycles_observed` when a fuel-only source was judged by its
 consumers, native `native_source_activity_samples`, `fluid_activity_samples`,
@@ -429,14 +530,17 @@ when applicable, `downstream_acceptance_samples`, `samples_observed`,
 `fuel_demand_watts`, `fuel_supply_watts`, `suggested_duration_seconds` or
 `projected_seconds` where
 they apply), readiness first, deduplicated by reason and position, at
-most 12 with an `omitted_blockers` count. Up to eight `transient_conditions`
-rows report waits that did not fail it.
+most 12 with an `omitted_blockers` count, and `topology_diff` when the final
+signature differs. Up to eight `transient_conditions` rows report waits and
+recovered topology flickers that did not fail it.
 Serialization omissions alone do not reject validation. Character transfers,
 changed topology, persistent missing fuel or power, no production or unobserved
 downstream acceptance do reject it. A prior proof also loses current autonomy
 when a disallowed transfer or blocked output appears, or when a source or processor is
 at `no_fuel`, `no_power`, `no_resources` or disabled
-(`validated_producer_nonproductive`); input and output waits do not revoke it. Offline fixtures establish source behavior only; deployment and live supplied
+(`validated_producer_nonproductive`); input and output waits do not revoke it.
+An electric consumer's component is current only while its power component is
+currently proven. Offline fixtures establish source behavior only; deployment and live supplied
 steam-power autonomy remain unverified.
 
 After successful unattended validation, extracting only accepted products from
@@ -456,9 +560,13 @@ eviction boundary, leaves it unproven. Aggregate transfer counts and
 the component's proof interval. A narrower telemetry window cannot hide
 post-proof assistance. Unvalidated components and new validation samples still
 require complete history for their assessed windows.
-Electrical dependencies still join components in this 0.19.6 baseline; separating
-them would not remove a terminal buffer from its material-flow component or make
-this harvesting exception unnecessary. These are sampled bounded
+A power supply's proof, which its consumers' components and validation windows
+rely on, is kept per exact supplying topology past validation eviction and is
+revoked by any later character transfer into that supply, harvesting included,
+using a per-target last-transfer tick that survives unrelated event eviction.
+Electrical dependencies no longer join components; a terminal buffer still
+belongs to its material-flow component, so the harvesting exception still
+applies. These are sampled bounded
 claims, not a guarantee about every intervening tick or unlimited future demand.
 
 ## Verification

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { atomicWriteFile } from "../setup/atomic.js";
@@ -11,14 +12,16 @@ const priority = z.object({
   objective: text(240),
   strategic_reason: text(400),
   completion_condition: text(400),
-  essential_prerequisite: text(240).nullable(),
+  // One outcome sentence; item counts, travel and step sequences belong in a package.
+  essential_prerequisite: z.string().min(1)
+    .max(160, "essential_prerequisite is one outcome sentence of at most 160 characters").nullable(),
 }).strict();
 const runSchema = z.object({
   id: text(160), release_sha: gitSha, baseline_save_sha256: sha256,
   save_identity: text(240), created_at: text(80),
   roles: z.object({
     pilot: z.object({ model: z.literal("gpt-6-luna"), reasoning: z.literal("low"), fast: z.literal(true) }).strict(),
-    strategist: z.object({ model: z.literal("gpt-6.1-sol"), reasoning: z.literal("medium"), fast: z.literal(false) }).strict(),
+    strategist: z.object({ model: z.literal("gpt-6-astra"), reasoning: z.literal("medium"), fast: z.literal(false) }).strict(),
   }).strict(),
 }).strict();
 const capacity = z.object({
@@ -49,8 +52,14 @@ const packageStep = planStepSchema
   .refine((step) => step.action !== "mine" || (step.target_kind === "owned" && step.expected_name !== undefined
     && step.count === 1 && !step.allow_fluid_loss),
   "package mine steps remove one owned entity: target_kind owned, expected_name, count 1, no fluid loss");
+// A strategist note in the run's notebook, relative to the ledger's directory.
+const notePath = z.string().max(160).refine((note) => {
+  const segments = note.split("/");
+  return segments.length >= 2 && segments[0] === "notebook" && note.endsWith(".md")
+    && segments.slice(1).every((segment) => /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(segment));
+}, "notes are relative notebook/<name>.md paths without '..' or absolute parts");
 const packageId = z.string().regex(/^[a-z0-9-]{1,32}$/, "package ids are 1-32 lowercase letters, digits or dashes");
-// A coupled layout Sol designed and checked with find_placement/can_place; the
+// A coupled layout Astra designed and checked with find_placement/can_place; the
 // pilot revalidates it, adds its own travel and gathering, and queues the steps.
 const buildPackage = z.object({
   package_id: packageId,
@@ -64,6 +73,7 @@ const buildPackage = z.object({
   steps: z.array(packageStep).min(1).max(25),
   validated_place_steps: z.array(z.number().int().nonnegative()).max(24),
   success_check: text(240),
+  notes: z.array(notePath).max(3).optional(),
 }).strict();
 const MAX_PACKAGE_BYTES = 8192;
 
@@ -88,7 +98,7 @@ function packageIssues(packages: BuildPackage[], sourceTick: number | null): str
   packages.forEach((entry, index) => {
     const at = `build_packages.${index}`;
     if (sourceTick !== null && entry.source_tick > sourceTick) issues.push(`${at}.source_tick: newer than the revision's source_tick`);
-    // after_package_id may name a package the pilot already queued (and Sol dropped).
+    // after_package_id may name a package the pilot already queued (and Astra dropped).
     if (entry.after_package_id === entry.package_id
       || (entry.after_package_id !== null && after.get(entry.after_package_id) === entry.package_id)) {
       issues.push(`${at}.after_package_id: packages cannot depend on themselves or on each other`);
@@ -110,6 +120,16 @@ function packageIssues(packages: BuildPackage[], sourceTick: number | null): str
     }
   });
   return issues.slice(0, 3);
+}
+
+/** The pilot reads named notes from the notebook beside the ledger, so each must exist. */
+function missingNotes(packages: BuildPackage[], ledgerFile: string): string[] {
+  const directory = path.dirname(ledgerFile);
+  return packages.flatMap((entry, index) => (entry.notes ?? []).flatMap((note, noteIndex) => {
+    try { if (fs.statSync(path.join(directory, note)).isFile()) return []; }
+    catch { /* reported below */ }
+    return [`build_packages.${index}.notes.${noteIndex}: ${note} is not a file beside the ledger`];
+  })).slice(0, 3);
 }
 
 function schemaIssues(error: z.ZodError): string[] {
@@ -164,6 +184,8 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
     const specific = (isInitShape ? ledgerInitSchema : ledgerEnvelopeSchema).safeParse(envelopeValue);
     return discard("MALFORMED_REPORT", specific.success ? [] : schemaIssues(specific.error));
   }
+  const noteIssues = missingNotes(envelope.data.update.build_packages, file);
+  if (noteIssues.length > 0) return discard("MALFORMED_REPORT", noteIssues);
   let destination: fs.Stats | undefined;
   try { destination = fs.lstatSync(file); }
   catch (error) {

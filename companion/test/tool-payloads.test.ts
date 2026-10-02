@@ -3,7 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
-import { connectStatus, normalizeObservation, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
+import { connectStatus, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
+import { queuePlanSchema } from "../src/mcp/runPlan.js";
+import { FIFO_IDLE_HINT, normalizeFifo, normalizePlacementSearch } from "../src/mcp/toolPayloads.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 describe("public MCP to Lua DTO mappings", () => {
   it("returns canonical structured content without duplicating it as JSON text", () => {
@@ -62,6 +64,8 @@ describe("public MCP to Lua DTO mappings", () => {
     });
     expect(toolPayloads.pickup({ x: 1, y: 2, item: "iron-ore", count: 3 })).toEqual({ target: { x: 1, y: 2 }, item: "iron-ore", count: 3 });
     expect(toolPayloads.place({ x: 1, y: 2, name: "furnace", direction: 4 })).toEqual({ item: "furnace", position: { x: 1, y: 2 }, direction: 4 });
+    expect(toolPayloads.place({ x: 1, y: 2, name: "underground-belt", direction: 4, belt_to_ground_type: "output" }))
+      .toEqual({ item: "underground-belt", position: { x: 1, y: 2 }, direction: 4, belt_to_ground_type: "output" });
     expect(toolPayloads.insert({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
     expect(toolPayloads.extract({ x: 1, y: 2, items: { coal: 3 } })).toEqual({ target: { x: 1, y: 2 }, items: { coal: 3 } });
     expect(toolPayloads.extract({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 }, all: true });
@@ -182,7 +186,7 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.6", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.7", factorio_version: "2.0.0", tick: 1 }
       : method === "observe_local" ? { entities: [], resource_patches: [], ground_items: [] } : { ok: method });
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({
@@ -269,13 +273,84 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
   });
 });
 
+describe("read-only FIFO state", () => {
+  const fifoValue = (fifo: Record<string, unknown>) => ({ status: "completed", companion_exists: true, companion_ever_created: true,
+    protocol_version: 22, mod_version: "0.19.7", factorio_version: "2.0.0", tick: 1,
+    entities: [], resource_patches: [], ground_items: [], results: [], candidates: [], outcomes: [], fifo });
+  const args: Record<string, unknown> = {
+    connect_status: {}, map_summary: {}, progression_status: {}, production_requirements: { targets: { "iron-plate": 1 } },
+    describe_prototype: { names: ["transport-belt"] }, observe_local: { radius: 15 }, inspect_entity: { positions: [{ x: 1, y: 2 }] },
+    plan_status: { plan_id: 7 }, can_place: { placements: [{ x: 1, y: 2, name: "transport-belt" }] },
+    find_placement: { item: "transport-belt", preferred: { x: 0, y: 0 } },
+  };
+  const register = (value: unknown) => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call: vi.fn(async () => value) } as unknown as Bridge), validConfig, "read-only");
+    return handlers;
+  };
+
+  it("carries the Lua fifo state on every read-only tool and hints only past 30 idle seconds", async () => {
+    const idle = register(fifoValue({ queue_depth: 0, idle_seconds: 45 }));
+    expect(Object.keys(idle).sort()).toEqual([...READ_ONLY_TOOLS].sort());
+    for (const name of READ_ONLY_TOOLS) {
+      const output = await idle[name]!(args[name]);
+      expect(output.isError, name).toBe(false);
+      expect(output.structuredContent.fifo, name).toEqual({ active_plan_id: null, queue_depth: 0, idle_seconds: 45, hint: FIFO_IDLE_HINT });
+      expect(output.content[0].text.startsWith(`${FIFO_IDLE_HINT}; `), name).toBe(true);
+    }
+    const busy = register(fifoValue({ active_plan_id: 7, queue_depth: 1, idle_seconds: 0 }));
+    for (const name of READ_ONLY_TOOLS) {
+      const output = await busy[name]!(args[name]);
+      expect(output.structuredContent.fifo, name).toEqual({ active_plan_id: 7, queue_depth: 1, idle_seconds: 0 });
+      expect(output.content[0].text, name).not.toContain(FIFO_IDLE_HINT);
+    }
+  });
+
+  it("states unknown idle time as null without a hint", () => {
+    expect(normalizeFifo({ queue_depth: 0 })).toEqual({ active_plan_id: null, queue_depth: 0, idle_seconds: null });
+    expect(normalizeFifo({ queue_depth: 0, idle_seconds: 30 })).toEqual({ active_plan_id: null, queue_depth: 0, idle_seconds: 30 });
+    expect(normalizeFifo({ queue_depth: 0, idle_seconds: 31 })?.hint).toBe(FIFO_IDLE_HINT);
+    expect(normalizeFifo(undefined)).toBeUndefined();
+    expect(result({ status: "completed" }).structuredContent).toEqual({ status: "completed" });
+  });
+});
+
+describe("underground belt end selection", () => {
+  it("accepts belt_to_ground_type input|output on every placement schema and forwards it", async () => {
+    const handlers: Record<string, (args: any) => Promise<unknown>> = {};
+    const schemas: Record<string, any> = {};
+    const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<unknown>) {
+      schemas[name] = config.inputSchema; handlers[name] = handler;
+    } }, async () => ({ call: vi.fn(), enqueueAndWaitResult } as unknown as Bridge), validConfig);
+    const placement = { x: 1.5, y: 2.5, name: "underground-belt", direction: 4 };
+    for (const type of ["input", "output"]) {
+      expect(schemas.place_entity.safeParse({ ...placement, belt_to_ground_type: type }).success).toBe(true);
+      expect(schemas.build_plan.safeParse({ steps: [{ ...placement, belt_to_ground_type: type }] }).success).toBe(true);
+      expect(queuePlanSchema.safeParse({ steps: [{ action: "place_entity", ...placement, belt_to_ground_type: type }] }).success).toBe(true);
+    }
+    expect(schemas.place_entity.safeParse({ ...placement, belt_to_ground_type: "sideways" }).success).toBe(false);
+    expect(schemas.build_plan.safeParse({ steps: [{ ...placement, belt_to_ground_type: "sideways" }] }).success).toBe(false);
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "place_entity", ...placement, belt_to_ground_type: "sideways" }] }).success).toBe(false);
+    await handlers.place_entity({ ...placement, belt_to_ground_type: "output" });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "underground-belt", position: { x: 1.5, y: 2.5 },
+      direction: 4, belt_to_ground_type: "output" });
+    await handlers.build_plan({ steps: [{ ...placement, belt_to_ground_type: "input" }], auto_craft: true, stop_on_error: true });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
+      steps: [{ item: "underground-belt", position: { x: 1.5, y: 2.5 }, direction: 4, belt_to_ground_type: "input" }] });
+    const search = normalizePlacementSearch({ candidates: [{ build_steps: [{ ...placement, belt_to_ground_type: "input" }] }] });
+    expect(search.candidates[0].plan_steps).toEqual([{ action: "place_entity", ...placement, belt_to_ground_type: "input" }]);
+  });
+});
+
 describe("connect_status body lifecycle", () => {
   it("rebinds an absent native Codex player without creating a body", async () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.6", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.6", tick: 2 })
+        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.7", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.7", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -285,7 +360,7 @@ describe("connect_status body lifecycle", () => {
 
   it("rejects a stale mod before reporting connected", async () => {
     const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.6.0" });
-    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.19.6");
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.19.7");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
@@ -293,8 +368,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 22, mod_version: "0.19.6", factorio_version: "2.0.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.6", factorio_version: "2.0.0", tick: 2 })
+        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 22, mod_version: "0.19.7", factorio_version: "2.0.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.7", factorio_version: "2.0.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -304,7 +379,7 @@ describe("connect_status body lifecycle", () => {
 
   it("surfaces the bind-only no-player error without retrying or creating", async () => {
     const call = vi.fn()
-      .mockResolvedValueOnce({ protocol_version: 22, mod_version: "0.19.6", companion_exists: false, companion_ever_created: false, companion_dead: false })
+      .mockResolvedValueOnce({ protocol_version: 22, mod_version: "0.19.7", companion_exists: false, companion_ever_created: false, companion_dead: false })
       .mockRejectedValueOnce(new Error("native player 'Codex' is not connected with a living character"));
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("native player 'Codex' is not connected");
     expect(call.mock.calls).toEqual([["ping"], ["spawn_companion", {}]]);

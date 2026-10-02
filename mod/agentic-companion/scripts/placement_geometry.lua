@@ -57,6 +57,28 @@ function M.character_box(c)
   return proto and M.footprint(proto, c.position, 0) or nil
 end
 
+-- Belts never collide with the character but carry it while it stands still.
+M.CONVEYOR_TYPES = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
+  ["lane-splitter"] = true, loader = true, ["loader-1x1"] = true, ["linked-belt"] = true }
+local CONVEYOR_FILTER = {}
+for name in pairs(M.CONVEYOR_TYPES) do CONVEYOR_FILTER[#CONVEYOR_FILTER + 1] = name end
+table.sort(CONVEYOR_FILTER)
+
+-- First conveyor whose box overlaps `box` (default: the body's box), or nil.
+function M.conveyor_under(c, box)
+  box = box or M.character_box(c)
+  if not box then return nil end
+  local ok, found = pcall(c.surface.find_entities_filtered, { area = box, type = CONVEYOR_FILTER })
+  if not ok or type(found) ~= "table" then return nil end
+  for _, entity in ipairs(found) do
+    if entity.valid and M.CONVEYOR_TYPES[entity.type]
+      and (not entity.bounding_box or M.overlaps(box, entity.bounding_box)) then
+      return entity
+    end
+  end
+  return nil
+end
+
 function M.overlaps_character(c, proto, position, direction)
   return M.overlaps(M.footprint(proto, position, direction), M.character_box(c))
 end

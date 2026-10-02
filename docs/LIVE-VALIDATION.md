@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.19.6**. Prior live evidence remains historical
-until the fresh 0.19.6 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.19.7**. Prior live evidence remains historical
+until the fresh 0.19.7 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -83,7 +83,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.19.6 reliability pass, also record these observable checks without
+For the 0.19.7 reliability pass, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
 
 - A compact observation stays bounded, names every omission count, and appears
@@ -95,6 +95,47 @@ turning them into a fixed opening or map-specific sequence:
 - A genuine no-path case reports only charted local collision evidence, any
   owned collision cage, and the best bounded reachable frontier/partial route;
   it neither walks that partial route automatically nor reveals uncharted state.
+  Its `frontier_probes` give one reason per probe. Only when every answered
+  probe was refused and none ended `timeout`, `transient` or `path_uncharted`
+  does an enclosure by owned entities fail as `BODY_ENCLOSED`, naming one
+  owned blocker (on the line toward the target first); recover only by
+  extracting and mining it, never by teleport.
+- A successful walk or approach never leaves the body on a belt: it steps once
+  to a clear off-belt tile (reported as `settle`). `BODY_ON_CONVEYOR` leaves
+  the body on the belt, where it drifts until the next `walk_to` off it; after
+  any other plan the idle body shows no belt drift and
+  `observe_local.character.standing_on` is absent.
+- Neither role calls a thread-reading tool after `GO`, Astra's notebook is
+  non-empty, and at least one package names a note.
+- An underground belt pair placed with `belt_to_ground_type` `input` then
+  `output` reports the output end paired with the input end; the offline
+  fixtures do not verify the output end's direction. A `belt_to_ground_type`
+  on any other item fails before walking.
+- Read-only results carry `fifo`; after more than 30 s of idle body the pilot's
+  next read shows the `body idle` hint and the pilot queues work before reading
+  further.
+- A powered line on the steam network stays its own component: it carries
+  `power_supply_component_not_proven` until the plant's component is proven
+  (on run history, so a line validated later still sees that proof; only a
+  transfer into the plant revokes it, never unrelated later proofs), then
+  validates on its own, with the plant's boilers, their refill inserters and
+  their fuel sources' supply judged in the line's window. A
+  lab-ended segment with no research
+  selected is refused as `consumer_idle_no_research`; with research active,
+  any lab, working or not, is refused as
+  `consumer_missing_required_science_pack` unless the segment supplies every
+  pack the research needs (directly or through an upstream lab), and a lab's acceptance counts only after the window
+  sees it working. An inserter on `low_power` is
+  judged by throughput.
+- Growth is input first: from the run recorder's samples at `GO+20m` and
+  `GO+60m`, record drills and furnaces by entity and ore and plates produced
+  per minute, and compare them with the same checkpoints of debug cycle 6
+  (target: both checkpoints above cycle 6). Science is not hand-crafted while
+  plate production per minute is below its consumption.
+- Record every `topology_sample_flicker` and every `topology_diff`. A window
+  must not end on one differing sample (target: zero flicker early ends), and
+  a lazy fuel-only feeder at a stocked burner must not fail
+  `transport_starved_before_end` (target: zero such false negatives).
 - For path-start recovery, record the deployed source SHA, packaged mod archive
   SHA-256, Factorio version, exact plan identities/outcomes, and structured
   character position plus `path_start` at the starting and later ticks. Exercise
@@ -234,7 +275,13 @@ checks.
   still dead at the window end, must fail as `persistent_nonproductive_status`
   even when independent downstream stock grows. Starve one takeoff from the
   window's first third to its end while stock carries its consumers; it must
-  fail as `transport_starved_before_end` at that inserter.
+  fail as `transport_starved_before_end` at that inserter. A burner's sole
+  fuel inlet, a fuel-only feeder, waiting while it still holds its top-up stock (five items)
+  owes it nothing in that sample; confirm a lazy furnace fuel feeder proves
+  although its swings are further apart than the recency limit, and that a
+  feeder stopped behind stocked fuel still fails once a draw goes unanswered.
+  A second fuel inlet into that burner, including one from a hand-stocked
+  chest, removes the exemption.
 - Observe fuel consumption, resumed ordinary replenishment, and renewed waiting
   with unchanged topology. Record continued source/processor production,
   downstream acceptance and zero character transfers across the bounded
@@ -297,19 +344,28 @@ couch PC. Do not launch a local GUI as a recovery shortcut.
 The next fresh supervised-debug topology has exactly two persistent reasoning
 sessions and one physical writer. Start the sole gameplay pilot as
 `gpt-6-luna` with `low` reasoning and fast mode enabled. Start the persistent
-strategist as `gpt-6.1-sol` with `medium` reasoning at normal speed and expose only the disabled-
+strategist as `gpt-6-astra` with `medium` reasoning at normal speed and expose only the disabled-
 by-default `factorio-readonly` MCP server to it; disable the full `factorio`
-server in that Sol session. Sol owns NOW/NEXT/LATER and is the sole atomic writer
+server in that Astra session. Astra owns NOW/NEXT/LATER and is the sole atomic writer
 of one compact `operations.json`, including its initial revision. The ledger is
-Sol's only channel to the pilot. Sol designs every coupled layout as a build
+Astra's only channel to the pilot. Astra designs every coupled layout as a build
 package checked with `find_placement` and `can_place` (the only coordinates in
 the ledger); Luna revalidates and queues packages unchanged and owns immediate
 safety, travel, gathering, physical plans, actions, and latest exact local
-evidence. Sol reads never enter
-the physical FIFO, and Luna continues without waiting when Sol or its ledger is
+evidence. Astra reads never enter
+the physical FIFO, and Luna continues without waiting when Astra or its ledger is
 stale or unavailable. Record both profiles, their MCP surfaces, release SHA,
 archive hash, and save hash before `GO`. Never apply this cutover to the current
 run.
+
+Before `GO`, create an empty `notebook/` directory beside the run's
+`operations.json`. Astra alone writes it (markdown ideas, approaches, outcomes,
+and relative layout templates; a `README.md` index of at most 2 KB; about 64 KB
+in total; no imported or copied external content). A build package may name up
+to three `notes`, which `ledger-apply` refuses unless each is an existing file
+beside the ledger, and the pilot reads only those. The notebook is not a
+broker, second ledger, or control channel. Archive it with the run and
+summarise what Astra learned in the run write-up.
 
 Launch the two connected sessions from the repository with `session-launcher`.
 The pilot needs no MCP override: the project `.codex/config.toml` defaults are
@@ -320,7 +376,7 @@ table; a partial `mcp_servers.<name>.enabled` override fails with
 
 ```sh
 session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on
-session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effort medium --fast off \
+session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
   -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
@@ -330,7 +386,7 @@ The launch flags express requested settings. `--fast on` requests
 normal service. Neither a launch flag nor a successful update is role-profile
 confirmation. Follow the native readback procedure below before `GO`.
 Start each with its checked-in role goal; the pilot takes no physical action
-before `GO`. Confirm Sol lists exactly the ten
+before `GO`. Confirm Astra lists exactly the ten
 configured read-only tools (including the side-effect-free placement checks) and cannot list any movement, transfer, crafting,
 placement, research mutation, plan enqueue/run/cancel, or stop tool before
 `GO`, and that the pilot has the full surface and no read-only server.
@@ -338,10 +394,11 @@ placement, research mutation, plan enqueue/run/cancel, or stop tool before
 Before `GO`, verify the requested fresh save and release hashes, permanent
 peaceful mode/enemy bases disabled, exact native player, viewer, and one
 body/lane/writer. Archive the previous run's `operations.json` into that previous
-run's directory and verify the current ledger destination is absent. Give Sol
+run's directory and verify the current ledger destination is absent. Give Astra
 the new ledger's absolute path and the exact `run` object
 (`id`, `release_sha`, `baseline_save_sha256`, `save_identity`, `created_at`,
-`roles` per the ledger schema), and have Sol create it by piping an
+`roles` per the ledger schema: `{"pilot":{"model":"gpt-6-luna","reasoning":"low","fast":true},`
+`"strategist":{"model":"gpt-6-astra","reasoning":"medium","fast":false}}`), and have Astra create it by piping an
 `{"init": true, "run": <that object>, "source_tick": null, "update": ...}`
 envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger
 <absolute operations.json path>` from its worktree. Supply a fresh observed
@@ -357,8 +414,8 @@ refuses every existing destination, including malformed ledgers, without
 replacement. Subsequent reports use the unchanged
 `{run_id, save_identity, source_tick, update}` envelope and require a newer tick;
 an ordinary update cannot initialize an absent ledger. Never hand-seed revision
-0: Sol is the sole atomic host writer, including initialization, and Luna
-continues fail-open if Sol or the ledger is missing, malformed, stale, or
+0: Astra is the sole atomic host writer, including initialization, and Luna
+continues fail-open if Astra or the ledger is missing, malformed, stale, or
 unavailable. On any resumed save or after a mod upgrade,
 reconcile retained work: if `observe_local` reports an active task or queue
 depth, call `stop` and re-observe until idle, and treat pre-`GO` plan IDs as
@@ -366,7 +423,9 @@ invalid `after_plan_id` values. Rehearse the stop sequence below on the live
 role sessions without stopping the server; a role turn must end within about
 five seconds of pause plus interrupt. Then resume both role goals through the
 native procedure below before starting the recorder; an active goal plus an
-idle thread does not prove that queued `GO` will start a turn. Continue past
+idle thread does not prove that queued `GO` will start a turn. At `GO+20m`
+record the GO+20 recorder checkpoint as the run's comparison snapshot without
+stopping anything; assisted debug progress is still not benchmark evidence. Continue past
 20 minutes toward the assigned milestone
 (currently sustained autonomous Nauvis production: a validated
 `autonomous_end_to_end` segment that still holds at the next two recorder
@@ -406,7 +465,7 @@ do not reconstruct readback from a launch command or substitute the supervisor's
 own settings. Record session and turn identity, native runtime version,
 observation receipt time, requested values, reported values and interpretation
 in existing run evidence. This preparation report uses the existing session
-transport to the supervisor; Sol's only channel to the pilot remains the ledger.
+transport to the supervisor; Astra's only channel to the pilot remains the ledger.
 All required profile fields fit this compact projection. If fuller native output
 is needed, the supervisor reads it through the existing session transport and
 records it in existing run evidence; do not add a store or channel.
@@ -414,7 +473,7 @@ records it in existing run evidence; do not add a store or channel.
 If preparation changes a role profile, retain the update receipt, end that
 turn, and obtain a fresh native read in the subsequent turn. Require both
 `current_turn` and `next_turn` to match Luna / low / Fast (`priority` in the
-validated runtime) or Sol / medium / normal (`default` in these probes,
+validated runtime) or Astra / medium / normal (`default` in these probes,
 `standard` only when the installed runtime establishes that mapping).
 `changed:false` on a read means no update was requested, not failed preparation.
 Missing fields, unresolved null tiers, wrong identity, malformed or stale
@@ -510,19 +569,27 @@ and use the role daemon's existing connection (or `codex-real app-server proxy
 `capabilities.experimentalApi=true`. Retain the exact `threadId` from the role
 session and every returned `turn.id`; names, the latest roster entry, and a
 supervisor's own thread are not substitutes. The installed 0.159.2 protocol
-provides `thread/goal/get`, `thread/goal/set`, `thread/read`,
-`thread/queue/add`, `thread/queue/list`, `thread/queue/start`, `turn/interrupt`,
-and `turn/started` / `turn/completed` notifications. Recheck the installed
+provides `thread/resume`, `thread/goal/get`, `thread/goal/set`, `thread/read`,
+`thread/queue/add`, `thread/queue/list`, `thread/queue/start`, `turn/steer`,
+`turn/interrupt`, and `turn/started` / `turn/completed` notifications. A
+connection receives a thread's turn notifications only after `thread/resume`
+subscribes it to that thread. Recheck the installed
 schemas when the runtime changes; a schema establishes capability, not success.
 
 1. Preserve the rehearsal's physical stop, goal pause, turn interruption,
-   settled task-owned commands, stopped Sol ledger writes, and fresh physical
+   settled task-owned commands, stopped Astra ledger writes, and fresh physical
    quiescence. Read back each exact paused goal and interrupted/completed turn.
    Pause may itself settle a turn: if an interrupt reports no active turn,
    inspect that exact turn before deciding whether anything remains to stop.
    An interrupt response alone does not prove settlement; retain the matching
    `turn/completed` notification and current thread readback.
-2. Resume each existing goal with `thread/goal/set` using
+2. While each role's goal is still paused, subscribe that exact thread with
+   `thread/resume` on the connection that will release GO, and keep that
+   connection open through GO. On a thread whose goal is active, with a
+   queued GO, `thread/resume` can itself start a turn that consumes the GO; the
+   later `thread/queue/start` then fails with `-32600` ("thread already has an
+   active or pending turn", 2026-10-02).
+   Resume each existing goal with `thread/goal/set` using
    `{threadId, status: "active"}`. Resume can immediately start a continuation
    turn. Interrupt that exact resumed turn as part of the rehearsal and await
    its settlement; it must perform no pilot physical action. Read back the
@@ -533,8 +600,13 @@ schemas when the runtime changes; a schema establishes capability, not success.
 3. Start the recorder and obtain its baseline before releasing either role.
    Submit one `GO` per role with `thread/queue/add` using
    `{threadId, clientUserMessageId, input: [{type: "text", text: <GO>}]}`.
-   The pilot's GO text names Sol's exact thread ID, as does any replacement
+   The pilot's GO text names Astra's exact thread ID, as does any replacement
    pilot's assignment, so the pilot never reads threads to address reports.
+   Each role's GO text also carries this line: "Never call list_threads,
+   read_thread or wait_threads; after any compaction re-read your goal file and
+   SKILL.md (Astra: also notebook/README.md)." No configuration or
+   `session-launcher` option filters those coordination tools per action, so
+   this text rule is the control.
    Choose and retain one unique client message ID for each role's GO. The
    response's `queuedSubmission.id` proves acceptance only. Read
    `thread/queue/list` for that thread to identify the pending submission;
@@ -547,6 +619,12 @@ schemas when the runtime changes; a schema establishes capability, not success.
    stop deadline once from that GO boundary. Retries, delayed role starts,
    resumption, and recovery never reset or extend it. If the deadline arrives
    during recovery, execute the explicit-stop sequence, not another release.
+   If a connection must subscribe after the goals are active, treat its
+   `thread/resume` as a possible start. Read the thread and
+   `thread/queue/list` before releasing. If a started turn's `userMessage`
+   carries the GO `clientId`, record that as consumption and do not release
+   it again. Otherwise interrupt that exact turn, await its `turn/completed`,
+   confirm the GO is still listed, and only then release it.
 5. Match the returned turn ID and `turn/started` notification to that thread.
    Confirm the pending submission disappears from `thread/queue/list` and the
    turn's `userMessage` item contains the same `clientId` and GO text; retain
@@ -561,7 +639,7 @@ schemas when the runtime changes; a schema establishes capability, not success.
 6. Observe a later native goal continuation turn after the GO turn ends while
    the milestone remains open. The supervisor does not assign every batch.
    Keep exactly the two persistent roles, one body and FIFO lane: Luna alone
-   writes gameplay, Sol keeps its read-only surface and alone writes the
+   writes gameplay, Astra keeps its read-only surface and alone writes the
    ledger. The supervisor's native session control is not a gameplay writer.
 
 **Verification evidence and limits (2026-10-02).** The installed Codex CLI
@@ -610,16 +688,29 @@ active task and every queued plan within seconds); in each role TUI run
 `/goal pause` and read back the paused state; interrupt any active role turn
 with the native TUI stop control or app-server `turn/interrupt` for that role's
 exact `threadId` and `turnId`, and read back the interrupted turn; check
-separately that no task-owned command or job is still running; confirm Sol
+separately that no task-owned command or job is still running; confirm Astra
 makes no further ledger write; then run recorder FINISH and
 `server stop <run-dir>`. The debug supervisor of this contract may use these
 native controls on its own role sessions as recorded interventions. A steered
 `CANCEL` reaches a busy role at its next step but stops nothing by itself.
 
+Deliver deadline-sensitive or the owner-relayed instructions, such as a stop or a
+keep-running decision, with native `turn/steer`
+`{threadId, expectedTurnId, input, clientUserMessageId}`. Address the exact
+target's current active turn, read with `thread/read`. On an expected-turn
+mismatch, re-read and steer the new turn; if no turn is active, start one with
+that input. Queued delivery (`thread/queue/add`, which ordinary peer sends use
+for Codex targets) waits until the target's turn ends. On 2026-10-02 a
+keep-running instruction waited 10.5 minutes behind a busy supervisor turn and
+arrived after the stop it was meant to prevent. Confirm delivery by the
+`clientUserMessageId` in that turn's `userMessage`. Add no control file or
+message store for this.
+
 ### Supervisor stall and replacement validation
 
 Follow the authoritative stall contract in `AGENTS.md`; this is a manual
-supervised procedure, not an executable supervisor. Before `GO`, record a
+supervised procedure gated by one observation helper, not an executable
+supervisor. Before `GO`, record a
 confirmed message delivery from the current supervisor to the exact pilot
 session. Verify interrupt/retirement and observable inability to resume using
 a disposable non-gameplay session with the same session mechanism; confirm
@@ -647,17 +738,37 @@ start or the next unchanged sample. Renewed activity resets timing and the
 single-nudge state; a run change or uncertain observation invalidates timing.
 Re-establish a fresh lower bound after uncertainty rather than counting the gap.
 
-At about two minutes, revalidate idle evidence, deliver one nudge per interval,
-and record its receipt. Failed or uncertain delivery is a capability problem;
-read back delivery state before retrying and do not claim a nudge succeeded.
-At about five minutes, freshly revalidate continued idleness, interrupt and
-retire the old pilot, and confirm it cannot resume gameplay writes. Settle any
-in-flight physical call: wait for its definitive outcome or resolve uncertainty
+The supervisor's observation helper is the only nudge and replacement gate;
+never dispatch on an inline idle predicate. Pipe every fresh `observe_local`
+result and its receipt time through the helper, in the same step that may
+dispatch. The helper compares the full physical signature (position, carried
+inventory, `active_task`, `queue_depth`, crafting state) with the retained one
+and keeps the conservative idle lower bound across unchanged samples. It
+returns `eligible_nudge` only when the signature has stayed unchanged for at
+least 120 s from that bound and no nudge was sent in this interval. It returns
+`eligible_replace` from 300 s, under the conditions below.
+Reserve the interval's single nudge in the helper (`nudge_sent`, set
+atomically) immediately before dispatch, send its unique interval token, and
+record the delivery receipt. Failed or uncertain delivery is a capability
+problem; read back delivery state before retrying the same nudge and do not
+claim a nudge succeeded.
+
+Delivery is not consumption. A `steered:<id>` receipt names the target's
+active turn, not a message, and a steer reaches the pilot only at that turn's
+next step boundary. Record consumption only when the token appears in a
+`userMessage` of the exact pilot turn (`thread/read` or its rollout). At five
+minutes, replacement requires either recorded consumption of the token or,
+first, one recorded `turn/interrupt` of the exact stale pilot turn. After that
+interrupt, native goal continuation starts a fresh turn that sees the queued
+nudge, and replacement waits a further 120 s with the signature still
+unchanged. Then freshly revalidate continued idleness, interrupt and retire the
+old pilot, and confirm it cannot resume gameplay writes. Settle any in-flight
+physical call: wait for its definitive outcome or resolve uncertainty
 through structured state before proceeding. Interruption does not roll back
 committed plans. If emergency cancellation is necessary, record `stop` and its
 effects. Then freshly prove absent active work, zero queued work, and zero
 crafting. Without both retirement proof and physical quiescence, do not launch
-the replacement. Preserve Sol, the one body/FIFO/write path, invalidate affected
+the replacement. Preserve Astra, the one body/FIFO/write path, invalidate affected
 state, and give the replacement latest structured state and the open milestone.
 Record all interventions; assisted progress and timing are not benchmark proof.
 
@@ -674,9 +785,11 @@ delivery/replacement only in an authorized supervised run:
 | Unknown transition, first idle observation at 02:03 and unchanged sample at 03:12 | Report at least 69 s observed idle, not an exact start before 02:03. |
 | Renewed movement, carried-inventory, task/queue, or crafting activity | Reset idle timing and nudge state; a later interval needs fresh evidence. |
 | Missing, malformed, failed, stale observation, or run change | Invalidate timing; no intervention based on the uncertain interval. |
+| Body moved after the last eligible sample, before dispatch (2026-10-02 13:05) | No nudge: the helper sees the changed signature on the fresh sample and restarts the interval at its receipt. |
 | Failed or uncertain exact-pilot message delivery | Record a capability problem, never successful nudge evidence; establish delivery state before retry. |
+| Nudge delivered (`steered:<turn id>`) but its token is in no pilot `userMessage` at five minutes | No replacement. Interrupt the exact stale turn once, then replace only after a further 120 s of unchanged idle. |
 | Interrupted pilot without confirmed retirement, or unresolved physical call/work | No replacement writer starts. Obtain retirement proof, settle the call, and freshly prove all three idle fields first. |
-| Confirmed retirement and fresh physical quiescence after five idle minutes | Record replacement intervention; preserve strategist/body/FIFO, invalidate affected state, and resume from latest structured evidence. |
+| Consumed nudge or recorded exact-turn interrupt, confirmed retirement and fresh physical quiescence after five idle minutes | Record replacement intervention; preserve strategist/body/FIFO, invalidate affected state, and resume from latest structured evidence. |
 
 Offline verification proves neither message delivery nor live
 retirement/replacement. Claim live behavior only with an authorized supervised
@@ -827,7 +940,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.19.6 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.19.7 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -858,14 +971,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.19.6. They
+The successful observations below were collected before release 0.19.7. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.19.6. Complete the fresh run above after installing 0.19.6 before recording a
+0.19.7. Complete the fresh run above after installing 0.19.7 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.19.6 run must instead report protocol v22 and mod/app 0.19.6.
+  0.8.0. A 0.19.7 run must instead report protocol v22 and mod/app 0.19.7.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

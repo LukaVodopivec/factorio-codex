@@ -7,13 +7,11 @@ local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
 
-local direction_names = {}
-for name, value in pairs(defines.direction) do
-  direction_names[value] = name
-end
-
 local function dir_name(d)
-  return direction_names[d] or tostring(d)
+  for name, value in pairs(defines.direction) do
+    if value == d then return name end
+  end
+  return tostring(d)
 end
 
 local function validate_position(pos, action)
@@ -49,6 +47,39 @@ local function blocked_reason(c, pos)
   return "the spot is blocked — try a nearby position"
 end
 
+-- Underground belts take an explicit input/output end; every other item rejects the field.
+function M.belt_to_ground_error(item, place_result, value)
+  if value == nil then return nil end
+  if value ~= "input" and value ~= "output" then
+    return "belt_to_ground_type must be \"input\" or \"output\""
+  end
+  if place_result.type ~= "underground-belt" then
+    return string.format("belt_to_ground_type applies only to underground belts; %s places a %s",
+      item, place_result.type)
+  end
+  return nil
+end
+
+-- Runtime pairing of a placed underground belt, or nil for any other entity.
+function M.underground_pairing(built)
+  if not (built and built.valid and built.type == "underground-belt") then return nil end
+  local pairing = { belt_to_ground_type = built.belt_to_ground_type }
+  local ok, neighbour = pcall(function() return built.neighbours end)
+  if ok and neighbour and neighbour.valid then
+    pairing.neighbour = { name = neighbour.name, belt_to_ground_type = neighbour.belt_to_ground_type,
+      position = { x = neighbour.position.x, y = neighbour.position.y } }
+  end
+  return pairing
+end
+
+local function pairing_note(pairing)
+  if not pairing then return "" end
+  if not pairing.neighbour then return string.format(" as %s end; no paired underground yet", pairing.belt_to_ground_type) end
+  return string.format(" as %s end paired with %s at (%.1f, %.1f)", pairing.belt_to_ground_type,
+    pairing.neighbour.name, pairing.neighbour.position.x, pairing.neighbour.position.y)
+end
+M.pairing_note = pairing_note
+
 M.place = {}
 
 function M.place.start(task)
@@ -72,6 +103,8 @@ function M.place.start(task)
   end
   task.direction = math.floor(tonumber(task.direction) or 0) % 16
   task._entity_name = result.name
+  local belt_error = M.belt_to_ground_error(task.item, result, task.belt_to_ground_type)
+  if belt_error then error(belt_error) end
   if task.input_target ~= nil then
     if result.type ~= "inserter" then error(task.item .. " has no deterministic input target") end
     task._input_target = output_targets.resolve(c, task.input_target, "place input_target", "input")
@@ -192,6 +225,7 @@ function M.place.tick(task)
     name = task._entity_name,
     position = task.position,
     direction = task.direction,
+    type = task.belt_to_ground_type,
     force = c.force,
     raise_built = true,
   })
@@ -208,12 +242,12 @@ function M.place.tick(task)
     task._expected_input, task._expected_output = expected_input, expected_output
     return nil
   end
-  return {
-    status = "done",
-    detail = string.format("placed %s at (%.1f, %.1f)%s",
-      task.item, built.position.x, built.position.y,
-      task.direction ~= 0 and (" facing " .. dir_name(task.direction)) or ""),
-  }
+  local pairing = M.underground_pairing(built)
+  local detail = string.format("placed %s at (%.1f, %.1f)%s%s",
+    task.item, built.position.x, built.position.y,
+    task.direction ~= 0 and (" facing " .. dir_name(task.direction)) or "", pairing_note(pairing))
+  return { status = "done", detail = detail,
+    outcome = pairing and { detail = detail, underground = pairing } or nil }
 end
 
 -- ----------------------------------------------------------------- rotate

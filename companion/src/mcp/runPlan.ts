@@ -11,7 +11,7 @@ export const planStepSchema = z.discriminatedUnion("action", [
     arrival_radius: z.number().min(0.5, "arrival_radius is 0.5–6 tiles").max(6, "arrival_radius is 0.5–6 tiles; for a farther goal walk to the target and use vicinity arrival").default(1) }).strict(),
   z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict(),
   z.object({ action: z.literal("pickup_items"), ...position, item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
-  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: z.object(position).strict().optional(), output_target: z.object(position).strict().optional() }).strict(),
+  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: z.object(position).strict().optional(), output_target: z.object(position).strict().optional(), belt_to_ground_type: z.enum(["input", "output"]).optional() }).strict(),
   z.object({ action: z.literal("craft_items"), recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict(),
   z.object({ action: z.literal("insert_items"), ...position, items }).strict(),
   z.object({ action: z.literal("extract_items"), ...position, items: items.optional() }).strict(),

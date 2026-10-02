@@ -83,6 +83,11 @@ and no character crafting. Session interruption alone does not cancel committed
 plans. Use `stop` only if required as recorded emergency cancellation, then
 re-observe. Do not start a replacement without both proven writer retirement
 and physical quiescence; unconfirmed retirement is a capability problem.
+Delivery is not consumption: replace only after the nudge's token appears in
+a pilot `userMessage`, or after one recorded interrupt of the exact stale pilot
+turn followed by a further two minutes of unchanged idleness. The observation
+helper that `docs/LIVE-VALIDATION.md` describes is the only nudge and
+replacement gate.
 
 Record every nudge or replacement intervention and invalidate affected state.
 Preserve the strategist, single body, FIFO, and write path; start the replacement
@@ -94,7 +99,7 @@ Idleness is not low growth, and physical activity (movement, inventory change)
 is not growth. At each recorder checkpoint the supervisor records structural
 growth from `map_summary` with `activity_since_tick` and recorder deltas:
 machines, physical edges, validated or autonomous components, character
-transfers per finished product, and production. Sol, not the supervisor, turns
+transfers per finished product, and production. Astra, not the supervisor, turns
 low growth into NOW; the supervisor never replaces a pilot for low growth alone.
 
 `stop` is recorded emergency cancellation, used only for an explicit the owner stop,
@@ -103,25 +108,27 @@ physical quiescence. For an explicit the owner stop the supervisor, recording ea
 step: calls factorio `stop`; pauses both role goals natively (`/goal pause`,
 read back) and interrupts any active role turn (TUI stop control or app-server
 `turn/interrupt` for the exact thread and turn, read back); checks that no
-task-owned command still runs; ensures Sol makes no further ledger write; then
+task-owned command still runs; ensures Astra makes no further ledger write; then
 finishes the recorder and stops the server. `docs/LIVE-VALIDATION.md` holds the
 pre-`GO` stop rehearsal, which resumes both goals before `GO`.
 
 Before `GO` of a fresh run, archive the previous run's `operations.json` into
-that run's directory and have Sol initialise the new one; a ledger from another
-run is archival evidence only. Before `GO` on any resumed save or after a mod
-upgrade, reconcile retained work: if `observe_local` shows an active task or
-queue depth, call `stop` and re-observe until idle.
+that run's directory and have Astra initialise the new one; a ledger from another
+run is archival evidence only. The run's `notebook/` stays in its run directory,
+and the run write-up summarises what Astra learned. Before `GO` on any resumed
+save or after a mod upgrade, reconcile retained work: if `observe_local` shows an
+active task or queue depth, call `stop` and re-observe until idle.
 
 Start exactly two persistent reasoning sessions around one physical body and
 FIFO lane. The `gpt-6-luna` pilot uses `low` reasoning with fast mode enabled
 and is the sole gameplay writer, physical controller, immediate-safety
 authority, and source of latest exact local state. The persistent
-`gpt-6.1-sol` strategist uses `medium` reasoning at normal speed, owns coordinate-free long-horizon
-NOW/NEXT/LATER priorities, designs every coupled layout as a validated build
-package that the pilot revalidates and queues unchanged, and may call only the
-mechanically read-only MCP surface, including the side-effect-free placement
-checks. Its reads never enter or delay the physical lane.
+`gpt-6-astra` strategist uses `medium` reasoning at normal speed, owns
+coordinate-free long-horizon NOW/NEXT/LATER priorities, designs every coupled
+layout as a validated build package that the pilot revalidates and queues
+unchanged, and may call only the mechanically read-only MCP surface, including
+the side-effect-free placement checks. Its reads never enter or delay the
+physical lane.
 
 Before `GO`, each exact role session calls native `execution_settings({})` and
 reports its fresh `current_turn` and `next_turn` model, reasoning effort and
@@ -129,79 +136,58 @@ service tier, plus `fast_mode_enabled` and `fast_inherited_from_root` when
 available, separately from requested launch/update settings. The supervisor
 records exact session/turn identity and receipt time in existing run evidence,
 explicitly consumes both reports, and confirms Luna-low-Fast and
-Sol-medium-normal for current and next turns before authorizing gameplay.
+Astra-medium-normal for current and next turns before authorizing gameplay.
 An update applies next turn: end the preparation turn and obtain a fresh native
 read in the subsequent turn. Missing, delayed, malformed, stale or unexplained
 contradictory evidence holds `GO`; a sent report or successful update is not
 confirmation. Follow `docs/LIVE-VALIDATION.md` for installed field semantics:
 feature availability, selected thread tiers and provider-confirmed processing
-are separate evidence. A true feature flag alone proves neither Fast processing
-nor a native bug; normal tiers may coexist with enabled selection controls.
+are separate evidence.
 
-Keep one compact `operations.json`. Sol is its sole atomic host writer, including
-its initial revision; Luna never writes it. The ledger is Sol's only channel to
-the pilot: supervisor assignments never ask Sol to message the pilot. Pilot
-reports stay under about 300 bytes (the connected transport rejects messages
-over 1,000 bytes); ledger updates stay compact, with build packages capped at
-8 KB. Both are material and asynchronous, not per-call acknowledgements or
-blocking synchronization. Luna validates each unseen
-revision against newer physical evidence and continues fail-open when Sol, a
+Keep one compact `operations.json`. Astra is its sole atomic host writer,
+including its initial revision; Luna never writes it. The ledger is Astra's only
+channel to the pilot: supervisor assignments never ask Astra to message the
+pilot. Pilot reports stay under about 300 bytes (the connected transport rejects
+messages over 1,000 bytes); ledger updates stay compact, with build packages
+capped at 8 KB. Both are material and asynchronous, not per-call
+acknowledgements or blocking synchronization. Luna validates each unseen
+revision against newer physical evidence and continues fail-open when Astra, a
 report, or the ledger is missing, malformed, stale, or unavailable. Do not add
 another writer, body, lane, ledger, broker, daemon, or control channel.
+
+Astra may also keep a per-run markdown notebook in `<run_dir>/notebook/`,
+created empty at deploy: its own ideas, approaches, outcomes, and relative
+layout templates, never imported or copied external content, with a README
+index of at most 2 KB and about 64 KB in total. A build package may name up to
+three notes, and Luna reads only those. The notebook is a learning store, not a
+broker, a second ledger, or a control channel; the ledger remains the only
+command channel.
+
+Role sessions never call `list_threads`, `read_thread`, or `wait_threads`;
+delivered messages and their own tool results are their evidence. After any
+context compaction a role re-reads its goal file and `SKILL.md` before any other
+call (Astra also its notebook index). The `GO` text names Astra's exact thread
+ID for the pilot.
 
 The native `/goal` owns continuation. Waypoints, batches, individual plans,
 tool results, and progress reports are nonterminal. While later-tick milestone
 proof is absent, immediately continue whenever productive work or bounded
-recovery exists. Keep the current plan and one `plan_status`-confirmed successor
-when safe: `queue_plan` returns immediately, while `run_plan` and single
-physical tools hold the only physical slot until they finish. Roles end their
-turn at a report checkpoint with work queued; a turn end is neither pause nor
-completion, and native goal continuation, not a supervisor assignment per batch,
-starts the next batch after delivering queued messages. The supervisor also
-yields between checkpoints instead of sleeping inside one turn. Complete only on
-milestone proof, explicit the owner stop, or a genuine exhausted blocker; a stop
-never marks a goal complete.
+recovery exists. Roles end their turn at a report checkpoint with work queued;
+a turn end is neither pause nor completion, and
+native goal continuation, not a supervisor assignment per batch, starts the
+next batch after delivering queued messages. The supervisor also yields between
+checkpoints instead of sleeping inside one turn. Complete only on milestone proof, explicit the owner stop, or a
+genuine exhausted blocker; a stop never marks a goal complete.
 
-Gameplay strategy lives in `.agents/skills/factorio-player/SKILL.md`, the single
-canonical growth and autonomy text. In short: at each decision boundary preserve
-immediate safety and known-good capacity, resolve a hard production unblock,
-then evaluate the highest-payback expansion of the measured factory bottleneck
-before another manual deficit batch. Treat automation as an autonomous physical
-material-flow segment, never as a placed or hand-fed machine; distinguish
-`machine_present`, `locally_operating`, and `autonomous_end_to_end`, whose
-downstream acceptance is a consumer or a terminal buffer with space, reported as
-`downstream_kind`. Reserve loop, automation, continuous, self-running, and fully
-calibrated for current `autonomous_end_to_end` evidence. Every repeated manual
-bridge names its permanent physical replacement and numeric sunset.
-
-Exactly one physical MCP call may be in flight. Parallelize only read-only
-observations when inconsistent source ticks are acceptable, then revalidate the
-newest state before mutation. Copy plan/predecessor IDs verbatim. `run_plan` is
-sequential and nontransactional; early and partial effects remain committed
-without rollback. During waits, continue independent productive work through the
-same FIFO whenever available.
-
-Coordinates and natural targets are ephemeral. Re-observe locally before
-targeting entities not yet observed at a new position, and after a route
-failure, selection contradiction, or partial or unexpected result; a successful
-plan result with a compact observation is the post-action state. Cluster work
-around fresh exact targets. On path failure, use only returned charted reachable
-frontiers. Never use screenshots for gameplay, fuzzy selection, hidden map
-state, raw Lua/console, teleport, free resources, imported blueprints, copied
-layouts, tutorials, online sequences, fixed build orders, prescribed technology
-order, named routes, map coordinates, or seed facts.
-
-Use authoritative tool schemas and capability evidence. Confirm recipes through
-`progression_status.enabled_recipes` or `describe_prototype(kind="recipe")`;
-technology names are not assumed recipes. Inspect machines before `set_recipe`;
-furnaces select from inserted input. An invalid schema, wrong machine, unknown
-recipe, identity mismatch, or out-of-range observation is terminal for the
-unchanged request: change evidence or preconditions instead of repeating it.
-
-The supported save is permanently peaceful with enemy bases disabled. `stop` is
-recorded emergency cancellation only, in the cases listed above. Debug runs continue past `GO+20m` to their assigned
-milestone; Candidate B and fresh-baseline freeze rules are historical unless
-The owner explicitly starts a benchmark.
+Gameplay rules live in `.agents/skills/factorio-player/`: `SKILL.md` holds the
+hard rules (one body, writer, and FIFO; honest play; tool, evidence, automation,
+and validation semantics; ledger, notebook, report, thread, and stop protocol),
+`PLAYER-KNOWLEDGE-v1.md` is a short Factorio intro with overridable hints, and
+the two goal files hold each role's duties. The supported save is permanently
+peaceful with enemy bases disabled. `stop` is recorded emergency cancellation
+only, in the cases listed above. Debug runs continue past `GO+20m` to their
+assigned milestone; Candidate B and fresh-baseline freeze rules are historical
+unless the owner explicitly starts a benchmark.
 
 When a newly observed gameplay difficulty appears to require greenfield code,
 first make one bounded Firecrawl reuse survey for maintained mods, interfaces,

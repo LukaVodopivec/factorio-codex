@@ -122,8 +122,8 @@ check(result.failed:match("collision segment") and result.failed:match("stone%-f
   and result.failed:match("water") and result.failed:match("inferred visible collision evidence")
   and result.failed:match("not authoritative blockers"),
   "no-path result includes bounded local collision-segment evidence")
-check(blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
-  "blocker evidence uses the same character collision mask as native pathfinding")
+check(blocker_filter.collision_mask == prototypes.entity.character.collision_mask.layers,
+  "blocker evidence uses the same character collision layers as native pathfinding")
 local saw_cage_query = false
 for _, filter in ipairs(entity_filters) do
   if filter.area and filter.area.left_top.x == -4 and filter.area.right_bottom.x == 4 then saw_cage_query = true end
@@ -297,7 +297,7 @@ check(result and result.failed:match("^PATH_STALLED:"),
 check(result.failed:match("collision segment") and result.failed:match("stone%-furnace"),
   "stalled path includes the same bounded local blocker evidence")
 check(blocker_filter.area.right_bottom.x == 1.5
-  and blocker_filter.collision_mask == prototypes.entity.character.collision_mask,
+  and blocker_filter.collision_mask == prototypes.entity.character.collision_mask.layers,
   "stalled evidence uses only the current-waypoint segment and excludes noncolliding entities")
 
 found_blockers, tile_blocks = {}, false
@@ -460,5 +460,141 @@ result = approach.ensure(task, body, { x = 4, y = 0 }, 2)
 check(result and result.detail:match("no physical progress") and retained.walk.escape_failed
   and not storage.path_request and not body.walking_state.walking,
   "revalidated unchanged recovery fails within its original physical progress bound")
+
+-- Belt settle: a walk or approach never finishes with the body on a conveyor.
+-- Conveyors answer only the typed query; collision queries see nothing here.
+local belts = {}
+body.surface.find_entities_filtered = function(filter)
+  if filter.type then return belts end
+  return {}
+end
+body.surface.find_non_colliding_position = nil
+body.bounding_box, tile_blocks, chart_all = nil, false, true
+local function belt(x, y, w, h)
+  return { valid = true, name = "transport-belt", type = "transport-belt", direction = 4,
+    position = { x = x + w / 2, y = y + h / 2 },
+    bounding_box = { left_top = { x = x, y = y }, right_bottom = { x = x + w, y = y + h } } }
+end
+belts = { belt(10, 0, 1, 1) }
+task = reset({ x = 10.5, y = 0.5 })
+walk.start(task)
+walk.tick(task); deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
+body.position = { x = 10.5, y = 0.5 }
+check(walk.tick(task) == nil and task._walk.phase == "settling" and body.walking_state.walking
+  and body.walking_state.direction == defines.direction.north
+  and task._walk.settle.to.x == 10.5 and task._walk.settle.to.y == -0.5,
+  "arrival on a belt starts one ordinary-walking step to the nearest clear off-belt tile")
+body.position = { x = 10.5, y = -0.5 }
+local settled = walk.tick(task)
+check(settled and settled.status == "done" and settled.outcome.settle
+  and settled.outcome.settle.conveyor.name == "transport-belt" and settled.outcome.settle.final.y == -0.5
+  and settled.detail:match("stepped off transport%-belt") and body.walking_state.walking == false,
+  "walk_to finishes only off the belt and reports the settle step")
+
+belts = { belt(7, -3, 8, 8) }
+task = reset({ x = 10.5, y = 0.5 })
+walk.start(task)
+walk.tick(task); deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
+body.position = { x = 10.5, y = 0.5 }
+local covered = walk.tick(task)
+check(covered and covered.status == "failed" and covered.detail:match("^BODY_ON_CONVEYOR:")
+  and covered.outcome.diagnostics.path.settle_rejected.conveyor > 0,
+  "no off-belt tile within 2 tiles fails truthfully as BODY_ON_CONVEYOR")
+
+belts = { belt(10, 0, 1, 1) }
+task = reset({ x = 10.5, y = 0.5 })
+walk.start(task)
+walk.tick(task); deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
+body.position = { x = 10.5, y = 0.5 }
+walk.tick(task)
+game.tick = 60
+local stuck = walk.tick(task)
+check(stuck and stuck.status == "failed" and stuck.detail:match("^BODY_ON_CONVEYOR:.*within 60 ticks"),
+  "a settle step that never leaves the belt fails within its tick bound")
+
+task = reset({ x = 12.5, y = 0.5 })
+body.position = { x = 10.5, y = 0.5 }
+check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, 2.5) == nil and task._approach
+  and task._approach.walk.phase == "settling" and task._approach.walk.settle.to.y == -0.5,
+  "an in-reach approach on a belt settles to an off-belt tile still within reach")
+body.position = { x = 10.5, y = -0.5 }
+check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, 2.5) == "ok" and task._approach == nil,
+  "the approach succeeds once the body is off the belt and in reach")
+belts = {}
+
+-- Frontier probes: each records why it failed, one transient reply is
+-- re-requested once, and ring 2 follows an empty ring 1. Only refusals the
+-- pathfinder answered prove an enclosure, which names an owned collider on
+-- the line toward the target for owned mining; an inconclusive probe keeps
+-- PATH_NOT_FOUND with the probe reasons.
+local owned = { valid = true, name = "wooden-chest", type = "container", force = body.force, position = { x = 1, y = 0 } }
+local behind = { valid = true, name = "iron-chest", type = "container", force = body.force, position = { x = -0.5, y = -0.5 } }
+local colliders = { owned, behind }
+body.surface.find_entities_filtered = function(filter)
+  if filter.type or not filter.area then return {} end
+  local a, found = filter.area, {}
+  for _, entity in ipairs(colliders) do
+    if entity.position.x >= a.left_top.x and entity.position.x <= a.right_bottom.x
+      and entity.position.y >= a.left_top.y and entity.position.y <= a.right_bottom.y then found[#found + 1] = entity end
+  end
+  return found
+end
+body.surface.find_non_colliding_position = function(_, requested) return requested end
+task = reset({ x = 10, y = 0 })
+walk.step(task._walk, body, task.id); deliver(nil, false)
+check(walk.step(task._walk, body, task.id) == nil and task._walk.phase == "frontier_waiting",
+  "no-path begins the first frontier ring")
+local first_request = storage.path_request.id
+deliver(nil, true); walk.step(task._walk, body, task.id)
+check(task._walk.phase == "frontier_retry_wait" and task._walk.frontier_probes[1].retried,
+  "a transient frontier reply waits for one bounded re-request")
+game.tick = game.tick + 30
+walk.step(task._walk, body, task.id)
+check(task._walk.phase == "frontier_waiting" and storage.path_request.id ~= first_request
+  and requested_goals[storage.path_request.id].x == requested_goals[first_request].x,
+  "the same frontier probe is re-requested exactly once")
+deliver(nil, true); walk.step(task._walk, body, task.id)
+check(task._walk.frontier_probes[1].reason == "transient" and task._walk.frontier_index == 2,
+  "a second transient reply is recorded and the next probe proceeds")
+local function exhaust()
+  local result
+  while storage.path_request do
+    deliver(nil, false)
+    result = walk.step(task._walk, body, task.id)
+  end
+  return result, result and result.outcome and result.outcome.diagnostics.path
+end
+local unproven, unproven_path = exhaust()
+check(unproven and unproven.failed:match("^PATH_NOT_FOUND:") and unproven_path.suggested_recovery == nil
+  and #unproven_path.frontier_probes == 16 and unproven_path.frontier_probes[1].reason == "transient",
+  "an empty frontier list with an inconclusive probe stays PATH_NOT_FOUND and names no blocker to mine")
+task = reset({ x = 10, y = 0 })
+walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+local enclosed, enclosed_path = exhaust()
+local ring_two, ring_two_at_8 = 0, 0
+for _, probe in ipairs(enclosed_path and enclosed_path.frontier_probes or {}) do
+  if probe.ring == 2 then
+    ring_two = ring_two + 1
+    if math.max(math.abs(probe.requested.x), math.abs(probe.requested.y)) == 8 then ring_two_at_8 = ring_two_at_8 + 1 end
+  end
+end
+check(enclosed and enclosed.failed:match("^BODY_ENCLOSED:") and enclosed_path.failure_class == "PATH_NOT_FOUND"
+  and #enclosed_path.frontier_probes == 16 and ring_two == 8 and ring_two_at_8 == 8
+  and enclosed_path.frontier_probes[16].reason == "path_failed"
+  and enclosed_path.suggested_recovery.tool == "mine" and enclosed_path.suggested_recovery.target_kind == "owned"
+  and enclosed_path.suggested_recovery.expected_name == "wooden-chest" and enclosed_path.suggested_recovery.x == 1,
+  "refused probes in both rings prove an enclosure that names the owned blocker toward the target, not a nearer one behind")
+-- A dense build sorts more than the 16 reported colliders ahead of the one on
+-- the line; the suggestion still comes from every collider found.
+for index = 1, 16 do
+  colliders[#colliders + 1] = { valid = true, name = "stone-furnace", type = "furnace", force = body.force,
+    position = { x = -4 + (index - 1) % 8, y = index <= 8 and -3 or -2 } }
+end
+task = reset({ x = 10, y = 0 })
+walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+local dense, dense_path = exhaust()
+check(dense and dense.failed:match("^BODY_ENCLOSED:") and dense_path.suggested_recovery.expected_name == "wooden-chest"
+  and dense_path.suggested_recovery.x == 1 and #dense_path.owned_collision_candidates == 16,
+  "a dense enclosure still names the owned blocker toward the target beyond the 16 reported colliders")
 
 os.exit(failures == 0 and 0 or 1)

@@ -213,7 +213,11 @@ local function item_fuel_category(name)
   return nil
 end
 
-local function mining_products(entity)
+-- A validation window passes `retained`, its own per-drill products from
+-- earlier samples: a drill whose mining_target reads nil for a sample keeps
+-- the identity it last mined, like a furnace's previous_recipe. A replaced
+-- drill still changes the window's signature through its unit number.
+local function mining_products(entity, retained)
   local products = {}
   local ok, target = pcall(function() return entity.mining_target end)
   local mineable = ok and target and target.prototype and target.prototype.mineable_properties
@@ -224,6 +228,16 @@ local function mining_products(entity)
     end
   end
   table.sort(products, function(a, b) return a.type == b.type and a.name < b.name or a.type < b.type end)
+  local key = retained and entity_key(entity)
+  if key and #products > 0 then
+    retained[key] = {}
+    for index, product in ipairs(products) do retained[key][index] = { name = product.name, type = product.type } end
+  elseif key and ok and target == nil and retained[key] then
+    for index, product in ipairs(retained[key]) do
+      products[index] = { name = product.name, type = product.type,
+        fuel_category = product.type ~= "fluid" and item_fuel_category(product.name) or nil }
+    end
+  end
   return products
 end
 
@@ -335,7 +349,11 @@ local function fluid_compatible(box, name, temperature)
     and (not box.maximum_temperature or type(temperature) == "number" and temperature <= box.maximum_temperature)
 end
 
-local function build_material_flow(flow_entities, node_by_key, activity, network_poles, proof_activity)
+-- `activity` is the requested window; `history` is the whole retained run.
+-- Retained proofs are assessed only for public summaries: a new validation
+-- sample (`internal`) assesses its own window without inheriting a prior
+-- proof's exemptions, though it still names its power supply's proof.
+local function build_material_flow(flow_entities, node_by_key, activity, network_poles, history, internal)
   local nodes = sorted_rows(node_by_key, key_position)
   local retained = {}
   for index, node in ipairs(nodes) do
@@ -525,7 +543,13 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     return id
   end
   local function join(a, b) a, b = root(a), root(b); if a ~= b then parent[b] = a end end
-  for _, edge in ipairs(edges) do join(edge.from, edge.to) end
+  -- Power is a dependency, not a material path: a consumer keeps its own
+  -- material component and names its network's supply (checked per
+  -- component below). Generators sharing a network supply it together.
+  for _, edge in ipairs(edges) do if edge.kind ~= "electrical_dependency" then join(edge.from, edge.to) end end
+  for _, list in pairs(generators) do
+    for index = 2, #list do join(list[1].id, list[index].id) end
+  end
   local by_root = {}
   for _, node in ipairs(nodes) do
     local r = root(node.id)
@@ -539,11 +563,13 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     component.products_finished_total = component.products_finished_total + (node.products_finished or 0)
   end
   for _, edge in ipairs(edges) do
-    local component = by_root[root(edge.from)]
-    component.edge_count = component.edge_count + 1
-    component._edges[#component._edges + 1] = edge
+    if edge.kind ~= "electrical_dependency" then
+      local component = by_root[root(edge.from)]
+      component.edge_count = component.edge_count + 1
+      component._edges[#component._edges + 1] = edge
+    end
   end
-  for _, event in ipairs((proof_activity or activity).events or {}) do
+  for _, event in ipairs(history.events or {}) do
     if event.target then
       local key = string.format("%s\0%s\0%.17g\0%.17g", event.target.name, event.target.type,
         event.target.position.x, event.target.position.y)
@@ -557,6 +583,13 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
             tonumber(event.tick) or 0)
         end
       end
+    end
+  end
+  for key, tick in pairs(history.target_last_tick or {}) do
+    local node = retained[key]
+    local component = node and by_root[root(node.id)]
+    if component then
+      component._history_last_transfer_tick = math.max(component._history_last_transfer_tick or 0, tick)
     end
   end
   local components = sorted_rows(by_root, function(a, b) return a.node_ids[1] < b.node_ids[1] end)
@@ -767,21 +800,59 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     end
     return false
   end
-  for _, node in ipairs(nodes) do
-    if node.role == "buffer" or node.role == "sink" then
-      local products, queue, seen, head = {}, { node.id }, {}, 1
-      while head <= #queue do
-        local id = queue[head]; head = head + 1
-        if not seen[id] then
-          seen[id] = true
-          local upstream = node_by_id[id]
-          if upstream.role == "source" or upstream.role == "processor" then
-            for _, product in ipairs(upstream.products) do products[product.type .. ":" .. product.name] = product end
-          elseif upstream.role == "transport" or upstream.role == "buffer" or id == node.id then
-            for _, parent_id in ipairs(incoming[id]) do queue[#queue + 1] = parent_id end
-          end
+  -- The products that physically reach a node: its own when it produces,
+  -- otherwise its producers' through transport, buffers and labs (an
+  -- inserter relays a lab's packs into the next lab of a chain).
+  local function upstream_products(start_id)
+    local products, queue, seen, head = {}, { start_id }, {}, 1
+    while head <= #queue do
+      local id = queue[head]; head = head + 1
+      if not seen[id] then
+        seen[id] = true
+        local upstream = node_by_id[id]
+        if upstream.role == "source" or upstream.role == "processor" then
+          for _, product in ipairs(upstream.products) do products[product.type .. ":" .. product.name] = product end
+        elseif upstream.role == "transport" or upstream.role == "buffer" or upstream.type == "lab" or id == start_id then
+          for _, parent_id in ipairs(incoming[id]) do queue[#queue + 1] = parent_id end
         end
       end
+    end
+    return products
+  end
+  -- A fuel feeder waiting for source items at a burner may owe it nothing:
+  -- name the burner when the pickup's proven supply is only fuel for it, so
+  -- validation judges the wait against that burner's sampled fuel stock.
+  -- Only the burner's sole physical fuel inlet of any provenance qualifies
+  -- (the inlet rule of fuel_refill_via): another inlet's replenishment, even
+  -- from an unproven hand-stocked chest, never excuses an inactive return.
+  local function fuel_inlet_count(burner)
+    local count = 0
+    for _, parent in ipairs(incoming[burner.id] or {}) do
+      local upstream = node_by_id[parent]
+      if upstream.role == "transport" or upstream.role == "buffer"
+        or product_matches(upstream, burner.fuel_categories or {}, true) then count = count + 1 end
+    end
+    return count
+  end
+  for _, node in ipairs(nodes) do
+    if node.type == "inserter" and node.status == "insufficient_input" then
+      local pickup, destination
+      for _, edge in ipairs(edges) do
+        if edge.from == node.id and edge.kind == "inserter_drop" then destination = node_by_id[edge.to] end
+        if edge.to == node.id and edge.kind == "inserter_pickup" then pickup = node_by_id[edge.from] end
+      end
+      local categories = destination and destination.fuel_categories or {}
+      if pickup and destination and fuel_inlet(upstream_products(pickup.id), destination)
+        and ((pickup.role == "source" or pickup.role == "processor") and product_matches(pickup, categories, true)
+          or (pickup.role == "transport" or pickup.role == "buffer") and upstream_proven(pickup.id, categories, true))
+        and fuel_inlet_count(destination) == 1 then
+        node._fuel_feed_to = destination._key
+      end
+    end
+  end
+  for _, node in ipairs(nodes) do
+    if node.role == "buffer" or node.role == "sink" then
+      local products = upstream_products(node.id)
       -- A buffer is terminal when nothing leaves it, or when everything that
       -- leaves only refuels producers upstream of it: a self-fuelling loop's
       -- chest is where its surplus ends, not an intermediate stage.
@@ -826,7 +897,22 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         end
       end
       node._accepted_stock, node._accepted_products = {}, {}
-      node._accepting = next(products) ~= nil and (node.role == "buffer" or node.status == "working")
+      -- A lab waiting for science packs consumes only when the line supplies
+      -- every pack its current research needs; otherwise it never starts.
+      -- Any lab with research in progress, whatever its status, needs that
+      -- supply: hand-stocked packs only defer the wait.
+      local lab_waiting = node.type == "lab" and node._raw_status == "missing_science_packs"
+      if node.type == "lab" and node._raw_status ~= "no_research_in_progress" then
+        local ok, ingredients = pcall(function() return node._entity.force.current_research.research_unit_ingredients end)
+        local readable = ok and type(ingredients) == "table" and next(ingredients) ~= nil
+        if not readable then lab_waiting = false end
+        for _, ingredient in pairs(readable and ingredients or {}) do
+          if type(ingredient) ~= "table" or not products[(ingredient.type or "item") .. ":" .. tostring(ingredient.name)] then
+            lab_waiting, node._missing_science_pack = false, true
+          end
+        end
+      end
+      node._accepting = next(products) ~= nil and (node.role == "buffer" or node.status == "working" or lab_waiting)
       for key, product in pairs(products) do
         -- Inventory values are private interval samples, never serialized.
         -- Unsupported fluid endpoints remain unproven rather than guessing capacity.
@@ -881,12 +967,39 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     local component = by_root[root(diagnostic.node_id)]
     component._diagnostics[#component._diagnostics + 1] = diagnostic
   end
+  -- A component holding a network's generators is judged after the supplies
+  -- powering it and before any component consuming its power, so each can
+  -- name its supply's proof. Supplies powering each other stay unproven in
+  -- any order.
+  local supplier_of, order, suppliers, consumers_only = {}, {}, {}, {}
   for index, component in ipairs(components) do
     component.component_id = "component-" .. index
+    local supplies = false
+    for _, id in ipairs(component.node_ids) do
+      local node = node_by_id[id]
+      if node.type == "generator" and node._power_network then supplier_of[node._power_network], supplies = component, true end
+    end
+    component._supplies_power = supplies or nil
+    if supplies then suppliers[#suppliers + 1] = component else consumers_only[#consumers_only + 1] = component end
+  end
+  local placed = {}
+  local function place(component)
+    if placed[component] then return end
+    placed[component] = true
+    for _, id in ipairs(component.node_ids) do
+      local node = node_by_id[id]
+      local supplier = node._power_consumer and supplier_of[node._power_network]
+      if supplier and supplier ~= component then place(supplier) end
+    end
+    order[#order + 1] = component
+  end
+  for _, component in ipairs(suppliers) do place(component) end
+  for _, component in ipairs(consumers_only) do order[#order + 1] = component end
+  for _, component in ipairs(order) do
     local local_work = (component.status_counts.working or 0) > 0
     local rows, signature_rows, producing_nodes, accepting_sinks = {}, {}, 0, 0
     local buffers, consumers, blocked_output, interrupted = 0, 0, false, nil
-    local unreached, endpoints = {}, {}
+    local unreached, endpoints, supplied_by = {}, {}, {}
     component._downstream, component._production, component._source_production = {}, {}, {}
     component._native_activity = {}
     component._node_status, component._buffers, component._inputs, component._fuel_buffers = {}, {}, {}, {}
@@ -903,7 +1016,8 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     for _, id in ipairs(component.node_ids) do
       local node = node_by_id[id]
       local status = { status = node.status, role = node.role, position = node.position,
-        entity = node.name, saturated = node.fuel_return_saturation ~= nil or nil, drop_to = drop_of[id] }
+        entity = node.name, saturated = node.fuel_return_saturation ~= nil or nil, drop_to = drop_of[id],
+        fuel_feed_to = node._fuel_feed_to }
       if node.fuel_return_saturation then
         status.fuel_return_to = node_by_id[node.fuel_return_saturation.destination_node_id]._key
       end
@@ -985,8 +1099,15 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       for _, product in ipairs(node.products) do signature_rows[#signature_rows + 1] = node._key .. ":output:" .. product.type .. ":" .. product.name end
       if node.role == "sink" then
         consumers = consumers + 1
+        -- A lab with no research selected consumes nothing until one is.
+        if node.type == "lab" and node._raw_status == "no_research_in_progress" then
+          block(node, "consumer_idle_no_research", "evidence", nil, "readiness")
+        elseif node._missing_science_pack then
+          block(node, "consumer_missing_required_science_pack", "evidence", nil, "readiness")
+        end
         endpoints[#endpoints + 1] = node
-        component._downstream[node._key] = { kind = "consumer", accepting = node._accepting, products = node._accepted_products }
+        component._downstream[node._key] = { kind = "consumer", accepting = node._accepting, products = node._accepted_products,
+          lab = node.type == "lab" or nil }
       elseif node._downstream_buffer then
         buffers = buffers + 1
         endpoints[#endpoints + 1] = node
@@ -1042,6 +1163,15 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
             { kind = "material_input" })
         end
       end
+      -- Power provenance is a node property: the network's supply must be
+      -- this component or another one currently proven autonomous.
+      if node._power_consumer then
+        local supplier = supplier_of[node._power_network]
+        if supplier ~= component and not (supplier and supplier._supply_proven) then
+          block(node, "power_supply_component_not_proven", "evidence", { kind = "electrical_supply" }, "readiness")
+        end
+        if supplier and supplier ~= component then supplied_by[supplier] = true end
+      end
       if node.requires_fuel and not upstream_proven(id, node.fuel_categories or {}, true) then
         block(node, next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven",
           "structural", { kind = "fuel_input" }, "readiness")
@@ -1052,6 +1182,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         block(node, "nonproductive_status:" .. node.status, status_class(node))
       end
     end
+    component._supplied_by = supplied_by
     for _, edge in ipairs(component._edges) do
       signature_rows[#signature_rows + 1] = node_by_id[edge.from]._key .. "->" .. node_by_id[edge.to]._key .. ":" .. edge.kind .. ":" .. tostring(edge.from_fluidbox) .. ":" .. tostring(edge.to_fluidbox)
     end
@@ -1084,7 +1215,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       for _, node in ipairs(#endpoints > 0 and endpoints or anchors) do block(node, "downstream_acceptance_not_observed", "transient") end
     end
     local validation
-    for _, candidate in ipairs(proof_activity and proof_activity.validations or {}) do
+    for _, candidate in ipairs(not internal and history.validations or {}) do
       if candidate._signature == component._signature and candidate.proven then validation = candidate end
     end
     -- Bootstrap transfers before a successful bounded validation are historical
@@ -1134,6 +1265,13 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     local history_complete = factory_activity.history_complete(validation and validation.start_tick or activity.since_tick)
     local topology_ready = #hard_rows == 0 and history_complete and not transfer_observed
     local autonomous = topology_ready and validation ~= nil and not interrupted
+    -- A supply's proof usually ended before a later window or checkpoint, so
+    -- its consumers judge it on retained run history: proven and still
+    -- operating, with complete telemetry and no character transfer since.
+    local supply_start = (history.supply_proof_tick or {})[component._signature]
+    component._supply_proven = #hard_rows == 0 and not interrupted and supply_start ~= nil
+      and (history.target_last_tick_after == nil or supply_start > history.target_last_tick_after)
+      and not ((component._history_last_transfer_tick or -1) >= supply_start)
     component.state = {
       downstream_kind = buffers > 0 and (consumers > 0 and "mixed" or "buffer") or (consumers > 0 and "consumer" or "none"),
       blocked_output = blocked_output,
@@ -1151,6 +1289,42 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       blocker_details = details,
       validation = validation,
     }
+  end
+  -- A window judges its supply's continuity with its own: the supplying
+  -- component's burners, their feeders and fuel sources are sampled with
+  -- this one's nodes, so a supply whose stored fuel outlasts a dead refill
+  -- fails it; its fuel sources' cycles bound their refill waits but are
+  -- not this window's own source cycles. A supply's own supplies are
+  -- sampled too, transitively. Copies are collected from every component's
+  -- own nodes first, so suppliers may come in any order and may power each
+  -- other.
+  local copies = {}
+  for _, component in ipairs(order) do
+    local status_copy, source_copy = {}, {}
+    local seen, queue, head = { [component] = true }, {}, 1
+    for supplier in pairs(component._supplied_by) do queue[#queue + 1] = supplier end
+    while head <= #queue do
+      local supplier = queue[head]; head = head + 1
+      if not seen[supplier] then
+        seen[supplier] = true
+        for further in pairs(supplier._supplied_by or {}) do queue[#queue + 1] = further end
+        local fuelled = {}
+        for key, status in pairs(supplier._node_status) do
+          if status.fuel_energy ~= nil or status.fuel_unreadable then fuelled[key] = true end
+        end
+        for key, status in pairs(supplier._node_status) do
+          if fuelled[key] or fuelled[status.drop_to] or fuelled[status.fuel_feed_to] then
+            status_copy[key] = status
+            for _, source in ipairs(status.fuel_sources or {}) do source_copy[source] = supplier._source_production[source] end
+          end
+        end
+      end
+    end
+    copies[component] = { status_copy, source_copy }
+  end
+  for component, copy in pairs(copies) do
+    for key, status in pairs(copy[1]) do component._node_status[key] = status end
+    component._supply_sources, component._supplied_by = copy[2], nil
   end
   return { nodes = nodes, edges = edges, components = components, diagnostics = diagnostics,
     relationship_semantics = "exact_runtime_targets_only; absence_or_unsupported_is_not_a_connection" }
@@ -1190,7 +1364,7 @@ local function present_flow(flow, omissions)
   return result
 end
 
-local function collect_summary(params, internal)
+local function collect_summary(params, internal, drill_products)
   params = type(params) == "table" and params or {}
   local detail = params.detail or "aggregate"
   if detail ~= "aggregate" and detail ~= "full" then error("map_summary detail must be aggregate or full") end
@@ -1311,14 +1485,16 @@ local function collect_summary(params, internal)
               products_finished = number_property(entity, "products_finished"),
               ingredients = recipe and recipe.ingredients or {},
               products = products_with_fuel(recipe and recipe.products
-                or (entity.type == "mining-drill" and mining_products(entity) or {})),
+                or (entity.type == "mining-drill" and mining_products(entity, drill_products) or {})),
               requires_fuel = has_burner(entity),
               fuel_categories = burner_categories(entity),
               power_state = raw_status == "no_power" and "missing" or raw_status == "low_power" and "low" or "not_exactly_observed",
               fuel_state = raw_status == "no_fuel" and "missing" or "not_exactly_observed",
             }
             if role == "source" then
-              node._source_production = { working = node.status == "working", progress = number_property(entity, "mining_progress") }
+              -- Located so a supplying component's source can carry a row.
+              node._source_production = { working = node.status == "working", progress = number_property(entity, "mining_progress"),
+                position = node.position, entity = node.name }
               local ok, target = pcall(function() return entity.mining_target end)
               if ok and entity_key(target) and charted(c.force, c.surface, target.position) then
                 node._source_production.resource_key = entity_key(target)
@@ -1429,14 +1605,10 @@ local function collect_summary(params, internal)
   local network_count = 0; for _ in pairs(electric_networks) do network_count = network_count + 1 end
   local activity = factory_activity.snapshot(params.activity_since_tick, true)
   -- Current proofs must see assistance since their own start, even when public
-  -- telemetry requests a narrower window. Both snapshots reuse bounded storage.
-  -- A new validation sample assesses its own window, without inheriting a
-  -- prior proof's exemptions or assistance outside that window.
-  local proof_activity
-  if not internal then
-    proof_activity = activity.since_tick == activity.epoch_tick and activity or factory_activity.snapshot(nil, true)
-  end
-  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity, network_poles, proof_activity)
+  -- telemetry requests a narrower window, and a supply's proof is judged on
+  -- the whole run from any window. Both snapshots reuse bounded storage.
+  local history = activity.since_tick == activity.epoch_tick and activity or factory_activity.snapshot(nil, true)
+  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity, network_poles, history, internal)
   local public_flow = present_flow(material_flow, omissions)
   if not internal then
     material_flow = public_flow
@@ -1506,7 +1678,7 @@ function M.factory_component_sample(params)
     or #params.positions < 1 or #params.positions > 16 then
     error("factory component sample requires 1-16 positions")
   end
-  local summary = collect_summary({ activity_since_tick = params.source_tick }, true)
+  local summary = collect_summary({ activity_since_tick = params.source_tick }, true, params.drill_products)
   local flow = summary.factory.material_flow
   local selected_component
   local selected_ids = {}
@@ -1536,6 +1708,7 @@ function M.factory_component_sample(params)
     component_signature = selected_component.component_signature,
     _signature = selected_component._signature, _downstream = selected_component._downstream,
     _production = selected_component._production, _source_production = selected_component._source_production,
+    _supply_sources = selected_component._supply_sources, _supplies_power = selected_component._supplies_power,
     _native_activity = selected_component._native_activity,
     downstream_kind = selected_component.state.downstream_kind,
     blocked_output = selected_component.state.blocked_output,

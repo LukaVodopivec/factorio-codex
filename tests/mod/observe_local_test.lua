@@ -217,5 +217,17 @@ local failed_query = spatial.observe_local({ radius = 5 }).character.path_start
 check(failed_query.state == "unknown" and not failed_query.clear and failed_query.reason:match("query failed"),
   "failed engine query cannot turn an empty collision list into proven clearance")
 surface.find_entities_filtered = original_query
+character.bounding_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } }
+local conveyor = { valid = true, name = "transport-belt", type = "transport-belt", direction = 4, position = { x = 0.5, y = 0.5 },
+  bounding_box = { left_top = { x = 0, y = 0 }, right_bottom = { x = 1, y = 1 } } }
+entity_order = { conveyor }
+local on_belt = spatial.observe_local({ radius = 5 }).character.standing_on
+check(on_belt and on_belt.name == "transport-belt" and on_belt.type == "transport-belt" and on_belt.direction == 4
+  and on_belt.position.x == 0.5 and on_belt.position.y == 0.5,
+  "standing_on names the conveyor under the body")
+conveyor.position, conveyor.bounding_box = { x = 2.5, y = 2.5 }, { left_top = { x = 2, y = 2 }, right_bottom = { x = 3, y = 3 } }
+check(spatial.observe_local({ radius = 5 }).character.standing_on == nil,
+  "standing_on is omitted when no conveyor lies under the body")
+character.bounding_box = nil
 _G.require = parse_require
 os.exit(failures == 0 and 0 or 1)

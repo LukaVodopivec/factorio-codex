@@ -6,17 +6,40 @@ local MAX_RETURNED_EVENTS = 8
 local MAX_TARGET_ROWS = 16
 local MAX_VALIDATIONS = 32
 
+local function target_key(target)
+  return string.format("%s\0%s\0%.17g\0%.17g", target.name or "", target.type or "", target.position.x, target.position.y)
+end
+
 local function ensure()
   storage.factory_activity = storage.factory_activity or {
     epoch_tick = game and game.tick or 0, events = {}, events_omitted = 0,
     validations = {}, validations_omitted = 0,
   }
-  storage.factory_activity.validations = storage.factory_activity.validations or {}
-  storage.factory_activity.validations_omitted = storage.factory_activity.validations_omitted or 0
-  return storage.factory_activity
+  local activity = storage.factory_activity
+  activity.validations = activity.validations or {}
+  activity.validations_omitted = activity.validations_omitted or 0
+  -- Latest proof start per exact power-supplying topology, kept past
+  -- validation eviction and bounded by the supplies ever proven. Proofs
+  -- adopted from an older save are kept by exact signature alone.
+  if not activity.supply_proof_tick then
+    activity.supply_proof_tick = {}
+    for _, validation in ipairs(activity.validations) do
+      if validation._signature then activity.supply_proof_tick[validation._signature] = validation.start_tick end
+    end
+  end
+  -- Last transfer tick per exact target, kept past event eviction and bounded
+  -- by the targets ever touched. History adopted from an older save is
+  -- complete only after its last evicted event.
+  if not activity.target_last_tick then
+    activity.target_last_tick, activity.target_last_tick_after = {}, activity.latest_evicted_tick
+    for _, event in ipairs(activity.events) do
+      if event.target and event.target.position then activity.target_last_tick[target_key(event.target)] = event.tick end
+    end
+  end
+  return activity
 end
 
-function M.record_validation(result, signature)
+function M.record_validation(result, signature, supplies_power)
   local native = type(result) == "table" and (result.native_source_activity_samples ~= nil
     or result.fluid_activity_samples ~= nil or result.power_delivery_samples ~= nil
     or result.mining_sources_present ~= nil or result.native_power_required ~= nil)
@@ -26,7 +49,10 @@ function M.record_validation(result, signature)
     source_proven = (source_proven or water_proven and (result.mining_sources_present == false
       or (tonumber(result.fuel_source_cycles_observed) or 0) >= 1))
       and (result.native_source_activity_samples == nil or water_proven)
-      and (tonumber(result.fluid_activity_samples) or 0) >= 3
+      -- A component with no fluid nodes (an electric line) has no fluid
+      -- samples; a native fluid source is itself a fluid node.
+      and (result.fluid_activity_samples == nil and result.native_source_activity_samples == nil
+        or (tonumber(result.fluid_activity_samples) or 0) >= 3)
       and type(result.mining_sources_present) == "boolean"
       and type(result.native_power_required) == "boolean"
       and (not result.native_power_required or (tonumber(result.power_delivery_samples) or 0) >= 3)
@@ -53,6 +79,7 @@ function M.record_validation(result, signature)
     character_transfer_actions = result.character_transfer_actions,
     proven = true, evidence_class = "bounded_multi_tick_component_validation",
   }
+  if supplies_power then activity.supply_proof_tick[signature] = result.start_tick end
   if #activity.validations > MAX_VALIDATIONS then
     table.remove(activity.validations, 1)
     activity.validations_omitted = activity.validations_omitted + 1
@@ -81,10 +108,12 @@ function M.record(kind, outcome)
   if moved == 0 then return end
   table.sort(items, function(a, b) return a.name < b.name end)
   local activity = ensure()
+  local target = target_identity(outcome.target)
   activity.events[#activity.events + 1] = {
     tick = game.tick, action = kind, item_count = moved,
-    target = target_identity(outcome.target), items = items,
+    target = target, items = items,
   }
+  if target then activity.target_last_tick[target_key(target)] = game.tick end
   if #activity.events > MAX_EVENTS then
     local evicted = table.remove(activity.events, 1)
     activity.latest_evicted_tick = evicted.tick
@@ -117,8 +146,7 @@ function M.snapshot(since_tick, internal)
       local bucket = event.action == "insert" and inserted or extracted
       for _, item in ipairs(event.items) do bucket[item.name] = (bucket[item.name] or 0) + item.count end
       if event.target and event.target.position then
-        local key = string.format("%s\0%s\0%.17g\0%.17g", event.target.name or "", event.target.type or "",
-          event.target.position.x, event.target.position.y)
+        local key = target_key(event.target)
         local row = targets[key] or { target = event.target, transfer_actions = 0, transferred_items = 0,
           last_transfer_tick = event.tick }
         targets[key] = row; row.transfer_actions = row.transfer_actions + 1; row.transferred_items = row.transferred_items + event.item_count
@@ -160,6 +188,11 @@ function M.snapshot(since_tick, internal)
     events_omitted_before_window = complete and 0 or activity.events_omitted,
     validations = validations, validations_omitted = activity.validations_omitted,
     history_complete = complete,
+    -- Internal only: per-target last transfer ticks for judging retained
+    -- proofs from any later tick, complete after target_last_tick_after.
+    target_last_tick = internal and activity.target_last_tick or nil,
+    target_last_tick_after = internal and activity.target_last_tick_after or nil,
+    supply_proof_tick = internal and activity.supply_proof_tick or nil,
   }
 end
 

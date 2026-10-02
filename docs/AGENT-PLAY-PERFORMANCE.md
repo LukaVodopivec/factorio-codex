@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.6 retains each exact placed entity and validates the live output
+Release 0.19.7 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,17 +24,18 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.6 validation.
+0.19.7 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
 enabled and is the sole gameplay writer, character controller, and exact-local-
-state authority. The persistent `gpt-6.1-sol` strategist uses `medium` reasoning at normal speed,
+state authority. The persistent `gpt-6-astra` strategist uses `medium` reasoning at normal speed,
 owns one compact NOW/NEXT/LATER list, atomically writes `operations.json`, and
 receives only the separate read-only MCP surface. Strategist reads never enter
 the physical FIFO. Luna validates advice against newer physical evidence and
-continues fail-open when Sol or the ledger is stale or unavailable. Record both
-profiles before `GO`; never change the active debug run in place.
+continues fail-open when Astra or the ledger is stale or unavailable. Record both
+profiles before `GO`; never change the active debug run in place. Cycles 1-6 and
+their continuations ran the earlier `gpt-6.1-sol` strategist ("Sol" below).
 
 Plans execute contiguously in Lua and may prepare one successor by predecessor
 ID. This removes model-thinking idle time; it does not accelerate walking,
@@ -299,6 +300,138 @@ Known limit: a long belt feeding several burners from a cold
 start can fail a 60-second window and pass at 300 seconds, so use the longer
 window there.
 
+## 2026-10-02 debug cycle 6 (0.19.6) and its open-ended continuation
+
+Run `debug-20261002T104321Z` (fresh game, seed 747930220, release 9138e78)
+stopped at its `GO+20m` deadline, 5 s late. The owner's request to keep it running
+was queued behind the supervisor's busy turn and arrived after the stop. The
+saved factory then continued open-ended as `debug-20261002T111425Z-continue`
+(GO 11:35:31Z). The owner stopped it at 15:28:55Z. Its recorder finished at
+15:30:35Z, at final checkpoint 47 (+235.6 min, tick 989414), and the server
+saved the final state (save SHA-256 `86e1da6f…f8fe9`). Both roles' goals were
+paused and their turns interrupted, the ledger stayed at revision 71, and the
+role sessions and the couch client were closed. Re-measured `GO+20m` rows for
+cycles 1-6:
+
+| Metric | c1 | c2 | c3 | c4 | c5 | c6 | Target |
+|---|---|---|---|---|---|---|---|
+| Pilot think share % | 89 | 93 | 83 | 85 | 56 | 83 | <60 |
+| Body busy % | 12 | 14 | 34 | 28 | 45 | 33 | >=50 |
+| Machines / physical edges | 7/21 | 4/4 | 6/13 | 6/15 | 6/10 | 5/8 | >=6/>=4 |
+| Products finished | 139 | 46 | 59 | 53 | 83 | 39 | |
+| Validations reaching window / proven | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 2/0 | >=1/>=1 |
+| Pre-window failures with flow evidence | 1 | 1 | 3 | 0 | 1 | 0 | 0 |
+| Blockers with position % | 0 | 0 | 0 | — | 0 | 100 | 100 |
+| Pilot thread reads after `GO` | 7 | 8 | 14 | 0 | 0 | 8 | 0 |
+
+The 0.19.6 structural goals held, and throughput fell back:
+
+- The pilot entered `GO` with 185k tokens of context.
+- It sent every report to the supervisor and none to Sol.
+- It placed its first machine at `GO+6:07`.
+
+**Continuation.** The first pilot was replaced at 14:58Z. Before that, it ran
+for 12,162 s:
+
+- 82% model time;
+- 1,234 requests averaging 134k input tokens;
+- 309 `queue_plan` calls, 47% of them single-step;
+- an idle body for about two thirds of the window, including validation
+  windows;
+- no `connect_entities` calls.
+
+Eight compactions dropped the thread ban but kept the transport text that
+orders thread reconciliation. As a result:
+
+- the pilot read threads at about 29 call sites;
+- Sol polled the pilot thread 94 times (707k characters);
+- Sol made 64 ledger revisions in about 3.5 hours, many of them step-by-step
+  `essential_prerequisite` commands.
+
+**Final factory (+235.6 minutes).** 37 machines, of which only 13 produce
+(the rest are inserters), and 248 reported edges. The 13 productive machines
+never changed after +205 minutes, and machines plateaued at 25 to 26 for 85
+minutes before that. One iron drill ran out of resources. Since the baseline
+the factory made 2,784 iron plates, 1,559 copper plates and 4,242 coal. Of the
+248 automation packs, the recorder counts 130 hand-crafted, all by the first
+pilot, and 118 machine-made; the replacement hand-crafted none, and its science outlet fed the lab from plan 357 on. The lab
+consumed 177 packs (130 inserted by hand), and `logistic-science-pack` research
+rose from 6.7% at 15:18Z to 70.2% at the stop. Character transfer actions
+totalled 101. No component was currently `autonomous_end_to_end` at the stop.
+
+**Validation verdicts.**
+
+- Plans 27 and 311 were proven.
+- Plans 113, 212 and 358 were correct readiness refusals (358: the known
+  steam-proof gap, an exhausted iron drill, unresolved ore and copper
+  provenance and an old dead-end belt).
+- Plans 301, 313 and 334 failed falsely on `transport_starved_before_end`.
+  The fuel feeder at a stocked furnace swings about every 2,667 ticks, but the
+  recency limit is 1,200.
+- Plans 17, 18, 171 and 334 ended early on one differing topology sample,
+  although the signature before and after the window matched the baseline.
+- Plan 311's proof was revoked 61 s after its window, when the pilot
+  harvested the terminal chest of a 149-node component that spans the whole
+  base.
+
+**Interventions.**
+
+- 4 nudges. The one at 13:05 was premature: the supervisor checked only
+  instantaneous idleness.
+- 1 teleport rescue, after a PATH_NOT_FOUND that returned no frontiers.
+- Belt drift of the idle body.
+- A 39-minute ledger-read lapse.
+- A pilot replacement whose nudge was steered into a 77-minute turn and was
+  never consumed.
+- A read-only diagnostic at 15:28Z: a lab inventory-threshold wait that timed
+  out had been read as no delivery, although research was progressing.
+
+Two new tracker defects came from the replacement: `can_place` accepted an
+occupied coal belt that physical placement then refused, and
+same-topology productive windows got divergent throughput outcomes (an earlier issue,
+not yet diagnosed).
+
+Release 0.19.7 addresses these defects:
+
+- **Body.** A successful walk or approach settles off belts, or fails with
+  `BODY_ON_CONVEYOR`, and `observe_local.character.standing_on` makes belt
+  drift visible (recorder samples state it as `null` when absent). Frontier
+  probes give a reason for each probe, add a second ring and one transient
+  retry, and an enclosed body gets `BODY_ENCLOSED` with an owned blocker to
+  mine instead of a teleport rescue. Underground belts take
+  `belt_to_ground_type` and report their paired end, and every read-only
+  result carries `fifo` with a `body idle` hint after 30 idle seconds.
+- **Roles.** An Astra (`gpt-6-astra`) brain keeps a per-run notebook, with the
+  hard rules in SKILL.md and a short Factorio intro. Neither role reads threads,
+  and both re-read their rules after compaction. The pilot never ends a turn
+  with an empty FIFO, Astra revises the ledger only on change, and
+  `essential_prerequisite` is capped at one 160-character sentence. Growth is
+  input first: input rate is the primary metric, and no science is
+  hand-crafted while raw input is the bottleneck.
+- **Validator.** Power is a dependency, not a material path: an electric
+  consumer keeps its own component and names `power_supply_component_not_proven`
+  until its network's generating component is currently proven, so one network
+  no longer merges the base. A fuel-only feeder waiting at a burner that holds
+  its top-up stock is not starved. A topology or hard-row difference must
+  persist into the next sample (a recovered one is the transient
+  `topology_sample_flicker`), a drill whose `mining_target` reads nil keeps the
+  products it last mined in the window, and a persistent signature change
+  carries a bounded `topology_diff`. A lab with no research is refused as
+  `consumer_idle_no_research`, a lab in `missing_science_packs` accepts packs
+  only when the segment supplies every pack its research needs (otherwise
+  `consumer_missing_required_science_pack`),
+  and transport `low_power` is judged by throughput.
+- **Supervision.** One observation helper gates every nudge and replacement,
+  and replacement needs a consumed nudge or one exact-turn interrupt first.
+  Roles are subscribed with `thread/resume` while their goals are paused,
+  deadline-sensitive or the owner-relayed instructions go by `turn/steer`, and the
+  `GO+20m` checkpoint is a snapshot, not a stop. The couch-client deploy stop,
+  JOIN restart and InGame check are only dry-run tested.
+
+Deferred: an exemption for terminal-harvest revocation (V4), role sessions
+without the workstation-global instructions, and a ring of failed validation
+outcomes.
+
 ## Prior 0.8.0 structured timings
 
 All gameplay perception and action below used the Factorio MCP text surface.
@@ -468,7 +601,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.6, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.19.7, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -538,7 +671,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.6 benchmark results.
+present historical timings as 0.19.7 benchmark results.
 
 #### Candidate B R7 recorded result
 

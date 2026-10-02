@@ -10,7 +10,7 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
 local RAW = { working = 1, no_fuel = 2, no_ingredients = 3, waiting_for_source_items = 4,
-  waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8 }
+  waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8, low_power = 9 }
 local COAL = 4000000
 local DRILL_POWER, FURNACE_POWER = 2500, 1500
 local MINE_TICKS, SMELT_TICKS, HALF_SWING, TOP_UP = 240, 192, 38, 5
@@ -360,6 +360,19 @@ do
   check(not attributed and plan.status == "failed" and not outcome.proven
     and rows_at(outcome, inactive).transport_starved_before_end,
     "another inlet's replenishment cannot prove an inactive competing fuel return")
+  -- A hand-stocked chest has no proven upstream, yet its inserter is still a
+  -- physical fuel inlet: its refills never excuse the dead proven return.
+  for _, stash_lazy in ipairs({ true, false }) do
+    local stash_box, stash_source, stash_dead = self_fed(5, COAL, { dead_at = 1, dead_status = RAW.waiting_for_source_items })
+    local stash = chest(1, 4)
+    stash._stock.coal = 200
+    inserter(2, 3, stash, stash_source, { lazy = stash_lazy })
+    warm(305)
+    plan, outcome = validate(stash_box.position, 60)
+    check(plan.status == "failed" and not outcome.proven and rows_at(outcome, stash_dead).transport_starved_before_end
+      and stash_source._fuel >= 4,
+      (stash_lazy and "a lazy" or "an eager") .. " hand-stocked fuel stash cannot excuse a dead self-fed return")
+  end
 end
 local box, source = self_fed(5, COAL)
 warm(300)
@@ -989,6 +1002,120 @@ for _, pulse in ipairs({ 2270, 2350 }) do
   boundary_previous = { products = outcome.products_finished_delta, waits = waits }
 end
 
+-- Layout (b2) with lazy fuel feeders: a feeder at a burner holding its
+-- top-up stock legitimately waits longer than the recency limit between
+-- swings while the overflow chest takes the surplus. Wherever the window
+-- ends, that wait is not a starved edge.
+for _, duration in ipairs({ 60, 300 }) do
+  for offset = 0, 2400, 600 do
+    local lazy_out = lazy_fuel_belt(5, COAL, true)
+    warm(600 + offset)
+    local lazy_plan, lazy_result = validate(lazy_out.position, duration)
+    check(lazy_plan.status == "completed" and lazy_result.proven and not reasons(lazy_result):match("transport_starved"),
+      string.format("lazy fuel feeders at stocked burners prove in %d s at end offset %d", duration, offset))
+    if not lazy_result.proven then print("  " .. reasons(lazy_result)) end
+  end
+end
+-- A lazy feeder whose coal source dies is still caught once its burner
+-- falls below the top-up stock.
+do
+  local dead_out, dead_coal = lazy_fuel_belt(5, COAL, true)
+  warm(600)
+  local dead_plan, dead_result = validate(dead_out.position, 300, function(elapsed)
+    if elapsed == 1 then dead_coal.mining_target.amount, dead_coal._step = 0, function() dead_coal.status = RAW.no_fuel end end
+  end)
+  check(dead_plan.status == "failed" and not dead_result.proven,
+    "a lazy fuel feeder whose coal source died is not proven")
+end
+-- An eager feeder from a hand-stocked chest that nothing supplies is a
+-- competing fuel inlet: with every refill drawn from finite hand stock, the
+-- idle belt return is not excused and the component is not autonomous.
+for _, target in ipairs({ "furnace", "coal drill" }) do
+  local hand_out, hand_coal, hand_smelt = lazy_fuel_belt(5, COAL, true)
+  local hand = chest(20, 20)
+  hand._stock.coal = 50
+  inserter(21, 20, hand, target == "furnace" and hand_smelt or hand_coal)
+  warm(600)
+  local hand_plan, hand_result = validate(hand_out.position, 120)
+  local idle_return = target == "furnace" and { position = { x = 8, y = 5 } } or { position = { x = 2, y = 5 } }
+  check(hand_plan.status == "failed" and not hand_result.proven and hand._stock.coal < 50
+    and rows_at(hand_result, idle_return).transport_starved_before_end and not component_state().autonomous_end_to_end,
+    "a hand-stocked fuel chest feeding the " .. target .. " cannot prove its idle belt fuel return")
+end
+-- Two lazy feeders from one coal belt into one furnace: the first always
+-- answers the draw, so the second never swings. That is indistinguishable
+-- from a dead competing return, so neither is excused by the burner's stock.
+for offset = 0, 1800, 600 do
+  local pair_out, _, pair_smelt = lazy_fuel_belt(5, COAL, true)
+  local _, pair_tail = nil, nil
+  for _, entity in ipairs(entities) do
+    if entity.type == "transport-belt" and entity.position.x == 2 and entity.position.y == 6 then pair_tail = entity end
+  end
+  local second = inserter(9, 5, pair_tail, pair_smelt, { lazy = true })
+  warm(600 + offset)
+  local pair_plan, pair_result = validate(pair_out.position, 60)
+  check(pair_plan.status == "failed" and not pair_result.proven and rows_at(pair_result, second).transport_starved_before_end,
+    "a second lazy feeder that never swings at a stocked burner is not excused at end offset " .. offset)
+end
+
+-- One sample whose runtime read flickers (a drill's mining_target, an
+-- inserter's drop_target) is not a topology change: the drill keeps the
+-- products it last mined, and a difference must persist into the next
+-- sample to end the window. A permanent change still fails, naming the
+-- signature rows it lost and gained.
+do
+  local function output_inserter()
+    for _, entity in ipairs(entities) do
+      if entity.type == "inserter" and entity.position.x == 11 and entity.position.y == 1 then return entity end
+    end
+  end
+  local mined_out, mined_coal = lazy_fuel_belt(5, COAL, true)
+  warm(600)
+  -- The drill keeps mining; only the runtime read is nil after its step.
+  local mined_target, mined_step, flickering = mined_coal.mining_target, mined_coal._step, false
+  mined_coal._step = function(...)
+    mined_coal.mining_target = mined_target
+    mined_step(...)
+    if flickering then mined_coal.mining_target = nil end
+  end
+  local mined_plan, mined = validate(mined_out.position, 60, function(elapsed)
+    flickering = elapsed >= 1800 and elapsed < 1830
+  end)
+  check(mined_plan.status == "completed" and mined.proven and not reasons(mined):match("provenance")
+    and not reasons(mined):match("topology_changed"),
+    "a coal drill whose mining_target reads nil for one sample keeps its mined identity")
+  local flick_out = lazy_fuel_belt(5, COAL, true)
+  local flick = output_inserter()
+  warm(600)
+  -- The drop_target reads nil exactly once: in one validation sample.
+  local flick_plan, flicked = validate(flick_out.position, 60, function(elapsed)
+    if elapsed == 1800 then
+      local reads = 0
+      flick.drop_target = nil
+      setmetatable(flick, { __index = function(_, key)
+        if key == "drop_target" then reads = reads + 1; return reads > 1 and flick_out or nil end
+      end })
+    end
+  end)
+  local recorded
+  for _, row in ipairs(flicked.transient_conditions or {}) do
+    if row.reason == "topology_sample_flicker" and row.samples == 1 and row.first_tick then recorded = true end
+  end
+  check(flick_plan.status == "completed" and flicked.proven and recorded and flicked.topology_diff == nil,
+    "a one-sample drop_target flicker proves the window and records a transient topology_sample_flicker")
+  local gone_out = lazy_fuel_belt(5, COAL, true)
+  local gone = output_inserter()
+  warm(600)
+  local gone_plan, gone_result = validate(gone_out.position, 60, function(elapsed)
+    if elapsed >= 1800 then gone.drop_target = nil end
+  end)
+  local diff = gone_result.topology_diff
+  check(gone_plan.status == "failed" and not gone_result.proven and reasons(gone_result):match("component_topology_changed_during_validation")
+    and gone_result.duration_ticks < 3600 and diff and #diff.removed > 0 and #diff.removed <= 4 and #diff.added <= 4
+    and not table.concat(diff.removed, "|"):find("\0", 1, true),
+    "a persistent drop_target removal ends the window with a bounded readable topology_diff")
+end
+
 -- Recorder admission keeps legacy source proof and refuses incomplete native
 -- aggregates; no native activity sample is disguised as a mining cycle.
 do
@@ -1016,6 +1143,49 @@ do
   check(records(legacy) == 0, "native admission never weakens legacy mining-source requirements")
   legacy.source_cycles_observed = 3
   check(records(legacy) == 1, "legacy source-only validation remains admissible")
+  -- History adopted from an older save keeps its retained per-target ticks
+  -- and is complete only after its last evicted event.
+  storage.factory_activity = { epoch_tick = game.tick - 60, events = { { tick = game.tick - 10, action = "insert",
+    item_count = 1, target = { name = "boiler", type = "boiler", position = { x = 1, y = 2 } },
+    items = { { name = "coal", count = 1 } } } }, events_omitted = 3, latest_evicted_tick = game.tick - 20, validations = {} }
+  local adopted = activity.snapshot(nil, true)
+  check(adopted.target_last_tick["boiler\0boiler\0001\0002"] == game.tick - 10
+    and adopted.target_last_tick_after == game.tick - 20,
+    "per-target transfer history adopted from an older save starts after its last evicted event")
 end
+
+-- An inserter on an underpowered network still swings, only slower, and
+-- reports low_power all window: its throughput decides, not its status. One
+-- that stops swinging still fails on throughput, and one with no power at all
+-- is still dead.
+local function underpowered_return(mode)
+  local box, source, back = self_fed(5, COAL)
+  local swing = back._step
+  back._step = function(elapsed)
+    if mode ~= "swinging" and elapsed and elapsed >= 600 then
+      back.status = mode == "unpowered" and RAW.no_power or RAW.low_power
+      return
+    end
+    swing(elapsed)
+    if elapsed then back.status = RAW.low_power end
+  end
+  warm(300)
+  return box, source, back
+end
+local slow_box, _, slow_back = underpowered_return("swinging")
+local slow_plan, slow = validate(slow_box.position, 60)
+check(slow_plan.status == "completed" and slow.proven and slow_back.status == RAW.low_power
+  and not reasons(slow):match("persistent_nonproductive_status"),
+  "a fuel return reporting low_power all window while it keeps swinging is not dead")
+local stuck_box, stuck_source, stuck_back = underpowered_return("stopped")
+local stuck_plan, stuck = validate(stuck_box.position, 60)
+check(stuck_plan.status == "failed" and not stuck.proven and stuck_back.status == RAW.low_power
+  and rows_at(stuck, stuck_source).fuel_replenishment_not_observed
+  and not rows_at(stuck, stuck_back)["persistent_nonproductive_status:low_power"],
+  "a low_power fuel return that stops swinging fails on the missing refill, not on its status")
+local cut_box, _, cut_back = underpowered_return("unpowered")
+local cut_plan, cut = validate(cut_box.position, 60)
+check(cut_plan.status == "failed" and not cut.proven and rows_at(cut, cut_back)["persistent_nonproductive_status:no_power"],
+  "a fuel return with no power at all is still dead on its path")
 
 os.exit(failures == 0 and 0 or 1)

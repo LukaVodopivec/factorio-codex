@@ -5,7 +5,7 @@ export const toolPayloads = {
   mine: ({ x, y, count, target_kind, allow_fluid_loss, expected_name, observed_tick }: { x: number; y: number; count?: number; target_kind?: "natural" | "owned"; allow_fluid_loss?: boolean; expected_name?: string; observed_tick?: number }) => ({ target: { x, y }, count, ...(target_kind ? { target_kind } : {}), ...(allow_fluid_loss ? { allow_fluid_loss: true } : {}), ...(expected_name ? { expected_name } : {}), ...(observed_tick === undefined ? {} : { observed_tick }) }),
   pickup: ({ x, y, item, count }: { x: number; y: number; item: string; count: number }) => ({ target: { x, y }, item, count }),
   craft: ({ recipe, crafts, wait_for_completion }: { recipe: string; crafts: number; wait_for_completion?: boolean }) => ({ recipe, count: crafts, ...(wait_for_completion === undefined ? {} : { wait_for_completion }) }),
-  place: ({ x, y, name, direction, input_target, output_target }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number } }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}) }),
+  place: ({ x, y, name, direction, input_target, output_target, belt_to_ground_type }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; belt_to_ground_type?: "input" | "output" }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}), ...(belt_to_ground_type ? { belt_to_ground_type } : {}) }),
   insert: ({ x, y, items: values }: { x: number; y: number; items: Record<string, number> }) => ({ target: { x, y }, items: values }),
   extract: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y }, all: true }) : ({ target: { x, y }, items: values }),
   recipe: ({ x, y, recipe }: { x: number; y: number; recipe: string }) => ({ target: { x, y }, recipe }),
@@ -62,6 +62,7 @@ function placementPlanSteps(value: unknown, fuel?: Record<string, number>): any[
     ...(step.direction === undefined ? {} : { direction: step.direction }),
     ...(step.input_target ? { input_target: step.input_target } : {}),
     ...(step.output_target ? { output_target: step.output_target } : {}),
+    ...(step.belt_to_ground_type ? { belt_to_ground_type: step.belt_to_ground_type } : {}),
   }));
   const fuelSteps = fuel && Object.keys(fuel).length > 0
     ? buildSteps.filter((step) => step.fuel_inlet === true).map((step) => ({ action: "insert_items", x: step.x, y: step.y, items: fuel }))
@@ -202,6 +203,20 @@ export function normalizePlanDiagnostics(value: any): any {
     diagnostics: { route, machines },
     ...(physicalAudit ? { physical_audit: physicalAudit } : {}),
   };
+}
+
+export const FIFO_IDLE_HINT = "body idle: queue bounded work before further reads";
+export const FIFO_IDLE_HINT_SECONDS = 30;
+export interface FifoState { active_plan_id: number | null; queue_depth: number | null; idle_seconds: number | null; hint?: string }
+
+// Lua omits nil fields; every read result states all three, plus the idle hint.
+export function normalizeFifo(value: unknown): FifoState | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const fifo = value as Record<string, unknown>;
+  const number = (field: unknown) => typeof field === "number" && Number.isFinite(field) ? field : null;
+  const idle = number(fifo.idle_seconds);
+  return { active_plan_id: number(fifo.active_plan_id), queue_depth: number(fifo.queue_depth), idle_seconds: idle,
+    ...(idle !== null && idle > FIFO_IDLE_HINT_SECONDS ? { hint: FIFO_IDLE_HINT } : {}) };
 }
 
 // The body idled while the caller reasoned; say so where the pilot looks next.

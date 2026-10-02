@@ -22,6 +22,18 @@ For the next fresh supervised run, start the pilot as `gpt-6-luna` with
 with `medium` reasoning and the default service tier. These profiles apply only
 at the safe fresh-run cutover; never reconfigure or replace a live role in place.
 
+During preparation, each exact role must send the supervisor a fresh native
+`execution_settings({})` readback, with current/next model, effort and service
+tiers, `fast_mode_enabled`, and `fast_inherited_from_root` when available,
+separate from requested settings. After a profile update, end that turn and
+read again in the subsequent turn. The supervisor records receipt times and
+explicitly consumes both role reports before `GO`; missing, delayed, malformed
+or unexplained contradictory evidence holds gameplay. Apply the profile-evidence
+procedure in `docs/LIVE-VALIDATION.md`; an enabled selection feature alone does
+not establish the processing tier. Preparation profile reporting uses the
+existing role-to-supervisor session transport, never a new pilot channel or a
+new ledger field.
+
 Until the owner explicitly re-enables benchmarking, the parent session is a debug
 supervisor. It may diagnose or rescue through surfaces unavailable to the pilot,
 but records every intervention and requires a fresh structured MCP observation

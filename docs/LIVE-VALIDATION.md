@@ -184,7 +184,10 @@ session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effo
   -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
-`--fast on` maps to `service_tier="priority"` plus `features.fast_mode=true`.
+The launch flags express requested settings. `--fast on` requests
+`service_tier="priority"` plus `features.fast_mode=true`; `--fast off` requests
+normal service. Neither a launch flag nor a successful update is role-profile
+confirmation. Follow the native readback procedure below before `GO`.
 Start each with its checked-in role goal; the pilot takes no physical action
 before `GO`. Confirm Sol lists exactly the ten
 configured read-only tools (including the side-effect-free placement checks) and cannot list any movement, transfer, crafting,
@@ -228,6 +231,133 @@ idle thread does not prove that queued `GO` will start a turn. Continue past
 `autonomous_end_to_end` segment that still holds at the next two recorder
 checkpoints, plus useful research consuming produced science); Candidate B and
 R1-R7 freeze rules are historical unless the owner starts a benchmark.
+
+### Native role-profile evidence before GO
+
+Use the existing connected session transport, exact role thread/turn identities,
+and existing run evidence. Add no launcher wrapper, enforcement hook, evidence
+store, ledger field, or gameplay control channel. Apply this procedure only at
+the fresh-run preparation cutover; never reconfigure an active gameplay role.
+
+The [official configuration reference](https://developers.openai.com/codex/config-reference)
+defines `features.fast_mode` as enabling model-catalog service-tier selection
+controls. It describes `service_tier` as a preference for new turns, with `fast`
+mapping to `priority`. Separate four kinds of evidence:
+
+- **Requested:** launch flags or the exact `execution_settings` update values.
+- **Current turn:** native `current_turn.model`, `reasoning_effort`, and
+  `service_tier`; an update does not retroactively change this turn.
+- **Next turn:** native `next_turn` model, effort and tier; a successful update
+  with `effective:"next_turn"` establishes a request for subsequent turns.
+- **Availability/inheritance:** `fast_mode_enabled` and
+  `fast_inherited_from_root` when available, preserved verbatim. Verify their
+  semantics in the installed runtime, rather than equating similarly named
+  fields. The disposable 0.159.2 probes below establish that its enabled flag
+  follows the selection feature, independently of the selected Fast tier.
+
+Each exact role calls native `execution_settings({})` in preparation and sends
+a compact structured projection copied verbatim from the native result to the
+supervisor: both model/effort/tier triples and the availability/inheritance
+fields, plus exact thread/turn identity and separate requested values. Keep the
+message below the existing 1,000-byte transport limit; exclude unrelated
+context, usage and model-catalog fields. Keep requested values separate;
+do not reconstruct readback from a launch command or substitute the supervisor's
+own settings. Record session and turn identity, native runtime version,
+observation receipt time, requested values, reported values and interpretation
+in existing run evidence. This preparation report uses the existing session
+transport to the supervisor; Sol's only channel to the pilot remains the ledger.
+All required profile fields fit this compact projection. If fuller native output
+is needed, the supervisor reads it through the existing session transport and
+records it in existing run evidence; do not add a store or channel.
+
+If preparation changes a role profile, retain the update receipt, end that
+turn, and obtain a fresh native read in the subsequent turn. Require both
+`current_turn` and `next_turn` to match Luna / low / Fast (`priority` in the
+validated runtime) or Sol / medium / normal (`default` in these probes,
+`standard` only when the installed runtime establishes that mapping).
+`changed:false` on a read means no update was requested, not failed preparation.
+Missing fields, unresolved null tiers, wrong identity, malformed or stale
+reports, delayed delivery and unexplained contradictions hold `GO`. Resolve
+with the exact role and a fresh read; never silently treat them as confirmation.
+Any later settings update invalidates the earlier report.
+
+The supervisor explicitly consumes and records its assessment of **both** fresh
+reports before authorizing `GO`. Sending or queuing a report does not prove
+consumption. A report that arrives after this assessment requires reassessment;
+if it arrives after `GO`, record the missed preparation evidence and qualify the
+run rather than retroactively claiming compliant preparation. A true selection
+feature flag with current/next normal tiers is consistent in the validated
+runtime: preserve it as capability evidence and judge selected normal speed by
+the tiers. Any other unexplained conflict must be resolved before `GO`; the flag
+alone does not establish a native bug.
+
+These tiers describe native selected thread/turn settings. They do not by
+themselves prove provider processing. Record provider-confirmed processing tier
+separately if the transport exposes it; otherwise state it is unavailable and
+claim only the selected profile. Never infer provider confirmation from latency,
+a feature flag, a model catalog, or a role's prose summary.
+
+**Verification evidence and limits (2026-10-02).** Disposable persistent
+native 0.159.2 app-server sessions used the existing stdio JSON-RPC mechanism,
+with configured MCP servers disabled, a read-only sandbox, and no gameplay
+goals. Experimental raw tool-output events supplied actual `execution_settings`
+results, not inferred launch values. Receipt times below are UTC:
+
+| Probe / receipt | Native current turn | Native next turn | Enabled / inherited | Supervisor interpretation |
+| --- | --- | --- | --- | --- |
+| Luna, 01:14:15 | Luna / low / priority | Luna / low / priority | true / false | Pilot selected Fast profile confirmed; no GO while Sol report absent. |
+| Sol delayed until 01:14:42 | Sol / medium / default | Sol / medium / default | true / false | Both reports now consumed; normal tier and true flag retained separately, not classified as a bug. No gameplay GO was sent. |
+| Sol requests Luna/low/fast:true, 01:14:49; same-turn read | Sol / medium / default | Luna / low / priority | true / false | `changed:true`, `effective:next_turn`; preparation incomplete despite update success. |
+| Subsequent turn, 01:14:54 | Luna / low / priority | Luna / low / priority | true / false | Fresh native read confirms application after the turn boundary. |
+| Requests Sol/medium/fast:false, 01:14:56; same-turn read | Luna / low / priority | Sol / medium / default | true / false | Disabling Fast selects default for next turn while selection capability remains enabled. |
+| Subsequent turn, 01:15:00 | Sol / medium / default | Sol / medium / default | true / false | Fresh normal profile consumed; true flag is capability evidence. |
+| Separate session with features.fast_mode=false, 01:15:05 | Sol / medium / null | Sol / medium / null | false / false | Controlled feature-off probe changes the enabled flag; null tier remains qualified, not normal-profile confirmation. |
+
+The supervisor withheld profile approval while Sol's report was outstanding
+for 27 seconds, then consumed both structured reports. The delay was controlled
+by requesting Sol's read after Luna's; it does not test transport congestion.
+The supervisor withheld confirmation across each mismatched current/next update until the subsequent-turn read. This
+is a disposable preparation exercise, not a live GO test. The feature-on/off
+comparison verifies the installed flag's capability meaning for these probes;
+it does not prove identical semantics in other versions or inheritance behavior
+for child sessions. Recheck after runtime changes. Provider processing tiers
+were not exposed in these settings results, so only native selected tiers are
+confirmed. Cleanup read all three test threads idle, archived them through native
+session controls, and observed the test app-server exit successfully. Initial
+transport-reader sampling was corrected before these complete probes; two
+preliminary sessions were also archived. No active gameplay role, shared native
+setting or credential was changed; no live run, mod deployment, server restart,
+or gameplay-performance claim follows from this validation.
+
+Repository-native offline verification used Node 22.23.2: the two-brain contract
+passed all 10 tests, the focused verifier passed all 15 Python tests, and quick
+and full passed all four and ten declared checks in a standalone checkout with
+byte-identical source at the time of those runs and the existing installed
+dependency tree. Subsequent changes were documentation only (compact-report
+wording and this evidence record); the two-brain and diff checks were rerun
+afterward.
+Initial preserved-worktree quick/full attempts reported an owning-checkout
+dependency-descriptor mismatch or missing descriptors; they did not establish
+which condition caused it. The standalone check supplied a matching real owning
+checkout without altering the verifier.
+an earlier issue remains separately owned; this correction changes no verifier code or
+suppresses any check. Fresh independent read-only review found a preparation
+message-size conflict; the compact projection above resolves it (a representative
+message with native Sol values and UUID identities is 417 bytes), and the
+reviewer confirmed the transport fix. A subsequent evidence-coverage finding
+was resolved by qualifying which source the broad checks covered, as above.
+Offline results do not prove
+live role preparation, provider processing tiers, or improved gameplay.
+
+After integrating the advanced 0.19.2 target, the instruction patch remained
+unchanged. The preserved worktree's own quick/full verification then passed all
+four/ten declared checks under Node 22.23.2; an exact committed standalone clone
+also passed both profiles. The integrated two-brain contract passed all 10 tests.
+A fresh independent read-only review found no integration conflict: upstream
+idle reporting, plan sizing and native GO resumption remained intact. These
+checks covered the integrated source before this evidence-only update; the
+final focused contract and diff checks were rerun afterward. The earlier
+prerequisite failure remains historical, not a current readiness failure.
 
 ### Native resumption after the stop rehearsal
 

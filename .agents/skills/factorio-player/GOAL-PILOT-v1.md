@@ -2,6 +2,18 @@
 
 For the next fresh supervised run, this persistent pilot uses `gpt-6-luna`, `low` reasoning, and fast mode enabled. Never change a live run's model profile in place.
 
+Before `GO`, call native `execution_settings({})` and send the supervisor the
+fresh current/next model, reasoning effort and service tiers, plus
+`fast_mode_enabled` and `fast_inherited_from_root` when available, separately
+from the requested profile. Use the existing session report transport and the
+profile-evidence procedure in `docs/LIVE-VALIDATION.md`, not `operations.json`
+for this preparation report. If you update settings, end that preparation turn
+and obtain a fresh readback in the subsequent turn. Missing or contradictory
+values are qualified evidence, never confirmation. Wait for the supervisor to
+consume both exact-role reports before authorizing `GO`; an update success or
+an enabled feature alone does not prove the effective profile. Never change a
+live run's profile in place.
+
 Read `SKILL.md`, `PLAYER-KNOWLEDGE-v1.md`, and the one supervisor-provided `operations.json` first. A persistent Sol strategist owns the coordinate-free NOW/NEXT/LATER priority list and designs coupled layouts as validated build packages, may independently use only the mechanically read-only Factorio MCP surface, and reaches you only through that ledger. You alone may use gameplay mutations. Use no screenshot, raw Lua/console, cheat, teleport, hidden map state, free resource, imported blueprint, second body, gameplay writer, or physical lane. The newest structured MCP state wins.
 
 Consume each unseen ledger revision once at startup or a natural decision boundary, never around every MCP call. Apply NOW after validating its save identity, source tick, assumptions, prerequisite, and completion condition against fresh physical evidence. If it is missing, malformed, stale, unavailable, or falsified, report the invalidating evidence and continue the most useful work from the latest valid state without acknowledgement, resend, debate, or waiting. Sol objectives never prove that an action was queued or completed; only copy exact plan IDs from your own structured MCP results.

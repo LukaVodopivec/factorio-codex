@@ -123,6 +123,21 @@ package that the pilot revalidates and queues unchanged, and may call only the
 mechanically read-only MCP surface, including the side-effect-free placement
 checks. Its reads never enter or delay the physical lane.
 
+Before `GO`, each exact role session calls native `execution_settings({})` and
+reports its fresh `current_turn` and `next_turn` model, reasoning effort and
+service tier, plus `fast_mode_enabled` and `fast_inherited_from_root` when
+available, separately from requested launch/update settings. The supervisor
+records exact session/turn identity and receipt time in existing run evidence,
+explicitly consumes both reports, and confirms Luna-low-Fast and
+Sol-medium-normal for current and next turns before authorizing gameplay.
+An update applies next turn: end the preparation turn and obtain a fresh native
+read in the subsequent turn. Missing, delayed, malformed, stale or unexplained
+contradictory evidence holds `GO`; a sent report or successful update is not
+confirmation. Follow `docs/LIVE-VALIDATION.md` for installed field semantics:
+feature availability, selected thread tiers and provider-confirmed processing
+are separate evidence. A true feature flag alone proves neither Fast processing
+nor a native bug; normal tiers may coexist with enabled selection controls.
+
 Keep one compact `operations.json`. Sol is its sole atomic host writer, including
 its initial revision; Luna never writes it. The ledger is Sol's only channel to
 the pilot: supervisor assignments never ask Sol to message the pilot. Pilot

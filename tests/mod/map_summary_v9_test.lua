@@ -147,7 +147,7 @@ local function flow_fixture(buffer_root, burner)
   return { source, feed, processor, unload, sink }, source, processor
 end
 
-prototypes.item = { coal = { fuel_value = 8, fuel_category = "chemical" } }
+prototypes.item = { coal = { name = "coal", fuel_value = 8, fuel_category = "chemical" } }
 defines.entity_status.normal = 2
 defines.entity_status.working = 3
 defines.inventory = { lab_input = 2 }
@@ -401,7 +401,7 @@ defines.entity_status.waiting_for_space_in_destination = 5
 defines.entity_status.full_output = 6
 local fuel_count = 5
 buffer_processor.status = 3
-buffer_source.burner = { currently_burning = { name = "coal", quality = "normal" }, remaining_burning_fuel = 4 }
+buffer_source.burner = { currently_burning = { name = prototypes.item.coal, quality = { name = "normal" } }, remaining_burning_fuel = 4 }
 buffer_source.get_fuel_inventory = function() return {
   get_item_count = function(item) assert(item.name == "coal" and item.quality == "normal"); return fuel_count end,
   can_insert = function(item) assert(item.name == "coal" and item.quality == "normal" and item.count == 1); return true end,
@@ -484,10 +484,27 @@ end
 rejects_saturation("unresolved held fuel identity remains blocked",
   function() fuel_feed.held_stack.valid_for_read = false end,
   function() fuel_feed.held_stack.valid_for_read = true end)
-prototypes.item.incompatible = { fuel_value = 8, fuel_category = "nuclear" }
+prototypes.item.incompatible = { name = "incompatible", fuel_value = 8, fuel_category = "nuclear" }
 rejects_saturation("incompatible held fuel remains blocked",
   function() fuel_feed.held_stack.name = "incompatible" end,
   function() fuel_feed.held_stack.name = "coal" end)
+local burning_fuel = buffer_source.burner.currently_burning
+rejects_saturation("incompatible currently burning fuel remains blocked",
+  function() buffer_source.burner.currently_burning = { name = prototypes.item.incompatible, quality = { name = "normal" } } end,
+  function() buffer_source.burner.currently_burning = burning_fuel end)
+rejects_saturation("missing currently burning fuel remains blocked",
+  function() buffer_source.burner.currently_burning = nil end,
+  function() buffer_source.burner.currently_burning = burning_fuel end)
+rejects_saturation("unreadable currently burning fuel remains blocked",
+  function()
+    buffer_source.burner.currently_burning = nil
+    setmetatable(buffer_source.burner, { __index = function() error("unreadable current fuel") end })
+  end,
+  function() setmetatable(buffer_source.burner, nil); buffer_source.burner.currently_burning = burning_fuel end)
+rejects_saturation("unreadable burning item prototype remains blocked",
+  function() buffer_source.burner.currently_burning = { name = setmetatable({}, {
+    __index = function() error("unreadable item name") end }) } end,
+  function() buffer_source.burner.currently_burning = burning_fuel end)
 rejects_saturation("unresolved physical fuel provenance remains blocked",
   function() coal_source.mining_target.prototype.mineable_properties.products[1].name = "ore" end,
   function() coal_source.mining_target.prototype.mineable_properties.products[1].name = "coal" end)
@@ -689,7 +706,7 @@ local function source_only_validation(mode)
     prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } }
   local source = { valid = true, name = "source-only-drill", type = "mining-drill", force = force,
     position = { x = 1, y = 4 }, status = 3, mining_target = target, mining_progress = 0.9,
-    prototype = burner_prototype, burner = { currently_burning = { name = "coal" }, remaining_burning_fuel = 4 },
+    prototype = burner_prototype, burner = { currently_burning = { name = prototypes.item.coal, quality = { name = "normal" } }, remaining_burning_fuel = 4 },
     get_fuel_inventory = function() return {
       get_item_count = function() return 5 end, can_insert = function() return true end,
     } end }
@@ -739,7 +756,7 @@ local function source_only_validation(mode)
   if mode == "consumer" or mode == "consumer_wrong_output" or mode == "consumer_multi_output" or mode == "consumer_full"
     or mode == "consumer_interruption" or mode == "consumer_unavailable" then
     sink.type, sink.name, sink.status = "burner-generator", "source-consumer", 3
-    sink.prototype, sink.burner = burner_prototype, { currently_burning = { name = "coal" }, remaining_burning_fuel = 4 }
+    sink.prototype, sink.burner = burner_prototype, { currently_burning = { name = prototypes.item.coal, quality = { name = "normal" } }, remaining_burning_fuel = 4 }
     sink.get_fuel_inventory = function() return {
       can_insert = function(stack) return stack.name == "coal" and mode ~= "consumer_full" and accepting end,
     } end

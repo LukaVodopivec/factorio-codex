@@ -19,7 +19,7 @@ local entity = {
   valid = true, name = "stone-furnace", type = "furnace", direction = 0,
   position = { x = 30, y = 0 }, electric_network_id = 17, energy = 2400,
   power_usage = 90, power_production = 0,
-  burner = { remaining_burning_fuel = 1250, currently_burning = { name = "coal", fuel_value = 4000 } },
+  burner = { remaining_burning_fuel = 1250, currently_burning = { name = { name = "coal", fuel_value = 4000 }, quality = { name = "normal" } } },
   prototype = { burner_prototype = { effectivity = 0.8 }, electric_energy_source_prototype = {
     buffer_capacity = 5000, input_flow_limit = 120, output_flow_limit = 0,
   } },
@@ -67,6 +67,30 @@ check(at_limit and type(at_limit_result.entities) == "table"
   and at_limit_result.entities[1].burner.effectivity == 0.8
   and at_limit_result.name == nil and at_limit_result.position == nil,
   "batched inspection accepts an exact target and reports electrical network, energy, and limits")
+
+local current_fuel = entity.burner.currently_burning
+local function checks_unreadable_fuel(label, current, expected_name, expected_value)
+  entity.burner.currently_burning = current
+  local ok, result = pcall(inspect.inspect, { targets = { entity.position } })
+  local facts = ok and result.entities[1].burner
+  check(facts and facts.remaining_burning_fuel == 1250 and facts.effectivity == 0.8
+    and facts.currently_burning == expected_name and facts.current_fuel_value == expected_value, label)
+  entity.burner.currently_burning = current_fuel
+end
+checks_unreadable_fuel("missing current fuel preserves other burner facts", nil)
+checks_unreadable_fuel("unreadable current item prototype preserves other burner facts",
+  setmetatable({}, { __index = function() error("unreadable item prototype") end }))
+checks_unreadable_fuel("unreadable item name cannot leak a prototype into inspection",
+  { name = setmetatable({}, { __index = function() error("unreadable item name") end }) })
+checks_unreadable_fuel("unreadable fuel value preserves the readable item name",
+  { name = setmetatable({ name = "coal" }, { __index = function() error("unreadable fuel value") end }) }, "coal")
+entity.burner.currently_burning = nil
+setmetatable(entity.burner, { __index = function(_, key)
+  if key == "currently_burning" then error("unreadable current fuel") end
+end })
+checks_unreadable_fuel("unreadable current fuel preserves other burner facts", nil)
+setmetatable(entity.burner, nil)
+entity.burner.currently_burning = current_fuel
 
 entity.position = { x = 30.000001, y = 0 }
 local beyond = inspect.inspect({ targets = { entity.position } })

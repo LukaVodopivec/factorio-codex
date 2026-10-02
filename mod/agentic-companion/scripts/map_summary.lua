@@ -375,7 +375,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
           end
           local burner = destination._entity.burner
           local burning = burner.currently_burning
-          if not burning or not destination.fuel_categories[item_fuel_category(burning.name)]
+          if not burning or not destination.fuel_categories[item_fuel_category(burning.name.name)]
             or not (burner.remaining_burning_fuel > 0) then return end
           local inventory = destination._entity.get_fuel_inventory()
           local item = { name = held.name, quality = held.quality.name, count = 1 }

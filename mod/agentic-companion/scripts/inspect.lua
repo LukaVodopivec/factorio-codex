@@ -253,8 +253,9 @@ local function inspect_one(position, c)
     if ok_remaining and type(remaining) == "number" then facts.remaining_burning_fuel = remaining end
     local ok_current, current = pcall(function() return burner.currently_burning end)
     if ok_current and current then
-      facts.currently_burning = current.name
-      local ok_value, value = pcall(function() return current.fuel_value end)
+      local ok_name, name = pcall(function() return current.name.name end)
+      if ok_name and type(name) == "string" then facts.currently_burning = name end
+      local ok_value, value = pcall(function() return current.name.fuel_value end)
       if ok_value and type(value) == "number" then facts.current_fuel_value = value end
     end
     local ok_effectivity, effectivity = pcall(function() return e.prototype.burner_prototype.effectivity end)

@@ -220,14 +220,103 @@ reconcile retained work: if `observe_local` reports an active task or queue
 depth, call `stop` and re-observe until idle, and treat pre-`GO` plan IDs as
 invalid `after_plan_id` values. Rehearse the stop sequence below on the live
 role sessions without stopping the server; a role turn must end within about
-five seconds of pause plus interrupt. Then resume both role goals with the same
-native controls, read back each goal as active and each role idle with no
-stray turn, and only then start the recorder and send `GO` in the same
-supervisor step. Continue past 20 minutes toward the assigned milestone
+five seconds of pause plus interrupt. Then resume both role goals through the
+native procedure below before starting the recorder; an active goal plus an
+idle thread does not prove that queued `GO` will start a turn. Continue past
+20 minutes toward the assigned milestone
 (currently sustained autonomous Nauvis production: a validated
 `autonomous_end_to_end` segment that still holds at the next two recorder
 checkpoints, plus useful research consuming produced science); Candidate B and
 R1-R7 freeze rules are historical unless the owner starts a benchmark.
+
+### Native resumption after the stop rehearsal
+
+Use the existing connected app-server session controls for each exact role,
+not a new session or gameplay path. Discover the installed protocol with
+`codex-real app-server generate-json-schema --experimental --out <scratch-dir>`
+and use the role daemon's existing connection (or `codex-real app-server proxy
+--sock <role-daemon-socket>`). Initialize the JSON-RPC connection with
+`capabilities.experimentalApi=true`. Retain the exact `threadId` from the role
+session and every returned `turn.id`; names, the latest roster entry, and a
+supervisor's own thread are not substitutes. The installed 0.159.2 protocol
+provides `thread/goal/get`, `thread/goal/set`, `thread/read`,
+`thread/queue/add`, `thread/queue/list`, `thread/queue/start`, `turn/interrupt`,
+and `turn/started` / `turn/completed` notifications. Recheck the installed
+schemas when the runtime changes; a schema establishes capability, not success.
+
+1. Preserve the rehearsal's physical stop, goal pause, turn interruption,
+   settled task-owned commands, stopped Sol ledger writes, and fresh physical
+   quiescence. Read back each exact paused goal and interrupted/completed turn.
+   Pause may itself settle a turn: if an interrupt reports no active turn,
+   inspect that exact turn before deciding whether anything remains to stop.
+   An interrupt response alone does not prove settlement; retain the matching
+   `turn/completed` notification and current thread readback.
+2. Resume each existing goal with `thread/goal/set` using
+   `{threadId, status: "active"}`. Resume can immediately start a continuation
+   turn. Interrupt that exact resumed turn as part of the rehearsal and await
+   its settlement; it must perform no pilot physical action. Read back the
+   active goal and idle thread. Do not start a separate reconciliation turn to
+   test readiness. First prove this release procedure on disposable
+   non-gameplay sessions through the same native connection mechanism, with
+   no Factorio tools; preserve the exact-role capability checks above.
+3. Start the recorder and obtain its baseline before releasing either role.
+   Submit one `GO` per role with `thread/queue/add` using
+   `{threadId, clientUserMessageId, input: [{type: "text", text: <GO>}]}`.
+   Choose and retain one unique client message ID for each role's GO. The
+   response's `queuedSubmission.id` proves acceptance only. Read
+   `thread/queue/list` for that thread to identify the pending submission;
+   queued delivery is not consumption and does not prove a turn will start.
+4. At GO, release each pending submission with `thread/queue/start` using
+   `{threadId, queuedSubmissionId: <returned id>}`. This consumes the existing
+   GO; do not send another GO or an empty `turn/start` reconciliation request.
+   Record the common GO timestamp at the first release dispatch, plus each
+   role's actual start receipt and recorder tick. Record any assigned absolute
+   stop deadline once from that GO boundary. Retries, delayed role starts,
+   resumption, and recovery never reset or extend it. If the deadline arrives
+   during recovery, execute the explicit-stop sequence, not another release.
+5. Match the returned turn ID and `turn/started` notification to that thread.
+   Confirm the pending submission disappears from `thread/queue/list` and the
+   turn's `userMessage` item contains the same `clientId` and GO text; retain
+   the role's response acknowledging consumption. These are distinct receipts
+   for acceptance, pending delivery, consumption, and turn start. Before any
+   retry after a timeout or uncertain effect, read the goal, thread, queue,
+   and exact turn history (`thread/read` with `includeTurns:true`, or the
+   installed paginated turn/item reads). If GO was consumed or a turn started,
+   do not enqueue or start it again. If an active/pending turn is reported,
+   resolve its identity and settlement before release; never overlap role
+   turns or treat an idle roster sample as proof that no start is pending.
+6. Observe a later native goal continuation turn after the GO turn ends while
+   the milestone remains open. The supervisor does not assign every batch.
+   Keep exactly the two persistent roles, one body and FIFO lane: Luna alone
+   writes gameplay, Sol keeps its read-only surface and alone writes the
+   ledger. The supervisor's native session control is not a gameplay writer.
+
+**Verification evidence and limits (2026-10-02).** The installed Codex CLI
+0.159.2 generated the experimental native schemas. Disposable persistent
+app-server sessions, using native stdio and connected Unix WebSocket JSON-RPC
+transports with every configured MCP server disabled and a read-only sandbox, exercised
+`gpt-6-luna` / low and `gpt-6.1-sol` / medium separately. Both rehearsed pause,
+interruption, resume, and interruption of the automatically resumed turn.
+Their goals read active and threads idle, yet each GO remained in
+`thread/queue/list`. Exact `thread/queue/start` removed that submission,
+returned a turn ID, emitted the matching `turn/started`, and recorded a
+`userMessage` with the submitted client ID. Both answered `GO_CONSUMED`,
+completed that turn, and then automatically started and completed a distinct
+native goal continuation answering `CONTINUATION`, without another start
+request. In the stdio samples, rehearsal/resume interrupted-turn durations
+were 6/8 ms for Luna and
+4/13 ms for Sol; these disposable timings do not establish live-role stop
+latency. Cleanup read both goals paused and threads idle, archived the test
+sessions, and observed the test app-server processes exit successfully.
+
+This proves native session resumption and continuation over those transports,
+not the running human daemon, live gameplay, physical stop latency, recorder
+behavior, or ledger quiescence. Rehearse through the actual connected role route before a live GO.
+The release 0.19.1 cycle-2 queued-GO incident is the reported motivation, not
+new live validation evidence. Claim live success only after an authorized
+supervised run records both roles consuming GO and subsequent pilot physical
+work through the ordinary lane. No mod release or deployment is required for
+this documentation correction.
 
 For the 0.19.0 role split, measure at `GO+20m` against the 0.18.0 baseline in
 `docs/AGENT-PLAY-PERFORMANCE.md`: first `queue_plan` within 3 minutes of `GO`

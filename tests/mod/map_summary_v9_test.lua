@@ -181,6 +181,101 @@ storage.factory_activity.events[#storage.factory_activity.events + 1] = {
 local bootstrapped = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })
 check(bootstrapped.factory.material_flow.components[1].state.autonomous_end_to_end,
   "a proven interval can sunset earlier bootstrap transfers without calling a hand-fed loop autonomous")
+do
+  local saved_storage = storage
+  local activity, map = require("scripts.factory_activity"), require("scripts.map_summary")
+  local function record(target)
+    activity.record("insert", { target = target, transfers = { { item = "ore", inserted = 1 } } })
+  end
+  local function prove(component_sample, start_tick)
+    activity.record_validation({ proven = true, component_signature = component_sample.component_signature,
+      start_tick = start_tick, end_tick = 960, duration_ticks = 960 - start_tick,
+      products_finished_delta = 3, downstream_kind = "consumer", downstream_acceptance_samples = 3,
+      source_cycles_observed = 3, character_transfer_actions = 0 }, component_sample._signature)
+  end
+  storage = {}; game.tick = 900
+  map.map_summary({})
+  -- Evict real bootstrap transfers, then prove a strictly later interval.
+  for i = 1, 129 do record(flow_processor) end
+  game.tick = 901
+  local later_sample = map.factory_component_sample({ source_tick = 901, positions = { flow_source.position } })
+  prove(later_sample, 901)
+  game.tick = 960
+  local later = map.map_summary({})
+  check(later.factory.material_flow.components[1].state.autonomous_end_to_end
+    and not later.factory.character_transfers.history_complete
+    and later.factory.character_transfers.transfer_actions == 128
+    and #storage.factory_activity.events == 128,
+    "older-event eviction does not invalidate a later proof or change bounded whole-run counts")
+  game.tick = 961
+  local narrow = map.map_summary({ activity_since_tick = 961 })
+  check(narrow.factory.material_flow.components[1].state.autonomous_end_to_end
+    and narrow.factory.character_transfers.history_complete
+    and narrow.factory.character_transfers.transfer_actions == 0
+    and narrow.factory.material_flow.components[1].character_transfer_actions == 0,
+    "a requested window after validation ends retains proof with its own zero transfer counts")
+  storage.factory_activity.latest_evicted_tick = nil
+  check(not map.map_summary({ activity_since_tick = 960 }).factory.material_flow.components[1].state.autonomous_end_to_end
+    and not activity.snapshot(960).history_complete,
+    "missing eviction boundary cannot establish proof or requested-window completeness")
+  storage.factory_activity.latest_evicted_tick = 901
+  local exact = map.map_summary({ activity_since_tick = 960 })
+  check(not exact.factory.material_flow.components[1].state.autonomous_end_to_end
+    and exact.factory.material_flow.components[1].state.autonomy_evidence == "character_transfer_history_incomplete"
+    and exact.factory.character_transfers.history_complete,
+    "eviction at the exact proof start remains incomplete even with complete narrower telemetry")
+  storage.factory_activity.latest_evicted_tick = 920
+  check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+    "eviction overlapping a proven interval prevents current autonomy")
+  storage.factory_activity.latest_evicted_tick = 900
+  game.tick = 961; record(flow_processor); game.tick = 962
+  local hidden = map.map_summary({ activity_since_tick = 962 })
+  check(not hidden.factory.material_flow.components[1].state.autonomous_end_to_end
+    and hidden.factory.material_flow.components[1].state.autonomy_evidence == "character_transfer_observed"
+    and hidden.factory.character_transfers.transfer_actions == 0
+    and hidden.factory.material_flow.components[1].character_transfer_actions == 0,
+    "a narrow activity window cannot hide post-proof assistance but preserves raw window counts")
+  local fresh = map.factory_component_sample({ source_tick = 962, positions = { flow_source.position } })
+  check(fresh.topology_ready and fresh.character_history_complete and fresh.character_transfer_actions == 0,
+    "new validation samples assess their own clean interval without inheriting old proof assistance")
+  storage.factory_activity.latest_evicted_tick = 962
+  local incomplete = map.factory_component_sample({ source_tick = 962, positions = { flow_source.position } })
+  check(not incomplete.topology_ready and not incomplete.character_history_complete,
+    "new validation samples require complete history at their own exact start boundary")
+  storage.factory_activity.latest_evicted_tick = 900
+  -- Evict the disallowed post-proof insertion with unrelated later events.
+  for i = 1, 128 do record({ name = "unrelated", type = "container", position = { x = -1, y = -1 } }) end
+  local evicted_assistance = map.map_summary({ activity_since_tick = 962 })
+  check(not evicted_assistance.factory.material_flow.components[1].state.autonomous_end_to_end
+    and evicted_assistance.factory.material_flow.components[1].state.autonomy_evidence == "character_transfer_history_incomplete",
+    "evicted post-proof assistance cannot disappear behind unrelated activity")
+
+  -- Two disconnected components share one log but have different proof starts.
+  local original_entities = flow_entities
+  local other_entities, other_source = flow_fixture(false, false)
+  for _, entity in ipairs(other_entities) do entity.position.x = entity.position.x + 10 end
+  flow_entities = {}; for _, entity in ipairs(original_entities) do flow_entities[#flow_entities + 1] = entity end
+  for _, entity in ipairs(other_entities) do flow_entities[#flow_entities + 1] = entity end
+  storage = {}; game.tick = 899; map.map_summary({})
+  local first_sample = map.factory_component_sample({ source_tick = 899, positions = { flow_source.position } })
+  local second_sample = map.factory_component_sample({ source_tick = 899, positions = { other_source.position } })
+  game.tick = 900
+  for i = 1, 129 do record({ name = "unrelated", type = "container", position = { x = -1, y = -1 } }) end
+  prove(first_sample, 900); prove(second_sample, 901); game.tick = 960
+  local mixed = map.map_summary({})
+  check(#mixed.factory.material_flow.components == 2
+    and not mixed.factory.material_flow.components[1].state.autonomous_end_to_end
+    and mixed.factory.material_flow.components[2].state.autonomous_end_to_end,
+    "each component uses its own proof interval against the shared eviction watermark")
+  storage.factory_activity.validations = {}
+  local unvalidated = map.map_summary({})
+  local unvalidated_narrow = map.map_summary({ activity_since_tick = 960 })
+  check(not unvalidated.factory.material_flow.components[1].state.autonomy_topology_ready
+    and unvalidated_narrow.factory.material_flow.components[1].state.autonomy_topology_ready
+    and not unvalidated_narrow.factory.material_flow.components[1].state.autonomous_end_to_end,
+    "unvalidated components require completeness for the requested window and never gain proof from it")
+  flow_entities, storage, game.tick = original_entities, saved_storage, 960
+end
 -- Produce the transfer through real build-plan placement and starter insertion.
 package.loaded["scripts.companion"].get = function() return body end
 package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end, ensure_entity = function() return "ok" end }
@@ -669,6 +764,12 @@ local function simulate_validation(mode)
   elseif mode == "generic_shortage" then buffer_segment[2].status = 8 end
   buffer_source.mining_progress, coal_source.mining_progress = 0.9, 0.9
   map.map_summary({}) -- establish the run-local epoch before source_tick
+  if mode == "older_eviction" then
+    for i = 1, 129 do
+      require("scripts.factory_activity").record("insert", { target = buffer_processor,
+        transfers = { { item = "ore", inserted = 1 } } })
+    end
+  end
   local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
     source_tick = start, positions = { buffer_sink.position }, duration_seconds = 1 } } })
   game.tick = start + 1; tasks.on_tick()
@@ -726,6 +827,13 @@ check(accepted_buffer.status == "completed" and accepted_buffer.outcomes[1].resu
   and accepted_buffer.outcomes[1].result.downstream_acceptance_samples == 3
   and map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
   "real graph and validator prove supplied burner drill-furnace-chest acceptance across three unattended cycles")
+local later_buffer = simulate_validation("older_eviction")
+local later_buffer_summary = map.map_summary({})
+check(later_buffer.status == "completed"
+  and later_buffer_summary.factory.material_flow.components[1].state.autonomous_end_to_end
+  and not later_buffer_summary.factory.character_transfers.history_complete,
+  "real parked validation proves a later interval after bootstrap transfer eviction")
+simulate_validation("accept") -- retain the ordinary harvesting fixture below
 -- Harvest only after a real unattended validation; keep production and the
 -- terminal inventory physically progressing for ten minutes of fixture time.
 local harvest_start, produced_before = game.tick, buffer_processor.products_finished

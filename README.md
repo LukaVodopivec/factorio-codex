@@ -447,7 +447,15 @@ work: raw transfer actions and extracted-item counts include every harvest.
 It never establishes proof or exempts transfers during a new validation window.
 Insertions, extractions from processors or intermediate buffers, unrelated items,
 and mixed transfers containing any disallowed item revoke current autonomy.
-Incomplete or evicted transfer history remains conservatively unproven.
+Transfer history must be complete from the matching component's validation start
+through the current observation. Evictions strictly before that start do not
+invalidate a later proof; an eviction at or after the start, or an unavailable
+eviction boundary, leaves it unproven. Aggregate transfer counts and
+`character_transfers.history_complete` describe the requested
+`activity_since_tick` window (the whole run by default), which may differ from
+the component's proof interval. A narrower telemetry window cannot hide
+post-proof assistance. Unvalidated components and new validation samples still
+require complete history for their assessed windows.
 Electrical dependencies still join components in this 0.19.6 baseline; separating
 them would not remove a terminal buffer from its material-flow component or make
 this harvesting exception unnecessary. These are sampled bounded

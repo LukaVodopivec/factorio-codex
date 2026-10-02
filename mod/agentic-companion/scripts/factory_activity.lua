@@ -92,6 +92,16 @@ function M.record(kind, outcome)
   end
 end
 
+-- Completeness is inclusive at the start tick. Without an eviction boundary
+-- we cannot prove that any omitted event predates the assessed interval.
+function M.history_complete(since_tick)
+  local activity = ensure()
+  since_tick = tonumber(since_tick) or activity.epoch_tick
+  return since_tick >= activity.epoch_tick and since_tick <= game.tick
+    and (activity.events_omitted == 0 or type(activity.latest_evicted_tick) == "number"
+      and since_tick > activity.latest_evicted_tick)
+end
+
 function M.snapshot(since_tick, internal)
   local activity = ensure()
   since_tick = tonumber(since_tick) or activity.epoch_tick
@@ -99,7 +109,6 @@ function M.snapshot(since_tick, internal)
     error("activity_since_tick must be within the current run-local activity epoch")
   end
   local inserted, extracted, events, targets, action_count, item_count = {}, {}, {}, {}, 0, 0
-  local oldest = activity.events[1] and activity.events[1].tick or game.tick
   for _, event in ipairs(activity.events) do
     if event.tick >= since_tick then
       events[#events + 1] = event
@@ -122,7 +131,7 @@ function M.snapshot(since_tick, internal)
     table.sort(rows, function(a, b) return a.name < b.name end)
     return rows
   end
-  local complete = activity.events_omitted == 0 or since_tick > (activity.latest_evicted_tick or oldest)
+  local complete = M.history_complete(since_tick)
   local target_rows = {}; for _, row in pairs(targets) do target_rows[#target_rows + 1] = row end
   table.sort(target_rows, function(a, b)
     local ap, bp = a.target.position, b.target.position

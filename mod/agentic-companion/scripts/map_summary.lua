@@ -335,7 +335,7 @@ local function fluid_compatible(box, name, temperature)
     and (not box.maximum_temperature or type(temperature) == "number" and temperature <= box.maximum_temperature)
 end
 
-local function build_material_flow(flow_entities, node_by_key, activity, network_poles)
+local function build_material_flow(flow_entities, node_by_key, activity, network_poles, proof_activity)
   local nodes = sorted_rows(node_by_key, key_position)
   local retained = {}
   for index, node in ipairs(nodes) do
@@ -543,7 +543,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     component.edge_count = component.edge_count + 1
     component._edges[#component._edges + 1] = edge
   end
-  for _, event in ipairs(activity.events or {}) do
+  for _, event in ipairs((proof_activity or activity).events or {}) do
     if event.target then
       local key = string.format("%s\0%s\0%.17g\0%.17g", event.target.name, event.target.type,
         event.target.position.x, event.target.position.y)
@@ -551,9 +551,11 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       if node then
         local component = by_root[root(node.id)]
         component._transfers[#component._transfers + 1] = { event = event, node = node }
-        component.character_transfer_actions = component.character_transfer_actions + 1
-        component.last_character_transfer_tick = math.max(component.last_character_transfer_tick or 0,
-          tonumber(event.tick) or 0)
+        if event.tick >= activity.since_tick then
+          component.character_transfer_actions = component.character_transfer_actions + 1
+          component.last_character_transfer_tick = math.max(component.last_character_transfer_tick or 0,
+            tonumber(event.tick) or 0)
+        end
       end
     end
   end
@@ -1082,7 +1084,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       for _, node in ipairs(#endpoints > 0 and endpoints or anchors) do block(node, "downstream_acceptance_not_observed", "transient") end
     end
     local validation
-    for _, candidate in ipairs(activity.validations or {}) do
+    for _, candidate in ipairs(proof_activity and proof_activity.validations or {}) do
       if candidate._signature == component._signature and candidate.proven then validation = candidate end
     end
     -- Bootstrap transfers before a successful bounded validation are historical
@@ -1093,7 +1095,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     local transfer_observed = false
     for _, transfer in ipairs(component._transfers) do
       local event, node = transfer.event, transfer.node
-      if not validation or event.tick >= validation.start_tick then
+      if event.tick >= (validation and validation.start_tick or activity.since_tick) then
         local harvest = validation and event.tick > validation.end_tick and event.action == "extract"
           and node._downstream_buffer and #event.items > 0
         if harvest then
@@ -1129,7 +1131,8 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       end
     end
     component._blocker_rows = rows
-    local topology_ready = #hard_rows == 0 and activity.history_complete and not transfer_observed
+    local history_complete = factory_activity.history_complete(validation and validation.start_tick or activity.since_tick)
+    local topology_ready = #hard_rows == 0 and history_complete and not transfer_observed
     local autonomous = topology_ready and validation ~= nil and not interrupted
     component.state = {
       downstream_kind = buffers > 0 and (consumers > 0 and "mixed" or "buffer") or (consumers > 0 and "consumer" or "none"),
@@ -1140,7 +1143,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       autonomous_end_to_end = autonomous,
       autonomy_evidence = autonomous and "bounded_multi_tick_no_character_transfer_validation"
         or transfer_observed and "character_transfer_observed"
-        or not activity.history_complete and "character_transfer_history_incomplete"
+        or not history_complete and "character_transfer_history_incomplete"
         or topology_ready and validation and "validated_producer_nonproductive"
         or topology_ready and "bounded_multi_tick_production_not_yet_proven"
         or "physical_end_to_end_path_not_proven",
@@ -1425,7 +1428,15 @@ local function collect_summary(params, internal)
   end
   local network_count = 0; for _ in pairs(electric_networks) do network_count = network_count + 1 end
   local activity = factory_activity.snapshot(params.activity_since_tick, true)
-  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity, network_poles)
+  -- Current proofs must see assistance since their own start, even when public
+  -- telemetry requests a narrower window. Both snapshots reuse bounded storage.
+  -- A new validation sample assesses its own window, without inheriting a
+  -- prior proof's exemptions or assistance outside that window.
+  local proof_activity
+  if not internal then
+    proof_activity = activity.since_tick == activity.epoch_tick and activity or factory_activity.snapshot(nil, true)
+  end
+  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity, network_poles, proof_activity)
   local public_flow = present_flow(material_flow, omissions)
   if not internal then
     material_flow = public_flow

@@ -209,11 +209,11 @@ otherwise nonaccepting output buffer (including intermediate storage) reports
 
 A narrowly proven fuel-replenishment branch may wait without blocking useful
 material output. Its inserter keeps normalized `status=full_output`; the node's
-`fuel_return_saturation` records the exact destination, held fuel and quality,
+`fuel_return_saturation` records the exact destination, fuel and quality,
 observed `waiting_for_space_in_destination`, and evidence kind. The existing
 `downstream_inventory_blocked` diagnostic remains visible with
 `nonblocking_reason=proven_fuel_return_saturation`. This distinction requires
-exact runtime pickup/drop relationships and upstream production of the held
+exact runtime pickup/drop relationships and upstream production of the identified
 fuel, compatibility with the working destination burner, remaining burning
 energy, matching stocked fuel, and supported fuel-inventory space for that
 quality. Destination compartment evidence requires a mining drill or successfully
@@ -224,9 +224,32 @@ physically full inventories, other full-output entities, and unrelated
 relationship diagnostics still block. In particular,
 `belt_orientation_does_not_reach_consumer` remains effective.
 
+`identity_source=held_stack` uses a readable held item. When the stack is empty,
+`identity_source=burning_and_stocked_fuel` instead requires exactly one stocked
+item/quality pair matching the currently burning pair. Empty-stack names and
+qualities are never read. These are supported Factorio 2.0 APIs:
+[LuaBurner.currently_burning](https://lua-api.factorio.com/2.0.72/classes/LuaBurner.html#currently_burning),
+[LuaInventory.get_contents](https://lua-api.factorio.com/2.0.72/classes/LuaInventory.html#get_contents)
+and [LuaItemStack.valid_for_read](https://lua-api.factorio.com/2.0.72/classes/LuaItemStack.html#valid_for_read).
+Conflicting or multiple stocked pairs remain unproven. Compatible burning
+energy and matching stocked fuel are checked on every validation sample for
+each identified fuel-return branch, including when its inserter resumes working.
+
 This distinction clears only the branch's output blockers; it never establishes
 `autonomous_end_to_end`. The existing bounded production, downstream acceptance,
 topology and complete character-transfer history requirements still apply.
+
+An inserter's exact `waiting_for_source_items` snapshot stays normalized as
+`insufficient_input`, with its input diagnostic visible. If its empty stack,
+exact pickup/drop bindings and compatible physical supply are proven, the node
+also carries `transport_wait`; the diagnostic explains provisional sampling
+through `validation_nonblocking_reason`. Only the parked validator defers these
+status-only blockers to collect later flow. Every observed wait must be followed
+by a working snapshot of that same inserter before the interval can pass.
+Persistent starvation fails even if another branch increases downstream stock.
+Other insufficient-input statuses, unsupported relationships and unrelated
+diagnostics remain hard blockers. A current source-item wait still revokes the
+public autonomy claim until fresh working evidence is observed.
 
 `validate_factory_component` uses the existing parked plan step to sample a
 bounded 1–300 second unattended interval. It requires unchanged physical

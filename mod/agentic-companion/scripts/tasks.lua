@@ -388,7 +388,7 @@ local function validate_factory_component(plan, step)
     -- Bootstrap insertions queued before this step (fuel, input packets) are
     -- historical debt; the transfer window opens when validation starts.
     step._window_tick = math.max(step.source_tick, game.tick)
-    step._baseline = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions })
+    step._baseline = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions, sample_transport_waits = true })
     if not step._baseline.topology_ready then
       local blockers = {}
       for _, blocker in ipairs(step._baseline.blockers or {}) do
@@ -416,6 +416,8 @@ local function validate_factory_component(plan, step)
     step._sample_interval = math.max(1, math.min(30, math.floor(step.duration_seconds * 60 / 3)))
     step._sample_phase = 0
     step._previous, step._acceptance_counts = step._baseline, {}
+    step._waiting_transports = {}
+    for key in pairs(step._baseline._transport_waits or {}) do step._waiting_transports[key] = false end
     for key, downstream in pairs(step._baseline._downstream) do
       step._acceptance_counts[key] = {}
       if downstream.kind == "consumer" then
@@ -427,7 +429,7 @@ local function validate_factory_component(plan, step)
     plan.next_check_tick = math.min(step._validation_due_tick, game.tick + step._sample_interval)
     return nil
   end
-  local final = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions })
+  local final = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions, sample_transport_waits = true })
   local delta = final.products_finished_total - step._baseline.products_finished_total
   local blockers = {}
   for _, blocker in ipairs(final.blockers or {}) do
@@ -438,6 +440,14 @@ local function validate_factory_component(plan, step)
   end
   if final.character_transfer_actions > 0 then blockers[#blockers + 1] = { reason = "character_transfer_observed" } end
   if not final.character_history_complete then blockers[#blockers + 1] = { reason = "character_transfer_history_incomplete" } end
+  for key in pairs(final._transport_waits or {}) do
+    -- Every newly observed shortage opens a resumption obligation. Other
+    -- branches' production cannot conceal this transport's persistent wait.
+    step._waiting_transports[key] = false
+  end
+  for key in pairs(final._transport_working or {}) do
+    if step._waiting_transports[key] ~= nil then step._waiting_transports[key] = true end
+  end
   for key, downstream in pairs(final._downstream) do
     local previous, counts = step._previous._downstream[key], step._acceptance_counts[key]
     if counts and downstream.accepting then
@@ -483,6 +493,9 @@ local function validate_factory_component(plan, step)
   local source_cycles
   for _, count in pairs(step._source_cycles) do source_cycles = math.min(source_cycles or count, count) end
   source_cycles = source_cycles or 0
+  for _, resumed in pairs(step._waiting_transports) do
+    if not resumed then blockers[#blockers + 1] = { reason = "transport_resumption_not_observed" }; break end
+  end
   if source_cycles < 3 then blockers[#blockers + 1] = { reason = "several_source_cycles_not_observed" } end
   if acceptance_samples < 3 then blockers[#blockers + 1] = { reason = "bounded_downstream_acceptance_not_observed" } end
   if next(step._baseline._production) and delta <= 0 then

@@ -218,7 +218,7 @@ local function burner_categories(entity)
   return result
 end
 
-local function build_material_flow(flow_entities, node_by_key, activity)
+local function build_material_flow(flow_entities, node_by_key, activity, sample_transport_waits)
   local nodes = sorted_rows(node_by_key, key_position)
   local retained = {}
   for index, node in ipairs(nodes) do
@@ -352,45 +352,97 @@ local function build_material_flow(flow_entities, node_by_key, activity)
   end
   -- A replenishment inserter may wait at the ordinary fuel target while
   -- the burner continues working and its fuel inventory still has space.
-  -- Prove the specific held fuel and physical supply, never infer a limit
-  -- from a hard-coded stock count or exempt other full-output entities.
+  -- Prove held or burning-and-stocked fuel and physical supply; never infer
+  -- a hard-coded stock limit or exempt other full-output entities.
   for _, node in ipairs(nodes) do
-    if node.type == "inserter" and node._waiting_for_destination then
+    if node.type == "inserter" then
       local pickup, destination
       for _, edge in ipairs(edges) do
         if edge.from == node.id and edge.kind == "inserter_drop" then destination = node_by_id[edge.to] end
         if edge.to == node.id and edge.kind == "inserter_pickup" then pickup = node_by_id[edge.from] end
       end
-      if pickup and destination and destination._fuel_destination_proven
-        and destination.requires_fuel and destination.status == "working" then
-        local ok, fuel, quality = pcall(function()
+      local function pickup_supplies(product, fuel_only)
+        return pickup and ((pickup.role == "source" or pickup.role == "processor") and product_matches(pickup, product, fuel_only)
+          or (pickup.role == "transport" or pickup.role == "buffer") and upstream_proven(pickup.id, product, fuel_only))
+      end
+      -- Unreadable compartment evidence cannot erase the fuel obligation.
+      -- Establish the physical candidate first, then prove its compartment.
+      local fuel_return = destination and (destination.role == "source" or destination.role == "processor")
+        and destination.requires_fuel
+        and pickup_supplies(destination.fuel_categories, true)
+      node._fuel_return_required = fuel_return or false
+      if fuel_return and destination._fuel_destination_proven and destination.status == "working" then
+        local ok, fuel, quality, identity = pcall(function()
           local held = node._entity.held_stack
-          if not held.valid_for_read or held.count <= 0 then return end
-          local category = item_fuel_category(held.name)
+          local burner = destination._entity.burner
+          local burning = burner.currently_burning
+          if not burning or type(burning.name.name) ~= "string" or type(burning.quality.name) ~= "string"
+            or not destination.fuel_categories[item_fuel_category(burning.name.name)]
+            or not (burner.remaining_burning_fuel > 0) then return end
+          local inventory = destination._entity.get_fuel_inventory()
+          local name, quality_name, identity_source
+          if held.valid_for_read == true then
+            if held.count <= 0 then return end
+            name, quality_name, identity_source = held.name, held.quality.name, "held_stack"
+          elseif held.valid_for_read == false then
+            -- Factorio 2.0: empty LuaItemStack identity is unreadable. The
+            -- burning pair returns prototypes; inventory contents return names.
+            -- Require one unambiguous stocked pair matching the burning pair.
+            local contents = inventory.get_contents()
+            if type(contents) ~= "table" or #contents ~= 1 then return end
+            for index in pairs(contents) do if index ~= 1 then return end end
+            local stock = contents[1]
+            if type(stock) ~= "table" or type(stock.count) ~= "number" or stock.count <= 0
+              or stock.name ~= burning.name.name or stock.quality ~= burning.quality.name then return end
+            name, quality_name, identity_source = stock.name, stock.quality, "burning_and_stocked_fuel"
+          else return end
+          if type(name) ~= "string" or name == "" or type(quality_name) ~= "string" or quality_name == "" then return end
+          local category = item_fuel_category(name)
           if not category or not destination.fuel_categories[category] then return end
           -- A fuel that is also a recipe ingredient could be waiting on
           -- material input instead; the destination compartment is ambiguous.
           for _, ingredient in ipairs(destination.ingredients) do
-            if ingredient.type == "item" and ingredient.name == held.name then return end
+            if ingredient.type == "item" and ingredient.name == name then return end
           end
-          local burner = destination._entity.burner
-          local burning = burner.currently_burning
-          if not burning or not destination.fuel_categories[item_fuel_category(burning.name.name)]
-            or not (burner.remaining_burning_fuel > 0) then return end
-          local inventory = destination._entity.get_fuel_inventory()
-          local item = { name = held.name, quality = held.quality.name, count = 1 }
+          local item = { name = name, quality = quality_name, count = 1 }
           if inventory.get_item_count({ name = item.name, quality = item.quality }) > 0
-            and inventory.can_insert(item) == true then
-            return held.name, held.quality.name
+            and (not node._waiting_for_destination or inventory.can_insert(item) == true) then
+            return name, quality_name, identity_source
           end
         end)
         local product = { name = fuel, type = "item" }
-        local supplied = (pickup.role == "source" or pickup.role == "processor") and product_matches(pickup, product, false)
-          or (pickup.role == "transport" or pickup.role == "buffer") and upstream_proven(pickup.id, product, false)
+        local supplied = pickup_supplies(product, false)
         if ok and fuel and supplied then
-          node.fuel_return_saturation = { destination_node_id = destination.id, fuel = fuel, quality = quality,
-            observed_status = "waiting_for_space_in_destination",
-            evidence = "supplied_working_burner_with_fuel_inventory_space" }
+          node._fuel_return_supply = { destination_node_id = destination.id, fuel = fuel, quality = quality,
+            identity_source = identity,
+            evidence = "supplied_working_burner_with_stocked_fuel" }
+          if node._waiting_for_destination then
+            node.fuel_return_saturation = node._fuel_return_supply
+            node.fuel_return_saturation.observed_status = "waiting_for_space_in_destination"
+            node.fuel_return_saturation.evidence = "supplied_working_burner_with_fuel_inventory_space"
+          end
+        end
+      end
+      if node._waiting_for_source and pickup and destination then
+        local ok_empty, empty = pcall(function() return node._entity.held_stack.valid_for_read == false end)
+        local supplied = false
+        if fuel_return then
+          supplied = node._fuel_return_supply ~= nil
+        else
+          for _, candidate in ipairs(nodes) do
+            if candidate.role == "source" or candidate.role == "processor" then
+              for _, product in ipairs(candidate.products) do
+                if pickup_supplies(product, false) and (destination.role == "buffer" or destination.role == "sink"
+                  or destination.role == "processor" and product_matches({ products = destination.ingredients }, product, false)) then
+                  supplied = true
+                end
+              end
+            end
+          end
+        end
+        if ok_empty and empty and supplied then
+          node.transport_wait = { observed_status = "waiting_for_source_items", destination_node_id = destination.id,
+            evidence = "exact_supplied_transport_requires_bounded_resumption" }
         end
       end
     end
@@ -464,6 +516,8 @@ local function build_material_flow(flow_entities, node_by_key, activity)
   for _, row in ipairs(diagnostics) do
     if row.reason == "downstream_inventory_blocked" and node_by_id[row.node_id].fuel_return_saturation then
       row.nonblocking_reason = "proven_fuel_return_saturation"
+    elseif row.reason == "missing_or_mismatched_input" and node_by_id[row.node_id].transport_wait then
+      row.validation_nonblocking_reason = "provisional_transport_wait_requires_bounded_resumption"
     end
   end
   table.sort(diagnostics, function(a, b)
@@ -479,8 +533,12 @@ local function build_material_flow(flow_entities, node_by_key, activity)
     local blockers, signature_rows, producing_nodes, accepting_sinks = {}, {}, 0, 0
     local buffers, consumers, blocked_output = 0, 0, false
     component._downstream, component._production, component._source_production = {}, {}, {}
+    component._transport_waits, component._transport_working, component._fuel_returns = {}, {}, {}
     for _, id in ipairs(component.node_ids) do
       local node = node_by_id[id]
+      if node.transport_wait then component._transport_waits[node._key] = true end
+      if node.type == "inserter" and node.status == "working" then component._transport_working[node._key] = true end
+      if node._fuel_return_required then component._fuel_returns[node._key] = node._fuel_return_supply ~= nil end
       signature_rows[#signature_rows + 1] = node._key .. ":" .. tostring(node.direction) .. ":"
         .. tostring(number_property(node._entity, "unit_number")) .. ":" .. tostring(node.recipe)
       for _, ingredient in ipairs(node.ingredients) do signature_rows[#signature_rows + 1] = node._key .. ":input:" .. ingredient.type .. ":" .. ingredient.name end
@@ -515,7 +573,8 @@ local function build_material_flow(flow_entities, node_by_key, activity)
           reason = next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven" }
       end
       if node.status == "no_power" or node.status == "low_power" or node.status == "no_fuel"
-        or node.status == "insufficient_input" or node.status == "full_output" and not node.fuel_return_saturation
+        or node.status == "insufficient_input" and not (sample_transport_waits and node.transport_wait)
+        or node.status == "full_output" and not node.fuel_return_saturation
         or node.status == "disabled" or node.status == "no_resources" then
         blockers[#blockers + 1] = { node_id = id, reason = "nonproductive_status", status = node.status }
       end
@@ -533,7 +592,9 @@ local function build_material_flow(flow_entities, node_by_key, activity)
     end
     component.component_signature = string.format("%08x%08x", h1, h2)
     for _, diagnostic in ipairs(component._diagnostics) do
-      if diagnostic.reason ~= "downstream_inventory_blocked" or not node_by_id[diagnostic.node_id].fuel_return_saturation then
+      local exempt = diagnostic.reason == "downstream_inventory_blocked" and node_by_id[diagnostic.node_id].fuel_return_saturation
+        or sample_transport_waits and diagnostic.reason == "missing_or_mismatched_input" and node_by_id[diagnostic.node_id].transport_wait
+      if not exempt then
         blockers[#blockers + 1] = { node_id = diagnostic.node_id, reason = "relationship_diagnostic", diagnostic = diagnostic.reason }
       end
     end
@@ -546,6 +607,11 @@ local function build_material_flow(flow_entities, node_by_key, activity)
     local validation
     for _, candidate in ipairs(activity.validations or {}) do
       if candidate._signature == component._signature and candidate.proven then validation = candidate end
+    end
+    if validation then
+      for _, supplied in pairs(component._fuel_returns) do
+        if not supplied then blockers[#blockers + 1] = { reason = "fuel_return_supply_unproven" }; break end
+      end
     end
     -- Bootstrap transfers before a successful bounded validation are historical
     -- debt, not evidence that the now-connected component still needs the
@@ -726,6 +792,7 @@ local function collect_summary(params, internal)
               role = role, position = { x = entity.position.x, y = entity.position.y },
               direction = entity.direction, status = normalize_status(raw_status),
               _waiting_for_destination = raw_status == "waiting_for_space_in_destination",
+              _waiting_for_source = raw_status == "waiting_for_source_items",
               _fuel_destination_proven = entity.type == "mining-drill" or recipe and recipe.ingredients_proven,
               recipe = recipe and recipe.name or nil,
               products_finished = number_property(entity, "products_finished"),
@@ -833,7 +900,7 @@ local function collect_summary(params, internal)
   end
   local network_count = 0; for _ in pairs(electric_networks) do network_count = network_count + 1 end
   local activity = factory_activity.snapshot(params.activity_since_tick, true)
-  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity)
+  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity, internal and params._sample_transport_waits)
   local public_flow = present_flow(material_flow, omissions)
   if not internal then
     material_flow = public_flow
@@ -903,7 +970,7 @@ function M.factory_component_sample(params)
     or #params.positions < 1 or #params.positions > 16 then
     error("factory component sample requires 1-16 positions")
   end
-  local summary = collect_summary({ activity_since_tick = params.source_tick }, true)
+  local summary = collect_summary({ activity_since_tick = params.source_tick, _sample_transport_waits = params.sample_transport_waits }, true)
   local flow = summary.factory.material_flow
   local selected_component
   local selected_ids = {}
@@ -927,20 +994,25 @@ function M.factory_component_sample(params)
     selected_ids[#selected_ids + 1] = found.id
   end
   table.sort(selected_ids)
+  local blockers = { table.unpack(selected_component.state.autonomy_blockers) }
+  for _, supplied in pairs(selected_component._fuel_returns) do
+    if not supplied then blockers[#blockers + 1] = "fuel_return_supply_unproven"; break end
+  end
   return {
     tick = summary.tick, source_tick = params.source_tick,
     component_id = selected_component.component_id,
     component_signature = selected_component.component_signature,
     _signature = selected_component._signature, _downstream = selected_component._downstream,
     _production = selected_component._production, _source_production = selected_component._source_production,
+    _transport_waits = selected_component._transport_waits, _transport_working = selected_component._transport_working,
     downstream_kind = selected_component.state.downstream_kind,
     blocked_output = selected_component.state.blocked_output,
     selected_node_ids = selected_ids,
     products_finished_total = selected_component.products_finished_total,
     character_transfer_actions = selected_component.character_transfer_actions,
     character_history_complete = summary.factory.character_transfers.history_complete,
-    topology_ready = selected_component.state.autonomy_topology_ready,
-    blockers = selected_component.state.autonomy_blockers,
+    topology_ready = selected_component.state.autonomy_topology_ready and #blockers == 0,
+    blockers = blockers,
     graph_omissions = {
       nodes = summary.factory.omissions.capped_flow_nodes,
       edges = summary.factory.omissions.capped_flow_edges,

@@ -403,6 +403,7 @@ local fuel_count = 5
 buffer_processor.status = 3
 buffer_source.burner = { currently_burning = { name = prototypes.item.coal, quality = { name = "normal" } }, remaining_burning_fuel = 4 }
 buffer_source.get_fuel_inventory = function() return {
+  get_contents = function() return { { name = "coal", quality = "normal", count = fuel_count } } end,
   get_item_count = function(item) assert(item.name == "coal" and item.quality == "normal"); return fuel_count end,
   can_insert = function(item) assert(item.name == "coal" and item.quality == "normal" and item.count == 1); return true end,
 } end
@@ -481,9 +482,43 @@ for _, case in ipairs({
       buffer_processor.status, buffer_processor.burner, buffer_processor.get_fuel_inventory, buffer_processor.get_recipe = 3, {}, nil, processor_recipe
     end)
 end
-rejects_saturation("unresolved held fuel identity remains blocked",
-  function() fuel_feed.held_stack.valid_for_read = false end,
-  function() fuel_feed.held_stack.valid_for_read = true end)
+local held_fuel = fuel_feed.held_stack
+local empty_held = setmetatable({ valid_for_read = false }, {
+  __index = function() error("empty stack identity is unreadable") end,
+  __newindex = function() error("empty stack fields are read-only") end,
+})
+fuel_feed.held_stack = empty_held
+local empty_wait = map.map_summary({})
+local empty_wait_node
+for _, node in ipairs(empty_wait.factory.material_flow.nodes) do if node.name == "fuel-feed" then empty_wait_node = node end end
+check(empty_wait.factory.material_flow.components[1].state.autonomy_topology_ready
+  and not empty_wait.factory.material_flow.components[1].state.autonomous_end_to_end
+  and empty_wait_node.status == "full_output"
+  and empty_wait_node.fuel_return_saturation.identity_source == "burning_and_stocked_fuel",
+  "empty held stack wait derives identity only from the supported burning and stocked pair, without proving autonomy")
+fuel_feed.held_stack = held_fuel
+for _, case in ipairs({
+  { "unavailable stocked contents", function() error("unsupported") end },
+  { "absent stocked contents", function() return {} end },
+  { "contradictory stocked fuel", function() return { { name = "wood", quality = "normal", count = 5 } } end },
+  { "contradictory stocked quality", function() return { { name = "coal", quality = "uncommon", count = 5 } } end },
+  { "ambiguous stocked fuels", function() return { { name = "coal", quality = "normal", count = 5 },
+      { name = "wood", quality = "normal", count = 5 } } end },
+  { "ambiguous stocked qualities", function() return { { name = "coal", quality = "normal", count = 5 },
+      { name = "coal", quality = "uncommon", count = 5 } } end },
+}) do
+  rejects_saturation("empty-stack " .. case[1] .. " remains blocked",
+    function()
+      fuel_feed.held_stack = empty_held
+      buffer_source.get_fuel_inventory = function()
+        local inventory = fuel_inventory(); inventory.get_contents = case[2]; return inventory
+      end
+    end,
+    function() fuel_feed.held_stack = held_fuel; buffer_source.get_fuel_inventory = fuel_inventory end)
+end
+rejects_saturation("unreadable held-stack validity remains blocked",
+  function() fuel_feed.held_stack = setmetatable({}, { __index = function() error("unsupported") end }) end,
+  function() fuel_feed.held_stack = held_fuel end)
 prototypes.item.incompatible = { name = "incompatible", fuel_value = 8, fuel_category = "nuclear" }
 rejects_saturation("incompatible held fuel remains blocked",
   function() fuel_feed.held_stack.name = "incompatible" end,
@@ -546,17 +581,44 @@ coal_source.burner, coal_source.prototype, coal_source.get_fuel_inventory = nil,
 fuel_feed.drop_target = buffer_source
 fuel_feed.status = 3
 local bypass_stock = 0
+defines.entity_status.waiting_for_source_items = 7
+defines.entity_status.no_ingredients = 8
 local function simulate_validation(mode)
   game.tick = game.tick + 100
   local start = game.tick
   storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
   buffer_accepting, buffer_stock, buffer_processor.products_finished = true, 0, 10
   buffer_source.status, buffer_processor.status = 3, 3
-  fuel_feed.status = (mode == "saturated" or mode == "replenish" or mode == "ambiguous_return"
+  buffer_processor.burner, buffer_processor.get_fuel_inventory = buffer_source.burner, fuel_inventory
+  buffer_processor.get_recipe = processor_recipe
+  local function unsupported_compartment()
+    local recipe = processor_recipe()
+    local fact = { name = recipe.name, products = recipe.products }
+    if mode == "compartment_malformed" then fact.ingredients = { false }
+    elseif mode == "compartment_unreadable" then
+      setmetatable(fact, { __index = function(_, key) if key == "ingredients" then error("unsupported") end end })
+    end
+    return fact
+  end
+  if mode:match("^compartment_") and mode ~= "compartment_later" then
+    buffer_processor.get_recipe = unsupported_compartment
+    buffer_processor.get_fuel_inventory = function() error("unsupported") end
+  end
+  furnace_fuel.held_stack = empty_held
+  buffer_segment[2].status, buffer_segment[2].held_stack = 3, empty_held
+  fuel_count = 5
+  fuel_feed.held_stack = mode == "empty_wait" and empty_held or held_fuel
+  fuel_feed.status = (mode == "saturated" or mode == "empty_wait" or mode == "replenish" or mode == "ambiguous_return"
     or mode == "incompatible_return" or mode == "blocked_output") and 5 or 3
-  fuel_feed.held_stack.name = mode == "incompatible_return" and "incompatible" or "coal"
+  held_fuel.name = mode == "incompatible_return" and "incompatible" or "coal"
   buffer_source.get_fuel_inventory = mode == "ambiguous_return" and function() error("unsupported") end or fuel_inventory
   buffer_segment[4].status = mode == "blocked_output" and 6 or 3
+  buffer_segment[4].held_stack = empty_held
+  if mode == "fuel_wait_preflight" or mode == "persistent_fuel_wait" then
+    fuel_feed.status, fuel_feed.held_stack = 7, empty_held
+  elseif mode == "material_wait_preflight" or mode == "persistent_material_wait" then buffer_segment[2].status = 7
+  elseif mode == "output_wait_preflight" then buffer_segment[4].status = 7
+  elseif mode == "generic_shortage" then buffer_segment[2].status = 8 end
   buffer_source.mining_progress, coal_source.mining_progress = 0.9, 0.9
   map.map_summary({}) -- establish the run-local epoch before source_tick
   local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
@@ -578,12 +640,32 @@ local function simulate_validation(mode)
       fuel_feed.status = i == 2 and 3 or 5
       fuel_count = i == 2 and 4 or 5
     end
+    if mode == "fuel_wait_preflight" then fuel_feed.status = 3 end
+    if mode == "material_wait_preflight" then buffer_segment[2].status = 3 end
+    if mode == "output_wait_preflight" then buffer_segment[4].status = 3 end
+    if mode == "fuel_wait_later" then fuel_feed.status, fuel_feed.held_stack = i == 2 and 7 or 3, empty_held end
+    if mode == "material_wait_later" then buffer_segment[2].status = i == 2 and 7 or 3 end
+    if mode == "persistent_later_wait" and i >= 2 then fuel_feed.status, fuel_feed.held_stack = 7, empty_held end
+    if i == 2 then
+      if mode == "compartment_later" then
+        buffer_processor.get_recipe = unsupported_compartment
+        buffer_processor.get_fuel_inventory = function() error("unsupported") end
+      end
+      if mode == "empty_stock_later" then fuel_count = 0 end
+      if mode == "no_energy_later" then buffer_source.burner.remaining_burning_fuel = 0 end
+      if mode == "unsupported_fuel_later" then buffer_source.get_fuel_inventory = function() error("unsupported") end end
+      if mode == "incompatible_held_later" then fuel_feed.held_stack.name = "incompatible" end
+    end
     if mode == "transfer" and i == 2 then
       require("scripts.factory_activity").record("insert", { target = buffer_processor, transfers = { { item = "ore", inserted = 1 } } })
     end
     tasks.on_tick()
   end
-  return tasks.plan_status({ plan_id = queued.plan_id })
+  local result = tasks.plan_status({ plan_id = queued.plan_id })
+  -- Restore only after the final observation; every validation sample used
+  -- the actual changed fuel evidence, independently of downstream growth.
+  buffer_source.burner.remaining_burning_fuel = 4
+  return result
 end
 defines.entity_status.no_fuel = 4
 local accepted_buffer = simulate_validation("accept")
@@ -597,6 +679,55 @@ check(saturated_interval.status == "completed" and map.map_summary({}).factory.m
 local replenished_interval = simulate_validation("replenish")
 check(replenished_interval.status == "completed",
   "offline replenishment resumes after fuel consumption and returns to ordinary saturation without changing topology")
+local empty_interval = simulate_validation("empty_wait")
+check(empty_interval.status == "completed" and map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+  "empty-stack waiting permits independent multi-tick production and acceptance in the parked validator")
+for _, count in ipairs({ 1, 17 }) do
+  fuel_count = count
+  check(map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+    "positive compatible stock proves replenishment without a hard-coded stock threshold: " .. count)
+end
+fuel_count = 0
+check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+  "loss of matching stocked fuel revokes the current empty-stack proof")
+fuel_count, fuel_feed.status = 5, 7
+local waiting_summary = map.map_summary({})
+check(not waiting_summary.factory.material_flow.components[1].state.autonomous_end_to_end
+  and canonical(waiting_summary.factory.material_flow.nodes):match('"transport_wait"')
+  and canonical(waiting_summary.factory.material_flow.diagnostics):match("provisional_transport_wait_requires_bounded_resumption"),
+  "a current exact source-item wait preserves status and provisional diagnostics while revoking public proof")
+fuel_feed.status = 3
+fuel_count = 0
+check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+  "loss of matching stocked fuel also revokes proof when the return inserter reports working")
+fuel_count = 5
+for _, mode in ipairs({ "fuel_wait_preflight", "material_wait_preflight", "output_wait_preflight", "fuel_wait_later", "material_wait_later" }) do
+  local interval = simulate_validation(mode)
+  check(interval.status == "completed" and interval.outcomes[1].result.source_cycles_observed == 3
+    and interval.outcomes[1].result.downstream_acceptance_samples == 3,
+    "bounded validator collects later flow and exact transport resumption after " .. mode)
+end
+for _, mode in ipairs({ "persistent_fuel_wait", "persistent_material_wait", "persistent_later_wait" }) do
+  local interval = simulate_validation(mode)
+  check(interval.status == "failed" and canonical(interval.outcomes[1].result.blockers):match("transport_resumption_not_observed")
+    and buffer_stock == 3,
+    "productive sources and rising downstream stock cannot conceal " .. mode)
+end
+for _, mode in ipairs({ "empty_stock_later", "no_energy_later", "unsupported_fuel_later", "incompatible_held_later" }) do
+  local interval = simulate_validation(mode)
+  check(interval.status == "failed" and canonical(interval.outcomes[1].result.blockers):match("fuel_return_supply_unproven")
+    and buffer_stock > 0,
+    "rising downstream stock cannot conceal broken working fuel return: " .. mode)
+end
+for _, mode in ipairs({ "compartment_missing", "compartment_unreadable", "compartment_malformed", "compartment_later" }) do
+  local interval = simulate_validation(mode)
+  check(interval.status == "failed" and canonical(interval.outcomes[1].result.blockers):match("fuel_return_supply_unproven")
+    and buffer_stock > 0,
+    "growing downstream stock cannot erase a fuel-return obligation with " .. mode)
+end
+local generic_shortage = simulate_validation("generic_shortage")
+check(generic_shortage.status == "failed" and generic_shortage.outcomes[1].result.stage == "preflight",
+  "generic insufficient_input remains a hard preflight blocker")
 for _, mode in ipairs({ "ambiguous_return", "incompatible_return", "blocked_output" }) do
   local rejected = simulate_validation(mode)
   check(rejected.status == "failed" and rejected.outcomes[1].result.blocked_output,

@@ -160,7 +160,10 @@ checks.
   acceptance remains unproven; no exact remote inventory/fluid counts appear.
 - In an authorized supported Factorio 2.0.x run, observe an exact connected
   fuel-return inserter waiting at the burner's ordinary replenishment target
-  while useful production continues. Capture its held fuel/quality, pickup/drop
+  while useful production continues, both with held fuel and with an empty
+  held stack. For the empty case, capture the supported burning pair and the
+  single matching stocked fuel/quality pair; never read empty-stack identity.
+  Capture `identity_source`, pickup/drop
   bindings, compatible upstream production, working burner with remaining
   energy, matching stocked fuel and fuel-inventory space. Confirm the waiting
   status stays visible with `fuel_return_saturation` and the corresponding
@@ -168,6 +171,15 @@ checks.
   component `blocked_output` or either other output blocker. Do not infer the
   normal replenishment target from a hard-coded count or relabel the inserter
   as working. Unsupported or ambiguous compartment/fuel evidence stays blocked.
+- Observe exact `waiting_for_source_items` snapshots at preflight and during
+  sampling on both a fuel-return and a material-transport inserter. Confirm the
+  normalized shortage and diagnostic remain visible, with `transport_wait`
+  evidence and `validation_nonblocking_reason` explaining provisional sampling.
+  Record later working resumption of each waiting inserter, all required source
+  and processor cycles, matching acceptance at every endpoint and zero transfers.
+  Persistent waiting must fail even when independent downstream stock grows;
+  generic `insufficient_input` must still fail preflight. A current waiting
+  snapshot must revoke an existing public autonomy claim.
 - Observe fuel consumption, resumed ordinary replenishment, and renewed waiting
   with unchanged topology. Record continued source/processor production,
   downstream acceptance and zero character transfers across the bounded
@@ -175,10 +187,16 @@ checks.
   and full/nonaccepting buffer blockage, incompatible/unresolved fuel, and the
   end-belt orientation diagnostic; each must still reject autonomy. Do not
   repair a belt layout merely to remove that diagnostic in this check.
+- Check positive burning energy and matching compatible stocked fuel at every
+  sample, including after the return inserter resumes working. Independently
+  remove stock, interrupt burning energy, make fuel evidence unsupported or
+  contradictory, and keep downstream output growing through another branch.
+  Each broken return must still reject validation and revoke current proof;
+  aggregate output growth is not continuous fuel evidence.
 - Record the exact deployed source revision and mod archive digest with live
   structured observations. The Lua saturation/replenishment fixture is offline
-  simulated evidence, not confirmation of the reported release 0.19.2 live
-  observation. This source change has no live confirmation or deployment;
+  simulated evidence, not confirmation of the reported release 0.19.5 live
+  observation or any later deployed candidate. This source change has no live confirmation or deployment;
   perform that check only in a separately authorized run, without restarting or
   altering an unrelated active run.
 - During separate validation intervals, interrupt fuel/power, change a physical

@@ -149,12 +149,12 @@ end
 
 local function terminal_pole(c, item_name, proto, entity)
   if entity.type == "electric-pole" then
-    local reach = tonumber(entity.prototype and entity.prototype.maximum_wire_distance)
+    local reach = tonumber(entity.prototype.get_max_wire_distance(entity.quality))
     if not reach then error("power pole endpoint does not expose wire reach") end
     return { position = entity.position, reach = reach, step = nil }
   end
-  local supply = tonumber(proto.supply_area_distance)
-  local reach = tonumber(proto.maximum_wire_distance)
+  local supply = tonumber(proto.get_supply_area_distance("normal"))
+  local reach = tonumber(proto.get_max_wire_distance("normal"))
   if not supply or not reach then error("power route prototype must expose supply area and wire reach") end
   local box, candidates = entity_box(entity), {}
   local min_x, max_x = math.floor(box.left_top.x - supply), math.ceil(box.right_bottom.x + supply)
@@ -181,7 +181,7 @@ local function terminal_pole(c, item_name, proto, entity)
 end
 
 local function power_route(c, item_name, proto, from, to, from_entity, to_entity, max_length)
-  local new_reach = tonumber(proto.maximum_wire_distance)
+  local new_reach = tonumber(proto.get_max_wire_distance("normal"))
   if not new_reach then error("power route prototype must expose wire reach") end
   local from_terminal = terminal_pole(c, item_name, proto, from_entity)
   local to_terminal = terminal_pole(c, item_name, proto, to_entity)

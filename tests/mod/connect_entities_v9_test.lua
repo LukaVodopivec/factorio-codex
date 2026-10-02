@@ -5,6 +5,7 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 local from_entity = { valid = true, name = "belt-a", type = "transport-belt", position = { x = 0.5, y = 0.5 } }
 local to_entity = { valid = true, name = "belt-b", type = "transport-belt", position = { x = 4.5, y = 0.5 } }
 local charted = true
+local blocked_position
 local force = { is_chunk_charted = function() return charted end }
 local surface = {
   find_entities_filtered = function(filter)
@@ -12,7 +13,18 @@ local surface = {
     if math.abs(filter.position.x - to_entity.position.x) < 0.01 then return { to_entity } end
     return {}
   end,
-  can_place_entity = function(args) return not (math.abs(args.position.x - 2.5) < 0.01 and math.abs(args.position.y - 0.5) < 0.01) end,
+  can_place_entity = function(args)
+    local pos = args.position
+    if blocked_position and pos.x == blocked_position.x and pos.y == blocked_position.y then return false end
+    if args.name == "small-electric-pole" then
+      for _, entity in ipairs({ from_entity, to_entity }) do
+        local box = entity.bounding_box
+        if box and pos.x + 0.2 > box.left_top.x and pos.x - 0.2 < box.right_bottom.x
+          and pos.y + 0.2 > box.left_top.y and pos.y - 0.2 < box.right_bottom.y then return false end
+      end
+    end
+    return args.name == "small-electric-pole" or not (math.abs(pos.x - 2.5) < 0.01 and math.abs(pos.y - 0.5) < 0.01)
+  end,
 }
 package.loaded["scripts.companion"] = { require_companion = function() return { surface = surface, force = force } end }
 _G.defines = { build_check_type = { manual = 1 } }
@@ -49,21 +61,95 @@ end
 check(includes_source_port and includes_target_port,
   "pipe routes accept fluid-capable machines and physically fill their external connection tiles")
 
+local function pole_prototype(quality, reach)
+  return { get_max_wire_distance = function(actual_quality)
+    assert(actual_quality == quality, "wire reach must use the pole's actual quality")
+    return reach
+  end }
+end
+local proposed_supply = 2.5
+local proposed_pole = {
+  name = "small-electric-pole", type = "electric-pole",
+  get_max_wire_distance = function(quality)
+    assert(quality == "normal", "proposed wire reach must use normal quality")
+    return 5
+  end,
+  get_supply_area_distance = function(quality)
+    assert(quality == "normal", "proposed supply area must use normal quality")
+    return proposed_supply
+  end,
+  collision_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } },
+}
+_G.prototypes.item["small-electric-pole"] = { place_result = proposed_pole }
+local function power_route(max_length)
+  return connect.connect_entities({ kind = "power", prototype = "small-electric-pole",
+    from = from_entity.position, to = to_entity.position, max_length = max_length or 10 })
+end
+local function rejects_power(max_length, message)
+  local ok, err = pcall(power_route, max_length)
+  return not ok and tostring(err):find(message, 1, true) ~= nil
+end
+local function within_wire_reach(route, from_reach, to_reach)
+  local previous, reach = from_entity.position, from_reach
+  for _, step in ipairs(route.steps) do
+    local dx, dy = step.x - previous.x, step.y - previous.y
+    if math.sqrt(dx * dx + dy * dy) > math.min(reach, 5) then return false end
+    previous, reach = step, 5
+  end
+  local dx, dy = to_entity.position.x - previous.x, to_entity.position.y - previous.y
+  return math.sqrt(dx * dx + dy * dy) <= math.min(reach, to_reach)
+end
 from_entity.type, to_entity.type = "electric-pole", "electric-pole"
-from_entity.prototype, to_entity.prototype = { maximum_wire_distance = 5 }, { maximum_wire_distance = 5 }
+from_entity.quality, to_entity.quality = { name = "normal" }, { name = "normal" }
+from_entity.prototype = pole_prototype(from_entity.quality, 5)
+to_entity.prototype = pole_prototype(to_entity.quality, 5)
 to_entity.position.x = 10.5
-_G.prototypes.item["small-electric-pole"] = { place_result = { name = "small-electric-pole", type = "electric-pole", maximum_wire_distance = 5, supply_area_distance = 2.5, collision_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } } } }
-local power = connect.connect_entities({ kind = "power", prototype = "small-electric-pole", from = { x = 0.5, y = 0.5 }, to = { x = 10.5, y = 0.5 }, max_length = 10 })
-check(power.length == 1 and power.steps[1].x == 5.5, "power routes respect endpoint and prototype wire reach")
+local power = power_route()
+check(power.length == 1 and power.steps[1].x == 5.5 and power.steps[1].y == 0.5
+  and within_wire_reach(power, 5, 5), "power routes respect endpoint and prototype wire reach")
+
+from_entity.quality, to_entity.quality = { name = "rare" }, { name = "epic" }
+from_entity.prototype = pole_prototype(from_entity.quality, 5)
+to_entity.prototype = pole_prototype(to_entity.quality, 3)
+local unequal_power = power_route()
+check(unequal_power.length == 3 and unequal_power.steps[1].x == 3.5
+  and unequal_power.steps[2].x == 5.5 and unequal_power.steps[3].x == 8.5
+  and within_wire_reach(unequal_power, 5, 3), "different endpoint qualities and reaches produce deterministic bounded wire spans")
+check(rejects_power(2, "beyond max_length"), "power routes reject too few allowed poles")
+blocked_position = { x = 5.5, y = 0.5 }
+check(rejects_power(10, "power route is blocked"), "power routes reject blocked intermediate placement")
+blocked_position = nil
+from_entity.prototype = pole_prototype(from_entity.quality, 3)
+to_entity.prototype = pole_prototype(to_entity.quality, 5)
+local short_source = power_route()
+check(short_source.length == 3 and within_wire_reach(short_source, 3, 5), "short source reach also bounds the route")
+to_entity.position.x = 3.5
+check(power_route().length == 0, "already reachable poles need no new placement")
+to_entity.position.x = 10.5
 
 from_entity.type, from_entity.name = "generator", "steam-engine"
 to_entity.type, to_entity.name = "lab", "lab"
 from_entity.prototype, to_entity.prototype = { electric_energy_source_prototype = {} }, { electric_energy_source_prototype = {} }
 from_entity.bounding_box = { left_top = { x = -0.5, y = -0.5 }, right_bottom = { x = 1.5, y = 1.5 } }
 to_entity.bounding_box = { left_top = { x = 9.5, y = -0.5 }, right_bottom = { x = 11.5, y = 1.5 } }
-local machine_power = connect.connect_entities({ kind = "power", prototype = "small-electric-pole", from = { x = 0.5, y = 0.5 }, to = { x = 10.5, y = 0.5 }, max_length = 10 })
-check(machine_power.length >= 2 and machine_power.length <= 10,
-  "power routes accept producing and consuming machines and include physical endpoint-covering poles")
+local machine_power = power_route()
+local function covers(step, entity)
+  local box = entity.bounding_box
+  local dx = math.max(box.left_top.x - step.x, 0, step.x - box.right_bottom.x)
+  local dy = math.max(box.left_top.y - step.y, 0, step.y - box.right_bottom.y)
+  return dx <= proposed_supply and dy <= proposed_supply
+end
+check(machine_power.length >= 2 and machine_power.length <= 10
+  and covers(machine_power.steps[1], from_entity) and covers(machine_power.steps[#machine_power.steps], to_entity),
+  "machine routes include physical poles covering both endpoints with normal-quality supply area")
+for index = 2, #machine_power.steps do
+  local a, b = machine_power.steps[index - 1], machine_power.steps[index]
+  check((b.x - a.x)^2 + (b.y - a.y)^2 <= 25, "machine route pole spans fit normal wire reach")
+end
+check(rejects_power(1, "endpoint coverage needs more poles"), "endpoint-covering poles count toward max_length")
+proposed_supply = 0.25
+check(rejects_power(10, "no charted physical pole placement covers"), "machine endpoint coverage refuses placements outside supply area")
+proposed_supply = 2.5
 charted = false
 local uncharted, uncharted_error = pcall(connect.connect_entities, { kind = "power", prototype = "small-electric-pole", from = { x = 0.5, y = 0.5 }, to = { x = 10.5, y = 0.5 }, max_length = 10 })
 check(not uncharted and tostring(uncharted_error):match("force%-charted") ~= nil, "uncharted exact endpoints are refused")

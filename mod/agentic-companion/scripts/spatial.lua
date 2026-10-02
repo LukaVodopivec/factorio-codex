@@ -340,35 +340,73 @@ function M.observe_local(params)
     return a.count < b.count
   end)
   local patches = {}
-  for name, resources in pairs(resources_by_name) do
+  -- The exact member list is only the final sort tie-break; build it on demand.
+  local function patch_members_key(patch)
+    if type(patch._members) == "table" then
+      local parts = {}
+      for i, e in ipairs(patch._members) do parts[i] = string.format("%.17g,%.17g,%.17g,%d", e.x, e.y, e.amount, e.unit) end
+      patch._members = table.concat(parts, ";")
+    end
+    return patch._members
+  end
+  for name, entities_of_name in pairs(resources_by_name) do
+    -- Read each engine position and amount once; the clustering below runs
+    -- on plain tables (thousands of ore tiles made API reads the tick cost).
+    local resources = {}
+    for i, e in ipairs(entities_of_name) do
+      local pos = e.position
+      resources[i] = { x = pos.x, y = pos.y, amount = e.amount or 0, unit = tonumber(e.unit_number) or -1 }
+    end
     table.sort(resources, function(a, b)
-      if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-      if a.position.x ~= b.position.x then return a.position.x < b.position.x end
-      if (a.amount or 0) ~= (b.amount or 0) then return (a.amount or 0) < (b.amount or 0) end
-      return (tonumber(a.unit_number) or -1) < (tonumber(b.unit_number) or -1)
+      if a.y ~= b.y then return a.y < b.y end
+      if a.x ~= b.x then return a.x < b.x end
+      if a.amount ~= b.amount then return a.amount < b.amount end
+      return a.unit < b.unit
     end)
+    -- Neighbours lie within 1.1 tiles on both axes, so they share a bucket
+    -- within two of each other; the exact distance test still decides.
+    local buckets = {}
+    for index, r in ipairs(resources) do
+      local bx, by = math.floor(r.x), math.floor(r.y)
+      local column = buckets[bx]
+      if not column then column = {}; buckets[bx] = column end
+      local bucket = column[by]
+      if not bucket then bucket = {}; column[by] = bucket end
+      bucket[#bucket + 1] = index
+    end
     local visited = {}
     for start = 1, #resources do if not visited[start] then
       local queue, head, count, amount, sx, sy, members = { start }, 1, 0, 0, 0, 0, {}; visited[start] = true
-      local nearest, nearest_distance_sq, nearest_unit
+      local nearest, nearest_distance_sq
       while head <= #queue do
         local index = queue[head]; head = head + 1; local e = resources[index]
-        count, amount, sx, sy = count + 1, amount + (e.amount or 0), sx + e.position.x, sy + e.position.y
-        local ndx, ndy = e.position.x - c.position.x, e.position.y - c.position.y
-        local distance_sq, unit = ndx * ndx + ndy * ndy, tonumber(e.unit_number) or -1
+        count, amount, sx, sy = count + 1, amount + e.amount, sx + e.x, sy + e.y
+        local ndx, ndy = e.x - c.position.x, e.y - c.position.y
+        local distance_sq = ndx * ndx + ndy * ndy
         if not nearest or distance_sq < nearest_distance_sq
-          or (distance_sq == nearest_distance_sq and (e.position.y < nearest.position.y
-            or (e.position.y == nearest.position.y and (e.position.x < nearest.position.x
-              or (e.position.x == nearest.position.x and ((e.amount or 0) < (nearest.amount or 0)
-                or ((e.amount or 0) == (nearest.amount or 0) and unit < nearest_unit))))))) then
-          nearest, nearest_distance_sq, nearest_unit = e, distance_sq, unit
+          or (distance_sq == nearest_distance_sq and (e.y < nearest.y
+            or (e.y == nearest.y and (e.x < nearest.x
+              or (e.x == nearest.x and (e.amount < nearest.amount
+                or (e.amount == nearest.amount and e.unit < nearest.unit))))))) then
+          nearest, nearest_distance_sq = e, distance_sq
         end
-        members[#members + 1] = string.format("%.17g,%.17g,%.17g,%d", e.position.x, e.position.y,
-          e.amount or 0, tonumber(e.unit_number) or -1)
-        for other = 1, #resources do if not visited[other] then local o = resources[other]; if math.abs(e.position.x - o.position.x) <= 1.1 and math.abs(e.position.y - o.position.y) <= 1.1 then visited[other] = true; queue[#queue + 1] = other end end end
+        members[#members + 1] = e
+        local found, bx, by = {}, math.floor(e.x), math.floor(e.y)
+        for gx = bx - 2, bx + 2 do
+          local column = buckets[gx]
+          if column then for gy = by - 2, by + 2 do
+            local bucket = column[gy]
+            if bucket then for _, other in ipairs(bucket) do
+              local o = resources[other]
+              if not visited[other] and math.abs(e.x - o.x) <= 1.1 and math.abs(e.y - o.y) <= 1.1 then found[#found + 1] = other end
+            end end
+          end end
+        end
+        table.sort(found)
+        for _, other in ipairs(found) do visited[other] = true; queue[#queue + 1] = other end
       end
       local center = { x = sx / count, y = sy / count }; local dx, dy = center.x - c.position.x, center.y - c.position.y
-      patches[#patches + 1] = { name = name, entity_count = count, total_amount = amount, center = center, distance = math.sqrt(dx * dx + dy * dy), nearest_target = { x = nearest.position.x, y = nearest.position.y, amount = nearest.amount or 0, distance = math.sqrt(nearest_distance_sq) }, _members = table.concat(members, ";") }
+      patches[#patches + 1] = { name = name, entity_count = count, total_amount = amount, center = center, distance = math.sqrt(dx * dx + dy * dy), nearest_target = { x = nearest.x, y = nearest.y, amount = nearest.amount, distance = math.sqrt(nearest_distance_sq) }, _members = members }
     end end
   end
   table.sort(patches, function(a, b)
@@ -378,7 +416,7 @@ function M.observe_local(params)
     if a.center.x ~= b.center.x then return a.center.x < b.center.x end
     if a.entity_count ~= b.entity_count then return a.entity_count < b.entity_count end
     if a.total_amount ~= b.total_amount then return a.total_amount < b.total_amount end
-    return a._members < b._members
+    return patch_members_key(a) < patch_members_key(b)
   end)
   local omitted_resource_patches = math.max(0, #patches - patch_limit)
   while #patches > patch_limit do table.remove(patches) end

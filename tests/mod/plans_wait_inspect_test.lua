@@ -189,4 +189,9 @@ game.tick = 900
 check(tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 900,
   positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } }).body_idle_ticks == 0,
   "emergency cancel-all clears the idle clock, so the first plan after it is not blamed")
+local emptied = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 900,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+check(tasks.plan_status({ plan_id = emptied.plan_id }).fifo_empty == false, "a queued plan keeps the FIFO non-empty")
+tasks.cancel({ all = true })
+check(tasks.plan_status({ plan_id = emptied.plan_id }).fifo_empty == true, "plan_status reports an empty FIFO once nothing is pending")
 os.exit(failures == 0 and 0 or 1)

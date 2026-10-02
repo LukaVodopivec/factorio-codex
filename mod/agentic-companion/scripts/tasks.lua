@@ -251,6 +251,9 @@ local function plan_payload(plan)
     position = c and { x = c.position.x, y = c.position.y } or nil,
     current_step = plan.current_step, completed_steps = plan.completed_steps,
     total_steps = #plan.steps, outcomes = plan.outcomes, queue_depth = #storage.tasks.queue,
+    -- Nothing active, queued, parked, or hand-crafting: the body is idle now.
+    fifo_empty = not storage.tasks.active and #storage.tasks.queue == 0
+      and not (c and c.valid and (c.crafting_queue_size or 0) > 0),
     transitions = plan.transitions,
     inventory_delta = inventory_delta(plan),
     observation = plan.observation, observation_error = plan.observation_error,

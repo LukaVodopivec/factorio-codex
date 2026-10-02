@@ -174,5 +174,18 @@ check(compact.entities[1].bounds == nil and compact.entities[1].selection_box ==
   "compact entity rows omit placement geometry retained by full observations")
 check(#canonical(compact) < 10000,
   "dense compact observation remains below the bounded serialized response budget")
+local position_reads, dense = 0, {}
+for x = -14, 15 do for y = -14, 15 do
+  local raw = resource("dense-ore", x + 0.5, y + 0.5, 10)
+  local pos = raw.position; raw.position = nil
+  dense[#dense + 1] = setmetatable(raw, { __index = function(_, key) if key == "position" then position_reads = position_reads + 1; return pos end end })
+end end
+entity_order = dense
+local dense_observation = spatial.observe_local({ radius = 15 })
+check(#dense_observation.resource_patches == 1 and dense_observation.resource_patches[1].entity_count == 900
+  and dense_observation.resource_patches[1].total_amount == 9000,
+  "a dense ore field clusters into one exact patch")
+check(position_reads < 20 * 900,
+  "patch clustering reads each ore position a bounded number of times, not once per pair")
 _G.require = parse_require
 os.exit(failures == 0 and 0 or 1)

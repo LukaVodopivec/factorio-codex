@@ -101,7 +101,7 @@ describe("mod installation", () => {
     const mods = path.join(tempDir(), "mods");
     const installed = installMod(mods);
     expect(installed.copied).toBe(true);
-    expect(JSON.parse(fs.readFileSync(path.join(installed.dest, "info.json"), "utf8"))).toMatchObject({ name: "agentic-companion", version: "0.19.2" });
+    expect(JSON.parse(fs.readFileSync(path.join(installed.dest, "info.json"), "utf8"))).toMatchObject({ name: "agentic-companion", version: "0.19.3" });
     expect(JSON.parse(fs.readFileSync(path.join(mods, "mod-list.json"), "utf8")).mods).toContainEqual({ name: "agentic-companion", enabled: true });
   });
 });

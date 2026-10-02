@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
 import { MCP_SERVER_VERSION, registerMcpTools } from "../src/mcp/server.js";
-import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
+import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
 import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
@@ -9,7 +9,7 @@ const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", r
 describe("protocol v22 DTO and tool registry", () => {
   it("declares v22 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(22);
-    expect(MCP_SERVER_VERSION).toBe("0.19.2");
+    expect(MCP_SERVER_VERSION).toBe("0.19.3");
     expect(RPC_METHODS).toHaveLength(19);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities"]));
   });
@@ -192,5 +192,13 @@ describe("queued plan idle feedback", () => {
     expect(queuedPlanSummary({ plan_id: 4, body_idle_ticks: 0 })).toBe("queued plan 4");
     expect(queuedPlanSummary({ plan_id: 4, body_idle_ticks: 599 })).toBe("queued plan 4");
     expect(queuedPlanSummary({ plan_id: 5, body_idle_ticks: 2700 })).toMatch(/^queued plan 5; the body sat idle 45 s before it: queue work that outlasts your next decision/);
+  });
+});
+
+describe("plan_status idle feedback", () => {
+  it("says the body is idle only when a terminal plan leaves the FIFO empty", () => {
+    expect(planStatusSummary({ status: "completed", fifo_empty: true }, true)).toBe("completed; the FIFO is empty and the body is idle");
+    expect(planStatusSummary({ status: "completed", fifo_empty: false }, true)).toBe("completed");
+    expect(planStatusSummary({ status: "running", fifo_empty: true }, false)).toBe("running");
   });
 });

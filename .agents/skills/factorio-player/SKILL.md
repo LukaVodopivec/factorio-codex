@@ -297,7 +297,9 @@ and zero character insert/extract actions for the segment must all hold.
 - A `validate_factory_component` plan step proves autonomy for one whole
   physical component: its 1-16 `positions` only identify the component (one
   exact node position is enough), and it samples the component for
-  `duration_seconds` (long enough for several processor cycles). Its transfer window opens
+  `duration_seconds` (long enough for several processor cycles). Queue it only once every
+  node of the segment has a physical feed, fuel included; a hand-fuelled burner
+  always fails on `fuel_input_provenance_unresolved`. Its transfer window opens
   when the step starts, so queue it after a `wait_for_item` on the segment's
   terminal output, once bootstrap insertions are done and the segment produces.
   A failed preflight lists named blockers such as

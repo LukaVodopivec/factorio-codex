@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.2 retains each exact placed entity and validates the live output
+Release 0.19.3 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.2 validation.
+0.19.3 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -153,6 +153,29 @@ returns `body_idle_ticks`, the time the FIFO sat empty before the plan, and its
 summary names idle seconds from 10 s on. The pilot sizes each plan to outlast
 its next decision, and the runbook delivers `GO` as a native turn start on each
 role thread with a running turn read back.
+
+## 2026-10-02 debug cycle 3 (0.19.2) and the 0.19.3 observation cost fix
+
+Run `debug-20261002T011309Z` (fresh game, seed 747930220) stopped at `GO+20m`
+with 6 machines, 13 physical edges, 70 finished products, and no nudge; `GO`
+went through the native resumption procedure. The idle feedback raised body
+busy time from about 14% to 34% and the first `queue_plan` came 24 s after
+`GO`. Sol designed a full mined-coal fuel corridor, but all three validations
+failed on `fuel_input_provenance_unresolved`: each was queued on a hand-fuelled
+burner segment. The worst idle gaps began when a plan ended and the pilot then
+reasoned with nothing queued, and its context grew from 94k to 235k tokens,
+partly from reading other sessions' threads at turn starts.
+
+The couch client's latency stayed at 60 to 90 ticks, rising within seconds of
+Sol's read bursts. An isolated headless benchmark of the final save found the
+cause: `observe_local` clustered resource patches by comparing every ore tile
+with every other through engine position reads, costing 600 to 740 ms of tick
+time per call at radius 30 (about 2,400 ore tiles). Release 0.19.3 clusters
+through a tile-bucket index with each position read once and produces
+byte-identical output at 36 to 48 ms. `plan_status` also reports `fifo_empty`
+and says so when a terminal plan leaves the body idle, the pilot no longer
+reads threads after `GO`, and validation steps close only segments whose every
+node has a physical feed.
 
 ## Prior 0.8.0 structured timings
 
@@ -323,7 +346,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.2, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.19.3, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -393,7 +416,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.2 benchmark results.
+present historical timings as 0.19.3 benchmark results.
 
 #### Candidate B R7 recorded result
 

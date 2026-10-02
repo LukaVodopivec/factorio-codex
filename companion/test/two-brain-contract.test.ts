@@ -110,6 +110,9 @@ describe("persistent two-brain coordination contract", () => {
     expect(skill).toMatch(/transfer window opens\s+when the step starts/);
     for (const text of [agents, skill, pilot]) expect(text).toMatch(/under about 300 bytes/);
     expect(skill).toMatch(/one\s+exact node position is enough/);
+    expect(strategist).toMatch(/A segment is complete only when every node has a physical feed, fuel included/);
+    expect(pilot).toMatch(/After `GO`, never call `read_thread` or `wait_threads`, and call `list_threads` only once if you lack Sol's thread ID/);
+    expect(pilot).toMatch(/a `plan_status` summary saying the FIFO is empty means it is not/);
     expect(pilot).toMatch(/size each queued plan to outlast the next one[\s\S]*rather than a lone one-rock or one-item plan/);
     expect(skill).toMatch(/size each plan to outlast the pilot's next decision/);
   });

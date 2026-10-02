@@ -7,10 +7,10 @@ import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../co
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
 import { normalizeObservation } from "./observation.js";
 import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
-import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
+import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.19.2";
+export const MCP_SERVER_VERSION = "0.19.3";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const items = z.record(z.string(), z.number().int().positive());
@@ -167,7 +167,7 @@ export function registerMcpTools(
       const value: any = await waitForPlanStatus(await bridge(), p.plan_id, p.wait_until, p.timeout_seconds * 1_000, extra?.signal);
       if (value.observation) value.observation = normalizeObservation(value.observation);
       const terminal = ["completed", "partial", "failed", "cancelled"].includes(value.status);
-      return result(normalizePlanDiagnostics({ ...value, terminal,
+      return result(normalizePlanDiagnostics({ ...value, terminal, summary: planStatusSummary(value, terminal),
         next_action: terminal ? null : { tool: "plan_status", arguments: {
           plan_id: value.plan_id, wait_until: p.wait_until === "current" ? "progress" : p.wait_until, timeout_seconds: p.timeout_seconds,
         } },

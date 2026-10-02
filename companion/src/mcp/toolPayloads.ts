@@ -211,3 +211,11 @@ export function queuedPlanSummary(queued: { plan_id: number; body_idle_ticks?: n
     ? `queued plan ${queued.plan_id}; the body sat idle ${idle} s before it: queue work that outlasts your next decision and keep a successor queued`
     : `queued plan ${queued.plan_id}`;
 }
+
+// A finished plan that leaves the FIFO empty idles the body until the next
+// queue_plan; say so before the caller starts reading or reasoning.
+export function planStatusSummary(value: { status: string; fifo_empty?: boolean }, terminal: boolean): string {
+  return terminal && value.fifo_empty
+    ? `${value.status}; the FIFO is empty and the body is idle`
+    : value.status;
+}

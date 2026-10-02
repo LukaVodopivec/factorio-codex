@@ -530,7 +530,8 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
   for _, node in ipairs(nodes) do
     local r = root(node.id)
     local component = by_root[r] or { node_ids = {}, roles = {}, status_counts = {}, edge_count = 0,
-      products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil, _edges = {}, _diagnostics = {} }
+      products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil,
+      _transfers = {}, _edges = {}, _diagnostics = {} }
     by_root[r] = component
     component.node_ids[#component.node_ids + 1] = node.id
     component.roles[node.role] = (component.roles[node.role] or 0) + 1
@@ -542,16 +543,17 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     component.edge_count = component.edge_count + 1
     component._edges[#component._edges + 1] = edge
   end
-  for _, event in ipairs(activity.target_actions or {}) do
+  for _, event in ipairs(activity.events or {}) do
     if event.target then
       local key = string.format("%s\0%s\0%.17g\0%.17g", event.target.name, event.target.type,
         event.target.position.x, event.target.position.y)
       local node = retained[key]
       if node then
         local component = by_root[root(node.id)]
-        component.character_transfer_actions = component.character_transfer_actions + event.transfer_actions
+        component._transfers[#component._transfers + 1] = { event = event, node = node }
+        component.character_transfer_actions = component.character_transfer_actions + 1
         component.last_character_transfer_tick = math.max(component.last_character_transfer_tick or 0,
-          tonumber(event.last_transfer_tick) or 0)
+          tonumber(event.tick) or 0)
       end
     end
   end
@@ -1085,11 +1087,23 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     end
     -- Bootstrap transfers before a successful bounded validation are historical
     -- debt, not evidence that the now-connected component still needs the
-    -- character. Any transfer at or after the validation interval begins
-    -- revokes it; incomplete telemetry remains conservatively unproven.
-    local transfer_observed = validation and component.last_character_transfer_tick
-      and component.last_character_transfer_tick >= validation.start_tick
-      or not validation and component.character_transfer_actions > 0
+    -- character. Only accepted-product harvesting from a matching terminal
+    -- buffer after the unattended interval may retain that proof. Raw counts
+    -- still include harvesting; incomplete telemetry remains unproven.
+    local transfer_observed = false
+    for _, transfer in ipairs(component._transfers) do
+      local event, node = transfer.event, transfer.node
+      if not validation or event.tick >= validation.start_tick then
+        local harvest = validation and event.tick > validation.end_tick and event.action == "extract"
+          and node._downstream_buffer and #event.items > 0
+        if harvest then
+          for _, item in ipairs(event.items) do
+            if node._accepted_products["item:" .. item.name] ~= true then harvest = false end
+          end
+        end
+        if not harvest then transfer_observed = true; break end
+      end
+    end
     local blocker_names, seen_blocker, details, seen_detail = {}, {}, {}, {}
     local hard_rows = {}
     for _, row in ipairs(rows) do

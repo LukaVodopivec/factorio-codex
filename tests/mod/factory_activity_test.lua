@@ -32,6 +32,10 @@ local capped = activity.snapshot(100)
 check(#capped.events == 8 and capped.events_omitted_in_window > 0 and capped.events_omitted_before_window > 0
   and not capped.history_complete and #capped.target_actions == 16 and capped.target_actions_omitted > 0,
   "activity history is capped and reports omissions instead of pretending completeness")
+local internal = activity.snapshot(100, true)
+check(#internal.events == 128 and #internal.target_actions == 128
+  and internal.events[1].action == "insert" and internal.events[1].items[1].name == "ore",
+  "internal attribution retains action and items beyond both public presentation caps")
 for i = 1, 33 do activity.record_validation({ proven = true, component_signature = "component-" .. i,
   start_tick = 300, end_tick = 301, duration_ticks = 1, products_finished_delta = i + 2,
   downstream_kind = "consumer", downstream_acceptance_samples = 3, source_cycles_observed = 3,

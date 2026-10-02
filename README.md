@@ -434,10 +434,23 @@ rows report waits that did not fail it.
 Serialization omissions alone do not reject validation. Character transfers,
 changed topology, persistent missing fuel or power, no production or unobserved
 downstream acceptance do reject it. A prior proof also loses current autonomy
-when a new transfer or blocked output appears, or when a source or processor is
+when a disallowed transfer or blocked output appears, or when a source or processor is
 at `no_fuel`, `no_power`, `no_resources` or disabled
 (`validated_producer_nonproductive`); input and output waits do not revoke it. Offline fixtures establish source behavior only; deployment and live supplied
-steam-power autonomy remain unverified. These are sampled bounded
+steam-power autonomy remain unverified.
+
+After successful unattended validation, extracting only accepted products from
+that matching component's terminal downstream buffer strictly after the
+validation end tick retains its bounded autonomy proof while downstream capacity
+and the other current autonomy conditions hold. Harvesting remains character
+work: raw transfer actions and extracted-item counts include every harvest.
+It never establishes proof or exempts transfers during a new validation window.
+Insertions, extractions from processors or intermediate buffers, unrelated items,
+and mixed transfers containing any disallowed item revoke current autonomy.
+Incomplete or evicted transfer history remains conservatively unproven.
+Electrical dependencies still join components in this 0.19.6 baseline; separating
+them would not remove a terminal buffer from its material-flow component or make
+this harvesting exception unnecessary. These are sampled bounded
 claims, not a guarantee about every intervening tick or unlimited future demand.
 
 ## Verification

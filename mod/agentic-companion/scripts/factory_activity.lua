@@ -131,7 +131,7 @@ function M.snapshot(since_tick, internal)
   local omitted_targets = math.max(0, #target_rows - MAX_TARGET_ROWS)
   if not internal then while #target_rows > MAX_TARGET_ROWS do table.remove(target_rows) end end
   local omitted_events = math.max(0, #events - MAX_RETURNED_EVENTS)
-  while #events > MAX_RETURNED_EVENTS do table.remove(events, 1) end
+  if not internal then while #events > MAX_RETURNED_EVENTS do table.remove(events, 1) end end
   local validations = {}
   for _, validation in ipairs(activity.validations) do
     if validation.end_tick >= since_tick then

@@ -705,6 +705,10 @@ local function simulate_validation(mode)
       if mode == "unsupported_fuel_later" then buffer_source.get_fuel_inventory = function() error("unsupported") end end
       if mode == "incompatible_held_later" then fuel_feed.held_stack.name = "incompatible" end
     end
+    if mode == "harvest" and i == 2 then
+      buffer_stock = buffer_stock - 1
+      require("scripts.factory_activity").record("extract", { target = buffer_sink, transfers = { { item = "plate", extracted = 1 } } })
+    end
     if mode == "transfer" and i == 2 then
       require("scripts.factory_activity").record("insert", { target = buffer_processor, transfers = { { item = "ore", inserted = 1 } } })
     end
@@ -722,6 +726,71 @@ check(accepted_buffer.status == "completed" and accepted_buffer.outcomes[1].resu
   and accepted_buffer.outcomes[1].result.downstream_acceptance_samples == 3
   and map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
   "real graph and validator prove supplied burner drill-furnace-chest acceptance across three unattended cycles")
+-- Harvest only after a real unattended validation; keep production and the
+-- terminal inventory physically progressing for ten minutes of fixture time.
+local harvest_start, produced_before = game.tick, buffer_processor.products_finished
+for i = 1, 20 do
+  require("scripts.factory_activity").record("insert", { target = { name = "unrelated", type = "container",
+    position = { x = -i, y = -10 } }, transfers = { { item = "ore", inserted = 1 } } })
+end
+for i = 1, 60 do
+  game.tick = harvest_start + i * 600
+  buffer_processor.products_finished = buffer_processor.products_finished + 10
+  buffer_source.mining_target.amount = buffer_source.mining_target.amount - 10
+  coal_source.mining_target.amount = coal_source.mining_target.amount - 10
+  buffer_stock = buffer_stock + 10
+  buffer_stock = buffer_stock - 10
+  require("scripts.factory_activity").record("extract", { target = buffer_sink,
+    transfers = { { item = "plate", extracted = 10 } } })
+  local summary = map.map_summary({})
+  check(summary.factory.material_flow.components[1].state.autonomous_end_to_end,
+    "terminal harvesting retains a real proof at simulated second " .. i * 10)
+end
+local harvested = map.map_summary({})
+check(game.tick - harvest_start == 36000 and buffer_processor.products_finished - produced_before == 600
+  and harvested.factory.character_transfers.transfer_actions == 80
+  and harvested.factory.character_transfers.extracted_items[1].count == 600
+  and harvested.factory.material_flow.components[1].character_transfer_actions == 60
+  and harvested.factory.character_transfers.target_actions_omitted > 0,
+  "ten minutes of production and capped public telemetry retain honest harvesting counts")
+for _, case in ipairs({
+  { "terminal insertion", "insert", buffer_sink, { { item = "plate", inserted = 1 } } },
+  { "processor extraction", "extract", buffer_processor, { { item = "plate", extracted = 1 } } },
+  { "unrelated item", "extract", buffer_sink, { { item = "ore", extracted = 1 } } },
+  { "mixed extraction", "extract", buffer_sink, { { item = "plate", extracted = 1 }, { item = "ore", extracted = 1 } } },
+}) do
+  simulate_validation("accept")
+  game.tick = game.tick + 1
+  require("scripts.factory_activity").record(case[2], { target = case[3], transfers = case[4] })
+  -- Hide the disallowed event behind the public event cap with later harvesting.
+  for i = 1, 9 do
+    game.tick = game.tick + 1
+    require("scripts.factory_activity").record("extract", { target = buffer_sink,
+      transfers = { { item = "plate", extracted = 1 } } })
+  end
+  local state = map.map_summary({}).factory.material_flow.components[1].state
+  check(not state.autonomous_end_to_end and state.autonomy_evidence == "character_transfer_observed",
+    case[1] .. " revokes proof even behind the public event cap")
+end
+simulate_validation("accept")
+require("scripts.factory_activity").record("extract", { target = buffer_sink,
+  transfers = { { item = "plate", extracted = 1 } } })
+check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+  "extraction at validation end tick is not post-validation harvesting")
+simulate_validation("accept")
+for i = 1, 129 do
+  game.tick = game.tick + 1
+  require("scripts.factory_activity").record("extract", { target = buffer_sink,
+    transfers = { { item = "plate", extracted = 1 } } })
+end
+check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+  "evicted harvesting history remains conservatively unproven")
+simulate_validation("no_production")
+game.tick = game.tick + 1
+require("scripts.factory_activity").record("extract", { target = buffer_sink,
+  transfers = { { item = "plate", extracted = 1 } } })
+check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+  "terminal harvesting never establishes a missing unattended proof")
 local saturated_interval = simulate_validation("saturated")
 check(saturated_interval.status == "completed" and map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
   "parked validator permits proven saturated fuel replenishment only with independent multi-tick production and acceptance")
@@ -807,6 +876,11 @@ buffer_segment[4].drop_target, buffer_segment[9], buffer_segment[10] = middle_ch
 local relayed_output = simulate_validation("accept")
 check(relayed_output.status == "completed" and relayed_output.outcomes[1].result.downstream_kind == "buffer",
   "ordinary intermediate buffers transport proven upstream product identities without becoming production roots")
+game.tick = game.tick + 1
+require("scripts.factory_activity").record("extract", { target = middle_chest,
+  transfers = { { item = "plate", extracted = 1 } } })
+check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+  "accepted-product extraction from an intermediate buffer still revokes proof")
 middle_chest.get_inventory = function() return { get_item_count = function() return 10 end, can_insert = function() return false end } end
 local blocked_middle = simulate_validation("accept")
 check(blocked_middle.status == "completed" and not blocked_middle.outcomes[1].result.blocked_output
@@ -834,6 +908,10 @@ check(interrupted_fuel.status == "failed"
   and canonical(interrupted_fuel.outcomes[1].result.blockers):match("several_processor_cycles_not_observed")
   and canonical(interrupted_fuel.outcomes[1].result.transient_conditions):match("nonproductive_status:no_fuel"),
   "fuel interruption that stops production fails on throughput and names the no_fuel wait as transient")
+local assisted_harvest = simulate_validation("harvest")
+check(assisted_harvest.status == "failed"
+  and canonical(assisted_harvest.outcomes[1].result.blockers):match("character_transfer_observed"),
+  "accepted terminal harvesting during validation remains character assistance")
 local transferred_interval = simulate_validation("transfer")
 check(transferred_interval.status == "failed" and canonical(transferred_interval.outcomes[1].result.blockers):match("character_transfer_observed"),
   "a character transfer during the real unattended interval invalidates acceptance")

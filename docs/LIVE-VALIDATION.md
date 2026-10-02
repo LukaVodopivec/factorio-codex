@@ -268,6 +268,25 @@ checks.
   produced earlier in the window. Check complete transfer attribution even when
   the public target-action rows are omitted. Bounded validation samples the
   interval; it cannot guarantee every intervening tick or future buffer demand.
+- For the sampling correction, compare repeated 60-second windows at
+  varied start phases in a separately authorized isolated run. Record deployed
+  commit, archive digest, save identity and start/end ticks. The 29/28-tick
+  cadence reduces aliasing but may miss short swings. A private sampled fuel
+  rise resets only the exact unique supplied inserter inlet's source-wait
+  streak; another possible fuel inlet forbids that attribution. Confirm the
+  reset does not excuse a stopped return after one early delivery or borrow
+  replenishment from a competing inlet. Keep the ordinary fuel-demand,
+  replenishment, supply-deficit, path-recency and structural checks intact.
+  Distinguish total wait samples from the final uninterrupted sampled streak:
+  in 60 seconds, `transport_starved_before_end` requires a streak strictly older
+  than 1,200 ticks, except for pending longer-window evidence at the exact drop
+  target. Record saturation and pending rows separately. Equal topology,
+  production and wait totals do not establish equivalent physical activity.
+  Exact inventories, fuel quantities and internal identities remain private;
+  report only bounded outcomes and relevant transport/replenishment evidence.
+  The supplied short-swing and boundary fixtures are offline synthetic evidence;
+  they establish a possible aliasing mechanism, not the cause of the reported
+  release 0.19.6 windows. This correction has no installation or live receipt.
 
 ## Persistent two-brain, one-writer contract
 

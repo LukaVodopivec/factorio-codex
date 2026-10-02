@@ -271,8 +271,31 @@ limit, fails as `transport_starved_before_end` unless its drop target already
 names a longer window. This also catches a hand-stocked fuel chest behind a
 surplus takeoff that took every coal, which the audit had proven falsely,
 even after the feeder swung once early. An unreadable burner fuel stock fails as
-`fuel_stock_unreadable`. Window samples alternate 29 and 28 ticks apart so short swings are not
-aliased away. Known limit: a long belt feeding several burners from a cold
+`fuel_stock_unreadable`. Window samples alternate 29 and 28 ticks apart to reduce
+aliasing; this does not guarantee observing every short swing. A sampled burner
+fuel rise resets the source-wait streak of its unique supplied inserter inlet,
+because that exact path delivered fuel between samples. Another possible fuel
+inlet makes this attribution ambiguous; replenishment then cannot reset either
+inserter's streak. This uses private component samples and does not expose fuel
+quantities or runtime identities. It is an event reset, not a permanent exemption:
+one early refill cannot excuse later starvation. Saturation and a pending
+longer-window row at the exact drop target retain their existing meanings.
+
+For an earlier issue, the reported two 60-second windows had equal topology signatures
+and production totals, but neither those totals nor whole-window wait counts
+identify the final uninterrupted sampled source-wait streak. The rejection uses
+that streak, strictly older than 20 seconds at the end of a 60-second window.
+Offline deterministic short-swing timelines reproduced phase-dependent results
+before the reset correction; supplied phases now pass, while stopped and
+ambiguous returns remain unproven. A separate pair produced 15 plates and 125
+wait samples in each window but correctly differed: final sampled wait streaks
+of 1,234 versus 1,149 ticks straddled the 1,200-tick boundary. These are synthetic
+regressions, not a replay or diagnosis of the exact live windows. Discriminating
+live evidence would include start/end ticks, sample phase, final streak, fuel
+rise observations, saturation and pending drop-target rows. No installation or
+live confirmation was performed for this correction.
+
+Known limit: a long belt feeding several burners from a cold
 start can fail a 60-second window and pass at 300 seconds, so use the longer
 window there.
 

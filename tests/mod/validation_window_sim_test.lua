@@ -180,10 +180,11 @@ end
 -- unpowered electric inserter) from that window tick on.
 local function inserter(x, y, pickup, drop, options)
   options = options or {}
+  local half_swing = options.half_swing or HALF_SWING
   local entity = add({ name = "burner-inserter", type = "inserter", position = { x = x, y = y },
     status = RAW.waiting_for_source_items, pickup_target = pickup, drop_target = drop, _timer = 0,
     _hand = options.hand, _phase = options.hand and "to_drop" or nil })
-  if options.hand then entity._timer = options.delay or HALF_SWING end
+  if options.hand then entity._timer = options.delay or half_swing end
   entity.held_stack = { valid_for_read = false }
   entity._step = function(elapsed)
     if options.dead_at and elapsed and elapsed >= options.dead_at then entity.status = options.dead_status or RAW.no_fuel; return end
@@ -192,11 +193,11 @@ local function inserter(x, y, pickup, drop, options)
     elseif entity._hand then
       if accepts(drop, entity._hand) then
         deliver(drop, entity._hand)
-        entity._hand, entity._timer, entity.status = nil, HALF_SWING, RAW.working
+        entity._hand, entity._timer, entity.status = nil, half_swing, RAW.working
       else entity.status = RAW.waiting_for_space_in_destination end
     else
       local item = take(pickup, function(name) return can_ever(drop, name) and (not options.lazy or accepts(drop, name)) end)
-      if item then entity._hand, entity._timer, entity.status = item, HALF_SWING, RAW.working
+      if item then entity._hand, entity._timer, entity.status = item, half_swing, RAW.working
       else entity.status = RAW.waiting_for_source_items end
     end
     entity.held_stack = entity._hand and { valid_for_read = true, name = entity._hand, quality = { name = "normal" }, count = 1 }
@@ -211,13 +212,21 @@ local function step_world(elapsed)
 end
 local function warm(ticks) for _ = 1, ticks do game.tick = game.tick + 1; step_world() end end
 local function reset() entities, frozen, storage = {}, false, {} end
-local function validate(position, duration, hook)
+local function validate(position, duration, hook, samples)
   storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
   map.map_summary({}) -- open complete run-local transfer history
   local start = game.tick
   local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
     source_tick = start, positions = { position }, duration_seconds = duration } } })
   local result
+  local sample_component = map.factory_component_sample
+  if samples then
+    map.factory_component_sample = function(args)
+      local sample = sample_component(args)
+      samples[#samples + 1] = sample
+      return sample
+    end
+  end
   for _ = 1, duration * 60 + 30 do
     game.tick = game.tick + 1
     if hook then hook(game.tick - start) end
@@ -226,6 +235,7 @@ local function validate(position, duration, hook)
     result = tasks.plan_status({ plan_id = queued.plan_id })
     if result.status == "completed" or result.status == "failed" then break end
   end
+  map.factory_component_sample = sample_component
   return result, result.outcomes and result.outcomes[1].result or {}
 end
 local function rows_at(outcome, entity, field)
@@ -287,6 +297,69 @@ local function self_fed(fuel, remaining, options)
   local source = drill(1, 1, "coal", box, fuel, remaining)
   local back = inserter(3, 3, box, source, options)
   return box, source, back
+end
+-- Synthetic short swings stress the sampling cadence; this is a deterministic
+-- supplied timeline, not a claim about the speed/status of a live inserter.
+-- The original classifier passed phases 0/21/56 and rejected 5/33/49 despite
+-- the same supplied operation and 15 mining cycles. Refill observations are
+-- durable evidence of the exact unique inlet's otherwise missed activity.
+for _, phase in ipairs({ 0, 5, 21, 33, 49, 56 }) do
+  local probe_box, probe_source, probe_return = self_fed(5, COAL, { lazy = true, half_swing = 5 })
+  warm(300 + phase)
+  local samples = {}
+  local probe_plan, probe = validate(probe_box.position, 60, nil, samples)
+  local waits, last_active, last_refill, energy = 0, nil, nil, nil
+  for _, sample in ipairs(samples) do
+    for _, info in pairs(sample._node_status) do
+      if info.position.x == probe_return.position.x and info.position.y == probe_return.position.y then
+        if info.status == "insufficient_input" then waits = waits + 1 else last_active = sample.tick end
+      elseif info.position.x == probe_source.position.x and info.position.y == probe_source.position.y then
+        if energy and info.fuel_energy > energy then last_refill = sample.tick end
+        energy = info.fuel_energy
+      end
+    end
+  end
+  check(probe_plan.status == "completed" and probe.proven and probe.source_cycles_observed == 15
+    and waits >= #samples - 3 and last_refill and probe.end_tick - last_refill < 1200,
+    "supplied short fuel-return swings pass at phase " .. phase .. " despite nearly all sampled waits")
+  if phase == 5 or phase == 33 or phase == 49 then
+    check(not last_active or probe.end_tick - last_active > 1200,
+      "phase " .. phase .. " misses the final supplied swings while observing their replenishment")
+  end
+  if phase == 5 then
+    local public = map.map_summary({})
+    local function has_private(value)
+      if type(value) ~= "table" then return false end
+      for key, child in pairs(value) do
+        if key == "fuel_refill_via" or key == "fuel_energy" or key == "_node_status" or has_private(child) then return true end
+      end
+      return false
+    end
+    check(not has_private(public) and not has_private(probe),
+      "fuel-rise attribution and private stock samples stay out of map summary and validation outcomes")
+  end
+end
+do
+  local stopped_box, stopped_source, stopped_return = self_fed(5, COAL,
+    { lazy = true, half_swing = 5, dead_at = 1600, dead_status = RAW.waiting_for_source_items })
+  warm(305)
+  local plan, outcome = validate(stopped_box.position, 60)
+  check(plan.status == "failed" and not outcome.proven and outcome.source_cycles_observed == 15
+    and rows_at(outcome, stopped_return).transport_starved_before_end,
+    "one early short return followed by sustained source waiting cannot borrow starter-fuel production")
+  local ambiguous_box, ambiguous_source, inactive = self_fed(5, COAL,
+    { dead_at = 1, dead_status = RAW.waiting_for_source_items })
+  inserter(4, 3, ambiguous_box, ambiguous_source, { lazy = true, half_swing = 5 })
+  warm(305)
+  local samples = {}
+  plan, outcome = validate(ambiguous_box.position, 60, nil, samples)
+  local attributed = false
+  for _, sample in ipairs(samples) do
+    for _, info in pairs(sample._node_status) do attributed = attributed or info.fuel_refill_via ~= nil end
+  end
+  check(not attributed and plan.status == "failed" and not outcome.proven
+    and rows_at(outcome, inactive).transport_starved_before_end,
+    "another inlet's replenishment cannot prove an inactive competing fuel return")
 end
 local box, source = self_fed(5, COAL)
 warm(300)
@@ -881,6 +954,39 @@ for _, case in ipairs({ { 17, 10, 300 }, { 8, 10, 60 }, { 17, 10, 300, true }, {
   check(plan.status == "failed" and not outcome.proven and starved and starved.class == "throughput"
     and (outcome.products_finished_delta or 0) > 0,
     "a fuel chest stocked by hand behind a surplus takeoff that takes every coal is not proven in " .. case[3] .. " s" .. (case[4] and " after one early swing" or ""))
+end
+
+-- Similar aggregate waits and production do not mean the same final streak.
+-- A single supplied pulse reaches the starved surplus takeoff on either side
+-- of the 20-second boundary; starter stock keeps the other paths producing.
+local boundary_previous
+for _, pulse in ipairs({ 2270, 2350 }) do
+  local out, feeder = surplus_first(8, 10)
+  warm(600)
+  local samples = {}
+  local plan, outcome = validate(out.position, 60, function(elapsed)
+    if elapsed == pulse then feeder._hand, feeder._timer = "coal", HALF_SWING end
+  end, samples)
+  local first_wait, last_active, waits = nil, nil, 0
+  for _, sample in ipairs(samples) do
+    for _, info in pairs(sample._node_status) do
+      if info.position.x == feeder.position.x and info.position.y == feeder.position.y then
+        if info.status == "insufficient_input" then
+          first_wait, waits = first_wait or sample.tick, waits + 1
+        else first_wait, last_active = nil, sample.tick end
+      end
+    end
+  end
+  local final_wait = first_wait and outcome.end_tick - first_wait
+  local starved = rows_at(outcome, feeder).transport_starved_before_end
+  check(last_active and final_wait and (pulse == 2270 and final_wait > 1200 and starved and plan.status == "failed"
+    or pulse == 2350 and final_wait < 1200 and not starved and plan.status == "completed"),
+    "final source-wait streak on " .. (pulse == 2270 and "the older" or "the younger") .. " side of 20 seconds is classified by recency")
+  if boundary_previous then
+    check(outcome.products_finished_delta == boundary_previous.products and waits == boundary_previous.waits,
+      "equal production and aggregate waits can correctly yield different final-starvation outcomes")
+  end
+  boundary_previous = { products = outcome.products_finished_delta, waits = waits }
 end
 
 -- Recorder admission keeps legacy source proof and refuses incomplete native

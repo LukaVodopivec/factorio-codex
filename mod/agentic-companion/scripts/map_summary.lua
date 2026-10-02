@@ -908,6 +908,22 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         status.fuel_unreadable = status.fuel_energy == nil or nil
         local suppliers, modelled = fuel_suppliers(id, node.fuel_categories or {})
         if #suppliers > 0 then status.fuel_sources, status.fuel_supply_unmodelled = suppliers, not modelled or nil end
+        -- Attribute a fuel rise only when one physical inlet can have
+        -- delivered it. Transport/buffers may carry stocked fuel even without
+        -- production provenance, so another such inlet makes it ambiguous.
+        local inlet, ambiguous
+        for _, parent in ipairs(incoming[id] or {}) do
+          local upstream = node_by_id[parent]
+          if upstream.role == "transport" or upstream.role == "buffer"
+            or product_matches(upstream, node.fuel_categories or {}, true) then
+            if inlet then ambiguous = true end
+            inlet = upstream
+          end
+        end
+        if inlet and not ambiguous and inlet.type == "inserter"
+          and upstream_proven(inlet.id, node.fuel_categories or {}, true) then
+          status.fuel_refill_via = inlet._key
+        end
       end
       if node.role == "processor" then
         -- Input stock is sampled so a starter packet cannot stand in for a

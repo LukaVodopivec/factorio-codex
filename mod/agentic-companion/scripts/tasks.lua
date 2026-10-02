@@ -387,8 +387,9 @@ end
 local VALIDATION_MIN_EVENTS = 3
 local VALIDATION_STALL_TICKS = 20 * 60
 local VALIDATION_STRUCTURAL_NONPRODUCTIVE_SHARE = 0.9
--- Odd, so its phase drifts across the 60-tick-multiple machine periods and a
--- short inserter swing cannot alias between every sample.
+-- Drift across common machine periods to reduce aliasing. Short swings may
+-- still fall between samples; uniquely attributable fuel rises also prove
+-- return activity without requiring a sampled swing.
 local VALIDATION_MAX_SAMPLE_TICKS = 29
 local VALIDATION_MAX_ROWS = 12
 local VALIDATION_MAX_TRANSIENT_ROWS = 8
@@ -517,6 +518,14 @@ local function observe_statuses(step, sample, progressed)
   for _, info in pairs(sample._node_status or {}) do
     local counter = info.fuel_return_to and step._status_counts[info.fuel_return_to]
     if counter then counter.return_waiting = true end
+  end
+  -- A fuel rise delivered through the burner's unique supplied inlet is
+  -- physical activity on that exact return, even if its short swing fell
+  -- between status samples. Do not borrow another inlet's replenishment.
+  for key, info in pairs(sample._node_status or {}) do
+    local burner = step._status_counts[key]
+    local inlet = info.fuel_refill_via and step._status_counts[info.fuel_refill_via]
+    if inlet and burner.refill_tick == game.tick then inlet.starved_since = nil end
   end
 end
 

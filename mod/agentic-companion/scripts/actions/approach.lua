@@ -1,6 +1,7 @@
 -- Shared "walk within reach first" phase for every action task with a map
 -- target. Sub-state lives under task._approach.
 local walk = require("scripts.actions.walk")
+local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
 
@@ -12,7 +13,16 @@ end
 -- Call every tick before acting on target_pos. Returns "ok" once within
 -- `reach` tiles, nil while still walking, or {status="failed", detail=...}.
 function M.ensure(task, c, target_pos, reach)
-  if dist_sq(c.position, target_pos) <= reach * reach then
+  local evidence = placement_geometry.path_start(c)
+  local active = task._approach
+  -- Recovery belongs to the physical start, even when a plan advances targets.
+  -- Proven clearance retires it; a failed blocked start survives step changes.
+  if active and (active.walk.phase == "escaping" or active.walk.escape_failed) and evidence.clear then
+    task._approach = nil
+    c.walking_state = { walking = false }
+  end
+  if dist_sq(c.position, target_pos) <= reach * reach
+    and evidence.clear then
     local active = task._approach
     if active and active.target.x == target_pos.x and active.target.y == target_pos.y
       and active.reach == reach then
@@ -23,7 +33,8 @@ function M.ensure(task, c, target_pos, reach)
   end
 
   local a = task._approach
-  if not a or a.target.x ~= target_pos.x or a.target.y ~= target_pos.y or a.reach ~= reach then
+  if not a or (a.walk.phase ~= "escaping" and not a.walk.escape_failed
+    and (a.target.x ~= target_pos.x or a.target.y ~= target_pos.y or a.reach ~= reach)) then
     a = { target = { x = target_pos.x, y = target_pos.y }, reach = reach, walk = {} }
     task._approach = a
     walk.begin(a.walk, c, a.target, math.max(reach - 0.5, 0.5))
@@ -34,7 +45,7 @@ function M.ensure(task, c, target_pos, reach)
     task._approach = nil
     return "ok"
   elseif type(r) == "table" then
-    task._approach = nil
+    if a.walk.phase ~= "escaping" and not a.walk.escape_failed then task._approach = nil end
     return { status = "failed", detail = "couldn't get in range: " .. r.failed }
   end
   return nil
@@ -66,7 +77,11 @@ function M.ensure_entity(task, c, e)
   if not e.valid then
     return { status = "failed", detail = "the selected entity is gone" }
   end
-  if c.can_reach_entity(e) then
+  if c.can_reach_entity(e) and placement_geometry.path_start(c).clear then
+    if task._approach then
+      task._approach = nil
+      c.walking_state = { walking = false }
+    end
     task._approach_close = nil
     return "ok"
   end

@@ -22,6 +22,11 @@ local real_approach = require("scripts.actions.approach")
 local reach_checks = 0
 local body = {
   position = { x = 0, y = 0 },
+  prototype = { collision_mask = { layers = { player = true } },
+    collision_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } } },
+  force = {},
+  surface = { find_entities_filtered = function() return {} end,
+    get_tile = function() return { collides_with = function() return false end } end },
   reach_distance = 6,
   walking_state = {},
   can_reach_entity = function() reach_checks = reach_checks + 1 return false end,
@@ -87,7 +92,8 @@ body.can_reach_entity = function(candidate)
   action_reach_checks = action_reach_checks + 1
   return math.abs(body.position.x - candidate.position.x) <= body.reach_distance - 0.5
 end
-body.surface = { find_entities_filtered = function() return { entity } end }
+body.surface = { find_entities_filtered = function(filter) return filter.limit and {} or { entity } end,
+  get_tile = function() return { collides_with = function() return false end } end }
 body.force = { recipes = { ["iron-gear-wheel"] = { enabled = true } } }
 body.get_item_count = function() return 1 end
 body.remove_item = function() return 1 end

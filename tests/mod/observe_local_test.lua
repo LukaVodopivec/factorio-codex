@@ -58,7 +58,10 @@ local surface = {
   get_tile = function() return { collides_with = function() return false end } end,
   find_entities_filtered = function(filter)
     local area, result = filter.area, {}
-    local left, top, right, bottom = area[1][1], area[1][2], area[2][1], area[2][2]
+    local left, top, right, bottom
+    if area.left_top then
+      left, top, right, bottom = area.left_top.x, area.left_top.y, area.right_bottom.x, area.right_bottom.y
+    else left, top, right, bottom = area[1][1], area[1][2], area[2][1], area[2][2] end
     for _, candidate in ipairs(entity_order) do
       local box = candidate.bounding_box or {
         left_top = { x = candidate.position.x - 0.5, y = candidate.position.y - 0.5 },
@@ -187,5 +190,32 @@ check(#dense_observation.resource_patches == 1 and dense_observation.resource_pa
   "a dense ore field clusters into one exact patch")
 check(position_reads < 20 * 900,
   "patch clustering reads each ore position a bounded number of times, not once per pair")
+check(dense_observation.character.path_start.state == "unknown" and not dense_observation.character.path_start.clear,
+  "observation reports unavailable character collision geometry as unknown")
+character.prototype = { collision_mask = { layers = { player = true }, consider_tile_transitions = true },
+  collision_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } } }
+local geometry = parse_require("scripts.placement_geometry")
+for _, fixture in ipairs({
+  { name = "belt-overlap", kind = "transport-belt", layers = { object = true, transport_belt = true }, state = "clear" },
+  { name = "mined-tree-remains", kind = "corpse", layers = {}, state = "clear" },
+  { name = "solid-overlap", kind = "furnace", layers = { object = true, player = true }, state = "blocked" },
+}) do
+  local e = entity(fixture.name, 0, 0, 1, 1)
+  e.type, e.bounding_box = fixture.kind, e.selection_box
+  e.prototype = { collision_mask = { layers = fixture.layers } }
+  entity_order = { e }
+  local observed = spatial.observe_local({ radius = 5 }).character.path_start
+  check(observed.state == fixture.state and canonical(observed) == canonical(geometry.path_start(character)),
+    fixture.name .. " structured path_start agrees with the shared movement classifier")
+end
+local original_query = surface.find_entities_filtered
+surface.find_entities_filtered = function(filter)
+  if filter.limit then error("engine query failed") end
+  return original_query(filter)
+end
+local failed_query = spatial.observe_local({ radius = 5 }).character.path_start
+check(failed_query.state == "unknown" and not failed_query.clear and failed_query.reason:match("query failed"),
+  "failed engine query cannot turn an empty collision list into proven clearance")
+surface.find_entities_filtered = original_query
 _G.require = parse_require
 os.exit(failures == 0 and 0 or 1)

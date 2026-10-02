@@ -53,7 +53,7 @@ end
 
 function M.character_box(c)
   if c.bounding_box and c.bounding_box.left_top then return c.bounding_box end
-  local proto = prototypes and prototypes.entity and prototypes.entity[c.name or "character"]
+  local proto = c.prototype or (prototypes and prototypes.entity and prototypes.entity[c.name or "character"])
   return proto and M.footprint(proto, c.position, 0) or nil
 end
 
@@ -71,53 +71,131 @@ function M.can_place(c, proto, position, direction)
   return ok, ok and "placeable" or "blocked", area
 end
 
-function M.start_collisions(c)
-  -- Real LuaControl objects expose an authoritative bounding box. Lightweight
-  -- unit fixtures that omit both it and the prototype collision box cannot
-  -- support a truthful start-overlap check, so leave that branch unknown.
-  local character_proto = prototypes and prototypes.entity and prototypes.entity[c.name or "character"]
-  if not (c.bounding_box and c.bounding_box.left_top)
-    and not (character_proto and character_proto.collision_box) then
-    return {}
+-- Factorio 2.0 CollisionMask semantics. Selection boxes never prove collision.
+local function mask_overlap(a, b, tile)
+  if not a or not b or type(a.layers) ~= "table" or type(b.layers) ~= "table" then return nil end
+  if not tile then
+    if a.colliding_with_tiles_only or b.colliding_with_tiles_only then return false end
+    if a.not_colliding_with_itself and b.not_colliding_with_itself then
+      local equal = true
+      for layer in pairs(a.layers) do if not b.layers[layer] then equal = false end end
+      for layer in pairs(b.layers) do if not a.layers[layer] then equal = false end end
+      if equal then return false end
+    end
   end
-  local area, collisions = M.character_box(c), {}
-  if not area then return collisions end
-  local ok, entities = pcall(c.surface.find_entities_filtered, { area = area })
-  if ok then
-    for _, entity in ipairs(entities or {}) do
-      if entity.valid and entity ~= c and entity.type ~= "resource" and entity.type ~= "item-entity" then
-        local box = entity.bounding_box or entity.selection_box
-        if not box or M.overlaps(area, box) then
-          collisions[#collisions + 1] = { kind = "entity", name = entity.name, type = entity.type,
-            position = { x = entity.position.x, y = entity.position.y } }
+  for layer in pairs(a.layers) do if b.layers[layer] then return true end end
+  return false
+end
+
+function M.path_start(c)
+  local result = { clear = false, state = "unknown", collisions = {} }
+  local reasons = {}
+  local function unknown(reason) reasons[reason] = true end
+  local proto = c.prototype or (prototypes and prototypes.entity and prototypes.entity[c.name or "character"])
+  local mask = proto and proto.collision_mask
+  local box = c.bounding_box or (proto and proto.collision_box)
+  if not box or not xy(box.left_top) or not xy(box.right_bottom)
+    or not mask or type(mask.layers) ~= "table" then
+    result.reason = "character collision geometry or mask unavailable"
+    return result
+  end
+  local area = c.bounding_box or M.footprint(proto, c.position, 0)
+  -- Bound both the engine query and the evidence. An unsupported large body
+  -- or truncated query is uncertainty, never a claim of clearance.
+  if area.right_bottom.x - area.left_top.x > 8 or area.right_bottom.y - area.left_top.y > 8 then
+    result.reason = "character collision footprint exceeds local evidence bound"
+    return result
+  end
+  if c.force.is_chunk_charted then
+    for _, point in ipairs({ area.left_top,
+      { x = area.right_bottom.x - 0.001, y = area.left_top.y },
+      { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
+      { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 } }) do
+      local chart_ok, charted = pcall(c.force.is_chunk_charted, c.surface,
+        { x = math.floor(point.x / 32), y = math.floor(point.y / 32) })
+      if not chart_ok or not charted then
+        result.reason = "character collision footprint crosses uncharted or unavailable terrain"
+        return result
+      end
+    end
+  end
+  local ok, entities = pcall(c.surface.find_entities_filtered, { area = area, limit = 65 })
+  if not ok or type(entities) ~= "table" then
+    unknown("entity collision query failed")
+  else
+    if #entities >= 65 then
+      unknown("entity collision query reached local evidence bound")
+      entities = {} -- A truncated engine subset cannot supply stable entity evidence.
+    end
+    for _, entity in ipairs(entities) do
+      if entity.valid and entity ~= c then
+        local entity_proto = entity.prototype or (prototypes and prototypes.entity and prototypes.entity[entity.name])
+        local collides = mask_overlap(mask, entity_proto and entity_proto.collision_mask, false)
+        if collides == nil then
+          unknown("entity collision mask unavailable")
+        elseif collides then
+          local box = entity.bounding_box
+          if not box or not xy(box.left_top) or not xy(box.right_bottom) then
+            unknown("entity collision geometry unavailable")
+          elseif M.overlaps(area, box) then
+            -- Gates have a runtime mask; diagonal bounding boxes can enclose
+            -- space outside the rotated collision shape. Neither proves overlap.
+            if entity.type == "gate" or (entity.direction and entity.direction % 4 ~= 0)
+              or (entity.orientation and (entity.orientation * 4) % 1 ~= 0) then
+              unknown("runtime collision shape unsupported")
+            else
+              result.collisions[#result.collisions + 1] = { kind = "entity", name = entity.name, type = entity.type,
+                position = { x = entity.position.x, y = entity.position.y } }
+            end
+          end
         end
       end
     end
   end
-  local corners = { area.left_top,
-    { x = area.right_bottom.x - 0.001, y = area.left_top.y },
-    { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
-    { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 } }
-  local seen = {}
-  for _, corner in ipairs(corners) do
-    local tile_ok, tile = pcall(c.surface.get_tile, corner.x, corner.y)
-    local collision_ok, collides = tile_ok and tile and pcall(tile.collides_with, "player")
-    if collision_ok and collides then
-      local key = math.floor(corner.x) .. ":" .. math.floor(corner.y)
-      if not seen[key] then
-        seen[key] = true
-        collisions[#collisions + 1] = { kind = "tile", name = tile.name or "collision-tile",
-          position = { x = math.floor(corner.x), y = math.floor(corner.y) } }
+  local left, right = math.floor(area.left_top.x), math.ceil(area.right_bottom.x) - 1
+  local top, bottom = math.floor(area.left_top.y), math.ceil(area.right_bottom.y) - 1
+  if mask.consider_tile_transitions then
+    left, right = math.floor(c.position.x), math.floor(c.position.x)
+    top, bottom = math.floor(c.position.y), math.floor(c.position.y)
+  end
+  for y = top, bottom do
+    for x = left, right do
+      local tile_ok, tile = pcall(c.surface.get_tile, x, y)
+      local collides
+      if tile_ok and tile then
+        -- LuaTile.collides_with accepts one layer. Keep the pcall's two
+        -- results separate: boolean expressions discard additional Lua returns.
+        collides = false
+        for layer in pairs(mask.layers) do
+          local collision_ok, value = pcall(tile.collides_with, layer)
+          if not collision_ok or type(value) ~= "boolean" then
+            unknown("tile collision query failed")
+          elseif value then collides = true end
+        end
+      else unknown("tile query failed") end
+      if collides then
+        result.collisions[#result.collisions + 1] = { kind = "tile", name = tile.name,
+          position = { x = x, y = y } }
       end
     end
   end
-  table.sort(collisions, function(a, b)
+  table.sort(result.collisions, function(a, b)
     if a.kind ~= b.kind then return a.kind < b.kind end
     if a.name ~= b.name then return a.name < b.name end
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
     return a.position.x < b.position.x
   end)
-  return collisions
+  if #result.collisions > 16 then
+    result.omitted_collisions = #result.collisions - 16
+    while #result.collisions > 16 do table.remove(result.collisions) end
+  end
+  local ordered = {}
+  for reason in pairs(reasons) do ordered[#ordered + 1] = reason end
+  table.sort(ordered)
+  result.reason = #ordered > 0 and table.concat(ordered, "; ") or nil
+  result.state = #result.collisions > 0 and "blocked" or (#ordered > 0 and "unknown" or "clear")
+  result.clear = result.state == "clear"
+  return result
 end
 
 return M

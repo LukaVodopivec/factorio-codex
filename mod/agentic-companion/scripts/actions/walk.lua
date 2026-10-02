@@ -74,6 +74,11 @@ local function fail(c, code, detail, outcome)
   return { failed = code .. ": " .. detail, outcome = outcome }
 end
 
+local function escape_fail(state, c, code, detail, outcome)
+  state.escape_failed = true
+  return fail(c, code, detail, outcome)
+end
+
 local function collision_labels(collisions)
   local labels = {}
   for _, collision in ipairs(collisions) do
@@ -83,20 +88,27 @@ local function collision_labels(collisions)
   return #labels > 0 and table.concat(labels, ",") or "none"
 end
 
-local function begin_escape(state, c)
-  local collisions = placement_geometry.start_collisions(c)
-  if #collisions == 0 then return false end
+local function begin_escape(state, c, evidence)
+  local collisions = evidence.collisions
+  if state.escape_attempted then
+    return escape_fail(state, c, "START_COLLISION", "start became blocked again after the bounded escape; observe and choose a reachable local route")
+  end
+  state.escape_attempted = true
+  local pending = storage.path_request
+  if pending and pending.id == state.request_id then storage.path_request = nil end
+  state.path, state.request_id = nil, nil
   local ok, target = pcall(c.surface.find_non_colliding_position,
     c.name or "character", c.position, 1.5, 0.1, false)
-  if not ok or not target then
-    return fail(c, "START_COLLISION", "character path body overlaps " .. collision_labels(collisions)
+  if not ok or not target or type(target.x) ~= "number" or type(target.y) ~= "number"
+    or dist_sq(c.position, target) < STUCK_EPSILON_SQ then
+    return escape_fail(state, c, "START_COLLISION", "character path body overlaps " .. collision_labels(collisions)
       .. "; Factorio found no clear position within 1.5 tiles")
   end
   state.phase = "escaping"
   state.escape_target = { x = target.x, y = target.y }
   state.escape_started_tick = game.tick
-  state.escape_started_position = { x = c.position.x, y = c.position.y }
-  state.start_collisions = collision_labels(collisions)
+  state.escape_check_tick = game.tick
+  state.escape_check_position = { x = c.position.x, y = c.position.y }
   return true
 end
 
@@ -452,38 +464,50 @@ function M.step(state, c, task_id)
         arrival_mode = state.arrival_mode, arrival_radius = state.arrival_radius } } })
   end
 
+  local evidence = placement_geometry.path_start(c)
+  if evidence.state == "unknown" then
+    return fail(c, "START_COLLISION_UNKNOWN", evidence.reason .. "; re-observe collision evidence before retrying",
+      { code = "START_COLLISION_UNKNOWN", diagnostics = { path_start = evidence } })
+  end
+  if evidence.state == "blocked" then
+    if state.escape_failed then
+      return fail(c, "START_COLLISION", "the previous bounded escape failed and the current start remains blocked: "
+        .. collision_labels(evidence.collisions) .. "; observe and choose a reachable local route",
+        { code = "START_COLLISION", diagnostics = { path_start = evidence } })
+    end
+    if state.phase ~= "escaping" then
+      local failure = begin_escape(state, c, evidence)
+      if type(failure) == "table" then return failure end
+    end
+    if game.tick - state.escape_check_tick >= STUCK_CHECK_TICKS then
+      if dist_sq(pos, state.escape_check_position) < STUCK_EPSILON_SQ then
+        return escape_fail(state, c, "START_COLLISION", "ordinary escape made no physical progress; "
+          .. collision_labels(evidence.collisions) .. "; the free destination does not prove a traversable approach",
+          { code = "START_COLLISION", diagnostics = { path_start = evidence, escape_target = state.escape_target } })
+      end
+      state.escape_check_tick = game.tick
+      state.escape_check_position = { x = pos.x, y = pos.y }
+    end
+    if game.tick - state.escape_started_tick >= ESCAPE_TICKS then
+      return escape_fail(state, c, "START_COLLISION", string.format(
+        "ordinary walking could not clear %s toward free position (%.1f, %.1f) within %d ticks; observe and choose a reachable local route",
+        collision_labels(evidence.collisions), state.escape_target.x, state.escape_target.y, ESCAPE_TICKS),
+        { code = "START_COLLISION", diagnostics = { path_start = evidence, escape_target = state.escape_target } })
+    end
+    c.walking_state = { walking = true, direction = direction_toward(pos, state.escape_target) }
+    return nil
+  end
+
+  -- Arrival requires current proven clearance, including during an escape.
   if dist_sq(pos, state.target) <= state.arrive_within * state.arrive_within then
     stop(c)
     return "arrived"
   end
-
-  if state.phase == "request" then
-    local escape = begin_escape(state, c)
-    if type(escape) == "table" then return escape end
-    if escape then
-      c.walking_state = { walking = true, direction = direction_toward(c.position, state.escape_target) }
-      return nil
-    end
-    request_path(state, c, task_id)
-  end
-
-
   if state.phase == "escaping" then
-    local collisions = placement_geometry.start_collisions(c)
-    if #collisions == 0 then
-      state.escape_cleared_tick = game.tick
-      request_path(state, c, task_id)
-      stop(c)
-      return nil
-    end
-    if game.tick - state.escape_started_tick >= ESCAPE_TICKS then
-      return fail(c, "START_COLLISION", string.format(
-        "ordinary walking could not clear %s toward free position (%.1f, %.1f) within %d ticks",
-        state.start_collisions, state.escape_target.x, state.escape_target.y, ESCAPE_TICKS))
-    end
-    c.walking_state = { walking = true, direction = direction_toward(c.position, state.escape_target) }
-    return nil
+    state.escape_cleared_tick = game.tick
+    state.phase = "request"
   end
+  if state.phase == "request" then request_path(state, c, task_id) end
 
   if state.phase == "waiting" then
     local result = take_path_result(state, task_id)

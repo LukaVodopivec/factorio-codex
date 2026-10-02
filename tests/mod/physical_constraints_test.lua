@@ -121,4 +121,63 @@ local accepted = craft.tick(nonblocking)
 check(accepted.status == "done" and accepted.detail:match("accepted 1 recipe crafts of iron%-gear%-wheel") ~= nil
   and body.crafting_queue_size == 1, "nonblocking crafting returns only after Factorio accepts the real queue")
 
+-- Use the retained real approach and walker for partial build-plan continuation.
+package.loaded["scripts.actions.approach"] = nil
+require("scripts.actions.approach")
+package.loaded["scripts.actions.build_plan"] = nil
+local build_plan = require("scripts.actions.build_plan")
+body.name = "character"
+body.prototype = { collision_mask = { layers = { player = true }, consider_tile_transitions = true },
+  collision_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } } }
+prototypes.entity["stone-furnace"] = { name = "stone-furnace", type = "furnace",
+  collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } }
+local pinned = false
+local physical_blocker = { valid = true, name = "solid-fixture", type = "simple-entity", position = { x = 0, y = 0 },
+  prototype = { collision_mask = { layers = { player = true, object = true } } },
+  bounding_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } }
+surface.find_entities_filtered = function() return pinned and { physical_blocker } or {} end
+surface.get_tile = function() return { collides_with = function() return false end } end
+surface.find_non_colliding_position = function() return { x = -1, y = 0 } end
+surface.can_place_entity = function() return true end
+local committed = {}
+surface.create_entity = function(args)
+  local e = { valid = true, name = args.name, type = "furnace", position = args.position }
+  committed[#committed + 1] = e
+  return e
+end
+inventory["stone-furnace"] = 2
+body.crafting_queue_size = 0
+body.position = { x = 0, y = 0 }
+game.tick = 0
+local continuation = { id = 91, stop_on_error = false, steps = {
+  { item = "stone-furnace", position = { x = 4, y = 0 } },
+  { item = "stone-furnace", position = { x = 5, y = 0 } },
+  { item = "stone-furnace", position = { x = 5.5, y = 0 } },
+} }
+storage = { tasks = { active = continuation } }
+build_plan.start(continuation)
+check(build_plan.tick(continuation) == nil and #committed == 1 and inventory["stone-furnace"] == 1,
+  "real build plan commits its first placement with exact carried-item consumption")
+pinned = true
+check(build_plan.tick(continuation) == nil and continuation._approach.walk.phase == "escaping"
+  and #committed == 1 and inventory["stone-furnace"] == 1,
+  "partial-plan continuation cannot place within reach while the body is pinned")
+game.tick = 60
+local first_failure = build_plan.tick(continuation)
+check(first_failure == nil and continuation._index == 3 and continuation._approach.walk.escape_failed,
+  "failed physical start remains attached when a partial build plan advances")
+local partial_done = build_plan.tick(continuation)
+check(partial_done and not continuation._results[3].ok and continuation._results[3].why:match("previous bounded escape failed")
+  and continuation._results[1].ok and not continuation._results[2].ok
+  and continuation._results[2].why:match("no physical progress") and #committed == 1
+  and inventory["stone-furnace"] == 1 and not body.walking_state.walking,
+  "failed embedded escape preserves the committed placement and unused item")
+physical_blocker.name, physical_blocker.type = "mined-remains", "corpse"
+physical_blocker.prototype.collision_mask = { layers = {} }
+local resume = { id = 92, steps = { { item = "stone-furnace", position = { x = 5, y = 0 } } } }
+storage.tasks.active = resume
+build_plan.start(resume)
+check(build_plan.tick(resume).status == "done" and #committed == 2 and inventory["stone-furnace"] == 0,
+  "continuation among nonblocking remains consumes only the remaining item without mining the stump")
+
 os.exit(failures == 0 and 0 or 1)

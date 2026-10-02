@@ -95,6 +95,27 @@ turning them into a fixed opening or map-specific sequence:
 - A genuine no-path case reports only charted local collision evidence, any
   owned collision cage, and the best bounded reachable frontier/partial route;
   it neither walks that partial route automatically nor reveals uncharted state.
+- For path-start recovery, record the deployed source SHA, packaged mod archive
+  SHA-256, Factorio version, exact plan identities/outcomes, and structured
+  character position plus `path_start` at the starting and later ticks. Exercise
+  walking among existing belts and mined-tree remains: footprint overlap alone
+  must remain `state=clear` and must not require mining or body-clearance rescue.
+  Observation and movement use the same collision-mask classification.
+- Exercise a genuine collision overlap while the goal is already inside exact
+  arrival tolerance, and repeat with a resolved vicinity goal. Arrival and
+  within-reach placement/entity shortcuts must wait for physical clearance.
+  Record ordinary escape movement followed by native path traversal. In a true
+  cage or a stationary escape, expect a finite actionable `START_COLLISION`
+  failure, stopped walking, and no native request from the uncleared start;
+  a nearby free destination does not prove that the approach is traversable.
+- Continue a partially committed placement plan through embedded approach;
+  verify exact entity reach, carried-item consumption and preserved earlier
+  placements. `path_start.clear=false, state=unknown` means missing/unsupported
+  evidence or a failed engine query, with a reason; it never proves clearance
+  and movement reports `START_COLLISION_UNKNOWN`. Record every supervisor
+  intervention and exclude assisted progress/timing from benchmark evidence.
+  Offline fixture passes do not establish live recovery. Use only an authorized
+  supported run; do not restart or alter an unrelated active run for this check.
 - A deliberately split electrical route reports successful pole placement
   separately from endpoint coverage and network continuity. Add an honest
   bridge and confirm the later result becomes connected; do not equate either

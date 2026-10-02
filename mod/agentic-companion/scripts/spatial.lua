@@ -437,7 +437,7 @@ function M.observe_local(params)
     pcall(function() recipe = entry.recipe.name end)
     crafting.queue[#crafting.queue + 1] = { recipe = recipe, count = entry.count }
   end
-  local start_collisions = placement_geometry.start_collisions(c)
+  local path_start = placement_geometry.path_start(c)
   local result = {
     tick = game.tick, radius = radius, detail = params.detail == "full" and "full" or "compact",
     character = { position = { x = c.position.x, y = c.position.y }, health = c.health,
@@ -445,7 +445,7 @@ function M.observe_local(params)
       active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
       crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance,
       collision_box = plain_box(placement_geometry.character_box(c)),
-      path_start = { clear = #start_collisions == 0, collisions = start_collisions } },
+      path_start = path_start },
     entities = details, resource_patches = patches, ground_items = ground_items,
     omitted_entities = omitted, omitted_ground_items = omitted_ground_items,
     omitted_resource_patches = omitted_resource_patches,

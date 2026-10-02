@@ -10,7 +10,8 @@ end
 _G.defines = {
   direction = { north = 0, northeast = 2, east = 4, southeast = 6, south = 8, southwest = 10, west = 12, northwest = 14 },
 }
-_G.prototypes = { entity = { character = { collision_mask = {} } } }
+_G.prototypes = { entity = { character = { collision_mask = { layers = { player = true }, not_colliding_with_itself = true, consider_tile_transitions = true },
+  collision_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } } } } }
 
 local next_path_id, blocker_filter, chart_all, requested_goals, entity_filters = 0, nil, true, {}, {}
 local found_blockers = {
@@ -29,9 +30,18 @@ local body = {
     return next_path_id
   end,
   get_tile = function(x, y) tile_queries = tile_queries + 1; return { position = { x = math.floor(x), y = math.floor(y) },
-    name = x >= 0.5 and "water" or "grass", collides_with = function(layer) return tile_blocks and layer == "player" and x >= 0.5 end } end,
+    name = x >= 0.5 and "water" or "grass", collides_with = function(layer) return tile_blocks and layer == "player" and x >= 0.5 and x < 2 end } end,
   find_entities_filtered = function(filter)
     entity_queries = entity_queries + 1; blocker_filter = filter; entity_filters[#entity_filters + 1] = filter
+    if filter.limit then
+      local overlaps = {}
+      for _, e in ipairs(found_blockers) do
+        local box = e.bounding_box
+        if box and box.left_top.x < filter.area.right_bottom.x and box.right_bottom.x > filter.area.left_top.x
+          and box.left_top.y < filter.area.right_bottom.y and box.right_bottom.y > filter.area.left_top.y then overlaps[#overlaps + 1] = e end
+      end
+      return overlaps
+    end
     return found_blockers
   end },
 }
@@ -81,6 +91,7 @@ check(walk.step(task._walk, body, task.id) == "arrived" and body.walking_state.w
 -- before asking the native pathfinder for the requested route.
 body.bounding_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } }
 found_blockers = { { valid = true, name = "stone-furnace", type = "furnace", position = { x = 0, y = 0 },
+  prototype = { collision_mask = { layers = { player = true, object = true } } },
   bounding_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } }
 body.surface.find_non_colliding_position = function() return { x = -1, y = 0 } end
 task = reset()
@@ -92,6 +103,11 @@ found_blockers = {}
 check(walk.step(task._walk, body, task.id) == nil and task._walk.phase == "waiting"
   and storage.path_request and storage.path_request.id == 1 and body.walking_state.walking == false,
   "cleared start collision resumes the native pathfinder from the physical position")
+deliver({ { x = 4, y = 0 }, { x = 10, y = 0 } })
+check(walk.step(task._walk, body, task.id) == nil and body.walking_state.walking,
+  "ordinary escape continues with native path traversal")
+body.position = { x = 10, y = 0 }; body.bounding_box = nil
+check(walk.step(task._walk, body, task.id) == "arrived", "escaped native walk finishes only at the physical goal")
 body.bounding_box, body.surface.find_non_colliding_position = nil, nil
 found_blockers = {
   { valid = true, name = "stone-furnace", type = "furnace", position = { x = 1, y = 0 } },
@@ -237,11 +253,10 @@ found_blockers, tile_blocks = { { valid = true, name = "stone-furnace", type = "
 
 chart_all = false
 task = reset({ x = 40, y = 0 })
-body.position = { x = 31.8, y = 0 }
+body.position = { x = 31.9, y = 0 }
 entity_queries, tile_queries = 0, 0
-walk.step(task._walk, body, task.id); deliver(nil, false)
 local boundary_result = walk.step(task._walk, body, task.id)
-check(boundary_result.failed:match("crosses uncharted terrain") and entity_queries == 0 and tile_queries == 0,
+check(boundary_result.failed:match("START_COLLISION_UNKNOWN") and entity_queries == 0 and tile_queries == 0,
   "collision evidence makes zero entity or tile queries when its bounded area crosses an uncharted chunk")
 chart_all = true
 
@@ -326,5 +341,124 @@ result = approach.ensure(task, body, task.target, 2)
 check(result and result.status == "failed"
   and result.detail:match("couldn't get in range: PATH_NOT_FOUND:"),
   "embedded approach preserves deterministic native path failure")
+
+-- Real collision metadata separates traversable footprints from physical blockers.
+local geometry = require("scripts.placement_geometry")
+local function overlap(name, mask, kind)
+  return { valid = true, name = name, type = kind or "simple-entity", position = { x = 0, y = 0 },
+    prototype = { collision_mask = mask },
+    bounding_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } }
+end
+for _, example in ipairs({
+  overlap("transport-belt", { layers = { object = true, transport_belt = true } }, "transport-belt"),
+  overlap("tree-01-stump", { layers = {} }, "corpse"),
+}) do
+  found_blockers, tile_blocks = { example }, false
+  task = reset()
+  local evidence = geometry.path_start(body)
+  check(evidence.clear and #evidence.collisions == 0, example.name .. " footprint is physically traversable")
+  check(walk.step(task._walk, body, task.id) == nil and storage.path_request ~= nil,
+    example.name .. " overlap uses native pathfinding without destructive clearance")
+end
+found_blockers = { overlap("solid-object", { layers = { player = true, object = true } }) }
+body.surface.find_non_colliding_position = function() return { x = -1, y = 0 } end
+task = reset({ x = 0.1, y = 0 })
+check(geometry.path_start(body).state == "blocked" and walk.step(task._walk, body, task.id) == nil
+  and task._walk.phase == "escaping" and not storage.path_request,
+  "genuine overlap inside arrival tolerance cannot report arrival")
+game.tick = 60
+result = walk.step(task._walk, body, task.id)
+check(result and result.failed:match("no physical progress") and not storage.path_request
+  and not body.walking_state.walking,
+  "stationary escape terminates with current evidence before an unchanged retry or native request")
+
+task = reset({ x = 0.1, y = 0 })
+check(approach.ensure(task, body, task.target, 2) == nil and task._approach.walk.phase == "escaping",
+  "embedded within-reach approach starts recovery for a pinned body")
+local selected = { valid = true, name = "exact-machine", position = { x = 0.1, y = 0 } }
+body.can_reach_entity = function(e) return e == selected end
+body.reach_distance = 10
+check(approach.ensure_entity(task, body, selected) == nil and task._approach.walk.phase == "escaping",
+  "native entity reach cannot discard an active uncleared recovery")
+found_blockers = {}
+check(approach.ensure_entity(task, body, selected) == "ok", "safe native reach remains successful after clearance")
+check(task._approach == nil and not body.walking_state.walking,
+  "clear native reach retires completed escape state")
+game.tick = 120
+found_blockers = { overlap("new-solid", { layers = { player = true } }) }
+check(approach.ensure(task, body, { x = 3, y = 0 }, 2) == nil and task._approach.walk.phase == "escaping"
+  and task._approach.walk.escape_started_tick == 120,
+  "a later obstruction obtains fresh escape state after successful recovery")
+found_blockers = {}
+check(approach.ensure(task, body, { x = 1, y = 0 }, 2) == "ok" and task._approach == nil,
+  "clear positional reach retires completed recovery even when the requested target changes")
+
+
+found_blockers = { overlap("same-mask-body", prototypes.entity.character.collision_mask) }
+check(geometry.path_start(body).clear, "identical masks with not_colliding_with_itself do not block")
+found_blockers = { overlap("tiles-only", { layers = { player = true }, colliding_with_tiles_only = true }) }
+check(geometry.path_start(body).clear, "tiles-only masks do not block another entity")
+found_blockers = { overlap("unsupported-mask", nil) }
+check(geometry.path_start(body).state == "unknown" and not geometry.path_start(body).clear,
+  "missing entity collision metadata cannot prove clearance")
+task = reset()
+result = walk.step(task._walk, body, task.id)
+check(result and result.failed:match("START_COLLISION_UNKNOWN") and not storage.path_request,
+  "unknown collision evidence fails with an actionable diagnostic")
+found_blockers = {}
+tile_blocks = true
+body.position = { x = 1, y = 0 }
+check(geometry.path_start(body).state == "blocked" and geometry.path_start(body).collisions[1].kind == "tile",
+  "terrain collision preserves both pcall return values and blocks the character")
+body.position = { x = 0.4, y = 0 }
+check(geometry.path_start(body).clear, "tile transitions use the character centre rather than footprint overlap")
+
+found_blockers = { overlap("solid-object", { layers = { player = true } }) }
+tile_blocks = false
+body.surface.find_non_colliding_position = function(_, requested)
+  return requested.x == 0 and { x = -1, y = 0 } or { x = 0.2, y = 0 }
+end
+task = reset({ x = 0.1, y = 0 })
+task.arrival_mode, task.arrival_radius = "vicinity", 2
+walk.start(task)
+check(walk.tick(task) == nil and task._walk.phase == "escaping" and task._walk.target.x == 0.2
+  and not storage.path_request,
+  "resolved vicinity proximity cannot finish a genuinely blocked start")
+found_blockers = {}
+task = reset({ x = 0.1, y = 0 })
+check(walk.step(task._walk, body, task.id) == "arrived" and not storage.path_request,
+  "an already safely arrived character succeeds without unnecessary native pathfinding")
+local tile_query = body.surface.get_tile
+body.surface.get_tile = function() error("tile unavailable") end
+check(geometry.path_start(body).state == "unknown" and not geometry.path_start(body).clear,
+  "failed terrain query cannot prove clearance")
+body.surface.get_tile = tile_query
+found_blockers = { overlap("selection-only", { layers = { player = true } }) }
+found_blockers[1].selection_box, found_blockers[1].bounding_box = found_blockers[1].bounding_box, nil
+-- Force this fixture's query to return its selection-overlap candidate, as a
+-- real broad-phase query may do; exact collision geometry is still required.
+local entity_query = body.surface.find_entities_filtered
+body.surface.find_entities_filtered = function() return found_blockers end
+check(geometry.path_start(body).state == "unknown" and #geometry.path_start(body).collisions == 0,
+  "selection overlap without collision geometry never establishes a physical blocker")
+body.surface.find_entities_filtered = entity_query
+
+found_blockers = { overlap("solid-object", { layers = { player = true } }) }
+body.surface.find_non_colliding_position = function() return { x = -1, y = 0 } end
+task = reset({ x = 3, y = 0 })
+approach.ensure(task, body, task.target, 2)
+local retained = task._approach
+body.surface.find_entities_filtered = function() error("temporary engine query failure") end
+game.tick = 30
+result = approach.ensure(task, body, { x = 4, y = 0 }, 2)
+check(result and result.status == "failed" and result.detail:match("START_COLLISION_UNKNOWN")
+  and task._approach == retained and retained.walk.escape_started_tick == 0,
+  "unknown evidence cannot discard active recovery or reset its bounded escape timer")
+body.surface.find_entities_filtered = entity_query
+game.tick = 60
+result = approach.ensure(task, body, { x = 4, y = 0 }, 2)
+check(result and result.detail:match("no physical progress") and retained.walk.escape_failed
+  and not storage.path_request and not body.walking_state.walking,
+  "revalidated unchanged recovery fails within its original physical progress bound")
 
 os.exit(failures == 0 and 0 or 1)

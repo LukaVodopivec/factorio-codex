@@ -10,7 +10,7 @@ end
 _G.defines = {
   direction = { north = 0, northeast = 2, east = 4, southeast = 6, south = 8, southwest = 10, west = 12, northwest = 14 },
 }
-_G.prototypes = { entity = { character = { collision_mask = {} } } }
+_G.prototypes = { entity = { character = { collision_mask = { layers = { player = true } }, collision_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x = 0.2, y = 0.2 } } } } }
 
 local next_path_id = 0
 local body = {
@@ -21,7 +21,8 @@ local body = {
   mining_state = {},
   crafting_queue = {},
   crafting_queue_size = 0,
-  surface = { request_path = function()
+  surface = { find_entities_filtered = function() return {} end,
+    get_tile = function() return { collides_with = function() return false end } end, request_path = function()
     next_path_id = next_path_id + 1
     return next_path_id
   end },

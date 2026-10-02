@@ -24,7 +24,7 @@ function M.prototype(proto, position, direction)
   for index, box in pairs(boxes) do
     local connections_ok, connections = pcall(function() return box.pipe_connections end)
     if connections_ok then
-      for _, connection in ipairs(connections or {}) do
+      for connection_index, connection in ipairs(connections or {}) do
         local relative = vec(connection.positions and connection.positions[direction_index])
         if relative then
           rows[#rows + 1] = { fluidbox_index = tonumber(box.index) or tonumber(index),
@@ -43,30 +43,44 @@ function M.prototype(proto, position, direction)
   return rows
 end
 
-function M.live(entity)
-  local rows, count = {}, 0
+function M.live(entity, internal)
+  local rows, count, complete = {}, 0, true
   local count_ok = pcall(function() count = #entity.fluidbox end)
-  if not count_ok then return rows end
+  if not count_ok then return rows, false end
   for index = 1, count do
     local proto_ok, box = pcall(function() return entity.get_fluid_box_prototype(index) end)
     local ok, connections = pcall(function() return entity.fluidbox.get_pipe_connections(index) end)
     if ok then
-      for _, connection in ipairs(connections or {}) do
+      for connection_index, connection in ipairs(connections or {}) do
         local position, target_position = vec(connection.position), vec(connection.target_position)
         if position and target_position and connection.connection_type ~= "linked" then
-          local target
+          local target, target_entity
           pcall(function()
             local owner = connection.target and connection.target.owner
-            if owner and owner.valid then target = { name = owner.name, type = owner.type,
-              position = { x = owner.position.x, y = owner.position.y } } end
+            if owner and owner.valid then
+              target_entity = owner
+              target = { name = owner.name, type = owner.type,
+                position = { x = owner.position.x, y = owner.position.y } }
+            end
           end)
           rows[#rows + 1] = { fluidbox_index = index,
             production_type = proto_ok and box and box.production_type or nil,
             filter = proto_ok and box and filter_name(box.filter) or nil,
             connection_type = connection.connection_type, flow_direction = connection.flow_direction,
             position = position, target_position = target_position, connected_target = target or false }
+          if internal then
+            if connection.target and not target_entity then complete = false end
+            local row = rows[#rows]
+            row._pipe_connection_index = connection_index
+            row._target_entity, row._target_fluidbox_index = target_entity, connection.target_fluidbox_index
+            row._target_pipe_connection_index = connection.target_pipe_connection_index
+          end
+        elseif internal then
+          complete = false
         end
       end
+    else
+      complete = false
     end
   end
   table.sort(rows, function(a, b)
@@ -74,7 +88,44 @@ function M.live(entity)
     if a.position.x ~= b.position.x then return a.position.x < b.position.x end
     return a.fluidbox_index < b.fluidbox_index
   end)
-  return rows
+  return rows, complete
+end
+
+-- Private component samples only. In 2.0 these are segment capacities and
+-- runtime filters, not recipe ingredients or identities inferred from stock.
+-- A merged/unsupported prototype or an unreadable field refuses the sample.
+function M.sample(entity)
+  local ok, rows = pcall(function()
+    local boxes = {}
+    for index = 1, #entity.fluidbox do
+      local proto = entity.get_fluid_box_prototype(index)
+      if not proto or type(proto.production_type) ~= "string" then error("unsupported fluidbox prototype") end
+      local filter = entity.fluidbox.get_filter(index)
+      local capacity = entity.fluidbox.get_capacity(index)
+      local fluid = entity.fluidbox[index]
+      local segment = entity.fluidbox.get_fluid_segment_id(index)
+      local contents = entity.fluidbox.get_fluid_segment_contents(index)
+      if type(contents) ~= "table" then error("unreadable fluid segment stock") end
+      local segment_name, segment_amount = nil, 0
+      for name, amount in pairs(contents) do
+        if segment_name or type(name) ~= "string" or type(amount) ~= "number" then error("ambiguous fluid segment") end
+        segment_name, segment_amount = name, amount
+      end
+      if fluid and segment_name ~= fluid.name then error("inconsistent fluid segment identity") end
+      if type(capacity) ~= "number" or capacity <= 0 or type(segment) ~= "number" then error("unreadable fluid segment") end
+      if fluid and (type(fluid.name) ~= "string" or type(fluid.amount) ~= "number"
+        or type(fluid.temperature) ~= "number") then error("unreadable fluid") end
+      boxes[index] = { index = index, production_type = proto.production_type,
+        filter = filter and filter.name or filter_name(proto.filter),
+        minimum_temperature = filter and filter.minimum_temperature or proto.minimum_temperature,
+        maximum_temperature = filter and filter.maximum_temperature or proto.maximum_temperature,
+        capacity = capacity, segment = segment, segment_name = segment_name, segment_amount = segment_amount,
+        name = fluid and fluid.name, amount = fluid and fluid.amount or 0,
+        temperature = fluid and fluid.temperature }
+    end
+    return boxes
+  end)
+  return ok and rows or nil
 end
 
 return M

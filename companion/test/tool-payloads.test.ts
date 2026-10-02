@@ -33,7 +33,9 @@ describe("public MCP to Lua DTO mappings", () => {
       component_id: downstream_kind, node_count: 17, omitted_node_ids: 5,
       state: { downstream_kind, blocked_output: downstream_kind === "buffer",
         autonomous_end_to_end: downstream_kind === "consumer",
-        validation: { downstream_kind, downstream_acceptance_samples: 3 } },
+        validation: { downstream_kind, downstream_acceptance_samples: 3,
+          native_source_activity_samples: 24, fluid_activity_samples: 3, power_delivery_samples: 12,
+          mining_sources_present: true, native_power_required: true } },
     }));
     const value = { tick: 42, factory: { groups: {}, force_flows: {},
       material_flow: { nodes: {}, edges: {}, diagnostics: {}, components },

@@ -574,6 +574,125 @@ local function by_position(a, b)
   return a.position.x < b.position.x
 end
 
+-- Native last-tick fields are integrated only over consecutive observed
+-- ticks. Three short bursts share this validator and its exact private graph;
+-- gaps never become inferred pump/generator cycles. Segment counts are uint32,
+-- so each burst's mass balance reserves one fluid unit for rounding.
+local NATIVE_BURST_TICKS = 8
+local function native_required(sample)
+  for _, info in pairs(sample._native_activity or {}) do
+    if info.source or info.type == "boiler" or info.generator or info.consumer or info.type == "pump" then return true end
+  end
+  return false
+end
+
+local function observe_native(step, sample)
+  local burst = step._native_burst
+  if not burst then return end
+  local previous = burst.previous
+  local consecutive = previous and sample.tick == previous.tick + 1
+  if previous and sample.tick ~= previous.tick and not consecutive then burst.aliased = true end
+  local current = sample._native_activity or {}
+  local function event(key, field)
+    local counts = step._native_counts[key]
+    counts[field] = (counts[field] or 0) + 1
+    note_event(step, key .. ":" .. field)
+  end
+  local observed_generation, networks = {}, {}
+  for key, info in pairs(current) do
+    local before = previous and previous._native_activity[key]
+    local counts = step._native_counts[key]
+    if consecutive and before then
+      if info.type == "offshore-pump" or info.type == "pump" then
+        if type(info.pumped) == "number" and info.pumped > 0 then
+          event(key, "flow")
+          local input, output = info.input and info.boxes[info.input], info.boxes[info.output or 1]
+          if input then burst.draw[input.segment] = (burst.draw[input.segment] or 0) + info.pumped end
+          if output then burst.feed[output.segment] = (burst.feed[output.segment] or 0) + info.pumped end
+        elseif info.pumped == nil then counts.unreadable = true end
+      elseif info.generator then
+        if type(info.generated) == "number" and info.generated > 0 then
+          event(key, "flow")
+          local box, generator = info.boxes[1], info.generator
+          local per_unit = (generator.maximum_temperature - generator.default_temperature)
+            * generator.heat_capacity * generator.effectivity
+          if per_unit > 0 then
+            burst.draw[box.segment] = (burst.draw[box.segment] or 0) + info.generated / per_unit
+          else counts.unreadable = true end
+        elseif info.generated == nil then counts.unreadable = true end
+      end
+      if info.type == "boiler" then
+        if type(info.fuel_energy) ~= "number" or type(info.burning_energy) ~= "number" then counts.unreadable = true
+        elseif type(before.fuel_energy) ~= "number" or type(before.burning_energy) ~= "number" then counts.unreadable = true
+        elseif info.fuel_energy < before.fuel_energy or info.burning_energy < before.burning_energy then
+          burst.burning[key] = true
+        end
+      end
+      if info.consumer then
+        if type(info.energy) ~= "number" or type(before.energy) ~= "number" then counts.unreadable = true
+        elseif info.energy < before.energy then counts.used = true
+        elseif info.energy > before.energy then event(key, "delivery") end
+      end
+      if info.generator and info.power_network then
+        local network = info.power_network
+        observed_generation[network] = observed_generation[network] or {}
+        local counts_by_name = observed_generation[network]
+        if type(info.generated) ~= "number" or type(info.network_generation) ~= "table"
+          or type(before.network_generation) ~= "table" then counts.unreadable = true
+        else
+          counts_by_name[info.name] = (counts_by_name[info.name] or 0) + info.generated
+          networks[network] = { current = info.network_generation, previous = before.network_generation, key = key }
+        end
+      end
+    end
+  end
+  -- Compare whole-network generation with the sum of actual observed entity
+  -- generation for the same tick. Unknown producers (even of the same name),
+  -- accumulator discharge, resets and unreadable statistics cannot be attributed.
+  for network, info in pairs(networks) do
+    local names = {}
+    for name in pairs(info.current) do names[name] = true end
+    for name in pairs(info.previous) do names[name] = true end
+    for name in pairs(observed_generation[network]) do names[name] = true end
+    for name in pairs(names) do
+      local now, before = info.current[name] or 0, info.previous[name] or 0
+      if type(now) ~= "number" or type(before) ~= "number"
+        or math.abs(now - before - (observed_generation[network][name] or 0)) > 0.000001 then
+        step._native_counts[info.key].attribution_failed = true
+      end
+    end
+  end
+  burst.previous = sample
+  if sample.tick < burst.finish_tick then return end
+  local producers = {}
+  for key, info in pairs(current) do
+    if info.type == "boiler" and info.output and info.boxes then
+      local segment = info.boxes[info.output].segment
+      producers[segment] = producers[segment] or {}
+      producers[segment][#producers[segment] + 1] = key
+    end
+  end
+  for segment, keys in pairs(producers) do
+    for _, key in ipairs(keys) do
+      local info, before = current[key], burst.start._native_activity[key]
+      local counts = step._native_counts[key]
+      if #keys ~= 1 then counts.ambiguous = true
+      elseif not burst.aliased and before and burst.burning[key] then
+        local output, start_output = info.boxes[info.output], before.boxes[before.output]
+        local input, start_input = info.boxes[info.input], before.boxes[before.input]
+        local production_lower_bound = output.segment_amount - start_output.segment_amount
+          + (burst.draw[segment] or 0) - (burst.feed[segment] or 0) - 1
+        if production_lower_bound > 0 and input.segment_amount >= start_input.segment_amount then
+          event(key, "flow")
+        end
+      end
+      if burst.aliased then counts.aliased = true end
+    end
+  end
+  step._native_burst = nil
+  step._native_burst_index = step._native_burst_index + 1
+end
+
 local function validate_factory_component(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
   step._wait_started_tick = step._wait_started_tick or plan.wait_started_tick
@@ -626,11 +745,31 @@ local function validate_factory_component(plan, step)
     -- a product and each source cycled, so one live branch cannot hide
     -- another branch that stopped.
     step._events = {}
+    if native_required(step._baseline) then
+      step._native_counts, step._native_burst_index = {}, 1
+      for key in pairs(step._baseline._native_activity) do step._native_counts[key] = {} end
+      local length = math.min(NATIVE_BURST_TICKS, math.floor(step.duration_seconds * 60 / 3))
+      step._native_burst_length = length
+      step._native_burst_starts = { game.tick,
+        game.tick + math.floor(step.duration_seconds * 60 / 2) - length,
+        step._validation_due_tick - length }
+      step._native_burst = { start = step._baseline, previous = step._baseline,
+        finish_tick = game.tick + length, draw = {}, feed = {}, burning = {} }
+    end
     observe_statuses(step, step._baseline, false)
-    plan.next_check_tick = math.min(step._validation_due_tick, game.tick + step._sample_interval)
+    plan.next_check_tick = math.min(step._validation_due_tick, game.tick + (step._native_burst and 1 or step._sample_interval))
     return nil
   end
   local final = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions })
+  if step._native_counts and final._signature == step._baseline._signature then
+    local start = step._native_burst_starts[step._native_burst_index]
+    if not step._native_burst and start and game.tick >= start then
+      step._native_burst = { start = final, previous = final,
+        finish_tick = math.min(step._validation_due_tick, game.tick + step._native_burst_length),
+        draw = {}, feed = {}, burning = {} }
+    end
+    observe_native(step, final)
+  end
   local delta = final.products_finished_total - step._baseline.products_finished_total
   local progressed = final.products_finished_total > step._previous.products_finished_total
   local blockers = hard_rows(final)
@@ -642,7 +781,9 @@ local function validate_factory_component(plan, step)
     if counts and downstream.accepting then
       if downstream.kind == "consumer" then
         for product, accepting in pairs(downstream.products) do
-          if counts[product] and accepting then counts[product] = counts[product] + 1; note_event(step, key) end
+          local native = (final._native_activity or {})[key]
+          local active = not native or not native.generator or type(native.generated) == "number" and native.generated > 0
+          if counts[product] and accepting and active then counts[product] = counts[product] + 1; note_event(step, key) end
         end
       elseif previous then
         for product, count in pairs(downstream.stock) do
@@ -706,6 +847,11 @@ local function validate_factory_component(plan, step)
     -- cadence does not keep every sample at the same phase indefinitely.
     step._sample_phase = 1 - step._sample_phase
     plan.next_check_tick = math.min(step._validation_due_tick, game.tick + math.max(1, step._sample_interval - step._sample_phase))
+    if step._native_counts then
+      local start = step._native_burst_starts[step._native_burst_index]
+      if step._native_burst then plan.next_check_tick = math.min(plan.next_check_tick, game.tick + 1)
+      elseif start then plan.next_check_tick = math.min(plan.next_check_tick, start) end
+    end
     return nil
   end
   for _, row in ipairs(persistent) do blockers[#blockers + 1] = row end
@@ -869,9 +1015,9 @@ local function validate_factory_component(plan, step)
   -- A path with a regular period must also have moved within a few of its
   -- own periods.
   local recency = math.min(VALIDATION_STALL_TICKS, math.max(1, math.floor(step.duration_seconds * 60 / 3)))
-  local function recent(key, count)
+  local function recent(key, count, event_key)
     if step._stalled_once or count < VALIDATION_MIN_EVENTS or (step._status_counts[key] or {}).persistent then return end
-    local stats = step._events[key] or { count = 0 }
+    local stats = step._events[event_key or key] or { count = 0 }
     local last, limit = stats.last or step._baseline.tick, recency
     if stats.count >= VALIDATION_MIN_EVENTS then
       local period = (stats.last - stats.first) / (stats.count - 1)
@@ -879,6 +1025,41 @@ local function validate_factory_component(plan, step)
     end
     if final.tick - last > limit then
       throughput("path_stalled_before_end", key, nil, { last_event_tick = last })
+    end
+  end
+  local fluid_samples, power_samples, native_source_samples
+  for key, counts in pairs(step._native_counts or {}) do
+    local info = (final._native_activity or {})[key] or {}
+    if counts.unreadable then throughput("native_activity_unreadable", key, nil, { class = "evidence" }) end
+    if counts.aliased then throughput("native_activity_aliased", key, nil, { class = "evidence" }) end
+    if counts.ambiguous then throughput("boiler_transformation_attribution_unproven", key, nil, { class = "evidence" }) end
+    if counts.attribution_failed then throughput("electrical_generation_attribution_unproven", key, nil, { class = "evidence" }) end
+    if info.source or info.type == "boiler" or info.generator or info.type == "pump" then
+      local count = counts.flow or 0
+      fluid_samples = math.min(fluid_samples or count, count)
+      if info.source then native_source_samples = math.min(native_source_samples or count, count) end
+      if count < VALIDATION_MIN_EVENTS then throughput("bounded_fluid_activity_not_observed", key)
+      else recent(key, count, key .. ":flow") end
+      local before = step._baseline._native_activity[key]
+      if before and info.boxes and before.boxes then
+        for index, box in ipairs(info.boxes) do
+          if box.segment_amount < before.boxes[index].segment_amount then throughput("fluid_supply_draining", key); break end
+        end
+      end
+      if info.type == "boiler" then
+        local fuel = step._status_counts[key] or {}
+        if not fuel.consumed or not fuel.refuelled then throughput("boiler_fuel_replenishment_not_observed", key) end
+      end
+    end
+    if info.consumer then
+      local count = counts.delivery or 0
+      power_samples = math.min(power_samples or count, count)
+      if count < VALIDATION_MIN_EVENTS or not counts.used then throughput("bounded_power_delivery_not_observed", key)
+      else recent(key, count, key .. ":delivery") end
+      local before = step._baseline._native_activity[key]
+      if type(info.energy) ~= "number" or not before or type(before.energy) ~= "number" or info.energy < before.energy then
+        throughput("electrical_store_draining", key)
+      end
     end
   end
   local acceptance_samples
@@ -914,6 +1095,7 @@ local function validate_factory_component(plan, step)
   -- cycle suffices when every producer it fuels shows several cycles. Such a
   -- source is reported separately and never lowers source_cycles_observed.
   local function producer_cycles(key)
+    if step._native_counts and step._native_counts[key] then return step._native_counts[key].flow or 0 end
     if step._source_cycles[key] then return step._source_cycles[key] end
     local count, before = final._production[key], step._baseline._production[key]
     return type(count) == "number" and type(before) == "number" and count - before or 0
@@ -949,7 +1131,7 @@ local function validate_factory_component(plan, step)
       elseif not fuel_consumers then recent(key, count) end
     end
   end
-  if not source_cycles then throughput("several_source_cycles_not_observed") end
+  if not source_cycles and (native_source_samples or 0) < VALIDATION_MIN_EVENTS then throughput("several_source_cycles_not_observed") end
   source_cycles = source_cycles or 0
   if next(step._baseline._production) and delta <= 0 then throughput("bounded_production_delta_not_observed") end
   -- Starter stock in an intermediate buffer, or a packet in a processor's
@@ -1023,6 +1205,10 @@ local function validate_factory_component(plan, step)
     character_transfer_actions = final.character_transfer_actions,
     downstream_kind = final.downstream_kind, blocked_output = final.blocked_output,
     source_cycles_observed = source_cycles, fuel_source_cycles_observed = fuel_source_cycles,
+    native_source_activity_samples = native_source_samples,
+    fluid_activity_samples = fluid_samples, power_delivery_samples = power_samples,
+    mining_sources_present = step._native_counts and (next(step._source_cycles) ~= nil),
+    native_power_required = step._native_counts and (power_samples ~= nil),
     downstream_acceptance_samples = acceptance_samples,
     topology_ready = final.topology_ready, blockers = blockers, omitted_blockers = omitted_blockers,
     transient_conditions = #transient > 0 and transient or nil,

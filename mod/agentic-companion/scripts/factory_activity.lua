@@ -17,19 +17,37 @@ local function ensure()
 end
 
 function M.record_validation(result, signature)
+  local native = type(result) == "table" and (result.native_source_activity_samples ~= nil
+    or result.fluid_activity_samples ~= nil or result.power_delivery_samples ~= nil
+    or result.mining_sources_present ~= nil or result.native_power_required ~= nil)
+  local source_proven = type(result) == "table" and (tonumber(result.source_cycles_observed) or 0) >= 3
+  if native then
+    local water_proven = (tonumber(result.native_source_activity_samples) or 0) >= 3
+    source_proven = (source_proven or water_proven and (result.mining_sources_present == false
+      or (tonumber(result.fuel_source_cycles_observed) or 0) >= 1))
+      and (result.native_source_activity_samples == nil or water_proven)
+      and (tonumber(result.fluid_activity_samples) or 0) >= 3
+      and type(result.mining_sources_present) == "boolean"
+      and type(result.native_power_required) == "boolean"
+      and (not result.native_power_required or (tonumber(result.power_delivery_samples) or 0) >= 3)
+  end
   if type(signature) ~= "string" or type(result) ~= "table" or type(result.component_signature) ~= "string"
     or result.proven ~= true or (tonumber(result.duration_ticks) or 0) < 1
     -- The parked validator checks every processor present. Source-only proof
     -- has source cycles and acceptance evidence without crafting production.
     or (tonumber(result.products_finished_delta) or -1) < 0
     or (tonumber(result.downstream_acceptance_samples) or 0) < 3
-    or (tonumber(result.source_cycles_observed) or 0) < 3
+    or not source_proven
     or (tonumber(result.character_transfer_actions) or 0) ~= 0 then return end
   local activity = ensure()
   activity.validations[#activity.validations + 1] = {
     component_signature = result.component_signature, _signature = signature,
     downstream_kind = result.downstream_kind, downstream_acceptance_samples = result.downstream_acceptance_samples,
     source_cycles_observed = result.source_cycles_observed,
+    native_source_activity_samples = result.native_source_activity_samples,
+    fluid_activity_samples = result.fluid_activity_samples, power_delivery_samples = result.power_delivery_samples,
+    mining_sources_present = result.mining_sources_present, native_power_required = result.native_power_required,
+    fuel_source_cycles_observed = result.fuel_source_cycles_observed,
     start_tick = result.start_tick, end_tick = result.end_tick,
     duration_ticks = result.duration_ticks, products_finished_delta = result.products_finished_delta,
     character_transfer_actions = result.character_transfer_actions,

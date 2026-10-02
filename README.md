@@ -364,7 +364,44 @@ below it). Buffer acceptance requires increases
 in each matching output stock across distinct samples; a working consumer
 must also accept every relevant output through its native input inventory
 at each counted sample. Supported item probes use lab input or burner-generator
-fuel inventories; unsupported consumer or fluid acceptance stays unproven.
+fuel inventories. Native thermal generators and terminal storage tanks support
+fluid acceptance; other consumer types remain unproven.
+The retained graph also supports native offshore-pump supply, separate-pipe
+boiler transformation, pipes (including underground connections), two-box pumps,
+thermal generators, and terminal fluid buffers. Identities come from
+[Factorio 2.0.76 runtime/prototype evidence](https://lua-api.factorio.com/2.0.76/runtime-api.json):
+the offshore source tile's fluid, runtime fluidbox filters and temperature
+constraints, boiler mode/target temperature, and generator heat requirements.
+Connections retain both fluidbox indices and native flow direction. Only valid,
+same-force targets on the current surface in charted chunks participate;
+unsupported machinery, merged boxes or unreadable connections stay unproven.
+
+Electrical dependencies join the exact private component but never transport
+items/fluids, satisfy ingredients or fuel provenance, or substitute an unrelated
+endpoint for material acceptance. Three eight-tick bursts inside the existing
+1–300 s parked validation window collect consecutive native pump movement and
+generator output; sparse gaps are never integrated. Each boiler needs three
+uniquely attributable output mass balances with actual fuel consumption and
+non-draining water input. Segment stock is sampled once per identity; the
+balance reserves one fluid unit for integer rounding and subtracts measured
+pump inflow. A shared output segment with several boilers remains unproven.
+Boilers must also exercise actual fuel replenishment. Pumps and generators
+need repeated activity and per-path recency; none receives fabricated mining
+cycles or crafting counters.
+
+Whole-network native generation increments must match the sum of the observed
+generators' actual output in each sampled tick, including when several generators
+share a name. Unknown suppliers, accumulator discharge and counter resets are
+unproven. An input-only electrical material participant must show actual buffer
+use and at least three recharge events, rather than shared network identity or
+working status alone. Stable buffers that conceal both use and recharge remain
+unproven. Fluid endpoints require compatible identity/temperature and segment
+capacity, with actual generator activity or distinct buffer arrivals. Draining
+fluid or electrical stores, incomplete transfer history, character transfers,
+changed entities/connections/constraints/network bindings and stopped branches
+refuse proof. Current native autonomy revokes when pump/generator activity or
+consumer energy fails. Presentation caps never limit private validation.
+
 Drill source cycles use a mining-progress
 wrap accompanied by depletion of the
 same already charted target. Adjacent sampling intervals vary the phase to
@@ -384,7 +421,9 @@ Private inventory/resource samples and exact internal identity strings are never
 returned. Validation returns `stage` (`readiness`, `preflight` or `window`),
 aggregate production deltas, `source_cycles_observed`,
 `fuel_source_cycles_observed` when a fuel-only source was judged by its
-consumers, `downstream_acceptance_samples`, `samples_observed`,
+consumers, native `native_source_activity_samples`, `fluid_activity_samples`,
+`power_delivery_samples`, `mining_sources_present` and `native_power_required`
+when applicable, `downstream_acceptance_samples`, `samples_observed`,
 `last_progress_tick`, and located blocker rows (`reason`, `class`, `position`,
 `entity`, `related_edge`, plus `last_event_tick`, `fuel_items`, `fuel_draws`,
 `fuel_demand_watts`, `fuel_supply_watts`, `suggested_duration_seconds` or
@@ -397,7 +436,8 @@ changed topology, persistent missing fuel or power, no production or unobserved
 downstream acceptance do reject it. A prior proof also loses current autonomy
 when a new transfer or blocked output appears, or when a source or processor is
 at `no_fuel`, `no_power`, `no_resources` or disabled
-(`validated_producer_nonproductive`); input and output waits do not revoke it. These are sampled bounded
+(`validated_producer_nonproductive`); input and output waits do not revoke it. Offline fixtures establish source behavior only; deployment and live supplied
+steam-power autonomy remain unverified. These are sampled bounded
 claims, not a guarantee about every intervening tick or unlimited future demand.
 
 ## Verification

@@ -883,4 +883,33 @@ for _, case in ipairs({ { 17, 10, 300 }, { 8, 10, 60 }, { 17, 10, 300, true }, {
     "a fuel chest stocked by hand behind a surplus takeoff that takes every coal is not proven in " .. case[3] .. " s" .. (case[4] and " after one early swing" or ""))
 end
 
+-- Recorder admission keeps legacy source proof and refuses incomplete native
+-- aggregates; no native activity sample is disguised as a mining cycle.
+do
+  local activity = require("scripts.factory_activity")
+  local valid = { proven = true, component_signature = "native-record", duration_ticks = 60,
+    start_tick = game.tick - 60, end_tick = game.tick, products_finished_delta = 0,
+    character_transfer_actions = 0, downstream_acceptance_samples = 3,
+    source_cycles_observed = 0, native_source_activity_samples = 3, fluid_activity_samples = 3,
+    mining_sources_present = false, native_power_required = true, power_delivery_samples = 3 }
+  local function records(candidate)
+    storage.factory_activity = { epoch_tick = game.tick - 60, events = {}, validations = {} }
+    activity.record_validation(candidate, "exact-native-identity")
+    return #activity.snapshot(game.tick - 60).validations
+  end
+  check(records(valid) == 1, "recorder admits genuine non-mining source activity with complete native aggregates")
+  for _, field in ipairs({ "native_source_activity_samples", "fluid_activity_samples", "mining_sources_present",
+    "native_power_required", "power_delivery_samples" }) do
+    local incomplete = {}; for key, value in pairs(valid) do incomplete[key] = value end
+    incomplete[field] = nil
+    check(records(incomplete) == 0, "recorder rejects incomplete native evidence missing " .. field)
+  end
+  local legacy = { proven = true, component_signature = "legacy", duration_ticks = 60,
+    products_finished_delta = 0, downstream_acceptance_samples = 3, source_cycles_observed = 2,
+    character_transfer_actions = 0, start_tick = game.tick - 60, end_tick = game.tick }
+  check(records(legacy) == 0, "native admission never weakens legacy mining-source requirements")
+  legacy.source_cycles_observed = 3
+  check(records(legacy) == 1, "legacy source-only validation remains admissible")
+end
+
 os.exit(failures == 0 and 0 or 1)

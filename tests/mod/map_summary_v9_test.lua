@@ -1593,4 +1593,313 @@ local source = source_file:read("*a"); source_file:close()
 check(not source:find("get_tile", 1, true) and not source:find("collides_with", 1, true),
   "production shoreline scan contains no per-tile native calls")
 
+-- Fluid identities and topology come from native source/prototype/connection
+-- facts, independently of names, coordinates, recipes or preloaded contents.
+do
+  local previous_find, previous_fluids = surface.find_entities_filtered, prototypes.fluid
+  prototypes.fluid = { aqua = { default_temperature = 15, heat_capacity = 200 },
+    vapor = { default_temperature = 15, heat_capacity = 200 } }
+  local function entity(kind, x, boxes, proto)
+    local e = { valid = true, name = "opaque-" .. kind, type = kind, force = force, surface = surface,
+      position = { x = x, y = 9 }, status = 3, unit_number = x, prototype = proto or {} }
+    local links = {}
+    e.fluidbox = {}
+    for index, box in ipairs(boxes) do
+      e.fluidbox[index] = box.fluid
+      links[index] = {}
+    end
+    setmetatable(e.fluidbox, { __len = function() return #boxes end })
+    e.get_fluid_box_prototype = function(index) return boxes[index] end
+    e.fluidbox.get_filter = function(index)
+      local box = boxes[index]
+      return box.filter and { name = box.filter.name, minimum_temperature = box.minimum_temperature or -100,
+        maximum_temperature = box.maximum_temperature or 1000 }
+    end
+    e.fluidbox.get_capacity = function() return 100 end
+    e.fluidbox.get_fluid_segment_id = function(index) return x * 10 + index end
+    e.fluidbox.get_fluid_segment_contents = function(index)
+      local fluid = boxes[index].fluid
+      return fluid and { [fluid.name] = fluid.amount } or {}
+    end
+    e.fluidbox.get_pipe_connections = function(index) return links[index] end
+    return e, links
+  end
+  local source, sl = entity("offshore-pump", 1, { { production_type = "output", filter = { name = "aqua" } } })
+  source.get_fluid_source_fluid = function() return "aqua" end
+  local boiler, bl = entity("boiler", 2, {
+    { production_type = "input", filter = { name = "aqua" } },
+    { production_type = "output", filter = { name = "vapor" } } },
+    { boiler_mode = "output-to-separate-pipe", target_temperature = 165 })
+  local pipe, pl = entity("pipe-to-ground", 3, { { production_type = "none" } })
+  local generator, gl = entity("generator", 5, { { production_type = "input", filter = { name = "vapor" } } },
+    { burns_fluid = false, effectivity = 1, maximum_temperature = 165 })
+  local function link(a, al, ai, b, bl, bi)
+    al[ai][#al[ai] + 1] = { position = a.position, target_position = b.position, connection_type = "normal",
+      flow_direction = "output", target = b.fluidbox, target_fluidbox_index = bi }
+    bl[bi][#bl[bi] + 1] = { position = b.position, target_position = a.position, connection_type = "normal",
+      flow_direction = "input", target = a.fluidbox, target_fluidbox_index = ai }
+    a.fluidbox.owner, b.fluidbox.owner = a, b
+  end
+  link(source, sl, 1, boiler, bl, 1); link(boiler, bl, 2, pipe, pl, 1); link(pipe, pl, 1, generator, gl, 1)
+  surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or { generator, pipe, boiler, source } end
+  local summary = map.map_summary({})
+  local sample = map.factory_component_sample({ source_tick = game.tick, positions = { boiler.position } })
+  check(#summary.factory.material_flow.edges == 3, "native connected fluidboxes create exact directed relationships including underground pipes")
+  local output_edge
+  for _, edge in ipairs(summary.factory.material_flow.edges) do
+    if edge.from_fluidbox == 2 then output_edge = edge end
+  end
+  check(output_edge and output_edge.to_fluidbox == 1, "fluid relationships retain both box indices rather than entity adjacency")
+  check(not canonical(sample.blockers):find("output_identity_unproven", 1, true),
+    "empty native offshore and boiler boxes still establish product identity without recipes or stock")
+  check(not canonical(summary):find("_fluid_boxes", 1, true) and not canonical(summary):find("_target_entity", 1, true),
+    "private fluid samples and runtime entity references never escape map summary")
+  local signature = sample._signature
+  boiler.prototype.target_temperature = 170
+  check(map.factory_component_sample({ source_tick = game.tick, positions = { boiler.position } })._signature ~= signature,
+    "exact fluid component identity includes boiler output temperature")
+  boiler.prototype.target_temperature = 165
+  local old_force = generator.force
+  generator.force = foreign_force
+  local excluded = map.map_summary({})
+  check(canonical(excluded.factory.material_flow.diagnostics):find("fluid_connected_target_unproven", 1, true) ~= nil,
+    "native connected foreign-force target remains unproven")
+  generator.force = old_force
+  gl[1], pl[1] = {}, {}
+  check(#map.map_summary({}).factory.material_flow.edges == 2, "disconnected pipe targets never become edges through proximity")
+  surface.find_entities_filtered, prototypes.fluid = previous_find, previous_fluids
+end
+
+-- Supplied plant simulation: native per-tick pump/generator quantities,
+-- conserved steam stock and burning fuel, actual electrical buffer draw and
+-- recharge, and mined coal transported to fuel and material acceptance.
+do
+  local previous_find, old_fluids, old_coal = surface.find_entities_filtered, prototypes.fluid, prototypes.item.coal
+  local function steam_validation(mode)
+    game.tick = game.tick + 100
+    local start = game.tick
+    storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+    prototypes.item.coal = { name = "coal", fuel_value = 10000, fuel_category = "chemical" }
+    prototypes.fluid = { aqua = { default_temperature = 15, heat_capacity = 1 },
+      vapor = { default_temperature = 15, heat_capacity = 1 } }
+    local steam, water, coal, accepted, fuel_items = 20, 20, 10, 0, 5
+    local generated_total, relay_steam = 0, 20
+    local electric = { electric_energy_source_prototype = { usage_priority = "secondary-input" } }
+    local entities, connections, boxes_by_entity = {}, {}, {}
+    local function make(kind, x, boxes, proto)
+      local e = { valid = true, name = "supplied-" .. kind, type = kind, force = force, surface = surface,
+        position = { x = x, y = 12 }, unit_number = 100 + x, status = 3, direction = 0, prototype = proto or {} }
+      entities[#entities + 1] = e
+      if boxes then
+        boxes_by_entity[e], connections[e] = boxes, {}
+        local fb = {}
+        setmetatable(fb, { __len = function() return #boxes end, __index = function(_, index)
+          if type(index) ~= "number" then return nil end
+          local box = boxes[index]
+          return { name = box.filter and box.filter.name or "vapor", temperature = box.segment == 1 and 15 or 165,
+            amount = box.segment == 1 and water or box.segment == 3 and relay_steam or steam }
+        end })
+        fb.owner = e
+        fb.get_pipe_connections = function(index) return connections[e][index] or {} end
+        fb.get_filter = function(index)
+          local box = boxes[index]
+          return box.filter and { name = box.filter.name, minimum_temperature = box.minimum_temperature or -100,
+            maximum_temperature = box.maximum_temperature or 1000 }
+        end
+        fb.get_capacity = function() return 1000 end
+        fb.get_fluid_segment_id = function(index) return boxes[index].segment end
+        fb.get_fluid_segment_contents = function(index)
+          local box = boxes[index]
+          return { [box.segment == 1 and "aqua" or "vapor"] = box.segment == 1 and water or box.segment == 3 and relay_steam or steam }
+        end
+        e.fluidbox = fb
+        e.get_fluid_box_prototype = function(index) return boxes[index] end
+      end
+      return e
+    end
+    local function box(kind, name, segment) return { production_type = kind, filter = name and { name = name }, segment = segment } end
+    local function link(a, ai, b, bi)
+      connections[a][ai] = connections[a][ai] or {}
+      connections[b][bi] = connections[b][bi] or {}
+      table.insert(connections[a][ai], { position = a.position, target_position = b.position, connection_type = "normal",
+        flow_direction = "output", target = b.fluidbox, target_fluidbox_index = bi })
+      table.insert(connections[b][bi], { position = b.position, target_position = a.position, connection_type = "normal",
+        flow_direction = "input", target = a.fluidbox, target_fluidbox_index = ai })
+    end
+    local source = make("offshore-pump", 1, { box("output", "aqua", 1) })
+    source.get_fluid_source_fluid = function() return "aqua" end
+    source.pumped_last_tick = 4
+    local boiler = make("boiler", 2, { box("input", "aqua", 1), box("output", "vapor", 2) },
+      { boiler_mode = "output-to-separate-pipe", target_temperature = 165,
+        burner_prototype = { fuel_categories = { chemical = true } } })
+    boiler.burner = { remaining_burning_fuel = 10000, currently_burning = {
+      name = prototypes.item.coal, quality = { name = "normal" } } }
+    boiler.get_fuel_inventory = function() return {
+      get_contents = function() return { { name = "coal", quality = "normal", count = fuel_items } } end,
+      get_item_count = function() return fuel_items end, can_insert = function() return fuel_items < 10 end } end
+    local pipe = make("pipe-to-ground", 3, { box("none", nil, 2) })
+    local generator = make("generator", 4, { box("input", "vapor", 2) },
+      { burns_fluid = false, effectivity = 1, maximum_temperature = 165 })
+    generator.electric_network_id, generator.energy_generated_last_tick = 7, 450
+    link(source, 1, boiler, 1); link(boiler, 2, pipe, 1); link(pipe, 1, generator, 1)
+    local pole = make("electric-pole", 5)
+    pole.electric_network_id = 7
+    pole.electric_network_statistics = setmetatable({}, { __index = function(_, key)
+      if key == "input_counts" then return { [generator.name] = generated_total } end
+    end })
+    local target = { valid = true, name = "coal", type = "resource", position = { x = 6, y = 12 }, amount = 1000,
+      prototype = { mineable_properties = { mining_time = 5 / 60, products = { { name = "coal", type = "item" } } } } }
+    local mine = make("mining-drill", 6, nil, { mining_speed = 1, electric_energy_source_prototype = electric.electric_energy_source_prototype })
+    mine.electric_network_id, mine.energy, mine.mining_target, mine.mining_progress = 7, 1000, target, 0
+    local chest = make("container", 7)
+    chest.get_inventory = function() return { get_item_count = function() return coal end, can_insert = function() return true end } end
+    mine.drop_target = chest
+    local refill = make("inserter", 8, nil, electric)
+    refill.electric_network_id, refill.energy, refill.pickup_target, refill.drop_target = 7, 1000, chest, boiler
+    local unload = make("inserter", 9, nil, electric)
+    local terminal = make("container", 10)
+    terminal.get_inventory = function() return { get_item_count = function() return accepted end, can_insert = function() return true end } end
+    unload.electric_network_id, unload.energy, unload.pickup_target, unload.drop_target = 7, 1000, chest, terminal
+    local extra_generator, steam_pump, water_buffer, other_boiler
+    if mode == "fluid_buffer" or mode == "fluid_buffer_full" or mode == "fluid_buffer_wrong" then
+      water_buffer = make("storage-tank", 11, { box("none", mode == "fluid_buffer_wrong" and "vapor" or "aqua", 1) })
+      connections[source][1], connections[boiler][1] = {}, {}
+      link(source, 1, water_buffer, 1)
+    elseif mode == "ambiguous_boilers" then
+      other_boiler = make("boiler", 11, { box("input", "aqua", 1), box("output", "vapor", 2) }, boiler.prototype)
+      other_boiler.burner = { remaining_burning_fuel = 10000, currently_burning = boiler.burner.currently_burning }
+      other_boiler.get_fuel_inventory = boiler.get_fuel_inventory
+      local other_refill = make("inserter", 12, nil, electric)
+      other_refill.electric_network_id, other_refill.energy = 7, 1000
+      other_refill.pickup_target, other_refill.drop_target = chest, other_boiler
+      link(source, 1, other_boiler, 1); link(other_boiler, 2, pipe, 1)
+    end
+    if mode == "multiple_generators" then
+      extra_generator = make("generator", 11, { box("input", "vapor", 2) }, generator.prototype)
+      extra_generator.electric_network_id, extra_generator.energy_generated_last_tick = 7, 225
+      generator.energy_generated_last_tick = 225
+      link(pipe, 1, extra_generator, 1)
+    elseif mode == "steam_pump" then
+      steam_pump = make("pump", 11, { box("input", "vapor", 2), box("output", "vapor", 3) }, electric)
+      steam_pump.electric_network_id, steam_pump.energy, steam_pump.pumped_last_tick = 7, 1000, 4
+      boxes_by_entity[generator][1].segment = 3
+      connections[pipe][1], connections[boiler][2], connections[generator][1] = {}, {}, {}
+      link(boiler, 2, pipe, 1); link(pipe, 1, steam_pump, 1); link(steam_pump, 2, generator, 1)
+    end
+    if mode == "presentation_caps" then
+      connections[pipe][1], connections[boiler][2], connections[generator][1] = {}, {}, {}
+      link(boiler, 2, pipe, 1)
+      local previous = pipe
+      for x = 11, 30 do
+        local next_pipe = make("pipe", x, { box("none", nil, 2) })
+        link(previous, 1, next_pipe, 1); previous = next_pipe
+      end
+      link(previous, 1, generator, 1)
+    end
+    if mode == "disconnected" then connections[pipe][1], connections[generator][1] = {}, {} end
+    if mode == "wrong_fluid" then boxes_by_entity[generator][1].filter.name = "aqua" end
+    if mode == "wrong_temperature" then boxes_by_entity[generator][1].minimum_temperature = 200 end
+    if mode == "missing_network" then generator.electric_network_id = nil end
+    if mode == "mismatched_network" then mine.electric_network_id, refill.electric_network_id, unload.electric_network_id = 8, 8, 8 end
+    if mode == "foreign_force" then generator.force = foreign_force end
+    if mode == "uncharted" then generator.position = { x = 1000, y = 12 } end
+    if mode == "unsupported_counter" then generator.energy_generated_last_tick = nil end
+    if mode == "unsupported_boiler" then boiler.prototype.boiler_mode = "heat-fluid-inside" end
+    if mode == "unreadable_source" then source.get_fluid_source_fluid = function() error("unreadable source") end end
+    surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
+    map.map_summary({})
+    local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
+      source_tick = start, positions = { water_buffer and source.position or boiler.position }, duration_seconds = 1 } } })
+    game.tick = start + 1; tasks.on_tick()
+    local preflight = map.factory_component_sample({ source_tick = game.tick, positions = { water_buffer and source.position or boiler.position } })
+    for tick = 1, 60 do
+      game.tick = start + 1 + tick * (mode == "aliased_samples" and 2 or 1)
+      mine.mining_progress = (tick % 5) / 5
+      if tick % 5 == 0 then target.amount, coal = target.amount - 1, coal + 2 end
+      if tick % 5 == 2 then coal, accepted = coal - 1, accepted + 1 end
+      boiler.burner.remaining_burning_fuel = boiler.burner.remaining_burning_fuel - 600
+      if boiler.burner.remaining_burning_fuel <= 0 then
+        boiler.burner.remaining_burning_fuel, fuel_items = boiler.burner.remaining_burning_fuel + 10000, fuel_items - 1
+      end
+      if tick % 5 == 4 and fuel_items < 5 and mode ~= "no_fuel_refill" then fuel_items, coal = fuel_items + 1, coal - 1 end
+      if mode == "starter_steam" then steam = steam - 3
+      elseif mode == "steam_pump" then relay_steam = relay_steam + 1
+      else steam = steam + 1 end
+      if mode == "starter_water" then water, source.pumped_last_tick = water - 1, 0 end
+      if water_buffer then water = mode == "fluid_buffer_full" and 1000 or water + 4 end
+      if other_boiler then other_boiler.burner.remaining_burning_fuel = boiler.burner.remaining_burning_fuel end
+      if mode ~= "unsupported_counter" then generator.energy_generated_last_tick = mode == "multiple_generators" and 225 or 450 end
+      if mode == "inactive_generation" or mode == "generation_interruption" and tick >= 30 then generator.energy_generated_last_tick = 0 end
+      generated_total = generated_total + (generator.energy_generated_last_tick or 0)
+        + (extra_generator and extra_generator.energy_generated_last_tick or 0)
+      if mode == "unobserved_supplier" then generated_total = generated_total + 10 end
+      if mode == "full_endpoint" then steam = 1000 end
+      for _, consumer in ipairs({ mine, refill, unload }) do
+        consumer.energy = tick % 2 == 0 and 1000 or 850
+        if mode == "starter_energy" then consumer.energy = 1000 - tick end
+      end
+      if steam_pump then steam_pump.energy = tick % 2 == 0 and 1000 or 999 end
+      if mode == "topology_change" and tick == 20 then pipe.unit_number = 999 end
+      if mode == "connection_change" and tick == 8 then connections[pipe][1][1].target_pipe_connection_index = 99 end
+      if mode == "added_boiler" and tick == 8 then
+        local added = make("boiler", 12, { box("input", "aqua", 1), box("output", "vapor", 2) }, boiler.prototype)
+        added.burner, added.get_fuel_inventory = boiler.burner, boiler.get_fuel_inventory
+        link(source, 1, added, 1); link(added, 2, pipe, 1)
+      end
+      if mode == "network_change" and tick == 20 then generator.electric_network_id = 9 end
+      if mode == "transfer" and tick == 20 then
+        require("scripts.factory_activity").record("insert", { target = chest, transfers = { { item = "coal", inserted = 1 } } })
+      end
+      tasks.on_tick()
+    end
+    local result = tasks.plan_status({ plan_id = queued.plan_id })
+    local summary = map.map_summary({})
+    return result, preflight, summary, { generator = generator, source = source, boiler = boiler, unload = unload, steam_pump = steam_pump }
+  end
+  local result, preflight, final, plant = steam_validation("supplied")
+  check(preflight.topology_ready and result.status == "completed", "genuinely supplied native steam-power and accepted material segment proves autonomy")
+  if result.status ~= "completed" then print("steam fixture diagnostics " .. canonical(result)) end
+  check(final.factory.material_flow.components[1].state.autonomous_end_to_end
+    and final.factory.material_flow.components[1].state.validation.fluid_activity_samples >= 3,
+    "native proof is retained and drives current component autonomy with compact aggregate evidence")
+  plant.generator.energy_generated_last_tick = 0
+  check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+    "current native autonomy revokes when the validated generator stops")
+  plant.generator.energy_generated_last_tick, plant.source.pumped_last_tick = 450, 0
+  check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+    "current native autonomy revokes when its supplied water pump stops")
+  plant.source.pumped_last_tick, plant.unload.energy = 4, 0
+  check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+    "current native autonomy revokes when its material consumer loses electrical energy")
+  for _, mode in ipairs({ "multiple_generators", "steam_pump", "fluid_buffer" }) do
+    local valid = steam_validation(mode)
+    check(valid.status == "completed", "native proof supports " .. mode .. " with actual aggregate attribution/connectivity")
+  end
+  local pump_result, _, _, pump_plant = steam_validation("steam_pump")
+  pump_plant.steam_pump.pumped_last_tick = 0
+  check(pump_result.status == "completed" and not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+    "current native autonomy revokes when its inline steam pump stops despite stored steam and electrical energy")
+  for _, mode in ipairs({ "added_boiler", "connection_change" }) do
+    local changed = steam_validation(mode)
+    check(changed.status ~= "completed" and canonical(changed):find("component_topology_changed_during_validation", 1, true),
+      "native " .. mode .. " returns structured topology-change evidence without a sampling fault")
+  end
+  local capped_result, _, capped = steam_validation("presentation_caps")
+  check(capped_result.status == "completed" and capped.factory.omissions.capped_flow_nodes > 0,
+    "native validation uses the full fluid/power graph independently of presentation caps")
+  local serialized = canonical(final)
+  check(not serialized:find("_native_activity", 1, true) and not serialized:find("segment_amount", 1, true)
+    and not serialized:find("network_generation", 1, true) and not canonical(result):find("segment_amount", 1, true)
+    and not canonical(result):find("_native_activity", 1, true), "native fluid/power quantities and attribution samples never escape map summary")
+  for _, mode in ipairs({ "disconnected", "wrong_fluid", "wrong_temperature", "missing_network", "mismatched_network",
+    "foreign_force", "uncharted", "unsupported_counter", "unsupported_boiler", "unreadable_source", "starter_steam",
+    "starter_water", "starter_energy", "no_fuel_refill", "inactive_generation", "generation_interruption",
+    "unobserved_supplier", "full_endpoint", "topology_change", "network_change", "transfer",
+    "fluid_buffer_full", "fluid_buffer_wrong", "ambiguous_boilers", "aliased_samples" }) do
+    local result = steam_validation(mode)
+    check(result.status ~= "completed", "native steam-power proof rejects " .. mode)
+  end
+  surface.find_entities_filtered, prototypes.fluid, prototypes.item.coal = previous_find, old_fluids, old_coal
+end
+
 os.exit(failures == 0 and 0 or 1)

@@ -1,6 +1,7 @@
 -- Read-only summary of the force's already charted world. No chart or generation calls.
 local companion = require("scripts.companion")
 local factory_activity = require("scripts.factory_activity")
+local fluid_connections = require("scripts.fluid_connections")
 
 local M = {}
 local MAX_EDGES = 256
@@ -273,7 +274,68 @@ local function burner_categories(entity)
   return result
 end
 
-local function build_material_flow(flow_entities, node_by_key, activity)
+-- Native fluid identities are independent of crafting recipes and starter stock.
+local FLUID_TYPES = { ["offshore-pump"] = true, boiler = true, generator = true,
+  pipe = true, ["pipe-to-ground"] = true, pump = true, ["storage-tank"] = true }
+local function fluid_facts(node)
+  if not FLUID_TYPES[node.type] then return end
+  local entity = node._entity
+  node._fluid_boxes = fluid_connections.sample(entity)
+  node._fluid_connections, node._fluid_connections_complete = fluid_connections.live(entity, true)
+  local ok = pcall(function()
+    local boxes, proto = node._fluid_boxes, entity.prototype
+    if not boxes or #boxes == 0 then error("fluidbox evidence unavailable") end
+    if node.type == "offshore-pump" then
+      local name = entity.get_fluid_source_fluid()
+      local fluid = prototypes.fluid[name]
+      if #boxes ~= 1 or boxes[1].production_type ~= "output" or not fluid
+        or boxes[1].filter and boxes[1].filter ~= name then error("source identity unavailable") end
+      node.products = { { name = name, type = "fluid", temperature = fluid.default_temperature } }
+      node._fluid_source = name
+    elseif node.type == "boiler" then
+      if proto.boiler_mode ~= "output-to-separate-pipe" or #boxes ~= 2 then error("unsupported boiler") end
+      local input, output
+      for _, box in ipairs(boxes) do
+        if box.production_type == "input" then input = box end
+        if box.production_type == "output" then output = box end
+      end
+      if not input or not output or not input.filter or not output.filter
+        or type(proto.target_temperature) ~= "number" then error("boiler identity unavailable") end
+      node.ingredients = { { name = input.filter, type = "fluid" } }
+      node.products = { { name = output.filter, type = "fluid", temperature = proto.target_temperature } }
+      node._fluid_input, node._fluid_output = input.index, output.index
+      node._fuel_destination_proven = true
+    elseif node.type == "generator" then
+      local box = boxes[1]
+      local fluid = prototypes.fluid[box.filter]
+      if #boxes ~= 1 or box.production_type ~= "input" or not fluid or proto.burns_fluid ~= false
+        or type(proto.effectivity) ~= "number" or proto.effectivity <= 0
+        or type(proto.maximum_temperature) ~= "number" or fluid.heat_capacity <= 0 then error("unsupported generator") end
+      node.ingredients = { { name = box.filter, type = "fluid" } }
+      node._generator = { default_temperature = fluid.default_temperature, heat_capacity = fluid.heat_capacity,
+        effectivity = proto.effectivity, maximum_temperature = proto.maximum_temperature }
+    elseif node.type == "pump" then
+      if #boxes ~= 2 then error("unsupported pump boxes") end
+      local input, output
+      for _, box in ipairs(boxes) do
+        if box.production_type == "input" then input = box end
+        if box.production_type == "output" then output = box end
+      end
+      if not input or not output then error("unsupported pump direction") end
+      node._fluid_input, node._fluid_output = input.index, output.index
+    elseif #boxes ~= 1 then error("unsupported multiple transport boxes") end
+  end)
+  node._fluid_supported = ok
+end
+
+local function fluid_compatible(box, name, temperature)
+  return box and type(name) == "string" and (not box.filter or box.filter == name)
+    and (not box.name or box.name == name)
+    and (not box.minimum_temperature or type(temperature) == "number" and temperature >= box.minimum_temperature)
+    and (not box.maximum_temperature or type(temperature) == "number" and temperature <= box.maximum_temperature)
+end
+
+local function build_material_flow(flow_entities, node_by_key, activity, network_poles)
   local nodes = sorted_rows(node_by_key, key_position)
   local retained = {}
   for index, node in ipairs(nodes) do
@@ -290,14 +352,15 @@ local function build_material_flow(flow_entities, node_by_key, activity)
   local function status_class(node)
     return STRUCTURAL_RAW_STATUSES[node._raw_status] and "structural" or "transient"
   end
-  local function add_edge(from_entity, to_entity, kind)
+  local function add_edge(from_entity, to_entity, kind, from_box, to_box)
     local from_key, to_key = entity_key(from_entity), entity_key(to_entity)
     local from, to = from_key and retained[from_key], to_key and retained[to_key]
     if not from or not to then return false end
-    local key = from.id .. "\0" .. to.id .. "\0" .. kind
+    local key = from.id .. "\0" .. to.id .. "\0" .. kind .. ":" .. tostring(from_box) .. ":" .. tostring(to_box)
     if seen_edges[key] then return true end
     seen_edges[key] = true
-    edges[#edges + 1] = { from = from.id, to = to.id, kind = kind, confidence = "exact_runtime_relationship" }
+    edges[#edges + 1] = { from = from.id, to = to.id, kind = kind, confidence = "exact_runtime_relationship",
+      from_fluidbox = from_box, to_fluidbox = to_box }
     return true
   end
   for _, entity in ipairs(flow_entities) do
@@ -344,16 +407,92 @@ local function build_material_flow(flow_entities, node_by_key, activity)
           elseif ok_container and container and ok_kind and kind == "output" then add_edge(container, entity, "loader_container") end
         end
       end
+      if FLUID_TYPES[node.type] then
+        if number_property(entity, "unit_number") == nil then diagnostic(node, "fluid_entity_identity_unproven", "unsupported") end
+        if not node._fluid_supported or not node._fluid_connections_complete then
+          diagnostic(node, "fluid_native_evidence_unproven", "unsupported")
+        end
+        for _, connection in ipairs(node._fluid_connections or {}) do
+          local target = connection._target_entity
+          if target then
+            local other = retained[entity_key(target)]
+            local source_box = node._fluid_boxes and node._fluid_boxes[connection.fluidbox_index]
+            local target_box = other and other._fluid_boxes and other._fluid_boxes[connection._target_fluidbox_index]
+            if not other or other._entity ~= target or target.surface ~= entity.surface or not target_box or not source_box then
+              diagnostic(node, "fluid_connected_target_unproven", "unsupported")
+            elseif connection.flow_direction == "output" or connection.flow_direction == "input-output" then
+              local name = source_box.filter or source_box.name or target_box.filter or target_box.name
+              local temperature = source_box.temperature
+              if not temperature then
+                for _, product in ipairs(node.products) do
+                  if product.type == "fluid" and product.name == name then temperature = product.temperature end
+                end
+              end
+              if name and (source_box.filter and source_box.filter ~= name or target_box.filter and target_box.filter ~= name
+                or source_box.name and source_box.name ~= name or target_box.name and target_box.name ~= name
+                or temperature and not (fluid_compatible(source_box, name, temperature) and fluid_compatible(target_box, name, temperature))) then
+                diagnostic(node, "fluid_connection_incompatible", nil, "structural")
+              end
+              add_edge(entity, target, "fluid_connection", source_box.index, target_box.index)
+            elseif connection.flow_direction ~= "input" then
+              diagnostic(node, "fluid_direction_unproven", "unsupported")
+            end
+          end
+        end
+      end
       if node.status == "full_output" then diagnostic(node, "downstream_inventory_blocked", nil, status_class(node)) end
       if node.status == "no_power" or node.status == "low_power" then diagnostic(node, "missing_power", nil, status_class(node)) end
       if node.status == "no_fuel" then diagnostic(node, "missing_fuel", nil, status_class(node)) end
       if node.status == "insufficient_input" then diagnostic(node, "missing_or_mismatched_input", "status_only", status_class(node)) end
     end
   end
+  local generators = {}
+  for _, node in ipairs(nodes) do
+    if node.type == "generator" then
+      local network = number_property(node._entity, "electric_network_id")
+      node._power_network = network
+      if not network then diagnostic(node, "generator_electrical_network_unproven", "unsupported")
+      else
+        generators[network] = generators[network] or {}
+        generators[network][#generators[network] + 1] = node
+        local pole = network_poles and network_poles[network]
+        local ok, inputs = pcall(function() return pole.electric_network_statistics.input_counts end)
+        if ok and type(inputs) == "table" then node._network_generation = inputs
+        else diagnostic(node, "electrical_generation_attribution_unproven", "unsupported") end
+      end
+    end
+  end
+  for _, node in ipairs(nodes) do
+    local ok, energy_source = pcall(function() return node._entity.prototype.electric_energy_source_prototype end)
+    local network = number_property(node._entity, "electric_network_id")
+    local material_relevant = node.role == "source" or node.role == "processor" or node.type == "pump"
+    for _, edge in ipairs(edges) do
+      if edge.kind ~= "fluid_connection" and (edge.from == node.id or edge.to == node.id)
+        and (node.role == "transport" or node.role == "sink") then material_relevant = true end
+    end
+    if ok and energy_source and node.type ~= "generator" and generators[network] and material_relevant then
+      node._power_network = network
+      node._power_consumer = true
+      if energy_source.usage_priority ~= "primary-input" and energy_source.usage_priority ~= "secondary-input" then
+        diagnostic(node, "electrical_consumer_usage_unproven", "unsupported")
+      end
+      for _, generator in ipairs(generators[network]) do
+        add_edge(generator._entity, node._entity, "electrical_dependency")
+        generator._power_delivery = true
+      end
+    end
+  end
+  for _, node in ipairs(nodes) do
+    if node.type == "generator" and not node._power_delivery then
+      diagnostic(node, "electrical_material_consumer_unproven", "unsupported")
+    end
+  end
   table.sort(edges, function(a, b)
     if a.from ~= b.from then return a.from < b.from end
     if a.to ~= b.to then return a.to < b.to end
-    return a.kind < b.kind
+    if a.kind ~= b.kind then return a.kind < b.kind end
+    if a.from_fluidbox ~= b.from_fluidbox then return (a.from_fluidbox or 0) < (b.from_fluidbox or 0) end
+    return (a.to_fluidbox or 0) < (b.to_fluidbox or 0)
   end)
   -- A belt run is the tiles joined by belt_direction edges. Its consumer may
   -- pick up anywhere along it (inserter pickup, loader container), so a dead
@@ -420,8 +559,10 @@ local function build_material_flow(flow_entities, node_by_key, activity)
   local node_by_id, incoming, outgoing = {}, {}, {}
   for _, node in ipairs(nodes) do node_by_id[node.id], incoming[node.id], outgoing[node.id] = node, {}, {} end
   for _, edge in ipairs(edges) do
-    incoming[edge.to][#incoming[edge.to] + 1] = edge.from
-    outgoing[edge.from][#outgoing[edge.from] + 1] = edge.to
+    if edge.kind ~= "electrical_dependency" then
+      incoming[edge.to][#incoming[edge.to] + 1] = edge.from
+      outgoing[edge.from][#outgoing[edge.from] + 1] = edge.to
+    end
   end
   local function product_matches(node, ingredient, fuel_only)
     for _, product in ipairs(node.products or {}) do
@@ -686,7 +827,19 @@ local function build_material_flow(flow_entities, node_by_key, activity)
         -- Inventory values are private interval samples, never serialized.
         -- Unsupported fluid endpoints remain unproven rather than guessing capacity.
         local ok, count, accepting = pcall(function()
-          if product.type ~= "item" then error("unsupported fluid endpoint acceptance") end
+          if product.type == "fluid" then
+            if not node._fluid_supported or (node.type ~= "generator" and node.type ~= "storage-tank") then
+              error("unsupported fluid endpoint acceptance")
+            end
+            local box = node._fluid_boxes[1]
+            local temperature = box.temperature or product.temperature
+            local compatible = fluid_compatible(box, product.name, temperature)
+            if node.type == "generator" then
+              return 0, compatible and box.segment_amount < box.capacity and box.amount > 0
+                and type(box.temperature) == "number" and box.temperature > node._generator.default_temperature
+            end
+            return box.amount, compatible and box.segment_amount < box.capacity
+          end
           local inventory
           if node.role == "buffer" then inventory = node._entity.get_inventory(defines.inventory.chest)
           elseif node.type == "lab" then inventory = node._entity.get_inventory(defines.inventory.lab_input)
@@ -731,6 +884,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
     local buffers, consumers, blocked_output, interrupted = 0, 0, false, nil
     local unreached, endpoints = {}, {}
     component._downstream, component._production, component._source_production = {}, {}, {}
+    component._native_activity = {}
     component._node_status, component._buffers, component._inputs, component._fuel_buffers = {}, {}, {}, {}
     -- Every row is located at the node where a repair or inspection starts.
     -- Transient rows are single status samples and never gate topology.
@@ -769,9 +923,44 @@ local function build_material_flow(flow_entities, node_by_key, activity)
         end
         if next(stock) then component._inputs[node._key] = stock end
       end
+      if FLUID_TYPES[node.type] or node._power_consumer then
+        local native = { type = node.type, boxes = node._fluid_boxes, input = node._fluid_input, output = node._fluid_output,
+          source = node._fluid_source, generator = node._generator, power_network = node._power_network,
+          network_generation = node._network_generation, name = node.name,
+          pumped = (node.type == "offshore-pump" or node.type == "pump") and number_property(node._entity, "pumped_last_tick") or nil,
+          generated = node.type == "generator" and number_property(node._entity, "energy_generated_last_tick") or nil,
+          energy = node._power_consumer and number_property(node._entity, "energy") or nil,
+          consumer = node._power_consumer, fuel_energy = status.fuel_energy,
+          burning_energy = node.requires_fuel and number_property(node._entity.burner, "remaining_burning_fuel") or nil }
+        component._native_activity[node._key] = native
+        if native.consumer and (native.energy == nil or native.energy <= 0) then interrupted = "electrical_delivery_inactive" end
+        signature_rows[#signature_rows + 1] = node._key .. ":network:" .. tostring(node._power_network)
+        if node._generator then
+          for _, field in ipairs({ "default_temperature", "heat_capacity", "effectivity", "maximum_temperature" }) do
+            signature_rows[#signature_rows + 1] = node._key .. ":generator:" .. field .. ":" .. tostring(node._generator[field])
+          end
+        end
+      end
       component._node_status[node._key] = status
       signature_rows[#signature_rows + 1] = node._key .. ":" .. tostring(node.direction) .. ":"
         .. tostring(number_property(node._entity, "unit_number")) .. ":" .. tostring(node.recipe)
+      for _, box in ipairs(node._fluid_boxes or {}) do
+        signature_rows[#signature_rows + 1] = table.concat({ node._key, "box", tostring(box.index),
+          tostring(box.segment), tostring(box.production_type), tostring(box.filter), tostring(box.name),
+          tostring(box.minimum_temperature), tostring(box.maximum_temperature), tostring(box.capacity) }, ":")
+      end
+      for _, connection in ipairs(node._fluid_connections or {}) do
+        signature_rows[#signature_rows + 1] = table.concat({ node._key, "connection",
+          tostring(connection.fluidbox_index), tostring(connection._pipe_connection_index),
+          tostring(connection.connection_type), tostring(connection.flow_direction),
+          tostring(connection.position.x), tostring(connection.position.y),
+          tostring(connection.target_position.x), tostring(connection.target_position.y),
+          tostring(entity_key(connection._target_entity)), tostring(connection._target_fluidbox_index),
+          tostring(connection._target_pipe_connection_index) }, ":")
+      end
+      for _, product in ipairs(node.products) do
+        if product.type == "fluid" then signature_rows[#signature_rows + 1] = node._key .. ":temperature:" .. tostring(product.temperature) end
+      end
       for _, ingredient in ipairs(node.ingredients) do signature_rows[#signature_rows + 1] = node._key .. ":input:" .. ingredient.type .. ":" .. ingredient.name end
       for _, product in ipairs(node.products) do signature_rows[#signature_rows + 1] = node._key .. ":output:" .. product.type .. ":" .. product.name end
       if node.role == "sink" then
@@ -796,7 +985,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
         producing_nodes = producing_nodes + 1
         if AUTONOMY_REVOKING_STATUSES[node.status] then interrupted = node.status end
         if node.role == "source" then
-          component._source_production[node._key] = node._source_production
+          if node.type ~= "offshore-pump" then component._source_production[node._key] = node._source_production end
           if not node._source_production.working then block(node, "source_not_locally_operating", "transient") end
           -- A source whose output only refuels other producers runs at their
           -- burn rate; validation judges it by theirs.
@@ -809,7 +998,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
           end
           if fuel_consumers and #fuel_consumers > 0 then node._source_production.fuel_consumers = fuel_consumers end
         end
-        if node.role == "processor" then component._production[node._key] = node.products_finished or false end
+        if node.role == "processor" and node.type ~= "boiler" then component._production[node._key] = node.products_finished or false end
         -- A furnace before its first smelt has no recipe yet: with material
         -- arriving from upstream, that is a later start, not a defect.
         if #node.products == 0 and node.type == "furnace" and material_upstream(id) then
@@ -820,6 +1009,11 @@ local function build_material_flow(flow_entities, node_by_key, activity)
           block(node, "downstream_acceptance_path_unproven", "structural",
             { kind = "downstream_path" }, "readiness")
         end
+      end
+      if node.type == "generator" and (not node._accepting or (number_property(node._entity, "energy_generated_last_tick") or 0) <= 0)
+        or (node.type == "offshore-pump" or node.type == "pump")
+        and (number_property(node._entity, "pumped_last_tick") or 0) <= 0 then
+        interrupted = "native_fluid_dependency_inactive"
       end
       if node.role == "sink" and node._accepting then accepting_sinks = accepting_sinks + 1 end
       for _, ingredient in ipairs(node.ingredients or {}) do
@@ -839,7 +1033,7 @@ local function build_material_flow(flow_entities, node_by_key, activity)
       end
     end
     for _, edge in ipairs(component._edges) do
-      signature_rows[#signature_rows + 1] = node_by_id[edge.from]._key .. "->" .. node_by_id[edge.to]._key .. ":" .. edge.kind
+      signature_rows[#signature_rows + 1] = node_by_id[edge.from]._key .. "->" .. node_by_id[edge.to]._key .. ":" .. edge.kind .. ":" .. tostring(edge.from_fluidbox) .. ":" .. tostring(edge.to_fluidbox)
     end
     table.sort(signature_rows)
     component._signature = table.concat(signature_rows, "|")
@@ -1020,7 +1214,7 @@ local function collect_summary(params, internal)
   end
 
   local resources_by_name, landmarks, seen_landmark, seen_resource, water_edges, seen_edge = {}, {}, {}, {}, {}, {}
-  local groups_by_key, flow_candidates, electric_networks = {}, {}, {}
+  local groups_by_key, flow_candidates, electric_networks, network_poles = {}, {}, {}, {}
   local flow_entities, flow_nodes_by_key = {}, {}
   local omissions = { capped_groups = 0, capped_flows = 0, unsupported_entities = 0,
     invalid_entities = 0, unsupported_flow_statistics = 0, capped_flow_nodes = 0,
@@ -1063,7 +1257,15 @@ local function collect_summary(params, internal)
           local recipe = recipe_fact(entity)
           local role = FLOW_NODE_ROLES[entity.type]
           local network_id = number_property(entity, "electric_network_id")
-          if network_id then electric_networks[network_id] = true end
+          if network_id then
+            electric_networks[network_id] = true
+            if entity.type == "electric-pole" then
+              local previous = network_poles[network_id]
+              if not previous or (number_property(entity, "unit_number") or 0) < (number_property(previous, "unit_number") or 0) then
+                network_poles[network_id] = entity
+              end
+            end
+          end
           if role then
             local node = {
               _key = key, _entity = entity, name = entity.name, type = entity.type,
@@ -1104,6 +1306,7 @@ local function collect_summary(params, internal)
                 end
               end
             end
+            fluid_facts(node)
             flow_entities[#flow_entities + 1] = entity
             flow_nodes_by_key[key] = node
           end
@@ -1192,7 +1395,7 @@ local function collect_summary(params, internal)
   end
   local network_count = 0; for _ in pairs(electric_networks) do network_count = network_count + 1 end
   local activity = factory_activity.snapshot(params.activity_since_tick, true)
-  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity)
+  local material_flow = build_material_flow(flow_entities, flow_nodes_by_key, activity, network_poles)
   local public_flow = present_flow(material_flow, omissions)
   if not internal then
     material_flow = public_flow
@@ -1292,6 +1495,7 @@ function M.factory_component_sample(params)
     component_signature = selected_component.component_signature,
     _signature = selected_component._signature, _downstream = selected_component._downstream,
     _production = selected_component._production, _source_production = selected_component._source_production,
+    _native_activity = selected_component._native_activity,
     downstream_kind = selected_component.state.downstream_kind,
     blocked_output = selected_component.state.blocked_output,
     selected_node_ids = selected_ids,

@@ -169,7 +169,7 @@ checks.
   Topology readiness and local operation alone are not `autonomous_end_to_end`.
   A working consumer must accept every relevant output through its native input
   inventory at each counted sample. Reject incompatible outputs, full inputs,
-  and unsupported consumer or fluid acceptance; unrelated stocked inputs and
+  and unsupported consumer acceptance; unrelated stocked inputs and
   working status alone cannot prove endpoint acceptance.
   The historical coal-buffer increase and offline fixtures do not prove live
   autonomy; live evidence needs the exact deployed source/archive identity and
@@ -178,6 +178,37 @@ checks.
   `belt_dead_end_without_consumer`; a run with no consumer reports it once, at
   its last tile, with a position. A queued repair is not complete until
   re-observed.
+- Separately authorized live steam-power confirmation must use a **fresh
+  supervised Factorio 2.0.x run**, with matching server/client mod sets and
+  recorded source commit, release/archive digest and save identity. Do not
+  upgrade, replace or restart the existing active run to validate this change.
+  Source publication and offline fixtures do not establish installation or
+  live steam-power autonomy; both remain unverified until these receipts exist.
+  Build a legitimately supplied offshore-pump → separate-pipe boiler → native
+  steam transport → thermal generator segment powering a material participant
+  with a consuming endpoint or terminal buffer with space. Derive identities
+  from the source tile, native fluidbox filters/temperature constraints and
+  generator/boiler prototypes, never stocked contents or recipe guesses.
+  Keep electrical dependencies separate from material/fuel/acceptance paths.
+  Run the existing parked component validator for 1–300 s, long enough to
+  exercise boiler fuel replenishment. Require three eight-tick consecutive
+  bursts: native pump activity, generator output, uniquely attributed boiler
+  output mass balance with fuel use/non-draining input, endpoint arrivals or
+  actual steam consumption, and electrical buffer use plus three recharge
+  events. Preserve mining/crafting proof for the entities that have those
+  counters, complete transfer history, zero character transfers, exact private
+  topology and per-path recency. Record the compact native aggregate fields;
+  exact fluid quantities, network counts and internal signatures stay private.
+  Unknown electrical suppliers/accumulator discharge, several boilers sharing
+  one output segment, unreadable or aliased samples, or stable electrical
+  buffers concealing use/recharge remain unproven. More duration alone need
+  not resolve these limits. Check native pumps and underground connectivity,
+  multiple observed generators and terminal fluid-buffer acceptance.
+  Interrupt water, fuel and electrical supply separately; also test wrong fluid
+  or temperature, disconnected pipes, full endpoints, replaced entities,
+  changed network bindings and a character transfer. Re-observe revoked
+  current autonomy, locate each blocker, and obtain a new bounded proof after
+  repair. Finite starter water/steam/fuel/electrical energy must not pass.
 - Make the buffer full or nonaccepting. Confirm `blocked_output` and revoked
   current autonomy. Buffer capacity alone and production without accepted
   arrivals must never establish autonomous operation. Unsupported buffer

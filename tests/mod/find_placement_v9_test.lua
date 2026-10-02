@@ -84,7 +84,7 @@ surface.find_entities_filtered = function(args)
 end
 local body = { position = { x = 1.5, y = 1.5 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
-_G.defines = { build_check_type = { manual = 1 } }
+_G.defines = { build_check_type = { manual = 1, ghost_revive = 5 } }
 _G.prototypes = { item = {
   pipe = { place_result = { name = "pipe", type = "pipe", tile_width = 1, tile_height = 1, collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
   ["offshore-pump"] = { place_result = { name = "offshore-pump", type = "offshore-pump", tile_width = 1, tile_height = 1, collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },
@@ -117,6 +117,19 @@ local edge = finder.find_placement({ item = "pipe", preferred = { x = 31.5, y = 
 local leaked = false; for _, candidate in ipairs(edge.candidates) do if candidate.position.x >= 32 then leaked = true end end
 check(not leaked and charted_calls > 0, "uncharted candidate footprints are never passed through as placements")
 check(placement_calls > 0, "charted candidates use Factorio can_place_entity")
+local engine_check = surface.can_place_entity
+surface.can_place_entity = function(args)
+  if args.position.x == 1.5 and args.position.y == 1.5 then
+    return args.build_check_type == defines.build_check_type.manual
+  end
+  return engine_check(args)
+end
+local occupied_search = finder.find_placement({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 1, directions = { 0 }, limit = 1 })
+check(occupied_search.candidates[1] and (occupied_search.candidates[1].position.x ~= 1.5
+  or occupied_search.candidates[1].position.y ~= 1.5),
+  "placement search excludes replacement-only occupancy and keeps the clear neighbor")
+surface.can_place_entity = engine_check
+
 prototypes.item.pipe.place_result.fluidbox_prototypes = {
   { index = 1, production_type = "input-output", pipe_connections = { { positions = {
     { x = 0, y = -1 }, { x = 1, y = 0 }, { x = 0, y = 1 }, { x = -1, y = 0 },

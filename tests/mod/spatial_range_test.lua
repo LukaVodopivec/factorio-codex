@@ -12,7 +12,7 @@ package.loaded["scripts.companion"] = {
   get = function() return body end,
 }
 package.loaded["scripts.tasks"] = { active_summary = function() return nil end }
-_G.defines = { build_check_type = { manual = 1 } }
+_G.defines = { build_check_type = { manual = 1, ghost_revive = 5 } }
 _G.prototypes = { item = {
   ["transport-belt"] = { place_result = { name = "transport-belt", collision_box = {
     left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 },
@@ -47,18 +47,18 @@ check(accepted.results[1].can_place == true and accepted.results[1].reason == "p
   and accepted.results[1].item == "transport-belt"
   and accepted.results[1].entity == "transport-belt"
   and accepted.results[1].position.x == 30 and accepted.results[1].direction == 0
-  and checks == 1,
+  and checks == 2,
   "can_place returns authoritative placement identity and reason at the exact 30-tile boundary")
 
 local beyond, beyond_error = pcall(spatial.can_place, {
   item = "transport-belt", position = { x = 30.000001, y = 0 },
 })
-check(not beyond and tostring(beyond_error):match("placements must be a non%-empty array") ~= nil and checks == 1,
+check(not beyond and tostring(beyond_error):match("placements must be a non%-empty array") ~= nil and checks == 2,
   "can_place rejects the removed single-item fallback before querying the surface")
 
 local empty, empty_error = pcall(spatial.can_place, { placements = {} })
 check(not empty and tostring(empty_error):match("placements must be a non%-empty array") ~= nil
-  and checks == 1,
+  and checks == 2,
   "can_place rejects an empty placements array before querying the surface")
 
 local inherited, inherited_error = pcall(spatial.can_place, {
@@ -66,7 +66,7 @@ local inherited, inherited_error = pcall(spatial.can_place, {
   placements = { { position = { x = 0, y = 0 } } },
 })
 check(not inherited and tostring(inherited_error):match("placements%[1%]%.item must be an item name") ~= nil
-  and checks == 1,
+  and checks == 2,
   "can_place rejects top-level item inheritance before querying the surface")
 
 local too_many = {}
@@ -75,13 +75,13 @@ for i = 1, 25 do
 end
 local oversized, oversized_error = pcall(spatial.can_place, { placements = too_many })
 check(not oversized and tostring(oversized_error):match("at most 24 placements") ~= nil
-  and checks == 1,
+  and checks == 2,
   "can_place rejects more than 24 placements before querying the surface")
 
 local batch = spatial.can_place({ placements = {
   { item = "transport-belt", position = { x = 0, y = 30.000001 } },
 } })
-check(batch.results[1].can_place == false and batch.results[1].reason:match("within 30 tiles") ~= nil and checks == 1,
+check(batch.results[1].can_place == false and batch.results[1].reason:match("within 30 tiles") ~= nil and checks == 2,
   "batched can_place reports an over-range public placement as a physical rejection")
 
 local ten_names = {}

@@ -899,3 +899,107 @@ exactly 11 tools before adding the server to a client.
 The tested endpoint reported Windows-MCP 4.0.1 internally even though the
 installed package was 0.8.5; use the package version for pinning and retain
 the scheduled-task launcher as the source of the effective runtime options.
+
+## Occupied-belt placement agreement (2026-10-02)
+
+An isolated Factorio **2.0.77** headless reproduction establishes a manual
+replacement-check mismatch in the retained shared helper. It does not reconstruct
+all state changes or earlier steps in the original 0.19.6 science-inlet incident
+at `9138e78c53a4b12e7e6a01b2e479154853dd8340`.
+
+The [2.0.77 LuaSurface API](https://lua-api.factorio.com/2.0.77/classes/LuaSurface.html)
+provides `can_place_entity.build_check_type` (default `ghost_revive`) and a separate
+`create_entity.fast_replace` option (default false). The physical actions never
+request fast replacement. On an unchanged coal-carrying transport belt, the
+engine returned these results at both its exact center and an unsnapped supplied
+position on the same tile:
+
+| Proposed entity | Manual check | Script check | Ghost-revive check | Ordinary creation |
+| --- | --- | --- | --- | --- |
+| transport-belt | false | false | false | nil |
+| fast-transport-belt | true | false | false | nil |
+| underground-belt | true | false | false | nil |
+| inserter / burner-inserter | false | true | false | entity |
+
+Clear neighboring tiles passed all three checks and creation. The check and
+creation agreed on normal grid snapping in these samples. A script check alone
+would admit overlaps forbidden by ordinary manual building. The repair therefore
+retains manual admission and additionally requires ghost-revive clearance in
+`placement_geometry.can_place`; all existing consumers retain that single owner.
+The helper reports its actual engine-query count internally so placement search
+accounts for the additional check. MCP fields, range/list limits, FIFO routing,
+body checks, reach and item requirements remain unchanged. Occupied-footprint
+explanations use at most 65 local entity rows.
+
+### Isolated physical comparison and limits
+
+Two fresh peaceful saves with enemy bases disabled loaded separate instrumented
+copies of the predecessor and candidate scripts. Each dedicated server bound
+only to loopback with an OS-assigned UDP port, no RCON listener, no public/LAN
+advertisement and no connected gameplay client. Both servers exited after their
+receipts. No existing run, installed mod, client or pilot was upgraded or stopped.
+
+The engineering fixture generated dry ground, created one real character with
+known inventory and three connected east-facing belts, and placed one coal on
+the middle belt. It bound the isolated companion accessor to that character.
+Because this disconnected fixture did not process player chart requests, a
+recorded fixture-only wrapper admitted generated chunks for the path-start chart
+check. It retained engine collision masks, geometry, tile queries, normal build
+reach and item consumption, excluding only the fixture's own body from its proxy
+query as the original code excludes its body by identity. These are assisted
+engineering results, not a native-client gameplay run or benchmark evidence.
+No such wrapper is part of the candidate mod.
+
+At tick 60 the fixture called the actual `spatial.can_place`, `build.place`
+start/tick and `build_plan` start/tick modules. The precheck and occupied attempt
+ran on the same world state and tick, before any other placements:
+
+| Structured outcome | Predecessor | Candidate |
+| --- | --- | --- |
+| Occupied underground-belt precheck | `can_place:true`, `reason:placeable` | `can_place:false`, `reason:blocked by transport-belt` with position |
+| Single occupied physical placement | `status:failed`, unexpected creation failure | `status:failed`, named occupied-belt refusal |
+| Neighboring underground-belt | Precheck true; `status:done` | Precheck true; `status:done` |
+| Two committed belts, occupied third step, fourth clear step | `status:failed`, `placed 2/4`, step 3 unexpected failure, stop-on-error | `status:failed`, `placed 2/4`, step 3 occupied refusal, stop-on-error |
+| Initially clear tile occupied by package step 1 | Both initial checks true; step 2 fails after `placed 1/2` | Both initial checks true; step 2 refuses after `placed 1/2` |
+| Belt on ore and a ground coal item | Precheck true; physical `status:done` | Precheck true; physical `status:done` |
+
+All three original belt unit numbers, positions, directions, coal counts and
+input/output neighbor IDs were identical before checking, after single refusal
+and after the partial package. Single refusal left inventory exactly at ten
+transport belts and five underground belts. The clear-neighbor success consumed
+one underground belt; the partial package then consumed exactly two transport
+belts, leaving eight and four respectively. The refused third step consumed
+nothing and created nothing; the fourth step was not executed. At tick 120 the
+same belt identities and links remained, total carried coal was still one, and
+it had moved from the middle belt onto the final belt. This proves preserved
+transport in the fixture as well as same-tick item conservation.
+
+Prechecks observe current state; they reserve nothing. The earlier-step conflict
+case demonstrates execution revalidation, not transactionality or rollback.
+The original incident's exact intervening state remains unknown.
+
+### Source and archive identities
+
+Predecessor source: `65a61fa962a175fb0ab65d6b73a7055bafa406a0`, version 0.19.6.
+The candidate's exact mod content is identified by its source archive and helper
+SHA-256 below; source publication and active installed runtime remain separate.
+The instrumented archive identities snapshot the mod directories actually loaded
+by the fixture, including its replacement control script and fixture identity.
+Their action and placement modules match the corresponding source archive.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Downloaded official 2.0.77 headless archive | `c4efc11529f74d37c96933e291e0db73fd9f5aa4738913d9301b24680b3e947f` |
+| Predecessor source mod ZIP | `fd31448db9558b1184d91f70fee4ddca79017f0510399cbd1f15b3cb030f3d4a` |
+| Candidate source mod ZIP | `eebf4465e160dd3b009e01a07b78b60141ce3a8f9fb972ffc68dd5f4bed0e6a1` |
+| Predecessor instrumented fixture ZIP | `1917580020ca97f64c2a9f897fba388c1aea93d7d2f99a346ab1f74c4604cfd9` |
+| Candidate instrumented fixture ZIP | `722829a7c283246b8c6896364ab3845baefe47e80b0aeb7036bc243b93fc1837` |
+| Candidate `scripts/placement_geometry.lua` | `88d5f3cbcb647ec761cd2c7c99cf05bd82a672097e8d4600a9faddd2804aa2c6` |
+
+The Lua regression models occupancy shared by checks and creation rather than
+an unconditional engine answer. Against the predecessor it fails occupied
+precheck, refusal-before-creation, partial-package conservation and earlier-step
+revalidation assertions; it passes with the repaired helper. The existing search
+harness additionally rejects replacement-only candidates while retaining clear
+neighbors, and the range harness still verifies rejection before any engine
+queries for invalid or out-of-range requests.

@@ -5,7 +5,7 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
 _G.defines = {
-  build_check_type = { manual = 1 },
+  build_check_type = { manual = 1, ghost_revive = 5 },
   direction = { north = 0, northeast = 2, east = 4, southeast = 6, south = 8, southwest = 10, west = 12, northwest = 14 },
 }
 _G.game = { tick = 0 }
@@ -179,5 +179,104 @@ storage.tasks.active = resume
 build_plan.start(resume)
 check(build_plan.tick(resume).status == "done" and #committed == 2 and inventory["stone-furnace"] == 0,
   "continuation among nonblocking remains consumes only the remaining item without mining the stump")
+
+-- Factorio 2.0.77 isolated engine evidence: manual permits fast replacement
+-- of a belt by an underground/fast belt; ordinary create_entity returns nil.
+-- Keep occupancy as shared mutable world state, not an unconditional answer.
+local geometry = require("scripts.placement_geometry")
+local half_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } }
+local belt_proto = { name = "transport-belt", type = "transport-belt", collision_box = half_box }
+local underground_proto = { name = "underground-belt", type = "underground-belt", collision_box = half_box }
+prototypes.item["transport-belt"] = { place_result = belt_proto }
+prototypes.item["underground-belt"] = { place_result = underground_proto }
+local occupied = { valid = true, name = "transport-belt", type = "transport-belt", direction = 4,
+  position = { x = 4.5, y = 0.5 }, unit_number = 123, coal = 3, connections = { 122, 124 },
+  bounding_box = { left_top = { x = 4.1, y = 0.1 }, right_bottom = { x = 4.9, y = 0.9 } } }
+local world = { occupied }
+local function occupant(args)
+  local area = geometry.footprint(prototypes.item[args.name].place_result, args.position, args.direction)
+  for _, entity in ipairs(world) do
+    if entity.valid and not geometry.NON_BLOCKING_TYPES[entity.type]
+      and geometry.overlaps(area, entity.bounding_box) then return entity end
+  end
+end
+local creation_attempts, creations = 0, 0
+surface.can_place_entity = function(args)
+  local entity = occupant(args)
+  return not entity or (args.build_check_type == defines.build_check_type.manual
+    and args.name == "underground-belt" and entity.name == "transport-belt")
+end
+surface.create_entity = function(args)
+  creation_attempts = creation_attempts + 1
+  if occupant(args) then return nil end
+  local entity = { valid = true, name = args.name, type = prototypes.item[args.name].place_result.type,
+    position = args.position, bounding_box = geometry.footprint(prototypes.item[args.name].place_result, args.position, args.direction) }
+  world[#world + 1] = entity; creations = creations + 1
+  return entity
+end
+surface.find_entities_filtered = function(args)
+  local result = {}
+  for _, entity in ipairs(world) do
+    if not args.area or geometry.overlaps(args.area, entity.bounding_box) then result[#result+1] = entity end
+  end
+  return result
+end
+body.force.is_chunk_charted = function() return true end
+body.position = { x = 0, y = 0 }
+inventory["underground-belt"], inventory["transport-belt"] = 2, 3
+local spatial = require("scripts.spatial")
+local precheck = spatial.can_place({ placements = {
+  { item = "underground-belt", position = occupied.position, direction = 4 },
+  { item = "transport-belt", position = occupied.position, direction = 4 },
+  { item = "underground-belt", position = { x = 5.5, y = 0.5 }, direction = 4 },
+} }).results
+check(not precheck[1].can_place and precheck[1].reason:match("transport%-belt")
+  and not precheck[2].can_place and precheck[3].can_place,
+  "precheck refuses occupied replacement and ordinary belt tiles while accepting the clear neighbor")
+check(creation_attempts == 0 and inventory["underground-belt"] == 2 and occupied.coal == 3,
+  "prechecking occupancy is read-only")
+local attempted = { item = "underground-belt", position = occupied.position, direction = 4 }
+build.place.start(attempted)
+local refused = build.place.tick(attempted)
+check(refused.status == "failed" and creation_attempts == 0 and inventory["underground-belt"] == 2,
+  "single placement agrees on unchanged occupancy and refuses before physical creation")
+local package = { id = 93, auto_craft = false, steps = {
+  { item = "transport-belt", position = { x = 2.5, y = 0.5 }, direction = 4 },
+  { item = "transport-belt", position = { x = 3.5, y = 0.5 }, direction = 4 },
+  { item = "underground-belt", position = occupied.position, direction = 4 },
+  { item = "transport-belt", position = { x = 5.5, y = 0.5 }, direction = 4 },
+} }
+storage.tasks.active = package
+build_plan.start(package)
+build_plan.tick(package); build_plan.tick(package)
+local partial = build_plan.tick(package)
+check(partial and partial.status == "failed" and partial.detail:match("placed 2/4")
+  and partial.detail:match("step 3 failed") and partial.detail:match("stop_on_error")
+  and package._results[1].ok and package._results[2].ok and not package._results[3].ok
+  and package._results[4] == nil and creations == 2 and creation_attempts == 2
+  and inventory["underground-belt"] == 2 and inventory["transport-belt"] == 1,
+  "occupied-belt package refusal preserves earlier commitments, unused items and stop-on-error")
+check(occupied.valid and occupied.unit_number == 123 and occupied.direction == 4 and occupied.coal == 3
+  and occupied.connections[1] == 122 and occupied.connections[2] == 124,
+  "checks and refused placements preserve belt identity, contents, direction and connections")
+-- Prechecks are observations. An earlier step can occupy a previously clear tile.
+local conflict_pos = { x = 5.5, y = 0.5 }
+check(spatial.can_place({ placements = { { item = "transport-belt", position = conflict_pos } } }).results[1].can_place,
+  "future package conflict is initially clear")
+local conflict = { id = 94, auto_craft = false, steps = {
+  { item = "transport-belt", position = conflict_pos },
+  { item = "underground-belt", position = conflict_pos },
+} }
+storage.tasks.active = conflict
+build_plan.start(conflict); build_plan.tick(conflict)
+local conflict_result = build_plan.tick(conflict)
+check(conflict_result.status == "failed" and conflict_result.detail:match("placed 1/2")
+  and inventory["underground-belt"] == 2 and creation_attempts == 3,
+  "execution revalidates occupancy introduced by an earlier committed package step")
+world[#world+1] = { valid = true, name = "iron-ore", type = "resource", bounding_box = occupied.bounding_box }
+world[#world+1] = { valid = true, name = "item-on-ground", type = "item-entity", bounding_box = occupied.bounding_box }
+occupied.valid = false
+check(spatial.can_place({ placements = { { item = "underground-belt", position = occupied.position } } }).results[1].can_place,
+  "legitimate resource and ground-item overlaps remain placeable")
 
 os.exit(failures == 0 and 0 or 1)

@@ -376,8 +376,9 @@ function M.find_placement(params)
               local recipient_area = placement_geometry.footprint(output_recipient_proto, recipient_position, 0)
               if not placement_geometry.overlaps(area, recipient_area)
                 and footprint_charted(c.force, c.surface, recipient_area) then
-                engine_calls = engine_calls + 1
-                if placement_geometry.can_place(c, output_recipient_proto, recipient_position, 0) then
+                local recipient_ok, _, _, checks = placement_geometry.can_place(c, output_recipient_proto, recipient_position, 0)
+                engine_calls = engine_calls + checks
+                if recipient_ok then
                   recipient_placement = { item = params.output_recipient_item,
                     entity = output_recipient_proto.name, position = recipient_position, direction = 0 }
                   break
@@ -400,8 +401,8 @@ function M.find_placement(params)
           rejected_no_compatible_resource = rejected_no_compatible_resource + 1
           reject("no_compatible_resource", pos, direction); goto continue
         end
-        engine_calls = engine_calls + 1
-        local can_place, placement_reason = placement_geometry.can_place(c, proto, pos, direction)
+        local can_place, placement_reason, _, checks = placement_geometry.can_place(c, proto, pos, direction)
+        engine_calls = engine_calls + checks
         if not can_place then
           reject(placement_reason == "CODEX_BODY_OVERLAP" and "codex_body_overlap" or "blocked", pos, direction, area)
           goto continue

@@ -63,12 +63,22 @@ end
 
 function M.can_place(c, proto, position, direction)
   local area = M.footprint(proto, position, direction)
-  if M.overlaps(area, M.character_box(c)) then return false, "CODEX_BODY_OVERLAP", area end
-  local ok = c.surface.can_place_entity({
+  if M.overlaps(area, M.character_box(c)) then return false, "CODEX_BODY_OVERLAP", area, 0 end
+  local params = {
     name = proto.name, position = position, direction = direction or 0, force = c.force,
     build_check_type = defines.build_check_type.manual,
-  })
-  return ok, ok and "placeable" or "blocked", area
+  }
+  local ok = c.surface.can_place_entity(params)
+  local checks = 1
+  -- Manual checks permit fast replacement (e.g. underground belt over belt),
+  -- but our physical create_entity never replaces existing entities. Require
+  -- revival clearance too; script checks alone allow non-manual overlaps.
+  if ok then
+    params.build_check_type = defines.build_check_type.ghost_revive
+    ok = c.surface.can_place_entity(params)
+    checks = 2
+  end
+  return ok, ok and "placeable" or "blocked", area, checks
 end
 
 -- Factorio 2.0 CollisionMask semantics. Selection boxes never prove collision.

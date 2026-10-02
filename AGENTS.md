@@ -126,7 +126,7 @@ checks. Its reads never enter or delay the physical lane.
 Keep one compact `operations.json`. Sol is its sole atomic host writer, including
 its initial revision; Luna never writes it. The ledger is Sol's only channel to
 the pilot: supervisor assignments never ask Sol to message the pilot. Pilot
-reports stay under about 600 bytes (the connected transport rejects messages
+reports stay under about 300 bytes (the connected transport rejects messages
 over 1,000 bytes); ledger updates stay compact, with build packages capped at
 8 KB. Both are material and asynchronous, not per-call acknowledgements or
 blocking synchronization. Luna validates each unseen

@@ -235,6 +235,13 @@ describe("validated build packages", () => {
     expect(reduceLedger(older, envelope(101)).result).toMatchObject({ status: "applied" });
   });
 
+  it("accepts a segment package that ends by waiting for output and validating the component", () => {
+    const validated = { ...drillPair(), steps: [...drillPair().steps,
+      { action: "wait_for_item", x: 45, y: -30, inventory: "output", item: "iron-plate", count: 2, timeout_seconds: 120 },
+      { action: "validate_factory_component", source_tick: 100, positions: [{ x: 45, y: -30 }], duration_seconds: 60 }] };
+    expect(reduceLedger(ledger(), withPackages([validated])).result).toMatchObject({ status: "applied", revision: 1 });
+  });
+
   it("rejects packages it could not execute as written, with the offending path", () => {
     const cases: Array<[unknown[], string]> = [
       [[drillPair("a"), drillPair("b"), drillPair("c")], "build_packages"],

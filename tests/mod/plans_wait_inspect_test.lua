@@ -32,16 +32,17 @@ package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], 
 package.loaded["scripts.actions.build"] = { place = runner(), rotate = runner(), set_recipe = runner() }
 package.loaded["scripts.actions.transfer"] = { insert = runner(), extract = runner() }
 package.loaded["scripts.actions.build_plan"] = runner()
-local component_sample_count, component_ready = 0, true
+local component_sample_count, component_ready, component_transfers, sampled_since = 0, true, 0, {}
 package.loaded["scripts.map_summary"] = { factory_component_sample = function(params)
   component_sample_count = component_sample_count + 1
+  sampled_since[#sampled_since + 1] = params.source_tick
   return { tick = game.tick, source_tick = params.source_tick, component_id = "component-1",
     component_signature = "source:0:0|processor:1:0|sink:2:0", selected_node_ids = { "node-1" },
     products_finished_total = 9 + component_sample_count,
     _signature = "exact", _production = { processor = 9 + component_sample_count },
     _source_production = { source = { working = true, progress = 1 - component_sample_count / 10, remaining = 100 - component_sample_count, resource_key = "ore" } },
     _downstream = { sink = { kind = "consumer", accepting = true } }, downstream_kind = "consumer", blocked_output = false,
-    character_transfer_actions = 0, character_history_complete = true,
+    character_transfer_actions = component_transfers, character_history_complete = true,
     topology_ready = component_ready, blockers = component_ready and {} or { "material_input_provenance_unresolved:item:ore" },
     graph_omissions = { nodes = 20, edges = 30, diagnostics = 40 }, exact_remote_inventories = false,
   }
@@ -140,6 +141,10 @@ check(validation_done.status == "completed" and validation_done.outcomes[1].resu
   and validation_done.outcomes[1].result.character_transfer_actions == 0
   and validation_done.outcomes[1].result.exact_remote_inventories == false,
   "consumer validation proves several cycles despite serialization omissions, without remote inventory access")
+check(sampled_since[1] == 101 and sampled_since[#sampled_since] == 101
+  and validation_done.outcomes[1].result.source_tick == 100
+  and validation_done.outcomes[1].result.transfer_window_start_tick == 101,
+  "the transfer window opens when validation starts, so earlier bootstrap insertions are historical debt")
 local activity = require("scripts.factory_activity").snapshot(100)
 check(#activity.validations == 1 and activity.validations[1].component_signature == validation_done.outcomes[1].result.component_signature,
   "successful validation is retained in the existing bounded activity evidence")
@@ -153,4 +158,13 @@ local rejected_status = tasks.plan_status({ plan_id = rejected.plan_id })
 check(rejected_status.status == "failed" and rejected_status.outcomes[1].result.proven == false
   and rejected_status.outcomes[1].result.blockers[1].reason:match("material_input_provenance_unresolved"),
   "unproven material provenance fails with its structured diagnostic instead of advancing successors")
+
+storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+component_sample_count, component_ready, component_transfers = 0, false, 2
+local fed = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 222,
+  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+game.tick = 223; tasks.on_tick()
+local fed_blockers = {}
+for _, blocker in ipairs(tasks.plan_status({ plan_id = fed.plan_id }).outcomes[1].result.blockers) do fed_blockers[blocker.reason] = true end
+check(fed_blockers.character_transfer_observed, "a preflight refused for character transfers names that blocker")
 os.exit(failures == 0 and 0 or 1)

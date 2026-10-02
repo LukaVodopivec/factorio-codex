@@ -21,7 +21,8 @@ export const planStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("wait_for_research"), technology: z.string().min(1), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("validate_factory_component"), source_tick: z.number().int().nonnegative(),
-    positions: z.array(z.object(position).strict()).min(1).max(16),
+    positions: z.array(z.object(position).strict()).min(1, "give 1-16 exact node positions; they only identify the component")
+      .max(16, "give 1-16 exact node positions; they only identify the component, and one position validates the whole component"),
     duration_seconds: z.number().min(1).max(300).default(60) }).strict(),
 ]);
 export const queuePlanSchema = z.object({

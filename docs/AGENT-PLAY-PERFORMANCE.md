@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.0 retains each exact placed entity and validates the live output
+Release 0.19.1 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.0 validation.
+0.19.1 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -112,6 +112,27 @@ Factorio Learning Environment results (frontier models place entities too
 close, leave no room for connections, and repeat failing fixes) and the PEAR
 planner-executor benchmark (planner strength dominates) support putting layout
 judgement on the stronger model and keeping the fast model on execution.
+
+## 2026-10-02 debug cycle 1 (0.19.0) and the 0.19.1 loop fixes
+
+Run `debug-20261001T235110Z` started a fresh game on seed 747930220 and stopped
+at `GO+20m`; two steered idle nudges made it assisted. Against the 0.18.0 run
+over the same window it reached 7 machines and 21 physical edges (2 and 1),
+148 finished products (10), first `queue_plan` at 85 s (815 s), 4 placement
+calls (27), and no repeated empty search (5). Sol's build packages placed a
+belt-fed coal path and a plate export to a chest. Pilot think-time was still
+89% of wall time, concentrated before `queue_plan`, report messages, and 11
+whole-ledger reads; the body idled twice for about 2.4 minutes while the pilot
+waited on Sol's next package. No component became autonomous: the first
+validation named 20 positions against the 16-position cap, the retry named real
+blockers (belt orientation, blocked downstream, missing input, full output,
+fuel provenance), and nobody repaired them before the pilot left the site.
+
+Release 0.19.1 says in the validation schema and errors that one exact node
+position validates its whole component, makes every segment-completing package
+end with a validation step whose named blockers become the next repair, and
+tightens the pilot loop: queue before reading or reporting, read only the
+ledger fields it needs, and report material events in about 300 bytes.
 
 ## Prior 0.8.0 structured timings
 
@@ -282,7 +303,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.0, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.19.1, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -352,7 +373,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.0 benchmark results.
+present historical timings as 0.19.1 benchmark results.
 
 #### Candidate B R7 recorded result
 

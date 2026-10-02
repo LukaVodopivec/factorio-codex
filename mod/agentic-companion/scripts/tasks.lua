@@ -173,7 +173,7 @@ function M.queue_plan(params)
         or type(step.duration_seconds) ~= "number" or step.duration_seconds % 1 ~= 0
         or step.duration_seconds < 1 or step.duration_seconds > 300
         or type(step.positions) ~= "table" or #step.positions < 1 or #step.positions > 16 then
-        error("queue_plan validate_factory_component step " .. i .. " requires source_tick, 1-16 positions, and duration_seconds from 1 to 300")
+        error("queue_plan validate_factory_component step " .. i .. " requires source_tick, 1-16 exact node positions (one identifies the whole component), and duration_seconds from 1 to 300")
       end
       for _, position in ipairs(step.positions) do
         if type(position) ~= "table" or type(position.x) ~= "number" or type(position.y) ~= "number" then
@@ -373,18 +373,23 @@ local function validate_factory_component(plan, step)
   if step.source_tick > game.tick then return { status = "failed", detail = "SOURCE_TICK_IN_FUTURE",
     outcome = { code = "SOURCE_TICK_IN_FUTURE", source_tick = step.source_tick, current_tick = game.tick } } end
   if not step._baseline then
-    step._baseline = map_summary.factory_component_sample({ source_tick = step.source_tick, positions = step.positions })
+    -- Bootstrap insertions queued before this step (fuel, input packets) are
+    -- historical debt; the transfer window opens when validation starts.
+    step._window_tick = math.max(step.source_tick, game.tick)
+    step._baseline = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions })
     if not step._baseline.topology_ready then
       local blockers = {}
       for _, blocker in ipairs(step._baseline.blockers or {}) do
         blockers[#blockers + 1] = type(blocker) == "table" and blocker or { reason = blocker }
       end
+      if step._baseline.character_transfer_actions > 0 then blockers[#blockers + 1] = { reason = "character_transfer_observed" } end
+      if not step._baseline.character_history_complete then blockers[#blockers + 1] = { reason = "character_transfer_history_incomplete" } end
       local omitted_blockers = math.max(0, #blockers - 24)
       while #blockers > 24 do table.remove(blockers) end
       plan.wait_started_tick, plan.next_check_tick = nil, nil
       return { status = "failed", detail = "factory component autonomy preflight not proven", outcome = {
         code = "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN", proven = false, stage = "preflight",
-        source_tick = step.source_tick, component_signature = step._baseline.component_signature,
+        source_tick = step.source_tick, transfer_window_start_tick = step._window_tick, component_signature = step._baseline.component_signature,
         selected_node_ids = step._baseline.selected_node_ids, start_tick = step._baseline.tick,
         end_tick = step._baseline.tick, requested_duration_seconds = step.duration_seconds, duration_ticks = 0,
         products_finished_before = step._baseline.products_finished_total,
@@ -409,7 +414,7 @@ local function validate_factory_component(plan, step)
     plan.next_check_tick = math.min(step._validation_due_tick, game.tick + step._sample_interval)
     return nil
   end
-  local final = map_summary.factory_component_sample({ source_tick = step.source_tick, positions = step.positions })
+  local final = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions })
   local delta = final.products_finished_total - step._baseline.products_finished_total
   local blockers = {}
   for _, blocker in ipairs(final.blockers or {}) do
@@ -476,7 +481,7 @@ local function validate_factory_component(plan, step)
   while #blockers > 24 do table.remove(blockers) end
   local outcome = {
     code = proven and "FACTORY_COMPONENT_AUTONOMY_PROVEN" or "FACTORY_COMPONENT_AUTONOMY_NOT_PROVEN",
-    proven = proven, source_tick = step.source_tick,
+    proven = proven, source_tick = step.source_tick, transfer_window_start_tick = step._window_tick,
     component_signature = final.component_signature, selected_node_ids = final.selected_node_ids,
     start_tick = step._baseline.tick, end_tick = final.tick,
     requested_duration_seconds = step.duration_seconds,

@@ -278,6 +278,18 @@ and zero character insert/extract actions for the segment must all hold.
   syntax or schema failure, reconsider the higher-level intent as well as the
   malformed expression. While a wait is open, execute independent productive
   work through the same FIFO whenever available.
+- A `validate_factory_component` plan step proves autonomy for one whole
+  physical component: its 1-16 `positions` only identify the component (one
+  exact node position is enough), and it samples the component for
+  `duration_seconds` (long enough for several processor cycles). Its transfer window opens
+  when the step starts, so queue it after a `wait_for_item` on the segment's
+  terminal output, once bootstrap insertions are done and the segment produces.
+  A failed preflight lists named blockers such as
+  `relationship_diagnostic:belt_orientation_does_not_reach_consumer` or
+  `relationship_diagnostic:downstream_inventory_blocked`; those are the next
+  repair at that site, before anyone leaves it: the pilot clears
+  `nonproductive_status:*` and `blocked_output`; Sol packages every other
+  blocker, including fuel and input provenance, which need a physical feed.
 - `mine` count means physical mining cycles, not guaranteed items. Recalculate
   BOMs, successors, fuel, and waits from actual accepted/produced quantities. Derive
   item ceilings from the in-game learned per-cycle yield and confirm them with
@@ -285,9 +297,9 @@ and zero character insert/extract actions for the segment must all hold.
 
 ## Reporting and knowledge
 
-Pilot reports to Sol are nonterminal and material, never one per tool call, and
-stay under about 600 bytes because the connected transport rejects messages over
-1,000 bytes. Before reporting, keep useful work queued or name the exact reason
+Pilot reports to Sol are nonterminal and material, at most one per report
+checkpoint, never one per tool call, and stay under about 300 bytes (the
+connected transport rejects messages over 1,000 bytes). Before reporting, keep useful work queued or name the exact reason
 no successor is safe. Include run/save identity, source tick, active and queued
 plan IDs, what changed (accepted downstream output, new physical edges, measured
 capacity or avoided touches, or the quantitative reason a short manual bridge

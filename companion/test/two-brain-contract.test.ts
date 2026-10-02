@@ -102,6 +102,14 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/without a valid package keep working rather than waiting/i);
     expect(pilot).toMatch(/empty `find_placement` result is terminal for that unchanged request/);
     expect(agents).toMatch(/designs every coupled layout as a validated build\s+package/);
+    expect(pilot).toMatch(/After `GO`, before any ledger read, report, or long deliberation, make sure a plan is queued/);
+    expect(pilot).toMatch(/jq -c '\{revision, source_tick, run, assumptions, NOW: \.task_list\.NOW, build_packages\}'/);
+    expect(pilot).toMatch(/When a validation fails, stay at that site: queue the fixes for its `nonproductive_status:\*`[\s\S]*`blocked_output` blockers yourself[\s\S]*which a hand insertion cannot clear/);
+    expect(strategist).toMatch(/next package repairs the layout blockers it names[\s\S]*at that site before any other objective/);
+    expect(strategist).toMatch(/completes a segment ends with a `wait_for_item` on the segment's terminal output[\s\S]*followed by a validation step/);
+    expect(skill).toMatch(/transfer window opens\s+when the step starts/);
+    for (const text of [agents, skill, pilot]) expect(text).toMatch(/under about 300 bytes/);
+    expect(skill).toMatch(/one\s+exact node position is enough/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

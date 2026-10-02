@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.4 retains each exact placed entity and validates the live output
+Release 0.19.5 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.4 validation.
+0.19.5 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -199,6 +199,25 @@ validation result, a falsified ledger assumption, no safe successor, a
 supervisor stop, or otherwise about three minutes of game time since the last
 report, with no corrections or follow-ups.
 
+## 2026-10-02 debug cycle 5 (0.19.4) and the 0.19.5 pre-GO conduct
+
+Run `debug-20261002T023048Z` (fresh game, seed 747930220) stopped at `GO+20m`
+with 6 machines, 10 physical edges, 83 finished products, and no nudge. Pilot
+model time fell to 54% of wall time, the first cycle within the 60% target;
+body busy time reached about 45%, the largest gap between pilot calls was
+56 s, and the pilot sent two reports instead of 17. The couch client again
+logged no latency change. Production flattened from minute 15 when the iron
+furnace ran out of fuel while Sol kept validating a coal-only fuel loop, which
+the 0.19.4 topology rule could not prove; upstream 7d49443 since made
+source-only segments provable. The pilot entered `GO` with 204k tokens of
+context (76k in cycle 4) after polling threads about 20 times and reading the
+supervisor runbook before `GO`.
+
+Release 0.19.5 has the pilot read only its startup files and the runbook's
+profile-evidence procedure before `GO`, report, observe once, and end its
+turn; later pre-`GO` turns do only what their message asks, and the
+thread-read ban covers the whole run.
+
 ## Prior 0.8.0 structured timings
 
 All gameplay perception and action below used the Factorio MCP text surface.
@@ -368,7 +387,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.4, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.19.5, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -438,7 +457,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.4 benchmark results.
+present historical timings as 0.19.5 benchmark results.
 
 #### Candidate B R7 recorded result
 

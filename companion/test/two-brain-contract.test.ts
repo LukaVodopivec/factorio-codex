@@ -113,7 +113,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/never send a correction or follow-up/);
     expect(skill).toMatch(/one\s+exact node position is enough/);
     expect(strategist).toMatch(/A segment is complete only when every node has a physical feed, fuel included/);
-    expect(pilot).toMatch(/After `GO`, never call `read_thread` or `wait_threads`, and call `list_threads` only once if you lack Sol's thread ID/);
+    expect(pilot).toMatch(/Never call `read_thread` or `wait_threads`, and call `list_threads` only once after `GO` if you lack Sol's thread ID/);
+    expect(pilot).toMatch(/Before `GO`, read only your startup files and the runbook's profile-evidence procedure[\s\S]*only a message containing `GO` starts gameplay, and you never poll threads for it/);
     expect(pilot).toMatch(/a `plan_status` summary saying the FIFO is empty means it is not/);
     expect(pilot).toMatch(/size each queued plan to outlast the next one[\s\S]*rather than a lone one-rock or one-item plan/);
     expect(skill).toMatch(/size each plan to outlast the pilot's next decision/);

@@ -580,6 +580,28 @@ and the offline mocks supplied it, so every steam or powered component in debug
 cycle 7 was refused. Strict offline mocks now reject members absent
 from the vendored 2.0.77 runtime list, but they still cannot prove
 native values or behavior.
+an earlier issue exposed a different native-value mismatch in 0.19.8: successful
+`get_fluid_segment_id` and `get_fluid_segment_contents` reads return `nil` for
+offshore-pump and separate-pipe boiler output boxes. Their products, filters,
+temperatures, own buffer stock and directed connections remain readable. The
+retained sampler now preserves that evidence without inventing a segment or
+stock. Private validation attributes an output only through its exact observed
+connection to readable downstream segment evidence; conflicting or unreadable
+paths stay unproven. Numeric input-box segment contents describe the connected
+pipe stock, separately from the machine's own buffer. Native generator
+acceptance uses the observed connected transport segment's capacity, rather
+than treating the engine's internal buffer capacity as the pipe limit.
+
+Electric network `output_counts` records generation. Its interval is aligned
+with `energy_generated_last_tick`, including native counter precision. Exact
+electrical dependents remain separate material components, but their private
+energy observations establish delivery by the supplying plant. A positive
+native idle drain with positive, nondecreasing buffers proves consumption and
+replacement; empty or draining buffers do not. Three bounded consecutive
+bursts allow low-demand boiler transformation to exceed the retained one-unit
+mass reserve. Shared producers, disconnected paths, aliased samples and
+finite starter fluid, fuel or electricity remain insufficient evidence.
+
 Before each fresh run's `GO`, the supervisor therefore proves the steam path on
 the native runtime and records the result in `supervision.json` under
 `steam_gate`. `GO` waits until the gate passes.
@@ -606,15 +628,18 @@ burner-inserter fixtures below:
   boiler feeds a steam engine, and a small electric pole powers an electric
   inserter that moves finite plates from one chest into another chest with
   space. The inserter is the load, because an engine with no demand is not
-  delivering power.
+  delivering power. Preserve the finite chest, but replenish it through a real
+  coal source and its own fuel-return path: starter coal alone cannot establish
+  the retained fuel provenance or replenishment proof.
 - Run the release's real `validate_factory_component` with the component's
   positions and `duration_seconds: 120`. The outcome must be
   `FACTORY_COMPONENT_AUTONOMY_PROVEN` with `native_power_required: true`,
   `power_delivery_samples >= 3`, and `fluid_activity_samples >= 3`.
 - Then let the finite plates run out so the inserter idles with a charged
-  buffer and the engine stops generating. A `map_summary` read must still show
+  buffer and the engine serves only the consumers' native idle drain (zero
+  generation when there is no drain). A `map_summary` read must still show
   the plant's power component `autonomous_end_to_end` with no `blocked_output`
-  among its blockers (the standby rule, offline-proven only). Record it as
+  among its blockers. Record it as
   `standby: {autonomous_end_to_end, blocked_output}`.
 - On the same fixture entities, probe once that `fluidbox.get_prototype`,
   `get_fluid_source_fluid`, and `neighbours` exist and return without error.
@@ -633,6 +658,42 @@ fields. Never weaken the fixture or the thresholds to make it pass. A fixture pa
 evidence of the native steam path only. It proves neither gameplay steam
 autonomy nor the fuller live steam-power confirmation above, and it is never
 benchmark evidence.
+
+The isolated engineering fixture passed on 2026-10-03 with Factorio
+**2.0.77, build 84539, linux64 headless**, using the bundled Space Age mod set.
+The material source candidate was based on
+`31704489973c1affabb42ef2268c7c154c279205`. Executable and archive SHA-256 receipts:
+
+- Executable: `c9ac91d318bdbcce5afaac30d48f4b71dc38af257712a5d4d4c4feb625737198`.
+- Release 0.19.8 archive: `42378f29ad1e133a343769a9f6932dee8e9d7977754f9b4ec9157d7cb05d4957`.
+- Instrumented archive: `fa034396ad109cfa1a9839a8bd7f558e23005e8407ac2d4ddf9ef93294a1904b`.
+
+Every released source file matched the candidate mod. Instrumentation was
+limited to the appended fixture block and the documented generated-chunk
+substitution. A burner coal drill with a splitter and separate self-fuel and
+feeder branches replenished the finite coal chest. Earlier underfed fixture
+attempts failed provenance and were cleaned up; their failures were not treated
+as validation passes.
+
+The real request ran from tick 601 to 7801, exactly 7,200 ticks, and returned
+`FACTORY_COMPONENT_AUTONOMY_PROVEN`, `native_power_required:true`,
+`power_delivery_samples:360` and `fluid_activity_samples:3`, with no blockers
+or character transfers. After all 500 finite plates left the source chest,
+the final transfer settled, the hand was empty, and the inserter remained in
+native `waiting_for_source_items` status for 120 ticks. Its positive buffer
+held about 1,054.22 J, while generation of 8.33333 J/tick matched its observed
+native idle drain. The tick-12180 read reported `autonomous_end_to_end:true`
+and `blocked_output:false`. All three API-member probes returned without error.
+The surface was deleted and confirmed absent at tick 12181; the owned server
+exited with status 0, no owned Factorio process remained, and its separate
+write-data directory was removed and its absence verified.
+
+These receipts cover the exact isolated engineering archive above. They do not
+record installation into a gameplay run, a supervisor `GO`, gameplay autonomy,
+or benchmark results. Any subsequent gameplay deployment still needs its own
+fresh supervised run and matching runtime receipts, including that run's
+native steam gate. Node 22 offline verification and independent source review
+supplement these receipts; neither substitutes for native behavior.
 
 ### Native resumption after the stop rehearsal
 

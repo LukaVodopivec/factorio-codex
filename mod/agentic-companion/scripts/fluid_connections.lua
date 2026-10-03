@@ -1,6 +1,10 @@
 -- Stable world-space fluid connection facts for live entities and candidates.
 local M = {}
 
+local function finite(value)
+  return type(value) == "number" and value == value and math.abs(value) < math.huge
+end
+
 local function vec(value)
   if type(value) ~= "table" then return nil end
   local x, y = tonumber(value.x) or tonumber(value[1]), tonumber(value.y) or tonumber(value[2])
@@ -122,16 +126,25 @@ function M.sample(entity)
       local fluid = entity.fluidbox[index]
       local segment = entity.fluidbox.get_fluid_segment_id(index)
       local contents = entity.fluidbox.get_fluid_segment_contents(index)
-      if type(contents) ~= "table" then error("unreadable fluid segment stock") end
-      local segment_name, segment_amount = nil, 0
-      for name, amount in pairs(contents) do
-        if segment_name or type(name) ~= "string" or type(amount) ~= "number" then error("ambiguous fluid segment") end
-        segment_name, segment_amount = name, amount
+      -- Source/output boxes in 2.0.77 can have no segment at all. A successful
+      -- nil pair is native absence, not zero stock; failed calls still refuse
+      -- this sample through the enclosing pcall.
+      local absent = segment == nil and contents == nil and proto.production_type == "output"
+      local segment_name, segment_amount
+      if not absent then
+        if not finite(segment) or segment <= 0 or segment % 1 ~= 0 or type(contents) ~= "table" then
+          error("unreadable fluid segment")
+        end
+        segment_amount = 0
+        for name, amount in pairs(contents) do
+          if segment_name or type(name) ~= "string" or not finite(amount) or amount < 0 then error("ambiguous fluid segment") end
+          segment_name, segment_amount = name, amount
+        end
+        if fluid and segment_name ~= fluid.name then error("inconsistent fluid segment identity") end
       end
-      if fluid and segment_name ~= fluid.name then error("inconsistent fluid segment identity") end
-      if type(capacity) ~= "number" or capacity <= 0 or type(segment) ~= "number" then error("unreadable fluid segment") end
-      if fluid and (type(fluid.name) ~= "string" or type(fluid.amount) ~= "number"
-        or type(fluid.temperature) ~= "number") then error("unreadable fluid") end
+      if not finite(capacity) or capacity <= 0 then error("unreadable fluid capacity") end
+      if fluid and (type(fluid.name) ~= "string" or not finite(fluid.amount) or fluid.amount < 0
+        or not finite(fluid.temperature)) then error("unreadable fluid") end
       boxes[index] = { index = index, production_type = proto.production_type,
         filter = filter and filter.name or filter_name(proto.filter),
         minimum_temperature = filter and filter.minimum_temperature or proto.minimum_temperature,

@@ -529,6 +529,54 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       if node.status == "insufficient_input" then diagnostic(node, "missing_or_mismatched_input", "status_only", status_class(node)) end
     end
   end
+  -- Keep the box's own native absence intact. Accounting may instead read a
+  -- segment on its exact directed downstream connection, never an invented ID
+  -- or stock inferred from products. Conflicting/unreadable targets refuse it.
+  for _, node in ipairs(nodes) do
+    node._fluid_segments = {}
+    for index, box in ipairs(node._fluid_boxes or {}) do
+      local evidence = box.segment and box or nil
+      if not evidence and box.production_type == "output" and node._fluid_connections_complete then
+        local ambiguous = false
+        for _, connection in ipairs(node._fluid_connections or {}) do
+          if connection.fluidbox_index == index and connection._target_entity
+            and (connection.flow_direction == "output" or connection.flow_direction == "input-output") then
+            local target = retained[entity_key(connection._target_entity)]
+            local downstream = target and target._entity == connection._target_entity
+              and target._entity.surface == node._entity.surface and target._fluid_supported
+              and target._fluid_boxes and target._fluid_boxes[connection._target_fluidbox_index]
+            if not downstream or not downstream.segment or not target._fluid_connections_complete
+              or evidence and (evidence.segment ~= downstream.segment
+                or evidence.segment_name ~= downstream.segment_name or evidence.segment_amount ~= downstream.segment_amount) then
+              ambiguous = true
+            else evidence = downstream end
+          end
+        end
+        if ambiguous then evidence = nil end
+      end
+      node._fluid_segments[index] = evidence
+      -- Generator input buffers report their own capacity even when their
+      -- segment ID/contents refer to the larger connected pipe segment.
+      -- Compare segment stock only with native capacity of that exact segment.
+      if node.type == "generator" and evidence then
+        local capacity
+        for _, connection in ipairs(node._fluid_connections or {}) do
+          if connection.fluidbox_index == index and connection._target_entity
+            and (connection.flow_direction == "input" or connection.flow_direction == "input-output") then
+            local target = retained[entity_key(connection._target_entity)]
+            local peer = target and target._entity == connection._target_entity and target._fluid_supported
+              and target._entity.surface == node._entity.surface and target._fluid_connections_complete
+              and target._fluid_boxes[connection._target_fluidbox_index]
+            if peer and peer.production_type == "none" and peer.segment == evidence.segment then
+              if capacity and capacity ~= peer.capacity then capacity = false; break end
+              capacity = peer.capacity
+            end
+          end
+        end
+        node._generator_segment_capacity = capacity == nil and evidence.capacity or capacity
+      end
+    end
+  end
   local generators = {}
   for _, node in ipairs(nodes) do
     if node.type == "generator" then
@@ -539,7 +587,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         generators[network] = generators[network] or {}
         generators[network][#generators[network] + 1] = node
         local pole = network_poles and network_poles[network]
-        local ok, inputs = pcall(function() return pole.electric_network_statistics.input_counts end)
+        local ok, inputs = pcall(function() return pole.electric_network_statistics.output_counts end)
         if ok and type(inputs) == "table" then node._network_generation = inputs
         else diagnostic(node, "electrical_generation_attribution_unproven", "unsupported") end
       end
@@ -1031,7 +1079,8 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
             local temperature = box.temperature or product.temperature
             local compatible = fluid_compatible(box, product.name, temperature)
             if node.type == "generator" then
-              return 0, compatible and box.segment_amount < box.capacity and box.amount > 0
+              return 0, compatible and type(node._generator_segment_capacity) == "number"
+                and box.segment_amount < node._generator_segment_capacity and box.amount > 0
                 and type(box.temperature) == "number" and box.temperature > node._generator.default_temperature
             end
             return box.amount, compatible and box.segment_amount < box.capacity
@@ -1164,13 +1213,15 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         if next(stock) then component._inputs[node._key] = stock end
       end
       if FLUID_TYPES[node.type] or node._power_consumer then
-        local native = { type = node.type, boxes = node._fluid_boxes, input = node._fluid_input, output = node._fluid_output,
+        local native = { type = node.type, boxes = node._fluid_boxes, segments = node._fluid_segments,
+          input = node._fluid_input, output = node._fluid_output,
           source = node._fluid_source, generator = node._generator, power_network = node._power_network,
           network_generation = node._network_generation, name = node.name,
           pumped = (node.type == "offshore-pump" or node.type == "pump") and number_property(node._entity, "pumped_last_tick") or nil,
           generated = node.type == "generator" and number_property(node._entity, "energy_generated_last_tick") or nil,
           energy = node._power_consumer and number_property(node._entity, "energy") or nil,
-          consumer = node._power_consumer, fuel_energy = status.fuel_energy,
+          consumer = node._power_consumer, drain = node._power_consumer and number_property(node._entity, "electric_drain") or nil,
+          fuel_energy = status.fuel_energy,
           burning_energy = node.requires_fuel and number_property(node._entity.burner, "remaining_burning_fuel") or nil }
         component._native_activity[node._key] = native
         if native.consumer and (native.energy == nil or native.energy <= 0) then interrupted = "electrical_delivery_inactive" end
@@ -1311,6 +1362,28 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     component._supplied_by = supplied_by
     for _, edge in ipairs(component._edges) do
       signature_rows[#signature_rows + 1] = node_by_id[edge.from]._key .. "->" .. node_by_id[edge.to]._key .. ":" .. edge.kind .. ":" .. tostring(edge.from_fluidbox) .. ":" .. tostring(edge.to_fluidbox)
+    end
+    -- Observe delivery to exact electrical dependents without joining their
+    -- material paths or importing their finite cargo as supply provenance.
+    for _, edge in ipairs(edges) do
+      if edge.kind == "electrical_dependency" and by_root[root(edge.from)] == component
+        and by_root[root(edge.to)] ~= component then
+        local node = node_by_id[edge.to]
+        component._native_activity[node._key] = { name = node.name, type = node.type,
+          consumer = true, electrical_only = true, power_network = node._power_network,
+          energy = number_property(node._entity, "energy"), drain = number_property(node._entity, "electric_drain") }
+        local energy = component._native_activity[node._key].energy
+        if not energy or energy <= 0 then interrupted = "electrical_delivery_inactive" end
+        signature_rows[#signature_rows + 1] = table.concat({ "electrical-dependent", node._key,
+          tostring(number_property(node._entity, "unit_number")), tostring(node._power_network),
+          tostring(node.direction) }, ":")
+        for _, connection in ipairs(edges) do
+          if connection.from == node.id or connection.to == node.id then
+            signature_rows[#signature_rows + 1] = table.concat({ "electrical-dependent-connection", connection.kind,
+              node_by_id[connection.from]._key, node_by_id[connection.to]._key }, ":")
+          end
+        end
+      end
     end
     table.sort(signature_rows)
     component._signature = table.concat(signature_rows, "|")

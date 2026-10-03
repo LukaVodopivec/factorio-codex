@@ -621,15 +621,32 @@ local function by_position(a, b)
 end
 
 -- Native last-tick fields are integrated only over consecutive observed
--- ticks. Three short bursts share this validator and its exact private graph;
--- gaps never become inferred pump/generator cycles. Segment counts are uint32,
--- so each burst's mass balance reserves one fluid unit for rounding.
-local NATIVE_BURST_TICKS = 8
+-- ticks. Three bounded bursts share this validator and its exact private graph;
+-- gaps never become inferred pump/generator cycles. Native segment stock is
+-- fractional; retain a one-unit mass reserve and enough consecutive ticks to
+-- observe low-demand transformation without shrinking that reserve.
+local NATIVE_BURST_TICKS = 120
 local function native_required(sample)
   for _, info in pairs(sample._native_activity or {}) do
-    if info.source or info.type == "boiler" or info.generator or info.consumer or info.type == "pump" then return true end
+    if info.source or info.type == "boiler" or info.generator or info.consumer or info.type == "pump" and not info.electrical_only then return true end
   end
   return false
+end
+
+-- Directional machine buffers are separate from the pipe-segment contents,
+-- even when an input box exposes the connected segment's numeric identity.
+-- Transport boxes already belong to segment stock and must not be counted twice.
+local function directional_stock(sample)
+  local stock = {}
+  for _, info in pairs(sample._native_activity or {}) do
+    for index, box in ipairs(info.boxes or {}) do
+      local segment = info.segments[index]
+      if box.production_type ~= "none" and segment then
+        stock[segment.segment] = (stock[segment.segment] or 0) + box.amount
+      end
+    end
+  end
+  return stock
 end
 
 local function observe_native(step, sample)
@@ -649,20 +666,22 @@ local function observe_native(step, sample)
     local before = previous and previous._native_activity[key]
     local counts = step._native_counts[key]
     if consecutive and before then
-      if info.type == "offshore-pump" or info.type == "pump" then
+      if info.type == "offshore-pump" or info.type == "pump" and not info.electrical_only then
         if type(info.pumped) == "number" and info.pumped > 0 then
           event(key, "flow")
-          local input, output = info.input and info.boxes[info.input], info.boxes[info.output or 1]
-          if input then burst.draw[input.segment] = (burst.draw[input.segment] or 0) + info.pumped end
-          if output then burst.feed[output.segment] = (burst.feed[output.segment] or 0) + info.pumped end
+          local input, output = info.input and info.segments[info.input], info.segments[info.output or 1]
+          if input then burst.draw[input.segment] = (burst.draw[input.segment] or 0) + info.pumped
+          elseif info.input then counts.unreadable = true end
+          if output then burst.feed[output.segment] = (burst.feed[output.segment] or 0) + info.pumped
+          else counts.unreadable = true end
         elseif info.pumped == nil then counts.unreadable = true end
       elseif info.generator then
         if type(info.generated) == "number" and info.generated > 0 then
           event(key, "flow")
-          local box, generator = info.boxes[1], info.generator
+          local box, generator = info.segments[1], info.generator
           local per_unit = (generator.maximum_temperature - generator.default_temperature)
             * generator.heat_capacity * generator.effectivity
-          if per_unit > 0 then
+          if box and per_unit > 0 then
             burst.draw[box.segment] = (burst.draw[box.segment] or 0) + info.generated / per_unit
           else counts.unreadable = true end
         elseif info.generated == nil then counts.unreadable = true end
@@ -677,23 +696,32 @@ local function observe_native(step, sample)
       if info.consumer then
         if type(info.energy) ~= "number" or type(before.energy) ~= "number" then counts.unreadable = true
         elseif info.energy < before.energy then counts.used = true
-        elseif info.energy > before.energy then event(key, "delivery") end
+        elseif info.energy > before.energy then event(key, "delivery")
+        elseif info.energy > 0 and before.energy > 0 and type(info.drain) == "number" and info.drain > 0 then
+          -- Native drain consumes energy each tick. A nondecreasing own buffer
+          -- under that drain proves replacement, even with no visible oscillation.
+          counts.used = true
+          event(key, "delivery")
+        end
       end
       if info.generator and info.power_network then
         local network = info.power_network
         observed_generation[network] = observed_generation[network] or {}
         local counts_by_name = observed_generation[network]
+        local earlier = burst.earlier and burst.earlier._native_activity[key]
         if type(info.generated) ~= "number" or type(info.network_generation) ~= "table"
           or type(before.network_generation) ~= "table" then counts.unreadable = true
-        else
+        elseif earlier and burst.earlier.tick + 1 == previous.tick and type(earlier.network_generation) == "table" then
+          -- Network statistics reflect the current update; the generator field
+          -- explicitly reports the last tick. Compare the preceding interval.
           counts_by_name[info.name] = (counts_by_name[info.name] or 0) + info.generated
-          networks[network] = { current = info.network_generation, previous = before.network_generation, key = key }
+          networks[network] = { current = before.network_generation, previous = earlier.network_generation, key = key }
         end
       end
     end
   end
   -- Compare whole-network generation with the sum of actual observed entity
-  -- generation for the same tick. Unknown producers (even of the same name),
+  -- generation for the preceding statistics interval. Unknown producers (even of the same name),
   -- accumulator discharge, resets and unreadable statistics cannot be attributed.
   for network, info in pairs(networks) do
     local names = {}
@@ -702,20 +730,26 @@ local function observe_native(step, sample)
     for name in pairs(observed_generation[network]) do names[name] = true end
     for name in pairs(names) do
       local now, before = info.current[name] or 0, info.previous[name] or 0
+      -- Native electricity counters quantize each increment to 1/65536 J;
+      -- allow that rounding unit, not a workload-sized attribution tolerance.
       if type(now) ~= "number" or type(before) ~= "number"
-        or math.abs(now - before - (observed_generation[network][name] or 0)) > 0.000001 then
+        or math.abs(now - before - (observed_generation[network][name] or 0)) > 1 / 65536 + 0.000001 then
         step._native_counts[info.key].attribution_failed = true
       end
     end
   end
-  burst.previous = sample
+  burst.earlier, burst.previous = previous, sample
   if sample.tick < burst.finish_tick then return end
+  local start_stock, end_stock = directional_stock(burst.start), directional_stock(sample)
   local producers = {}
   for key, info in pairs(current) do
     if info.type == "boiler" and info.output and info.boxes then
-      local segment = info.boxes[info.output].segment
-      producers[segment] = producers[segment] or {}
-      producers[segment][#producers[segment] + 1] = key
+      local output = info.segments[info.output]
+      if output then
+        local segment = output.segment
+        producers[segment] = producers[segment] or {}
+        producers[segment][#producers[segment] + 1] = key
+      else step._native_counts[key].unreadable = true end
     end
   end
   for segment, keys in pairs(producers) do
@@ -724,12 +758,19 @@ local function observe_native(step, sample)
       local counts = step._native_counts[key]
       if #keys ~= 1 then counts.ambiguous = true
       elseif not burst.aliased and before and burst.burning[key] then
-        local output, start_output = info.boxes[info.output], before.boxes[before.output]
-        local input, start_input = info.boxes[info.input], before.boxes[before.input]
-        local production_lower_bound = output.segment_amount - start_output.segment_amount
-          + (burst.draw[segment] or 0) - (burst.feed[segment] or 0) - 1
-        if production_lower_bound > 0 and input.segment_amount >= start_input.segment_amount then
-          event(key, "flow")
+        local output, start_output = info.segments[info.output], before.segments[before.output]
+        local input, start_input = info.segments[info.input], before.segments[before.input]
+        if not start_output or not input or not start_input
+          or output.segment ~= start_output.segment or input.segment ~= start_input.segment then counts.unreadable = true
+        else
+          local production_lower_bound = output.segment_amount - start_output.segment_amount
+            + (burst.draw[segment] or 0) - (burst.feed[segment] or 0) - 1
+          production_lower_bound = production_lower_bound + (end_stock[segment] or 0) - (start_stock[segment] or 0)
+          local input_change = input.segment_amount - start_input.segment_amount
+            + (end_stock[input.segment] or 0) - (start_stock[input.segment] or 0)
+          if production_lower_bound > 0 and input_change >= 0 then
+            event(key, "flow")
+          end
         end
       end
       if burst.aliased then counts.aliased = true end
@@ -1114,6 +1155,7 @@ local function validate_factory_component(plan, step)
       throughput("path_stalled_before_end", key, nil, { last_event_tick = last })
     end
   end
+  local baseline_stock, final_stock = directional_stock(step._baseline), directional_stock(final)
   local fluid_samples, power_samples, native_source_samples
   for key, counts in pairs(step._native_counts or {}) do
     local info = (final._native_activity or {})[key] or {}
@@ -1121,7 +1163,7 @@ local function validate_factory_component(plan, step)
     if counts.aliased then throughput("native_activity_aliased", key, nil, { class = "evidence" }) end
     if counts.ambiguous then throughput("boiler_transformation_attribution_unproven", key, nil, { class = "evidence" }) end
     if counts.attribution_failed then throughput("electrical_generation_attribution_unproven", key, nil, { class = "evidence" }) end
-    if info.source or info.type == "boiler" or info.generator or info.type == "pump" then
+    if info.source or info.type == "boiler" or info.generator or info.type == "pump" and not info.electrical_only then
       local count = counts.flow or 0
       fluid_samples = math.min(fluid_samples or count, count)
       if info.source then native_source_samples = math.min(native_source_samples or count, count) end
@@ -1129,8 +1171,15 @@ local function validate_factory_component(plan, step)
       else recent(key, count, key .. ":flow") end
       local before = step._baseline._native_activity[key]
       if before and info.boxes and before.boxes then
-        for index, box in ipairs(info.boxes) do
-          if box.segment_amount < before.boxes[index].segment_amount then throughput("fluid_supply_draining", key); break end
+        for index in ipairs(info.boxes) do
+          local box, start_box = info.segments[index], before.segments[index]
+          if not box or not start_box or box.segment ~= start_box.segment then
+            throughput("fluid_segment_attribution_unproven", key)
+          else
+            local change = box.segment_amount - start_box.segment_amount
+            change = change + (final_stock[box.segment] or 0) - (baseline_stock[box.segment] or 0)
+            if change < 0 then throughput("fluid_supply_draining", key); break end
+          end
         end
       end
       if info.type == "boiler" then
@@ -1144,7 +1193,7 @@ local function validate_factory_component(plan, step)
       if count < VALIDATION_MIN_EVENTS or not counts.used then throughput("bounded_power_delivery_not_observed", key)
       else recent(key, count, key .. ":delivery") end
       local before = step._baseline._native_activity[key]
-      if type(info.energy) ~= "number" or not before or type(before.energy) ~= "number" or info.energy < before.energy then
+      if type(info.energy) ~= "number" or info.energy <= 0 or not before or type(before.energy) ~= "number" or info.energy < before.energy then
         throughput("electrical_store_draining", key)
       end
     end

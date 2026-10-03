@@ -1,4 +1,7 @@
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+local mock = dofile(here .. "/factorio_api_mock.lua")
+-- Keep mock/locator in an outer scope: this suite reaches Lua's local limit.
+local function run()
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
@@ -12,9 +15,9 @@ local function canonical(value)
   return "{" .. table.concat(out, ",") .. "}"
 end
 local resources = {
-  { valid = true, name = "iron-ore", type = "resource", amount = 20, position = { x = 8, y = 1 } },
-  { valid = true, name = "iron-ore", type = "resource", amount = 10, position = { x = 3, y = 1 } },
-  { valid = true, name = "copper-ore", type = "resource", amount = 999, position = { x = 33, y = 1 } },
+  mock.entity({ valid = true, name = "iron-ore", type = "resource", amount = 20, position = { x = 8, y = 1 } }),
+  mock.entity({ valid = true, name = "iron-ore", type = "resource", amount = 10, position = { x = 3, y = 1 } }),
+  mock.entity({ valid = true, name = "copper-ore", type = "resource", amount = 999, position = { x = 33, y = 1 } }),
 }
 local force = {
   is_chunk_charted = function(_, chunk) return chunk.x == 0 and chunk.y == 0 end,
@@ -24,15 +27,15 @@ local force = {
   end } end,
   get_fluid_production_statistics = function() return { get_flow_count = function() return 0 end } end,
 }
-local machine = { valid = true, name = "assembling-machine-1", type = "assembling-machine", position = { x = 5, y = 5 }, direction = 4, status = 1, force = force,
+local machine = mock.entity({ valid = true, name = "assembling-machine-1", type = "assembling-machine", position = { x = 5, y = 5 }, direction = 4, status = 1, force = force,
   crafting_speed = 1, get_inventory = function() error("aggregate must not inspect remote inventory") end,
   get_recipe = function() return { name = "gear", energy = 0.5,
-    ingredients = { { name = "iron", type = "item" } }, products = { { name = "gear", type = "item" } } } end }
+    ingredients = { { name = "iron", type = "item" } }, products = { { name = "gear", type = "item" } } } end })
 local foreign_force = {}
-local foreign_machine = { valid = true, name = "foreign-machine", type = "assembling-machine",
-  position = { x = 6, y = 5 }, force = foreign_force, status = 1 }
-local invalid_machine = { valid = false, name = "invalid-machine", type = "furnace", position = { x = 7, y = 5 }, force = force }
-local body = { valid = true, name = "character", type = "character", position = { x = 0, y = 0 }, force = force }
+local foreign_machine = mock.entity({ valid = true, name = "foreign-machine", type = "assembling-machine",
+  position = { x = 6, y = 5 }, force = foreign_force, status = 1 })
+local invalid_machine = mock.entity({ valid = false, name = "invalid-machine", type = "furnace", position = { x = 7, y = 5 }, force = force })
+local body = mock.entity({ valid = true, name = "character", type = "character", position = { x = 0, y = 0 }, force = force })
 local surface = {
   get_chunks = function()
     local chunks, index = { { x = 1, y = 0 }, { x = 0, y = 0 } }, 0
@@ -104,10 +107,10 @@ check(aggregate.factory.evidence.entity_summary.evidence_class == "charted_remot
 
 local dense = {}
 for i = 1, 70 do
-  dense[i] = { valid = true, name = string.format("machine-%02d", i), type = "assembling-machine",
+  dense[i] = mock.entity({ valid = true, name = string.format("machine-%02d", i), type = "assembling-machine",
     position = { x = (i % 28) + 0.1, y = math.floor(i / 28) + 10.1 }, force = force, status = 1,
     crafting_speed = 1, get_recipe = function() return { name = string.format("recipe-%02d", i), energy = 1,
-      ingredients = {}, products = { { name = string.format("product-%02d", i), type = "item" } } } end }
+      ingredients = {}, products = { { name = string.format("product-%02d", i), type = "item" } } } end })
 end
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return dense end
 local bounded = require("scripts.map_summary").map_summary({})
@@ -126,25 +129,25 @@ check(aggregate_bytes <= 18000 and aggregate_bytes * 5 < full_bytes * 4,
 -- production interval. Recipe/source identities prove material provenance;
 -- buffers and finite hand-loaded burner stock never serve as roots.
 local function flow_fixture(buffer_root, burner)
-  local source = { valid = true, name = buffer_root and "wooden-chest" or "electric-mining-drill",
+  local source = mock.entity({ valid = true, name = buffer_root and "wooden-chest" or "electric-mining-drill",
     type = buffer_root and "container" or "mining-drill", position = { x = 1, y = 1 }, force = force,
-    status = 3, products_finished = 5 }
-  if not buffer_root then source.mining_target = { valid = true, name = "ore", type = "resource", position = source.position, amount = 100, prototype = { mineable_properties = {
+    status = 3, products_finished = 5 })
+  if not buffer_root then source.mining_target = mock.entity({ valid = true, name = "ore", type = "resource", position = source.position, amount = 100, prototype = { mineable_properties = {
     products = { { name = "ore", type = "item" } },
-  } } } end
-  local processor = { valid = true, name = "processor", type = "assembling-machine",
+  } } }) end
+  local processor = mock.entity({ valid = true, name = "processor", type = "assembling-machine",
     position = { x = 3, y = 1 }, force = force, status = 2, products_finished = 10,
     burner = burner and {} or nil, crafting_speed = 1,
     get_recipe = function() return { name = "process", energy = 1,
-      ingredients = { { name = "ore", type = "item" } }, products = { { name = "plate", type = "item" } } } end }
+      ingredients = { { name = "ore", type = "item" } }, products = { { name = "plate", type = "item" } } } end })
   if burner then processor.prototype = { burner_prototype = { fuel_categories = { chemical = true } } } end
-  local sink = { valid = true, name = "lab", type = "lab", position = { x = 5, y = 1 }, force = force, status = 3, get_inventory = function() return {
+  local sink = mock.entity({ valid = true, name = "lab", type = "lab", position = { x = 5, y = 1 }, force = force, status = 3, get_inventory = function() return {
       can_insert = function(stack) return stack.name == "plate" end,
-    } end }
-  local feed = { valid = true, name = "feed", type = "inserter", position = { x = 2, y = 1 }, force = force,
-    status = 2, pickup_target = source, drop_target = processor }
-  local unload = { valid = true, name = "unload", type = "inserter", position = { x = 4, y = 1 }, force = force,
-    status = 2, pickup_target = processor, drop_target = sink }
+    } end })
+  local feed = mock.entity({ valid = true, name = "feed", type = "inserter", position = { x = 2, y = 1 }, force = force,
+    status = 2, pickup_target = source, drop_target = processor })
+  local unload = mock.entity({ valid = true, name = "unload", type = "inserter", position = { x = 4, y = 1 }, force = force,
+    status = 2, pickup_target = processor, drop_target = sink })
   if not buffer_root then source.drop_target = feed end
   return { source, feed, processor, unload, sink }, source, processor
 end
@@ -244,7 +247,7 @@ do
     "new validation samples require complete history at their own exact start boundary")
   storage.factory_activity.latest_evicted_tick = 900
   -- Evict the disallowed post-proof insertion with unrelated later events.
-  for i = 1, 128 do record({ name = "unrelated", type = "container", position = { x = -1, y = -1 } }) end
+  for i = 1, 128 do record(mock.entity({ name = "unrelated", type = "container", position = { x = -1, y = -1 } })) end
   local evicted_assistance = map.map_summary({ activity_since_tick = 962 })
   check(not evicted_assistance.factory.material_flow.components[1].state.autonomous_end_to_end
     and evicted_assistance.factory.material_flow.components[1].state.autonomy_evidence == "character_transfer_history_incomplete",
@@ -260,7 +263,7 @@ do
   local first_sample = map.factory_component_sample({ source_tick = 899, positions = { flow_source.position } })
   local second_sample = map.factory_component_sample({ source_tick = 899, positions = { other_source.position } })
   game.tick = 900
-  for i = 1, 129 do record({ name = "unrelated", type = "container", position = { x = -1, y = -1 } }) end
+  for i = 1, 129 do record(mock.entity({ name = "unrelated", type = "container", position = { x = -1, y = -1 } })) end
   prove(first_sample, 900); prove(second_sample, 901); game.tick = 960
   local mixed = map.map_summary({})
   check(#mixed.factory.material_flow.components == 2
@@ -345,15 +348,15 @@ check(not burner_flow.factory.material_flow.components[1].state.autonomy_topolog
 -- A burner drill drops its mined output into a chest; a return inserter
 -- feeds the chest back into the drill's fuel slot.
 local function self_fed_fixture(ore)
-local coal_drill = { valid = true, name = "burner-mining-drill", type = "mining-drill", position = { x = 1, y = 1 },
+local coal_drill = mock.entity({ valid = true, name = "burner-mining-drill", type = "mining-drill", position = { x = 1, y = 1 },
   force = force, status = 3, products_finished = 5, burner = {},
-  prototype = { burner_prototype = { fuel_categories = { chemical = true } } } }
-coal_drill.mining_target = { valid = true, name = ore, type = "resource", position = coal_drill.position, amount = 100,
-  prototype = { mineable_properties = { products = { { name = ore, type = "item" } } } } }
-local coal_chest = { valid = true, name = "wooden-chest", type = "container", position = { x = 5, y = 1 }, force = force, status = 3,
-  get_inventory = function() return { get_contents = function() return { { name = ore, count = 10 } } end, is_full = function() return false end, can_insert = function() return true end } end }
-local refuel = { valid = true, name = "refuel", type = "inserter", position = { x = 2, y = 2 }, force = force,
-  status = 2, pickup_target = coal_chest, drop_target = coal_drill }
+  prototype = { burner_prototype = { fuel_categories = { chemical = true } } } })
+coal_drill.mining_target = mock.entity({ valid = true, name = ore, type = "resource", position = coal_drill.position, amount = 100,
+  prototype = { mineable_properties = { products = { { name = ore, type = "item" } } } } })
+local coal_chest = mock.entity({ valid = true, name = "wooden-chest", type = "container", position = { x = 5, y = 1 }, force = force, status = 3,
+  get_inventory = function() return { get_contents = function() return { { name = ore, count = 10 } } end, is_full = function() return false end, can_insert = function() return true end } end })
+local refuel = mock.entity({ valid = true, name = "refuel", type = "inserter", position = { x = 2, y = 2 }, force = force,
+  status = 2, pickup_target = coal_chest, drop_target = coal_drill })
 coal_drill.drop_target = coal_chest
 storage = {}
 local self_fed = { coal_drill, refuel, coal_chest }
@@ -380,8 +383,8 @@ local large_sink, large_unload = large[5], large[4]
 large_sink.position, large_unload.position = { x = 30, y = 1 }, { x = 29, y = 1 }
 large = { large_source, large_processor, large_sink, large_unload }
 for i = 1, 13 do
-  large[#large + 1] = { valid = true, name = "feed-" .. i, type = "inserter", position = { x = i, y = 1 },
-    force = force, status = 2, pickup_target = large_source, drop_target = large_processor }
+  large[#large + 1] = mock.entity({ valid = true, name = "feed-" .. i, type = "inserter", position = { x = i, y = 1 },
+    force = force, status = 2, pickup_target = large_source, drop_target = large_processor })
 end
 large_source.drop_target = large[5]
 surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or large end
@@ -411,7 +414,7 @@ check(rewired._signature ~= before_rewire and rewired.component_signature ~= ori
 large[6].drop_target = large_processor
 local ok_missing, missing = pcall(map.factory_component_sample, { source_tick = 1200, positions = { { x = 31, y = 31 } } })
 local ok_split, split = pcall(map.factory_component_sample, { source_tick = 1200, positions = { large_sink.position, dense[1].position } })
-local duplicate = { valid = true, name = "overlap", type = "container", position = large_sink.position, force = force, status = 2 }
+local duplicate = mock.entity({ valid = true, name = "overlap", type = "container", position = large_sink.position, force = force, status = 2 })
 large[#large + 1] = duplicate
 local ok_ambiguous, ambiguous = pcall(map.factory_component_sample, { source_tick = 1200, positions = { large_sink.position } })
 table.remove(large)
@@ -483,12 +486,12 @@ buffer_source.burner, buffer_processor.burner = {}, {}
 buffer_processor.type, buffer_processor.name = "furnace", "stone-furnace"
 local burner_prototype = { burner_prototype = { fuel_categories = { chemical = true } } }
 buffer_source.prototype, buffer_processor.prototype = burner_prototype, burner_prototype
-local coal_source = { valid = true, name = "coal-drill", type = "mining-drill", position = { x = 1, y = 3 }, force = force,
-  status = 3, products_finished = 0, mining_target = { valid = true, name = "coal", type = "resource", position = { x = 1, y = 3 }, amount = 100, prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } } }
-local fuel_feed = { valid = true, name = "fuel-feed", type = "inserter", position = { x = 2, y = 3 }, force = force,
-  status = 3, pickup_target = coal_source, drop_target = buffer_source }
-local furnace_fuel = { valid = true, name = "furnace-fuel", type = "inserter", position = { x = 3, y = 3 }, force = force,
-  status = 3, pickup_target = coal_source, drop_target = buffer_processor }
+local coal_source = mock.entity({ valid = true, name = "coal-drill", type = "mining-drill", position = { x = 1, y = 3 }, force = force,
+  status = 3, products_finished = 0, mining_target = mock.entity({ valid = true, name = "coal", type = "resource", position = { x = 1, y = 3 }, amount = 100, prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } }) })
+local fuel_feed = mock.entity({ valid = true, name = "fuel-feed", type = "inserter", position = { x = 2, y = 3 }, force = force,
+  status = 3, pickup_target = coal_source, drop_target = buffer_source })
+local furnace_fuel = mock.entity({ valid = true, name = "furnace-fuel", type = "inserter", position = { x = 3, y = 3 }, force = force,
+  status = 3, pickup_target = coal_source, drop_target = buffer_processor })
 coal_source.drop_target = fuel_feed
 buffer_segment[6], buffer_segment[7], buffer_segment[8] = coal_source, fuel_feed, furnace_fuel
 -- Offline reproduction of the reported ordinary five-coal replenishment limit.
@@ -659,9 +662,9 @@ rejects_saturation("missing currently burning fuel remains blocked",
 rejects_saturation("unreadable currently burning fuel remains blocked",
   function()
     buffer_source.burner.currently_burning = nil
-    setmetatable(buffer_source.burner, { __index = function() error("unreadable current fuel") end })
+    mock.unreadable(buffer_source.burner, "currently_burning")
   end,
-  function() setmetatable(buffer_source.burner, nil); buffer_source.burner.currently_burning = burning_fuel end)
+  function() mock.unreadable(buffer_source.burner, "currently_burning", false); buffer_source.burner.currently_burning = burning_fuel end)
 rejects_saturation("unreadable burning item prototype remains blocked",
   function() buffer_source.burner.currently_burning = { name = setmetatable({}, {
     __index = function() error("unreadable item name") end }) } end,
@@ -674,9 +677,9 @@ rejects_saturation("missing pickup cannot be replaced by a machine-output edge",
 rejects_saturation("unreadable pickup remains unproven despite a machine-output edge",
   function()
     fuel_feed.pickup_target = nil
-    setmetatable(fuel_feed, { __index = function(_, key) if key == "pickup_target" then error("unsupported") end end })
+    mock.unreadable(fuel_feed, "pickup_target")
   end,
-  function() setmetatable(fuel_feed, nil); fuel_feed.pickup_target = coal_source end)
+  function() mock.unreadable(fuel_feed, "pickup_target", false); fuel_feed.pickup_target = coal_source end)
 rejects_saturation("contradictory pickup cannot borrow fuel provenance from another incoming edge",
   function() fuel_feed.pickup_target = buffer_source end, function() fuel_feed.pickup_target = coal_source end)
 rejects_saturation("ambiguous drop relationship remains blocked",
@@ -690,8 +693,8 @@ rejects_saturation("no remaining burning energy is not supplied saturation",
   function() buffer_source.burner.remaining_burning_fuel = 4 end)
 -- A belt run ending at an inserter pickup is consumed there; only a run with
 -- no consumer anywhere along it is a dead end, reported at its last tile.
-local coal_belt = { valid = true, name = "transport-belt", type = "transport-belt", position = { x = 1, y = 4 },
-  force = force, status = 2, belt_neighbours = { inputs = {}, outputs = {} } }
+local coal_belt = mock.entity({ valid = true, name = "transport-belt", type = "transport-belt", position = { x = 1, y = 4 },
+  force = force, status = 2, belt_neighbours = { inputs = {}, outputs = {} } })
 coal_source.drop_target, fuel_feed.pickup_target, furnace_fuel.pickup_target = coal_belt, coal_belt, coal_belt
 buffer_segment[9] = coal_belt
 -- Match the reported self-return binding as well as the useful furnace branch.
@@ -985,17 +988,17 @@ buffer_sink.get_inventory = function() return {
   get_item_count = function(name) return name == "ore" and bypass_stock or buffer_stock end,
   can_insert = function() return true end,
 } end
-local bypass = { valid = true, name = "bypass", type = "inserter", position = { x = 6, y = 1 }, force = force,
-  status = 3, pickup_target = buffer_source, drop_target = buffer_sink }
+local bypass = mock.entity({ valid = true, name = "bypass", type = "inserter", position = { x = 6, y = 1 }, force = force,
+  status = 3, pickup_target = buffer_source, drop_target = buffer_sink })
 buffer_segment[9] = bypass
 local wrong_output = simulate_validation("wrong_product")
 check(wrong_output.status == "failed" and canonical(wrong_output.outcomes[1].result.blockers):match("bounded_downstream_acceptance_not_observed"),
   "raw source arrivals into a shared buffer cannot prove acceptance of absent processor output")
 buffer_segment[9], buffer_sink.get_inventory = nil, regular_inventory
-local middle_chest = { valid = true, name = "middle-chest", type = "container", position = { x = 4, y = 2 }, force = force, status = 2,
-  get_inventory = function() return { get_item_count = function() return 0 end, can_insert = function() return true end } end }
-local relay = { valid = true, name = "relay", type = "inserter", position = { x = 5, y = 2 }, force = force, status = 3,
-  pickup_target = middle_chest, drop_target = buffer_sink }
+local middle_chest = mock.entity({ valid = true, name = "middle-chest", type = "container", position = { x = 4, y = 2 }, force = force, status = 2,
+  get_inventory = function() return { get_item_count = function() return 0 end, can_insert = function() return true end } end })
+local relay = mock.entity({ valid = true, name = "relay", type = "inserter", position = { x = 5, y = 2 }, force = force, status = 3,
+  pickup_target = middle_chest, drop_target = buffer_sink })
 buffer_segment[4].drop_target, buffer_segment[9], buffer_segment[10] = middle_chest, middle_chest, relay
 local relayed_output = simulate_validation("accept")
 check(relayed_output.status == "completed" and relayed_output.outcomes[1].result.downstream_kind == "buffer",
@@ -1066,8 +1069,8 @@ check(alias_result.status == "completed" and alias_result.outcomes[1].result.sou
 storage = {}; game.tick = game.tick + 100
 local extra = {}
 for i = 1, 40 do
-  extra[#extra + 1] = { valid = true, name = "unconnected-belt-" .. i, type = "transport-belt", force = force, status = 2,
-    position = { x = (i % 25) + 0.1, y = math.floor(i / 25) * 0.1 }, belt_neighbours = { inputs = {}, outputs = {} } }
+  extra[#extra + 1] = mock.entity({ valid = true, name = "unconnected-belt-" .. i, type = "transport-belt", force = force, status = 2,
+    position = { x = (i % 25) + 0.1, y = math.floor(i / 25) * 0.1 }, belt_neighbours = { inputs = {}, outputs = {} } })
 end
 for _, row in ipairs(buffer_segment) do extra[#extra + 1] = row end
 buffer_source.status, buffer_processor.status, buffer_accepting = 3, 3, true
@@ -1081,8 +1084,8 @@ end
 check(omitted_diagnostics.factory.omissions.capped_edge_diagnostics == 16 and complete_sample.topology_ready
   and not serialized_component and #omitted_diagnostics.factory.material_flow.diagnostics == 24,
   "unrelated diagnostic and component omissions never remove selected full-graph evidence")
-local duplicate_drill = { valid = true, name = "shared-resource-drill", type = "mining-drill", force = force, status = 3,
-  position = { x = 7, y = 2 }, mining_target = buffer_source.mining_target, mining_progress = 0.5, drop_target = buffer_segment[2] }
+local duplicate_drill = mock.entity({ valid = true, name = "shared-resource-drill", type = "mining-drill", force = force, status = 3,
+  position = { x = 7, y = 2 }, mining_target = buffer_source.mining_target, mining_progress = 0.5, drop_target = buffer_segment[2] })
 extra[#extra + 1] = duplicate_drill
 local shared_target = map.factory_component_sample({ source_tick = game.tick, positions = { buffer_sink.position } })
 check(not shared_target.topology_ready and canonical(shared_target.blockers):match("shared_mining_target_production_ambiguous"),
@@ -1095,28 +1098,28 @@ local function source_only_validation(mode)
   local start = game.tick
   storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
   local stock, accepting = 0, true
-  local target = { valid = true, name = "coal", type = "resource", position = { x = 1, y = 4 }, amount = 100,
-    prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } }
-  local source = { valid = true, name = "source-only-drill", type = "mining-drill", force = force,
+  local target = mock.entity({ valid = true, name = "coal", type = "resource", position = { x = 1, y = 4 }, amount = 100,
+    prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } })
+  local source = mock.entity({ valid = true, name = "source-only-drill", type = "mining-drill", force = force,
     position = { x = 1, y = 4 }, status = 3, mining_target = target, mining_progress = 0.9,
     prototype = burner_prototype, burner = { currently_burning = { name = prototypes.item.coal, quality = { name = "normal" } }, remaining_burning_fuel = 4 },
     get_fuel_inventory = function() return {
       get_contents = function() return { { name = "coal", quality = "normal", count = 5 } } end,
       get_item_count = function() return 5 end, can_insert = function() return true end,
-    } end }
-  local middle = { valid = true, name = "source-relay-chest", type = "container", force = force,
+    } end })
+  local middle = mock.entity({ valid = true, name = "source-relay-chest", type = "container", force = force,
     position = { x = 2, y = 4 }, status = 2, get_inventory = function() return {
       get_item_count = function() return 10 end, can_insert = function() return true end,
-    } end }
-  local sink = { valid = true, name = "source-terminal-chest", type = "container", force = force,
+    } end })
+  local sink = mock.entity({ valid = true, name = "source-terminal-chest", type = "container", force = force,
     position = { x = 4, y = 4 }, status = 2, get_inventory = function() return {
       get_item_count = function() return stock end, can_insert = function() return accepting end,
-    } end }
-  local unload = { valid = true, name = "source-unload", type = "inserter", force = force,
-    position = { x = 3, y = 4 }, status = 3, pickup_target = middle, drop_target = sink }
-  local refill = { valid = true, name = "source-self-return", type = "inserter", force = force,
+    } end })
+  local unload = mock.entity({ valid = true, name = "source-unload", type = "inserter", force = force,
+    position = { x = 3, y = 4 }, status = 3, pickup_target = middle, drop_target = sink })
+  local refill = mock.entity({ valid = true, name = "source-self-return", type = "inserter", force = force,
     position = { x = 2, y = 5 }, status = 5, pickup_target = middle, drop_target = source,
-    held_stack = { valid_for_read = true, name = "coal", quality = { name = "normal" }, count = 1 } }
+    held_stack = { valid_for_read = true, name = "coal", quality = { name = "normal" }, count = 1 } })
   source.drop_target = middle
   local entities = { source, middle, unload, sink, refill }
   if mode == "electric" then
@@ -1140,18 +1143,18 @@ local function source_only_validation(mode)
   elseif mode == "unsupported_fuel" then source.get_fuel_inventory = function() error("unsupported") end
   elseif mode == "generic_full" then refill.status = 6
   elseif mode == "shared_target" then
-    entities[6] = { valid = true, name = "other-source", type = "mining-drill", force = force,
-      position = { x = 1, y = 5 }, status = 3, mining_target = target, mining_progress = 0.9, drop_target = middle }
+    entities[6] = mock.entity({ valid = true, name = "other-source", type = "mining-drill", force = force,
+      position = { x = 1, y = 5 }, status = 3, mining_target = target, mining_progress = 0.9, drop_target = middle })
   elseif mode == "belt_pickup_end" then
-    local belt = { valid = true, name = "pickup-terminal", type = "transport-belt", force = force,
-      position = { x = 2, y = 6 }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } }
+    local belt = mock.entity({ valid = true, name = "pickup-terminal", type = "transport-belt", force = force,
+      position = { x = 2, y = 6 }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } })
     source.drop_target, unload.pickup_target, refill.pickup_target = belt, belt, belt
     entities[2] = belt
   elseif mode == "belt_dead_end" then
-    entities[6] = { valid = true, name = "spill-belt", type = "transport-belt", force = force,
-      position = { x = 3, y = 6 }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } }
-    entities[7] = { valid = true, name = "spill", type = "inserter", force = force,
-      position = { x = 3, y = 5 }, status = 3, pickup_target = middle, drop_target = entities[6] }
+    entities[6] = mock.entity({ valid = true, name = "spill-belt", type = "transport-belt", force = force,
+      position = { x = 3, y = 6 }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } })
+    entities[7] = mock.entity({ valid = true, name = "spill", type = "inserter", force = force,
+      position = { x = 3, y = 5 }, status = 3, pickup_target = middle, drop_target = entities[6] })
   end
   if mode == "consumer" or mode == "consumer_wrong_output" or mode == "consumer_multi_output" or mode == "consumer_full"
     or mode == "consumer_interruption" or mode == "consumer_unavailable" then
@@ -1269,25 +1272,25 @@ check(spill_row and spill_row.position.x == 3 and spill_row.position.y == 6 and 
 local many_rows_fixture
 do
   local function belt(x, y, kind)
-    return { valid = true, name = kind or "transport-belt", type = kind or "transport-belt", force = force,
-      position = { x = x, y = y }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } }
+    return mock.entity({ valid = true, name = kind or "transport-belt", type = kind or "transport-belt", force = force,
+      position = { x = x, y = y }, status = 3, belt_neighbours = { inputs = {}, outputs = {} } })
   end
   local function link(a, b)
     a.belt_neighbours.outputs[#a.belt_neighbours.outputs + 1] = b
     b.belt_neighbours.inputs[#b.belt_neighbours.inputs + 1] = a
   end
   local function drill(x, y, drop)
-    return { valid = true, name = "electric-mining-drill", type = "mining-drill", force = force, position = { x = x, y = y },
-      status = 3, drop_target = drop, mining_target = { valid = true, name = "coal", type = "resource", position = { x = x, y = y },
-        amount = 100, prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } } }
+    return mock.entity({ valid = true, name = "electric-mining-drill", type = "mining-drill", force = force, position = { x = x, y = y },
+      status = 3, drop_target = drop, mining_target = mock.entity({ valid = true, name = "coal", type = "resource", position = { x = x, y = y },
+        amount = 100, prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } }) })
   end
   local function chest(x, y)
-    return { valid = true, name = "wooden-chest", type = "container", force = force, position = { x = x, y = y }, status = 2,
-      get_inventory = function() return { get_item_count = function() return 0 end, can_insert = function() return true end } end }
+    return mock.entity({ valid = true, name = "wooden-chest", type = "container", force = force, position = { x = x, y = y }, status = 2,
+      get_inventory = function() return { get_item_count = function() return 0 end, can_insert = function() return true end } end })
   end
   local function inserter(x, y, pickup, drop)
-    return { valid = true, name = "inserter", type = "inserter", force = force, position = { x = x, y = y }, status = 3,
-      pickup_target = pickup, drop_target = drop }
+    return mock.entity({ valid = true, name = "inserter", type = "inserter", force = force, position = { x = x, y = y }, status = 3,
+      pickup_target = pickup, drop_target = drop })
   end
   local function dead_ends(entities)
     storage = {}
@@ -1594,10 +1597,10 @@ do
     local line = flow_fixture(false, false)
     local first = line[5]
     first.status = status
-    local second = { valid = true, name = "lab", type = "lab", position = { x = 7, y = 1 }, force = force, status = status,
-      get_inventory = function() return { can_insert = function(stack) return stack.name == "plate" end } end }
-    line[#line + 1] = { valid = true, name = "relay", type = "inserter", position = { x = 6, y = 1 }, force = force,
-      status = 3, pickup_target = first, drop_target = second }
+    local second = mock.entity({ valid = true, name = "lab", type = "lab", position = { x = 7, y = 1 }, force = force, status = status,
+      get_inventory = function() return { can_insert = function(stack) return stack.name == "plate" end } end })
+    line[#line + 1] = mock.entity({ valid = true, name = "relay", type = "inserter", position = { x = 6, y = 1 }, force = force,
+      status = 3, pickup_target = first, drop_target = second })
     line[#line + 1] = second
     surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or line end
     local sample = map.factory_component_sample({ source_tick = game.tick, positions = { first.position } })
@@ -1627,24 +1630,24 @@ do
   local function replay(recorded)
     local entities = {}
     for index, row in ipairs(recorded.nodes) do
-      local entity = { valid = true, name = row[1], type = row[2], position = { x = row[3], y = row[4] },
-        direction = row[5], status = RAW_STATUS[row[6]], force = force, _stock = 0 }
+      local entity = mock.entity({ valid = true, name = row[1], type = row[2], position = { x = row[3], y = row[4] },
+        direction = row[5], status = RAW_STATUS[row[6]], force = force}, { stock = 0  })
       if entity.type == "transport-belt" then entity.belt_neighbours = { inputs = {}, outputs = {} } end
       if entity.type == "inserter" then entity.burner, entity.prototype = {}, burner_prototype end
       if entity.type == "container" then
-        entity.get_inventory = function() return { get_item_count = function() return entity._stock end,
+        entity.get_inventory = function() return { get_item_count = function() return mock.state(entity).stock end,
           can_insert = function() return true end } end
       end
       if entity.type == "mining-drill" then
         entity.prototype, entity.mining_progress = burner_prototype, 0
-        entity.mining_target = { valid = true, name = "coal", type = "resource", position = { x = row[3] - 0.5, y = row[4] + 0.5 },
-          amount = 3838, prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } }
+        entity.mining_target = mock.entity({ valid = true, name = "coal", type = "resource", position = { x = row[3] - 0.5, y = row[4] + 0.5 },
+          amount = 3838, prototype = { mineable_properties = { products = { { name = "coal", type = "item" } } } } })
         entity.burner = { remaining_burning_fuel = 8,
           currently_burning = { name = { name = "coal", fuel_value = 4000000 }, quality = { name = "normal" } } }
-        entity._fuel = 5
-        entity.get_fuel_inventory = function() return { get_item_count = function() return entity._fuel end,
+        mock.state(entity).fuel = 5
+        entity.get_fuel_inventory = function() return { get_item_count = function() return mock.state(entity).fuel end,
           can_insert = function() return true end,
-          get_contents = function() return entity._fuel > 0 and { { name = "coal", quality = "normal", count = entity._fuel } } or {} end } end
+          get_contents = function() return mock.state(entity).fuel > 0 and { { name = "coal", quality = "normal", count = mock.state(entity).fuel } } or {} end } end
       end
       entities[index] = entity
     end
@@ -1662,7 +1665,7 @@ do
   -- an item from the fuel inventory.
   local BURN = 400
   local function burn(drill, elapsed, fuel)
-    drill.burner.remaining_burning_fuel, drill._fuel = 8 * (1 - (elapsed % BURN) / BURN), fuel
+    drill.burner.remaining_burning_fuel, mock.state(drill).fuel = 8 * (1 - (elapsed % BURN) / BURN), fuel
   end
   local function coal_loop(entities, drill, terminal, buffer, fuel_return)
     fuel_return.held_stack = { valid_for_read = true, name = "coal", quality = { name = "normal" }, count = 1 }
@@ -1673,7 +1676,7 @@ do
       burn(drill, elapsed, elapsed % BURN < 20 and 4 or 5)
       terminal.status = elapsed % 10 < 7 and 8 or 3
       fuel_return.status = elapsed % 10 < 8 and 5 or 3
-      buffer._stock = cycles
+      mock.state(buffer).stock = cycles
     end
   end
   local function replay_passes(label, recorded, drill, terminal, buffer, fuel_return)
@@ -1762,13 +1765,13 @@ do
     local plan, outcome = run_window(surplus, chest.position, 60, function(elapsed)
       local active = math.min(elapsed, burnt_out - 1)
       local cycles = math.floor(active / 120)
-      drill.mining_progress, drill.mining_target.amount, chest._stock = (active % 120) / 120, 3838 - cycles, cycles
+      drill.mining_progress, drill.mining_target.amount, mock.state(chest).stock = (active % 120) / 120, 3838 - cycles, cycles
       surplus[6].status = elapsed % 10 < 5 and 3 or 8
       if elapsed < burnt_out then
         drill.status = 3
         burn(drill, elapsed, bootstrap - math.floor(elapsed / BURN))
       else
-        drill.status, drill.burner.remaining_burning_fuel, drill._fuel = 4, 0, 0
+        drill.status, drill.burner.remaining_burning_fuel, mock.state(drill).fuel = 4, 0, 0
       end
     end)
     local rows = {}
@@ -1913,16 +1916,16 @@ do
   prototypes.fluid = { aqua = { default_temperature = 15, heat_capacity = 200 },
     vapor = { default_temperature = 15, heat_capacity = 200 } }
   local function entity(kind, x, boxes, proto)
-    local e = { valid = true, name = "opaque-" .. kind, type = kind, force = force, surface = surface,
-      position = { x = x, y = 9 }, status = 3, unit_number = x, prototype = proto or {} }
+    local e = mock.entity({ valid = true, name = "opaque-" .. kind, type = kind, force = force, surface = surface,
+      position = { x = x, y = 9 }, status = 3, unit_number = x, prototype = proto or {} })
     local links = {}
     e.fluidbox = {}
     for index, box in ipairs(boxes) do
       e.fluidbox[index] = box.fluid
       links[index] = {}
     end
-    setmetatable(e.fluidbox, { __len = function() return #boxes end })
-    e.get_fluid_box_prototype = function(index) return boxes[index] end
+    mock.length(e.fluidbox, function() return #boxes end)
+    e.fluidbox.get_prototype = function(index) return boxes[index] end
     e.fluidbox.get_filter = function(index)
       local box = boxes[index]
       return box.filter and { name = box.filter.name, minimum_temperature = box.minimum_temperature or -100,
@@ -1965,6 +1968,48 @@ do
   check(output_edge and output_edge.to_fluidbox == 1, "fluid relationships retain both box indices rather than entity adjacency")
   check(not canonical(sample.blockers):find("output_identity_unproven", 1, true),
     "empty native offshore and boiler boxes still establish product identity without recipes or stock")
+  local native = require("scripts.fluid_connections")
+  local boiler_boxes, generator_boxes = native.sample(boiler), native.sample(generator)
+  check(boiler_boxes[1].filter == "aqua" and boiler_boxes[1].production_type == "input"
+    and boiler_boxes[2].filter == "vapor" and boiler_boxes[2].production_type == "output"
+    and generator_boxes[1].filter == "vapor" and generator_boxes[1].production_type == "input",
+    "LuaFluidBox prototypes establish boiler input/output and generator input identities on empty boxes")
+  check(boiler_boxes[1].minimum_temperature == -100 and boiler_boxes[2].maximum_temperature == 1000,
+    "native fluid samples preserve runtime filter temperature constraints")
+  local boiler_activity, generator_activity
+  for _, activity in pairs(sample._native_activity) do
+    if activity.type == "boiler" then boiler_activity = activity end
+    if activity.type == "generator" then generator_activity = activity end
+  end
+  check(boiler_activity.input == 1 and boiler_activity.output == 2
+    and generator_activity.boxes[1].filter == "vapor" and generator_activity.generator.maximum_temperature == 165
+    and sample._signature:find(":output:fluid:vapor", 1, true)
+    and sample._signature:find(":temperature:165", 1, true),
+    "structured component evidence preserves boiler steam product and temperature and generator input")
+  local get_prototype = boiler.fluidbox.get_prototype
+  local bad_prototypes = {
+    { label = "merged prototype array", get = function(index) return { get_prototype(index), get_prototype(index) } end },
+    { label = "single-member prototype array", get = function(index) return { get_prototype(index) } end },
+    { label = "missing prototype", get = function() return nil end },
+    { label = "empty prototype array", get = function() return {} end },
+    { label = "unreadable prototype", get = function() error("native read failed") end },
+    { label = "unreadable prototype field", get = function()
+      return setmetatable({}, { __index = function() error("native field read failed") end })
+    end },
+  }
+  for _, case in ipairs(bad_prototypes) do
+    boiler.fluidbox.get_prototype = case.get
+    local endpoints, complete = native.live(boiler, true)
+    check(native.sample(boiler) == nil and not complete and endpoints[1].filter == nil
+      and endpoints[1].production_type == nil, case.label .. " refuses sample and endpoint identity")
+    local refused = map.map_summary({})
+    check(#refused.factory.material_flow.edges == 1
+      and canonical(refused.factory.material_flow.diagnostics):find("fluid_native_evidence_unproven", 1, true),
+      case.label .. " never creates boiler topology from connected endpoints")
+    check(canonical(map.factory_component_sample({ source_tick = game.tick, positions = { boiler.position } }).blockers)
+      :find("output_identity_unproven", 1, true) ~= nil, case.label .. " leaves boiler products unproven")
+  end
+  boiler.fluidbox.get_prototype = get_prototype
   check(not canonical(summary):find("_fluid_boxes", 1, true) and not canonical(summary):find("_target_entity", 1, true),
     "private fluid samples and runtime entity references never escape map summary")
   local signature = sample._signature
@@ -2000,8 +2045,8 @@ do
     local electric = { electric_energy_source_prototype = { usage_priority = "secondary-input" } }
     local entities, connections, boxes_by_entity = {}, {}, {}
     local function make(kind, x, boxes, proto)
-      local e = { valid = true, name = "supplied-" .. kind, type = kind, force = force, surface = surface,
-        position = { x = x, y = 12 }, unit_number = 100 + x, status = 3, direction = 0, prototype = proto or {} }
+      local e = mock.entity({ valid = true, name = "supplied-" .. kind, type = kind, force = force, surface = surface,
+        position = { x = x, y = 12 }, unit_number = 100 + x, status = 3, direction = 0, prototype = proto or {} })
       entities[#entities + 1] = e
       if boxes then
         boxes_by_entity[e], connections[e] = boxes, {}
@@ -2026,7 +2071,7 @@ do
           return { [box.segment == 1 and "aqua" or "vapor"] = box.segment == 1 and water or box.segment == 3 and relay_steam or steam }
         end
         e.fluidbox = fb
-        e.get_fluid_box_prototype = function(index) return boxes[index] end
+        e.fluidbox.get_prototype = function(index) return boxes[index] end
       end
       return e
     end
@@ -2060,8 +2105,8 @@ do
     pole.electric_network_statistics = setmetatable({}, { __index = function(_, key)
       if key == "input_counts" then return { [generator.name] = generated_total } end
     end })
-    local target = { valid = true, name = "coal", type = "resource", position = { x = 6, y = 12 }, amount = 1000,
-      prototype = { mineable_properties = { mining_time = 5 / 60, products = { { name = "coal", type = "item" } } } } }
+    local target = mock.entity({ valid = true, name = "coal", type = "resource", position = { x = 6, y = 12 }, amount = 1000,
+      prototype = { mineable_properties = { mining_time = 5 / 60, products = { { name = "coal", type = "item" } } } } })
     local mine = make("mining-drill", 6, nil, { mining_speed = 1, electric_energy_source_prototype = electric.electric_energy_source_prototype })
     mine.electric_network_id, mine.energy, mine.mining_target, mine.mining_progress = 7, 1000, target, 0
     local chest = make("container", 7)
@@ -2131,8 +2176,8 @@ do
       d_pole.electric_network_statistics = setmetatable({}, { __index = function(_, key)
         if key == "input_counts" then return { [d_generator.name] = d_generated } end
       end })
-      local d_target = { valid = true, name = "coal", type = "resource", position = { x = 56, y = 12 }, amount = 1000,
-        prototype = { mineable_properties = { mining_time = 5 / 60, products = { { name = "coal", type = "item" } } } } }
+      local d_target = mock.entity({ valid = true, name = "coal", type = "resource", position = { x = 56, y = 12 }, amount = 1000,
+        prototype = { mineable_properties = { mining_time = 5 / 60, products = { { name = "coal", type = "item" } } } } })
       local d_mine = make("mining-drill", 56, nil, mine.prototype)
       d_mine.electric_network_id, d_mine.energy, d_mine.mining_target, d_mine.mining_progress = 7, 1000, d_target, 0
       local d_chest = make("container", 57)
@@ -2179,8 +2224,8 @@ do
       if mode == "plus_line_dead" then far.status = defines.entity_status.no_power end
       line_mine = make("mining-drill", 44, nil, { mining_speed = 1, electric_energy_source_prototype = electric.electric_energy_source_prototype })
       line_mine.electric_network_id, line_mine.energy, line_mine.mining_progress = line_network, 1000, 0
-      line_mine.mining_target = { valid = true, name = "iron-ore", type = "resource", position = { x = 44, y = 12 }, amount = 1000,
-        prototype = { mineable_properties = { mining_time = 1, products = { { name = "iron-ore", type = "item" } } } } }
+      line_mine.mining_target = mock.entity({ valid = true, name = "iron-ore", type = "resource", position = { x = 44, y = 12 }, amount = 1000,
+        prototype = { mineable_properties = { mining_time = 1, products = { { name = "iron-ore", type = "item" } } } } })
       line_mine.drop_target, line_to, line_far = to, to, far
     end
     if mode == "cross_supply" or mode == "chain_supply" then
@@ -2514,4 +2559,7 @@ do
   surface.find_entities_filtered, prototypes.fluid, prototypes.item.coal = previous_find, old_fluids, old_coal
 end
 
+mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)
+end
+run()

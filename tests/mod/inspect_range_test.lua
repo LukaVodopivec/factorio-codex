@@ -1,4 +1,5 @@
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
 local failures = 0
@@ -15,7 +16,7 @@ package.loaded["scripts.companion"] = {
   end,
 }
 
-local entity = {
+local entity = mock.entity({
   valid = true, name = "stone-furnace", type = "furnace", direction = 0,
   position = { x = 30, y = 0 }, electric_network_id = 17, energy = 2400,
   power_usage = 90, power_production = 0,
@@ -26,7 +27,7 @@ local entity = {
     get_output_flow_limit = function(quality) return quality and quality.name == "uncommon" and 0 or nil end,
   } },
   quality = { name = "uncommon" },
-}
+})
 local found_entity = entity
 local inspection_queries = 0
 local surface = {
@@ -49,12 +50,12 @@ local pre_spawn, pre_spawn_error = pcall(inspect.inspect, {})
 check(not pre_spawn and tostring(pre_spawn_error):match("does not exist") ~= nil,
   "pre-spawn inspection requires the Codex body before validating targets")
 
-body = { valid = false, position = { x = 0, y = 0 }, surface = surface }
+body = mock.entity({ valid = false, position = { x = 0, y = 0 }, surface = surface })
 local dead, dead_error = pcall(inspect.inspect, { targets = { { x = 0, y = 0 } } })
 check(not dead and tostring(dead_error):match("does not exist") ~= nil,
   "dead-body inspection cannot fall back to a connected player")
 
-body = { valid = true, position = { x = 0, y = 0 }, surface = surface }
+body = mock.entity({ valid = true, position = { x = 0, y = 0 }, surface = surface })
 entity.position = { x = 30, y = 0 }
 local at_limit, at_limit_result = pcall(inspect.inspect, { targets = { entity.position } })
 check(at_limit and type(at_limit_result.entities) == "table"
@@ -90,11 +91,9 @@ checks_unreadable_fuel("unreadable item name cannot leak a prototype into inspec
 checks_unreadable_fuel("unreadable fuel value preserves the readable item name",
   { name = setmetatable({ name = "coal" }, { __index = function() error("unreadable fuel value") end }) }, "coal")
 entity.burner.currently_burning = nil
-setmetatable(entity.burner, { __index = function(_, key)
-  if key == "currently_burning" then error("unreadable current fuel") end
-end })
+mock.unreadable(entity.burner, "currently_burning")
 checks_unreadable_fuel("unreadable current fuel preserves other burner facts", nil)
-setmetatable(entity.burner, nil)
+mock.unreadable(entity.burner, "currently_burning", false)
 entity.burner.currently_burning = current_fuel
 
 entity.position = { x = 30.000001, y = 0 }
@@ -114,14 +113,14 @@ check(absent.entities[1].error:match("call observe_local first") ~= nil
   "missing-entity guidance names only the public observe_local tool")
 entity.valid = true
 
-local pickup = { valid = true, name = "transport-belt", type = "transport-belt", position = { x = 0.5, y = -1.5 } }
-local drop = { valid = true, name = "stone-furnace", type = "furnace", position = { x = 0.5, y = 1.5 } }
-local inserter = {
+local pickup = mock.entity({ valid = true, name = "transport-belt", type = "transport-belt", position = { x = 0.5, y = -1.5 } })
+local drop = mock.entity({ valid = true, name = "stone-furnace", type = "furnace", position = { x = 0.5, y = 1.5 } })
+local inserter = mock.entity({
   valid = true, name = "burner-inserter", type = "inserter", direction = 0,
   position = { x = 0.5, y = 0.5 }, pickup_position = { x = 0.5, y = -0.7 },
   drop_position = { x = 0.5, y = 1.3 }, pickup_target = pickup, drop_target = drop,
   prototype = {},
-}
+})
 found_entity = inserter
 local inserter_result = inspect.inspect({ targets = { inserter.position } }).entities[1]
 check(inserter_result.pickup_position.x == 0.5 and inserter_result.pickup_position.y == -0.7
@@ -133,24 +132,24 @@ check(inserter_result.pickup_position.x == 0.5 and inserter_result.pickup_positi
   and inserter_result.drop_target.position.y == 1.5,
   "inserter inspection reports exact runtime endpoints and valid target identities")
 
-inserter.pickup_target = { valid = false }
+inserter.pickup_target = mock.entity({ valid = false })
 inserter.drop_target = nil
 local no_targets = inspect.inspect({ targets = { inserter.position } }).entities[1]
 check(no_targets.pickup_target == nil and no_targets.drop_target == nil,
   "inserter inspection omits invalid and absent targets")
 
-local connected_pipe = { valid = true, name = "pipe", type = "pipe", position = { x = 2, y = 1 } }
+local connected_pipe = mock.entity({ valid = true, name = "pipe", type = "pipe", position = { x = 2, y = 1 } })
 local fluidbox = { [1] = {} }
 fluidbox.get_pipe_connections = function(index)
   check(index == 1, "fluid endpoint inspection requests the exact fluidbox index")
   return { { position = { x = 1, y = 0.5 }, target_position = { x = 1.5, y = 0.5 }, connection_type = "normal",
-    flow_direction = "input-output", target = { owner = connected_pipe } } }
+    flow_direction = "input-output", target = mock.fluidbox({ owner = connected_pipe }) } }
 end
-local pump = { valid = true, name = "offshore-pump", type = "offshore-pump", direction = 4,
-  position = { x = 1, y = 1 }, prototype = {}, fluidbox = fluidbox,
-  get_fluid_box_prototype = function(index)
-    return { index = index, production_type = "output", filter = { name = "water" } }
-  end }
+fluidbox.get_prototype = function(index)
+  return { index = index, production_type = "output", filter = { name = "water" } }
+end
+local pump = mock.entity({ valid = true, name = "offshore-pump", type = "offshore-pump", direction = 4,
+  position = { x = 1, y = 1 }, prototype = {}, fluidbox = fluidbox })
 found_entity = pump
 local pump_result = inspect.inspect({ targets = { pump.position } }).entities[1]
 check(pump_result.fluid_connections[1]
@@ -162,13 +161,24 @@ check(pump_result.fluid_connections[1]
   and pump_result.fluid_connections[1].filter == "water"
   and pump_result.fluid_connections[1].connected_target.name == "pipe",
   "entity inspection exposes live fluid endpoints and their connected target")
+local native_prototype = fluidbox.get_prototype
+for _, unreadable in ipairs({
+  function(index) return { native_prototype(index), native_prototype(index) } end,
+  function() error("unreadable native prototype") end,
+}) do
+  fluidbox.get_prototype = unreadable
+  local endpoint = inspect.inspect({ targets = { pump.position } }).entities[1].fluid_connections[1]
+  check(endpoint and endpoint.position.x == 1 and endpoint.filter == nil and endpoint.production_type == nil,
+    "unproven native prototype preserves observed endpoint geometry without inventing filter or direction")
+end
+fluidbox.get_prototype = native_prototype
 
-local ore = { valid = true, name = "iron-ore", type = "resource", position = { x = 2.25, y = 0.25 }, amount = 873 }
-local drill = {
+local ore = mock.entity({ valid = true, name = "iron-ore", type = "resource", position = { x = 2.25, y = 0.25 }, amount = 873 })
+local drill = mock.entity({
   valid = true, name = "burner-mining-drill", type = "mining-drill", direction = 4,
   position = { x = 2, y = 0 }, mining_target = ore,
   drop_position = { x = 3.3, y = -0.5 }, drop_target = drop, prototype = {},
-}
+})
 found_entity = drill
 local drill_result = inspect.inspect({ targets = { drill.position } }).entities[1]
 check(drill_result.mining_target.name == "iron-ore"
@@ -186,18 +196,18 @@ check(unbound_drill.drop_position.x == 3.3 and unbound_drill.drop_target == fals
   and unbound_drill.drop_target_bound == false,
   "mining drill inspection preserves the endpoint and explicit unbound recipient sentinel")
 
-drill.drop_target = { valid = false }
+drill.drop_target = mock.entity({ valid = false })
 local invalid_recipient_drill = inspect.inspect({ targets = { drill.position } }).entities[1]
 check(invalid_recipient_drill.drop_target == false
   and invalid_recipient_drill.drop_target_bound == false
   and type(invalid_recipient_drill.drop_target) ~= "table",
   "an invalid drill recipient is explicitly unbound and never encoded as an empty object")
 
-drill.mining_target = { valid = false }
+drill.mining_target = mock.entity({ valid = false })
 local no_mining_target = inspect.inspect({ targets = { drill.position } }).entities[1]
 check(no_mining_target.mining_target == nil, "mining drill inspection omits an invalid resource target")
 
-local belt = {
+local belt = mock.entity({
   valid = true, name = "transport-belt", type = "transport-belt", direction = 4,
   position = { x = 3.5, y = 0.5 }, prototype = {},
   get_max_transport_line_index = function() return 2 end,
@@ -207,7 +217,7 @@ local belt = {
       return { ["iron-ore"] = 2, ["coal"] = 1 }
     end }
   end,
-}
+})
 found_entity = belt
 local belt_result = inspect.inspect({ targets = { belt.position } }).entities[1]
 check(belt_result.belt_contents["iron-ore"] == 5 and belt_result.belt_contents.coal == 1,
@@ -255,4 +265,5 @@ local oversized, oversized_error = pcall(inspect.inspect, { targets = too_many }
 check(not oversized and tostring(oversized_error):match("at most 16 targets") ~= nil,
   "inspection rejects more than 16 targets")
 
+mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

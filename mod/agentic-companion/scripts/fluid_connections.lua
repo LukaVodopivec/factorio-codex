@@ -14,6 +14,22 @@ local function filter_name(value)
   return ok and name or nil
 end
 
+-- Merged crafting-machine boxes return an array, not one authoritative
+-- prototype. Until supported, refuse it rather than choosing a member.
+local function live_prototype(entity, index)
+  local ok, box = pcall(function()
+    local proto = entity.fluidbox.get_prototype(index)
+    if type(proto) == "table" and rawget(proto, 1) ~= nil then error("merged fluidbox prototype") end
+    if not proto or type(proto.production_type) ~= "string" then error("unreadable fluidbox prototype") end
+    local filter = proto.filter
+    local name = filter and (type(filter) == "string" and filter or filter.name)
+    if filter and type(name) ~= "string" then error("unreadable fluidbox filter") end
+    return { production_type = proto.production_type, filter = name,
+      minimum_temperature = proto.minimum_temperature, maximum_temperature = proto.maximum_temperature }
+  end)
+  return ok and box or nil
+end
+
 function M.prototype(proto, position, direction)
   local rows = {}
   direction = math.floor(tonumber(direction) or 0) % 16
@@ -48,7 +64,8 @@ function M.live(entity, internal)
   local count_ok = pcall(function() count = #entity.fluidbox end)
   if not count_ok then return rows, false end
   for index = 1, count do
-    local proto_ok, box = pcall(function() return entity.get_fluid_box_prototype(index) end)
+    local box = live_prototype(entity, index)
+    if not box then complete = false end
     local ok, connections = pcall(function() return entity.fluidbox.get_pipe_connections(index) end)
     if ok then
       for connection_index, connection in ipairs(connections or {}) do
@@ -64,8 +81,8 @@ function M.live(entity, internal)
             end
           end)
           rows[#rows + 1] = { fluidbox_index = index,
-            production_type = proto_ok and box and box.production_type or nil,
-            filter = proto_ok and box and filter_name(box.filter) or nil,
+            production_type = box and box.production_type or nil,
+            filter = box and box.filter or nil,
             connection_type = connection.connection_type, flow_direction = connection.flow_direction,
             position = position, target_position = target_position, connected_target = target or false }
           if internal then
@@ -98,8 +115,8 @@ function M.sample(entity)
   local ok, rows = pcall(function()
     local boxes = {}
     for index = 1, #entity.fluidbox do
-      local proto = entity.get_fluid_box_prototype(index)
-      if not proto or type(proto.production_type) ~= "string" then error("unsupported fluidbox prototype") end
+      local proto = live_prototype(entity, index)
+      if not proto then error("unsupported fluidbox prototype") end
       local filter = entity.fluidbox.get_filter(index)
       local capacity = entity.fluidbox.get_capacity(index)
       local fluid = entity.fluidbox[index]

@@ -5,6 +5,7 @@
 -- 76 ticks and top a burner's fuel up only below five items, and belts as
 -- delay lines. Offline stub evidence only; no fixture is live autonomy proof.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
@@ -34,7 +35,7 @@ local surface = {
   get_chunks = function() local done = false; return function() if not done then done = true; return { x = 0, y = 0 } end end end,
   find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end,
 }
-local body = { valid = true, name = "character", type = "character", position = { x = -20, y = -20 }, force = force, surface = surface }
+local body = mock.entity({ valid = true, name = "character", type = "character", position = { x = -20, y = -20 }, force = force, surface = surface })
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
 for _, action in ipairs({ "walk", "mine", "pickup", "craft", "build_plan" }) do package.loaded["scripts.actions." .. action] = {} end
 package.loaded["scripts.actions.build"] = { place = {}, rotate = {}, set_recipe = {} }
@@ -48,69 +49,68 @@ local function add(entity)
   return entity
 end
 local function burner(entity, power, fuel, remaining)
-  entity._power, entity._fuel = power, fuel
+  mock.state(entity).power, mock.state(entity).fuel = power, fuel
   entity.burner = { remaining_burning_fuel = remaining, currently_burning = { name = prototypes.item.coal, quality = { name = "normal" } } }
   entity.prototype = { burner_prototype = { fuel_categories = { chemical = true } } }
   entity.get_fuel_inventory = function() return {
-    get_contents = function() return entity._fuel > 0 and { { name = "coal", quality = "normal", count = entity._fuel } } or {} end,
-    get_item_count = function() return entity._fuel end,
-    can_insert = function() return entity._fuel < 50 end,
+    get_contents = function() return mock.state(entity).fuel > 0 and { { name = "coal", quality = "normal", count = mock.state(entity).fuel } } or {} end,
+    get_item_count = function() return mock.state(entity).fuel end,
+    can_insert = function() return mock.state(entity).fuel < 50 end,
   } end
 end
 -- A burner takes the next fuel item only when its burning remainder is spent.
 local function burn(entity)
   local state = entity.burner
-  if state.remaining_burning_fuel <= 0 and entity._fuel > 0 then
-    entity._fuel, state.remaining_burning_fuel = entity._fuel - 1, state.remaining_burning_fuel + COAL
+  if state.remaining_burning_fuel <= 0 and mock.state(entity).fuel > 0 then
+    mock.state(entity).fuel, state.remaining_burning_fuel = mock.state(entity).fuel - 1, state.remaining_burning_fuel + COAL
   end
   if state.remaining_burning_fuel <= 0 then return false end
-  state.remaining_burning_fuel = math.max(0, state.remaining_burning_fuel - entity._power)
+  state.remaining_burning_fuel = math.max(0, state.remaining_burning_fuel - mock.state(entity).power)
   return true
 end
 local function stock_total(chest)
   local total = 0
-  for _, count in pairs(chest._stock) do total = total + count end
+  for _, count in pairs(mock.state(chest).stock) do total = total + count end
   return total
 end
 local function accepts(target, item)
-  if target._line then return #target._line.items < target._line.capacity end
-  if target.type == "container" then return stock_total(target) < target._capacity end
-  if item == "coal" and target.burner then return target._fuel < TOP_UP end
-  return target.type == "furnace" and item == "iron-ore" and target._source < 5
+  if mock.state(target).line then return #mock.state(target).line.items < mock.state(target).line.capacity end
+  if target.type == "container" then return stock_total(target) < mock.state(target).capacity end
+  if item == "coal" and target.burner then return mock.state(target).fuel < TOP_UP end
+  return target.type == "furnace" and item == "iron-ore" and mock.state(target).source < 5
 end
 local function deliver(target, item)
-  if target._line then target._line.items[#target._line.items + 1] = { name = item, arrival = game.tick + target._line.delay }
-  elseif target.type == "container" then target._stock[item] = (target._stock[item] or 0) + 1
-  elseif item == "coal" then target._fuel = target._fuel + 1
-  else target._source = target._source + 1 end
+  if mock.state(target).line then mock.state(target).line.items[#mock.state(target).line.items + 1] = { name = item, arrival = game.tick + mock.state(target).line.delay }
+  elseif target.type == "container" then mock.state(target).stock[item] = (mock.state(target).stock[item] or 0) + 1
+  elseif item == "coal" then mock.state(target).fuel = mock.state(target).fuel + 1
+  else mock.state(target).source = mock.state(target).source + 1 end
 end
 local function can_ever(target, item)
-  if target._line or target.type == "container" then return true end
+  if mock.state(target).line or target.type == "container" then return true end
   return item == "coal" and target.burner ~= nil or target.type == "furnace" and item == "iron-ore"
 end
 local function take(source, wanted)
-  if source._line then
-    local first = source._line.items[1]
-    if first and first.arrival <= game.tick and wanted(first.name) then table.remove(source._line.items, 1); return first.name end
+  if mock.state(source).line then
+    local first = mock.state(source).line.items[1]
+    if first and first.arrival <= game.tick and wanted(first.name) then table.remove(mock.state(source).line.items, 1); return first.name end
   elseif source.type == "container" then
     local names = {}
-    for name, count in pairs(source._stock) do if count > 0 then names[#names + 1] = name end end
+    for name, count in pairs(mock.state(source).stock) do if count > 0 then names[#names + 1] = name end end
     table.sort(names)
     for _, name in ipairs(names) do
-      if wanted(name) then source._stock[name] = source._stock[name] - 1; return name end
+      if wanted(name) then mock.state(source).stock[name] = mock.state(source).stock[name] - 1; return name end
     end
-  elseif source.type == "furnace" and source._result > 0 and wanted("iron-plate") then
-    source._result = source._result - 1
+  elseif source.type == "furnace" and mock.state(source).result > 0 and wanted("iron-plate") then
+    mock.state(source).result = mock.state(source).result - 1
     return "iron-plate"
   end
 end
 
 local function chest(x, y, capacity)
-  local entity = add({ name = "wooden-chest", type = "container", position = { x = x, y = y }, status = RAW.normal,
-    _stock = {}, _capacity = capacity or 1600 })
+  local entity = add(mock.entity({ name = "wooden-chest", type = "container", position = { x = x, y = y }, status = RAW.normal }, { stock = {}, capacity = capacity or 1600 }))
   entity.get_inventory = function() return {
-    get_item_count = function(name) return entity._stock[name] or 0 end,
-    can_insert = function() return stock_total(entity) < entity._capacity end,
+    get_item_count = function(name) return mock.state(entity).stock[name] or 0 end,
+    can_insert = function() return stock_total(entity) < mock.state(entity).capacity end,
   } end
   return entity
 end
@@ -118,31 +118,31 @@ end
 -- and can be picked up at the tail once they have travelled.
 local function belt_line(x, y, delay, capacity)
   local line = { items = {}, delay = delay, capacity = capacity }
-  local head = add({ name = "transport-belt", type = "transport-belt", position = { x = x, y = y }, status = RAW.working, _line = line })
-  local tail = add({ name = "transport-belt", type = "transport-belt", position = { x = x + 1, y = y }, status = RAW.working, _line = line })
+  local head = add(mock.entity({ name = "transport-belt", type = "transport-belt", position = { x = x, y = y }, status = RAW.working }, { line = line }))
+  local tail = add(mock.entity({ name = "transport-belt", type = "transport-belt", position = { x = x + 1, y = y }, status = RAW.working }, { line = line }))
   head.belt_neighbours, tail.belt_neighbours = { inputs = {}, outputs = { tail } }, { inputs = { head }, outputs = {} }
   return head, tail
 end
 local function drill(x, y, ore, drop, fuel, remaining)
-  local entity = add({ name = "burner-mining-drill", type = "mining-drill", position = { x = x, y = y }, status = RAW.working,
-    mining_progress = 0, drop_target = drop, _mined = 0 })
-  entity.mining_target = { valid = true, name = ore, type = "resource", position = { x = x + 0.5, y = y + 40 }, amount = 10000,
-    prototype = { mineable_properties = { mining_time = 1, products = { { name = ore, type = "item" } } } } }
+  local entity = add(mock.entity({ name = "burner-mining-drill", type = "mining-drill", position = { x = x, y = y }, status = RAW.working,
+    mining_progress = 0, drop_target = drop }, { mined = 0 }))
+  entity.mining_target = mock.entity({ valid = true, name = ore, type = "resource", position = { x = x + 0.5, y = y + 40 }, amount = 10000,
+    prototype = { mineable_properties = { mining_time = 1, products = { { name = ore, type = "item" } } } } })
   burner(entity, DRILL_POWER, fuel, remaining)
   entity.prototype.mining_speed = 60 / MINE_TICKS
-  entity._step = function()
-    if entity._held then
-      if not accepts(entity.drop_target, entity._held) then entity.status = RAW.full_output; return end
-      deliver(entity.drop_target, entity._held)
-      entity._held = nil
+  mock.state(entity).step = function()
+    if mock.state(entity).held then
+      if not accepts(entity.drop_target, mock.state(entity).held) then entity.status = RAW.full_output; return end
+      deliver(entity.drop_target, mock.state(entity).held)
+      mock.state(entity).held = nil
     end
     if not burn(entity) then entity.status = RAW.no_fuel; return end
-    entity.status, entity._mined = RAW.working, entity._mined + 1
-    if entity._mined == MINE_TICKS then
-      entity._mined, entity.mining_target.amount = 0, entity.mining_target.amount - 1
-      if accepts(entity.drop_target, ore) then deliver(entity.drop_target, ore) else entity._held = ore end
+    entity.status, mock.state(entity).mined = RAW.working, mock.state(entity).mined + 1
+    if mock.state(entity).mined == MINE_TICKS then
+      mock.state(entity).mined, entity.mining_target.amount = 0, entity.mining_target.amount - 1
+      if accepts(entity.drop_target, ore) then deliver(entity.drop_target, ore) else mock.state(entity).held = ore end
     end
-    entity.mining_progress = entity._mined / MINE_TICKS
+    entity.mining_progress = mock.state(entity).mined / MINE_TICKS
   end
   return entity
 end
@@ -151,25 +151,25 @@ end
 -- name ("table") or a bare name ("string"); get_recipe() is nil whenever the
 -- furnace is idle.
 local function furnace(x, y, fuel, remaining, previous_shape)
-  local entity = add({ name = "stone-furnace", type = "furnace", position = { x = x, y = y }, status = RAW.no_ingredients,
-    products_finished = 0, crafting_speed = 1, _source = 0, _result = 0 })
+  local entity = add(mock.entity({ name = "stone-furnace", type = "furnace", position = { x = x, y = y }, status = RAW.no_ingredients,
+    products_finished = 0, crafting_speed = 1 }, { source = 0, result = 0 }))
   burner(entity, FURNACE_POWER, fuel, remaining)
-  entity.get_recipe = function() return (entity._smelt or entity._source > 0) and PLATE or nil end
+  entity.get_recipe = function() return (mock.state(entity).smelt or mock.state(entity).source > 0) and PLATE or nil end
   entity.get_inventory = function(index)
     assert(index == defines.inventory.furnace_source)
-    return { get_item_count = function(name) return name == "iron-ore" and entity._source or 0 end }
+    return { get_item_count = function(name) return name == "iron-ore" and mock.state(entity).source or 0 end }
   end
-  entity._step = function()
-    if not entity._smelt and entity._source > 0 and entity._result < 100 then
-      entity._source, entity._smelt = entity._source - 1, 0
+  mock.state(entity).step = function()
+    if not mock.state(entity).smelt and mock.state(entity).source > 0 and mock.state(entity).result < 100 then
+      mock.state(entity).source, mock.state(entity).smelt = mock.state(entity).source - 1, 0
       entity.previous_recipe = previous_shape == "string" and "iron-plate"
         or { name = previous_shape == "table" and PLATE or PLATE_PROTOTYPE, quality = { name = "normal" } }
     end
-    if not entity._smelt then entity.status = RAW.no_ingredients; return end
+    if not mock.state(entity).smelt then entity.status = RAW.no_ingredients; return end
     if not burn(entity) then entity.status = RAW.no_fuel; return end
-    entity.status, entity._smelt = RAW.working, entity._smelt + 1
-    if entity._smelt == SMELT_TICKS then
-      entity._smelt, entity._result, entity.products_finished = nil, entity._result + 1, entity.products_finished + 1
+    entity.status, mock.state(entity).smelt = RAW.working, mock.state(entity).smelt + 1
+    if mock.state(entity).smelt == SMELT_TICKS then
+      mock.state(entity).smelt, mock.state(entity).result, entity.products_finished = nil, mock.state(entity).result + 1, entity.products_finished + 1
     end
   end
   return entity
@@ -181,26 +181,25 @@ end
 local function inserter(x, y, pickup, drop, options)
   options = options or {}
   local half_swing = options.half_swing or HALF_SWING
-  local entity = add({ name = "burner-inserter", type = "inserter", position = { x = x, y = y },
-    status = RAW.waiting_for_source_items, pickup_target = pickup, drop_target = drop, _timer = 0,
-    _hand = options.hand, _phase = options.hand and "to_drop" or nil })
-  if options.hand then entity._timer = options.delay or half_swing end
+  local entity = add(mock.entity({ name = "burner-inserter", type = "inserter", position = { x = x, y = y },
+    status = RAW.waiting_for_source_items, pickup_target = pickup, drop_target = drop }, { timer = 0, hand = options.hand, phase = options.hand and "to_drop" or nil }))
+  if options.hand then mock.state(entity).timer = options.delay or half_swing end
   entity.held_stack = { valid_for_read = false }
-  entity._step = function(elapsed)
+  mock.state(entity).step = function(elapsed)
     if options.dead_at and elapsed and elapsed >= options.dead_at then entity.status = options.dead_status or RAW.no_fuel; return end
-    if entity._timer > 0 then
-      entity._timer, entity.status = entity._timer - 1, RAW.working
-    elseif entity._hand then
-      if accepts(drop, entity._hand) then
-        deliver(drop, entity._hand)
-        entity._hand, entity._timer, entity.status = nil, half_swing, RAW.working
+    if mock.state(entity).timer > 0 then
+      mock.state(entity).timer, entity.status = mock.state(entity).timer - 1, RAW.working
+    elseif mock.state(entity).hand then
+      if accepts(drop, mock.state(entity).hand) then
+        deliver(drop, mock.state(entity).hand)
+        mock.state(entity).hand, mock.state(entity).timer, entity.status = nil, half_swing, RAW.working
       else entity.status = RAW.waiting_for_space_in_destination end
     else
       local item = take(pickup, function(name) return can_ever(drop, name) and (not options.lazy or accepts(drop, name)) end)
-      if item then entity._hand, entity._timer, entity.status = item, half_swing, RAW.working
+      if item then mock.state(entity).hand, mock.state(entity).timer, entity.status = item, half_swing, RAW.working
       else entity.status = RAW.waiting_for_source_items end
     end
-    entity.held_stack = entity._hand and { valid_for_read = true, name = entity._hand, quality = { name = "normal" }, count = 1 }
+    entity.held_stack = mock.state(entity).hand and { valid_for_read = true, name = mock.state(entity).hand, quality = { name = "normal" }, count = 1 }
       or { valid_for_read = false }
   end
   return entity
@@ -208,7 +207,7 @@ end
 
 local function step_world(elapsed)
   if frozen then return end
-  for _, entity in ipairs(entities) do if entity._step then entity._step(elapsed) end end
+  for _, entity in ipairs(entities) do if mock.state(entity).step then mock.state(entity).step(elapsed) end end
 end
 local function warm(ticks) for _ = 1, ticks do game.tick = game.tick + 1; step_world() end end
 local function reset() entities, frozen, storage = {}, false, {} end
@@ -263,7 +262,7 @@ local smelter = furnace(6, 1, 5, COAL)
 local iron = drill(2, 1, "iron-ore", smelter, 5, COAL)
 inserter(9, 1, smelter, plates)
 local fuel_chest = chest(4, 6)
-fuel_chest._stock.coal = 20
+mock.state(fuel_chest).stock.coal = 20
 local coal = drill(1, 6, "coal", fuel_chest, 5, COAL)
 inserter(2, 4, fuel_chest, iron); inserter(6, 4, fuel_chest, smelter); inserter(2, 7, fuel_chest, coal)
 warm(600)
@@ -276,9 +275,9 @@ check(idle_samples > 600 and gap_plan.status == "completed" and gap.proven
   "an idle furnace between ore arrivals keeps its previous recipe identity through a 120 s window")
 check(type(smelter.previous_recipe.name) == "userdata", "the fixture furnace reports its previous recipe as a userdata prototype")
 local string_furnace = furnace(20, 1, 5, COAL, "string")
-string_furnace._source = 1; string_furnace._step(); string_furnace._smelt = nil; string_furnace._source = 0
+mock.state(string_furnace).source = 1; mock.state(string_furnace).step(); mock.state(string_furnace).smelt = nil; mock.state(string_furnace).source = 0
 local table_furnace = furnace(22, 1, 5, COAL, "table")
-table_furnace._source = 1; table_furnace._step(); table_furnace._smelt = nil; table_furnace._source = 0
+mock.state(table_furnace).source = 1; mock.state(table_furnace).step(); mock.state(table_furnace).smelt = nil; mock.state(table_furnace).source = 0
 local fresh_furnace = furnace(24, 1, 5, COAL)
 local recipes = {}
 for _, node in ipairs(map.map_summary({}).factory.material_flow.nodes) do
@@ -365,12 +364,12 @@ do
   for _, stash_lazy in ipairs({ true, false }) do
     local stash_box, stash_source, stash_dead = self_fed(5, COAL, { dead_at = 1, dead_status = RAW.waiting_for_source_items })
     local stash = chest(1, 4)
-    stash._stock.coal = 200
+    mock.state(stash).stock.coal = 200
     inserter(2, 3, stash, stash_source, { lazy = stash_lazy })
     warm(305)
     plan, outcome = validate(stash_box.position, 60)
     check(plan.status == "failed" and not outcome.proven and rows_at(outcome, stash_dead).transport_starved_before_end
-      and stash_source._fuel >= 4,
+      and mock.state(stash_source).fuel >= 4,
       (stash_lazy and "a lazy" or "an eager") .. " hand-stocked fuel stash cannot excuse a dead self-fed return")
   end
 end
@@ -381,7 +380,7 @@ local loop_state = component_state()
 check(loop_plan.status == "completed" and loop.proven and loop.downstream_kind == "buffer"
   and loop.source_cycles_observed >= 3 and loop_state.autonomous_end_to_end,
   "a self-fuelling coal drill whose chest also feeds its fuel return is a ready, validated terminal buffer loop")
-box._capacity = stock_total(box)
+mock.state(box).capacity = stock_total(box)
 local full_state = component_state()
 check(full_state.blocked_output and table.concat(full_state.autonomy_blockers, ","):match("blocked_output"),
   "the self-fuelling loop's full terminal chest is blocked output, not backpressure")
@@ -408,7 +407,7 @@ check(rerun_plan.status == "completed" and rerun.proven,
 local loaded_box, loaded_source, loaded_return = self_fed(7, COAL)
 warm(5)
 local loaded_plan, loaded = validate(loaded_box.position, 60)
-check(loaded_plan.status == "completed" and loaded.proven and loaded_source._fuel == 5 and loaded_return._hand == "coal",
+check(loaded_plan.status == "completed" and loaded.proven and mock.state(loaded_source).fuel == 5 and mock.state(loaded_return).hand == "coal",
   "a loaded return waiting at a working burner above its top-up stock counts as exercised")
 
 -- A lazy return inserter answers a draw a swing later. A draw 30 ticks before
@@ -416,11 +415,11 @@ check(loaded_plan.status == "completed" and loaded.proven and loaded_source._fue
 box, source = self_fed(5, DRILL_POWER * 3570, { lazy = true })
 local late_plan, late = validate(box.position, 60)
 check(late_plan.status == "failed" and not reasons(late):match("fuel_replenishment_not_observed")
-  and rows_at(late, source).fuel_return_not_yet_exercised ~= nil and source._fuel == 4,
+  and rows_at(late, source).fuel_return_not_yet_exercised ~= nil and mock.state(source).fuel == 4,
   "an unrefilled draw younger than the grace at window end is not a missing refill")
 box, source = self_fed(5, DRILL_POWER * 1970, { lazy = true })
 local again_plan, again = validate(box.position, 60)
-check(again_plan.status == "completed" and again.proven and source._fuel == 4,
+check(again_plan.status == "completed" and again.proven and mock.state(source).fuel == 4,
   "an earlier answered draw proves the return while the last draw is still in flight")
 
 -- Demand-limited fuel source: the coal drill feeds only the iron drill's and
@@ -455,7 +454,7 @@ local function two_producers(furnace_fuel_dead, feed_dead_at)
   inserter(6, 1, ore_tail, smelt, { dead_at = feed_dead_at })
   inserter(11, 1, smelt, out)
   local coal_box = chest(4, 8)
-  coal_box._stock.coal = 20
+  mock.state(coal_box).stock.coal = 20
   local coal_drill = drill(1, 8, "coal", coal_box, 5, COAL)
   inserter(2, 4, coal_box, ore); inserter(8, 4, coal_box, smelt, { dead_at = furnace_fuel_dead and 0 or nil })
   inserter(3, 9, coal_box, coal_drill)
@@ -464,7 +463,7 @@ local function two_producers(furnace_fuel_dead, feed_dead_at)
   return out, smelt, ore
 end
 local out, smelt = two_producers(true, nil)
-smelt._fuel, smelt.burner.remaining_burning_fuel = 0, FURNACE_POWER * 1250
+mock.state(smelt).fuel, smelt.burner.remaining_burning_fuel = 0, FURNACE_POWER * 1250
 local dry_plan, dry = validate(out.position, 60)
 local dry_rows = rows_at(dry, smelt)
 check(dry_plan.status == "failed" and not dry.proven and dry_rows["persistent_nonproductive_status:no_fuel"]
@@ -537,7 +536,7 @@ end
 local supplied_box, supplied_coal = shared_fuel_belt(2, COAL / 10)
 warm(600)
 local supplied_plan, supplied = validate(supplied_box.position, 60)
-check(supplied_plan.status == "completed" and supplied.proven and supplied_coal._fuel < TOP_UP,
+check(supplied_plan.status == "completed" and supplied.proven and mock.state(supplied_coal).fuel < TOP_UP,
   "a supply-limited return refilling a still-demanding burner once per mining period is not starved")
 -- The same return stopping after it has shown its supply interval is starved.
 supplied_box, supplied_coal = shared_fuel_belt(2, COAL / 10, { dead_at = 1200 })
@@ -582,7 +581,7 @@ end
 local slow_box, slow_coal = fuel_only_belt(10)
 warm(3000)
 local slow_plan, slow = validate(slow_box.position, 300)
-check(slow_plan.status == "completed" and slow.proven and slow_coal._fuel >= TOP_UP,
+check(slow_plan.status == "completed" and slow.proven and mock.state(slow_coal).fuel >= TOP_UP,
   "a demand-limited source above its top-up stock with a loaded waiting return proves in one window")
 
 -- FP1: a coal drill's genuine return loop through terminal chest T, and an
@@ -598,7 +597,7 @@ local function intermediate_fuel(feed_dead_at, feed_first)
   local head, tail = belt_line(1, 8, 60, 8)
   local coal_drill = drill(1, 10, "coal", head, 3, COAL)
   local terminal, fuel_box = chest(3, 10), chest(6, 6)
-  fuel_box._stock.coal = 20
+  mock.state(fuel_box).stock.coal = 20
   local feed = feed_first and inserter(5, 7, tail, fuel_box, { dead_at = feed_dead_at }) or nil
   inserter(3, 9, tail, terminal); inserter(2, 11, terminal, coal_drill)
   feed = feed or inserter(5, 7, tail, fuel_box, { dead_at = feed_dead_at })
@@ -611,7 +610,7 @@ for _, feed_dead in ipairs({ true, false }) do
   local fp_plan, fp = validate(fp_box.position, 60)
   local draining = rows_at(fp, fp_fuel).intermediate_buffer_draining
   check(fp_plan.status == "failed" and not fp.proven and draining and draining.class == "throughput"
-    and fp.products_finished_delta >= 3 and fp_fuel._stock.coal < 20,
+    and fp.products_finished_delta >= 3 and mock.state(fp_fuel).stock.coal < 20,
     "an intermediate fuel chest draining starter coal with " .. (feed_dead and "a dead feed" or "a starved takeoff")
       .. " is not autonomous although output rose")
 end
@@ -628,7 +627,7 @@ local function intermediate_ore(feed_dead)
   local ore = drill(1, 12, "iron-ore", ore_head, 3, COAL)
   if feed_dead then inserter(3, 15, ore_tail, chest(3, 16)) end
   local ore_box = chest(8, 12)
-  ore_box._stock["iron-ore"] = 40
+  mock.state(ore_box).stock["iron-ore"] = 40
   inserter(5, 15, ore_tail, ore_box, { dead_at = feed_dead and 0 or nil })
   inserter(8, 3, ore_box, smelt)
   local head, tail = belt_line(1, 8, 60, 8)
@@ -645,7 +644,7 @@ check(fp2_plan.status == "failed" and not fp2.proven and rows_at(fp2, ore_buffer
 ore_out, ore_buffer = intermediate_ore(false)
 warm(600)
 fp2_plan, fp2 = validate(ore_out.position, 60)
-check(fp2_plan.status == "completed" and fp2.proven and ore_buffer._stock["iron-ore"] < 40,
+check(fp2_plan.status == "completed" and fp2.proven and mock.state(ore_buffer).stock["iron-ore"] < 40,
   "an intermediate chest that falls while its live feed keeps adding is a fed stage")
 
 -- Layout (b) with lazy returns that fetch only below the top-up stock, and
@@ -677,10 +676,10 @@ check(shared_plan.status == "completed" and shared.proven and not reasons(shared
 local late_box, late_coal, late_smelt = lazy_fuel_belt(10, COAL, true)
 warm(317)
 local first_plan, first = validate(late_box.position, 60, function(elapsed)
-  if elapsed == 1 then late_smelt.burner.remaining_burning_fuel, late_smelt._fuel = FURNACE_POWER * 2700, 5 end
+  if elapsed == 1 then late_smelt.burner.remaining_burning_fuel, mock.state(late_smelt).fuel = FURNACE_POWER * 2700, 5 end
 end)
 local in_flight = rows_at(first, late_smelt).fuel_return_not_yet_exercised
-check(first_plan.status == "failed" and late_smelt._fuel == 4 and in_flight and in_flight.class == "evidence"
+check(first_plan.status == "failed" and mock.state(late_smelt).fuel == 4 and in_flight and in_flight.class == "evidence"
   and not reasons(first):match("fuel_replenishment_not_observed") and not reasons(first):match("transport_starved"),
   "a first draw younger than one shared supply period is in flight evidence, not a starved return")
 
@@ -706,7 +705,7 @@ local function packet_furnace(feed_options)
   reset()
   local product_box = chest(14, 1)
   local smelt = furnace(8, 1, 5, COAL)
-  smelt._source = 30
+  mock.state(smelt).source = 30
   inserter(11, 1, smelt, product_box)
   local ore_head, ore_tail = belt_line(2, 3, 30, 60)
   local ore = drill(1, 1, "iron-ore", ore_head, 5, COAL)
@@ -741,7 +740,7 @@ local function two_feeds(dead_at, via_chest, a_capacity)
   local b = drill(1, 1, "iron-ore", b_head, 5, COAL)
   inserter(6, 2, b_tail, smelt)
   local coal_box = chest(4, 8)
-  coal_box._stock.coal = 20
+  mock.state(coal_box).stock.coal = 20
   local coal_drill = drill(1, 8, "coal", coal_box, 5, COAL)
   inserter(2, -6, coal_box, a); inserter(2, 0, coal_box, b); inserter(8, 4, coal_box, smelt); inserter(3, 9, coal_box, coal_drill)
   return product_box, a, a_feed, stage
@@ -818,7 +817,7 @@ do
   -- FP1d: the stage chest starts with ore, so one outflow is sampled before
   -- its takeoff loses power; afterwards it only fills.
   local fp1d_box, _, fp1d_feed, fp1d_stage = two_feeds(420, true)
-  fp1d_stage._stock["iron-ore"] = 10
+  mock.state(fp1d_stage).stock["iron-ore"] = 10
   warm(600)
   local fp1d_plan, fp1d = validate(fp1d_box.position, 60)
   check(fp1d_plan.status == "failed" and not fp1d.proven and rows_at(fp1d, fp1d_feed)["persistent_nonproductive_status:no_power"]
@@ -835,11 +834,11 @@ do
     local smelt = furnace(8, 1, 5, COAL)
     inserter(5, 4, ore_tail, smelt)
     local out_head, out_tail = belt_line(10, 1, 30, 80)
-    for _ = 1, 70 do out_head._line.items[#out_head._line.items + 1] = { name = "iron-plate", arrival = 0 } end
+    for _ = 1, 70 do mock.state(out_head).line.items[#mock.state(out_head).line.items + 1] = { name = "iron-plate", arrival = 0 } end
     local i2 = inserter(9, 1, smelt, out_head, { dead_at = i2_dead_at, dead_status = RAW.no_power })
     local i3 = inserter(13, 1, out_tail, product_box, { dead_at = i3_dead_at, dead_status = RAW.no_power })
     local coal_box = chest(4, 8)
-    coal_box._stock.coal = 20
+    mock.state(coal_box).stock.coal = 20
     local coal_drill = drill(1, 8, "coal", coal_box, 5, COAL)
     inserter(1, 3, coal_box, ore); inserter(2, 3, coal_box, smelt); inserter(3, 9, coal_box, coal_drill)
     warm(600)
@@ -858,7 +857,7 @@ do
   local wait_box, wait_source = self_fed(5, COAL, { lazy = true })
   warm(300)
   local _, waiting = validate(wait_box.position, 60, function(elapsed)
-    if elapsed == 3300 then wait_source._fuel, wait_source.burner.remaining_burning_fuel, wait_box._stock.coal = 0, 0, 0 end
+    if elapsed == 3300 then mock.state(wait_source).fuel, wait_source.burner.remaining_burning_fuel, mock.state(wait_box).stock.coal = 0, 0, 0 end
   end)
   local wait_rows = rows_at(waiting, wait_source)
   check(wait_source.status == RAW.no_fuel and not wait_rows["persistent_nonproductive_status:no_fuel"]
@@ -879,7 +878,7 @@ do
   local fresh_iron = drill(2, 1, "iron-ore", fresh_smelt, 5, COAL)
   inserter(9, 1, fresh_smelt, fresh_box)
   local fresh_fuel = chest(4, 6)
-  fresh_fuel._stock.coal = 20
+  mock.state(fresh_fuel).stock.coal = 20
   local fresh_coal = drill(1, 6, "coal", fresh_fuel, 5, COAL)
   inserter(2, 4, fresh_fuel, fresh_iron); inserter(6, 4, fresh_fuel, fresh_smelt); inserter(2, 7, fresh_fuel, fresh_coal)
   local fresh_plan, fresh = validate(fresh_box.position, 60)
@@ -893,7 +892,7 @@ do
   local bare_smelt = furnace(6, 1, 5, COAL)
   inserter(9, 1, bare_smelt, bare_box)
   local bare_fuel = chest(4, 6)
-  bare_fuel._stock.coal = 20
+  mock.state(bare_fuel).stock.coal = 20
   local bare_coal = drill(1, 6, "coal", bare_fuel, 5, COAL)
   inserter(6, 4, bare_fuel, bare_smelt); inserter(2, 7, bare_fuel, bare_coal)
   local bare_plan, bare = validate(bare_box.position, 60)
@@ -946,7 +945,7 @@ local function surplus_first(iron_fuel, furnace_fuel)
   inserter(3, 21, tail, overflow)
   inserter(1, 21, overflow, coal_drill)
   local fuel_box = chest(6, 24)
-  fuel_box._stock.coal = 20
+  mock.state(fuel_box).stock.coal = 20
   local feeder = inserter(5, 21, tail, fuel_box)
   local out = chest(14, 26)
   local smelter = furnace(10, 26, furnace_fuel, COAL)
@@ -961,7 +960,7 @@ for _, case in ipairs({ { 17, 10, 300 }, { 8, 10, 60 }, { 17, 10, 300, true }, {
   local out, feeder = surplus_first(case[1], case[2])
   warm(600)
   local plan, outcome = validate(out.position, case[3], case[4] and function(elapsed)
-    if elapsed == 100 then feeder._hand, feeder._timer, feeder._phase = "coal", 38, "to_drop" end
+    if elapsed == 100 then mock.state(feeder).hand, mock.state(feeder).timer, mock.state(feeder).phase = "coal", 38, "to_drop" end
   end or nil)
   local starved = rows_at(outcome, feeder).transport_starved_before_end
   check(plan.status == "failed" and not outcome.proven and starved and starved.class == "throughput"
@@ -978,7 +977,7 @@ for _, pulse in ipairs({ 2270, 2350 }) do
   warm(600)
   local samples = {}
   local plan, outcome = validate(out.position, 60, function(elapsed)
-    if elapsed == pulse then feeder._hand, feeder._timer = "coal", HALF_SWING end
+    if elapsed == pulse then mock.state(feeder).hand, mock.state(feeder).timer = "coal", HALF_SWING end
   end, samples)
   local first_wait, last_active, waits = nil, nil, 0
   for _, sample in ipairs(samples) do
@@ -1022,7 +1021,7 @@ do
   local dead_out, dead_coal = lazy_fuel_belt(5, COAL, true)
   warm(600)
   local dead_plan, dead_result = validate(dead_out.position, 300, function(elapsed)
-    if elapsed == 1 then dead_coal.mining_target.amount, dead_coal._step = 0, function() dead_coal.status = RAW.no_fuel end end
+    if elapsed == 1 then dead_coal.mining_target.amount, mock.state(dead_coal).step = 0, function() dead_coal.status = RAW.no_fuel end end
   end)
   check(dead_plan.status == "failed" and not dead_result.proven,
     "a lazy fuel feeder whose coal source died is not proven")
@@ -1033,12 +1032,12 @@ end
 for _, target in ipairs({ "furnace", "coal drill" }) do
   local hand_out, hand_coal, hand_smelt = lazy_fuel_belt(5, COAL, true)
   local hand = chest(20, 20)
-  hand._stock.coal = 50
+  mock.state(hand).stock.coal = 50
   inserter(21, 20, hand, target == "furnace" and hand_smelt or hand_coal)
   warm(600)
   local hand_plan, hand_result = validate(hand_out.position, 120)
   local idle_return = target == "furnace" and { position = { x = 8, y = 5 } } or { position = { x = 2, y = 5 } }
-  check(hand_plan.status == "failed" and not hand_result.proven and hand._stock.coal < 50
+  check(hand_plan.status == "failed" and not hand_result.proven and mock.state(hand).stock.coal < 50
     and rows_at(hand_result, idle_return).transport_starved_before_end and not component_state().autonomous_end_to_end,
     "a hand-stocked fuel chest feeding the " .. target .. " cannot prove its idle belt fuel return")
 end
@@ -1072,8 +1071,8 @@ do
   local mined_out, mined_coal = lazy_fuel_belt(5, COAL, true)
   warm(600)
   -- The drill keeps mining; only the runtime read is nil after its step.
-  local mined_target, mined_step, flickering = mined_coal.mining_target, mined_coal._step, false
-  mined_coal._step = function(...)
+  local mined_target, mined_step, flickering = mined_coal.mining_target, mock.state(mined_coal).step, false
+  mock.state(mined_coal).step = function(...)
     mined_coal.mining_target = mined_target
     mined_step(...)
     if flickering then mined_coal.mining_target = nil end
@@ -1092,9 +1091,9 @@ do
     if elapsed == 1800 then
       local reads = 0
       flick.drop_target = nil
-      setmetatable(flick, { __index = function(_, key)
-        if key == "drop_target" then reads = reads + 1; return reads > 1 and flick_out or nil end
-      end })
+      mock.read(flick, "drop_target", function()
+        reads = reads + 1; return reads > 1 and flick_out or nil
+      end)
     end
   end)
   local recorded
@@ -1160,8 +1159,8 @@ end
 -- is still dead.
 local function underpowered_return(mode)
   local box, source, back = self_fed(5, COAL)
-  local swing = back._step
-  back._step = function(elapsed)
+  local swing = mock.state(back).step
+  mock.state(back).step = function(elapsed)
     if mode ~= "swinging" and elapsed and elapsed >= 600 then
       back.status = mode == "unpowered" and RAW.no_power or RAW.low_power
       return
@@ -1188,4 +1187,5 @@ local cut_plan, cut = validate(cut_box.position, 60)
 check(cut_plan.status == "failed" and not cut.proven and rows_at(cut, cut_back)["persistent_nonproductive_status:no_power"],
   "a fuel return with no power at all is still dead on its path")
 
+mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

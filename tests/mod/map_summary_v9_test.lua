@@ -105,6 +105,96 @@ check(aggregate.factory.evidence.entity_summary.evidence_class == "charted_remot
   and aggregate.factory.evidence.cached_or_previously_observed_facts.included == false,
   "aggregate labels charted, rolling, and absent cached evidence without exposing remote stock")
 
+-- Nominal mining capacity uses each currently evidenced resource, independently
+-- of achieved flow, status and the existing material-flow validation evidence.
+do
+  local original_find = surface.find_entities_filtered
+  local function drill(x, time, amount, status)
+    local target = mock.entity({ valid = true, name = "ore", type = "resource",
+      position = { x = x, y = 2 }, amount = 100,
+      prototype = { mineable_properties = { mining_time = time,
+        products = { { type = "item", name = "ore", amount = amount } } } } })
+    return mock.entity({ valid = true, name = "test-drill", type = "mining-drill",
+      position = { x = x, y = 2 }, force = force, status = status,
+      prototype = { mining_speed = 0.5 }, mining_target = target })
+  end
+  local first, second = drill(1, 1, 1, 1), drill(2, 2, 2, 2)
+  defines.entity_status.no_fuel = 2
+  local installed = { first }
+  surface.find_entities_filtered = function(filter)
+    if filter.type == "resource" then return {} end
+    return installed
+  end
+  local function group()
+    return require("scripts.map_summary").map_summary({ flow_items = { "ore" } }).factory.groups[1]
+  end
+  local one = group()
+  check(one.theoretical_items_per_minute == 30 and one.capacity_state == "complete"
+    and one.evidenced_drill_count == 1 and one.status_counts.no_power == 1,
+    "one idle installed drill has nominal capacity independent of status")
+  second.prototype.mining_speed = 1
+  installed = { second, first }
+  local many = group()
+  check(many.theoretical_items_per_minute == 90 and many.machine_count == 2
+    and many.status_counts.no_fuel == 1
+    and many.capacity_state == "complete" and many.evidenced_drill_count == 2
+    and many.capacity_basis == "nominal_prototype_mining_speed_times_item_yield_divided_by_current_resource_mining_time",
+    "mixed-resource-time drill group sums per-drill speed/time/item-yield capacities")
+  local measured = require("scripts.map_summary").map_summary({ flow_items = { "ore" } })
+  check(measured.factory.force_flows[1].input_rate == 2
+    and measured.factory.groups[1].theoretical_items_per_minute == 90,
+    "nominal installed capacity remains distinct from rolling force production")
+  second.mining_target = nil
+  local partial = group()
+  check(partial.capacity_state == "incomplete" and partial.evidenced_drill_count == 1
+    and partial.theoretical_items_per_minute == nil,
+    "missing target cannot turn a partial group into a complete total")
+  installed = { first }
+  local target, mining = first.mining_target, first.mining_target.prototype.mineable_properties
+  local cases = {
+    { "missing target", function() first.mining_target = nil end },
+    { "uncharted target", function() target.position = { x = 33, y = 2 } end },
+    { "invalid target", function() target.valid = false end },
+    { "zero mining time", function() mining.mining_time = 0 end },
+    { "missing mining time", function() mining.mining_time = nil end },
+    { "NaN mining time", function() mining.mining_time = 0/0 end },
+    { "negative speed", function() first.prototype.mining_speed = -1 end },
+    { "missing speed", function() first.prototype.mining_speed = nil end },
+    { "nonfinite speed", function() first.prototype.mining_speed = math.huge end },
+    { "missing yield", function() mining.products[1].amount = nil end },
+    { "zero yield", function() mining.products[1].amount = 0 end },
+    { "nonfinite yield", function() mining.products[1].amount = math.huge end },
+    { "empty products", function() mining.products = {} end },
+    { "variable yield", function() mining.products[1] = { name = "ore", type = "item", amount_min = 1, amount_max = 2 } end },
+    { "probabilistic yield", function() mining.products[1].probability = 0.5 end },
+    { "fluid product", function() mining.products[1].type = "fluid" end },
+  }
+  for _, case in ipairs(cases) do
+    first.mining_target, target.valid, target.position = target, true, { x = 1, y = 2 }
+    first.prototype.mining_speed, mining.mining_time = 0.5, 1
+    mining.products = { { name = "ore", type = "item", amount = 1 } }
+    case[2]()
+    local missing = group()
+    check(missing.capacity_state == "unavailable" and missing.evidenced_drill_count == 0
+      and missing.theoretical_items_per_minute == nil, case[1] .. " leaves mining capacity explicitly unavailable")
+  end
+  first.mining_target, mining.mining_time = target, 1
+  first.prototype.mining_speed = 0.5
+  mining.products = { { name = "ore", type = "item", amount_min = 2, amount_max = 2, probability = 1 },
+    { name = "stone", type = "item", amount = 1 } }
+  check(group().theoretical_items_per_minute == 90, "fixed item yields are summed including equal minimum/maximum amounts")
+  mock.unreadable(first, "prototype")
+  check(group().capacity_state == "unavailable", "unreadable drill prototype leaves nominal capacity unavailable")
+  mock.unreadable(first, "prototype", false)
+  installed = { machine }
+  local crafting = group()
+  check(crafting.theoretical_items_per_minute == nil and crafting.capacity_state == nil
+    and crafting.theoretical_crafts_per_second == 2,
+    "non-drill groups retain crafting capacity without mining labels")
+  surface.find_entities_filtered = original_find
+  defines.entity_status.no_fuel = nil
+end
+
 local dense = {}
 for i = 1, 70 do
   dense[i] = mock.entity({ valid = true, name = string.format("machine-%02d", i), type = "assembling-machine",

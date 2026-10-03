@@ -233,7 +233,23 @@ travel, and buffer-aware packets over exact next-task quantities. Growth is
 input first: raw extraction, smelting, fuel and power stay ahead of demand,
 progress is judged first by input rate (ore and plates per minute), and science
 is never hand-crafted to push research while raw input is the bottleneck. This
-is a principle, not a build or technology order. Exactly one
+is a principle, not a build or technology order. In `map_summary`, use
+`factory.force_flows[].produced_per_minute` and `consumed_per_minute` for
+achieved rolling throughput: Factorio production statistics call production
+`input_rate` and consumption `output_rate`; the aliases preserve those values
+and their precision window. Mining groups' `theoretical_items_per_minute` is
+installed nominal capacity, summed per drill as
+`60 * prototype mining speed / current resource mining time * item yield`.
+It excludes speed and productivity bonuses and ignores idle, fuel-starved or
+output-blocked duty time. Only deterministic positive item yields are supported
+(fixed amounts, including equal minimum/maximum amounts, with probability one).
+Fluid extraction, variable yields and missing or invalid target facts leave
+capacity unavailable; a group with only some evidenced drills is incomplete
+and has no total. Read `capacity_state` and `evidenced_drill_count` alongside
+`capacity_basis`. A complete group total divided by its drill count is an
+average per-drill estimate; mixed resources can have different individual
+capacities. Theoretical capacity never proves achieved throughput or autonomy.
+Exactly one
 physical call may be in flight; only read-only snapshots may overlap when their
 tick inconsistency is acceptable.
 

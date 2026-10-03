@@ -51,6 +51,22 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(output.structuredContent.factory.omissions).toEqual(value.factory.omissions);
     expect(output.structuredContent.factory.character_transfers.validations[0]).toEqual(components[1].state.validation);
   });
+  it("exposes flow aliases and nominal drill capacity through registered text and structure", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const group = { entity: "drill", type: "mining-drill", machine_count: 2,
+      theoretical_items_per_minute: 90, capacity_state: "complete", evidenced_drill_count: 2,
+      capacity_basis: "nominal_prototype_mining_speed_times_item_yield_divided_by_current_resource_mining_time" };
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call: vi.fn(async () => ({ tick: 42, summary: "factory tick 42", factory: {
+        groups: [group], force_flows: [{ type: "item", name: "ore", input_rate: 0, output_rate: 3 }],
+      } })) } as unknown as Bridge), validConfig);
+    const output = await handlers.map_summary({});
+    expect(output.structuredContent.factory.groups).toEqual([group]);
+    expect(output.structuredContent.factory.force_flows[0]).toMatchObject({ produced_per_minute: 0, consumed_per_minute: 3 });
+    expect(output.content[0].text).toContain("produced_per_minute=0, consumed_per_minute=3");
+    expect(output.content[0].text).toContain("theoretical_items_per_minute=90 (complete)");
+  });
+
   it("maps every coordinate action to the retained Lua DTO", () => {
     expect(toolPayloads.target({ x: 1, y: 2 })).toEqual({ target: { x: 1, y: 2 }, arrival_mode: "exact", arrival_radius: 1 });
     expect(toolPayloads.target({ x: 1, y: 2, arrival_mode: "vicinity", arrival_radius: 4 })).toEqual({

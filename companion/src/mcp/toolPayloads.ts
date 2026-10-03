@@ -94,15 +94,28 @@ export function normalizeMapSummary(value: any): any {
   const factory = value.factory && typeof value.factory === "object" ? value.factory : undefined;
   const materialFlow = factory?.material_flow && typeof factory.material_flow === "object" ? factory.material_flow : undefined;
   const transfers = factory?.character_transfers && typeof factory.character_transfers === "object" ? factory.character_transfers : undefined;
+  const flows = luaArray(factory?.force_flows);
+  const normalizedFlows = Array.isArray(flows) ? flows.map((row: any) => ({
+    ...row,
+    ...(typeof row?.input_rate === "number" && Number.isFinite(row.input_rate)
+      ? { produced_per_minute: row.input_rate } : {}),
+    ...(typeof row?.output_rate === "number" && Number.isFinite(row.output_rate)
+      ? { consumed_per_minute: row.output_rate } : {}),
+  })) : flows;
+  const sampleFlow = Array.isArray(normalizedFlows) ? normalizedFlows[0] : undefined;
+  const drill = Array.isArray(factory?.groups) ? factory.groups.find((group: any) => group?.type === "mining-drill") : undefined;
+  const rateSummary = sampleFlow ? `; sample ${sampleFlow.type} ${sampleFlow.name}: produced_per_minute=${sampleFlow.produced_per_minute ?? "unavailable"}, consumed_per_minute=${sampleFlow.consumed_per_minute ?? "unavailable"}` : "";
+  const capacitySummary = drill ? `; sample ${drill.entity}: theoretical_items_per_minute=${drill.theoretical_items_per_minute ?? "unavailable"} (${drill.capacity_state})` : "";
   return {
     ...value,
     resources: luaArray(value.resources),
     water_edges: luaArray(value.water_edges),
     factory_landmarks: luaArray(value.factory_landmarks),
+    ...(factory && (rateSummary || capacitySummary) ? { summary: `${value.summary ?? "factory summary"}${rateSummary}${capacitySummary}` } : {}),
     ...(factory ? { factory: {
       ...factory,
       groups: luaArray(factory.groups),
-      force_flows: luaArray(factory.force_flows),
+      force_flows: normalizedFlows,
       ...(materialFlow ? { material_flow: { ...materialFlow,
         nodes: luaArray(materialFlow.nodes), edges: luaArray(materialFlow.edges),
         components: luaArray(materialFlow.components), diagnostics: luaArray(materialFlow.diagnostics),

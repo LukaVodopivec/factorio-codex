@@ -157,6 +157,21 @@ describe("protocol v22 DTO and tool registry", () => {
     expect(toolPayloads.productionRequirements({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } })).toEqual({ targets: { gear: 2, pipe: 3 }, recipe_choices: { pipe: "pipe" } });
   });
 
+  it("aliases measured production and consumption without inventing missing rates", () => {
+    const rows = [
+      { type: "item", name: "ore", input_rate: 2.125, output_rate: 3.5, precision: "one_minute", window_ticks: 3600, units: "units_per_minute", source: "force_flow_statistics" },
+      { type: "fluid", name: "water", input_rate: 0, output_rate: 0 },
+      { type: "item", name: "missing" },
+      { type: "item", name: "invalid", input_rate: NaN, output_rate: Infinity },
+    ];
+    const normalized = normalizeMapSummary({ factory: { force_flows: rows } }).factory.force_flows;
+    expect(normalized).toEqual([
+      { ...rows[0], produced_per_minute: 2.125, consumed_per_minute: 3.5 },
+      { ...rows[1], produced_per_minute: 0, consumed_per_minute: 0 }, rows[2], rows[3],
+    ]);
+    expect(rows[0]).not.toHaveProperty("produced_per_minute");
+  });
+
   it("normalizes Lua empty tables at every array boundary", () => {
     expect(normalizePlacementSearch({ rejected_no_compatible_resource: 5, candidates: {} }))
       .toEqual({ rejected_no_compatible_resource: 5, candidates: [] });

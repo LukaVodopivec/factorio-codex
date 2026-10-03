@@ -248,6 +248,32 @@ local function products_with_fuel(products)
   return products or {}
 end
 
+-- Installed nominal capacity, independent of duty/status and bonuses. Unlike
+-- validation's retained product identity, this requires a current charted target.
+local function nominal_mining_capacity(entity, force, surface)
+  local ok, rate = pcall(function()
+    local target = entity.mining_target
+    if not entity_key(target) or not charted(force, surface, target.position) then return nil end
+    local mining = target.prototype.mineable_properties
+    local speed, time = entity.prototype.mining_speed, mining.mining_time
+    if type(speed) ~= "number" or speed <= 0 or speed >= math.huge
+      or type(time) ~= "number" or time <= 0 or time >= math.huge then return nil end
+    local yield, count = 0, 0
+    for _, product in pairs(mining.products) do
+      if product.type ~= "item" or type(product.name) ~= "string"
+        or (product.probability ~= nil and product.probability ~= 1) then return nil end
+      local amount = product.amount
+      if amount == nil and product.amount_min == product.amount_max then amount = product.amount_min end
+      if type(amount) ~= "number" or amount <= 0 or amount >= math.huge then return nil end
+      yield, count = yield + amount, count + 1
+    end
+    if count == 0 then return nil end
+    local result = 60 * speed / time * yield
+    if result > 0 and result < math.huge then return result end
+  end)
+  return ok and rate or nil
+end
+
 local function has_burner(entity)
   local ok, burner = pcall(function() return entity.burner end)
   return ok and burner ~= nil
@@ -1528,6 +1554,11 @@ local function collect_summary(params, internal, drill_products)
               groups_by_key[group_key] = group
             end
             group.machine_count = group.machine_count + 1
+            if entity.type == "mining-drill" then
+              local capacity = nominal_mining_capacity(entity, c.force, c.surface)
+              group._mining_capacity = (group._mining_capacity or 0) + (capacity or 0)
+              group.evidenced_drill_count = (group.evidenced_drill_count or 0) + (capacity and 1 or 0)
+            end
             local bucket = normalize_status(raw_status)
             group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
             local speed = number_property(entity, "crafting_speed") or 0
@@ -1591,6 +1622,13 @@ local function collect_summary(params, internal, drill_products)
       group.capacity_basis = "summed_current_crafting_speed_divided_by_recipe_energy"
     end
     group._recipe_energy = nil
+    if group.type == "mining-drill" then
+      group.capacity_basis = "nominal_prototype_mining_speed_times_item_yield_divided_by_current_resource_mining_time"
+      group.capacity_state = group.evidenced_drill_count == group.machine_count and "complete"
+        or group.evidenced_drill_count > 0 and "incomplete" or "unavailable"
+      if group.capacity_state == "complete" then group.theoretical_items_per_minute = group._mining_capacity end
+      group._mining_capacity = nil
+    end
   end
   omissions.capped_groups = cap_rows(groups, MAX_FACTORY_GROUPS)
   local flows = read_force_flows(c.force, c.surface, flow_candidates, precision_name, omissions)

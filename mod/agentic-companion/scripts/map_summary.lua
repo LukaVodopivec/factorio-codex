@@ -358,14 +358,13 @@ local function fluid_facts(node)
       node._generator = { default_temperature = fluid.default_temperature, heat_capacity = fluid.heat_capacity,
         effectivity = proto.effectivity, maximum_temperature = proto.maximum_temperature }
     elseif node.type == "pump" then
-      if #boxes ~= 2 then error("unsupported pump boxes") end
-      local input, output
-      for _, box in ipairs(boxes) do
-        if box.production_type == "input" then input = box end
-        if box.production_type == "output" then output = box end
-      end
-      if not input or not output then error("unsupported pump direction") end
-      node._fluid_input, node._fluid_output = input.index, output.index
+      -- A 2.0 pump has one box carrying both its input and output
+      -- connections (their flow_direction orients its edges), outside any
+      -- segment, so the join below puts both neighbouring pools in one
+      -- domain where its draw and feed cancel. A pump box inside a segment
+      -- would hide its transfer between pools and is refused.
+      if #boxes ~= 1 or boxes[1].segment ~= nil then error("unsupported pump box") end
+      node._fluid_input, node._fluid_output = 1, 1
     elseif #boxes ~= 1 then error("unsupported multiple transport boxes") end
   end)
   node._fluid_supported = ok
@@ -388,6 +387,28 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
   for index, node in ipairs(nodes) do
     node.id = "node-" .. index
     retained[node._key] = node
+  end
+  -- Fluid pools: a segment, or one box outside any segment (its own stock).
+  -- Natively get_capacity is one box's capacity, so a segment's capacity sums
+  -- its sampled member boxes; an unsampled member only makes it look fuller.
+  -- A proven pipe connection touching an out-of-segment box joins the two
+  -- pools into one mass-balance domain (a boiler output and the steam
+  -- segment it fills); the domain key is its smallest member pool.
+  local segment_capacity, pool_parent = {}, {}
+  for _, node in ipairs(nodes) do
+    for _, box in ipairs(node._fluid_boxes or {}) do
+      box.pool = box.segment or node._key .. "#" .. box.index
+      if box.segment then segment_capacity[box.segment] = (segment_capacity[box.segment] or 0) + box.capacity end
+    end
+  end
+  local function pool_domain(pool)
+    while pool_parent[pool] do pool = pool_parent[pool] end
+    return pool
+  end
+  local function join_pools(a, b)
+    a, b = pool_domain(a), pool_domain(b)
+    if a == b then return end
+    if tostring(a) < tostring(b) then pool_parent[b] = a else pool_parent[a] = b end
   end
   local edges, seen_edges, diagnostics = {}, {}, {}
   -- The one charted flow node of the drill's force whose collision box holds
@@ -501,7 +522,9 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
             local other = retained[entity_key(target)]
             local source_box = node._fluid_boxes and node._fluid_boxes[connection.fluidbox_index]
             local target_box = other and other._fluid_boxes and other._fluid_boxes[connection._target_fluidbox_index]
-            if not other or other._entity ~= target or target.surface ~= entity.surface or not target_box or not source_box then
+            local proven = other and other._entity == target and target.surface == entity.surface and target_box and source_box
+            if proven and not (source_box.segment and target_box.segment) then join_pools(source_box.pool, target_box.pool) end
+            if not proven then
               diagnostic(node, "fluid_connected_target_unproven", "unsupported")
             elseif connection.flow_direction == "output" or connection.flow_direction == "input-output" then
               local name = source_box.filter or source_box.name or target_box.filter or target_box.name
@@ -529,52 +552,27 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       if node.status == "insufficient_input" then diagnostic(node, "missing_or_mismatched_input", "status_only", status_class(node)) end
     end
   end
-  -- Keep the box's own native absence intact. Accounting may instead read a
-  -- segment on its exact directed downstream connection, never an invented ID
-  -- or stock inferred from products. Conflicting/unreadable targets refuse it.
+  -- A segment's stock is its native contents (every member box included); an
+  -- out-of-segment box's stock is its own buffer, never an invented segment.
+  -- get_fluid_segment_contents is documented as uint32, so a domain's amount
+  -- is trusted to one unit per member segment (at least one): its rounding
+  -- allowance. 2.0.77 returns float32-precise fractions; the allowance guards
+  -- the documented contract and is conservative there.
+  local domain_amount, domain_segments, counted = {}, {}, {}
   for _, node in ipairs(nodes) do
-    node._fluid_segments = {}
-    for index, box in ipairs(node._fluid_boxes or {}) do
-      local evidence = box.segment and box or nil
-      if not evidence and box.production_type == "output" and node._fluid_connections_complete then
-        local ambiguous = false
-        for _, connection in ipairs(node._fluid_connections or {}) do
-          if connection.fluidbox_index == index and connection._target_entity
-            and (connection.flow_direction == "output" or connection.flow_direction == "input-output") then
-            local target = retained[entity_key(connection._target_entity)]
-            local downstream = target and target._entity == connection._target_entity
-              and target._entity.surface == node._entity.surface and target._fluid_supported
-              and target._fluid_boxes and target._fluid_boxes[connection._target_fluidbox_index]
-            if not downstream or not downstream.segment or not target._fluid_connections_complete
-              or evidence and (evidence.segment ~= downstream.segment
-                or evidence.segment_name ~= downstream.segment_name or evidence.segment_amount ~= downstream.segment_amount) then
-              ambiguous = true
-            else evidence = downstream end
-          end
-        end
-        if ambiguous then evidence = nil end
+    for _, box in ipairs(node._fluid_boxes or {}) do
+      box.domain = pool_domain(box.pool)
+      box.segment_capacity = box.segment and segment_capacity[box.segment] or box.capacity
+      if not counted[box.pool] then
+        counted[box.pool] = true
+        domain_amount[box.domain] = (domain_amount[box.domain] or 0) + (box.segment and box.segment_amount or box.amount)
+        if box.segment then domain_segments[box.domain] = (domain_segments[box.domain] or 0) + 1 end
       end
-      node._fluid_segments[index] = evidence
-      -- Generator input buffers report their own capacity even when their
-      -- segment ID/contents refer to the larger connected pipe segment.
-      -- Compare segment stock only with native capacity of that exact segment.
-      if node.type == "generator" and evidence then
-        local capacity
-        for _, connection in ipairs(node._fluid_connections or {}) do
-          if connection.fluidbox_index == index and connection._target_entity
-            and (connection.flow_direction == "input" or connection.flow_direction == "input-output") then
-            local target = retained[entity_key(connection._target_entity)]
-            local peer = target and target._entity == connection._target_entity and target._fluid_supported
-              and target._entity.surface == node._entity.surface and target._fluid_connections_complete
-              and target._fluid_boxes[connection._target_fluidbox_index]
-            if peer and peer.production_type == "none" and peer.segment == evidence.segment then
-              if capacity and capacity ~= peer.capacity then capacity = false; break end
-              capacity = peer.capacity
-            end
-          end
-        end
-        node._generator_segment_capacity = capacity == nil and evidence.capacity or capacity
-      end
+    end
+  end
+  for _, node in ipairs(nodes) do
+    for _, box in ipairs(node._fluid_boxes or {}) do
+      box.domain_amount, box.domain_rounding = domain_amount[box.domain], math.max(1, domain_segments[box.domain] or 0)
     end
   end
   local generators = {}
@@ -587,8 +585,10 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         generators[network] = generators[network] or {}
         generators[network][#generators[network] + 1] = node
         local pole = network_poles and network_poles[network]
-        local ok, inputs = pcall(function() return pole.electric_network_statistics.output_counts end)
-        if ok and type(inputs) == "table" then node._network_generation = inputs
+        -- Natively an electric network's producers are its output counts and
+        -- its consumers its input counts, both cumulative joules by name.
+        local ok, outputs = pcall(function() return pole.electric_network_statistics.output_counts end)
+        if ok and type(outputs) == "table" then node._network_generation = outputs
         else diagnostic(node, "electrical_generation_attribution_unproven", "unsupported") end
       end
     end
@@ -604,6 +604,9 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     if ok and energy_source and node.type ~= "generator" and generators[network] and material_relevant then
       node._power_network = network
       node._power_consumer = true
+      -- Natively an electric network's consumers are its input counts.
+      local ok_inputs, inputs = pcall(function() return network_poles[network].electric_network_statistics.input_counts end)
+      node._network_consumption = ok_inputs and type(inputs) == "table" and inputs or nil
       if energy_source.usage_priority ~= "primary-input" and energy_source.usage_priority ~= "secondary-input" then
         diagnostic(node, "electrical_consumer_usage_unproven", "unsupported")
       end
@@ -1079,11 +1082,13 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
             local temperature = box.temperature or product.temperature
             local compatible = fluid_compatible(box, product.name, temperature)
             if node.type == "generator" then
-              return 0, compatible and type(node._generator_segment_capacity) == "number"
-                and box.segment_amount < node._generator_segment_capacity and box.amount > 0
+              -- An engine that generated last tick consumed steam then; a
+              -- pump refills its own segment to exactly full after that.
+              return 0, compatible and (box.segment_amount < box.segment_capacity
+                  or (number_property(node._entity, "energy_generated_last_tick") or 0) > 0) and box.amount > 0
                 and type(box.temperature) == "number" and box.temperature > node._generator.default_temperature
             end
-            return box.amount, compatible and box.segment_amount < box.capacity
+            return box.amount, compatible and box.segment_amount < box.segment_capacity
           end
           local inventory
           if node.role == "buffer" then inventory = node._entity.get_inventory(defines.inventory.chest)
@@ -1213,10 +1218,11 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         if next(stock) then component._inputs[node._key] = stock end
       end
       if FLUID_TYPES[node.type] or node._power_consumer then
-        local native = { type = node.type, boxes = node._fluid_boxes, segments = node._fluid_segments,
+        local native = { type = node.type, boxes = node._fluid_boxes,
           input = node._fluid_input, output = node._fluid_output,
           source = node._fluid_source, generator = node._generator, power_network = node._power_network,
           network_generation = node._network_generation, name = node.name,
+          network_consumption = node._network_consumption, working = node._power_consumer and node.status == "working" or nil,
           pumped = (node.type == "offshore-pump" or node.type == "pump") and number_property(node._entity, "pumped_last_tick") or nil,
           generated = node.type == "generator" and number_property(node._entity, "energy_generated_last_tick") or nil,
           energy = node._power_consumer and number_property(node._entity, "energy") or nil,
@@ -1371,7 +1377,10 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         local node = node_by_id[edge.to]
         component._native_activity[node._key] = { name = node.name, type = node.type,
           consumer = true, electrical_only = true, power_network = node._power_network,
-          energy = number_property(node._entity, "energy"), drain = number_property(node._entity, "electric_drain") }
+          network_consumption = node._network_consumption, working = node.status == "working" or nil,
+          status = node.status, position = node.position, entity = node.name,
+          energy = number_property(node._entity, "energy"), drain = number_property(node._entity, "electric_drain"),
+          buffer = number_property(node._entity, "electric_buffer_size") }
         local energy = component._native_activity[node._key].energy
         if not energy or energy <= 0 then interrupted = "electrical_delivery_inactive" end
         signature_rows[#signature_rows + 1] = table.concat({ "electrical-dependent", node._key,

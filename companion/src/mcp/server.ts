@@ -10,7 +10,7 @@ import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitF
 import { normalizeCanPlace, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.19.8";
+export const MCP_SERVER_VERSION = "0.19.9";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();

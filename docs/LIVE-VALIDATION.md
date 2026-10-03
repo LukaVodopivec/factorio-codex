@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.19.8**. Prior live evidence remains historical
-until the fresh 0.19.8 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.19.9**. Prior live evidence remains historical
+until the fresh 0.19.9 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -88,7 +88,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.19.8 reliability pass, also record these observable checks without
+For the 0.19.9 reliability pass, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
 
 - A compact observation stays bounded, names every omission count, and appears
@@ -245,17 +245,19 @@ checks.
   generator/boiler prototypes, never stocked contents or recipe guesses.
   Keep electrical dependencies separate from material/fuel/acceptance paths.
   Run the existing parked component validator for 1–300 s, long enough to
-  exercise boiler fuel replenishment. Require three eight-tick consecutive
-  bursts: native pump activity, generator output, uniquely attributed boiler
+  exercise boiler fuel replenishment. Require three consecutive-tick bursts
+  (eight ticks, extended up to 60, and at most a third of the window, while a
+  boiler's balance has not cleared its reserve of one unit per steam-domain
+  segment, so a saturated domain needs about 30 kW per segment at 4 s or
+  more): native pump activity, generator output, uniquely attributed boiler
   output mass balance with fuel use/non-draining input, endpoint arrivals or
-  actual steam consumption, and electrical buffer use plus three recharge
-  events. Preserve mining/crafting proof for the entities that have those
+  actual steam consumption, and three electrical delivery events. Preserve mining/crafting proof for the entities that have those
   counters, complete transfer history, zero character transfers, exact private
   topology and per-path recency. Record the compact native aggregate fields;
   exact fluid quantities, network counts and internal signatures stay private.
   Unknown electrical suppliers/accumulator discharge, several boilers sharing
-  one output segment, unreadable or aliased samples, or stable electrical
-  buffers concealing use/recharge remain unproven. More duration alone need
+  one fluid domain, unreadable or aliased samples, or idle drain-free
+  consumers with full buffers remain unproven. More duration alone need
   not resolve these limits. Check native pumps and underground connectivity,
   multiple observed generators and terminal fluid-buffer acceptance.
   Interrupt water, fuel and electrical supply separately; also test wrong fluid
@@ -582,29 +584,47 @@ from the vendored 2.0.77 runtime list, but they still cannot prove
 native values or behavior.
 an earlier issue exposed a different native-value mismatch in 0.19.8: successful
 `get_fluid_segment_id` and `get_fluid_segment_contents` reads return `nil` for
-offshore-pump and separate-pipe boiler output boxes. Their products, filters,
-temperatures, own buffer stock and directed connections remain readable. The
-retained sampler now preserves that evidence without inventing a segment or
-stock. Private validation attributes an output only through its exact observed
-connection to readable downstream segment evidence; conflicting or unreadable
-paths stay unproven. Numeric input-box segment contents describe the connected
-pipe stock, separately from the machine's own buffer. Native generator
-acceptance uses the observed connected transport segment's capacity, rather
-than treating the engine's internal buffer capacity as the pipe limit.
+offshore-pump and separate-pipe boiler output boxes, and for a `pump`'s single
+box (volume 400, `production_type` none, carrying both its input and output
+connections). Their products, filters, temperatures, own buffer stock and
+directed connections remain readable. The retained sampler preserves that
+absence without inventing a segment or stock; a failed or half-present read
+still refuses the sample. `get_capacity` is the box's own capacity, while a
+segment's contents include every member box (a boiler's water input reads its
+own 200 plus its pipes). Private validation therefore balances fluid
+domains: a segment's native contents, or an out-of-segment box's own buffer,
+joined to the segment on its exact proven pipe connection. A segment's
+capacity is the sum of its sampled member boxes, and an engine still accepts
+steam while it generated last tick, because an inline pump refills its segment
+to exactly full.
 
-Electric network `output_counts` records generation. Its interval is aligned
-with `energy_generated_last_tick`, including native counter precision. Exact
-electrical dependents remain separate material components, but their private
-energy observations establish delivery by the supplying plant. A positive
-native idle drain with positive, nondecreasing buffers proves consumption and
-replacement; empty or draining buffers do not. Three bounded consecutive
-bursts allow low-demand boiler transformation to exceed the retained one-unit
-mass reserve. Shared producers, disconnected paths, aliased samples and
-finite starter fluid, fuel or electricity remain insufficient evidence.
+Electric network `output_counts` records generation, one tick ahead of
+`energy_generated_last_tick`; attribution allows only the native counter
+rounding (1/65536 J per increment, or float32 precision of the observed
+amount). Exact electrical dependents remain separate material components, but
+their private energy observations establish delivery by the supplying plant. A
+supplied consumer's buffer can read full every tick, so a positive,
+nondecreasing buffer under a positive native drain, or on a working drain-free
+consumer (an electric mining drill) while its network's consumption for its
+prototype rose, proves consumption and replacement; empty or draining buffers,
+or a drain-free idle buffer, do not. Three
+consecutive 120-tick bursts allow low-demand boiler transformation to exceed
+the retained mass reserve (one unit per member segment of the domain, for the
+documented uint32 contract). A boiler unproven only in a shortened burst (a
+window under 7 s, or a burst clamped after a recovered flicker) while its
+input domain held is evidence naming a strictly longer window; at 300 s it is
+a throughput row with no suggestion. An external dependent idle throughout at
+a full drain-free buffer (an output-blocked drill) is neutral for its supplying
+plant. Shared producers, disconnected paths, aliased
+samples and finite starter fluid, fuel or electricity remain insufficient
+evidence.
 
 Before each fresh run's `GO`, the supervisor therefore proves the steam path on
 the native runtime and records the result in `supervision.json` under
 `steam_gate`. `GO` waits until the gate passes.
+
+The strict offline mocks model these native facts, but still cannot prove
+native values or behavior.
 
 The validator is bound to the companion character's surface and charted chunks,
 so it cannot validate a temporary surface of the live run. Building the fixture
@@ -624,20 +644,28 @@ burner-inserter fixtures below:
   substitution. Record the SHA-256 of the release archive and of the
   instrumented archive.
 - On dry ground beside fixture water, build an offshore pump and pipes to a
-  boiler. A burner inserter feeds the boiler from a chest of finite coal. The
-  boiler feeds a steam engine, and a small electric pole powers an electric
-  inserter that moves finite plates from one chest into another chest with
-  space. The inserter is the load, because an engine with no demand is not
-  delivering power. Preserve the finite chest, but replenish it through a real
-  coal source and its own fuel-return path: starter coal alone cannot establish
-  the retained fuel provenance or replenishment proof.
+  boiler. An electric mining drill on a coal patch fills a chest, and an
+  electric inserter feeds the boiler from it, so the fuel has physical
+  provenance and the plant component holds electric consumers (a hand-stocked
+  coal chest is correctly refused: starter coal alone cannot establish the
+  retained fuel provenance or replenishment proof, and a load in another
+  component cannot make `native_power_required` true). The boiler feeds a
+  steam engine. Poles also power a load in its own components: two electric
+  furnaces fed from chests of finite ore and unloaded into chests with space
+  (about 480 kW). An engine with no demand is not delivering power.
+- After a change to fluid, pump, power or burst code, also run the
+  `pump-low-load` variant: the engine two tiles further on behind an inline
+  `pump`, primed with steam so it can power that pump, and no furnace load
+  (about 90 kW on its steam domain, so only a long consecutive burst clears
+  the mass reserve). It must also prove.
 - Run the release's real `validate_factory_component` with the component's
   positions and `duration_seconds: 120`. The outcome must be
   `FACTORY_COMPONENT_AUTONOMY_PROVEN` with `native_power_required: true`,
   `power_delivery_samples >= 3`, and `fluid_activity_samples >= 3`.
-- Then let the finite plates run out so the inserter idles with a charged
-  buffer and the engine serves only the consumers' native idle drain (zero
-  generation when there is no drain). A `map_summary` read must still show
+- When the plan reaches a terminal status (`completed` when proven), empty the
+  ore chests and bar the coal chest full, so every consumer on the network
+  idles with a charged buffer and the engine serves only the consumers' native
+  idle drain (zero generation when there is no drain). A `map_summary` read must still show
   the plant's power component `autonomous_end_to_end` with no `blocked_output`
   among its blockers. Record it as
   `standby: {autonomous_end_to_end, blocked_output}`.
@@ -687,6 +715,24 @@ and `blocked_output:false`. All three API-member probes returned without error.
 The surface was deleted and confirmed absent at tick 12181; the owned server
 exited with status 0, no owned Factorio process remained, and its separate
 write-data directory was removed and its absence verified.
+
+The 0.19.9 merged mechanism (fluid domains over native segment absence,
+summed member capacities, drain or drain-free working delivery, 120-tick
+bursts) passed the same isolated runtime on 2026-10-03 with the redesigned
+drill-fed plant above. Archive SHA-256
+`40b9f6fedbb42a107cf3767f311bcb6af4b73cca812c02e27e622c7e81e5c8f3`; after the
+external-dependent and burst-evidence fixes the rebuilt archive
+`665cb760a921ed65a6b008a63b09638ba12230769133c1a75ba94b410fd9dab0` returned the
+same results in both variants. The
+`standard` and `pump-low-load` variants each returned
+`FACTORY_COMPONENT_AUTONOMY_PROVEN` over 7,200 ticks with
+`native_power_required:true`, `power_delivery_samples:360`,
+`fluid_activity_samples:3` and no blockers; the standby reads reported
+`autonomous_end_to_end:true` and `blocked_output:false`, all three probes
+returned, and cleanup was verified. A preceding candidate with only the drain
+rule failed both variants on the drain-free electric mining drill
+(`bounded_power_delivery_not_observed`), which is why the working drain-free
+rule remains.
 
 These receipts cover the exact isolated engineering archive above. They do not
 record installation into a gameplay run, a supervisor `GO`, gameplay autonomy,
@@ -1106,7 +1152,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.19.8 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.19.9 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -1137,14 +1183,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.19.8. They
+The successful observations below were collected before release 0.19.9. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.19.8. Complete the fresh run above after installing 0.19.8 before recording a
+0.19.9. Complete the fresh run above after installing 0.19.9 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.19.8 run must instead report protocol v22 and mod/app 0.19.8.
+  0.8.0. A 0.19.9 run must instead report protocol v22 and mod/app 0.19.9.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

@@ -112,8 +112,9 @@ function M.live(entity, internal)
   return rows, complete
 end
 
--- Private component samples only. In 2.0 these are segment capacities and
--- runtime filters, not recipe ingredients or identities inferred from stock.
+-- Private component samples only: runtime filters and stock, not recipe
+-- ingredients or identities inferred from stock. Natively get_capacity is
+-- this box's own capacity, while segment contents include every member box.
 -- A merged/unsupported prototype or an unreadable field refuses the sample.
 function M.sample(entity)
   local ok, rows = pcall(function()
@@ -126,10 +127,12 @@ function M.sample(entity)
       local fluid = entity.fluidbox[index]
       local segment = entity.fluidbox.get_fluid_segment_id(index)
       local contents = entity.fluidbox.get_fluid_segment_contents(index)
-      -- Source/output boxes in 2.0.77 can have no segment at all. A successful
-      -- nil pair is native absence, not zero stock; failed calls still refuse
-      -- this sample through the enclosing pcall.
-      local absent = segment == nil and contents == nil and proto.production_type == "output"
+      -- Output and transfer boxes in 2.0.77 (offshore pumps, separate-pipe
+      -- boiler outputs, pumps) can have no segment at all. A successful nil
+      -- pair is native absence, not zero stock: such a box's own buffer is its
+      -- whole pool. Input boxes always have a segment; failed calls still
+      -- refuse this sample through the enclosing pcall.
+      local absent = segment == nil and contents == nil and proto.production_type ~= "input"
       local segment_name, segment_amount
       if not absent then
         if not finite(segment) or segment <= 0 or segment % 1 ~= 0 or type(contents) ~= "table" then

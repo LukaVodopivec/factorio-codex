@@ -2226,8 +2226,8 @@ do
     and sample._signature:find(":output:fluid:vapor", 1, true)
     and sample._signature:find(":temperature:165", 1, true),
     "structured component evidence preserves boiler steam product and temperature and generator input")
-  check(boiler_activity.boxes[2].segment == nil and boiler_activity.segments[2].segment == native.sample(pipe)[1].segment,
-    "private accounting attributes absent output segments to exact readable downstream boxes")
+  check(boiler_activity.boxes[2].segment == nil and boiler_activity.boxes[2].domain == native.sample(pipe)[1].segment,
+    "private accounting joins absent output segments to the exact readable downstream segment")
   local segment_id, segment_contents = boiler.fluidbox.get_fluid_segment_id, boiler.fluidbox.get_fluid_segment_contents
   for _, case in ipairs({
     { label = "failed ID read", id = function() error("native read failed") end },
@@ -2289,9 +2289,14 @@ end
 -- Supplied plant simulation: native per-tick pump/generator quantities,
 -- conserved steam stock and burning fuel, actual electrical buffer draw and
 -- recharge, and mined coal transported to fuel and material acceptance.
+-- Fluid boxes follow Factorio 2.0.77: get_capacity is the box's own
+-- capacity, a segment's stock is shared by its member boxes, and an offshore
+-- pump or boiler output box belongs to no segment (nil id and contents) and
+-- holds its own stock.
 do
   local previous_find, old_fluids, old_coal = surface.find_entities_filtered, prototypes.fluid, prototypes.item.coal
-  local function steam_validation(mode)
+  local function steam_validation(mode, duration, light_draw, flicker_tick)
+    duration, light_draw = duration or 1, light_draw or 0.04
     game.tick = game.tick + 100
     local start = game.tick
     storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
@@ -2299,9 +2304,25 @@ do
     prototypes.fluid = { aqua = { default_temperature = 15, heat_capacity = 1 },
       vapor = { default_temperature = 15, heat_capacity = 1 } }
     local steam, water, coal, accepted, fuel_items = 20, 20, 10, 0, 5
-    local generated_total, relay_steam, buffer_steam, previous_generated = 0, 20, 20, 450.123456
+    local generated_total, relay_steam, lagged_generation, previous_generated = 0, 20, nil, 450.123456
     local electric = { electric_energy_source_prototype = { usage_priority = "secondary-input" } }
     local entities, connections, boxes_by_entity = {}, {}, {}
+    local CAPACITY = { ["offshore-pump"] = 100, boiler = 200, pipe = 100, ["pipe-to-ground"] = 100,
+      generator = 200, pump = 100, ["storage-tank"] = 25000 }
+    local function segment_capacity(segment)
+      local total = 0
+      for _, boxes in pairs(boxes_by_entity) do
+        for _, box in ipairs(boxes) do if box.segment == segment then total = total + box.capacity end end
+      end
+      return total
+    end
+    local function segment_stock(segment)
+      return (segment == 1 or segment == 11) and water or segment == 3 and relay_steam or steam
+    end
+    local function box_amount(box)
+      if not box.segment then return box.stock end
+      return segment_stock(box.segment) * box.capacity / segment_capacity(box.segment)
+    end
     local function make(kind, x, boxes, proto)
       local e = mock.entity({ valid = true, name = "supplied-" .. kind, type = kind, force = force, surface = surface,
         position = { x = x, y = 12 }, unit_number = 100 + x, status = 3, direction = 0, prototype = proto or {} })
@@ -2309,20 +2330,16 @@ do
       entities[#entities + 1] = e
       if boxes then
         boxes_by_entity[e], connections[e] = boxes, {}
+        for _, box in ipairs(boxes) do
+          box.capacity = mode == "input_buffer_capacity" and kind == "generator" and 10 or CAPACITY[kind]
+        end
         local fb = {}
         setmetatable(fb, { __len = function() return #boxes end, __index = function(_, index)
           if type(index) ~= "number" then return nil end
-          local box = boxes[index]
-          local amount = box.segment == 1 and water or box.segment == 3 and relay_steam or steam
-          if box.production_type ~= "none" then amount = box.segment == 1 and 20 or buffer_steam end
-          if mode == "input_buffer_capacity" and kind == "generator" then amount = 5 end
-          if mode == "starter_generator_buffer" and kind == "generator" then amount = math.max(0, 100 - (game.tick - start) * 2) end
-          if box.production_type == "output" and (mode == "starter_output" and kind == "boiler"
-            or mode == "starter_source_output" and kind == "offshore-pump") then
-            amount = math.max(0, 100 - (game.tick - start) * 2)
-          end
-          return { name = box.filter and box.filter.name or "vapor", temperature = box.segment == 1 and 15 or 165,
-            amount = amount }
+          local box, amount = boxes[index], box_amount(boxes[index])
+          if amount <= 0 then return nil end
+          local name = box.filter and box.filter.name or "vapor"
+          return { name = name, temperature = name == "aqua" and 15 or 165, amount = amount }
         end })
         fb.owner = e
         fb.get_pipe_connections = function(index) return connections[e][index] or {} end
@@ -2331,30 +2348,32 @@ do
           return box.filter and { name = box.filter.name, minimum_temperature = box.minimum_temperature or -100,
             maximum_temperature = box.maximum_temperature or 1000 }
         end
-        fb.get_capacity = function() return mode == "input_buffer_capacity" and kind == "generator" and 10 or 1000 end
+        fb.get_capacity = function(index) return boxes[index].capacity end
         fb.get_fluid_segment_id = function(index)
-          if boxes[index].production_type == "output" and mode ~= "numeric_segments" then
+          if not boxes[index].segment then
             if mode == "failed_segment_read" then error("native segment read failed") end
             if mode == "malformed_segment" then return "segment" end
-            return nil
           end
           return boxes[index].segment
         end
         fb.get_fluid_segment_contents = function(index)
           local box = boxes[index]
-          if box.production_type == "output" and mode ~= "numeric_segments" then
+          if not box.segment then
             if mode == "failed_contents_read" then error("native contents read failed") end
             if mode == "malformed_contents" then return false end
             return nil
           end
-          return { [box.segment == 1 and "aqua" or "vapor"] = box.segment == 1 and water or box.segment == 3 and relay_steam or steam }
+          local amount = segment_stock(box.segment)
+          return amount > 0 and { [(box.segment == 1 or box.segment == 11) and "aqua" or "vapor"] = amount } or {}
         end
         e.fluidbox = fb
         e.fluidbox.get_prototype = function(index) return boxes[index] end
       end
       return e
     end
-    local function box(kind, name, segment) return { production_type = kind, filter = name and { name = name }, segment = segment } end
+    local function box(kind, name, segment, stock)
+      return { production_type = kind, filter = name and { name = name }, segment = segment, stock = stock }
+    end
     local function link(a, ai, b, bi)
       connections[a][ai] = connections[a][ai] or {}
       connections[b][bi] = connections[b][bi] or {}
@@ -2363,10 +2382,10 @@ do
       table.insert(connections[b][bi], { position = b.position, target_position = a.position, connection_type = "normal",
         flow_direction = "input", target = a.fluidbox, target_fluidbox_index = ai })
     end
-    local source = make("offshore-pump", 1, { box("output", "aqua", 1) })
+    local source = make("offshore-pump", 1, { box("output", "aqua", nil, 100) })
     source.get_fluid_source_fluid = function() return "aqua" end
     source.pumped_last_tick = 4
-    local boiler = make("boiler", 2, { box("input", "aqua", 1), box("output", "vapor", 2) },
+    local boiler = make("boiler", 2, { box("input", "aqua", 1), box("output", "vapor", nil, 50) },
       { boiler_mode = "output-to-separate-pipe", target_temperature = 165,
         burner_prototype = { fuel_categories = { chemical = true } } })
     boiler.burner = { remaining_burning_fuel = 10000, currently_burning = {
@@ -2381,8 +2400,16 @@ do
     link(source, 1, boiler, 1); link(boiler, 2, pipe, 1); link(pipe, 1, generator, 1)
     local pole = make("electric-pole", 5)
     pole.electric_network_id = 7
+    -- Native electric statistics: producers are output counts and consumers
+    -- input counts, cumulative joules by prototype name.
+    local consumed = {}
     pole.electric_network_statistics = setmetatable({}, { __index = function(_, key)
       if key == "output_counts" then return { [generator.name] = generated_total } end
+      if key == "input_counts" then
+        local copy = {}
+        for name, amount in pairs(consumed) do copy[name] = amount end
+        return copy
+      end
     end })
     local target = mock.entity({ valid = true, name = "coal", type = "resource", position = { x = 6, y = 12 }, amount = 1000,
       prototype = { mineable_properties = { mining_time = 5 / 60, products = { { name = "coal", type = "item" } } } } })
@@ -2403,7 +2430,7 @@ do
       connections[source][1], connections[boiler][1] = {}, {}
       link(source, 1, water_buffer, 1)
     elseif mode == "ambiguous_boilers" then
-      other_boiler = make("boiler", 11, { box("input", "aqua", 1), box("output", "vapor", 2) }, boiler.prototype)
+      other_boiler = make("boiler", 11, { box("input", "aqua", 1), box("output", "vapor", nil, 50) }, boiler.prototype)
       other_boiler.burner = { remaining_burning_fuel = 10000, currently_burning = boiler.burner.currently_burning }
       other_boiler.get_fuel_inventory = boiler.get_fuel_inventory
       local other_refill = make("inserter", 12, nil, electric)
@@ -2416,12 +2443,14 @@ do
       extra_generator.electric_network_id, extra_generator.energy_generated_last_tick = 7, 225
       generator.energy_generated_last_tick = 225
       link(pipe, 1, extra_generator, 1)
-    elseif mode == "steam_pump" then
-      steam_pump = make("pump", 11, { box("input", "vapor", 2), box("output", "vapor", 3) }, electric)
+    elseif mode == "steam_pump" or mode == "segmented_pump" or mode == "pump_full_engine" then
+      -- Native 2.0 pump: one box (base volume 400) outside any segment whose
+      -- input and output connections differ only by flow_direction.
+      steam_pump = make("pump", 11, { box("none", nil, mode == "segmented_pump" and 3 or nil, 40) }, electric)
       steam_pump.electric_network_id, steam_pump.energy, steam_pump.pumped_last_tick = 7, 1000, 4
       boxes_by_entity[generator][1].segment = 3
       connections[pipe][1], connections[boiler][2], connections[generator][1] = {}, {}, {}
-      link(boiler, 2, pipe, 1); link(pipe, 1, steam_pump, 1); link(steam_pump, 2, generator, 1)
+      link(boiler, 2, pipe, 1); link(pipe, 1, steam_pump, 1); link(steam_pump, 1, generator, 1)
     end
     if mode == "presentation_caps" then
       connections[pipe][1], connections[boiler][2], connections[generator][1] = {}, {}, {}
@@ -2439,15 +2468,15 @@ do
       -- network 9, while its coal drill and inserters draw from the plant's
       -- network 7. The plant powers D; D powers the line below.
       local d_fuel, d_coal, d_accepted, d_generated = 5, 10, 0, 0
-      local d_source = make("offshore-pump", 51, { box("output", "aqua", 1) })
+      local d_source = make("offshore-pump", 51, { box("output", "aqua", nil, 100) })
       d_source.get_fluid_source_fluid, d_source.pumped_last_tick = source.get_fluid_source_fluid, 4
-      local d_boiler = make("boiler", 52, { box("input", "aqua", 1), box("output", "vapor", 2) }, boiler.prototype)
+      local d_boiler = make("boiler", 52, { box("input", "aqua", 11), box("output", "vapor", nil, 50) }, boiler.prototype)
       d_boiler.burner = { remaining_burning_fuel = 10000, currently_burning = boiler.burner.currently_burning }
       d_boiler.get_fuel_inventory = function() return {
         get_contents = function() return { { name = "coal", quality = "normal", count = d_fuel } } end,
         get_item_count = function() return d_fuel end, can_insert = function() return d_fuel < 10 end } end
-      local d_pipe = make("pipe-to-ground", 53, { box("none", nil, 2) })
-      local d_generator = make("generator", 54, { box("input", "vapor", 2) }, generator.prototype)
+      local d_pipe = make("pipe-to-ground", 53, { box("none", nil, 12) })
+      local d_generator = make("generator", 54, { box("input", "vapor", 12) }, generator.prototype)
       d_generator.electric_network_id, d_generator.energy_generated_last_tick = 9, 450
       link(d_source, 1, d_boiler, 1); link(d_boiler, 2, d_pipe, 1); link(d_pipe, 1, d_generator, 1)
       local d_pole = make("electric-pole", 55)
@@ -2490,7 +2519,9 @@ do
           if tick % 20 == 4 and d_fuel < 5 then d_fuel = d_fuel + 1 end
         end }
     end
-    if mode == "plus_line" or mode == "plus_line_dead" or mode == "empty_external_consumer" or mode == "chain_line" then
+    if mode == "plus_line" or mode == "plus_line_dead" or mode == "empty_external_consumer" or mode == "chain_line"
+      or mode == "plus_line_drainfree" or mode == "plus_line_idle_drainfree" or mode == "plus_line_unfed_drainfree"
+      or mode == "plus_line_lowpower_drainfree" or mode == "plus_line_partial_idle_drainfree" then
       -- Lines with no material or fluid link to the plant, on its network
       -- or, in a chain, on supply D's network 9.
       local line_network = mode == "chain_line" and 9 or 7
@@ -2504,9 +2535,27 @@ do
       if mode == "empty_external_consumer" then far.energy = 0 end
       line_mine = make("mining-drill", 44, nil, { mining_speed = 1, electric_energy_source_prototype = electric.electric_energy_source_prototype })
       line_mine.electric_network_id, line_mine.energy, line_mine.mining_progress = line_network, 1000, 0
+      line_mine.electric_buffer_size = 1000
       line_mine.mining_target = mock.entity({ valid = true, name = "iron-ore", type = "resource", position = { x = 44, y = 12 }, amount = 1000,
         prototype = { mineable_properties = { mining_time = 1, products = { { name = "iron-ore", type = "item" } } } } })
       line_mine.drop_target, line_to, line_far = to, to, far
+      -- 2.0.77 electric mining drills are drain-free and their buffers read
+      -- full every tick: working, output-blocked, or (under its own name)
+      -- working while its network's consumption for that prototype never rose.
+      if mode == "plus_line_drainfree" or mode == "plus_line_unfed_drainfree" then
+        line_mine.electric_drain, line_mine.status = 0, defines.entity_status.working
+      end
+      if mode == "plus_line_unfed_drainfree" then line_mine.name = "line-drill" end
+      if mode == "plus_line_idle_drainfree" then
+        line_mine.electric_drain, line_mine.status = 0, defines.entity_status.full_output
+      end
+      -- A brownout or a steady partial buffer is not idle at a full buffer.
+      if mode == "plus_line_lowpower_drainfree" then
+        line_mine.name, line_mine.electric_drain, line_mine.status, line_mine.energy = "line-drill", 0, defines.entity_status.low_power, 400
+      end
+      if mode == "plus_line_partial_idle_drainfree" then
+        line_mine.name, line_mine.electric_drain, line_mine.status, line_mine.energy = "line-drill", 0, defines.entity_status.full_output, 400
+      end
     end
     if mode == "cross_supply" or mode == "chain_supply" then
       -- A second steam engine on network 9 behind a pump on network 7: each
@@ -2514,9 +2563,9 @@ do
       -- supply sorts before the plant, so it is judged after it.
       local other = make("generator", 50, { box("input", "vapor", 5) }, generator.prototype)
       other.electric_network_id, other.energy_generated_last_tick = 9, 0
-      local relay = make("pump", 51, { box("input", "vapor", 6), box("output", "vapor", 5) }, electric)
+      local relay = make("pump", 51, { box("none", nil, nil, 0) }, electric)
       relay.electric_network_id, relay.energy, relay.pumped_last_tick = 7, 1000, 0
-      link(relay, 2, other, 1)
+      link(relay, 1, other, 1)
       if mode == "cross_supply" then unload.electric_network_id = 9
       else other.position, relay.position = { x = 50, y = 4 }, { x = 51, y = 4 } end
       line_mine = relay
@@ -2530,6 +2579,10 @@ do
       end
     end
     if mode == "disconnected" then connections[pipe][1], connections[generator][1] = {}, {} end
+    if mode == "half_segment" then
+      -- An out-of-segment box reporting segment contents is ambiguous, never a pool.
+      boiler.fluidbox.get_fluid_segment_contents = function(index) return { [index == 1 and "aqua" or "vapor"] = 50 } end
+    end
     if mode == "wrong_fluid" then boxes_by_entity[generator][1].filter.name = "aqua" end
     if mode == "wrong_temperature" then boxes_by_entity[generator][1].minimum_temperature = 200 end
     if mode == "missing_network" then generator.electric_network_id = nil end
@@ -2539,14 +2592,30 @@ do
     if mode == "unsupported_counter" then generator.energy_generated_last_tick = nil end
     if mode == "unsupported_boiler" then boiler.prototype.boiler_mode = "heat-fluid-inside" end
     if mode == "unreadable_source" then source.get_fluid_source_fluid = function() error("unreadable source") end end
+    -- An idle drain-free consumer whose charged buffer holds draws nothing.
+    if mode == "idle_consumer" then unload.status, unload.electric_drain = defines.entity_status.waiting_for_source_items, 0 end
+    -- Working drain-free consumers (2.0.77 electric mining drills) read full.
+    if mode == "drain_free_working" then
+      for _, consumer in ipairs({ mine, refill, unload }) do consumer.status, consumer.electric_drain = defines.entity_status.working, 0 end
+    end
+    -- Output boxes reporting numeric segments (shared with their pipes).
+    if mode == "numeric_segments" then boxes_by_entity[source][1].segment, boxes_by_entity[boiler][2].segment = 1, 2 end
+    if mode == "starter_output" then boxes_by_entity[boiler][2].stock = 100 end
+    if mode == "starter_source_output" then boxes_by_entity[source][1].stock = 100 end
+    if mode == "starter_generator_buffer" then steam = 100 end
+    -- A saturated steam domain from the baseline on (native steady state).
+    if mode == "low_load_saturated" or mode == "rounding_drop" or mode == "light_load_exact" or mode == "light_load_flicker" then steam = segment_capacity(2) - 0.5 end
+    -- Native 2.0.77: an inline pump tops the engine's own segment up to
+    -- exactly its capacity after the engine consumed each tick.
+    if mode == "pump_full_engine" then relay_steam = segment_capacity(3) end
     surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
     map.map_summary({})
     local before_mine = line_mine and map.factory_component_sample({ source_tick = start, positions = { line_mine.position } })
     local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
-      source_tick = start, positions = { water_buffer and source.position or boiler.position }, duration_seconds = 1 } } })
+      source_tick = start, positions = { water_buffer and source.position or boiler.position }, duration_seconds = duration } } })
     game.tick = start + 1; tasks.on_tick()
     local preflight = map.factory_component_sample({ source_tick = game.tick, positions = { water_buffer and source.position or boiler.position } })
-    for tick = 1, 60 do
+    for tick = 1, duration * 60 do
       game.tick = start + 1 + tick * (mode == "aliased_samples" and 2 or 1)
       mine.mining_progress = (tick % 5) / 5
       if tick % 5 == 0 then target.amount, coal = target.amount - 1, coal + 2 end
@@ -2557,12 +2626,31 @@ do
       end
       if tick % 5 == 4 and fuel_items < 5 and mode ~= "no_fuel_refill" then fuel_items, coal = fuel_items + 1, coal - 1 end
       if mode == "starter_steam" then steam = steam - 3
+      -- The engine's buffer, part of its segment, drains starter steam.
+      elseif mode == "starter_generator_buffer" then steam = math.max(1, 100 - tick * 2)
+      -- Native low load: the boiler refills the engine's segment every tick,
+      -- so it is sampled just below its summed member capacity.
+      elseif mode == "saturated_steam" then steam = segment_capacity(2) - 0.5
+      -- Native light load (200 kW: 3333 J/tick over 30000 J/unit, scaled to
+      -- this heat capacity) on a saturated domain whose reading dips one
+      -- unit on alternate ticks (2.0.77 reads fractions, but the documented
+      -- uint32 contract allows such a dip): a short burst cannot clear the reserve.
+      elseif mode == "low_load_saturated" then steam = segment_capacity(2) - 0.5 - tick % 2
+      -- A light load (light_draw units per tick, 0.04 is about 72 kW) on a
+      -- saturated one-segment domain read exactly: only a long enough burst
+      -- clears its one-unit reserve.
+      elseif mode == "light_load_exact" or mode == "light_load_flicker" then steam = segment_capacity(2) - 0.5
+      -- Saturated, then read 0.7 units below the baseline by the end.
+      elseif mode == "rounding_drop" then steam = segment_capacity(2) - (tick >= 50 and 1.2 or 0.5)
       elseif mode == "steam_pump" then relay_steam = relay_steam + 1
       else steam = steam + 1 end
       if mode == "starter_water" then water, source.pumped_last_tick = water - 1, 0 end
-      if water_buffer then water = mode == "fluid_buffer_full" and 1000 or water + 4 end
+      if water_buffer then water = mode == "fluid_buffer_full" and segment_capacity(1) or water + 4 end
       if other_boiler then other_boiler.burner.remaining_burning_fuel = boiler.burner.remaining_burning_fuel end
-      if mode ~= "unsupported_counter" then generator.energy_generated_last_tick = mode == "multiple_generators" and 225 or 450 end
+      if mode ~= "unsupported_counter" then
+        generator.energy_generated_last_tick = mode == "multiple_generators" and 225
+          or mode == "low_load_saturated" and 3333.33 / 30000 * 150 or (mode == "light_load_exact" or mode == "light_load_flicker") and light_draw * 150 or mode == "full_endpoint" and 0 or 450
+      end
       if mode == "inactive_generation" or mode == "generation_interruption" and tick >= 30 then generator.energy_generated_last_tick = 0 end
       if mode == "lagged_fractional_generation" then
         generator.energy_generated_last_tick = previous_generated
@@ -2573,22 +2661,47 @@ do
         generated_total = generated_total + (generator.energy_generated_last_tick or 0)
           + (extra_generator and extra_generator.energy_generated_last_tick or 0)
       end
+      if mode == "varying_generation" then
+        -- 2.0.77 statistics lead energy_generated_last_tick by one tick.
+        local now = tick % 3 == 0 and 300 or 450
+        generated_total = generated_total - generator.energy_generated_last_tick + now
+        generator.energy_generated_last_tick, lagged_generation = lagged_generation or now, now
+      end
+      if mode == "float32_statistics" then
+        -- 2.0.77 adds each tick's flow as a float32: 7733.333... is counted as 7733.33349609375.
+        generator.energy_generated_last_tick = 7733.333333333333
+        generated_total = generated_total - 450 + 7733.33349609375
+      end
       if mode == "unobserved_supplier" then generated_total = generated_total + 10 end
-      if mode == "full_endpoint" then steam = 1000 end
+      -- A backed-up engine: its segment at capacity and nothing consumed
+      -- while its material consumers still work.
+      if mode == "full_endpoint" then steam = segment_capacity(2) end
+      -- Starter stock in out-of-segment output buffers drains with no inflow
+      -- (kept nonempty, so the component topology stays unchanged).
+      if mode == "starter_output" then boxes_by_entity[boiler][2].stock = math.max(1, 100 - tick * 2) end
+      if mode == "starter_source_output" then boxes_by_entity[source][1].stock = math.max(1, 100 - tick * 2) end
+      -- A supplied consumer's buffer may read full every tick natively
+      -- (constant_charged_buffers): its positive drain then proves delivery.
       for _, consumer in ipairs({ mine, refill, unload }) do
         consumer.energy = tick % 2 == 0 and 1000 or 850
-        if mode == "constant_charged_buffers" then consumer.energy = 1000 end
-        if mode == "starter_energy" then consumer.energy = 1000 - tick end
+        if mode == "constant_charged_buffers" or mode == "idle_consumer" or mode == "drain_free_working" then consumer.energy = 1000 end
+        if mode == "starter_energy" then consumer.energy = 1000 - tick
+        else consumed[consumer.name] = (consumed[consumer.name] or 0) + 13 end
       end
       if steam_pump then steam_pump.energy = tick % 2 == 0 and 1000 or 999 end
       if mode == "topology_change" and tick == 20 then pipe.unit_number = 999 end
       if mode == "connection_change" and tick == 8 then connections[pipe][1][1].target_pipe_connection_index = 99 end
       if mode == "added_boiler" and tick == 8 then
-        local added = make("boiler", 12, { box("input", "aqua", 1), box("output", "vapor", 2) }, boiler.prototype)
+        local added = make("boiler", 12, { box("input", "aqua", 1), box("output", "vapor", nil, 50) }, boiler.prototype)
         added.burner, added.get_fuel_inventory = boiler.burner, boiler.get_fuel_inventory
         link(source, 1, added, 1); link(added, 2, pipe, 1)
       end
       if mode == "network_change" and tick == 20 then generator.electric_network_id = 9 end
+      -- One recovered runtime flicker inside the third burst restarts it
+      -- near the end of the window, which clamps it short.
+      if mode == "light_load_flicker" then
+        generator.electric_network_id = tick == flicker_tick and 9 or 7
+      end
       if mode == "transfer" and tick == 20 then
         require("scripts.factory_activity").record("insert", { target = chest, transfers = { { item = "coal", inserted = 1 } } })
       end
@@ -2597,7 +2710,7 @@ do
     local result = tasks.plan_status({ plan_id = queued.plan_id })
     local summary = map.map_summary({})
     return result, preflight, summary, { generator = generator, source = source, boiler = boiler, unload = unload, steam_pump = steam_pump,
-      mine = mine, set_steam = function(amount) steam, buffer_steam = amount, math.min(20, amount) end,
+      mine = mine, set_steam = function(amount) steam = amount end, full_steam = segment_capacity(2),
       target = target,
       before_mine = before_mine, line_mine = line_mine, line_to = line_to, line_far = line_far, refill = refill, supply = supply,
       set_fuel = function(items, chest_coal) fuel_items, coal = items, chest_coal or coal end,
@@ -2639,7 +2752,7 @@ do
     local consumers = { plant.mine, plant.refill, plant.unload }
     local function standby(status, steam, drained, generated)
       plant.generator.energy_generated_last_tick = generated or 6.67 * 2
-      plant.source.pumped_last_tick = steam >= 1000 and 0 or 4
+      plant.source.pumped_last_tick = steam >= plant.full_steam and 0 or 4
       plant.set_steam(steam)
       for _, consumer in ipairs(consumers) do consumer.status, consumer.energy = status, 1000 end
       if drained then plant.unload.energy = 0 end
@@ -2650,17 +2763,17 @@ do
       return state
     end
     local waiting = defines.entity_status.waiting_for_source_items
-    local full = standby(waiting, 1000)
+    local full = standby(waiting, plant.full_steam)
     check(full.autonomous_end_to_end and not full.blocked_output
       and not canonical(full.autonomy_blockers):find("blocked_output", 1, true),
       "a proven engine on standby with idle charged consumers keeps autonomy and is not blocked output")
     check(standby(waiting, 20).autonomous_end_to_end,
       "a proven engine on standby keeps autonomy with a partly filled steam segment")
-    check(standby(waiting, 1000, false, 0).autonomous_end_to_end,
+    check(standby(waiting, plant.full_steam, false, 0).autonomous_end_to_end,
       "a drain-free engine generating exactly nothing is on standby too")
-    check(not standby(defines.entity_status.working, 1000, false, 0).autonomous_end_to_end,
+    check(not standby(defines.entity_status.working, plant.full_steam, false, 0).autonomous_end_to_end,
       "a stopped water pump with a working consumer still revokes autonomy")
-    check(not standby(defines.entity_status.working, 1000).autonomous_end_to_end,
+    check(not standby(defines.entity_status.working, plant.full_steam).autonomous_end_to_end,
       "a stopped engine while a consumer is working revokes autonomy")
     check(not standby(waiting, 0).autonomous_end_to_end, "an engine without steam is never on standby")
     check(not standby(waiting, 20, true).autonomous_end_to_end,
@@ -2892,9 +3005,78 @@ do
     check(not canonical(retained.blockers):find("power_supply_component_not_proven", 1, true),
       "a supply's proof survives eviction of its validation by unrelated later proofs")
   end
-  for _, mode in ipairs({ "multiple_generators", "steam_pump", "fluid_buffer" }) do
+  for _, mode in ipairs({ "multiple_generators", "steam_pump", "fluid_buffer", "saturated_steam", "float32_statistics", "varying_generation",
+    "low_load_saturated", "rounding_drop", "pump_full_engine" }) do
     local valid = steam_validation(mode)
     check(valid.status == "completed", "native proof supports " .. mode .. " with actual aggregate attribution/connectivity")
+    if valid.status ~= "completed" then print("  " .. canonical(valid.outcomes[1].result.blockers)) end
+  end
+  do
+    -- A light load proves only over a long enough burst. A window too short
+    -- for full 120-tick bursts is evidence naming the duration that allows
+    -- them (7 s), not a throughput fault of the boiler.
+    local short = steam_validation("light_load_exact", 1)
+    local short_blockers = short.outcomes[1].result.blockers or {}
+    local row = short_blockers[1] or {}
+    check(short.status == "failed" and #short_blockers == 1 and row.reason == "bounded_fluid_activity_not_observed"
+      and row.class == "evidence" and row.suggested_duration_seconds == 7 and row.entity == "supplied-boiler",
+      "a light load on a window too short for a full burst names the duration that allows one")
+    if #short_blockers ~= 1 or row.class ~= "evidence" then print("  " .. canonical(short_blockers)) end
+    local full = steam_validation("light_load_exact", 3)
+    check(full.status == "completed" and full.outcomes[1].result.fluid_activity_samples >= 3,
+      "the same light load proves over a window long enough for full bursts")
+    if full.status ~= "completed" then print("  " .. canonical(full.outcomes[1].result.blockers)) end
+    -- Just under 1/119 units per tick needs about 120 consecutive pairs:
+    -- three full bursts with their 1-tick gaps do not fit 3 s, so 3 s is
+    -- evidence naming a strictly longer window, and that window proves.
+    local edge = steam_validation("light_load_exact", 3, 1 / 119.5)
+    local edge_row = (edge.outcomes[1].result.blockers or {})[1] or {}
+    check(edge.status == "failed" and edge_row.reason == "bounded_fluid_activity_not_observed"
+      and edge_row.class == "evidence" and (edge_row.suggested_duration_seconds or 0) > 3,
+      "a light load whose third burst is clamped at the floor window suggests a strictly longer window")
+    if edge_row.class ~= "evidence" or (edge_row.suggested_duration_seconds or 0) <= 3 then print("  " .. canonical(edge_row)) end
+    local edge_full = steam_validation("light_load_exact", edge_row.suggested_duration_seconds or 7, 1 / 119.5)
+    check(edge_full.status == "completed", "the same light load proves over the suggested window")
+    if edge_full.status ~= "completed" then print("  " .. canonical(edge_full.outcomes[1].result.blockers)) end
+    -- Under 1/120 units per tick no full burst clears the reserve: the
+    -- suggested window returns the throughput verdict, not more evidence.
+    local under = steam_validation("light_load_exact", 3, 1 / 120.5)
+    local under_row = (under.outcomes[1].result.blockers or {})[1] or {}
+    local under_full = steam_validation("light_load_exact", under_row.suggested_duration_seconds or 7, 1 / 120.5)
+    local under_full_row = (under_full.outcomes[1].result.blockers or {})[1] or {}
+    check(under_row.class == "evidence" and under_row.suggested_duration_seconds == 7
+      and under_full.status == "failed" and under_full_row.reason == "bounded_fluid_activity_not_observed"
+      and under_full_row.class == "throughput",
+      "an under-loaded plant reaches the throughput verdict at the suggested window instead of looping on evidence")
+    if under_full_row.class ~= "throughput" then print("  " .. canonical(under_row) .. " " .. canonical(under_full_row)) end
+    -- A recovered flicker that clamps the third burst of a full-length window
+    -- suggests a strictly longer window, never the one that just failed.
+    local flicker = steam_validation("light_load_flicker", 7, 0.01, 310)
+    local flicker_row = (flicker.outcomes[1].result.blockers or {})[1] or {}
+    check(flicker.status == "failed" and flicker_row.class == "evidence" and flicker_row.suggested_duration_seconds == 8,
+      "a flicker-shortened burst on a full-length window suggests a strictly longer window")
+    if flicker_row.suggested_duration_seconds ~= 8 then print("  " .. canonical(flicker_row)) end
+  end
+  do
+    -- At the maximum window no strictly longer one exists: the flicker-
+    -- shortened burst returns the throughput verdict without a suggestion.
+    local capped = steam_validation("light_load_flicker", 300, 0.01, 300 * 60 - 110)
+    local capped_row = (capped.outcomes[1].result.blockers or {})[1] or {}
+    check(capped.status == "failed" and capped_row.reason == "bounded_fluid_activity_not_observed"
+      and capped_row.class == "throughput" and capped_row.suggested_duration_seconds == nil,
+      "a flicker-shortened burst on the maximum window suggests no window")
+    if capped_row.class ~= "throughput" then print("  " .. canonical(capped_row)) end
+  end
+  do
+    -- Draining input is a throughput fault, never evidence for a longer window.
+    local draining = steam_validation("starter_source_output")
+    local evidence
+    for _, row in ipairs(draining.outcomes[1].result.blockers or {}) do
+      if row.suggested_duration_seconds then evidence = row end
+    end
+    check(draining.status == "failed" and canonical(draining):find("fluid_supply_draining", 1, true) and not evidence,
+      "a draining input domain names no evidence window")
+    if evidence then print("  " .. canonical(evidence)) end
   end
   local pump_result, _, _, pump_plant = steam_validation("steam_pump")
   pump_plant.steam_pump.pumped_last_tick = 0
@@ -2905,6 +3087,9 @@ do
     check(changed.status ~= "completed" and canonical(changed):find("component_topology_changed_during_validation", 1, true),
       "native " .. mode .. " returns structured topology-change evidence without a sampling fault")
   end
+  local idle_result = steam_validation("idle_consumer")
+  check(idle_result.status ~= "completed" and canonical(idle_result):find("bounded_power_delivery_not_observed", 1, true),
+    "a full buffer on an idle drain-free consumer is never power delivery, even while same-name consumers draw")
   local capped_result, _, capped = steam_validation("presentation_caps")
   check(capped_result.status == "completed" and capped.factory.omissions.capped_flow_nodes > 0,
     "native validation uses the full fluid/power graph independently of presentation caps")
@@ -2914,7 +3099,36 @@ do
     and not canonical(result):find("_native_activity", 1, true), "native fluid/power quantities and attribution samples never escape map summary")
   local narrow = steam_validation("input_buffer_capacity")
   check(narrow.status == "completed", "generator buffer capacity cannot stand in for the exact connected segment capacity")
-  for _, mode in ipairs({ "constant_charged_buffers", "lagged_fractional_generation" }) do
+  -- External electrical dependents: a working drain-free drill proves
+  -- delivery like an in-plant one; one idle at a full drain-free buffer is
+  -- neutral; one that never draws fails the plant at its own location.
+  for _, mode in ipairs({ "plus_line_drainfree", "plus_line_idle_drainfree" }) do
+    local dependent = steam_validation(mode)
+    check(dependent.status == "completed", "a steam plant supplying an external drain-free drill proves: " .. mode)
+    if dependent.status ~= "completed" then print("  " .. canonical(dependent.outcomes[1].result.blockers)) end
+  end
+  ;(function() -- own function scope: the enclosing one is at Lua's local limit
+    for _, mode in ipairs({ "plus_line_lowpower_drainfree", "plus_line_partial_idle_drainfree" }) do
+      local starved, row = steam_validation(mode), nil
+      for _, candidate in ipairs(starved.outcomes[1].result.blockers or {}) do
+        if candidate.reason == "bounded_power_delivery_not_observed" and candidate.entity == "line-drill" then row = candidate end
+      end
+      check(starved.status == "failed" and row ~= nil,
+        "an external drain-free dependent in a brownout or at a steady partial buffer is not neutral: " .. mode)
+    end
+  end)()
+  do
+    local unfed = steam_validation("plus_line_unfed_drainfree")
+    local unfed_row
+    for _, row in ipairs(unfed.outcomes[1].result.blockers or {}) do
+      if row.reason == "bounded_power_delivery_not_observed" then unfed_row = row end
+    end
+    check(unfed.status == "failed" and unfed_row and unfed_row.entity == "line-drill"
+      and unfed_row.position and unfed_row.position.x == 44 and unfed_row.position.y == 12,
+      "an external dependent without observed delivery is named at its entity and position")
+    if not unfed_row or unfed_row.entity ~= "line-drill" then print("  " .. canonical(unfed)) end
+  end
+  for _, mode in ipairs({ "constant_charged_buffers", "drain_free_working", "lagged_fractional_generation" }) do
     local observed = steam_validation(mode)
     check(observed.status == "completed", "native power evidence supports " .. mode)
   end
@@ -2925,7 +3139,7 @@ do
     "foreign_force", "uncharted", "unsupported_counter", "unsupported_boiler", "unreadable_source", "starter_steam",
     "starter_water", "starter_energy", "no_fuel_refill", "inactive_generation", "generation_interruption",
     "unobserved_supplier", "full_endpoint", "topology_change", "network_change", "transfer",
-    "fluid_buffer_full", "fluid_buffer_wrong", "ambiguous_boilers", "aliased_samples" }) do
+    "fluid_buffer_full", "fluid_buffer_wrong", "ambiguous_boilers", "aliased_samples", "half_segment", "segmented_pump" }) do
     local result = steam_validation(mode)
     check(result.status ~= "completed", "native steam-power proof rejects " .. mode)
   end

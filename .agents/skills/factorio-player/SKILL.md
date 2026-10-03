@@ -150,6 +150,13 @@ A `validate_factory_component` plan step proves one whole physical component.
 Its 1-16 `positions` only identify the component; one exact node position is
 enough. It samples for `duration_seconds`, and its transfer window opens
 when the step starts, so bootstrap insertions before it do not count.
+Validate a steam power component for 7 s or more while its network's consumers
+work: its boiler proves only under a steady draw of about 15 kW per segment of
+its steam domain (each inline pump adds one), and shorter windows need more
+(about 90 kW per segment at 1 s). An evidence-class
+`bounded_fluid_activity_not_observed` names `suggested_duration_seconds`; a
+throughput-class one on a supplied boiler with idle consumers means too little
+load, not a broken plant.
 
 - **Readiness refusal.** `FACTORY_COMPONENT_NOT_READY` (stage `readiness`)
   returns located rows naming the missing edge: a fuel edge, or a path from the

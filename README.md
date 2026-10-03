@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.19.8**.
+Current release: **0.19.9**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -522,7 +522,8 @@ progress accepts nothing, so research must be active before a lab-ended
 segment is validated, and a lab left without research mid-window ends it. Native thermal generators and terminal storage tanks support
 fluid acceptance; other consumer types remain unproven.
 The retained graph also supports native offshore-pump supply, separate-pipe
-boiler transformation, pipes (including underground connections), two-box pumps,
+boiler transformation, pipes (including underground connections), pumps (one
+box carrying both connections, outside any segment, as in 2.0.77),
 thermal generators, and terminal fluid buffers. Identities come from
 [Factorio 2.0.76 runtime/prototype evidence](https://lua-api.factorio.com/2.0.76/runtime-api.json):
 the offshore source tile's fluid, runtime fluidbox filters and temperature
@@ -555,25 +556,59 @@ sources as in its own window, and a supply burning faster than those sources
 mine fails it with `fuel_supply_deficit`. A supply powered by another supply
 is judged after it; supplies that power each other stay unproven. An electric component with no fluid nodes is
 proven without fluid samples. An
-idle or unpowered line on the network neither fails nor merges with the plant. Three eight-tick bursts inside the existing
-1–300 s parked validation window collect consecutive native pump movement and
-generator output; sparse gaps are never integrated. Each boiler needs three
+idle or unpowered line on the network neither fails nor merges with the plant. Three bursts of consecutive ticks inside the existing
+1–300 s parked validation window collect native pump movement and generator
+output; sparse gaps are never integrated. A burst lasts 120 ticks, but never
+more than a third of the window (`duration_seconds` × 20 ticks): a saturated
+steam domain shows only the engines' draw, so a light load needs long bursts.
+The floor for a boiler proof on a saturated domain is a steady draw of about
+15 kW per segment of its steam domain at `duration_seconds` 7 or more (each
+inline pump adds a segment; three full bursts and their gaps do not fit 6 s),
+and more than about 90 kW per segment at 1 s, 45 kW at 2 s or 30 kW at 3 s. A
+boiler still short of its reserve only in a shortened burst (a shorter window,
+or a burst clamped after a recovered flicker) while its input domain held is
+reported as evidence-class `bounded_fluid_activity_not_observed` with
+`suggested_duration_seconds` 7, or one second more than a window of 7 s or
+longer; a 300 s window, or a draining input, gets the throughput row instead;
+validate a steam plant while its consumers work. Each boiler needs three
 uniquely attributable output mass balances with actual fuel consumption and
-non-draining water input. Segment stock is sampled once per identity; the
-balance reserves one fluid unit for integer rounding and subtracts measured
-pump inflow. A shared output segment with several boilers remains unproven.
+non-draining water input. Balances run over fluid domains: a segment, plus any
+box outside a segment joined to it by a proven pipe connection (in 2.0.77 the
+offshore pump output, the boiler's steam output and a pump's single box report
+no segment and hold their own stock, so a pump joins its two neighbouring pools
+into one domain where its draw and feed cancel; a pump box inside a segment is
+refused). Each pool is counted once; a segment's capacity sums its member
+boxes, since `get_capacity` is per box, and a segment's contents include every
+member box. The balance reserves one fluid unit per member segment, guarding
+the documented uint32 segment contents (2.0.77 returns fractional stock, so the
+reserve is conservative), and subtracts measured pump inflow; the input and
+whole-window draining checks allow the same rounding. A domain that changes
+identity during the window, or is shared by several boilers, remains unproven.
 Boilers must also exercise actual fuel replenishment. Pumps and generators
 need repeated activity and per-path recency; none receives fabricated mining
 cycles or crafting counters.
 
-Whole-network native generation increments must match the sum of the observed
-generators' actual output in each sampled tick, including when several generators
-share a name. Unknown suppliers, accumulator discharge and counter resets are
-unproven. An input-only electrical material participant must show actual buffer
-use and at least three recharge events, rather than shared network identity or
-working status alone. Stable buffers that conceal both use and recharge remain
-unproven. Fluid endpoints require compatible identity/temperature and segment
-capacity, with actual generator activity or distinct buffer arrivals. Draining
+Whole-network native generation increments (the network's output counts) must
+match the sum of the observed generators' actual output in each sampled tick,
+including when several generators share a name. In 2.0.77 those counts lead
+`energy_generated_last_tick` by one tick, quantize each increment to 1/65536 J
+and carry each tick's flow at float32 precision, so the comparison is aligned
+and allows those roundings only. Unknown suppliers,
+accumulator discharge and counter resets are unproven. An input-only electrical
+material participant must show actual buffer use and at least three delivery
+events, rather than shared network identity or working status alone: a buffer
+recharge, or, since a supplied buffer can read full every tick, a positive,
+nondecreasing buffer under a positive native drain, or on a working drain-free
+consumer (2.0.77 electric mining drills) while its network's consumption for
+its prototype rose. Exact electrical
+dependents outside the plant's material paths contribute the same private
+delivery observations without joining its component, and their blockers name
+the dependent's entity and position. A full buffer on an idle drain-free
+consumer is never delivery; an external dependent idle throughout at such a
+buffer neither proves nor blocks its supplying plant. Fluid endpoints require compatible identity/temperature and segment
+capacity, with actual generator activity or distinct buffer arrivals; an engine
+that generated last tick accepts even at a full segment, since a pump refills
+its segment to exactly full after it consumed. Draining
 fluid or electrical stores, incomplete transfer history, character transfers,
 changed entities/connections/constraints/network bindings and stopped branches
 refuse proof. Current native autonomy revokes when pump/generator activity or

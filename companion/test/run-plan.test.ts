@@ -124,6 +124,24 @@ describe("current queued-plan protocol", () => {
     expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status", "cancel", "plan_status"]);
   });
 
+  it("preserves structured split selector identities in a failed terminal bridge response", async () => {
+    const positions = [{ x: 0, y: 0 }, { x: 2, y: 0 }];
+    const selector = { code: "FACTORY_COMPONENT_SPLIT", stage: "selector",
+      component_signatures_by_position: positions.map((position, i) => ({ position,
+        component_id: `component-${i + 1}`, component_signature: `exact-component-${i + 1}` })) };
+    const terminal = { plan_id: 17, status: "failed", completed_steps: 0,
+      outcomes: [{ step: 1, action: "validate_factory_component", status: "failed",
+        error: "FACTORY_COMPONENT_SPLIT", result: selector }] };
+    const call = vi.fn(async (method: string) => method === "queue_plan" ? { plan_id: 17 } : terminal);
+    const result = await executeRunPlan({ call } as unknown as Bridge, runPlanSchema.parse({ steps: [
+      { action: "validate_factory_component", source_tick: 300, positions, duration_seconds: 1 },
+      { action: "walk_to", x: 3, y: 0 },
+    ] }));
+    expect(result).toEqual(terminal);
+    expect(result.outcomes[0]?.result).toEqual(selector);
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status"]);
+  });
+
   it("marks effects unknown instead of fabricating zero progress when cancellation readback fails", async () => {
     let now = 0;
     const controller = new AbortController();

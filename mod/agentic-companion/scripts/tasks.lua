@@ -749,8 +749,12 @@ local function validate_factory_component(plan, step)
     -- historical debt; the transfer window opens when validation starts.
     step._window_tick = math.max(step.source_tick, game.tick)
     step._drill_products = {}
-    step._baseline = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions,
+    local baseline = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions,
       drill_products = step._drill_products })
+    if baseline.code == "FACTORY_COMPONENT_SPLIT" then
+      return { status = "failed", detail = baseline.code, outcome = baseline }
+    end
+    step._baseline = baseline
     local rows = hard_rows(step._baseline)
     if not step._baseline.topology_ready or #rows > 0 then
       -- Preflight is topology only. A missing fuel edge or downstream path is
@@ -810,6 +814,9 @@ local function validate_factory_component(plan, step)
   end
   local final = map_summary.factory_component_sample({ source_tick = step._window_tick, positions = step.positions,
     drill_products = step._drill_products })
+  if final.code == "FACTORY_COMPONENT_SPLIT" then
+    return { status = "failed", detail = final.code, outcome = final }
+  end
   -- A sample whose topology or hard rows differ from the window's may be one
   -- flickering runtime read: skip it, and end the window only when the next
   -- sample confirms the difference. A recovered flicker is reported.

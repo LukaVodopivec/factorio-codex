@@ -413,14 +413,26 @@ check(rewired._signature ~= before_rewire and rewired.component_signature ~= ori
   "changed physical relationships change the complete component signature even with identical node positions")
 large[6].drop_target = large_processor
 local ok_missing, missing = pcall(map.factory_component_sample, { source_tick = 1200, positions = { { x = 31, y = 31 } } })
-local ok_split, split = pcall(map.factory_component_sample, { source_tick = 1200, positions = { large_sink.position, dense[1].position } })
+local other_component = map.factory_component_sample({ source_tick = 1200, positions = { dense[1].position } })
+local split = map.factory_component_sample({ source_tick = 1200,
+  positions = { large_sink.position, dense[1].position, large_processor.position, dense[1].position } })
+check(split.code == "FACTORY_COMPONENT_SPLIT" and split.stage == "selector"
+  and #split.component_signatures_by_position == 4,
+  "split selectors return a structured failure with every requested position, including duplicates")
+for i, expected in ipairs({ { large_sink, unrelated }, { dense[1], other_component },
+  { large_processor, unrelated }, { dense[1], other_component } }) do
+  local row = split.component_signatures_by_position[i]
+  check(row.position.x == expected[1].position.x and row.position.y == expected[1].position.y
+    and row.component_id == expected[2].component_id and row.component_signature == expected[2].component_signature,
+    "split selector row " .. i .. " preserves exact complete-graph component identity")
+end
 local duplicate = mock.entity({ valid = true, name = "overlap", type = "container", position = large_sink.position, force = force, status = 2 })
 large[#large + 1] = duplicate
 local ok_ambiguous, ambiguous = pcall(map.factory_component_sample, { source_tick = 1200, positions = { large_sink.position } })
 table.remove(large)
-check(not ok_missing and missing:match("FACTORY_COMPONENT_TARGET_NOT_FOUND") and not ok_split and split:match("FACTORY_COMPONENT_SPLIT")
+check(not ok_missing and missing:match("FACTORY_COMPONENT_TARGET_NOT_FOUND")
   and not ok_ambiguous and ambiguous:match("FACTORY_COMPONENT_TARGET_AMBIGUOUS"),
-  "full-graph sampling preserves structured missing, split and ambiguous failures")
+  "full-graph sampling preserves missing and ambiguous target errors")
 local too_many = {}; for i = 1, 17 do too_many[i] = large_sink.position end
 check(not pcall(map.factory_component_sample, { source_tick = 1200, positions = {} })
   and not pcall(map.factory_component_sample, { source_tick = 1200, positions = too_many }),

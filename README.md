@@ -261,7 +261,15 @@ counts; `factory.omissions` counts omitted graph rows. These omissions make the
 presentation partial, not the physical evidence incomplete. Exact component
 sampling for `validate_factory_component` resolves 1–16 caller-named positions
 against the complete graph, including nodes and components absent from the
-response. Missing, ambiguous and split-component selections fail structurally.
+response. Missing and ambiguous selections retain their target errors. A
+split-component selection terminates validation with a failed step whose
+`result` contains `code: "FACTORY_COMPONENT_SPLIT"`, `stage: "selector"`, and
+`component_signatures_by_position`: an array in requested position order,
+including duplicates, of `{position: {x, y}, component_id, component_signature}`.
+Every row identifies the exact complete-graph component at that position.
+This failure also applies when a later validation sample observes a split;
+validation performs no physical action or inventory transfer, and later plan
+steps do not execute. Earlier committed steps retain their effects.
 
 Blocker rows are classed and located. `structural` rows describe the build
 itself (a missing edge or path, inventory-proven `blocked_output`, or a raw

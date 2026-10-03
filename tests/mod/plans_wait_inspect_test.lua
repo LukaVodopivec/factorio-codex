@@ -22,22 +22,48 @@ local force = { technologies = { automation = technology }, current_research = t
 local body = { valid = true, position = { x = 0, y = 0 }, surface = surface, force = force,
   walking_state = {}, mining_state = {}, crafting_queue = {} }
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
-local function runner() return { start = function() end, tick = function() return { status = "done" } end } end
+local all_physical_starts, all_physical_ticks, transfer_effects, placement_effects = 0, 0, 0, {}
+local function runner(kind) return {
+  start = function(task)
+    all_physical_starts = all_physical_starts + 1
+    if kind == "place" then
+      placement_effects[#placement_effects + 1] = { name = task.item, x = task.position.x, y = task.position.y }
+    end
+  end,
+  tick = function()
+    all_physical_ticks = all_physical_ticks + 1
+    if kind == "insert" or kind == "extract" then
+      transfer_effects = transfer_effects + 1
+      return { status = "done", outcome = { transfers = { { item = "iron-plate", inserted = 1, extracted = 1 } } } }
+    end
+    return { status = "done" }
+  end,
+} end
 local physical_starts, physical_ticks = 0, 0
 local physical_runner = {
-  start = function() physical_starts = physical_starts + 1; body.walking_state = { walking = true } end,
-  tick = function() physical_ticks = physical_ticks + 1 end,
+  start = function() physical_starts = physical_starts + 1; all_physical_starts = all_physical_starts + 1; body.walking_state = { walking = true } end,
+  tick = function() physical_ticks = physical_ticks + 1; all_physical_ticks = all_physical_ticks + 1 end,
 }
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.craft"] = physical_runner, runner(), runner()
-local place_runner = runner()
+package.loaded["scripts.actions.pickup"] = runner()
+local place_runner = runner("place")
 package.loaded["scripts.actions.build"] = { place = place_runner, rotate = runner(), set_recipe = runner() }
-package.loaded["scripts.actions.transfer"] = { insert = runner(), extract = runner() }
+package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract") }
 package.loaded["scripts.actions.build_plan"] = runner()
 local component_sample_count, component_ready, component_transfers, sampled_since = 0, true, 0, {}
 local source_only = false
+local split_after
 package.loaded["scripts.map_summary"] = { factory_component_sample = function(params)
   component_sample_count = component_sample_count + 1
   sampled_since[#sampled_since + 1] = params.source_tick
+  if split_after and component_sample_count > split_after then
+    local rows = {}
+    for i, position in ipairs(params.positions) do
+      rows[i] = { position = { x = position.x, y = position.y },
+        component_id = "component-" .. i, component_signature = "exact-component-" .. i }
+    end
+    return { code = "FACTORY_COMPONENT_SPLIT", stage = "selector", component_signatures_by_position = rows }
+  end
   return { tick = game.tick, source_tick = params.source_tick, component_id = "component-1",
     component_signature = "source:0:0|processor:1:0|sink:2:0", selected_node_ids = { "node-1" },
     products_finished_total = source_only and 0 or 9 + component_sample_count,
@@ -150,6 +176,40 @@ check(sampled_since[1] == 101 and sampled_since[#sampled_since] == 101
 local activity = require("scripts.factory_activity").snapshot(100)
 check(#activity.validations == 1 and activity.validations[1].component_signature == validation_done.outcomes[1].result.component_signature,
   "successful validation is retained in the existing bounded activity evidence")
+
+for _, after in ipairs({ 0, 1 }) do
+  storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil },
+    factory_activity = { epoch_tick = 300, events = {}, events_omitted = 0 } }
+  component_sample_count, split_after, physical_starts, physical_ticks = 0, after, 0, 0
+  all_physical_starts, all_physical_ticks, transfer_effects, placement_effects = 0, 0, 0, {}
+  local positions = { { x = 0, y = 0 }, { x = 2, y = 0 } }
+  local split_plan = tasks.queue_plan({ steps = {
+    { action = "place_entity", name = "stone-furnace", x = 1, y = 0 },
+    { action = "validate_factory_component", source_tick = 300, positions = positions, duration_seconds = 1 },
+    { action = "walk_to", x = 3, y = 0 },
+  } })
+  for _, tick in ipairs({ 301, 302, 322, 342, 362, 382 }) do game.tick = tick; tasks.on_tick() end
+  local terminal = tasks.plan_status({ plan_id = split_plan.plan_id })
+  local outcome = terminal.outcomes[2].result
+  check(terminal.status == "failed" and terminal.completed_steps == 1 and #terminal.outcomes == 2
+    and terminal.outcomes[1].status == "completed" and terminal.outcomes[2].status == "failed"
+    and outcome.code == "FACTORY_COMPONENT_SPLIT" and outcome.stage == "selector"
+    and #outcome.component_signatures_by_position == 2,
+    "split at sample " .. (after + 1) .. " terminates with structured selector failure and retains committed prior step")
+  for i, row in ipairs(outcome.component_signatures_by_position) do
+    check(row.position.x == positions[i].x and row.position.y == positions[i].y
+      and row.component_id == "component-" .. i and row.component_signature == "exact-component-" .. i,
+      "plan split preserves position " .. i .. " and its exact component identity")
+  end
+  check(#placement_effects == 1 and placement_effects[1].name == "stone-furnace"
+    and placement_effects[1].x == 1 and placement_effects[1].y == 0,
+    "split validation preserves the earlier committed placement effect")
+  check(all_physical_starts == 1 and all_physical_ticks == 1 and transfer_effects == 0
+    and physical_starts == 0 and physical_ticks == 0 and component_sample_count == after + 1
+    and require("scripts.factory_activity").snapshot(300).transfer_actions == 0,
+    "split validation starts no physical action or transfer and never executes its dependent walk")
+end
+split_after = nil
 
 source_only, component_sample_count = true, 0
 storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }

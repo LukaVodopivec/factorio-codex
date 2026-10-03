@@ -1682,6 +1682,7 @@ function M.factory_component_sample(params)
   local flow = summary.factory.material_flow
   local selected_component
   local selected_ids = {}
+  local component_signatures_by_position, split = {}, false
   for _, position in ipairs(params.positions) do
     local found, matches
     for _, node in ipairs(flow.nodes) do
@@ -1696,11 +1697,17 @@ function M.factory_component_sample(params)
     end
     if not component then error("FACTORY_COMPONENT_TARGET_OMITTED: selected node has no component") end
     if selected_component and selected_component.component_id ~= component.component_id then
-      error("FACTORY_COMPONENT_SPLIT: positions do not belong to one exact physical component")
+      split = true
     end
+    component_signatures_by_position[#component_signatures_by_position + 1] = {
+      position = { x = position.x, y = position.y }, component_id = component.component_id,
+      component_signature = component.component_signature,
+    }
     selected_component = component
     selected_ids[#selected_ids + 1] = found.id
   end
+  if split then return { code = "FACTORY_COMPONENT_SPLIT", stage = "selector",
+    component_signatures_by_position = component_signatures_by_position } end
   table.sort(selected_ids)
   return {
     tick = summary.tick, source_tick = params.source_tick,

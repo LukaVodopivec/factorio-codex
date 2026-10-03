@@ -10,7 +10,7 @@ import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitF
 import { normalizeCanPlace, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.19.7";
+export const MCP_SERVER_VERSION = "0.19.8";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();
@@ -148,7 +148,7 @@ export function registerMcpTools(
     flow_fluids: z.array(z.string().min(1)).max(32).optional(),
     activity_since_tick: z.number().int().nonnegative().optional(),
   }).strict();
-  server.registerTool("map_summary", { description: "Compact aggregate of already charted, player-force factory entities: installed capacity estimates, normalized status, native force/surface flow rates, conservative physical connectivity, and run-local character transfers. Read material_flow.components[].state (autonomy_blockers, downstream_kind) and character_transfers to find the automation-debt head. It never charts terrain or exposes exact remote inventories. Use detail=full only for rare bounded landmark/resource/shoreline scouting.", inputSchema: mapSummarySchema }, async (p) => {
+  server.registerTool("map_summary", { description: "Compact aggregate of already charted, player-force factory entities: installed capacity estimates, normalized status, native force/surface flow rates, conservative physical connectivity, and run-local character transfers. Read material_flow.components[].state (autonomy_blockers, downstream_kind) and character_transfers to find the automation-debt head. Rows are capped; material_flow component_count, edge_count, autonomous_component_count, validated_component_count and products_finished_total count the whole graph. It never charts terrain or exposes exact remote inventories. Use detail=full only for rare bounded landmark/resource/shoreline scouting.", inputSchema: mapSummarySchema }, async (p) => {
     try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", mapSummarySchema.parse(p)))); }
     catch (error) { return failure(error); }
   });

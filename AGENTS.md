@@ -102,12 +102,13 @@ machines, physical edges, validated or autonomous components, character
 transfers per finished product, and production. Astra, not the supervisor, turns
 low growth into NOW; the supervisor never replaces a pilot for low growth alone.
 
-`stop` is recorded emergency cancellation, used only for an explicit the owner stop,
-retained-work reconciliation, or a replacement that cannot otherwise reach
-physical quiescence. For an explicit the owner stop the supervisor, recording each
-step: calls factorio `stop`; pauses both role goals natively (`/goal pause`,
-read back) and interrupts any active role turn (TUI stop control or app-server
-`turn/interrupt` for the exact thread and turn, read back); checks that no
+`stop` is the supervisor's recorded emergency cancellation (the pilot never
+calls it), used only for an explicit the owner stop, retained-work reconciliation,
+or a replacement that cannot otherwise reach physical quiescence. For an
+explicit the owner stop the supervisor, recording each step: calls factorio `stop`;
+pauses both role goals natively (`/goal pause`, read back) and interrupts any
+active role turn (TUI stop control or app-server `turn/interrupt` for the exact
+thread and turn, read back); checks that no
 task-owned command still runs; ensures Astra makes no further ledger write; then
 finishes the recorder and stops the server. `docs/LIVE-VALIDATION.md` holds the
 pre-`GO` stop rehearsal, which resumes both goals before `GO`.

@@ -97,6 +97,10 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/A TUI interruption alone does not authorize physical cancellation/);
     expect(flatSkill).toMatch(/a role told of it never calls `stop`, makes no further write/i);
     expect(pilot).toMatch(/If the supervisor says the owner stopped the run, do not call `stop`/);
+    expect(pilot).toMatch(/Never call `stop`; it is the supervisor's emergency cancellation/);
+    expect(pilot).toMatch(/To abandon a stalled wait, queue the corrective plan without `after_plan_id`: it runs while the wait is parked\. Otherwise let the wait's bounded timeout end it/);
+    expect(pilot).not.toMatch(/queue the corrective plan as its successor/);
+    expect(read("AGENTS.md").replace(/\s+/g, " ")).toMatch(/`stop` is the supervisor's recorded emergency cancellation \(the pilot never calls it\)/);
     expect(pilot).toMatch(/obtain fresh structured state and inspect exact known plan IDs with `plan_status`/);
     expect(pilot).toMatch(/A monitoring timeout leaves the plan pending/);
     expect(pilot).toMatch(/Retain completed physical effects; there is no rollback/);
@@ -139,7 +143,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/at every report checkpoint, after every compaction, and immediately before any manual service batch/);
     expect(pilot).toMatch(/about 30,000 game ticks[\s\S]*Re-read the ledger just before/);
     expect(strategist).toMatch(/Revise the ledger only when NOW, NEXT, LATER, a package, or an assumption changes/);
-    expect(strategist).toMatch(/Drop a package once the pilot reports it queued, or once fresh reads show its placements already standing/);
+    expect(strategist).toMatch(/Leave a queued or standing package until your next publish replaces it; never write a revision only to drop a package/);
+    expect(strategist).not.toMatch(/Drop a package once the pilot reports it queued/);
     for (const text of [pilot, strategist]) expect(text).toMatch(/A second hand batch of the same item (?:is|counts as) a service cycle/);
     expect(pilot).not.toMatch(/no safe successor/);
   });
@@ -190,7 +195,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/if it fails again, report `false-negative <package>`/);
     expect(strategist).toMatch(/On `false-negative <package>`, record a suspected validator false negative in `assumptions`/);
     expect(flat[2]).toMatch(/`FACTORY_COMPONENT_NOT_READY` \(stage `readiness`\)[\s\S]*segment's existing buffer or consumer[\s\S]*Only `physical_source_downstream_path_unproven`/);
-    expect(pilot).toMatch(/Inventory-proven `blocked_output` means the terminal buffer is full: empty it as a named bridge or report it, and never add a chest or sink/);
+    expect(pilot).toMatch(/Inventory-proven `blocked_output` means the terminal buffer is full: empty it only for items a queued package requires; otherwise leave it full and report it\. Never add a chest or sink/);
   });
 
   it("keeps the intro's hints overridable and removal guarded", () => {
@@ -204,6 +209,39 @@ describe("persistent two-brain coordination contract", () => {
     expect(normalized).not.toMatch(/exactly one terminal buffer/);
     expect(skill.replace(/\s+/g, " ")).toMatch(/A package removal step removes one owned entity \(`target_kind` `owned`, `expected_name`, count 1\)\. Removal is refused while the entity holds items, fuel included, or while hand-crafting is queued/);
     expect(pilot).toMatch(/or a removal whose target is gone\) and queue the rest in order/);
+  });
+
+  it("chains only dependent pilot plans, starts near GO, and names only callable tools", () => {
+    expect(pilot).toMatch(/Pass the current plan's ID as `after_plan_id` only when the new plan needs that plan's effects/);
+    expect(pilot).toMatch(/Queue independent productive work without it: FIFO order already sequences it, and it runs while a wait or validation is parked/);
+    expect(pilot).toMatch(/A chained successor is cancelled when its predecessor fails, times out, or ends partial/);
+    expect(pilot).not.toMatch(/Every `queue_plan` while a plan is active passes/);
+    expect(pilot).toMatch(/never call `plan_status` while no successor is queued/);
+    expect(pilot).toMatch(/Until the first package arrives, gather only within 30 tiles of your GO position, or of the site NOW's `essential_prerequisite` sent you to/);
+    expect(pilot).toMatch(/A package whose placements already stand exactly as specified is done: skip it, never report it as falsified/);
+    const registered = new Set([...read("companion/src/mcp/server.ts").matchAll(/registerTool\("([a-z_]+)"/g)].map((match) => match[1]));
+    const named = [...pilot.matchAll(/`tools\.mcp__factorio__([a-z_]+)`/g)].map((match) => match[1]);
+    expect(named.length).toBeGreaterThan(0);
+    for (const tool of named) expect(registered).toContain(tool);
+    expect(pilot).toContain("`tools.mcp__factorio__<tool>` with one prefix");
+    expect(pilot).toContain("`tools.codex_tui__send_message_to_thread`");
+    expect(pilot).toContain("`tools.execution_settings`");
+    expect(pilot).not.toMatch(/mcp__factorio__(?:mcp__|codex_tui__|send_message_to_thread|execution_settings)/);
+  });
+
+  it("returns NOW to input when input is flat and keeps proofs continuous", () => {
+    const flatStrategist = strategist.replace(/\s+/g, " ");
+    const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ");
+    expect(flatStrategist).toMatch(/When input rate has not grown for two report checkpoints while plates accumulate in buffers, NOW becomes more extraction and smelting funded from those buffers\. This is a principle, not a build or technology order/);
+    for (const text of [flatStrategist, knowledge])
+      expect(text).toContain("Carrying finished plates or hardware to a build site is capital, not service; only feeding a running machine's input or fuel is service.");
+    expect(flatStrategist).toMatch(/When a note holds your own proven template for the bottleneck, the next package reuses it at a new anchor after one `can_place` batch/);
+    expect(knowledge).toMatch(/Flat input while plates pile up in buffers means those plates should fund more extraction and smelting/);
+    expect(knowledge).toMatch(/proven Codex-authored layout reused at a new anchor/);
+    expect(knowledge).toMatch(/A full buffer of construction items is the intended stop for that line/);
+    expect(knowledge).toMatch(/take from the buffer only what a queued package requires/);
+    expect(flatStrategist).toMatch(/A package extending a proven component ends the same way, re-validating the joined component/);
+    expect(flatStrategist).toMatch(/would merge into a component with unresolved blockers, prefer ending the extension at its own terminal buffer, with no edge into it/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

@@ -2,6 +2,7 @@
 local companion = require("scripts.companion")
 local factory_activity = require("scripts.factory_activity")
 local fluid_connections = require("scripts.fluid_connections")
+local output_target = require("scripts.output_target")
 
 local M = {}
 local MAX_EDGES = 256
@@ -54,6 +55,8 @@ local STRUCTURAL_RAW_STATUSES = {
 -- A validated producer that is out of fuel, power, resources or enabled
 -- state is not currently autonomous; ordinary input/output waits are.
 local AUTONOMY_REVOKING_STATUSES = { no_fuel = true, no_power = true, no_resources = true, disabled = true }
+-- Electrical consumers in these sampled states draw no work power.
+local IDLE_CONSUMER_STATUSES = { idle = true, insufficient_input = true, full_output = true }
 local MAX_COMPONENT_BLOCKER_DETAILS = 3
 
 local FLOW_PRECISIONS = {
@@ -387,6 +390,37 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     retained[node._key] = node
   end
   local edges, seen_edges, diagnostics = {}, {}, {}
+  -- The one charted flow node of the drill's force whose collision box holds
+  -- its drop position, by the native point/collision endpoint query, that can
+  -- take a mined product: a conveyor carries anything, other recipients must
+  -- accept one natively.
+  local CONVEYORS = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
+    ["lane-splitter"] = true, loader = true, ["loader-1x1"] = true, ["linked-belt"] = true }
+  local function pending_drill_recipient(entity)
+    local ok, found = pcall(function()
+      local point, products = entity.drop_position, mining_products(entity)
+      local function accepts(candidate)
+        if CONVEYORS[candidate.type] then return true end
+        for _, product in ipairs(products) do
+          if product.type == "item" and candidate.can_insert({ name = product.name, count = 1 }) then return true end
+        end
+        return false
+      end
+      local match
+      for _, candidate in ipairs(entity.surface.find_entities_filtered({
+        area = output_target.endpoint_area(point, entity.type, "output"), force = entity.force })) do
+        if candidate.valid and candidate ~= entity and retained[entity_key(candidate)]
+          and output_target.can_target_type(candidate.type, "output")
+          and output_target.recipient_contains(candidate.bounding_box, point, entity.type, "output")
+          and accepts(candidate) then
+          if match then return nil end
+          match = candidate
+        end
+      end
+      return match
+    end)
+    return ok and found ~= nil
+  end
   local function diagnostic(node, reason, confidence, class, related_edge)
     confidence = confidence or "exact"
     diagnostics[#diagnostics + 1] = { node_id = node.id, reason = reason, confidence = confidence,
@@ -424,6 +458,11 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       elseif entity.type == "mining-drill" then
         local ok_drop, drop = pcall(function() return entity.drop_target end)
         if not ok_drop then diagnostic(node, "output_connection_ambiguous_requires_local_inspection", "ambiguous")
+        elseif drop == nil and pending_drill_recipient(entity) then
+          -- Factorio binds a drill's drop_target at its first output; until
+          -- then exactly one charted recipient at its drop position is a
+          -- pending binding, not a missing sink. It still proves no path.
+          node._output_pending = true
         elseif not drop or not add_edge(entity, drop, "machine_output") then
           diagnostic(node, "output_has_no_physical_sink", nil, nil, { kind = "machine_output" })
         end
@@ -529,6 +568,27 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
   for _, node in ipairs(nodes) do
     if node.type == "generator" and not node._power_delivery then
       diagnostic(node, "electrical_material_consumer_unproven", "unsupported")
+    end
+  end
+  -- An engine on standby: its own box holds steam above the fluid's default
+  -- temperature and every material consumer on its network is idle with a
+  -- charged buffer, so it serves at most their constant drain. No material
+  -- demand is neither an interruption nor blocked output. Standby never
+  -- proves anything by itself: autonomy still needs retained validation.
+  local demand = {}
+  for _, node in ipairs(nodes) do
+    if node._power_consumer then
+      local energy = number_property(node._entity, "energy")
+      if not IDLE_CONSUMER_STATUSES[node.status] or not energy or energy <= 0 then demand[node._power_network] = true end
+    end
+  end
+  for _, node in ipairs(nodes) do
+    local box = node.type == "generator" and node._fluid_supported and node._fluid_boxes and node._fluid_boxes[1]
+    if box and node._power_delivery and not demand[node._power_network]
+      and (number_property(node._entity, "energy_generated_last_tick") or -1) >= 0
+      and box.amount > 0 and type(box.temperature) == "number" and box.temperature > node._generator.default_temperature
+      and fluid_compatible(box, box.name, box.temperature) then
+      node._standby = true
     end
   end
   table.sort(edges, function(a, b)
@@ -760,6 +820,26 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     end
     return reached
   end
+  -- Whether a pump's fluid reaches engines through fluid entities only, and
+  -- every engine it reaches is on standby: it stopped from backpressure.
+  local function feeds_only_standby(start_id)
+    local queue, seen, head, found = { start_id }, { [start_id] = true }, 1, false
+    while head <= #queue do
+      local id = queue[head]; head = head + 1
+      for _, next_id in ipairs(outgoing[id] or {}) do
+        local next_node = node_by_id[next_id]
+        if not seen[next_id] and next_node then
+          seen[next_id] = true
+          if next_node.type == "generator" then
+            if not next_node._standby then return false end
+            found = true
+          elseif FLUID_TYPES[next_node.type] then queue[#queue + 1] = next_id
+          else return false end
+        end
+      end
+    end
+    return found
+  end
   local function ancestors(start_id)
     local queue, seen, head = { start_id }, {}, 1
     while head <= #queue do
@@ -975,7 +1055,7 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
           -- terminal endpoint that refuses the item proves blocked output.
           if not accepting then
             node._accepting = false
-            if node._downstream_buffer or node.role == "sink" then node._blocked_output = true end
+            if node._downstream_buffer or (node.role == "sink" and not node._standby) then node._blocked_output = true end
           end
         end
       end
@@ -1173,13 +1253,18 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         elseif #node.products == 0 then block(node, "output_identity_unproven", "structural") end
         if not reaches_downstream(id) then
           unreached[#unreached + 1] = node
-          block(node, "downstream_acceptance_path_unproven", "structural",
-            { kind = "downstream_path" }, "readiness")
+          if node._output_pending then
+            block(node, "drill_output_target_pending_first_output", "evidence", { kind = "machine_output" }, "readiness")
+          else
+            block(node, "downstream_acceptance_path_unproven", "structural",
+              { kind = "downstream_path" }, "readiness")
+          end
         end
       end
-      if node.type == "generator" and (not node._accepting or (number_property(node._entity, "energy_generated_last_tick") or 0) <= 0)
+      if node.type == "generator" and not node._standby
+        and (not node._accepting or (number_property(node._entity, "energy_generated_last_tick") or 0) <= 0)
         or (node.type == "offshore-pump" or node.type == "pump")
-        and (number_property(node._entity, "pumped_last_tick") or 0) <= 0 then
+        and (number_property(node._entity, "pumped_last_tick") or 0) <= 0 and not feeds_only_standby(id) then
         interrupted = "native_fluid_dependency_inactive"
       end
       if node.role == "sink" and node._accepting then accepting_sinks = accepting_sinks + 1 end
@@ -1199,8 +1284,23 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         if supplier and supplier ~= component then supplied_by[supplier] = true end
       end
       if node.requires_fuel and not upstream_proven(id, node.fuel_categories or {}, true) then
+        local related_edge = { kind = "fuel_input" }
+        -- A burner inserter refuels only from fuel it carries. When its
+        -- produced cargo is known and none of it burns here, say so: it needs
+        -- a fuel feed of its own, not proof of the cargo it already moves.
+        if node.role == "transport" then
+          local cargo = upstream_products(id)
+          if next(cargo) then
+            related_edge.transport_cargo_fuel = false
+            for _, product in pairs(cargo) do
+              if product.fuel_category and (node.fuel_categories or {})[product.fuel_category] then
+                related_edge.transport_cargo_fuel = nil
+              end
+            end
+          end
+        end
         block(node, next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven",
-          "structural", { kind = "fuel_input" }, "readiness")
+          "structural", related_edge, "readiness")
       end
       if node.status == "no_power" or node.status == "low_power" or node.status == "no_fuel"
         or node.status == "insufficient_input" or node.status == "full_output" and not node.fuel_return_saturation
@@ -1382,6 +1482,15 @@ local function present_flow(flow, omissions)
       end
       result[field][#result[field] + 1] = row
     end
+  end
+  -- Whole-graph counters beside the capped rows, so a recorder never
+  -- measures the factory from the presented subset.
+  result.component_count, result.edge_count = #flow.components, #flow.edges
+  result.autonomous_component_count, result.validated_component_count, result.products_finished_total = 0, 0, 0
+  for _, component in ipairs(flow.components) do
+    if component.state.autonomous_end_to_end then result.autonomous_component_count = result.autonomous_component_count + 1 end
+    if component.state.validation then result.validated_component_count = result.validated_component_count + 1 end
+    result.products_finished_total = result.products_finished_total + component.products_finished_total
   end
   omissions.capped_flow_nodes = #flow.nodes - #result.nodes
   omissions.capped_flow_edges = #flow.edges - #result.edges

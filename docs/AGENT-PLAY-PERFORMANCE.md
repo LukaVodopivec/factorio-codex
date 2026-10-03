@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.7 retains each exact placed entity and validates the live output
+Release 0.19.8 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.7 validation.
+0.19.8 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -432,6 +432,138 @@ Deferred: an exemption for terminal-harvest revocation (V4), role sessions
 without the workstation-global instructions, and a ring of failed validation
 outcomes.
 
+## 2026-10-02 debug cycle 7 (0.19.7)
+
+Run `debug-20261002T180832Z` (fresh game, seed 747930220, release 0777538,
+Astra `gpt-6-astra` medium brain, Luna low Fast pilot) started at
+18:19:53Z. It ran open-ended, with comparison snapshots at `GO+20m` and
+`GO+60m`, until the owner stopped it at 21:08:39Z. The supervisor's factorio `stop`
+came at 21:10:33Z. Both goals were paused, both turns interrupted and the body
+quiescent by 21:11:37Z. The recorder finished at 21:14:53Z (about +175 min),
+the server saved the final state (save SHA-256 `84a386bc…4d35`), and the
+ledger stayed at revision 87. The notebook (an index and 7 notes) was archived
+against its manifest. The run is assisted, so it is not benchmark evidence.
+
+Role behaviour held:
+
+- 0 thread reads by either role after `GO`;
+- 0 nudges and 0 replacements;
+- 98 pilot ledger reads, at most 5.6 minutes apart;
+- 0 fail-open races;
+- 10 hand-crafted science packs (cycle 6: 131);
+- the first proof before `GO+20m`: plan 25, the coal fuel-return loop, over
+  180 s with 41 source cycles, 38 acceptance samples and 0 transfers.
+
+Input is compared with one definition: iron ore and iron plates per resource,
+cumulative since game start from the recorder's force statistics, with coal and
+copper reported separately. Cycle 6 is aligned by supervised minutes across its
+run and continuation. Cycle 7 had the lowest `GO+20m` iron of any cycle (31
+ore, 31 plates; cycle 6: 79 and 39). Iron was flat from `GO+15m` in both
+cycles, while coal rose, so the `ore_per_min` of 0 was a real stall. Cycle 7
+led in iron plates from `GO+25m` and in iron ore from `GO+30m`:
+
+| Checkpoint | Drills/furnaces c6 → c7 | Iron ore c6 → c7 | Iron plates c6 → c7 | Coal c6 → c7 |
+|---|---|---|---|---|
+| `GO+60m` | 2/1 → 3/2 | 515 → 664 | 343 → 598 | 903 → 671 |
+| `GO+120m` | 4/3 → 5/3 | 1,375 → 1,943 | 1,275 → 1,902 | 2,010 → 1,820 |
+| `GO+170m` | 4/3 → 5/5 | 2,125 → 3,561 | 2,024 → 3,442 | 2,970 → 3,051 |
+
+Iron reached 30/min by `GO+120m` (cycle 6: 15/min) and copper
+15/min. Drills then stayed at 5 from `GO+105m` to the stop, the same plateau
+time as cycle 6's 4. The brain counted carrying construction capital as a
+service cycle and moved NOW to manufacturing, a copper-return route and
+science, leaving extraction in NEXT. Meanwhile about 820 iron and 880 copper
+plates sat in chests. A belt assembler made about 1,034 belts and drained the
+shared iron line. The pilot hauled 890 of them out of the full terminal chest,
+and 781 were still in its inventory at the stop.
+
+Validation made 12 attempts:
+
+- 1 proven (plan 25);
+- 2 correct refusals: plan 17, an incomplete layout, and plan 42, a burner
+  output inserter carrying plates with no fuel route, which the game starved;
+- 9 false negatives from one defect.
+
+`fluid_connections.lua` calls `LuaEntity.get_fluid_box_prototype`, which
+Factorio 2.0.77 does not have. The offline mocks define it. Every boiler,
+engine, pump and pipe therefore sat in its own component, and every
+electric consumer carried `power_supply_component_not_proven`, from about
+`GO+55m`. Plan 25's proof stopped describing the factory when plans 39/40
+merged the coal line into the iron line; that was supersession by design, not
+a revocation. The burner-inserter placement tolerance was a
+separate defect and never blocked steam proof.
+
+Pacing missed its targets:
+
+- The pilot's think share was 73% and the body was busy about 38%.
+- 56% of literal `queue_plan` step lists had one step (170 of 306, from 320
+  calls), and only 26% of calls named `after_plan_id`.
+- The first placement came at `GO+7:05`, after mining rocks about 140 tiles
+  away.
+- Astra wrote about 30 ledger revisions per game hour (86 in all). NOW
+  changed about 13 times (about 4.6 per hour); 48 revisions named a priority
+  field (phase, bottleneck or task list) and 38 were package-only.
+
+At 18:45 the pilot called `stop` itself to abandon a stalled wait, cancelling
+plans 31 and 32. The owner's stop relay waited behind a 5-minute supervisor turn:
+it was delivered after 94.5 s, and factorio `stop` came after 114.6 s.
+
+Recorder and checkpoint component, edge and product counts from about
+`GO+20m` (the first capped sample, at `GO+19.7m`) cover only the capped
+presentation rows (8 components, 24 edges), so the `GO+20m` graph counts are
+partial too. Their series, including the final 44 machines, 312 edges and
+6,190 products, are partial; the validations list is the authoritative proof record. The other
+confounders are:
+
+- the brain model and the instructions changed together;
+- both cycles were assisted: in cycle 7, the pilot's own stop, an isolated
+  native fixture with verified cleanup, and read-only probes;
+- each run chose its own ore sites.
+
+Already upstream before 0.19.8:
+
+- the pilot never calls `stop`, and the tool is described as supervisor-only
+  (`2f01e34`);
+- burner-inserter recipient preflight geometry (`e367774`);
+- explicit underground ends in `find_placement` (`abb7eb0`).
+
+Release 0.19.8 addresses these defects:
+
+- **Steam.** Fluid boxes are read through `fluidbox.get_prototype(index)`, a
+  single prototype only (merged boxes stay unsupported), and positive fixtures
+  now require pump-boiler-engine edges, a boiler steam product and one
+  component. A generator on standby (hot steam present, every material
+  consumer on its network idle with a charged buffer, generation at most their
+  constant drain) keeps its proof instead of reading as interrupted or
+  `blocked_output`, and a water pump that feeds only standby engines is
+  stopped by backpressure, not interrupted. A live steam gate on an isolated native
+  fixture must prove a loaded plant before each fresh run's `GO`.
+- **Measurement.** `material_flow` carries uncapped whole-graph counters
+  (`component_count`, `edge_count`, `autonomous_component_count`,
+  `validated_component_count`, `products_finished_total`). The supervisor
+  tooling reads them and labels capped-row counts partial, measures input per
+  resource with GO-aligned samples, and separates proofs superseded by a merge
+  from revoked ones and priority revisions from package-only ones.
+- **Validator.** A drill with one charted recipient at its drop position but no
+  bound `drop_target` yet reports the evidence row
+  `drill_output_target_pending_first_output` instead of a missing sink. A
+  burner inserter carrying known non-fuel cargo marks its fuel row
+  `transport_cargo_fuel: false`, which explains plan 42's correct refusal.
+- **Roles.** The pilot never calls `stop` and abandons a stalled wait with an
+  unchained corrective plan that runs while the wait is parked. It passes
+  `after_plan_id` only for a plan that needs its predecessor's effects, calls
+  `plan_status` only with a successor queued, gathers within 30 tiles of `GO`
+  or of the site NOW sent it to until the first package, skips a package that
+  already stands, names tools by their exact code-mode names, and takes from a full terminal buffer only what a queued
+  package needs. Flat input for two checkpoints while buffers fill makes
+  extraction and smelting NOW; hauled capital is not service; Astra reuses its
+  own proven templates, leaves packages until the next publish replaces them,
+  and re-validates a proven component it extends.
+- **Supervision.** the owner's instructions are relayed by `turn/steer` rather than
+  queued, every supervisor tool wait is capped at 15 s, `stop_steps` record the
+  relay and stop timestamps, and game-touching interventions are mirrored into
+  recorder events.
+
 ## Prior 0.8.0 structured timings
 
 All gameplay perception and action below used the Factorio MCP text surface.
@@ -601,7 +733,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.7, and exactly 25 tools.
+disambiguation, progression, protocol v22, version 0.19.8, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -671,7 +803,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.7 benchmark results.
+present historical timings as 0.19.8 benchmark results.
 
 #### Candidate B R7 recorded result
 

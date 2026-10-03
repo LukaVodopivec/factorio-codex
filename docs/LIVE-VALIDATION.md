@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.19.7**. Prior live evidence remains historical
-until the fresh 0.19.7 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.19.8**. Prior live evidence remains historical
+until the fresh 0.19.8 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -88,7 +88,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.19.7 reliability pass, also record these observable checks without
+For the 0.19.8 reliability pass, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
 
 - A compact observation stays bounded, names every omission count, and appears
@@ -136,7 +136,15 @@ turning them into a fixed opening or map-specific sequence:
   `GO+60m`, record drills and furnaces by entity and ore and plates produced
   per minute, and compare them with the same checkpoints of debug cycle 6
   (target: both checkpoints above cycle 6). Science is not hand-crafted while
-  plate production per minute is below its consumption.
+  plate production per minute is below its consumption. Compare per resource:
+  use each raw resource in the recorder delta (coal included) and each plate.
+  Report both the last 5-minute interval, where a stall shows as 0, and the
+  average since the recorder baseline. Take the sample captured nearest
+  `GO+20m` and `GO+60m` by wall clock: the recorder baseline precedes the `GO`
+  receipt by about 20 s. Recorder flow rows are capped. Component, autonomy,
+  validation, edge and product counts are whole-factory only when the sample
+  carries the mod's whole-graph counters. Otherwise they are partial and must be
+  labelled so.
 - Record every `topology_sample_flicker` and every `topology_diff`. A window
   must not end on one differing sample (target: zero flicker early ends), and
   a lazy fuel-only feeder at a stocked burner must not fail
@@ -427,8 +435,9 @@ depth, call `stop` and re-observe until idle, and treat pre-`GO` plan IDs as
 invalid `after_plan_id` values. Rehearse the stop sequence below on the live
 role sessions without stopping the server; a role turn must end within about
 five seconds of pause plus interrupt. Then resume both role goals through the
-native procedure below before starting the recorder; an active goal plus an
-idle thread does not prove that queued `GO` will start a turn. At `GO+20m`
+native procedure below and pass the live steam gate below before starting the
+recorder; an active goal plus an idle thread does not prove that queued `GO`
+will start a turn. At `GO+20m`
 record the GO+20 recorder checkpoint as the run's comparison snapshot without
 stopping anything; assisted debug progress is still not benchmark evidence. Continue past
 20 minutes toward the assigned milestone
@@ -564,6 +573,67 @@ checks covered the integrated source before this evidence-only update; the
 final focused contract and diff checks were rerun afterward. The earlier
 prerequisite failure remains historical, not a current readiness failure.
 
+### Live steam gate before GO
+
+Release 0.19.7 called a `LuaEntity` method that Factorio 2.0.77 does not have,
+and the offline mocks supplied it, so every steam or powered component in debug
+cycle 7 was refused. Strict offline mocks now reject members absent
+from the vendored 2.0.77 runtime list, but they still cannot prove
+native values or behavior.
+Before each fresh run's `GO`, the supervisor therefore proves the steam path on
+the native runtime and records the result in `supervision.json` under
+`steam_gate`. `GO` waits until the gate passes.
+
+The validator is bound to the companion character's surface and charted chunks,
+so it cannot validate a temporary surface of the live run. Building the fixture
+on the run's own surface would also change the comparison save. Run the gate
+instead as an isolated engineering fixture, following the occupied-belt and
+burner-inserter fixtures below:
+
+- Use a separate dedicated server with the run server's Factorio executable and
+  version, and its own write-data directory and fresh peaceful save with enemy
+  bases disabled. Bind it to loopback only, on an OS-assigned port, with no RCON
+  listener, no LAN or public advertisement, and no client. It never touches the
+  run's server, save, recorder, or ledger.
+- Load an instrumented copy of the exact release mod archive. The fixture block
+  appended to its `control.lua` binds the companion accessor to a fixture
+  character. If the disconnected server does not chart, substitute
+  generated-chunk checks for chart checks in that copy only, and record the
+  substitution. Record the SHA-256 of the release archive and of the
+  instrumented archive.
+- On dry ground beside fixture water, build an offshore pump and pipes to a
+  boiler. A burner inserter feeds the boiler from a chest of finite coal. The
+  boiler feeds a steam engine, and a small electric pole powers an electric
+  inserter that moves finite plates from one chest into another chest with
+  space. The inserter is the load, because an engine with no demand is not
+  delivering power.
+- Run the release's real `validate_factory_component` with the component's
+  positions and `duration_seconds: 120`. The outcome must be
+  `FACTORY_COMPONENT_AUTONOMY_PROVEN` with `native_power_required: true`,
+  `power_delivery_samples >= 3`, and `fluid_activity_samples >= 3`.
+- Then let the finite plates run out so the inserter idles with a charged
+  buffer and the engine stops generating. A `map_summary` read must still show
+  the plant's power component `autonomous_end_to_end` with no `blocked_output`
+  among its blockers (the standby rule, offline-proven only). Record it as
+  `standby: {autonomous_end_to_end, blocked_output}`.
+- On the same fixture entities, probe once that `fluidbox.get_prototype`,
+  `get_fluid_source_fluid`, and `neighbours` exist and return without error.
+  Use the boiler, the offshore pump, and a pipe-to-ground pair. This probe only
+  reads.
+- Write the outcome and probe receipts to the fixture's script output. Then
+  delete the fixture surface, confirm in a later receipt that it is absent, stop
+  the server, and remove its write-data directory. That is cleanup verified.
+
+Record the validation outcome, the standby read, the probe results,
+`cleanup_verified`, and the
+executable, version, and archive identities. Use the supervisor tooling's
+`supervision_record.py steam-gate` command, which recomputes `passed` from the
+thresholds above. If any condition fails, hold `GO` and report the failing
+fields. Never weaken the fixture or the thresholds to make it pass. A fixture pass is engineering
+evidence of the native steam path only. It proves neither gameplay steam
+autonomy nor the fuller live steam-power confirmation above, and it is never
+benchmark evidence.
+
 ### Native resumption after the stop rehearsal
 
 Use the existing connected app-server session controls for each exact role,
@@ -685,8 +755,16 @@ packages passing pilot revalidation; at least 6 machines and 4 physical edges
 The parent is the debug supervisor and may diagnose or recover through its
 separate surfaces. That authority does not pass to the pilot. Record each
 intervention and obtain a fresh structured observation before ordinary play.
+Mirror every intervention that touches the game process into the recorder's
+events with `runs mark-assisted <run-id> --reason <text>`, the existing
+intervention event. That includes raw RCON or console, a temporary surface,
+emergency `stop`, teleport, and server or client replacement. Pre-`GO`
+interventions made before the recorder exists stay in `supervision.json` only.
 The supervisor yields its own turn between recorder checkpoints and records the
-structural-growth deltas defined in `AGENTS.md` at each one.
+structural-growth deltas defined in `AGENTS.md` at each one. No single
+supervisor tool call waits longer than 15 s (`write_stdin` included), and a
+checkpoint turn ends as soon as its checkpoint is recorded. A steer reaches a
+busy turn only at its next step boundary.
 
 For an explicit the owner stop, record each step: call factorio `stop` (cancels the
 active task and every queued plan within seconds); in each role TUI run
@@ -702,14 +780,36 @@ native controls on its own role sessions as recorded interventions. A steered
 Deliver deadline-sensitive or the owner-relayed instructions, such as a stop or a
 keep-running decision, with native `turn/steer`
 `{threadId, expectedTurnId, input, clientUserMessageId}`. Address the exact
-target's current active turn, read with `thread/read`. On an expected-turn
+target's current active turn, read with `thread/turns/list` (limit 1). On an expected-turn
 mismatch, re-read and steer the new turn; if no turn is active, start one with
-that input. Queued delivery (`thread/queue/add`, which ordinary peer sends use
-for Codex targets) waits until the target's turn ends. On 2026-10-02 a
-keep-running instruction waited 10.5 minutes behind a busy supervisor turn and
-arrived after the stop it was meant to prevent. Confirm delivery by the
-`clientUserMessageId` in that turn's `userMessage`. Add no control file or
-message store for this.
+that input. Queued delivery waits until the target's turn ends.
+`session-status send` has no steer option: for a Codex target it runs
+`codex queue`, which is `thread/queue/add`. On 2026-10-02 a keep-running
+instruction waited 10.5 minutes behind a busy supervisor turn and arrived after
+the stop it was meant to prevent. In debug cycle 7, the owner's stop took 94.5 s to
+reach the supervisor and 114.6 s to reach factorio `stop`.
+
+The setup session therefore relays the owner's instructions with the supervisor
+tooling's `relay_steer.py`. It resolves the target's daemon socket and thread
+from the same managed session status that `send` uses, and keeps the same
+`<agent_peer_message>` envelope. It reads the active turn with
+`thread/turns/list` and steers it with that `expectedTurnId`. It re-reads once
+on a mismatch, and uses `turn/start` only when no turn is active. The relayed
+text carries `owner_message_at` and `relay_sent_at`. Confirm delivery by the
+`clientUserMessageId` in that turn's `userMessage`. An unconfirmed relay is
+read back before any resend.
+
+For an explicit stop, record these fields on the supervisor's `stop_steps`:
+
+- `owner_message_at` and `relay_sent_at`, from the relayed text;
+- `delivered_at`, the supervisor's receipt time;
+- `factorio_stop_at`, the factorio `stop` receipt;
+- `roles_interrupted_at`.
+
+The target is under 30 s from the owner's message to factorio `stop`. Before `GO`,
+the setup session steers one no-op token into the supervisor while a tool call
+is running. Record its consumption within 15 s in `capability_evidence`. Add no
+control file or message store for this.
 
 ### Supervisor stall and replacement validation
 
@@ -945,7 +1045,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.19.7 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.19.8 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -976,14 +1076,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.19.7. They
+The successful observations below were collected before release 0.19.8. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.19.7. Complete the fresh run above after installing 0.19.7 before recording a
+0.19.8. Complete the fresh run above after installing 0.19.8 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.19.7 run must instead report protocol v22 and mod/app 0.19.7.
+  0.8.0. A 0.19.8 run must instead report protocol v22 and mod/app 0.19.8.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

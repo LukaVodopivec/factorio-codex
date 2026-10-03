@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.19.7**.
+Current release: **0.19.8**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -48,9 +48,11 @@ client launcher in this repository.
 The mod never creates a standalone fallback character. Run
 `node companion/dist/cli.js doctor`, then start `codex` at this root. The
 committed project config starts MCP automatically. Begin with
-`connect_status`, then `observe_local`. The pilot never calls `stop` during
+`connect_status`, then `observe_local`. The pilot never calls `stop`, not for
 ordinary gameplay, report checkpoints, turn endings, monitoring timeouts,
-package changes, or routine plan recovery. Under `AGENTS.md`, the supervisor
+package changes, or routine plan recovery; it abandons a stalled wait by
+queueing the corrective plan without `after_plan_id`, which runs while the wait
+is parked, or else lets the wait's bounded timeout end it. Under `AGENTS.md`, the supervisor
 alone uses this emergency tool for an explicit the owner stop, retained-work
 reconciliation, or recorded emergency quiescence during replacement. A TUI
 interruption alone does not authorize cancellation. `stop` takes `{}` and calls
@@ -192,7 +194,21 @@ Astra-written markdown notebook at `<run_dir>/notebook/` (a `README.md` index of
 at most 2 KB, about 64 KB in total, no imported external content); a build
 package may name up to three `notes` (`notebook/<name>.md` paths that
 `ledger-apply` requires to exist beside the ledger), and the pilot reads only
-those. The ledger stays the only command channel. Neither role calls
+those. The ledger stays the only command channel. A queued or standing package
+stays in the ledger until Astra's next publish replaces it. A package that
+extends a proven component re-validates the joined component, and Astra
+reuses its own proven notebook template at a new anchor after one `can_place`
+batch. When input rate stays flat for two report checkpoints while plates
+accumulate in buffers, NOW returns to extraction and smelting funded from
+those buffers; hauling finished plates or hardware to a build site is capital,
+not service. The pilot passes `after_plan_id` only when a plan needs its
+predecessor's effects, because a chained successor is cancelled when its
+predecessor fails, times out, or ends partial; independent work queues
+unchained and runs while a wait or validation is parked. Until the first
+package arrives it gathers only within 30 tiles of its `GO` position or of the
+site NOW's `essential_prerequisite` sent it to, skips a package whose
+placements already stand as specified, and takes from a full terminal
+buffer only items a queued package requires. Neither role calls
 `list_threads`, `read_thread`, or `wait_threads`, and after a context
 compaction each re-reads its goal file and `SKILL.md` first.
 Neither role profile is applied to an active run in place. The
@@ -274,7 +290,14 @@ eligible existing player-force entity in already charted chunks. Presentation
 alone is capped: 12 nodes, 24 edges, 24 diagnostics and 8 components. Each
 component returns at most 12 node IDs and 24 blocker names, with nested omission
 counts; `factory.omissions` counts omitted graph rows. These omissions make the
-presentation partial, not the physical evidence incomplete. Exact component
+presentation partial, not the physical evidence incomplete. Uncapped
+whole-graph counters sit beside the rows on `material_flow`:
+`component_count`, `edge_count` (every edge, `electrical_dependency` included,
+so it equals the shown edges plus `omissions.capped_flow_edges`),
+`autonomous_component_count`, `validated_component_count` (components with a
+retained proven validation of their current topology) and
+`products_finished_total`; recorders and measurements read these, never sums
+of the capped rows. Exact component
 sampling for `validate_factory_component` resolves 1–16 caller-named positions
 against the complete graph, including nodes and components absent from the
 response. Missing and ambiguous selections retain their target errors. A
@@ -301,7 +324,18 @@ and `related_edge`. A belt run is the tiles joined by `belt_direction` edges,
 including an underground entrance to its exit; a consumer may pick up anywhere
 along it, through an inserter pickup or a `loader_container` edge. Only a run
 with no such outgoing edge reports `belt_dead_end_without_consumer`, at its
-last tile.
+last tile. Factorio binds a mining drill's `drop_target` only at its first
+output, so a drill whose `drop_target` is still nil while exactly one charted
+recipient of its force covers its drop position and can take a mined product
+(a conveyor, or a recipient whose native `can_insert` accepts it) reports the readiness row
+`drill_output_target_pending_first_output` (class `evidence`, `related_edge`
+`{kind: machine_output}`) instead of `output_has_no_physical_sink` and
+`downstream_acceptance_path_unproven`; it still proves no path, so validate
+after the first output. A burner inserter's `fuel_input_provenance_unresolved`
+row carries `related_edge.transport_cargo_fuel: false` when the cargo it moves
+is known and none of it burns in its fuel categories: it needs its own fuel
+feed or an electric replacement. The field is absent when the cargo is
+unknown, such as from a hand-stocked chest.
 
 Component state and validation evidence carry `downstream_kind`: `buffer`,
 `consumer`, `mixed` or `none`. A buffer stores output; it is not a consuming
@@ -493,9 +527,12 @@ thermal generators, and terminal fluid buffers. Identities come from
 [Factorio 2.0.76 runtime/prototype evidence](https://lua-api.factorio.com/2.0.76/runtime-api.json):
 the offshore source tile's fluid, runtime fluidbox filters and temperature
 constraints, boiler mode/target temperature, and generator heat requirements.
-Connections retain both fluidbox indices and native flow direction. Only valid,
+Connections retain both fluidbox indices and native flow direction. Box
+prototypes are read with `LuaFluidBox.get_prototype(index)`, accepted only as a
+single prototype with a readable production type and filter. Only valid,
 same-force targets on the current surface in charted chunks participate;
-unsupported machinery, merged boxes or unreadable connections stay unproven.
+unsupported machinery, merged boxes (an array of prototypes), unreadable
+prototypes or unreadable connections stay unproven.
 
 Electrical dependency is not a material path. `electrical_dependency` edges stay
 in the presented `material_flow.edges` but never join components, count in a
@@ -540,7 +577,14 @@ capacity, with actual generator activity or distinct buffer arrivals. Draining
 fluid or electrical stores, incomplete transfer history, character transfers,
 changed entities/connections/constraints/network bindings and stopped branches
 refuse proof. Current native autonomy revokes when pump/generator activity or
-consumer energy fails. Presentation caps never limit private validation.
+consumer energy fails. A generator on standby is the exception: its own box holds
+compatible steam above the fluid's default temperature and every material
+consumer on its network is `idle`, `insufficient_input` or `full_output` with a
+charged buffer, so it serves at most their constant drain (other consumers on
+the network, such as lamps, are not sampled). No demand is
+neither an interruption nor `blocked_output`, so standby keeps current
+autonomy, but a validation window still counts acceptance only on real
+generation. Presentation caps never limit private validation.
 
 Drill source cycles use a mining-progress
 wrap accompanied by depletion of the
@@ -581,7 +625,11 @@ at `no_fuel`, `no_power`, `no_resources` or disabled
 (`validated_producer_nonproductive`); input and output waits do not revoke it.
 An electric consumer's component is current only while its power component is
 currently proven. Offline fixtures establish source behavior only; deployment and live supplied
-steam-power autonomy remain unverified.
+steam-power autonomy remain unverified. Release 0.19.7 called a fluidbox
+method absent from Factorio 2.0.77 that its mocks supplied, so each
+fresh run now passes the native steam gate in
+[live validation](docs/LIVE-VALIDATION.md#live-steam-gate-before-go) before
+`GO`.
 
 After successful unattended validation, extracting only accepted products from
 that matching component's terminal downstream buffer strictly after the

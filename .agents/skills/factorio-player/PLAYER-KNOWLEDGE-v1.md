@@ -47,7 +47,10 @@ using it.
   early resources and new plates are reinvested into more of them. Science or
   other output pays when research unlocks a growth step or input has headroom.
   Hand-crafting science while raw input is the bottleneck starves expansion.
-  Input rate (ore and plates per minute) is the primary measure.
+  Input rate (ore and plates per minute) is the primary measure. Flat input
+  while plates pile up in buffers means those plates should fund more
+  extraction and smelting; a proven Codex-authored layout reused at a new
+  anchor is the cheapest next copy.
 - **Fuel first.** A burner source without a non-character fuel return is the
   bottleneck: build its fuel loop or move to powered extraction before scaling
   it. On a belt shared by a burner's fuel takeoff and a surplus takeoff, the
@@ -60,9 +63,10 @@ using it.
   stockpiles. Never hand-insert more than a few crafts of input before a
   validation window.
 - **One terminal buffer.** Each segment ends in a consumer or at most one
-  terminal buffer. Fix full or blocked output at its cause (empty the buffer as
-  a named bridge, or extend the segment to a consumer), never by adding a chest
-  or sink.
+  terminal buffer. Fix full or blocked output at its cause (take from the buffer
+  only what a queued package requires, or extend the segment to a consumer),
+  never by adding a chest or sink. A full buffer of construction items is the
+  intended stop for that line.
 - **Validation timing.** Cover several processor cycles and one fuel item per
   burner. Queue the validation after a `wait_for_item` on the segment's terminal
   output, once bootstrap insertions are done and the segment produces.
@@ -75,7 +79,9 @@ using it.
   `can_place` still sees the standing entity. Never remove a node with recent
   accepted output before its replacement proves output.
 - **Service cycles.** A second hand batch of the same item is a service cycle;
-  connected production for it usually pays back before a third.
+  connected production for it usually pays back before a third. Carrying
+  finished plates or hardware to a build site is capital, not service; only
+  feeding a running machine's input or fuel is service.
 - **Linear runs.** Build belt, pipe, and pole runs with `connect_entities`
   rather than one walk and placement per entity.
 - **Scaling.** Count capacity only after output is observed at its

@@ -209,10 +209,14 @@ check(#bounded.factory.groups == 12 and bounded.factory.omissions.capped_groups 
   and #bounded.factory.force_flows == 12 and bounded.factory.omissions.capped_flows == 58
   and bounded.factory.partial,
   "factory groups, graph nodes, and flow rows have deterministic caps and omission counts")
+check(bounded.factory.material_flow.component_count == 70 and #bounded.factory.material_flow.components == 8
+  and bounded.factory.material_flow.edge_count == 0 and bounded.factory.material_flow.autonomous_component_count == 0,
+  "whole-graph component counters stay uncapped beside the capped component rows")
 local bounded_full = require("scripts.map_summary").map_summary({ detail = "full" })
 local aggregate_bytes, full_bytes = #canonical(bounded), #canonical(bounded_full)
-check(aggregate_bytes <= 18000 and aggregate_bytes * 5 < full_bytes * 4,
-  "bounded aggregate stays at or below 18k fixture bytes and at least 20% smaller than full detail (aggregate="
+-- 18k plus the five uncapped whole-graph counters beside the capped rows.
+check(aggregate_bytes <= 18250 and aggregate_bytes * 5 < full_bytes * 4,
+  "bounded aggregate stays at or below 18.25k fixture bytes and at least 20% smaller than full detail (aggregate="
     .. aggregate_bytes .. ", full=" .. full_bytes .. ")")
 
 -- A component qualifies only after exact topology and a bounded unattended
@@ -1893,6 +1897,111 @@ do
     and refill.related_edge.kind == "fuel_input" and not starter_rows["persistent_nonproductive_status:no_fuel"]
     and starter_outcome.source_cycles_observed >= 3 and starter_outcome.downstream_acceptance_samples >= 3,
     "starter fuel outlasting the window cannot prove a fuel loop that never refills the drill")
+  -- Burner inserters refuel only from fuel they carry. The fuel row on one
+  -- whose produced cargo is known and burns nowhere says so, so a plate
+  -- carrier reads as needing its own fuel feed rather than a self-refuel
+  -- refusal. Unknown cargo (a hand-stocked chest) keeps the bare row.
+  local function iron_furnace(entity)
+    entity.prototype, entity.burner = burner_prototype, {}
+    entity.get_recipe = function() return { name = "iron-plate", energy = 3.2,
+      ingredients = { { name = "iron-ore", type = "item" } }, products = { { name = "iron-plate", type = "item" } } } end
+  end
+  local function inserter_fuel_rows(recorded, inserter, setup)
+    local entities = replay(recorded)
+    if setup then setup(entities) end
+    storage = {}
+    surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
+    local position = entities[inserter].position
+    local sample = map.factory_component_sample({ source_tick = game.tick, positions = { position } })
+    local rows = {}
+    for _, row in ipairs(sample._blocker_rows) do
+      if row.position.x == position.x and row.position.y == position.y and row.reason:find("fuel", 1, true) then
+        rows[#rows + 1] = row
+      end
+    end
+    return rows
+  end
+  local plate_rows = inserter_fuel_rows({
+    nodes = { { "stone-furnace", "furnace", 40, -50, 0, "working" },
+      { "burner-inserter", "inserter", 40.5, -48.5, 0, "insufficient_input" },
+      { "wooden-chest", "container", 40.5, -47.5, 0, "idle" } },
+    edges = { { 1, 2, "inserter_pickup" }, { 2, 3, "inserter_drop" } },
+  }, 2, function(entities) iron_furnace(entities[1]) end)
+  check(#plate_rows == 1 and plate_rows[1].reason == "fuel_input_provenance_unresolved"
+    and plate_rows[1].related_edge.kind == "fuel_input" and plate_rows[1].related_edge.transport_cargo_fuel == false,
+    "a burner inserter carrying plates is blocked with exactly one fuel row marking its non-fuel cargo")
+  check(#inserter_fuel_rows({
+    nodes = { { "burner-mining-drill", "mining-drill", 50, -50, 8, "working" },
+      { "transport-belt", "transport-belt", 50.5, -48.5, 4, "working" },
+      { "burner-inserter", "inserter", 50.5, -47.5, 0, "insufficient_input" },
+      { "wooden-chest", "container", 50.5, -46.5, 0, "idle" } },
+    edges = { { 1, 2, "machine_output" }, { 2, 3, "inserter_pickup" }, { 3, 4, "inserter_drop" } },
+  }, 3) == 0, "a burner inserter picking mined coal from a belt has proven fuel provenance")
+  local chest_rows = inserter_fuel_rows({
+    nodes = { { "wooden-chest", "container", 60.5, -50.5, 0, "idle" },
+      { "burner-inserter", "inserter", 60.5, -49.5, 0, "insufficient_input" },
+      { "wooden-chest", "container", 60.5, -48.5, 0, "idle" } },
+    edges = { { 1, 2, "inserter_pickup" }, { 2, 3, "inserter_drop" } },
+  }, 2)
+  check(#chest_rows == 1 and chest_rows[1].reason == "fuel_input_provenance_unresolved"
+    and chest_rows[1].related_edge.kind == "fuel_input" and chest_rows[1].related_edge.transport_cargo_fuel == nil,
+    "a burner inserter fed from a hand-stocked chest stays blocked on unproven fuel supply")
+  check(#inserter_fuel_rows({
+    nodes = { { "burner-mining-drill", "mining-drill", 70, -50, 8, "working" },
+      { "transport-belt", "transport-belt", 70.5, -48.5, 4, "working" },
+      { "stone-furnace", "furnace", 72, -48, 0, "working" },
+      { "inserter", "inserter", 71.5, -48.5, 12, "working" },
+      { "burner-inserter", "inserter", 70.5, -47.5, 0, "insufficient_input" },
+      { "wooden-chest", "container", 70.5, -46.5, 0, "idle" } },
+    edges = { { 1, 2, "machine_output" }, { 3, 4, "inserter_pickup" }, { 4, 2, "inserter_drop" },
+      { 2, 5, "inserter_pickup" }, { 5, 6, "inserter_drop" } },
+  }, 5, function(entities)
+    iron_furnace(entities[3])
+    entities[4].burner, entities[4].prototype = nil, {}
+  end) == 0, "a burner inserter on a belt mixing mined coal and plates has proven fuel provenance")
+  -- A fresh drill binds drop_target only at its first output. With exactly
+  -- one charted recipient under its drop position that is a pending binding
+  -- (evidence), not the structural missing sink it is without one.
+  local function fresh_drill(with_belt, recipient)
+    local entities = replay({
+      nodes = { { "burner-mining-drill", "mining-drill", 80, -50, 0, "working" },
+        recipient or { "transport-belt", "transport-belt", 80.5, -51.5, 4, "working" } },
+      edges = {},
+    })
+    local drill, belt = entities[1], entities[2]
+    if recipient then belt.can_insert = function() return false end end
+    drill.surface, drill.drop_position = surface, { x = 80.3, y = -51.3 }
+    belt.bounding_box = { left_top = { x = 80.1, y = -51.9 }, right_bottom = { x = 80.9, y = -51.1 } }
+    if not with_belt then belt.bounding_box = { left_top = { x = 81.1, y = -51.9 }, right_bottom = { x = 81.9, y = -51.1 } } end
+    storage = {}
+    surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
+    local sample = map.factory_component_sample({ source_tick = game.tick, positions = { drill.position } })
+    local rows = {}
+    for _, row in ipairs(sample._blocker_rows) do
+      if row.position.x == drill.position.x and row.position.y == drill.position.y then rows[row.reason] = row end
+    end
+    local component
+    for _, candidate in ipairs(map.map_summary({}).factory.material_flow.components) do
+      if candidate.component_signature == sample.component_signature then component = candidate end
+    end
+    return rows, sample, component
+  end
+  local pending, pending_sample, pending_component = fresh_drill(true)
+  local pending_row = pending.drill_output_target_pending_first_output
+  check(pending_row and pending_row.class == "evidence" and pending_row.gate == "readiness"
+    and pending_row.related_edge.kind == "machine_output"
+    and not pending["relationship_diagnostic:output_has_no_physical_sink"]
+    and not pending.downstream_acceptance_path_unproven and not pending_sample.topology_ready
+    and pending_component and pending_component.state.blocker_details[1].reason == "drill_output_target_pending_first_output",
+    "a fresh drill with a recipient at its drop position reports a pending first-output binding, still unready")
+  local missing = fresh_drill(false)
+  check(missing["relationship_diagnostic:output_has_no_physical_sink"] and missing.downstream_acceptance_path_unproven
+    and not missing.drill_output_target_pending_first_output,
+    "a drill with no recipient at its drop position keeps the structural missing-sink row")
+  local refusing = fresh_drill(true, { "inserter", "inserter", 80.5, -51.5, 0, "waiting_for_source_items" })
+  check(refusing["relationship_diagnostic:output_has_no_physical_sink"] and refusing.downstream_acceptance_path_unproven
+    and not refusing.drill_output_target_pending_first_output,
+    "a recipient at the drop position that cannot take the mined product is no pending binding")
   force.is_chunk_charted = fixture_charted
 end
 surface.find_entities_filtered = previous_entities
@@ -2068,6 +2177,29 @@ do
     if edge.from_fluidbox == 2 then output_edge = edge end
   end
   check(output_edge and output_edge.to_fluidbox == 1, "fluid relationships retain both box indices rather than entity adjacency")
+  -- Positive native proof, so a silently refused fluidbox read fails here:
+  -- every relationship is a fluid connection, the boiler names its steam
+  -- product at its target temperature, and pump, boiler, pipe and engine
+  -- form one component.
+  local fluid_edges = 0
+  for _, edge in ipairs(summary.factory.material_flow.edges) do
+    if edge.kind == "fluid_connection" then fluid_edges = fluid_edges + 1 end
+  end
+  local boiler_key = string.format("%s\0%s\0%.17g\0%.17g", boiler.name, boiler.type, boiler.position.x, boiler.position.y)
+  check(fluid_edges == 3 and #summary.factory.material_flow.components == 1
+    and summary.factory.material_flow.components[1].node_count == 4
+    and sample._signature:find(boiler_key .. ":output:fluid:vapor", 1, true) ~= nil
+    and sample._signature:find(boiler_key .. ":temperature:165", 1, true) ~= nil
+    and not canonical(summary.factory.material_flow.diagnostics):find("fluid_native_evidence_unproven", 1, true),
+    "boiler, pipe and engine join one native fluid component with a boiler steam product")
+  -- A recipe-merged box reads back as an array of prototypes: unsupported.
+  local boiler_prototype = boiler.fluidbox.get_prototype
+  boiler.fluidbox.get_prototype = function(index) return { boiler_prototype(1), boiler_prototype(2) } end
+  local merged = map.map_summary({})
+  check(canonical(merged.factory.material_flow.diagnostics):find("fluid_native_evidence_unproven", 1, true) ~= nil
+    and #merged.factory.material_flow.edges < 3,
+    "a merged fluidbox prototype array stays unsupported native evidence")
+  boiler.fluidbox.get_prototype = boiler_prototype
   check(not canonical(sample.blockers):find("output_identity_unproven", 1, true),
     "empty native offshore and boiler boxes still establish product identity without recipes or stock")
   local native = require("scripts.fluid_connections")
@@ -2343,6 +2475,14 @@ do
       else other.position, relay.position = { x = 50, y = 4 }, { x = 51, y = 4 } end
       line_mine = relay
     end
+    if mode == "many_components" then
+      -- Twenty lone furnaces sort ahead of the plant ("node-1", "node-10".."node-19",
+      -- "node-2", "node-20"), so the proven plant falls beyond the row cap.
+      for x = 1, 20 do
+        local furnace = make("furnace", x, nil)
+        furnace.position, furnace.products_finished = { x = x, y = 0 }, 5
+      end
+    end
     if mode == "disconnected" then connections[pipe][1], connections[generator][1] = {}, {} end
     if mode == "wrong_fluid" then boxes_by_entity[generator][1].filter.name = "aqua" end
     if mode == "wrong_temperature" then boxes_by_entity[generator][1].minimum_temperature = 200 end
@@ -2403,6 +2543,7 @@ do
     local result = tasks.plan_status({ plan_id = queued.plan_id })
     local summary = map.map_summary({})
     return result, preflight, summary, { generator = generator, source = source, boiler = boiler, unload = unload, steam_pump = steam_pump,
+      mine = mine, set_steam = function(amount) steam = amount end,
       target = target,
       before_mine = before_mine, line_mine = line_mine, line_to = line_to, line_far = line_far, refill = refill, supply = supply,
       set_fuel = function(items, chest_coal) fuel_items, coal = items, chest_coal or coal end,
@@ -2429,6 +2570,67 @@ do
   plant.source.pumped_last_tick, plant.unload.energy = 4, 0
   check(not map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
     "current native autonomy revokes when its material consumer loses electrical energy")
+  plant.unload.energy = 1000
+  check(final.factory.material_flow.edge_count == #final.factory.material_flow.edges
+    and final.factory.material_flow.component_count == 1 and final.factory.material_flow.validated_component_count == 1
+    and final.factory.material_flow.autonomous_component_count == 1,
+    "an uncapped plant reports whole-graph counters equal to its rows")
+  do
+    -- Standby: a proven engine with hot steam and every consumer on its
+    -- network idle with a charged buffer serves only the electric inserters'
+    -- constant drain (0.4 kW is about 6.67 J/tick each), and its water pump
+    -- stops once the steam segment saturates. That is not an interruption,
+    -- and a steam segment backed up to capacity is not blocked output. Any
+    -- demand or missing steam still revokes autonomy.
+    local consumers = { plant.mine, plant.refill, plant.unload }
+    local function standby(status, steam, drained, generated)
+      plant.generator.energy_generated_last_tick = generated or 6.67 * 2
+      plant.source.pumped_last_tick = steam >= 1000 and 0 or 4
+      plant.set_steam(steam)
+      for _, consumer in ipairs(consumers) do consumer.status, consumer.energy = status, 1000 end
+      if drained then plant.unload.energy = 0 end
+      local state = map.map_summary({}).factory.material_flow.components[1].state
+      for _, consumer in ipairs(consumers) do consumer.status, consumer.energy = defines.entity_status.working, 1000 end
+      plant.generator.energy_generated_last_tick, plant.source.pumped_last_tick = 450, 4
+      plant.set_steam(20)
+      return state
+    end
+    local waiting = defines.entity_status.waiting_for_source_items
+    local full = standby(waiting, 1000)
+    check(full.autonomous_end_to_end and not full.blocked_output
+      and not canonical(full.autonomy_blockers):find("blocked_output", 1, true),
+      "a proven engine on standby with idle charged consumers keeps autonomy and is not blocked output")
+    check(standby(waiting, 20).autonomous_end_to_end,
+      "a proven engine on standby keeps autonomy with a partly filled steam segment")
+    check(standby(waiting, 1000, false, 0).autonomous_end_to_end,
+      "a drain-free engine generating exactly nothing is on standby too")
+    check(not standby(defines.entity_status.working, 1000, false, 0).autonomous_end_to_end,
+      "a stopped water pump with a working consumer still revokes autonomy")
+    check(not standby(defines.entity_status.working, 1000).autonomous_end_to_end,
+      "a stopped engine while a consumer is working revokes autonomy")
+    check(not standby(waiting, 0).autonomous_end_to_end, "an engine without steam is never on standby")
+    check(not standby(waiting, 20, true).autonomous_end_to_end,
+      "an idle consumer with a drained buffer is demand, never standby")
+    check(map.map_summary({}).factory.material_flow.components[1].state.autonomous_end_to_end,
+      "the restored generating plant is autonomous again")
+  end
+  do
+    -- Whole-graph counters: the proven plant sorts beyond the component row
+    -- cap, yet the counters still count it and every furnace's products.
+    local many_result, _, many = steam_validation("many_components")
+    local flow = many.factory.material_flow
+    local presented_autonomous, presented_products = 0, 0
+    for _, component in ipairs(flow.components) do
+      if component.state.autonomous_end_to_end then presented_autonomous = presented_autonomous + 1 end
+      presented_products = presented_products + component.products_finished_total
+    end
+    check(many_result.status == "completed" and #flow.components == 8 and flow.component_count == 21
+      and presented_autonomous == 0 and flow.autonomous_component_count == 1 and flow.validated_component_count == 1
+      and flow.products_finished_total == 100 and presented_products < 100
+      and flow.edge_count == #flow.edges + many.factory.omissions.capped_flow_edges,
+      "aggregate counters cover the whole graph when the autonomous component is beyond the row cap")
+    if many_result.status ~= "completed" then print("  " .. canonical(many_result)) end
+  end
   -- Power is a dependency, not a material path: an unrelated line on the
   -- plant's network stays its own component, so an idle or unpowered line
   -- never fails the plant, and a powered line names the supply's proof.

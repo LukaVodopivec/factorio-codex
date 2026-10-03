@@ -32,7 +32,9 @@ export interface MapSummary {
     charted_chunks: number; currently_visible_charted_chunks: number; machine_count: number;
     groups: Array<Record<string, unknown>>; force_flows: Array<Record<string, unknown>>;
     material_flow: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>>;
-      components: Array<Record<string, unknown>>; diagnostics: Array<Record<string, unknown>> };
+      components: Array<Record<string, unknown>>; diagnostics: Array<Record<string, unknown>>;
+      component_count: number; edge_count: number; autonomous_component_count: number;
+      validated_component_count: number; products_finished_total: number };
     character_transfers: Record<string, unknown>; omissions: Record<string, number>; partial: boolean;
   };
 }

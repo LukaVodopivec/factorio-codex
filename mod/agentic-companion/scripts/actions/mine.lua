@@ -265,13 +265,14 @@ end
 
 -- Hand-mining a resource that own mining drills already mine spends body time
 -- on something the factory produces. Name the drills and the drill-fed stock
--- so the caller sees the better source. Entity searches take an area; this
--- one spans the whole surface.
-local WHOLE_SURFACE = { { -1000000, -1000000 }, { 1000000, 1000000 } }
+-- so the caller sees the better source. The search names no area: a filter
+-- by force and type reads the surface's own lists, while a huge area makes
+-- the game walk every chunk in it and stalls every peer for many seconds
+-- (live on 2.0.77, cycle 9).
 local function drill_hint(c, task)
   if task._resolved_target.type ~= "resource" then return nil end
   local ok, found = pcall(c.surface.find_entities_filtered,
-    { area = WHOLE_SURFACE, type = "mining-drill", force = c.force })
+    { type = "mining-drill", force = c.force })
   if not ok or type(found) ~= "table" then return nil end
   local drills = 0
   for _, drill in ipairs(found) do

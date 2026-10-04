@@ -38,7 +38,7 @@ local body = {
 body.surface = { find_entities_filtered = function(filter)
   if filter.type == "mining-drill" then
     drill_queries = drill_queries + 1
-    check(filter.force == own and filter.area ~= nil, "the drill search is limited to the character's own force")
+    check(filter.force == own and filter.area == nil, "the drill search is limited to the character's own force and names no area")
     return drills
   end
   return { target }

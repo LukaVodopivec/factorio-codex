@@ -105,12 +105,23 @@ export function normalizeMapSummary(value: any): any {
   const sampleFlow = Array.isArray(normalizedFlows) ? normalizedFlows[0] : undefined;
   const drill = Array.isArray(factory?.groups) ? factory.groups.find((group: any) => group?.type === "mining-drill") : undefined;
   const rateSummary = sampleFlow ? `; sample ${sampleFlow.type} ${sampleFlow.name}: produced_per_minute=${sampleFlow.produced_per_minute ?? "unavailable"}, consumed_per_minute=${sampleFlow.consumed_per_minute ?? "unavailable"}` : "";
+  // Player-parity sections named by `include`; Lua serializes an empty list as {}.
+  const sections: Record<string, unknown> = {};
+  for (const key of ["stockpiles", "sites", "patches", "problems", "force_flows_all"]) {
+    if (value[key] !== undefined) sections[key] = luaArray(value[key]);
+  }
+  if (Array.isArray(sections.stockpiles)) sections.stockpiles = sections.stockpiles.map((row: any) =>
+    row && typeof row === "object" ? { ...row, holders: luaArray(row.holders) } : row);
+  // A status-count record; Lua serializes an empty one as [].
+  if (Array.isArray(value.problems_by_status) && value.problems_by_status.length === 0) sections.problems_by_status = {};
+  if (value.power && typeof value.power === "object") sections.power = { ...value.power, networks: luaArray(value.power.networks) };
   const capacitySummary = drill ? `; sample ${drill.entity}: theoretical_items_per_minute=${drill.theoretical_items_per_minute ?? "unavailable"} (${drill.capacity_state})` : "";
   return {
     ...value,
     resources: luaArray(value.resources),
     water_edges: luaArray(value.water_edges),
     factory_landmarks: luaArray(value.factory_landmarks),
+    ...sections,
     ...(factory && (rateSummary || capacitySummary) ? { summary: `${value.summary ?? "factory summary"}${rateSummary}${capacitySummary}` } : {}),
     ...(factory ? { factory: {
       ...factory,
@@ -221,20 +232,28 @@ export function normalizePlanDiagnostics(value: any): any {
 
 export const FIFO_IDLE_HINT = "body idle: queue bounded work before further reads";
 export const FIFO_IDLE_HINT_SECONDS = 30;
-export interface FifoState { active_plan_id: number | null; queue_depth: number | null; idle_seconds: number | null; hint?: string }
+export const FIFO_HUMAN_HINT = "human control: the body is held and plans stay queued in order; this is neither idleness nor failure";
+export interface FifoState { active_plan_id: number | null; queue_depth: number | null; idle_seconds: number | null;
+  human_control?: boolean; human_idle_ticks?: number; hint?: string }
 
 // Lua omits nil fields; every read result states all three, plus the idle hint.
+// A human hold is reported as sent and replaces the idle hint: a parked FIFO is not idle.
 export function normalizeFifo(value: unknown): FifoState | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const fifo = value as Record<string, unknown>;
   const number = (field: unknown) => typeof field === "number" && Number.isFinite(field) ? field : null;
   const idle = number(fifo.idle_seconds);
+  const held = fifo.human_control === true;
+  const humanIdle = number(fifo.human_idle_ticks);
   return { active_plan_id: number(fifo.active_plan_id), queue_depth: number(fifo.queue_depth), idle_seconds: idle,
-    ...(idle !== null && idle > FIFO_IDLE_HINT_SECONDS ? { hint: FIFO_IDLE_HINT } : {}) };
+    ...(typeof fifo.human_control === "boolean" ? { human_control: held } : {}),
+    ...(humanIdle !== null ? { human_idle_ticks: humanIdle } : {}),
+    ...(held ? { hint: FIFO_HUMAN_HINT } : idle !== null && idle > FIFO_IDLE_HINT_SECONDS ? { hint: FIFO_IDLE_HINT } : {}) };
 }
 
 // The body idled while the caller reasoned; say so where the pilot looks next.
-export function queuedPlanSummary(queued: { plan_id: number; body_idle_ticks?: number }): string {
+export function queuedPlanSummary(queued: { plan_id: number; body_idle_ticks?: number; human_control?: boolean }): string {
+  if (queued.human_control) return `queued plan ${queued.plan_id}; a human holds the body, so it starts in order once they are idle`;
   const idle = Math.floor((queued.body_idle_ticks ?? 0) / 60);
   return idle >= 10
     ? `queued plan ${queued.plan_id}; the body sat idle ${idle} s before it: queue work that outlasts your next decision and keep a successor queued`
@@ -243,8 +262,9 @@ export function queuedPlanSummary(queued: { plan_id: number; body_idle_ticks?: n
 
 // A finished plan that leaves the FIFO empty idles the body until the next
 // queue_plan; say so before the caller starts reading or reasoning.
-export function planStatusSummary(value: { status: string; fifo_empty?: boolean }, terminal: boolean): string {
+export function planStatusSummary(value: { status: string; fifo_empty?: boolean; human_control?: boolean }, terminal: boolean): string {
+  const held = value.human_control ? "; a human hold delayed this plan (not a failure): re-observe before relying on earlier positions" : "";
   return terminal && value.fifo_empty
-    ? `${value.status}; the FIFO is empty and the body is idle`
-    : value.status;
+    ? `${value.status}; the FIFO is empty and the body is idle${held}`
+    : `${value.status}${held}`;
 }

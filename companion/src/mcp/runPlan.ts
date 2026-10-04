@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_TASK_TIMEOUT_MS, ModError, TaskCancelledError, type TaskClock } from "../bridge.js";
+import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, ModError, TaskCancelledError, type TaskClock } from "../bridge.js";
 import type { Bridge } from "../bridge.js";
 import { normalizeObservation } from "./observation.js";
 
@@ -54,8 +54,13 @@ export interface RunPlanResult {
   execution?: { mode: "sequential_nontransactional"; rollback: "none"; committed_steps?: number[]; effects_state?: "unknown";
     incomplete_step?: { step: number; status: "failed" | "cancelled"; effects: "unknown" } };
   wait?: { condition: "progress" | "terminal"; timed_out: boolean; waited_ms: number };
+  /** Present only when a human hold delayed this plan: delayed, not failed. */
+  human_control?: boolean;
+  /** The body's FIFO state from the same Lua read; human_control is the current hold. */
+  fifo?: { human_control?: boolean };
+  summary?: string;
 }
-const realClock: TaskClock = { now: Date.now, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
+const realClock: TaskClock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 
 const terminalStatuses = new Set(["completed", "partial", "failed", "cancelled"]);
 function isTerminal(status: RunPlanResult): boolean { return terminalStatuses.has(status.status); }
@@ -92,14 +97,31 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
   if (signal?.aborted) return { status: "cancelled", completed_steps: 0, outcomes: [],
     execution: { mode: "sequential_nontransactional", rollback: "none", committed_steps: [] } };
   const { plan_id } = await bridge.call<{ plan_id: number }>("queue_plan", input);
-  const deadline = clock.now() + DEFAULT_TASK_TIMEOUT_MS;
+  // Time under a human hold is not charged and never cancels the plan: past
+  // the return guard the plan stays queued and the caller waits on plan_status.
+  const started = clock.now();
+  const budget = holdAwareDeadline(clock, started + DEFAULT_TASK_TIMEOUT_MS);
   try {
-    const status = await waitForPlanStatus(bridge, plan_id, "terminal", deadline - clock.now(), signal, clock);
-    if (isTerminal(status)) {
-      if (status.observation) status.observation = normalizeObservation(status.observation);
-      return status;
+    for (;;) {
+      if (signal?.aborted) throw new TaskCancelledError("run_plan was cancelled");
+      const status = await bridge.call<RunPlanResult>("plan_status", { plan_id });
+      budget.sample(status.fifo?.human_control === true);
+      if (isTerminal(status)) {
+        if (status.observation) status.observation = normalizeObservation(status.observation);
+        return status;
+      }
+      if (budget.remaining() <= 0) {
+        if (!budget.parked()) throw new ModError("run_plan gave up after 570s");
+        // Credited hold time is left: report the latest read, not the plan's sticky hold marker.
+        const { human_control: _sticky, ...latest } = status;
+        return { ...latest, ...(budget.holding ? { human_control: true } : {}),
+          wait: { condition: "terminal", timed_out: true, waited_ms: Math.max(0, clock.now() - started) },
+          summary: budget.holding
+            ? `plan ${plan_id} is still ${status.status}: a human holds the body, so nothing was cancelled; it runs in order once they are idle, so wait with plan_status`
+            : `plan ${plan_id} is still ${status.status} at the call time limit after an earlier human hold delayed it; nothing was cancelled, so wait with plan_status` };
+      }
+      await clock.sleep(Math.min(1_000, budget.remaining()));
     }
-    throw new ModError("run_plan gave up after 570s");
   } catch (error) {
     await bridge.call("cancel", { plan_id }).catch(() => {});
     try {

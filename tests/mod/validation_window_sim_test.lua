@@ -1187,5 +1187,210 @@ local cut_plan, cut = validate(cut_box.position, 60)
 check(cut_plan.status == "failed" and not cut.proven and rows_at(cut, cut_back)["persistent_nonproductive_status:no_power"],
   "a fuel return with no power at all is still dead on its path")
 
+;(function()
+-- External fuel enters the plate transport's fuel inventory, not its hand.
+-- This reuses the native-mechanics stub world; these are offline regressions.
+local function external_plate_line(mode)
+  reset()
+  local endpoint = chest(12, 1)
+  local processor = furnace(6, 1, 5, COAL)
+  local ore = drill(2, 1, "iron-ore", processor, 5, COAL)
+  local output = inserter(9, 1, processor, endpoint)
+  burner(output, 1000, 5, mode == "short" and COAL or 10000)
+  local swing = mock.state(output).step
+  mock.state(output).step = function(elapsed)
+    if output.status == RAW.working or output.status == RAW.no_fuel then
+      if not burn(output) then output.status = RAW.no_fuel; return end
+    end
+    swing(elapsed)
+  end
+  local fuel_box = chest(4, 6)
+  mock.state(fuel_box).stock.coal = 20
+  local coal = drill(1, 6, "coal", fuel_box, 5, COAL)
+  inserter(2, 4, fuel_box, ore)
+  inserter(6, 4, fuel_box, processor)
+  inserter(2, 7, fuel_box, coal)
+  local stopped = mode == "stopped" or mode == "ambiguous"
+  local feeder = inserter(9, 4, fuel_box, output, { lazy = true, half_swing = 5,
+    dead_at = stopped and 1 or nil, dead_status = RAW.waiting_for_source_items })
+  if mode == "ambiguous" then inserter(10, 4, fuel_box, output, { lazy = true, half_swing = 5 }) end
+  warm(600)
+  -- Select a pre-window burning phase; the simulated feeder supplies later refills.
+  mock.state(output).fuel = 5
+  output.burner.remaining_burning_fuel = mode == "short" and COAL or 10000
+  if mode == "unreadable" then output.get_fuel_inventory = function() error("unreadable fixture fuel") end end
+  if mode == "incompatible" then output.prototype.burner_prototype.fuel_categories = { nuclear = true } end
+  if mode == "full" then mock.state(endpoint).capacity = stock_total(endpoint) end
+  return endpoint, output, feeder, processor
+end
+for _, mode in ipairs({ "supplied", "stopped", "ambiguous", "unreadable", "incompatible", "short", "full", "topology", "transfer" }) do
+  local endpoint, output, feeder = external_plate_line(mode)
+  local samples = {}
+  local plan, outcome = validate(endpoint.position, mode == "short" and 20 or 120, function(elapsed)
+    if elapsed == 600 then
+      if mode == "topology" then feeder.drop_target = nil
+      elseif mode == "transfer" then
+        mock.state(endpoint).stock["iron-plate"] = (mock.state(endpoint).stock["iron-plate"] or 0) + 1
+        require("scripts.factory_activity").record("insert", {
+          target = { name = endpoint.name, type = endpoint.type, position = endpoint.position },
+          transfers = { { item = "iron-plate", inserted = 1 } } })
+      end
+    end
+  end, samples)
+  local plate_only, attributed, fuel_seen, missed_refill = false, false, false, false
+  local previous_fuel
+  for _, sample in ipairs(samples) do
+    for _, downstream in pairs(sample._downstream or {}) do
+      plate_only = downstream.stock["item:iron-plate"] ~= nil and downstream.stock["item:coal"] == nil
+    end
+    local recipient, feed
+    for _, info in pairs(sample._node_status or {}) do
+      if info.position.x == output.position.x and info.position.y == output.position.y then recipient = info end
+      if info.position.x == feeder.position.x and info.position.y == feeder.position.y then feed = info end
+    end
+    if recipient then
+      attributed = attributed or recipient.fuel_refill_via ~= nil
+      fuel_seen = fuel_seen or type(recipient.fuel_energy) == "number"
+      if previous_fuel and recipient.fuel_energy and recipient.fuel_energy > previous_fuel
+        and feed and feed.status == "insufficient_input" then missed_refill = true end
+      previous_fuel = recipient.fuel_energy
+    end
+  end
+  check(plate_only, "external " .. mode .. " fuel never creates a coal expectation in the plate chest")
+  if mode == "supplied" then
+    check(plan.status == "completed" and outcome.proven and outcome.downstream_acceptance_samples >= 3
+      and fuel_seen and attributed and missed_refill,
+      "external plate transport proves supply despite a fuel swing missed between samples")
+  else
+    check(plan.status == "failed" and not outcome.proven,
+      "external plate transport rejects " .. mode .. " fuel evidence")
+    if mode == "ambiguous" then
+      check(not attributed and rows_at(outcome, feeder).transport_starved_before_end,
+        "another inlet cannot attribute its refill to the stopped external feeder")
+    elseif mode == "short" then
+      local fuel = rows_at(outcome, output).fuel_return_not_yet_exercised
+        or rows_at(outcome, output).fuel_return_beyond_window
+      check(fuel and fuel.class == "evidence" and outcome.downstream_acceptance_samples >= 3,
+        "several plate arrivals do not prove a transport burner whose refill was not exercised")
+    elseif mode == "full" then
+      check(rows_at(outcome, endpoint).blocked_output, "external fuel proof never excuses a full endpoint")
+    elseif mode == "topology" then
+      check(reasons(outcome):find("component_topology_changed_during_validation", 1, true),
+        "external fuel proof rejects a changed physical inlet")
+    elseif mode == "transfer" then
+      check(outcome.character_transfer_actions == 1, "external fuel proof rejects a recorded character transfer")
+    elseif mode == "stopped" then
+      check(rows_at(outcome, output).fuel_replenishment_not_observed,
+        "starter fuel behind a stopped external feeder cannot prove replenishment")
+    end
+  end
+end
+
+end)()
+
+-- A human hold inside a validation window: The owner's own transfers are invisible
+-- to the mod, so the overlapped window proves nothing. It starts over from a
+-- fresh baseline once the hold releases and is judged on post-hold ticks only.
+;(function()
+  reset()
+  local plates = chest(12, 1)
+  local smelter = furnace(6, 1, 5, COAL)
+  local iron = drill(2, 1, "iron-ore", smelter, 5, COAL)
+  inserter(9, 1, smelter, plates)
+  local fuel_chest = chest(4, 6)
+  mock.state(fuel_chest).stock.coal = 20
+  local coal = drill(1, 6, "coal", fuel_chest, 5, COAL)
+  inserter(2, 4, fuel_chest, iron); inserter(6, 4, fuel_chest, smelter); inserter(2, 7, fuel_chest, coal)
+  warm(600)
+  storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+  map.map_summary({})
+  local start, held = game.tick, false
+  local companion_mock = package.loaded["scripts.companion"]
+  companion_mock.human_control = function() return held, held and 0 or 100000 end
+  local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
+    source_tick = start, positions = { plates.position }, duration_seconds = 120 } } })
+  local result, released, during_hold
+  for _ = 1, 3 * 120 * 60 do
+    game.tick = game.tick + 1
+    local elapsed = game.tick - start
+    held = elapsed >= 3600 and elapsed < 4200
+    if elapsed == 4200 then released = game.tick end
+    -- The owner hand-feeds the furnace during the hold: output no pipeline made.
+    if held and elapsed % 100 == 0 then mock.state(smelter).source = mock.state(smelter).source + 1 end
+    step_world(elapsed)
+    tasks.on_tick()
+    result = tasks.plan_status({ plan_id = queued.plan_id })
+    if elapsed == 4199 then during_hold = result.status == "waiting" and result.human_control == true and #result.outcomes == 0 end
+    if result.status == "completed" or result.status == "failed" then break end
+  end
+  companion_mock.human_control = nil
+  local outcome = result.outcomes and result.outcomes[1] and result.outcomes[1].result or {}
+  check(during_hold == true,
+    "a validation window parked across a human hold neither ends nor fails during the hold")
+  check(outcome.human_control_restarts == 1 and outcome.start_tick ~= nil and outcome.start_tick >= released
+    and outcome.transfer_window_start_tick >= released,
+    "a validation window that overlapped a human hold is restarted from a fresh baseline after the hold")
+  check(result.status == "completed" and outcome.proven and outcome.duration_ticks >= 120 * 60
+    and outcome.end_tick - released >= 120 * 60 and result.human_control == true,
+    "the restarted window runs its full duration on post-hold ticks before it can prove autonomy")
+  local recorded = storage.factory_activity and storage.factory_activity.validations or {}
+  check(#recorded == 1 and recorded[1].start_tick >= released,
+    "no validation record covers ticks from before or during the hold")
+end)()
+
+-- Window time discarded by a hold restart is not charged to the plan's
+-- 570-second active budget, for at most two restarts; a third hold inside the
+-- window ends the step unproven with its own outcome.
+local function held_validation(holds)
+  reset()
+  local plates = chest(12, 1)
+  local smelter = furnace(6, 1, 5, COAL)
+  local iron = drill(2, 1, "iron-ore", smelter, 5, COAL)
+  inserter(9, 1, smelter, plates)
+  local fuel_chest = chest(4, 6)
+  mock.state(fuel_chest).stock.coal = 20
+  local coal = drill(1, 6, "coal", fuel_chest, 5, COAL)
+  inserter(2, 4, fuel_chest, iron); inserter(6, 4, fuel_chest, smelter); inserter(2, 7, fuel_chest, coal)
+  warm(600)
+  storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+  map.map_summary({})
+  local start, held = game.tick, false
+  local companion_mock = package.loaded["scripts.companion"]
+  companion_mock.human_control = function() return held, held and 0 or 100000 end
+  local queued = tasks.queue_plan({ observation_detail = "none", steps = { { action = "validate_factory_component",
+    source_tick = start, positions = { plates.position }, duration_seconds = 240 } } })
+  local result
+  for _ = 1, 900 * 60 do
+    game.tick = game.tick + 1
+    local elapsed = game.tick - start
+    held = false
+    for _, hold in ipairs(holds) do held = held or (elapsed >= hold * 60 and elapsed < (hold + 10) * 60) end
+    step_world(elapsed)
+    tasks.on_tick()
+    result = tasks.plan_status({ plan_id = queued.plan_id })
+    if result.status == "completed" or result.status == "failed" then break end
+  end
+  companion_mock.human_control = nil
+  return result, result.outcomes and result.outcomes[1] or {}, game.tick - start
+end
+;(function()
+  -- Holds at 200 s and 400 s discard 200 s and 190 s of window: the third
+  -- window ends 650 s after the plan started.
+  local result, step, elapsed = held_validation({ 200, 400 })
+  local outcome = type(step.result) == "table" and step.result or {}
+  check(result.status == "completed" and outcome.proven == true and outcome.human_control_restarts == 2
+    and outcome.duration_ticks >= 240 * 60 and elapsed >= 650 * 60,
+    "two hold restarts of a validation window do not charge the discarded window time to the plan's 570-second budget")
+  result, step, elapsed = held_validation({ 100, 200, 300 })
+  outcome = type(step.result) == "table" and step.result or {}
+  check(result.status == "failed" and step.status == "failed" and outcome.code == "human_control_during_window"
+    and outcome.proven == false and outcome.human_control_restarts == 2 and outcome.human_control_holds == 3
+    and tostring(step.error):match("human_control_during_window") and not tostring(step.error):match("budget")
+    and elapsed < 320 * 60 and #storage.tasks.queue == 0 and storage.tasks.active == nil,
+    "a third hold inside the window ends the step unproven as human_control_during_window instead of restarting again")
+  local recorded = storage.factory_activity and storage.factory_activity.validations or {}
+  check(#recorded == 0, "a window ended by human control records no validation")
+end)()
+
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

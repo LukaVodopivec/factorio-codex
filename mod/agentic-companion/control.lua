@@ -29,8 +29,15 @@ local function fifo_state()
   elseif t.last_finished_tick then
     idle_seconds = math.floor(math.max(0, game.tick - t.last_finished_tick) / 60)
   end
+  -- human_control: The owner's input holds the body and the FIFO is parked, which
+  -- is neither idleness nor failure; human_idle_ticks counts since that input.
+  -- A failed read never holds.
+  local ok, human_control, human_idle_ticks = pcall(companion.human_control)
+  human_control = ok and human_control == true
+  if not ok then human_idle_ticks = nil end
   return { active_plan_id = active and active.type == "plan" and active.id or nil,
-    queue_depth = depth, idle_seconds = idle_seconds }
+    queue_depth = depth, idle_seconds = idle_seconds,
+    human_control = human_control, human_idle_ticks = human_idle_ticks }
 end
 local function read(handler)
   return function(params)
@@ -42,7 +49,7 @@ end
 
 rpc.register("ping", read(function()
   return {
-    protocol_version = 22,
+    protocol_version = 23,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
@@ -64,7 +71,7 @@ rpc.register("connect_entities", connect_entities.connect_entities)
 rpc.register("describe_prototype", read(spatial.describe_prototype))
 rpc.register("progression_status", read(research.progression_status))
 rpc.register("enqueue", tasks.enqueue)
-rpc.register("get_task", tasks.get)
+rpc.register("get_task", read(tasks.get))
 rpc.register("queue_plan", tasks.queue_plan)
 rpc.register("plan_status", read(tasks.plan_status))
 rpc.register("cancel", tasks.cancel)

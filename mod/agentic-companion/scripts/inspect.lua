@@ -1,5 +1,6 @@
 -- inspect: detailed view of an entity at an exact local map position
--- (1.5-tile search, non-characters preferred).
+-- (1.5-tile search, non-characters preferred). Beyond the local radius it
+-- reads only own-force entities in charted chunks and marks them remote.
 local companion = require("scripts.companion")
 local fluid_connections = require("scripts.fluid_connections")
 
@@ -180,8 +181,31 @@ local function locate(pos, c)
   end
   local target = { x = tonumber(pos.x), y = tonumber(pos.y) }
 
-  if distance(c.position, target) > 30 then error("inspect positions must be within 30 tiles of Codex") end
   local surface = c.surface
+  -- Player parity: the map view shows a player their own machines anywhere the
+  -- force has charted. Beyond the local radius only such entities are read;
+  -- the chart is checked before the surface is queried, and one refusal covers
+  -- uncharted, foreign and empty positions so it reveals nothing about them.
+  local remote = distance(c.position, target) > 30
+  if remote then
+    local refusal = "inspect positions must be within 30 tiles of Codex, or on an own-force entity in a charted chunk"
+    local function is_charted(position)
+      local ok, known = pcall(function()
+        return c.force.is_chunk_charted(surface, { x = math.floor(position.x / 32), y = math.floor(position.y / 32) })
+      end)
+      return ok and known == true
+    end
+    if not is_charted(target) then error(refusal) end
+    local best, best_d = nil, math.huge
+    for _, e in ipairs(surface.find_entities_filtered({ position = target, radius = SEARCH_RADIUS, force = c.force })) do
+      if e.valid and e.force == c.force and e.type ~= "character" and is_charted(e.position) then
+        local d = distance(e.position, target)
+        if d < best_d then best, best_d = e, d end
+      end
+    end
+    if not best then error(refusal) end
+    return best, true
+  end
 
   -- Preference order: buildings/machines > resources > characters. A chest
   -- standing on an ore tile must resolve to the chest, not the ore under it.
@@ -210,7 +234,7 @@ local function locate(pos, c)
 end
 
 local function inspect_one(position, c)
-  local e = locate(position, c)
+  local e, remote = locate(position, c)
 
   local out = {
     name = e.name,
@@ -218,6 +242,8 @@ local function inspect_one(position, c)
     position = { x = round1(e.position.x), y = round1(e.position.y) },
     direction = e.direction,
   }
+  -- Read through the chart, not from within reach: acting still needs reach.
+  if remote then out.remote = true end
 
   local ok, health = pcall(function() return e.health end)
   if ok and health then out.health = round1(health) end
@@ -345,10 +371,18 @@ function M.inspect(params)
     error("inspect takes at most " .. MAX_TARGETS .. " targets per call — split the list")
   end
   local out = {}
+  local evidence_class = "fresh_local_exact"
+  local scope = "within_30_tiles_of_codex_at_source_tick"
   for i, target in ipairs(targets) do
     local ok, res = pcall(inspect_one, target, c)
     if ok then
       out[i] = res
+      -- A remote entity is read through the chart: the envelope must not
+      -- claim the whole result is local.
+      if res.remote then
+        evidence_class = "fresh_exact_local_and_charted_remote"
+        scope = "within_30_tiles_or_own_force_charted_at_source_tick"
+      end
     else
       local position = nil
       if type(target) == "table" then
@@ -362,8 +396,8 @@ function M.inspect(params)
   end
   return {
     tick = game.tick,
-    evidence_class = "fresh_local_exact",
-    scope = "within_30_tiles_of_codex_at_source_tick",
+    evidence_class = evidence_class,
+    scope = scope,
     entities = out,
   }
 end

@@ -440,11 +440,16 @@ function M.observe_local(params)
   local path_start = placement_geometry.path_start(c)
   -- A belt under the body carries it while idle; the recorder samples this too.
   local conveyor = placement_geometry.conveyor_under(c)
+  -- The owner's input holds the body and parks the FIFO; a failed read never holds.
+  local human_ok, human_control, human_idle_ticks = pcall(companion.human_control)
+  human_control = human_ok and human_control == true
+  if not human_ok then human_idle_ticks = nil end
   local result = {
     tick = game.tick, radius = radius, detail = params.detail == "full" and "full" or "compact",
     character = { position = { x = c.position.x, y = c.position.y }, health = c.health,
       inventory = inventory, inventory_scope = "main", ammo_inventory = ammo_inventory,
       active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
+      human_control = human_control, human_idle_ticks = human_idle_ticks,
       crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance,
       collision_box = plain_box(placement_geometry.character_box(c)),
       path_start = path_start,

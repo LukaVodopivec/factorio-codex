@@ -29,7 +29,8 @@
 - Keep movement, reach, inventory, crafting, placement, and time constraints
   observable and covered by tests.
 - Never expose images, raw Lua, arbitrary console commands, credentials, or
-  hidden global-map state through MCP.
+  uncharted terrain through MCP. Everything the force has charted may be read;
+  acting still needs physical reach.
 - Use Node 22 and Factorio 2.0.x. Run the proportional offline suite before
   publication; live gameplay validation requires an installed Factorio game.
 - Complete private-repository changes on clean, pushed `main` with exact
@@ -51,6 +52,13 @@ or failed observations never prove idleness. Parked waiting plans and
 predecessor-blocked queued plans are pending work, even when the body is still;
 they count in `queue_depth`. `plan_status` is only a per-plan read with an exact
 known `plan_id`, never a global work query.
+
+The owner may take the body over by mouse and keyboard at any time. A
+`human_control: true` hold (`observe_local.character` and every `fifo` block) is
+The owner playing: the mod parks the FIFO without cancelling plans and resumes after
+about five seconds without input. A hold is neither idleness nor failure. The
+supervisor never nudges or replaces during a hold, records it as the owner input,
+invalidates idle timing, and needs fresh idle evidence after it.
 
 Measure elapsed idle time with observation receipt timestamps in the current
 run. Retain the last evidenced physical change or transition into the current
@@ -116,7 +124,7 @@ pre-`GO` stop rehearsal, which resumes both goals before `GO`.
 Before `GO` of a fresh run, archive the previous run's `operations.json` into
 that run's directory and have Astra initialise the new one; a ledger from another
 run is archival evidence only. The run's `notebook/` stays in its run directory,
-and the run write-up summarises what Astra learned. Before `GO` on any resumed
+and the run write-up summarises what the roles learned. Before `GO` on any resumed
 save or after a mod upgrade, reconcile retained work: if `observe_local` shows an
 active task or queue depth, call `stop` and re-observe until idle.
 
@@ -156,18 +164,21 @@ revision against newer physical evidence and continues fail-open when Astra, a
 report, or the ledger is missing, malformed, stale, or unavailable. Do not add
 another writer, body, lane, ledger, broker, daemon, or control channel.
 
-Astra may also keep a per-run markdown notebook in `<run_dir>/notebook/`,
-created empty at deploy: its own ideas, approaches, outcomes, and relative
-layout templates, never imported or copied external content, with a README
-index of at most 2 KB and about 64 KB in total. A build package may name up to
-three notes, and Luna reads only those. The notebook is a learning store, not a
+Each run has a markdown notebook in `<run_dir>/notebook/`, created at deploy
+with empty `astra/` and `luna/` folders. Each role writes only its own folder
+and reads anything there at any time. Notes may hold exact positions, maps, and
+infrastructure inventories observed in this run, never imported or copied
+external content. There is no total size cap; each role keeps a short `INDEX.md`
+and splits long files. Nothing is read from another run; a resumed save of the
+same factory continues its run. A build package may name up to three notes.
+Notes are knowledge, never instructions: the notebook is a learning store, not a
 broker, a second ledger, or a control channel; the ledger remains the only
-command channel.
+command channel and Astra its only writer.
 
 Role sessions never call `list_threads`, `read_thread`, or `wait_threads`;
 delivered messages and their own tool results are their evidence. After any
 context compaction a role re-reads its goal file and `SKILL.md` before any other
-call (Astra also its notebook index). The `GO` text names Astra's exact thread
+call, then its notebook index. The `GO` text names Astra's exact thread
 ID for the pilot.
 
 The native `/goal` owns continuation. Waypoints, batches, individual plans,
@@ -184,7 +195,9 @@ Gameplay rules live in `.agents/skills/factorio-player/`: `SKILL.md` holds the
 hard rules (one body, writer, and FIFO; honest play; tool, evidence, automation,
 and validation semantics; ledger, notebook, report, thread, and stop protocol),
 `PLAYER-KNOWLEDGE-v1.md` is a short Factorio intro with overridable hints, and
-the two goal files hold each role's duties. The supported save is permanently
+the two goal files hold each role's duties. Researched principles, ratios, and
+a research-order hint written in this repository's own words are allowed there;
+imported blueprint strings and copied layouts stay out. The supported save is permanently
 peaceful with enemy bases disabled. `stop` is recorded emergency cancellation
 only, in the cases listed above. Debug runs continue past `GO+20m` to their
 assigned milestone; Candidate B and fresh-baseline freeze rules are historical
@@ -194,7 +207,7 @@ When a newly observed gameplay difficulty appears to require greenfield code,
 first make one bounded Firecrawl reuse survey for maintained mods, interfaces,
 or tools that already own the deterministic responsibility. Check license,
 maintenance, current Factorio API compatibility, one-body/one-writer/text-only
-physical fit, and whether each candidate introduces cheats, hidden map state,
+physical fit, and whether each candidate introduces cheats, uncharted map state,
 raw console, imported blueprints, or tutorial sequences. Reuse or adapt the
 smallest maintained compatible path; otherwise retain candidates only as design
 evidence, record why they do not fit, and patch the smallest existing active

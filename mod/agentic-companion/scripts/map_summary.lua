@@ -730,12 +730,13 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     end
   end
   local components = sorted_rows(by_root, function(a, b) return a.node_ids[1] < b.node_ids[1] end)
-  local node_by_id, incoming, outgoing = {}, {}, {}
+  local node_by_id, incoming, outgoing, pickup_of = {}, {}, {}, {}
   for _, node in ipairs(nodes) do node_by_id[node.id], incoming[node.id], outgoing[node.id] = node, {}, {} end
   for _, edge in ipairs(edges) do
     if edge.kind ~= "electrical_dependency" then
       incoming[edge.to][#incoming[edge.to] + 1] = edge.from
       outgoing[edge.from][#outgoing[edge.from] + 1] = edge.to
+      if edge.kind == "inserter_pickup" then pickup_of[edge.to] = edge.from end
     end
   end
   local function product_matches(node, ingredient, fuel_only)
@@ -863,7 +864,8 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         local next_node = node_by_id[next_id]
         if not seen[next_id] and next_node then
           seen[next_id] = true
-          if next_node.role == "transport" or through_buffers and next_node.role == "buffer" and not next_node._downstream_buffer then
+          if next_node.role == "transport" and not (next_node.type == "inserter" and pickup_of[next_id] ~= id)
+            or through_buffers and next_node.role == "buffer" and not next_node._downstream_buffer then
             queue[#queue + 1] = next_id
           else reached[#reached + 1] = next_node end
         end
@@ -901,10 +903,11 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
     end
     return seen
   end
-  -- A burner producer takes these products only as fuel: one burns in its
+  -- A burner takes these products only as fuel: one burns in its
   -- categories and none is a recipe ingredient that could be material input.
   local function fuel_inlet(products, target)
-    if not target.requires_fuel or (target.role ~= "source" and target.role ~= "processor") then return false end
+    if not target.requires_fuel or (target.role ~= "source" and target.role ~= "processor"
+      and target.type ~= "inserter") then return false end
     local fuel = false
     for _, product in pairs(products) do
       if product.fuel_category and (target.fuel_categories or {})[product.fuel_category] then fuel = true end
@@ -969,6 +972,10 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
         local upstream = node_by_id[id]
         if upstream.role == "source" or upstream.role == "processor" then
           for _, product in ipairs(upstream.products) do products[product.type .. ":" .. product.name] = product end
+        elseif upstream.type == "inserter" then
+          -- Another inserter drops into this burner's fuel inventory, never
+          -- its hand. Only the pickup target supplies cargo relayed onward.
+          if pickup_of[id] then queue[#queue + 1] = pickup_of[id] end
         elseif upstream.role == "transport" or upstream.role == "buffer" or upstream.type == "lab" or id == start_id then
           for _, parent_id in ipairs(incoming[id]) do queue[#queue + 1] = parent_id end
         end
@@ -1181,7 +1188,17 @@ local function build_material_flow(flow_entities, node_by_key, activity, network
       if node.fuel_return_saturation then
         status.fuel_return_to = node_by_id[node.fuel_return_saturation.destination_node_id]._key
       end
-      if node.requires_fuel and (node.role == "source" or node.role == "processor") then
+      -- Coal-carrying inserters refuel from their own hand under the retained
+      -- cargo proof. A burner carrying non-fuel cargo needs an external feed
+      -- whose demand and replenishment must be sampled like a producer's.
+      local self_fuelled = false
+      if node.type == "inserter" then
+        for _, product in pairs(upstream_products(id)) do
+          if product.fuel_category and (node.fuel_categories or {})[product.fuel_category] then self_fuelled = true end
+        end
+      end
+      if node.requires_fuel and (node.role == "source" or node.role == "processor"
+        or node.type == "inserter" and not self_fuelled) then
         status.fuel_energy, status.fuel_items, status.fuel_item_energy = stored_fuel(node._entity)
         status.fuel_unreadable = status.fuel_energy == nil or nil
         local suppliers, modelled = fuel_suppliers(id, node.fuel_categories or {})
@@ -1581,6 +1598,405 @@ local function present_flow(flow, omissions)
   return result
 end
 
+-- Player-parity sections, computed only when map_summary names them in
+-- `include`. They read what a player's map, production and electric-network
+-- views show: own-force entities and resources in chunks the force has already
+-- charted on the character's surface. Every section is capped and counts what
+-- it left out. Reading is not reach: acting on any of it still needs the body.
+local INCLUDE_SECTIONS = { stockpiles = true, sites = true, patches = true, power = true,
+  problems = true, flows_all = true }
+local MAX_STOCK_ITEMS, MAX_STOCK_HOLDERS = 64, 8
+local MAX_SITES, MAX_PATCHES, MAX_POWER_NETWORKS, MAX_PROBLEMS, MAX_FLOWS_ALL = 256, 64, 32, 64, 256
+local SITE_TYPES = {
+  ["mining-drill"] = true, furnace = true, ["assembling-machine"] = true, lab = true,
+  boiler = true, generator = true, ["burner-generator"] = true, reactor = true,
+  ["offshore-pump"] = true, pump = true, ["rocket-silo"] = true,
+}
+local CHEST_TYPES = { container = true, ["logistic-container"] = true }
+local OUTPUT_TYPES = { furnace = true, ["assembling-machine"] = true, ["rocket-silo"] = true }
+local BELT_TYPES = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
+  loader = true, ["loader-1x1"] = true, ["linked-belt"] = true }
+local STOCK_TYPE_NAMES = {}
+for _, types in ipairs({ CHEST_TYPES, OUTPUT_TYPES, BELT_TYPES }) do
+  for name in pairs(types) do STOCK_TYPE_NAMES[#STOCK_TYPE_NAMES + 1] = name end
+end
+table.sort(STOCK_TYPE_NAMES)
+local POWER_PRODUCER_TYPES = { generator = true, ["burner-generator"] = true, ["solar-panel"] = true,
+  ["fusion-generator"] = true }
+local PROBLEM_STATUSES = {
+  no_power = true, low_power = true, not_plugged_in_electric_network = true, no_fuel = true,
+  full_output = true, no_minable_resources = true, no_ingredients = true,
+  item_ingredient_shortage = true, fluid_ingredient_shortage = true,
+}
+-- Dead machines first, blocked ones next. Input waits are routine in a working
+-- factory and sort last so they cannot evict the others from the row cap.
+local PROBLEM_RANK = { no_power = 1, not_plugged_in_electric_network = 1, no_fuel = 1,
+  no_minable_resources = 2, full_output = 2, low_power = 2 }
+local INPUT_WAIT_RANK = 3
+
+local function parse_include(include)
+  local want = {}
+  if include == nil then return want end
+  if type(include) ~= "table" then error("map_summary include must be an array of section names") end
+  for _, name in ipairs(include) do
+    if not INCLUDE_SECTIONS[name] then error("unsupported map_summary include: " .. tostring(name)) end
+    want[name] = true
+  end
+  return want
+end
+
+local function xy(position) return { x = position.x, y = position.y } end
+
+local function row_position(a, b)
+  if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+  if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+  return a.entity < b.entity
+end
+
+-- What can be taken: a chest's contents or a crafting machine's output.
+-- Mining drills have no output inventory (native returns nil).
+local function stock_inventory(entity)
+  local ok, inventory = pcall(function()
+    if CHEST_TYPES[entity.type] then return entity.get_inventory(defines.inventory.chest) end
+    return entity.get_output_inventory()
+  end)
+  if ok then return inventory end
+  return nil
+end
+
+local function belt_lines(entity)
+  local lines, max_index = {}, 2
+  pcall(function() max_index = entity.get_max_transport_line_index() end)
+  for index = 1, max_index do
+    local ok, line = pcall(entity.get_transport_line, index)
+    if ok and line then lines[#lines + 1] = line end
+  end
+  return lines
+end
+
+-- Inventories and transport lines both return an array of {name, quality, count}.
+local function add_contents(bucket, source)
+  local ok, contents = pcall(function() return source.get_contents() end)
+  if not ok or type(contents) ~= "table" then return end
+  for _, row in ipairs(contents) do
+    if type(row) == "table" and type(row.name) == "string" then
+      bucket[row.name] = (bucket[row.name] or 0) + (tonumber(row.count) or 0)
+    end
+  end
+end
+
+local function build_stockpiles(own)
+  local items, belts = {}, {}
+  local function hold(item, count, entity, kind)
+    if count <= 0 then return end
+    local row = items[item] or { item = item, total = 0, holders = {} }
+    items[item] = row
+    row.total = row.total + count
+    row.holders[#row.holders + 1] = { entity = entity.name, position = xy(entity.position), count = count, kind = kind }
+  end
+  for _, record in ipairs(own) do
+    local entity = record.entity
+    if BELT_TYPES[entity.type] then
+      belts[#belts + 1] = entity
+    elseif CHEST_TYPES[entity.type] or OUTPUT_TYPES[entity.type] then
+      local inventory = stock_inventory(entity)
+      if inventory then
+        local bucket = {}
+        add_contents(bucket, inventory)
+        for item, count in pairs(bucket) do hold(item, count, entity, CHEST_TYPES[entity.type] and "chest" or "machine_output") end
+      end
+    end
+  end
+  -- One holder per connected belt run, located at the run's entity carrying
+  -- most of that item. Runs join through belt_neighbours among the collected
+  -- (own, charted) belts only, so a run never reaches into uncharted chunks.
+  local parent, index_of = {}, {}
+  for index, belt in ipairs(belts) do
+    parent[index] = index
+    local id = number_property(belt, "unit_number")
+    if id then index_of[id] = index end
+  end
+  local function find(index)
+    while parent[index] ~= index do parent[index] = parent[parent[index]]; index = parent[index] end
+    return index
+  end
+  for index, belt in ipairs(belts) do
+    local ok, outputs = pcall(function() return belt.belt_neighbours.outputs end)
+    for _, other in ipairs(ok and type(outputs) == "table" and outputs or {}) do
+      local other_index = index_of[number_property(other, "unit_number") or false]
+      if other_index then parent[find(index)] = find(other_index) end
+    end
+    -- belt_neighbours omits the other end of an underground pair.
+    if belt.type == "underground-belt" then
+      local ok_pair, pair = pcall(function() return belt.neighbours end)
+      local pair_index = ok_pair and pair and index_of[number_property(pair, "unit_number") or false]
+      if pair_index then parent[find(index)] = find(pair_index) end
+    end
+  end
+  local runs = {}
+  for index, belt in ipairs(belts) do
+    local bucket = {}
+    for _, line in ipairs(belt_lines(belt)) do add_contents(bucket, line) end
+    local run = runs[find(index)] or {}
+    runs[find(index)] = run
+    for item, count in pairs(bucket) do
+      local held = run[item] or { count = 0, best = 0 }
+      run[item] = held
+      held.count = held.count + count
+      if count > held.best or (count == held.best and held.entity and key_position(belt, held.entity)) then
+        held.best, held.entity = count, belt
+      end
+    end
+  end
+  for _, run in pairs(runs) do
+    for item, held in pairs(run) do if held.entity then hold(item, held.count, held.entity, "belt") end end
+  end
+  local rows = sorted_rows(items, function(a, b)
+    if a.total ~= b.total then return a.total > b.total end
+    return a.item < b.item
+  end)
+  for _, row in ipairs(rows) do
+    table.sort(row.holders, function(a, b)
+      if a.count ~= b.count then return a.count > b.count end
+      return row_position(a, b)
+    end)
+    row.holders_omitted = cap_rows(row.holders, MAX_STOCK_HOLDERS)
+  end
+  return rows, cap_rows(rows, MAX_STOCK_ITEMS)
+end
+
+-- One row per charted chunk holding own machines. This is independent of the
+-- detail=full landmark cap, so a full landmark list cannot hide a remote site.
+local function build_sites(own)
+  local by_chunk = {}
+  for _, record in ipairs(own) do
+    local entity = record.entity
+    if SITE_TYPES[entity.type] then
+      local cx, cy = math.floor(entity.position.x / 32), math.floor(entity.position.y / 32)
+      local key = cx .. "," .. cy
+      local site = by_chunk[key] or { chunk = { x = cx, y = cy }, machines = {}, _count = 0, _x = 0, _y = 0 }
+      by_chunk[key] = site
+      site.machines[entity.name] = (site.machines[entity.name] or 0) + 1
+      site._count, site._x, site._y = site._count + 1, site._x + entity.position.x, site._y + entity.position.y
+    end
+  end
+  local rows = sorted_rows(by_chunk, function(a, b)
+    if a._count ~= b._count then return a._count > b._count end
+    if a.chunk.y ~= b.chunk.y then return a.chunk.y < b.chunk.y end
+    return a.chunk.x < b.chunk.x
+  end)
+  for _, site in ipairs(rows) do
+    site.position = { x = math.floor(site._x / site._count + 0.5), y = math.floor(site._y / site._count + 0.5) }
+    site._count, site._x, site._y = nil, nil, nil
+  end
+  return rows, cap_rows(rows, MAX_SITES)
+end
+
+-- Resource entities are bucketed per chunk while the charted chunks are
+-- scanned; a patch is the same resource across touching (8-neighbour) chunks.
+-- That is coarser than tile adjacency but needs no per-tile work.
+local function add_patch_resource(cells, entity)
+  local cx, cy = math.floor(entity.position.x / 32), math.floor(entity.position.y / 32)
+  local by_name = cells[entity.name] or {}
+  cells[entity.name] = by_name
+  local key = cx .. "," .. cy
+  local cell = by_name[key]
+  local x, y = entity.position.x, entity.position.y
+  if not cell then
+    cell = { cx = cx, cy = cy, amount = 0, tiles = 0, x = 0, y = 0, left = x, right = x, top = y, bottom = y }
+    by_name[key] = cell
+  end
+  cell.amount, cell.tiles = cell.amount + (tonumber(entity.amount) or 0), cell.tiles + 1
+  cell.x, cell.y = cell.x + x, cell.y + y
+  cell.left, cell.right = math.min(cell.left, x), math.max(cell.right, x)
+  cell.top, cell.bottom = math.min(cell.top, y), math.max(cell.bottom, y)
+end
+
+local function build_patches(cells)
+  local rows = {}
+  for name, by_name in pairs(cells) do
+    for _, first in pairs(by_name) do
+      if not first.seen then
+        first.seen = true
+        local patch = { name = name, amount = 0, tiles = 0, _x = 0, _y = 0,
+          _left = first.left, _right = first.right, _top = first.top, _bottom = first.bottom }
+        local stack = { first }
+        while #stack > 0 do
+          local cell = table.remove(stack)
+          patch.amount, patch.tiles = patch.amount + cell.amount, patch.tiles + cell.tiles
+          patch._x, patch._y = patch._x + cell.x, patch._y + cell.y
+          patch._left, patch._right = math.min(patch._left, cell.left), math.max(patch._right, cell.right)
+          patch._top, patch._bottom = math.min(patch._top, cell.top), math.max(patch._bottom, cell.bottom)
+          for dy = -1, 1 do for dx = -1, 1 do
+            local neighbour = by_name[(cell.cx + dx) .. "," .. (cell.cy + dy)]
+            if neighbour and not neighbour.seen then neighbour.seen = true; stack[#stack + 1] = neighbour end
+          end end
+        end
+        patch.bbox = { left_top = { x = math.floor(patch._left), y = math.floor(patch._top) },
+          right_bottom = { x = math.ceil(patch._right), y = math.ceil(patch._bottom) } }
+        patch.centroid = { x = math.floor(patch._x / patch.tiles * 10 + 0.5) / 10,
+          y = math.floor(patch._y / patch.tiles * 10 + 0.5) / 10 }
+        patch._x, patch._y, patch._left, patch._right, patch._top, patch._bottom = nil, nil, nil, nil, nil, nil
+        rows[#rows + 1] = patch
+      end
+    end
+  end
+  table.sort(rows, function(a, b)
+    if a.amount ~= b.amount then return a.amount > b.amount end
+    if a.name ~= b.name then return a.name < b.name end
+    if a.centroid.y ~= b.centroid.y then return a.centroid.y < b.centroid.y end
+    return a.centroid.x < b.centroid.x
+  end)
+  return rows, cap_rows(rows, MAX_PATCHES)
+end
+
+-- Per electric network, as the electric-network view shows it.
+--   production_w / consumption_w: the five-second average of the network's
+--     native electric_network_statistics (read from one of its charted poles),
+--     summed over every producer (output) and consumer (input) row. Electric
+--     flow statistics count joules per tick, so the sum is multiplied by 60.
+--   capacity_w: nameplate, the sum of each producer prototype's
+--     get_max_energy_production (joules per tick) times 60; fuel, steam and
+--     daylight are not considered.
+--   satisfaction: 1 while no consumer on the network samples low_power or
+--     no_power. Otherwise min(1, production_w / demand), where demand is the
+--     nominal get_max_energy_usage (times 60) of the consumers that are trying
+--     to run (working, low_power or no_power).
+--   accumulator_j / accumulator_capacity_j: summed energy and
+--     electric_buffer_size of the network's accumulators.
+local function build_power(own, network_poles)
+  local networks = {}
+  local function nominal_watts(entity, method)
+    local ok, value = pcall(function()
+      local ok_quality, quality = pcall(function() return entity.quality end)
+      return entity.prototype[method](ok_quality and quality or nil)
+    end)
+    return ok and type(value) == "number" and value * 60 or 0
+  end
+  for _, record in ipairs(own) do
+    local entity, id = record.entity, record.network_id
+    if id and entity.type ~= "electric-pole" then
+      local network = networks[id] or { id = id, capacity_w = 0, accumulator_j = 0, accumulator_capacity_j = 0,
+        producers = {}, consumers = {}, _starved = 0, _demand = 0 }
+      networks[id] = network
+      if entity.type == "accumulator" then
+        network.accumulator_j = network.accumulator_j + (number_property(entity, "energy") or 0)
+        network.accumulator_capacity_j = network.accumulator_capacity_j + (number_property(entity, "electric_buffer_size") or 0)
+      elseif POWER_PRODUCER_TYPES[entity.type] then
+        network.producers[entity.name] = (network.producers[entity.name] or 0) + 1
+        network.capacity_w = network.capacity_w + nominal_watts(entity, "get_max_energy_production")
+      else
+        network.consumers[entity.name] = (network.consumers[entity.name] or 0) + 1
+        local status = normalize_status(record.status)
+        if status == "low_power" or status == "no_power" then network._starved = network._starved + 1 end
+        if status == "working" or status == "low_power" or status == "no_power" then
+          network._demand = network._demand + nominal_watts(entity, "get_max_energy_usage")
+        end
+      end
+    end
+  end
+  local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index.five_seconds
+  local rows = sorted_rows(networks, function(a, b) return a.id < b.id end)
+  for _, network in ipairs(rows) do
+    local ok, statistics = pcall(function() return network_poles[network.id].electric_network_statistics end)
+    local function watts(counts, category)
+      local ok_sum, sum = pcall(function()
+        local total = 0
+        for name in pairs(statistics[counts]) do
+          total = total + statistics.get_flow_count({ name = name, category = category,
+            precision_index = precision_index, count = false })
+        end
+        return total * 60
+      end)
+      if ok_sum and type(sum) == "number" then return sum end
+      return nil
+    end
+    network.statistics_available = ok and statistics ~= nil and precision_index ~= nil
+    if network.statistics_available then
+      network.production_w, network.consumption_w = watts("output_counts", "output"), watts("input_counts", "input")
+      network.statistics_available = network.production_w ~= nil and network.consumption_w ~= nil
+    end
+    if network._starved == 0 then
+      network.satisfaction = 1
+    elseif network.production_w and network._demand > 0 then
+      network.satisfaction = math.floor(math.min(1, network.production_w / network._demand) * 1000 + 0.5) / 1000
+    else
+      network.satisfaction = 0
+    end
+    network.starved_consumers = network._starved
+    network._starved, network._demand = nil, nil
+  end
+  return rows, cap_rows(rows, MAX_POWER_NETWORKS)
+end
+
+local function build_problems(own)
+  local rows, by_status = {}, {}
+  for _, record in ipairs(own) do
+    if PROBLEM_STATUSES[record.status] then
+      rows[#rows + 1] = { entity = record.entity.name, position = xy(record.entity.position),
+        status = record.status, _inserter = record.entity.type == "inserter",
+        _rank = PROBLEM_RANK[record.status] or INPUT_WAIT_RANK }
+      by_status[record.status] = (by_status[record.status] or 0) + 1
+    end
+  end
+  -- Input waits last, then machines before inserters (a dead network must not
+  -- fill the cap with arms), then the more severe status.
+  table.sort(rows, function(a, b)
+    local a_wait, b_wait = a._rank == INPUT_WAIT_RANK, b._rank == INPUT_WAIT_RANK
+    if a_wait ~= b_wait then return b_wait end
+    if a._inserter ~= b._inserter then return b._inserter end
+    if a._rank ~= b._rank then return a._rank < b._rank end
+    return row_position(a, b)
+  end)
+  local total = #rows
+  cap_rows(rows, MAX_PROBLEMS)
+  for _, row in ipairs(rows) do row._inserter, row._rank = nil, nil end
+  -- Per-status counts cover every problem, including rows the cap left out.
+  return rows, total, by_status
+end
+
+-- Every item and fluid the force's native statistics for this surface have
+-- ever counted: input is produced, output is consumed. Only this section
+-- lifts the force_flows row cap.
+local function read_all_flows(force, surface, precision_name)
+  local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index[precision_name]
+  local rows = {}
+  for _, kind in ipairs({ "item", "fluid" }) do
+    local getter_name = kind == "fluid" and "get_fluid_production_statistics" or "get_item_production_statistics"
+    local ok, statistics = pcall(function() return force[getter_name](surface) end)
+    if ok and statistics then
+      local function counts(field)
+        local ok_counts, value = pcall(function() return statistics[field] end)
+        return ok_counts and type(value) == "table" and value or {}
+      end
+      local produced, consumed, names = counts("input_counts"), counts("output_counts"), {}
+      for name in pairs(produced) do names[name] = true end
+      for name in pairs(consumed) do names[name] = true end
+      for name in pairs(names) do
+        local lifetime_produced, lifetime_consumed = tonumber(produced[name]) or 0, tonumber(consumed[name]) or 0
+        if type(name) == "string" and (lifetime_produced > 0 or lifetime_consumed > 0) then
+          local function rate(category)
+            local ok_rate, value = pcall(function()
+              return statistics.get_flow_count({ name = name, category = category, precision_index = precision_index, count = false })
+            end)
+            return ok_rate and type(value) == "number" and value or nil
+          end
+          rows[#rows + 1] = { name = name, kind = kind,
+            produced_per_minute = rate("input"), consumed_per_minute = rate("output"),
+            lifetime_produced = lifetime_produced, lifetime_consumed = lifetime_consumed }
+        end
+      end
+    end
+  end
+  table.sort(rows, function(a, b)
+    local a_total, b_total = a.lifetime_produced + a.lifetime_consumed, b.lifetime_produced + b.lifetime_consumed
+    if a_total ~= b_total then return a_total > b_total end
+    if a.kind ~= b.kind then return a.kind < b.kind end
+    return a.name < b.name
+  end)
+  return rows, cap_rows(rows, MAX_FLOWS_ALL)
+end
+
 local function collect_summary(params, internal, drill_products)
   params = type(params) == "table" and params or {}
   local detail = params.detail or "aggregate"
@@ -1596,6 +2012,10 @@ local function collect_summary(params, internal, drill_products)
     or tonumber(params.activity_since_tick) % 1 ~= 0) then
     error("activity_since_tick must be an integer tick")
   end
+  local want = parse_include(params.include)
+  -- Own entities and resource cells are retained only for a requested section.
+  local own = (want.stockpiles or want.sites or want.power or want.problems) and {} or nil
+  local patch_cells = want.patches and {} or nil
   local c = companion.require_companion()
   local chunks = {}
   local visible_chunks = 0
@@ -1650,11 +2070,12 @@ local function collect_summary(params, internal, drill_products)
   for _, chunk in ipairs(chunks) do
     local x0, y0 = chunk.x * 32, chunk.y * 32
     local area = { { x0, y0 }, { x0 + 32, y0 + 32 } }
-    if detail == "full" then for _, entity in ipairs(c.surface.find_entities_filtered({ area = area, type = "resource" })) do
+    if detail == "full" or patch_cells then for _, entity in ipairs(c.surface.find_entities_filtered({ area = area, type = "resource" })) do
       local resource_key = entity.valid and charted(c.force, c.surface, entity.position)
         and string.format("%s\0%.17g\0%.17g", entity.name, entity.position.x, entity.position.y) or nil
       if resource_key and not seen_resource[resource_key] then
         seen_resource[resource_key] = true
+        if patch_cells then add_patch_resource(patch_cells, entity) end
         local row = resources_by_name[entity.name] or { name = entity.name, entity_count = 0, total_amount = 0, nearest = nil, observed_tick = game.tick, _distance = nil }
         resources_by_name[entity.name] = row
         row.entity_count = row.entity_count + 1
@@ -1690,6 +2111,7 @@ local function collect_summary(params, internal, drill_products)
               end
             end
           end
+          if own then own[#own + 1] = { entity = entity, status = raw_status, network_id = network_id } end
           if role then
             local node = {
               _key = key, _entity = entity, name = entity.name, type = entity.type,
@@ -1854,7 +2276,7 @@ local function collect_summary(params, internal, drill_products)
       entity_summary = {
         evidence_class = "charted_remote_summary", source_tick = game.tick,
         scope = "currently_existing_player_force_entities_in_already_charted_chunks",
-        exact_remote_inventories = false, exact_remote_fluids = false,
+        exact_remote_inventories = want.stockpiles == true, exact_remote_fluids = false,
       },
       force_flows = {
         evidence_class = "rolling_force_surface_flow", source_tick = game.tick,
@@ -1873,7 +2295,27 @@ local function collect_summary(params, internal, drill_products)
 
   local summary_text = string.format("factory tick %d: %d machines in %d groups; %d flow rows; %d physical components; %d character transfers",
     game.tick, machine_count, #groups, #flows, #material_flow.components, activity.transfer_actions)
-  if detail == "aggregate" then return { tick = game.tick, summary = summary_text, factory = factory } end
+  -- Requested sections are top-level keys beside `factory`, each with the
+  -- count of what its cap left out.
+  local sections = {}
+  if want.stockpiles then sections.stockpiles, sections.stockpiles_omitted = build_stockpiles(own) end
+  if want.sites then sections.sites, sections.sites_omitted = build_sites(own) end
+  if want.patches then sections.patches, sections.patches_omitted = build_patches(patch_cells) end
+  if want.power then
+    local networks, networks_omitted = build_power(own, network_poles)
+    sections.power = { networks = networks, networks_omitted = networks_omitted }
+  end
+  if want.problems then
+    sections.problems, sections.problems_total, sections.problems_by_status = build_problems(own)
+  end
+  if want.flows_all then
+    sections.force_flows_all, sections.force_flows_all_omitted = read_all_flows(c.force, c.surface, precision_name)
+  end
+  local function with_sections(result)
+    for key, value in pairs(sections) do result[key] = value end
+    return result
+  end
+  if detail == "aggregate" then return with_sections({ tick = game.tick, summary = summary_text, factory = factory }) end
 
   local resources = {}; for _, row in pairs(resources_by_name) do row._distance = nil; resources[#resources + 1] = row end
   table.sort(resources, function(a, b) return a.name < b.name end)
@@ -1888,15 +2330,39 @@ local function collect_summary(params, internal, drill_products)
   local omitted_factory_landmarks = math.max(0, #landmarks - MAX_LANDMARKS)
   while #water_edges > MAX_EDGES do table.remove(water_edges) end
   while #landmarks > MAX_LANDMARKS do table.remove(landmarks) end
-  return {
+  return with_sections({
     tick = game.tick, charted_chunks = #chunks, resources = resources,
     water_edges = water_edges, omitted_water_edges = omitted_water_edges,
     factory_landmarks = landmarks, omitted_factory_landmarks = omitted_factory_landmarks,
     factory = factory, summary = summary_text,
-  }
+  })
 end
 
 function M.map_summary(params) return collect_summary(params, false) end
+
+-- Own-force stock of one item in charted chunks: chests, crafting-machine
+-- outputs and belts, counted natively by one typed query. A hand-mining result
+-- uses it to name the stock a drill already feeds. Returns 0 on any failure.
+function M.stock_total(item_name)
+  local ok, total = pcall(function()
+    if type(item_name) ~= "string" or item_name == "" then return 0 end
+    local c = companion.require_companion()
+    local sum = 0
+    for _, entity in ipairs(c.surface.find_entities_filtered({ force = c.force, type = STOCK_TYPE_NAMES })) do
+      if entity.valid and entity.force == c.force and charted(c.force, c.surface, entity.position) then
+        if BELT_TYPES[entity.type] then
+          for _, line in ipairs(belt_lines(entity)) do sum = sum + line.get_item_count(item_name) end
+        else
+          local inventory = stock_inventory(entity)
+          if inventory then sum = sum + inventory.get_item_count(item_name) end
+        end
+      end
+    end
+    return sum
+  end)
+  if ok and type(total) == "number" then return total end
+  return 0
+end
 
 -- Resolve an exact caller-named set of charted factory positions to one
 -- aggregate component. This deliberately returns counters and provenance, not

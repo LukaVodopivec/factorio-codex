@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.19.9 retains each exact placed entity and validates the live output
+Release 0.20.0 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.19.9 validation.
+0.20.0 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -564,6 +564,28 @@ Release 0.19.8 addresses these defects:
   relay and stop timestamps, and game-touching interventions are mirrored into
   recorder events.
 
+## 0.20.0 player-parity reads and the cycle-9 targets
+
+Cycle 8 (0.19.9) reached steam, electric mining, oil and plastic (193 machines
+in 15 h 45 min) but spent the body on work the factory already did. 0.20.0
+(protocol v23) lets both roles read what a player sees in charted chunks
+(`map_summary` `include`, remote `inspect_entity`), take items from belts, see
+a `drill_produced` hint on hand-mining, and yield the body to the owner's input
+(`human_control`). Cycle 9 is accepted against these targets (cycle 8 in
+brackets):
+
+- hand-mined ore, coal and stone after `GO+20m` where a drill exists: 50
+  cycles or fewer (1,976);
+- hand-crafted gears after the first gear assembler: 100 or fewer (1,210);
+- peak carried items: 1,000 or fewer (3,920);
+- supervisor exceptions to find own sites: 0 (3); game-touching rescues: 0 (1);
+- instruction-caused interventions: 2 or fewer (about 20 clarifications);
+- 4 or more steam engines by `GO+180m`, with satisfaction held at 100%;
+- `GO+60m` iron ore and plates at or above cycle 7's 664 and 598 (591 and 499);
+- think share under 60% (78%) and body busy 50% or more (34%);
+- takeover: the bot parks within 1 s of the owner's input, resumes within 10 s of
+  idle, and loses no plan.
+
 ## Prior 0.8.0 structured timings
 
 All gameplay perception and action below used the Factorio MCP text surface.
@@ -733,7 +755,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v22, version 0.19.9, and exactly 25 tools.
+disambiguation, progression, protocol v23, version 0.20.0, and exactly 25 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -803,7 +825,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.19.9 benchmark results.
+present historical timings as 0.20.0 benchmark results.
 
 #### Candidate B R7 recorded result
 

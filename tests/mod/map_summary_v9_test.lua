@@ -1919,7 +1919,7 @@ do
         rows[#rows + 1] = row
       end
     end
-    return rows
+    return rows, sample
   end
   local plate_rows = inserter_fuel_rows({
     nodes = { { "stone-furnace", "furnace", 40, -50, 0, "working" },
@@ -1946,7 +1946,7 @@ do
   check(#chest_rows == 1 and chest_rows[1].reason == "fuel_input_provenance_unresolved"
     and chest_rows[1].related_edge.kind == "fuel_input" and chest_rows[1].related_edge.transport_cargo_fuel == nil,
     "a burner inserter fed from a hand-stocked chest stays blocked on unproven fuel supply")
-  check(#inserter_fuel_rows({
+  local mixed_rows, mixed_sample = inserter_fuel_rows({
     nodes = { { "burner-mining-drill", "mining-drill", 70, -50, 8, "working" },
       { "transport-belt", "transport-belt", 70.5, -48.5, 4, "working" },
       { "stone-furnace", "furnace", 72, -48, 0, "working" },
@@ -1958,7 +1958,36 @@ do
   }, 5, function(entities)
     iron_furnace(entities[3])
     entities[4].burner, entities[4].prototype = nil, {}
-  end) == 0, "a burner inserter on a belt mixing mined coal and plates has proven fuel provenance")
+  end)
+  check(#mixed_rows == 0, "a burner inserter on a belt mixing mined coal and plates has proven fuel provenance")
+  local mixed_stock
+  for _, downstream in pairs(mixed_sample._downstream) do mixed_stock = downstream.stock end
+  check(mixed_stock and mixed_stock["item:coal"] ~= nil and mixed_stock["item:iron-plate"] ~= nil,
+    "genuine mixed coal-and-plate cargo retains both endpoint product expectations")
+  local _, external_sample = inserter_fuel_rows({
+    nodes = { { "stone-furnace", "furnace", 90, -50, 0, "working" },
+      { "burner-inserter", "inserter", 91.5, -49.5, 12, "working" },
+      { "wooden-chest", "container", 92.5, -49.5, 0, "idle" },
+      { "burner-mining-drill", "mining-drill", 95, -50, 8, "working" },
+      { "transport-belt", "transport-belt", 95.5, -48.5, 4, "working" },
+      { "burner-inserter", "inserter", 91.5, -48.5, 8, "insufficient_input" } },
+    edges = { { 1, 2, "inserter_pickup" }, { 2, 3, "inserter_drop" }, { 4, 5, "machine_output" },
+      { 5, 6, "inserter_pickup" }, { 6, 2, "inserter_drop" } },
+  }, 2, function(entities)
+    iron_furnace(entities[1])
+    entities[2].burner = entities[4].burner
+    entities[2].get_fuel_inventory = entities[4].get_fuel_inventory
+  end)
+  local external_stock, recipient, feeder
+  for _, downstream in pairs(external_sample._downstream) do external_stock = downstream.stock end
+  for _, info in pairs(external_sample._node_status) do
+    if info.position.x == 91.5 and info.position.y == -49.5 then recipient = info end
+    if info.position.x == 91.5 and info.position.y == -48.5 then feeder = info end
+  end
+  check(external_stock and external_stock["item:iron-plate"] ~= nil and external_stock["item:coal"] == nil,
+    "coal dropped into a plate inserter's fuel inventory is absent from endpoint cargo expectations")
+  check(recipient and recipient.fuel_energy and recipient.fuel_refill_via and feeder and feeder.fuel_feed_to,
+    "external burner transport exposes private fuel stock and sole-inlet demand attribution")
   -- A fresh drill binds drop_target only at its first output. With exactly
   -- one charted recipient under its drop position that is a pending binding
   -- (evidence), not the structural missing sink it is without one.
@@ -2295,7 +2324,9 @@ end
 -- holds its own stock.
 do
   local previous_find, old_fluids, old_coal = surface.find_entities_filtered, prototypes.fluid, prototypes.item.coal
-  local function steam_validation(mode, duration, light_draw, flicker_tick)
+  -- skipped(tick) withholds that tick's dispatcher call while the world still
+  -- advances: the validator misses the sample, as when other work holds the lane.
+  local function steam_validation(mode, duration, light_draw, flicker_tick, skipped)
     duration, light_draw = duration or 1, light_draw or 0.04
     game.tick = game.tick + 100
     local start = game.tick
@@ -2705,7 +2736,7 @@ do
       if mode == "transfer" and tick == 20 then
         require("scripts.factory_activity").record("insert", { target = chest, transfers = { { item = "coal", inserted = 1 } } })
       end
-      tasks.on_tick()
+      if not (skipped and skipped(tick)) then tasks.on_tick() end
     end
     local result = tasks.plan_status({ plan_id = queued.plan_id })
     local summary = map.map_summary({})
@@ -3056,6 +3087,28 @@ do
     check(flicker.status == "failed" and flicker_row.class == "evidence" and flicker_row.suggested_duration_seconds == 8,
       "a flicker-shortened burst on a full-length window suggests a strictly longer window")
     if flicker_row.suggested_duration_seconds ~= 8 then print("  " .. canonical(flicker_row)) end
+  end
+  do
+    -- one skipped tick in the middle of the first burst restarts the
+    -- consecutive run there. Each half (29 consecutive pairs, 1.16 units of
+    -- light-load draw) clears the one-unit reserve on its own readings, so
+    -- the burst still proves and the window completes.
+    local gapped = steam_validation("light_load_exact", 3, nil, nil, function(tick) return tick == 30 end)
+    check(gapped.status == "completed" and gapped.outcomes[1].result.fluid_activity_samples >= 3
+      and not canonical(gapped):find("native_activity_aliased", 1, true),
+      "one skipped tick mid-burst under a light steam load still proves")
+    if gapped.status ~= "completed" then print("  " .. canonical(gapped.outcomes[1].result.blockers)) end
+    -- Only every other tick is sampled: no two samples are consecutive, so no
+    -- run exists and nothing may be inferred across the gaps.
+    local singles = steam_validation("light_load_exact", 3, nil, nil, function(tick) return tick % 2 == 1 end)
+    local aliased_row
+    for _, row in ipairs(singles.outcomes[1].result.blockers or {}) do
+      if row.reason == "native_activity_aliased" and row.entity == "supplied-boiler" then aliased_row = row end
+    end
+    check(singles.status == "failed" and aliased_row and aliased_row.class == "evidence"
+      and (singles.outcomes[1].result.fluid_activity_samples or 0) == 0,
+      "gap-separated single ticks stay unproven and aliased, with no flow inferred across the gaps")
+    if not aliased_row then print("  " .. canonical(singles.outcomes[1].result.blockers)) end
   end
   do
     -- At the maximum window no strictly longer one exists: the flicker-

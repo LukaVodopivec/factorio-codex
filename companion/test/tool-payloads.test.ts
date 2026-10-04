@@ -3,9 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
-import { connectStatus, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
+import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
 import { queuePlanSchema } from "../src/mcp/runPlan.js";
-import { FIFO_IDLE_HINT, normalizeFifo, normalizePlacementSearch } from "../src/mcp/toolPayloads.js";
+import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeFifo, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 describe("public MCP to Lua DTO mappings", () => {
   it("returns canonical structured content without duplicating it as JSON text", () => {
@@ -65,6 +65,91 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(output.structuredContent.factory.force_flows[0]).toMatchObject({ produced_per_minute: 0, consumed_per_minute: 3 });
     expect(output.content[0].text).toContain("produced_per_minute=0, consumed_per_minute=3");
     expect(output.content[0].text).toContain("theoretical_items_per_minute=90 (complete)");
+  });
+  it("forwards map_summary include and returns every player-parity section with its omission counts", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const holder = { entity: "iron-chest", position: { x: 80.5, y: -3.5 }, count: 400, kind: "chest" };
+    const network = { id: 4, production_w: 900000, consumption_w: 450000, capacity_w: 1800000, satisfaction: 1,
+      accumulator_j: 0, accumulator_capacity_j: 0, statistics_available: true, starved_consumers: 0,
+      producers: { "steam-engine": 2 }, consumers: {} };
+    const value = { tick: 42, summary: "factory tick 42", factory: { groups: {}, force_flows: {} },
+      stockpiles: [{ item: "iron-plate", total: 400, holders: [holder], holders_omitted: 0 },
+        { item: "coal", total: 0, holders: {}, holders_omitted: 0 }], stockpiles_omitted: 3,
+      sites: [{ chunk: { x: 2, y: -1 }, position: { x: 80, y: -4 }, machines: { "electric-mining-drill": 5 } }], sites_omitted: 0,
+      patches: {}, patches_omitted: 0,
+      power: { networks: [network], networks_omitted: 1 },
+      problems: [{ entity: "stone-furnace", position: { x: 1, y: 2 }, status: "no_fuel" }], problems_total: 70,
+      force_flows_all: {}, force_flows_all_omitted: 0 };
+    const call = vi.fn(async () => value);
+    registerMcpTools({ registerTool(name, config: any, handler) { schemas[name] = config.inputSchema; handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig);
+    const output = await handlers.map_summary({ include: [...MAP_SUMMARY_SECTIONS] });
+    expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute",
+      include: ["stockpiles", "sites", "patches", "power", "problems", "flows_all"] });
+    expect(output.structuredContent).toMatchObject({ stockpiles_omitted: 3, sites: value.sites, sites_omitted: 0,
+      patches: [], patches_omitted: 0, power: { networks: [network], networks_omitted: 1 },
+      problems: value.problems, problems_total: 70, force_flows_all: [], force_flows_all_omitted: 0 });
+    expect(output.structuredContent.stockpiles).toEqual([{ item: "iron-plate", total: 400, holders: [holder], holders_omitted: 0 },
+      { item: "coal", total: 0, holders: [], holders_omitted: 0 }]);
+    await handlers.map_summary({});
+    expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute" });
+    expect((await handlers.map_summary({ include: ["inventories"] })).isError).toBe(true);
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(schemas.map_summary.safeParse({ include: ["power", "everything"] }).success).toBe(false);
+    for (const key of ["stockpiles", "sites", "patches", "power", "problems", "force_flows_all"]) {
+      expect((await handlers.map_summary({})).structuredContent, key).toHaveProperty(key);
+    }
+    // problems_by_status is a status-count record; Lua serializes an empty one as [].
+    call.mockResolvedValueOnce({ ...value, problems: {}, problems_total: 0, problems_by_status: [] } as never);
+    expect((await handlers.map_summary({ include: ["problems"] })).structuredContent)
+      .toMatchObject({ problems: [], problems_total: 0, problems_by_status: {} });
+    call.mockResolvedValueOnce({ ...value, problems_by_status: { no_fuel: 60, no_power: 10 } } as never);
+    expect((await handlers.map_summary({ include: ["problems"] })).structuredContent.problems_by_status)
+      .toEqual({ no_fuel: 60, no_power: 10 });
+    call.mockResolvedValueOnce({ tick: 1, factory: { groups: {}, force_flows: {} } } as never);
+    const plain = (await handlers.map_summary({})).structuredContent;
+    for (const key of ["stockpiles", "sites", "patches", "power", "problems", "force_flows_all"]) expect(plain, key).not.toHaveProperty(key);
+  });
+  it("passes the remote marker of a charted own-force inspection through unchanged", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const call = vi.fn(async () => ({ tick: 9, entities: [
+      { name: "iron-chest", position: { x: 300.5, y: 2.5 }, remote: true },
+      { name: "stone-furnace", position: { x: 1.5, y: 2.5 } },
+      { error: "inspect positions must be within 30 tiles of Codex, or on an own-force entity in a charted chunk" }] }));
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig);
+    const entities = (await handlers.inspect_entity({ positions: [{ x: 300.5, y: 2.5 }, { x: 1.5, y: 2.5 }, { x: 900, y: 900 }] })).structuredContent.entities;
+    expect(entities[0].remote).toBe(true);
+    expect(entities[1]).not.toHaveProperty("remote");
+    expect(entities[2].error).toContain("charted chunk");
+  });
+  it("returns the hand-mining drill hint and the belt pickup outcome as structured fields", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const descriptions: Record<string, string> = {};
+    const enqueueAndWaitResult = vi.fn()
+      .mockResolvedValueOnce({ status: "done", detail: "mined iron-ore; drill_produced: 3 own mining drill(s) already mine iron-ore",
+        outcome: { drill_produced: true, drills: 3, stockpile_total: 1250 } })
+      .mockResolvedValueOnce({ status: "done", detail: "physically picked up 4 iron-plate from the transport-belt",
+        outcome: { source: "belt", item: "iron-plate", requested: 4, picked_up: 4,
+          belt: { name: "transport-belt", position: { x: 5.5, y: 6.5 } } } });
+    registerMcpTools({ registerTool(name, config: any, handler) { descriptions[name] = config.description; handlers[name] = handler; } },
+      async () => ({ enqueueAndWaitResult } as unknown as Bridge), validConfig);
+    const mined = await handlers.mine({ x: 1, y: 2, count: 5 });
+    expect(mined.structuredContent).toMatchObject({ status: "completed", drill_produced: true, drills: 3, stockpile_total: 1250 });
+    expect(mined.content[0].text).toContain("drill_produced");
+    const picked = await handlers.pickup_items({ x: 5.5, y: 6.5, item: "iron-plate", count: 4 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "pickup", target: { x: 5.5, y: 6.5 }, item: "iron-plate", count: 4 });
+    expect(picked.structuredContent).toMatchObject({ status: "completed", source: "belt", requested: 4, picked_up: 4,
+      belt: { name: "transport-belt", position: { x: 5.5, y: 6.5 } } });
+    expect(descriptions.pickup_items).toMatch(/transport belt/);
+    expect(descriptions.pickup_items).toMatch(/within item_pickup_distance of the belt tile's centre/);
+    expect(descriptions.pickup_items).toMatch(/whole count must fit[^.]*refused, nothing is taken or spilled/);
+    expect(descriptions.pickup_items).toMatch(/never more than removed; nothing is created[^.]*\. A tile that runs dry ends the step failed with the actual picked_up count kept/);
+    expect(descriptions.map_summary).toMatch(/problems_by_status counts every problem machine by status/);
+    expect(descriptions.mine).toMatch(/drill_produced/);
+    expect(descriptions.inspect_entity).toMatch(/remote: true/);
+    for (const section of MAP_SUMMARY_SECTIONS) expect(descriptions.map_summary, section).toContain(section);
   });
 
   it("maps every coordinate action to the retained Lua DTO", () => {
@@ -202,7 +287,7 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.9", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 23, mod_version: "0.20.0", factorio_version: "2.0.0", tick: 1 }
       : method === "observe_local" ? { entities: [], resource_patches: [], ground_items: [] } : { ok: method });
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({
@@ -291,7 +376,7 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
 
 describe("read-only FIFO state", () => {
   const fifoValue = (fifo: Record<string, unknown>) => ({ status: "completed", companion_exists: true, companion_ever_created: true,
-    protocol_version: 22, mod_version: "0.19.9", factorio_version: "2.0.0", tick: 1,
+    protocol_version: 23, mod_version: "0.20.0", factorio_version: "2.0.0", tick: 1,
     entities: [], resource_patches: [], ground_items: [], results: [], candidates: [], outcomes: [], fifo });
   const args: Record<string, unknown> = {
     connect_status: {}, map_summary: {}, progression_status: {}, production_requirements: { targets: { "iron-plate": 1 } },
@@ -328,6 +413,43 @@ describe("read-only FIFO state", () => {
     expect(normalizeFifo({ queue_depth: 0, idle_seconds: 30 })).toEqual({ active_plan_id: null, queue_depth: 0, idle_seconds: 30 });
     expect(normalizeFifo({ queue_depth: 0, idle_seconds: 31 })?.hint).toBe(FIFO_IDLE_HINT);
     expect(normalizeFifo(undefined)).toBeUndefined();
+  });
+
+  it("reports a human hold on every read-only tool, replacing the idle hint", async () => {
+    const held = register(fifoValue({ active_plan_id: 7, queue_depth: 2, idle_seconds: 45, human_control: true, human_idle_ticks: 12 }));
+    for (const name of READ_ONLY_TOOLS) {
+      const output = await held[name]!(args[name]);
+      expect(output.isError, name).toBe(false);
+      expect(output.structuredContent.fifo, name).toEqual({ active_plan_id: 7, queue_depth: 2, idle_seconds: 45,
+        human_control: true, human_idle_ticks: 12, hint: FIFO_HUMAN_HINT });
+      expect(output.content[0].text, name).not.toContain(FIFO_IDLE_HINT);
+    }
+    expect(normalizeFifo({ queue_depth: 0, idle_seconds: 45, human_control: false, human_idle_ticks: 900 })).toEqual({
+      active_plan_id: null, queue_depth: 0, idle_seconds: 45, human_control: false, human_idle_ticks: 900, hint: FIFO_IDLE_HINT });
+    expect(normalizeFifo({ queue_depth: 0, human_control: false })).toEqual({
+      active_plan_id: null, queue_depth: 0, idle_seconds: null, human_control: false });
+  });
+
+  it("keeps human_control on observations and plan results and names it in plan summaries", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const call = vi.fn(async (method: string) => method === "observe_local"
+      ? { tick: 3, entities: [], resource_patches: [], ground_items: [], character: { human_control: true, human_idle_ticks: 40 } }
+      : method === "queue_plan" ? { plan_id: 9, human_control: true }
+      : { plan_id: 9, status: "completed", outcomes: [], fifo_empty: true, human_control: true });
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig);
+    const observed = await handlers.observe_local({ radius: 15, detail: "compact" });
+    expect(observed.structuredContent.character).toEqual({ human_control: true, human_idle_ticks: 40 });
+    const queued = await handlers.queue_plan({ steps: [{ action: "craft_items", recipe: "iron-gear-wheel", crafts: 1 }] });
+    expect(queued.isError).toBe(false);
+    expect(queued.structuredContent).toMatchObject({ plan_id: 9, status: "queued", human_control: true });
+    expect(queued.content[0].text).toContain("a human holds the body");
+    const status = await handlers.plan_status({ plan_id: 9 });
+    expect(status.isError).toBe(false);
+    expect(status.structuredContent).toMatchObject({ status: "completed", human_control: true });
+    expect(status.content[0].text).toBe("completed; the FIFO is empty and the body is idle; a human hold delayed this plan (not a failure): re-observe before relying on earlier positions");
+    expect(planStatusSummary({ status: "running" }, false)).toBe("running");
+    expect(queuedPlanSummary({ plan_id: 3 })).toBe("queued plan 3");
     expect(result({ status: "completed" }).structuredContent).toEqual({ status: "completed" });
   });
 });
@@ -377,8 +499,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.9", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.9", tick: 2 })
+        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 23, mod_version: "0.20.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 23, mod_version: "0.20.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -387,8 +509,8 @@ describe("connect_status body lifecycle", () => {
   });
 
   it("rejects a stale mod before reporting connected", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.6.0" });
-    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.19.9");
+    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 23, mod_version: "0.6.0" });
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.20.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
@@ -396,8 +518,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 22, mod_version: "0.19.9", factorio_version: "2.0.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 22, mod_version: "0.19.9", factorio_version: "2.0.0", tick: 2 })
+        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 23, mod_version: "0.20.0", factorio_version: "2.0.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 23, mod_version: "0.20.0", factorio_version: "2.0.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -407,7 +529,7 @@ describe("connect_status body lifecycle", () => {
 
   it("surfaces the bind-only no-player error without retrying or creating", async () => {
     const call = vi.fn()
-      .mockResolvedValueOnce({ protocol_version: 22, mod_version: "0.19.9", companion_exists: false, companion_ever_created: false, companion_dead: false })
+      .mockResolvedValueOnce({ protocol_version: 23, mod_version: "0.20.0", companion_exists: false, companion_ever_created: false, companion_dead: false })
       .mockRejectedValueOnce(new Error("native player 'Codex' is not connected with a living character"));
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("native player 'Codex' is not connected");
     expect(call.mock.calls).toEqual([["ping"], ["spawn_companion", {}]]);

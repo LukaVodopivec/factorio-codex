@@ -109,8 +109,8 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "mod", ok: false, detail: expect.stringMatching(/RPC unavailable: (unlock|ping) failed/), fix: expect.stringContaining("install and enable") }));
   });
   it.each([
-    { ping: { protocol_version: 6, mod_version: "0.19.9" }, failedCheck: "protocol" },
-    { ping: { protocol_version: 22, mod_version: "0.6.0" }, failedCheck: "mod" },
+    { ping: { protocol_version: 6, mod_version: "0.20.0" }, failedCheck: "protocol" },
+    { ping: { protocol_version: 23, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
@@ -128,7 +128,7 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
     expect(connect).not.toHaveBeenCalled();
   });
-  it("keeps root, package, lockfile, runtime, mod, and docs at 0.19.9", () => {
+  it("keeps root, package, lockfile, runtime, mod, and docs at 0.20.0", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const read = (relative: string) => JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
     const lock = read("package-lock.json");
@@ -140,16 +140,16 @@ describe("exact local configuration", () => {
       lock.packages[""].version,
       lock.packages.companion.version,
       companionVersion(),
-    ]).toEqual(Array(7).fill("0.19.9"));
-    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.19.9**");
-    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.19.9**");
+    ]).toEqual(Array(7).fill("0.20.0"));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.20.0**");
+    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.20.0**");
   });
   it("keeps visible locale title and description aligned with one-body mod metadata", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const info = JSON.parse(fs.readFileSync(path.join(root, "mod/agentic-companion/info.json"), "utf8"));
     const locale = fs.readFileSync(path.join(root, "mod/agentic-companion/locale/en/agentic-companion.cfg"), "utf8");
     const values = [...locale.matchAll(/^agentic-companion=(.+)$/gm)].map((match) => match[1]);
-    expect(info).toMatchObject({ version: "0.19.9", title: "Factorio Codex Companion" });
+    expect(info).toMatchObject({ version: "0.20.0", title: "Factorio Codex Companion" });
     expect(values).toEqual([info.title, info.description]);
     expect(locale).not.toMatch(/movement.speed|multiplier/i);
     expect(locale).not.toMatch(/Agentic Companion|AI companion|companions|characters|vehicles/i);
@@ -211,9 +211,14 @@ describe("exact local configuration", () => {
     expect(benchmark).toMatch(/Candidate B historically used exactly[\s\S]*Sol-medium read\/plan-only master[\s\S]*Terra-low\s+sole-writer pilot[\s\S]*Terra-low read-only specialist[\s\S]*fast mode off/i);
     expect(benchmark).toMatch(/superseded the earlier prospective wave matrix/i);
     expect(benchmark).not.toMatch(/\| W[123] —/);
-    expect(knowledge).toMatch(/recipes[\s\S]*calculations[\s\S]*operations[\s\S]*relative layouts/);
-    for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "online build sequences"])
+    expect(knowledge).toMatch(/recipes[\s\S]*calculations[\s\S]*operations[\s\S]*relative\s+layouts/);
+    for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "copied layouts", "online build sequences"])
       expect(normalizedKnowledge).toContain(forbidden);
+    expect(normalizedKnowledge).toMatch(/researched principles and ratios written in this repository's own words/);
+    expect(normalizedKnowledge).toMatch(/overridable hints, never a build or technology order: measured state wins/);
+    for (const ratio of ["5 electric drills feed 8 stone furnaces", "30 drills and 48 furnaces", "5 red science assemblers per 6 green", "3 cable assemblers per 2 circuit assemblers", "1 boiler (1.8 MW) runs 2 steam engines"])
+      expect(normalizedKnowledge).toContain(ratio);
+    expect(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8").replace(/\s+/g, " ")).toMatch(/Researched principles, ratios, and a research-order hint written in this repository's own words are allowed there; imported blueprint strings and copied layouts stay out/);
   });
 
   it("ships only the couch-PC native Codex client launcher", () => {
@@ -231,7 +236,10 @@ describe("exact local configuration", () => {
     for (const name of ["elevated-rails", "quality", "space-age", "agentic-companion"]) {
       expect(couchLauncher).toContain(`{"name":"${name}","enabled":true}`);
     }
-    expect(couchLauncher).toMatch(/--mp-connect[\s\S]*--force-graphics-preset very-low[\s\S]*--window-size 3840x2160/);
+    expect(couchLauncher).toMatch(/--mp-connect[\s\S]*--force-graphics-preset extreme[\s\S]*--graphics-quality high[\s\S]*--video-memory-usage all[\s\S]*--window-size 3840x2160/);
+    expect(couchLauncher).not.toMatch(/--force-graphics-preset very-low|--video-memory-usage low/);
+    for (const key of ["graphics-quality=high", "video-memory-usage=all", "texture-compression-level=none", "high-quality-animations=true", "high-quality-shadows=true"])
+      expect(couchLauncher).toMatch(new RegExp(`\\[graphics\\][\\s\\S]*${key}`));
     expect(couchLauncher).not.toContain("--window-size 640x480");
     expect(couchLauncher).not.toContain("--disable-audio");
     const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
@@ -318,7 +326,7 @@ describe("exact local configuration", () => {
       const normalized = text.replace(/\s+/g, " ");
       expect(text).toMatch(/newly observed gameplay difficulty appears to require greenfield code[\s\S]*bounded Firecrawl reuse survey/i);
       expect(normalized).toMatch(/license,.*maintenance,.*current Factorio API compatibility,.*one-body\/one-writer\/\s*text-only physical fit/i);
-      for (const risk of ["cheats", "hidden map state", "raw console", "imported blueprints", "tutorial sequences"])
+      for (const risk of ["cheats", "uncharted map state", "raw console", "imported blueprints", "tutorial sequences"])
         expect(normalized.toLowerCase()).toContain(risk);
       expect(normalized).toMatch(/reuse or adapt the.*smallest maintained compatible path.*design evidence.*patch the smallest existing active path/i);
       expect(normalized).toMatch(/not a service, gate, or report workflow|do not create a.*service, gate, or report workflow/i);

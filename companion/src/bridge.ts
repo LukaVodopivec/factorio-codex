@@ -26,7 +26,7 @@ export interface TaskClock {
 }
 
 const realClock: TaskClock = {
-  now: Date.now,
+  now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 export const TASK_POLL_DELAYS_MS = [100, 200, 500] as const;
@@ -104,41 +104,72 @@ export class Bridge {
     throw new ModError(st.detail || (st.status === "partial" ? "task partially completed" : "task failed"));
   }
 
-  /** Same physical queue path, retaining the structured terminal outcome. */
+  /** Same physical queue path, retaining the structured terminal outcome.
+   *  Time the body spends under a human hold (get_task's fifo.human_control)
+   *  is not charged to the deadline. A direct call has no parked form: if the
+   *  body is still held at the return guard, the task is cancelled and the call
+   *  fails asking for a retry after the hold. */
   async enqueueAndWaitResult(task: Task, opts: EnqueueOptions = {}): Promise<GetTaskResult> {
     if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
     const { task_id } = await this.call<{ task_id: number }>("enqueue", { task });
     const clock = opts.clock ?? realClock;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
-    const deadline = opts.deadlineMs ?? clock.now() + timeoutMs;
+    const started = clock.now();
+    const budget = holdAwareDeadline(clock, opts.deadlineMs ?? started + timeoutMs);
     let poll = 0;
 
     try {
-      while (clock.now() < deadline) {
+      for (;;) {
         if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
         const delay = TASK_POLL_DELAYS_MS[Math.min(poll, TASK_POLL_DELAYS_MS.length - 1)]!;
         poll++;
-        await clock.sleep(Math.min(delay, deadline - clock.now()));
+        await clock.sleep(Math.max(0, Math.min(delay, budget.remaining())));
         if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
-        if (clock.now() >= deadline) throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
         const st = await this.call<GetTaskResult>("get_task", { task_id });
         if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
-        if (clock.now() >= deadline) throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
-        switch (st.status) {
-          case "done":
-          case "partial":
-          case "failed":
-            return st;
-          case "cancelled":
-            return st;
-          default:
-            break; // queued / running
+        budget.sample(st.fifo?.human_control === true);
+        const { fifo: _fifo, ...status } = st;
+        if (status.status !== "queued" && status.status !== "running") {
+          return budget.held ? { ...status, human_control: true } : status;
         }
+        if (budget.remaining() > 0) continue;
+        const waited = Math.round((clock.now() - started) / 1000);
+        if (budget.holding) {
+          throw new ModError(`a human holds the body: task ${task_id} was still ${status.status} after ${waited}s and was cancelled`
+            + " so the tool call can return; retry the call after the hold ends");
+        }
+        throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`
+          + (budget.held ? ` (${waited}s wall time including a human hold)` : ""));
       }
-      throw new ModError(`gave up after ${Math.round(timeoutMs / 1000)}s — task cancelled`);
     } catch (error) {
       await this.call("cancel", { task_id }).catch(() => {});
       throw error;
     }
   }
+}
+
+/** A wall-clock deadline that a human hold does not consume. sample() after
+ *  each status read credits the time since the previous read only when both
+ *  reads show the hold. The wait ends at the budget or at the return guard
+ *  (default 570 s, under the 600 s MCP tool timeout), whichever comes first;
+ *  parked() means it ended at the guard with credited budget left. holding is
+ *  the latest read; held is true once any read showed the hold. */
+export function holdAwareDeadline(clock: TaskClock, deadline: number,
+  returnBy = Math.max(deadline, clock.now() + DEFAULT_TASK_TIMEOUT_MS)) {
+  let last = clock.now();
+  let holding = false;
+  let held = false;
+  return {
+    sample(nowHeld: boolean): void {
+      const now = clock.now();
+      if (nowHeld && holding) deadline += now - last;
+      holding = nowHeld;
+      held ||= nowHeld;
+      last = now;
+    },
+    remaining: () => Math.min(deadline, returnBy) - clock.now(),
+    parked: () => clock.now() < deadline,
+    get holding() { return holding; },
+    get held() { return held; },
+  };
 }

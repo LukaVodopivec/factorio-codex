@@ -880,6 +880,14 @@ function M.start(task)
   M.begin(task._walk, c, t, task.arrive_within, task.arrival_mode, task.arrival_radius)
 end
 
+-- After a human hold the body stands somewhere else: plan the same walk
+-- again from the current position.
+function M.resume(task)
+  local c = companion.get()
+  if not c then return end
+  M.begin(task._walk, c, task.target, task.arrive_within, task.arrival_mode, task.arrival_radius)
+end
+
 function M.tick(task)
   local c = companion.get()
   if not c then

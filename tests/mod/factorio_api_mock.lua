@@ -63,6 +63,13 @@ end
 function M.entity(values, simulation) return wrap("LuaEntity", values, simulation) end
 function M.fluidbox(values) return wrap("LuaFluidBox", values) end
 function M.burner(values) return wrap("LuaBurner", values) end
+-- Classes whose members a native 2.0.77 probe confirmed one by one.
+function M.force(values) return wrap("LuaForce", values) end
+function M.surface(values) return wrap("LuaSurface", values) end
+function M.flow_statistics(values) return wrap("LuaFlowStatistics", values) end
+function M.transport_line(values) return wrap("LuaTransportLine", values) end
+function M.inventory(values) return wrap("LuaInventory", values) end
+function M.entity_prototype(values) return wrap("LuaEntityPrototype", values) end
 function M.state(object)
   assert(objects[object], "simulation state requires a strict mock")
   return objects[object].simulation

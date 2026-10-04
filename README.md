@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.19.9**.
+Current release: **0.20.0**.
 
 Factorio Codex lets one Codex TUI control one physical character named Codex
 through deterministic, text-only local perception. The only active path is the
@@ -40,7 +40,7 @@ rollout, validation, or benchmarks. All visual workloads run on the couch PC.
 There, install the full standalone Factorio Space Age build under
 `%LOCALAPPDATA%\factorio-codex\standalone-space-age` and run the couch-only
 `scripts/launch-native-client.ps1 -Address <server:port>` to connect its isolated
-low-resource client as the real player named `Codex`. Then connect the separate
+maximum-quality 4K client as the real player named `Codex`. Then connect the separate
 normal couch Factorio client as the characterless spectator/follower. The
 native launcher rejects the Steam build because Steam replaces the isolated
 LAN identity with the account identity. There is intentionally no Linux visual
@@ -65,7 +65,13 @@ The built CLI supports `setup`, `doctor [--json]`, `mcp`, `server`, and durable 
 recording/comparison commands. MCP exposes exactly
 25 text-only tools through `tools/list`. `observe_local` exposes exact
 `ground_items` stacks and `pickup_items` physically collects one still-matching
-stack through the character's normal picking state. Its character record labels
+stack through the character's normal picking state, or takes `count` items
+from a plain transport belt at the given belt position as an exact conserved
+transfer: with the body within `item_pickup_distance` of the belt's centre and
+room for the whole count, exactly those items leave the belt tile's lines and
+enter the main inventory; otherwise an honest refusal, never a partial spill.
+A hand-mining result adds `drill_produced: true`, `drills` and
+`stockpile_total` when own mining drills already mine that resource. Its character record labels
 the existing `inventory` as `main` and reports equipped ammunition separately.
 `queue_plan` immediately adds
 one Lua-contiguous plan to the sole FIFO; both calls echo the stored
@@ -78,7 +84,11 @@ compatibility. Plans reuse the existing honest physical runners, explicitly
 report sequential nontransactional effects with no rollback, return inventory
 deltas by default, and attach a compact or full local observation only when
 requested.
-`inspect_entity` reports live inserter endpoints and targets, mining-drill output
+`inspect_entity` reads any entity within 30 tiles and, beyond that, only
+own-force entities in charted chunks, marked `remote: true`; a read that
+includes any is `fresh_exact_local_and_charted_remote` (exact at its source
+tick, readable, not reachable). Uncharted, foreign and empty remote positions
+share one refusal. It reports live inserter endpoints and targets, mining-drill output
 position, recipient (explicitly `null` when unbound), and a drill-only
 `drop_target_bound` boolean, current drill resource targets, furnace
 fuel/input/output buffers including exact empty compartments only when the
@@ -156,14 +166,38 @@ result (`connect_status`, `map_summary`, `progression_status`,
 read (in `describe_prototype`, whose rows are keyed by prototype name, `fifo`
 is that state, not a prototype); after more than 30 idle seconds it adds the `hint` "body idle: queue
 bounded work before further reads" and leads its text with it. The read-only
-strategist, which cannot queue, sees the hint too. Placement checks share exact collision geometry and explicitly reject
+strategist, which cannot queue, sees the hint too. Each `fifo` block and
+`observe_local.character` also state `human_control` and `human_idle_ticks`:
+while the connected Codex player has given real keyboard or mouse input within
+the last 300 ticks, the FIFO is parked (no step starts or ticks, no plan is
+cancelled or reordered, `queue_plan` still queues) and the hint becomes a
+human-control notice; a step that depended on the body position re-plans from
+where the body then stands. `plan_status`, `run_plan` and `queue_plan` results
+carry `human_control: true` when a hold delayed the plan, which is neither
+idleness nor failure. Placement checks share exact collision geometry and explicitly reject
 the Codex body footprint. If a route begins inside a collision, Codex uses
 ordinary walking toward Factorio's bounded nearest clear position before
 requesting a new native path. Partial inserts fail with requested, moved, and
 remainder counts; waits report their observed start/current/delta; recovering a
 fluid-filled owned machine requires explicit `allow_fluid_loss=true` and reports
 what ordinary dismantling discarded.
-`map_summary` summarizes only already-charted terrain and factory landmarks,
+`map_summary` summarizes only already-charted terrain and factory landmarks.
+Its optional `include` list adds capped top-level sections, each with an
+omission count, for own-force entities and resources in chunks the force has
+charted on the character's surface:
+
+| `include` | Output key | Content | Cap |
+| --- | --- | --- | --- |
+| `stockpiles` | `stockpiles` | per item: `total` and `holders` (chest, machine output, belt run) with positions | 64 items, 8 holders each |
+| `sites` | `sites` | per charted chunk: own machine counts and a position, independent of the landmark cap | 256 |
+| `patches` | `patches` | resource patches with `amount`, `tiles`, `bbox`, `centroid` | 64 |
+| `power` | `power.networks` | production, consumption, capacity (W), satisfaction, accumulator charge, producers, consumers | 32 |
+| `problems` | `problems` | machines with `no_power`, `low_power`, `no_fuel`, `full_output`, shortages or no resources; dead machines (no power, no fuel) before input waits | 64 of `problems_total`; `problems_by_status` counts every problem |
+| `flows_all` | `force_flows_all` | per item and fluid: per-minute and lifetime produced and consumed | 256 |
+
+Limits: charted-force scope replaces the earlier no-remote-inventory rule.
+Nothing is read from uncharted chunks or other forces, no read charts terrain,
+and reading is not reach: every mutation keeps its walking and reach checks.
 `production_requirements` performs deterministic recipe arithmetic, and
 `connect_entities` builds an inventory-backed physical belt, pipe, or power
 route.
@@ -190,11 +224,13 @@ revision (`ledger-apply` with an `init` envelope), and it is Astra's only channe
 to the pilot; Luna never writes it and continues fail-open when advice is
 absent, malformed, stale, or unavailable. A task-list `essential_prerequisite`
 is one outcome sentence of at most 160 characters. Each run has an
-Astra-written markdown notebook at `<run_dir>/notebook/` (a `README.md` index of
-at most 2 KB, about 64 KB in total, no imported external content); a build
-package may name up to three `notes` (`notebook/<name>.md` paths that
-`ledger-apply` requires to exist beside the ledger), and the pilot reads only
-those. The ledger stays the only command channel. A queued or standing package
+markdown notebook at `<run_dir>/notebook/` with one folder per role
+(`notebook/astra/`, `notebook/luna/`): each role writes its own folder and reads
+either at any time, including exact positions, maps and infrastructure lists
+observed in that run, and keeps a short `INDEX.md` there; nothing is imported
+or carried to another run. A build
+package may name up to three `notes` (paths that `ledger-apply` requires to
+exist beside the ledger). The ledger stays the only command channel. A queued or standing package
 stays in the ledger until Astra's next publish replaces it. A package that
 extends a proven component re-validates the joined component, and Astra
 reuses its own proven notebook template at a new anchor after one `can_place`
@@ -207,8 +243,13 @@ predecessor fails, times out, or ends partial; independent work queues
 unchained and runs while a wait or validation is parked. Until the first
 package arrives it gathers only within 30 tiles of its `GO` position or of the
 site NOW's `essential_prerequisite` sent it to, skips a package whose
-placements already stand as specified, and takes from a full terminal
-buffer only items a queued package requires. Neither role calls
+placements already stand as specified, and takes what it can use from its own
+chests, furnaces and belts (a full terminal buffer included), unloading surplus
+only into an existing chest or line. Taking stock is normal play at any time
+except from a component whose validation window is running; a proof speaks
+only for its window, and a later take from a furnace or machine inside a
+proven component (or any deposit, or any transfer on a power component) leaves
+a stale proof (`character_transfer_observed`) that the next validation renews. Neither role calls
 `list_threads`, `read_thread`, or `wait_threads`, and after a context
 compaction each re-reads its goal file and `SKILL.md` first.
 Neither role profile is applied to an active run in place. The

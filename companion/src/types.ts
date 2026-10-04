@@ -1,5 +1,9 @@
 export interface ChunkedEnvelope { ok: true; chunked: true; id: number; parts: number; data: string }
-export interface GetTaskResult { status: "queued" | "running" | "done" | "partial" | "failed" | "cancelled"; detail?: string; outcome?: Record<string, unknown> }
+export interface GetTaskResult { status: "queued" | "running" | "done" | "partial" | "failed" | "cancelled"; detail?: string; outcome?: Record<string, unknown>;
+  /** Read from the mod: the body's FIFO state, including the current human hold. */
+  fifo?: { human_control?: boolean };
+  /** Set by the bridge: a human hold delayed this task (delayed, not failed). */
+  human_control?: boolean }
 export interface Position { x: number; y: number }
 export interface PlacementCandidate {
   item: string; entity: string; position: Position; direction: number;
@@ -37,7 +41,37 @@ export interface MapSummary {
       validated_component_count: number; products_finished_total: number };
     character_transfers: Record<string, unknown>; omissions: Record<string, number>; partial: boolean;
   };
+  // Present only when named in `include`; own-force and charted-chunk scope.
+  stockpiles?: Array<{ item: string; total: number; holders_omitted: number;
+    holders: Array<{ entity: string; position: Position; count: number; kind: "chest" | "machine_output" | "belt" }> }>;
+  stockpiles_omitted?: number;
+  sites?: Array<{ chunk: Position; position: Position; machines: Record<string, number> }>; sites_omitted?: number;
+  patches?: Array<{ name: string; amount: number; tiles: number; bbox: { left_top: Position; right_bottom: Position }; centroid: Position }>;
+  patches_omitted?: number;
+  power?: { networks_omitted: number; networks: Array<{ id: number; production_w?: number; consumption_w?: number; capacity_w: number;
+    satisfaction: number; accumulator_j: number; accumulator_capacity_j: number; statistics_available: boolean;
+    starved_consumers: number; producers: Record<string, number>; consumers: Record<string, number> }> };
+  problems?: Array<{ entity: string; position: Position; status: string }>; problems_total?: number;
+  /** Every problem machine counted by normalized status, including rows past the cap. */
+  problems_by_status?: Record<string, number>;
+  force_flows_all?: Array<{ name: string; kind: "item" | "fluid"; produced_per_minute?: number; consumed_per_minute?: number;
+    lifetime_produced: number; lifetime_consumed: number }>;
+  force_flows_all_omitted?: number;
 }
+/** inspect_entity envelope: a remote (own-force, charted) read widens the evidence class and scope. */
+export interface InspectionResult {
+  tick: number;
+  evidence_class: "fresh_local_exact" | "fresh_exact_local_and_charted_remote";
+  scope: "within_30_tiles_of_codex_at_source_tick" | "within_30_tiles_or_own_force_charted_at_source_tick";
+  entities: Array<Record<string, unknown>>;
+}
+/** Human takeover state carried by every fifo block and observe_local.character. */
+export interface HumanControl { human_control: boolean; human_idle_ticks?: number }
+/** mine outcome when own mining drills already mine the hand-mined resource. */
+export interface MineDrillHint { drill_produced: true; drills: number; stockpile_total?: number }
+/** pickup_items outcome for a belt source. */
+export interface BeltPickupOutcome { source: "belt"; item: string; requested: number; picked_up: number;
+  belt: { name: string; position: Position } }
 export interface ProductionRequirementNode {
   item: string; required_units: number; recipe: string; recipe_executions: number;
   output_units_per_execution: number; category: string; craft_time_seconds_per_execution: number;

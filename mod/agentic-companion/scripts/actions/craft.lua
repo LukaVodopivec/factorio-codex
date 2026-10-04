@@ -105,17 +105,34 @@ function M.tick(task)
   s.next_poll = game.tick + POLL_TICKS
   if c.crafting_queue_size > 0 then return nil end
 
-  local parts = {}
+  -- An empty queue is not completion: the queue can be cancelled, or the
+  -- products taken, while the owner holds the body. Count the crafts whose
+  -- fixed-amount products are actually carried.
+  local parts, produced = {}, nil
   for _, name in ipairs(s.product_names) do
     local gained = c.get_item_count(name) - s.products_before[name]
     if gained > 0 then
       parts[#parts + 1] = string.format("+%d %s", gained, name)
     end
+    local per_craft = s.products_per_craft[name]
+    if per_craft and per_craft > 0 then
+      local crafts = math.max(0, math.floor(gained / per_craft))
+      if not produced or crafts < produced then produced = crafts end
+    end
+  end
+  local gains = #parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or ""
+  if produced and produced < s.started then
+    return {
+      status = produced > 0 and "partial" or "failed",
+      detail = string.format("hand-crafting queue emptied with the products of %d of %d recipe crafts of %s carried%s"
+        .. " - the queue was cancelled or the products were removed%s",
+        produced, s.started, task.recipe, gains, s.note),
+      outcome = { code = "CRAFT_PRODUCTS_MISSING", recipe = task.recipe, crafts_started = s.started, crafts_evidenced = produced },
+    }
   end
   return {
     status = "done",
-    detail = string.format("completed %d recipe crafts of %s%s%s", s.started, task.recipe,
-      #parts > 0 and (" (" .. table.concat(parts, ", ") .. ")") or "", s.note),
+    detail = string.format("completed %d recipe crafts of %s%s%s", s.started, task.recipe, gains, s.note),
   }
 end
 

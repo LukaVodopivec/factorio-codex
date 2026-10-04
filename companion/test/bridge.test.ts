@@ -177,3 +177,64 @@ describe("Bridge.enqueueAndWait", () => {
     expect(exec).not.toHaveBeenCalled();
   });
 });
+
+describe("Bridge.enqueueAndWaitResult under a human hold", () => {
+  // get_task carries the mod's fifo block; human_control is the current hold.
+  function heldRcon(held: (now: number) => boolean, done: (now: number) => boolean, now: () => number) {
+    const methods: string[] = [];
+    const fake = fakeRcon((cmd) => {
+      if (cmd.includes('"enqueue"')) { methods.push("enqueue"); return ok({ task_id: 21 }); }
+      if (cmd.includes('"cancel"')) { methods.push("cancel"); return ok({ cancelled: 1 }); }
+      methods.push("get_task");
+      const t = now();
+      return ok(done(t) ? { status: "done", detail: "arrived", fifo: { human_control: held(t) } }
+        : { status: "running", detail: "", fifo: { human_control: held(t), human_idle_ticks: 3 } });
+    });
+    return { ...fake, methods };
+  }
+
+  it("cancels a task still held at the return guard and fails asking for a retry after the hold", async () => {
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    const { rcon, methods } = heldRcon(() => true, () => false, () => now);
+    const error = await new Bridge(rcon).enqueueAndWaitResult({ type: "walk_to", target: { x: 1, y: 2 } }, { clock })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ModError);
+    expect((error as Error).message).toMatch(/a human holds the body: task 21 was still running after 570s and was cancelled/);
+    expect((error as Error).message).toMatch(/retry the call after the hold ends/);
+    expect(now).toBe(DEFAULT_TASK_TIMEOUT_MS);
+    expect(methods.at(-1)).toBe("cancel");
+  });
+
+  it("does not charge held time to the deadline and marks the result delayed", async () => {
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    // Held for the first 5 s (samples 100..4800 ms credit 4.7 s), then work until 5.6 s against a 1 s budget.
+    const { rcon, methods } = heldRcon((t) => t <= 5_000, (t) => t >= 5_600, () => now);
+    const st = await new Bridge(rcon).enqueueAndWaitResult({ type: "mine", target: { x: 0, y: 0 }, count: 1 },
+      { clock, timeoutMs: 1_000 });
+    expect(st).toEqual({ status: "done", detail: "arrived", human_control: true });
+    expect(methods).not.toContain("cancel");
+  });
+
+  it("still cancels when the unheld budget runs out after a hold", async () => {
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    const { rcon, methods } = heldRcon((t) => t <= 2_000, () => false, () => now);
+    await expect(new Bridge(rcon).enqueueAndWait({ type: "mine", target: { x: 0, y: 0 }, count: 1 },
+      { clock, timeoutMs: 1_000 })).rejects.toThrow(/gave up after 1s — task cancelled \(3s wall time including a human hold\)/);
+    expect(methods.at(-1)).toBe("cancel");
+    expect(now).toBe(2_700); // 1 s budget plus the 1.7 s between held samples 100 and 1800 ms
+  });
+
+  it("credits only intervals whose two consecutive samples both show the hold", async () => {
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    // One isolated held sample (300 ms) between unheld ones credits nothing.
+    const { rcon, methods } = heldRcon((t) => t === 300, () => false, () => now);
+    await expect(new Bridge(rcon).enqueueAndWait({ type: "mine", target: { x: 0, y: 0 }, count: 1 },
+      { clock, timeoutMs: 1_000 })).rejects.toThrow(/gave up after 1s/);
+    expect(now).toBe(1_000);
+    expect(methods.at(-1)).toBe("cancel");
+  });
+});

@@ -6,14 +6,16 @@ may override. Neither is a build order.
 
 ## Boundary
 
-Durable player knowledge, in this file and in the run notebook, may hold only
-facts learned through honest in-game play and structured Factorio Codex
-observations: recipes and recipe relationships, calculations from in-game
-values, repeatable operations, and Codex-authored relative layouts. Never store
-map coordinates, tutorials, external blueprint strings, online build sequences,
-or seed facts. No world position, landmark, route, or coordinate pair belongs in
-this file. Revalidate a retained lesson against current structured state before
-using it.
+This file holds facts learned through honest in-game play and structured
+Factorio Codex observations (recipes and recipe relationships, calculations
+from in-game values, repeatable operations, and Codex-authored relative
+layouts), plus researched principles and ratios written in this repository's
+own words. Never store map coordinates, tutorials, external blueprint strings,
+copied layouts, online build sequences, or seed facts here. No world position,
+landmark, route, or coordinate pair belongs in this file. The run notebook
+records anything observed in its run, exact positions, maps, and
+infrastructure inventories included; nothing carries over to another run.
+Revalidate a retained lesson against current structured state before using it.
 
 ## Mechanics
 
@@ -63,9 +65,10 @@ using it.
   stockpiles. Never hand-insert more than a few crafts of input before a
   validation window.
 - **One terminal buffer.** Each segment ends in a consumer or at most one
-  terminal buffer. Fix full or blocked output at its cause (take from the buffer
-  only what a queued package requires, or extend the segment to a consumer),
-  never by improvising a chest or sink outside a package. A full buffer of
+  terminal buffer. Fix full or blocked output at its cause (build with the
+  buffer's stock, unload surplus into an existing chest or line, or extend the
+  segment to a consumer), never by improvising a chest or sink outside a
+  package. A full buffer of
   construction items is the intended stop for that line.
 - **Validation timing.** Cover several processor cycles and one fuel item per
   burner. Queue the validation after a `wait_for_item` on the segment's terminal
@@ -78,8 +81,19 @@ using it.
   replacement on the removed tiles goes in a successor package, because
   `can_place` still sees the standing entity. Never remove a node with recent
   accepted output before its replacement proves output.
+- **Use your stock.** Chests, furnace outputs, and belts are the first source
+  for building and crafting (`stockpiles` names the holders). Leave a
+  component alone only while its validation window runs; a later take from a
+  furnace or machine inside a proven component just leaves a stale proof that
+  the next validation renews. Hand-mine only
+  what no drill of yours produces: trees, rocks, a resource with no drill yet.
+  Take gears, cable, circuits, belts, and inserters from assemblers that make
+  them. Carrying more than about two stacks of one resource is idle capital:
+  deposit the surplus into the line or a chest.
 - **Service cycles.** A second hand batch of the same item is a service cycle;
-  connected production for it usually pays back before a third. Carrying
+  connected production for it usually pays back before a third. Taking stock
+  from a buffer to build with is not debt; only a repeated haul that keeps a
+  machine running is. Carrying
   finished plates or hardware to a build site is capital, not service; only
   feeding a running machine's input or fuel is service.
 - **Linear runs.** Build belt, pipe, and pole runs with `connect_entities`
@@ -90,13 +104,45 @@ using it.
   corridors over disconnected islands. A destination type or direction that
   failed once falsifies that arrangement, not every arrangement.
 
+## Speed hints
+
+Principles and ratios from fast play, in our own words. They are overridable
+hints, never a build or technology order: measured state wins.
+
+- **Compounding.** A producer placed early pays back for the whole run, so
+  place drills, furnaces, and assemblers as soon as their parts exist. Unused
+  parts in the inventory are waste. Keep the hand-craft queue filled before
+  walking, so travel time also crafts.
+- **Opening scale.** About 10 iron, 6 copper, 16 coal, and 4 stone burner
+  drills carry the opening; move to electric drills before bulk belts.
+- **Rates.** Electric drill 0.5 ore/s, burner drill 0.25 ore/s, stone furnace
+  0.3125 plates/s, yellow belt 15 items/s.
+- **Ratios.** 5 electric drills feed 8 stone furnaces; a full yellow belt is
+  30 drills and 48 furnaces. 5 red science assemblers per 6 green (size iron
+  for green). 3 cable assemblers per 2 circuit assemblers.
+- **Power.** 1 boiler (1.8 MW) runs 2 steam engines (0.9 MW each). A shortage
+  slows every machine, so add a boiler and two engines whenever `power`
+  satisfaction is below 100% or production sits at capacity.
+- **Mall.** Right after red and green science run, automate belts, inserters,
+  drills, poles, and pipes into capped chests and build from those chests.
+  Unlock construction robots as early as research allows.
+- **Research hint.** Automation, Logistics, Electronics, Fast inserter,
+  Logistic science, Steel, Automation 2, Advanced material processing, Engine,
+  Fluid handling, Oil, Plastics, Advanced circuits, Sulfur, Chemical science,
+  robotics, production and utility science, the silo. In 2.0 some
+  technologies unlock by a trigger, not science: crafting iron plates, copper
+  plates, a lab, or steel, and mining crude oil or uranium ore.
+- **Space Age.** The win is a platform reaching the solar system edge. A
+  common fast planet order is Gleba, Fulgora, Vulcanus, Aquilo; evidence may
+  choose another. Skip Quality. Keep the first platforms minimal.
+
 ## Learning
 
 Learn through a state-driven loop: observe authoritative state, identify the
 bottleneck, form a falsifiable hypothesis, predict a measurable effect, choose a
-safe action, compare predicted and actual results. Astra retains, revises, or
-discards the lesson in the notebook with provenance and uncertainty; the pilot
-reports a falsified lesson instead of writing it. When an
+safe action, compare predicted and actual results. Each role retains, revises, or
+discards the lesson in its own notebook folder with provenance and
+uncertainty; the pilot also reports a falsified lesson. When an
 exact factor is unobservable, run only a bounded experiment with a safe bound
 and a numeric stop. Never turn a lesson into an opening script, elapsed-time
 milestone, fixed build order, named route, or prescriptive progression

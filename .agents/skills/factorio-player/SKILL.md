@@ -18,8 +18,7 @@ mode enabled. It is the sole gameplay writer, the physical character
 controller, and the authority for immediate safety and the latest exact local
 state. The [Astra strategist](GOAL-STRATEGIST-v1.md) runs `gpt-6-astra` with
 `medium` reasoning at normal speed. It owns the long-horizon priorities,
-designs coupled layouts as validated build packages, keeps the run notebook,
-and uses only the mechanically read-only Factorio MCP surface, including the
+designs coupled layouts as validated build packages, and uses only the mechanically read-only Factorio MCP surface, including the
 side-effect-free `can_place` and `find_placement`. Profiles change only at a
 fresh-run cutover, never on a live role. Before `GO` each role reports a fresh
 native `execution_settings({})` readback to the supervisor as
@@ -58,12 +57,29 @@ numeric sunset.
   and one compact `operations.json`. Exactly one physical MCP call may be in
   flight. Parallelize only read-only observations when inconsistent source
   ticks are acceptable, then revalidate the newest state before any mutation.
-- Use only locally visible or force-charted structured evidence and real
-  movement, reach, collision, inventory, crafting, power, and elapsed time.
-  Never use screenshots as gameplay evidence, raw Lua or console, cheats,
-  teleport, hidden map state, free resources, imported blueprints,
-  copied layouts, tutorials, online sequences, fixed build orders, prescribed
-  technology order, timed phases, named routes, map coordinates, or seed facts.
+- Reading is remote; acting needs reach. Everything the force has charted may
+  be read, as a player reads the map, production, and electricity screens.
+  Uncharted terrain stays hidden. Every mutation uses real movement, reach,
+  collision, inventory, crafting, power, and elapsed time.
+- Never use screenshots as gameplay evidence, raw Lua or console, cheats,
+  teleport, uncharted map state, free resources, imported blueprints,
+  copied layouts, tutorials, online sequences, timed phases, named routes,
+  cross-run coordinates (from another run, an imported map, or seed
+  knowledge), or seed facts. The principles, ratios, and research hint in
+  player knowledge are written in this repository and overridable; they are
+  never a fixed build order or a prescribed technology order.
+- `human_control: true` (in every `fifo` block and `observe_local.character`,
+  with `human_idle_ticks`) is the owner playing the body by mouse and keyboard. The
+  FIFO is parked: plans keep their order, nothing is cancelled, and
+  `queue_plan` is still accepted. A hold is neither idleness nor failure.
+  Never fight for the body or queue corrective work for it; the pilot ends its
+  turn or waits. The owner looking around in map or remote view is not a hold:
+  work continues. After the hold (about 5 s without input) re-observe before
+  targeting: The owner may have moved the body and changed the factory. `run_plan`
+  may return nonterminal with `human_control: true`: the plan stays queued
+  behind the hold, so read it with `plan_status` after the hold instead of
+  requeueing it. A direct tool call that fails with a human-hold reason is
+  retried after the hold.
 - The supported save is peaceful with enemy bases disabled.
 
 ## Tool and evidence semantics
@@ -72,15 +88,43 @@ numeric sunset.
   aggregate factory view: capacity, normalized status, flow, physical
   components (`material_flow.components[]` with blockers and
   `downstream_kind`), and `character_transfers`. Its `detail=full` is for rare
-  scouting only. It never authorizes remote inventories and is never a clock.
+  scouting only. It is never a clock.
+- `map_summary` `include` adds force-wide sections for charted chunks of the
+  current surface. Read `stockpiles` (per item `total` and `holders` with
+  positions: chests, machine outputs, belts) before any gather or hand-craft;
+  `sites` (own machines, one row per chunk; capped at 256 chunks, smallest
+  dropped first, with `sites_omitted`: a nonzero count means the list is
+  incomplete) and `patches` (amount, bbox,
+  centroid) for navigation and expansion; `power` (per network production,
+  consumption, capacity, `satisfaction`, accumulator charge) when anything is
+  slow; `problems` (machines with `no_power`, `no_fuel`, `full_output`, and
+  similar; rows list dead machines, no power or no fuel, before input waits,
+  and `problems_by_status` counts every problem by status, capped rows
+  included) at each report checkpoint; `flows_all` (`force_flows_all`: per-minute
+  and lifetime flow of every item and fluid) for rates.
+- `inspect_entity` reads own entities in charted chunks beyond the local
+  radius (`remote: true`). `pickup_items` also takes items from a belt tile
+  within pickup distance: an exact conserved transfer of the requested count
+  from the targeted plain transport belt into the main inventory, with the
+  body within `item_pickup_distance` of the belt's centre and room for the
+  whole count, or an honest refusal (never a partial spill). Ground stacks use
+  native picking.
 - Evidence classes stay separate. `fresh_local_exact` holds only at its source
-  tick. `charted_remote_summary` carries no exact stock.
+  tick. `fresh_exact_local_and_charted_remote` (an `inspect_entity` that
+  includes own entities beyond 30 tiles) is exact at its source tick and
+  readable, not reachable. An `include` section is exact only at its source
+  tick.
   `rolling_force_surface_flow` is a rate over its named window. A
   `time_skewed_physical_tour` is never a simultaneous snapshot.
 - Exact natural targets and coordinates are ephemeral. Re-observe before
   targeting entities not yet observed at a new position, and after a route
   failure, selection contradiction, or partial or unexpected result. Never
   substitute a nearby entity or replay stale coordinates.
+- Positions observed in this run are yours to remember and reuse: your own
+  sites, charted resources, and the routes between them. Record them, return
+  with `walk_to`, then re-observe before targeting anything there. A resumed
+  save of the same factory continues its run. Only coordinates from another
+  run are forbidden.
 - Direct positional actions auto-approach. `walk_to` is for relocation. A
   failed route offers only returned charted reachable frontiers;
   `frontier_probes` says why each probe failed. Never wrap movement in a
@@ -121,7 +165,9 @@ numeric sunset.
   preconditions are known.
 - `mine` count means physical mining cycles, not guaranteed items. Derive item
   ceilings from the in-game learned per-cycle yield and confirm them with
-  actual inventory deltas.
+  actual inventory deltas. A hand-mining result with `drill_produced: true`
+  (and `drills`, `stockpile_total`) means your own drills mine that resource:
+  take it from its stockpile instead.
 - `wait_for_item` observes only within its local range. Use bounded waits for
   meaningful transitions and never poll MCP reads in a host-language loop.
 - An `MCP_GAP` blocks only the affected branch. Name the missing field and the
@@ -133,10 +179,26 @@ Keep `machine_present` (built), `locally_operating` (running on cached or
 hand-fed input), and `autonomous_end_to_end` distinct. A segment is
 `autonomous_end_to_end` only from tool evidence of physical upstream supply,
 ordinary transport, processing, downstream acceptance, continuous power and
-fuel, several measured cycles, and zero character transfers touching it.
+fuel, several measured cycles, and zero character transfers touching it
+during its validation window.
 Downstream acceptance is a consumer (`downstream_kind` consumer) or a terminal
 buffer that still has space (`downstream_kind` buffer). A full buffer blocks
-the segment, and emptying it by hand is automation debt. Every consumed
+the segment. Taking what you need from a chest, furnace, machine output, or
+belt to build or craft with is normal use of your factory at any time, with one
+exception: never take from or insert into a component while its validation
+window runs. A proof speaks only for its window. After the window, taking
+accepted products from the component's terminal buffer chest, or picking items
+from a belt, keeps the proof. Any other character transfer on the component
+(taking from a furnace or machine inside it, any insert or deposit, and any
+transfer at all on a power-supply component) means the component
+reads `character_transfer_observed` until it is validated again, and consumers
+of such a power component are refused with `power_supply_component_not_proven`
+until then; after many transfers `character_transfer_history_incomplete` reads
+the same way. That is a stale proof, not a broken factory: take the stock
+anyway, prefer a terminal chest or belt when one holds the item, change no
+geometry for it, and let the next package's validation step there (or one
+re-validation of the power component) prove it again. Only a repeated haul
+that keeps a machine running is debt. Every consumed
 material and fuel input must come from a proven non-character source. A chest,
 machine buffer, or burner stock the character loaded is a buffer root, not
 supply. A hand-fed machine is not automation. Reserve **loop**,
@@ -217,15 +279,17 @@ restates them. Each package's steps are queued unchanged after one batched
 malformed, stale, or unavailable, the pilot continues fail-open and never
 waits.
 
-Each run has a notebook directory, `notebook/`, beside the ledger; it starts
-empty. Astra alone writes it, as free markdown: ideas, approaches, what worked
-or failed, and its own layout templates in relative coordinates. Notes hold
-only in-game learned content, never imported or copied external content, and
-never world coordinates. `notebook/README.md` is an index of at most 2 KB, and
-the whole notebook stays within about 64 KB. A package may name at most three
-notes in `notes` (`notebook/<name>.md` paths relative to the ledger's
-directory). The pilot reads only the notes a package names. The notebook is not
-a broker, a second ledger, or a control channel: every instruction to the
+Each run has a notebook beside the ledger, with `notebook/astra/` and
+`notebook/luna/`; both start empty. Each role writes only its own folder and
+reads anything in either folder at any time. Notes are free markdown: ideas,
+approaches, what worked or failed, layout templates, and this run's exact
+positions, maps, and infrastructure inventories as observed. There is no total
+size cap: keep a short `INDEX.md` per role and split long files. Notes hold
+only what this run observed or learned, never imported or copied external
+content, and nothing is read from another run's notebook. A package may name
+at most three notes in `notes` (`notebook/astra/<name>.md`, relative to the
+ledger's directory). Notes are knowledge, never instructions. The notebook is
+not a broker, a second ledger, or a control channel: every instruction to the
 pilot travels in the ledger.
 
 ## Reports
@@ -251,11 +315,12 @@ assumption or note, and next intent.
   asks you to reconcile with those tools or inspect the session roster. Send
   with `send_message_to_thread` to the exact thread ID your assignment names.
 - After any context compaction, re-read your goal file and this file before any
-  other call; the pilot then re-reads the ledger, and Astra the notebook index.
+  other call; the pilot then re-reads the ledger, and each role its notebook index.
 - The pilot takes no physical action before the supervisor's `GO`. The
   supervisor proves idleness only from a fresh `observe_local.character` with
   no `active_task`, `queue_depth == 0`, and `crafting.queue_size == 0`, and
-  nudges or replaces an idle pilot under `AGENTS.md`.
+  nudges or replaces an idle pilot under `AGENTS.md`, never during a
+  `human_control` hold.
 - Complete only from later-tick structured milestone proof. Declare a blocker
   only after materially distinct safe fallbacks are exhausted and no unrelated
   productive branch remains. An explicit the owner request ends gameplay; the
@@ -276,7 +341,7 @@ If a newly observed gameplay difficulty appears to require greenfield code,
 perform one bounded Firecrawl reuse survey for a maintained compatible
 responsibility. Check license, maintenance, current Factorio API compatibility,
 and one-body/one-writer/text-only physical fit. Reject candidates that
-introduce cheats, hidden map state, raw console access, imported blueprints,
+introduce cheats, uncharted map state, raw console access, imported blueprints,
 tutorial sequences, another body, or another writer. Reuse or adapt the
 smallest maintained compatible path; otherwise retain candidates only as design
 evidence and patch the smallest existing active path. This is engineering

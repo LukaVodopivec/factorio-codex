@@ -1,6 +1,8 @@
 -- Mine exactly the visible entity occupying the requested coordinate.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
+-- Optional: the charted-stock reader may be absent or fail to load.
+local map_summary_ok, map_summary = pcall(require, "scripts.map_summary")
 local M = {}
 local NATURAL_MINABLE_TYPES = { resource = true, tree = true, ["simple-entity"] = true }
 
@@ -261,6 +263,32 @@ function M.start(task)
   task._discarded_fluids = task.allow_fluid_loss and fluid_contents(found) or {}
 end
 
+-- Hand-mining a resource that own mining drills already mine spends body time
+-- on something the factory produces. Name the drills and the drill-fed stock
+-- so the caller sees the better source. Entity searches take an area; this
+-- one spans the whole surface.
+local WHOLE_SURFACE = { { -1000000, -1000000 }, { 1000000, 1000000 } }
+local function drill_hint(c, task)
+  if task._resolved_target.type ~= "resource" then return nil end
+  local ok, found = pcall(c.surface.find_entities_filtered,
+    { area = WHOLE_SURFACE, type = "mining-drill", force = c.force })
+  if not ok or type(found) ~= "table" then return nil end
+  local drills = 0
+  for _, drill in ipairs(found) do
+    local ok_target, target = pcall(function()
+      return drill.valid and drill.type == "mining-drill" and drill.force == c.force and drill.mining_target
+    end)
+    if ok_target and target and target.valid and target.name == task._entity_name then drills = drills + 1 end
+  end
+  if drills == 0 then return nil end
+  local hint = { drill_produced = true, drills = drills }
+  if map_summary_ok and type(map_summary) == "table" and map_summary.stock_total and task._expected_items[1] then
+    local ok_stock, total = pcall(map_summary.stock_total, task._expected_items[1])
+    if ok_stock and type(total) == "number" then hint.stockpile_total = total end
+  end
+  return hint
+end
+
 local function partial_failure(task, reason)
   return {
     status = "failed",
@@ -295,6 +323,13 @@ local function selection_failure(task, c, e, stage, code)
       can_reach_entity = can_reach, selected = actual,
     },
   }
+end
+
+-- After a human hold the interrupted cycle starts over: approach from the
+-- current position, then take fresh amount and inventory baselines. Completed
+-- cycles keep their count.
+function M.resume(task)
+  task._mining_started = false
 end
 
 function M.tick(task)
@@ -391,11 +426,16 @@ function M.tick(task)
   task._actual_gain = task._actual_gain + gained
   task._mining_started = false
   if task._completed >= task._requested then
+    local hint = drill_hint(c, task)
     return {
       status = "done",
-      detail = string.format("mined %s at exact coordinate: requested %d cycles, completed %d, actual gain %d items%s",
+      detail = string.format("mined %s at exact coordinate: requested %d cycles, completed %d, actual gain %d items%s%s",
         task._entity_name, task._requested, task._completed, task._actual_gain,
-        fluid_loss_detail(task._discarded_fluids)),
+        fluid_loss_detail(task._discarded_fluids),
+        hint and string.format("; drill_produced: %d own mining drill(s) already mine %s%s - take it from their chests and belts",
+          hint.drills, task._entity_name,
+          hint.stockpile_total and string.format(", stockpile_total %d", math.floor(hint.stockpile_total)) or "") or ""),
+      outcome = hint,
     }
   end
   if not (e and e.valid) then return partial_failure(task, "the initially selected resource was exhausted") end

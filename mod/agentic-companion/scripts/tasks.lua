@@ -27,6 +27,13 @@ local function stop_body()
   if not c then return end
   c.walking_state, c.mining_state, c.picking_state = { walking = false }, { mining = false }, false
 end
+-- The owner's real input on the Codex client holds the body (companion.human_control
+-- owns the rule). A failed read never holds.
+local function human_control()
+  local ok, held, idle = pcall(companion.human_control)
+  if not ok then return false end
+  return held == true, idle
+end
 local function cancel_crafting()
   local c = companion.get()
   if not c then return end
@@ -93,6 +100,8 @@ local function assign(task)
   local tasks = storage.tasks
   task.id = tasks.next_id
   if task.type == "plan" then set_plan_status(task, "queued") else task.status = "queued" end
+  -- Accepted and queued during a hold; the result says the hold delayed it.
+  if task.type == "plan" and human_control() then task.human_control = true end
   tasks.next_id = tasks.next_id + 1
   tasks.queue[#tasks.queue + 1] = task
   return task.id
@@ -210,7 +219,8 @@ function M.queue_plan(params)
   local crafting = body and body.valid and (body.crafting_queue_size or 0) > 0
   local body_idle_ticks = (not tasks.active and #tasks.queue == 0 and not crafting and tasks.last_finished_tick)
     and math.max(0, game.tick - tasks.last_finished_tick) or 0
-  return { plan_id = assign(plan), after_plan_id = predecessor, body_idle_ticks = body_idle_ticks }
+  return { plan_id = assign(plan), after_plan_id = predecessor, body_idle_ticks = body_idle_ticks,
+    human_control = plan.human_control }
 end
 local function plan_payload(plan)
   local c = companion.get()
@@ -249,6 +259,8 @@ local function plan_payload(plan)
   return {
     plan_id = plan.id, after_plan_id = plan.after_plan_id,
     status = plan.status, source_tick = game.tick,
+    -- Present only when a human hold delayed this plan: delayed, not failed.
+    human_control = plan.human_control,
     position = c and { x = c.position.x, y = c.position.y } or nil,
     current_step = plan.current_step, completed_steps = plan.completed_steps,
     total_steps = #plan.steps, outcomes = plan.outcomes, queue_depth = #storage.tasks.queue,
@@ -625,7 +637,8 @@ end
 
 -- Native last-tick fields are integrated only over consecutive observed
 -- ticks. Three bounded bursts share this validator and its exact private graph;
--- gaps never become inferred pump/generator cycles. Balances run over fluid
+-- gaps never become inferred pump/generator cycles: a skipped tick restarts
+-- the consecutive run inside its burst. Balances run over fluid
 -- domains (a segment plus any out-of-segment box piped into it, such as a
 -- boiler output or a pump). get_fluid_segment_contents is documented as
 -- uint32, so each burst's mass balance reserves one unit per segment of the
@@ -649,12 +662,53 @@ local function observe_native(step, sample)
   if not burst then return end
   local previous = burst.previous
   local consecutive = previous and sample.tick == previous.tick + 1
-  if previous and sample.tick ~= previous.tick and not consecutive then burst.aliased = true end
   local current = sample._native_activity or {}
   local function event(key, field)
     local counts = step._native_counts[key]
     counts[field] = (counts[field] or 0) + 1
     note_event(step, key .. ":" .. field)
+  end
+  -- A boiler's mass balance closes over one run of consecutive ticks, from
+  -- burst.start to `last`. Each run stands alone on its own readings; a
+  -- boiler proves at most once per burst.
+  local function close_run(last)
+    if last.tick == burst.start.tick then return end
+    burst.runs = true
+    local activity, producers = last._native_activity or {}, {}
+    for key, info in pairs(activity) do
+      if info.type == "boiler" and info.output and info.boxes then
+        local domain = info.boxes[info.output].domain
+        producers[domain] = producers[domain] or {}
+        producers[domain][#producers[domain] + 1] = key
+      end
+    end
+    for domain, keys in pairs(producers) do
+      for _, key in ipairs(keys) do
+        local info, before = activity[key], burst.start._native_activity[key]
+        local counts = step._native_counts[key]
+        if #keys ~= 1 then counts.ambiguous = true
+        elseif before and burst.burning[key] and not burst.proved[key] then
+          local output, start_output = info.boxes[info.output], before.boxes[before.output]
+          local input, start_input = info.boxes[info.input], before.boxes[before.input]
+          if output.domain ~= start_output.domain or input.domain ~= start_input.domain then counts.unreadable = true
+          elseif input.domain_amount >= start_input.domain_amount - input.domain_rounding then
+            if output.domain_amount - start_output.domain_amount + (burst.draw[domain] or 0) - (burst.feed[domain] or 0)
+                - output.domain_rounding > 0 then
+              burst.proved[key] = true
+              event(key, "flow")
+            -- Only a held input whose production bound fell short in a
+            -- shortened run is evidence for a longer window.
+            elseif last.tick - burst.start.tick < NATIVE_BURST_TICKS then burst.short[key] = true end
+          end
+        end
+      end
+    end
+  end
+  -- A skipped tick ends the run at the previous sample and starts a new one
+  -- here. Nothing is integrated or inferred across the gap.
+  if previous and sample.tick ~= previous.tick and not consecutive then
+    close_run(previous)
+    burst.start, burst.draw, burst.feed, burst.burning = sample, {}, {}, {}
   end
   local observed_generation, networks = {}, {}
   for key, info in pairs(current) do
@@ -749,33 +803,14 @@ local function observe_native(step, sample)
   end
   burst.earlier, burst.previous = previous, sample
   if sample.tick < burst.finish_tick then return end
-  local producers = {}
+  close_run(sample)
+  -- Aliased only when the burst held no consecutive run at all: gap-separated
+  -- single ticks prove nothing.
   for key, info in pairs(current) do
     if info.type == "boiler" and info.output and info.boxes then
-      local domain = info.boxes[info.output].domain
-      producers[domain] = producers[domain] or {}
-      producers[domain][#producers[domain] + 1] = key
-    end
-  end
-  for domain, keys in pairs(producers) do
-    for _, key in ipairs(keys) do
-      local info, before = current[key], burst.start._native_activity[key]
       local counts = step._native_counts[key]
-      if #keys ~= 1 then counts.ambiguous = true
-      elseif not burst.aliased and before and burst.burning[key] then
-        local output, start_output = info.boxes[info.output], before.boxes[before.output]
-        local input, start_input = info.boxes[info.input], before.boxes[before.input]
-        if output.domain ~= start_output.domain or input.domain ~= start_input.domain then counts.unreadable = true
-        elseif input.domain_amount >= start_input.domain_amount - input.domain_rounding then
-          if output.domain_amount - start_output.domain_amount + (burst.draw[domain] or 0) - (burst.feed[domain] or 0)
-              - output.domain_rounding > 0 then
-            event(key, "flow")
-          -- Only a held input whose production bound fell short in a
-          -- shortened burst is evidence for a longer window.
-          elseif sample.tick - burst.start.tick < NATIVE_BURST_TICKS then counts.short_burst = true end
-        end
-      end
-      if burst.aliased then counts.aliased = true end
+      if not burst.runs then counts.aliased = true
+      elseif burst.short[key] and not burst.proved[key] then counts.short_burst = true end
     end
   end
   step._native_burst = nil
@@ -850,7 +885,7 @@ local function validate_factory_component(plan, step)
         game.tick + math.floor(step.duration_seconds * 60 / 2) - length,
         step._validation_due_tick - length }
       step._native_burst = { start = step._baseline, previous = step._baseline,
-        finish_tick = game.tick + length, draw = {}, feed = {}, burning = {} }
+        finish_tick = game.tick + length, draw = {}, feed = {}, burning = {}, proved = {}, short = {} }
     end
     observe_statuses(step, step._baseline, false)
     plan.next_check_tick = math.min(step._validation_due_tick, game.tick + (step._native_burst and 1 or step._sample_interval))
@@ -878,7 +913,7 @@ local function validate_factory_component(plan, step)
     if not step._native_burst and start and game.tick >= start then
       step._native_burst = { start = final, previous = final,
         finish_tick = math.min(step._validation_due_tick, game.tick + step._native_burst_length),
-        draw = {}, feed = {}, burning = {} }
+        draw = {}, feed = {}, burning = {}, proved = {}, short = {} }
     end
     observe_native(step, final)
   end
@@ -1372,6 +1407,7 @@ local function validate_factory_component(plan, step)
     topology_ready = final.topology_ready, blockers = blockers, omitted_blockers = omitted_blockers,
     topology_diff = diff, transient_conditions = #transient > 0 and transient or nil,
     samples_observed = step._samples, last_progress_tick = step._last_progress_tick,
+    human_control_restarts = step._human_restarts,
     evidence_class = "bounded_multi_tick_component_validation",
     exact_remote_inventories = false, exact_remote_fluids = false,
   }
@@ -1392,12 +1428,15 @@ end
 local function wait_for_item(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
   step._wait_started_tick = step._wait_started_tick or plan.wait_started_tick
-  if game.tick - plan.wait_started_tick >= wait_timeout_ticks(step) then
+  -- The condition is read before the deadline is applied: a wait whose items
+  -- are present never times out on stale evidence.
+  local timed_out = game.tick - plan.wait_started_tick >= wait_timeout_ticks(step)
+  local c = companion.require_companion()
+  local dx, dy = c.position.x - step.x, c.position.y - step.y
+  if dx * dx + dy * dy > 900 and timed_out then
     plan.wait_started_tick, plan.next_check_tick = nil, nil
     return { status = "failed", detail = wait_timeout_detail(step) }
   end
-  local c = companion.require_companion()
-  local dx, dy = c.position.x - step.x, c.position.y - step.y
   if dx * dx + dy * dy > 900 then
     local distance = math.sqrt(dx * dx + dy * dy)
     plan.wait_started_tick, plan.next_check_tick = nil, nil
@@ -1416,14 +1455,23 @@ local function wait_for_item(plan, step)
     plan.wait_started_tick, plan.next_check_tick = nil, nil
     return { status = "done", detail = step.inventory .. " has " .. found .. " " .. step.item }
   end
+  if timed_out then
+    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    return { status = "failed", detail = wait_timeout_detail(step) }
+  end
   plan.next_check_tick = game.tick + 30
 end
 local function expire_parked_waits(tasks)
   for index = #tasks.queue, 1, -1 do
     local plan = tasks.queue[index]
     local step = plan.type == "plan" and plan.status == "waiting" and plan.steps[plan.current_step] or nil
-    if step and (step.action == "wait_for_item" or step.action == "wait_for_research") and plan.wait_started_tick
-      and game.tick - plan.wait_started_tick >= wait_timeout_ticks(step) then
+    local due = step and (step.action == "wait_for_item" or step.action == "wait_for_research") and plan.wait_started_tick
+      and game.tick - plan.wait_started_tick >= wait_timeout_ticks(step)
+    if due and not tasks.active then
+      -- The body is free: the dispatcher reads the condition once more this
+      -- tick before the deadline is applied, so a met wait never expires.
+      plan.next_check_tick = nil
+    elseif due then
       table.remove(tasks.queue, index)
       local detail = step.action == "wait_for_item" and wait_timeout_detail(step)
         or string.format("timed out waiting for research %s after %d ticks", step.technology, game.tick - plan.wait_started_tick)
@@ -1466,14 +1514,21 @@ local function tick_plan(plan)
   elseif step.action == "inspect_entities" then
     ok, result = pcall(function()
       local response = inspect.inspect({ targets = step.positions })
-      local errors = 0
-      for _, entity in ipairs(response.entities or {}) do if entity.error then errors = errors + 1 end end
+      local errors, remote = 0, 0
+      for _, entity in ipairs(response.entities or {}) do
+        if entity.error then errors = errors + 1 elseif entity.remote then remote = remote + 1 end
+      end
+      -- The read names its own evidence class and scope, which differ once
+      -- any entity lies beyond the body's 30 tiles.
+      local beyond = remote > 0 or (response.scope ~= nil and response.scope ~= "within_30_tiles_of_codex_at_source_tick")
       return {
         status = errors > 0 and "partial" or "done",
-        detail = string.format("inspected %d/%d entities locally at tick %d", #step.positions - errors, #step.positions, response.tick),
+        detail = string.format("inspected %d/%d entities%s at tick %d", #step.positions - errors, #step.positions,
+          beyond and string.format(" (%d remote, beyond 30 tiles of Codex)", remote) or " locally", response.tick),
         outcome = { tick = response.tick, entities = response.entities, omitted_entities = errors,
           evidence_class = response.evidence_class,
-          scope = "within_30_tiles_after_prior_physical_steps" },
+          scope = beyond and (response.scope or "within_30_tiles_or_own_force_charted_at_source_tick")
+            or "within_30_tiles_after_prior_physical_steps" },
       }
     end)
   else ok, result = pcall(runners[plan.current_task.type].tick, plan.current_task) end
@@ -1531,8 +1586,98 @@ local function dispatch(tasks)
     finish(task, result.status, result.detail, nil, result.outcome)
   end
 end
+-- Human takeover. While the owner's input holds the body the dispatcher is parked:
+-- no step starts or ticks, nothing is cancelled or reordered, and the mod
+-- writes no walking, mining or picking state after one release on entry, so
+-- he can move freely. Hold ticks are not charged to any deadline.
+local function mark_held(task)
+  if task and task.type == "plan" then task.human_control = true end
+end
+local function enter_hold(tasks)
+  tasks.human_hold = { since = game.tick }
+  if tasks.active then stop_body() end
+  mark_held(tasks.active)
+  for _, queued in ipairs(tasks.queue) do mark_held(queued) end
+end
+-- The body may stand anywhere after a hold. The interrupted step keeps its
+-- place and re-plans from the current position: its approach and any pending
+-- path request are dropped, and a runner with body-bound progress resets it.
+-- The hold is charged neither to a started plan's active budget nor to a
+-- parked wait's timeout, whose condition nothing evaluated meanwhile. A
+-- validation window the hold overlapped proves nothing about autonomy (the owner's
+-- own transfers are invisible to the mod), so it starts over from a fresh
+-- baseline after the hold, and the window time it discards is given back to
+-- the plan's active budget. At most two restarts: a third hold inside the
+-- window ends the step unproven, returned here as its result.
+local MAX_WINDOW_RESTARTS = 2
+local function release_plan(plan, held_ticks, hold_tick)
+  if plan.started_tick then plan.started_tick = plan.started_tick + held_ticks end
+  local step = plan.type == "plan" and plan.current_task and plan.steps[plan.current_step] or nil
+  if not step then return end
+  if step.action == "validate_factory_component" then
+    if not step._baseline then return end
+    local restarts = (step._human_restarts or 0) + 1
+    if restarts > MAX_WINDOW_RESTARTS then
+      plan.wait_started_tick, plan.next_check_tick = nil, nil
+      return { status = "failed",
+        detail = string.format("human_control_during_window: human control interrupted the validation window %d times; autonomy not proven", restarts),
+        outcome = { code = "human_control_during_window", proven = false, stage = "window", source_tick = step.source_tick,
+          transfer_window_start_tick = step._window_tick, start_tick = step._baseline.tick, end_tick = hold_tick,
+          requested_duration_seconds = step.duration_seconds, human_control_restarts = MAX_WINDOW_RESTARTS,
+          human_control_holds = restarts, evidence_class = "bounded_multi_tick_component_validation" } }
+    end
+    local window_start = step._wait_started_tick or step._baseline.tick
+    if plan.started_tick then plan.started_tick = plan.started_tick + math.max(0, hold_tick - window_start) end
+    for key in pairs(step) do
+      if type(key) == "string" and key:sub(1, 1) == "_" then step[key] = nil end
+    end
+    step._human_restarts = restarts
+    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    return
+  end
+  if plan.wait_started_tick then plan.wait_started_tick = plan.wait_started_tick + held_ticks end
+  if step._wait_started_tick then step._wait_started_tick = step._wait_started_tick + held_ticks end
+end
+local function leave_hold(tasks)
+  local hold_tick = tasks.human_hold.since
+  local held_ticks = game.tick - hold_tick
+  tasks.human_hold = nil
+  for index = #tasks.queue, 1, -1 do
+    local queued = tasks.queue[index]
+    local ended = release_plan(queued, held_ticks, hold_tick)
+    if ended then
+      -- A parked window owns no physical state: only its record is finalized.
+      table.remove(tasks.queue, index)
+      finish_step(queued, ended)
+    end
+  end
+  local task = tasks.active
+  if not task then return end
+  local ended = release_plan(task, held_ticks, hold_tick)
+  if ended then finish_step(task, ended); return end
+  storage.path_request, task._path_result = nil, nil
+  local current = task.type == "plan" and task.current_task or task
+  if not current then return end
+  current._approach, current._approach_close = nil, nil
+  local runner = runners[current.type]
+  if runner and runner.resume then
+    local ok, err = pcall(runner.resume, current)
+    if not ok then
+      local result = { status = "failed", detail = tostring(err) }
+      if task.type == "plan" then finish_step(task, result) else finish(task, "failed", result.detail) end
+    end
+  end
+end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end
+  local tasks = storage.tasks
+  if human_control() then
+    if not tasks.human_hold then enter_hold(tasks) end
+    -- The owner playing the body is not idle time.
+    if tasks.last_finished_tick then tasks.last_finished_tick = game.tick end
+    return
+  end
+  if tasks.human_hold then leave_hold(tasks) end
   expire_parked_waits(storage.tasks)
   -- Hand-crafting is body work: idle time starts when it ends, not when the
   -- asynchronous craft task that queued it finished.

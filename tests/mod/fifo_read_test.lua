@@ -11,7 +11,7 @@ _G.storage = { rpc_outbox = { next_id = 1, by_id = {} } }
 _G.game = { tick = 6000 }
 _G.defines = { events = setmetatable({}, { __index = function(_, key) return key end }) }
 _G.script = {
-  active_mods = { ["agentic-companion"] = "0.19.9", base = "2.0.0" },
+  active_mods = { ["agentic-companion"] = "0.20.0", base = "2.0.0" },
   on_init = function() end, on_configuration_changed = function() end,
   on_event = function() end, on_nth_tick = function() end,
 }
@@ -55,7 +55,7 @@ local function call(method)
 end
 
 local READS = { "ping", "observe_local", "inspect", "can_place", "find_placement", "map_summary",
-  "production_requirements", "describe_prototype", "progression_status", "plan_status" }
+  "production_requirements", "describe_prototype", "progression_status", "plan_status", "get_task" }
 
 -- Idle: nothing active or queued, last task finished 45 s ago.
 storage.tasks = { queue = {}, records = {}, last_finished_tick = game.tick - 45 * 60 }
@@ -71,7 +71,7 @@ end
 check(all_idle, "every read-only RPC carries fifo {queue_depth=0, idle_seconds=45} without an extra call")
 check(#reads == #READS - 1, "fifo decoration adds no handler call beyond the read itself")
 
-for _, method in ipairs({ "enqueue", "queue_plan", "cancel", "run_snapshot", "connect_entities", "start_research", "get_task" }) do
+for _, method in ipairs({ "enqueue", "queue_plan", "cancel", "run_snapshot", "connect_entities", "start_research" }) do
   local data = call(method)
   check(data and data.fifo == nil, method .. " result stays undecorated")
 end

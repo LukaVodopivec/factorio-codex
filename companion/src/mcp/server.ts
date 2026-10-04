@@ -10,7 +10,7 @@ import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitF
 import { normalizeCanPlace, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.19.9";
+export const MCP_SERVER_VERSION = "0.20.0";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();
@@ -47,6 +47,10 @@ function failure(error: unknown, prefix = "Error") {
   const message = error instanceof Error ? error.message : String(error);
   return result({ status: "failed", terminal: true, code: "TOOL_ERROR", summary: `${prefix}: ${message}`, next_action: null }, true);
 }
+
+/** Optional map_summary sections; each adds a top-level key of the same name
+ *  (flows_all adds force_flows_all), scoped to charted chunks. */
+export const MAP_SUMMARY_SECTIONS = ["stockpiles", "sites", "patches", "power", "problems", "flows_all"] as const;
 
 export type McpSurface = "full" | "read-only";
 export const READ_ONLY_TOOLS = [
@@ -111,6 +115,7 @@ export function registerMcpTools(
         : await (await bridge()).enqueueAndWaitResult({ type, ...params } as never);
       const status = terminal.status === "done" ? "completed" : terminal.status;
       return result({ status, terminal: true, summary: terminal.detail || status,
+        ...(terminal.human_control ? { human_control: true } : {}),
         ...(terminal.outcome ?? {}), next_action: null }, status === "failed" || status === "cancelled");
     } catch (error) { return failure(error); }
   };
@@ -127,7 +132,7 @@ export function registerMcpTools(
     try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }))); }
     catch (error) { return failure(error); }
   });
-  server.registerTool("inspect_entity", { description: 'Batch-inspect up to 16 exact positions within 30 tiles. Canonical input: {"positions":[{"x":1.5,"y":2.5}]}.', inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
+  server.registerTool("inspect_entity", { description: 'Batch-inspect up to 16 exact positions. Within 30 tiles any entity is read; beyond that only own-force entities in charted chunks are read, marked remote: true (reading is not reach: acting on them still needs the body there). Canonical input: {"positions":[{"x":1.5,"y":2.5}]}.', inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
     try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions)))); }
     catch (error) { return failure(error); }
   });
@@ -147,8 +152,9 @@ export function registerMcpTools(
     flow_items: z.array(z.string().min(1)).max(32).optional(),
     flow_fluids: z.array(z.string().min(1)).max(32).optional(),
     activity_since_tick: z.number().int().nonnegative().optional(),
+    include: z.array(z.enum(MAP_SUMMARY_SECTIONS)).max(MAP_SUMMARY_SECTIONS.length).optional(),
   }).strict();
-  server.registerTool("map_summary", { description: "Compact aggregate of already charted, player-force factory entities: installed capacity estimates, normalized status, native force/surface flow rates, conservative physical connectivity, and run-local character transfers. Read material_flow.components[].state (autonomy_blockers, downstream_kind) and character_transfers to find the automation-debt head. Rows are capped; material_flow component_count, edge_count, autonomous_component_count, validated_component_count and products_finished_total count the whole graph. It never charts terrain or exposes exact remote inventories. Use detail=full only for rare bounded landmark/resource/shoreline scouting.", inputSchema: mapSummarySchema }, async (p) => {
+  server.registerTool("map_summary", { description: "Compact aggregate of already charted, player-force factory entities: installed capacity estimates, normalized status, native force/surface flow rates, conservative physical connectivity, and run-local character transfers. Read material_flow.components[].state (autonomy_blockers, downstream_kind) and character_transfers to find the automation-debt head. Rows are capped; material_flow component_count, edge_count, autonomous_component_count, validated_component_count and products_finished_total count the whole graph. It never charts terrain and reads nothing from uncharted chunks. Optional include adds capped top-level sections for own-force entities and resources in charted chunks, each with an omission count: stockpiles before hand-mining or hand-crafting anything, to find the chests, machine outputs and belts that already hold it; sites to locate every chunk holding own machines; patches to choose the next resource patch by amount and position; power to check each electric network's production, consumption, capacity and satisfaction before adding consumers; problems to list machines that are unpowered, unfuelled, starved or blocked (rows are capped; problems_by_status counts every problem machine by status and problems_total sums them); flows_all (force_flows_all) for lifetime and per-minute production and consumption of every item and fluid. Reading is not reach: taking or changing anything still needs the body there. Use detail=full only for rare bounded landmark/resource/shoreline scouting.", inputSchema: mapSummarySchema }, async (p) => {
     try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", mapSummarySchema.parse(p)))); }
     catch (error) { return failure(error); }
   });
@@ -165,7 +171,7 @@ export function registerMcpTools(
     try { return result(normalizeProductionRequirements(await (await bridge()).call("production_requirements", toolPayloads.productionRequirements(p)))); }
     catch (error) { return failure(error); }
   });
-  server.registerTool("plan_status", { description: "Read plan state immediately, or wait up to 60 seconds for a completed step, waiting state, or terminal outcome. Waiting monitors only and never cancels physical work.", inputSchema: planStatusSchema }, async (input, extra) => {
+  server.registerTool("plan_status", { description: "Read plan state immediately, or wait up to 60 seconds for a completed step, waiting state, or terminal outcome. Waiting monitors only and never cancels physical work. human_control: true means a human held the body and delayed the plan: it is neither idleness nor failure, so re-observe after it.", inputSchema: planStatusSchema }, async (input, extra) => {
     try {
       const p = planStatusSchema.parse(input);
       const value: any = await waitForPlanStatus(await bridge(), p.plan_id, p.wait_until, p.timeout_seconds * 1_000, extra?.signal);
@@ -235,8 +241,8 @@ export function registerMcpTools(
     catch (error) { return failure(error); }
   });
   server.registerTool("walk_to", { description: "Scout or relocate through ordinary native walking. exact uses the fixed 1-tile goal tolerance; vicinity explicitly permits a reported collision-free point within arrival_radius only after native path confirmation. Goal collisions and route failures are distinct, and recovery is capped at three progress-monotonic nonrepeated frontiers. Positional actions already auto-approach.", inputSchema: walkInput }, async (p, extra) => task("walk_to", toolPayloads.target(p), extra?.signal));
-  server.registerTool("mine", { description: 'Auto-approach and physically mine the exact observed target without substituting a neighbor. Canonical fresh-observation input: {"x":3.25,"y":4.75,"count":1,"expected_name":"tree-01","observed_tick":12345}. Overlapping natural/owned targets require explicit target_kind; target_kind=owned recovers one empty player-owned entity through ordinary mining.', inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict() }, async (p, extra) => task("mine", toolPayloads.mine(p), extra?.signal));
-  server.registerTool("pickup_items", { description: "Auto-approach and physically pick up one exact item stack reported by observe_local. The item and count must still match, the full stack must fit, and Factorio's normal picking state performs collection.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) => task("pickup", toolPayloads.pickup(p), extra?.signal));
+  server.registerTool("mine", { description: 'Auto-approach and physically mine the exact observed target without substituting a neighbor. A resource result carrying drill_produced: true (with drills and stockpile_total) means own drills already mine it: take it from their chests and belts instead. Canonical fresh-observation input: {"x":3.25,"y":4.75,"count":1,"expected_name":"tree-01","observed_tick":12345}. Overlapping natural/owned targets require explicit target_kind; target_kind=owned recovers one empty player-owned entity through ordinary mining.', inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict() }, async (p, extra) => task("mine", toolPayloads.mine(p), extra?.signal));
+  server.registerTool("pickup_items", { description: "Auto-approach and physically pick up one exact item stack reported by observe_local, or items riding a plain transport belt tile at the given belt position. For a ground stack the item and count must still match and the full stack must fit, and Factorio's normal picking state performs collection. For a belt, count is the exact number wanted: the body must stand within item_pickup_distance of the belt tile's centre, the whole count must fit in the main inventory (otherwise it is refused, nothing is taken or spilled), and items of that kind move from that tile's transport lines into the inventory as they arrive, never more than removed; nothing is created. A tile that runs dry ends the step failed with the actual picked_up count kept. Underground belts, splitters and loaders are refused.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) => task("pickup", toolPayloads.pickup(p), extra?.signal));
   server.registerTool("place_entity", { description: 'Auto-approach and place one inventory item. Optional input_target/output_target require exact runtime binding after placement; a failure leaves the placed entity committed. Canonical input: {"name":"wooden-chest","x":1.5,"y":2.5}; use name, never item. Underground belts take belt_to_ground_type input|output and report the paired end.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType }).strict() }, async (p, extra) => task("place", toolPayloads.place(p), extra?.signal));
   const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict();
   server.registerTool("craft_items", { description: 'Queue exact recipe crafts, not output items. Canonical input: {"recipe":"iron-gear-wheel","crafts":2}; use recipe/crafts, never items.', inputSchema: craftInput }, async (p, extra) => task("craft", toolPayloads.craft(p), extra?.signal));
@@ -256,7 +262,10 @@ export function registerMcpTools(
     const parsed = runPlanSchema.parse(input);
     try {
       const outcome = await executeRunPlan(await bridge(), parsed, extra?.signal);
-      return result(normalizePlanDiagnostics({ ...outcome, terminal: true, next_action: null }), outcome.status === "failed" || outcome.status === "cancelled");
+      const terminal = ["completed", "partial", "failed", "cancelled"].includes(outcome.status);
+      return result(normalizePlanDiagnostics({ ...outcome, terminal, next_action: terminal ? null
+        : { tool: "plan_status", arguments: { plan_id: outcome.plan_id, wait_until: "terminal", timeout_seconds: 60 } } }),
+      outcome.status === "failed" || outcome.status === "cancelled");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const status = extra?.signal?.aborted ? "cancelled" : "failed";

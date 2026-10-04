@@ -12,15 +12,19 @@ describe("strategist read-only MCP surface", () => {
     const names: string[] = [];
     registerMcpTools({ registerTool(name) { names.push(name); } }, async () => ({} as Bridge), validConfig, "read-only");
     expect(names.sort()).toEqual([...READ_ONLY_TOOLS].sort());
+    expect([...READ_ONLY_TOOLS].sort()).toEqual(["can_place", "connect_status", "describe_prototype", "find_placement",
+      "inspect_entity", "map_summary", "observe_local", "plan_status", "production_requirements", "progression_status"]);
   });
 
   it("does not create a body and read calls never enter the physical FIFO lane", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const call = vi.fn(async (method: string) => {
-      if (method === "ping") return { protocol_version: 22, mod_version: "0.19.9", factorio_version: "2.0.77",
+      if (method === "ping") return { protocol_version: 23, mod_version: "0.20.0", factorio_version: "2.0.77",
         tick: 12, companion_exists: false, companion_ever_created: false, companion_dead: false };
       if (method === "observe_local") return { tick: 12, entities: [], resource_patches: [], ground_items: [] };
-      if (method === "inspect") return { tick: 12, entities: [] };
+      if (method === "inspect") return { tick: 12, entities: [{ name: "iron-chest", position: { x: 400.5, y: 0.5 }, remote: true }] };
+      if (method === "map_summary") return { tick: 12, factory: {}, stockpiles: {}, sites: {}, patches: {},
+        power: { networks: {} }, problems: {}, force_flows_all: {} };
       if (method === "plan_status") return { plan_id: 7, status: "completed" };
       if (method === "can_place") return { results: [{ can_place: true }] };
       if (method === "find_placement") return { candidates: [{ position: { x: 1, y: 1 }, direction: 0,
@@ -38,8 +42,13 @@ describe("strategist read-only MCP surface", () => {
     expect(call).not.toHaveBeenCalledWith("spawn_companion", expect.anything());
 
     await handlers.observe_local({ radius: 15, detail: "compact" });
-    await handlers.inspect_entity({ positions: [{ x: 0, y: 0 }] });
-    await handlers.map_summary({ detail: "aggregate", flow_precision: "one_minute" });
+    const inspected = await handlers.inspect_entity({ positions: [{ x: 400.5, y: 0.5 }] });
+    expect(inspected.structuredContent.entities[0].remote).toBe(true);
+    const include = ["stockpiles", "sites", "patches", "power", "problems", "flows_all"];
+    const summary = await handlers.map_summary({ detail: "aggregate", flow_precision: "one_minute", include });
+    expect(call).toHaveBeenCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute", include });
+    expect(summary.structuredContent).toMatchObject({ stockpiles: [], sites: [], patches: [],
+      power: { networks: [] }, problems: [], force_flows_all: [] });
     await handlers.progression_status({});
     await handlers.production_requirements({ technology: "automation", flow_precision: "one_minute" });
     await handlers.describe_prototype({ names: ["assembling-machine-1"], kind: "entity" });

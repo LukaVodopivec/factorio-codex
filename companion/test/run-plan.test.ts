@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { type TaskClock } from "../src/bridge.js";
-import type { Bridge } from "../src/bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, type TaskClock } from "../src/bridge.js";
+import type { RconClient } from "../src/rcon.js";
 import { executeRunPlan, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
 import { registerMcpTools } from "../src/mcp/server.js";
 
@@ -178,5 +178,101 @@ describe("current queued-plan protocol", () => {
     const output = await handlers.plan_status!({ plan_id: 14, wait_until: "terminal", timeout_seconds: 10 });
     expect(output.structuredContent).toMatchObject({ plan_id: 14, status: "completed", terminal: true, next_action: null });
     expect(call).toHaveBeenCalledWith("plan_status", { plan_id: 14 });
+  });
+});
+
+describe("run_plan and direct tools under a human hold", () => {
+  const steps = runPlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }] });
+
+  it("run_plan never cancels a held plan and returns it nonterminal before the tool timeout", async () => {
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    const call = vi.fn(async (method: string) => method === "queue_plan" ? { plan_id: 31 }
+      : method === "cancel" ? { cancelled: 1 }
+      : { plan_id: 31, status: "running", outcomes: [], human_control: true, fifo: { human_control: true, human_idle_ticks: 5 } });
+    const result = await executeRunPlan({ call } as unknown as Bridge, steps, undefined, clock);
+    expect(result).toMatchObject({ plan_id: 31, status: "running", human_control: true,
+      wait: { condition: "terminal", timed_out: true, waited_ms: DEFAULT_TASK_TIMEOUT_MS } });
+    expect(result.summary).toMatch(/a human holds the body, so nothing was cancelled/);
+    expect(call.mock.calls.map(([method]) => method)).not.toContain("cancel");
+    expect(now).toBe(DEFAULT_TASK_TIMEOUT_MS);
+  });
+
+  it("run_plan charges only unheld time and still cancels a plan stalled past it", async () => {
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    const cancelled = { plan_id: 32, status: "cancelled", outcomes: [] };
+    let cancelledAt: number | undefined;
+    // An earlier plan's sticky human_control must not count as a current hold.
+    const call = vi.fn(async (method: string) => {
+      if (method === "queue_plan") return { plan_id: 32 };
+      if (method === "cancel") { cancelledAt = now; return { cancelled: 1 }; }
+      return cancelledAt !== undefined ? cancelled
+        : { plan_id: 32, status: "running", outcomes: [], human_control: true, fifo: { human_control: false } };
+    });
+    const result = await executeRunPlan({ call } as unknown as Bridge, steps, undefined, clock);
+    expect(result.status).toBe("cancelled");
+    expect(cancelledAt).toBe(DEFAULT_TASK_TIMEOUT_MS);
+  });
+
+  it("run_plan reports the latest sample: a plan running long after a hold ended is not reported as held", async () => {
+    let now = 0;
+    const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    // Held for the first 100 s (credited), then running unheld until the return guard.
+    const call = vi.fn(async (method: string) => method === "queue_plan" ? { plan_id: 33 }
+      : method === "cancel" ? { cancelled: 1 }
+      : { plan_id: 33, status: "running", outcomes: [], human_control: true, fifo: { human_control: now < 100_000 } });
+    const result = await executeRunPlan({ call } as unknown as Bridge, steps, undefined, clock);
+    expect(result).toMatchObject({ plan_id: 33, status: "running",
+      wait: { condition: "terminal", timed_out: true, waited_ms: DEFAULT_TASK_TIMEOUT_MS } });
+    expect(result).not.toHaveProperty("human_control");
+    expect(result.summary).not.toMatch(/a human holds the body/);
+    expect(result.summary).toMatch(/earlier human hold delayed it; nothing was cancelled, so wait with plan_status/);
+    expect(call.mock.calls.map(([method]) => method)).not.toContain("cancel");
+  });
+
+  it("direct tools fail with a retry-after-hold result and cancel the task; run_plan stays nonterminal", async () => {
+    const handlers: Record<string, (args: any, extra?: any) => Promise<any>> = {};
+    const methods: string[] = [];
+    const reply = (data: unknown) => JSON.stringify({ ok: true, data });
+    const exec = vi.fn(async (cmd: string) => {
+      const method = /"rpc","([a-z_]+)"/.exec(cmd)![1]!;
+      methods.push(method);
+      switch (method) {
+        case "enqueue": return reply({ task_id: 41 });
+        case "get_task": return reply({ status: "running", detail: "", fifo: { human_control: true, human_idle_ticks: 2 } });
+        case "cancel": return reply({ cancelled: 1 });
+        case "connect_entities": return reply({ kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 2, y: 0 },
+          length: 1, steps: [{ x: 1, y: 0, name: "transport-belt", direction: 4 }], physical: true, ghosts: false });
+        case "queue_plan": return reply({ plan_id: 51 });
+        default: return reply({ plan_id: 51, status: "queued", outcomes: [], human_control: true, fifo: { human_control: true } });
+      }
+    });
+    const bridge = new Bridge({ exec } as unknown as RconClient);
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, async () => bridge, validConfig);
+
+    vi.useFakeTimers();
+    try {
+      const settle = async (pending: Promise<any>) => { await vi.advanceTimersByTimeAsync(DEFAULT_TASK_TIMEOUT_MS + 5_000); return pending; };
+      for (const [name, args] of [["walk_to", { x: 1, y: 2 }],
+        ["connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 2, y: 0 } }]] as const) {
+        methods.length = 0;
+        const out = await settle(handlers[name]!(args));
+        expect(out.isError).toBe(true);
+        expect(out.structuredContent).toMatchObject({ status: "failed", terminal: true, next_action: null });
+        expect(out.structuredContent).not.toHaveProperty("task_id");
+        expect(out.content[0].text).toMatch(/a human holds the body: task 41 was still running after 570s and was cancelled/);
+        expect(out.content[0].text).toMatch(/retry the call after the hold ends/);
+        expect(methods.at(-1)).toBe("cancel");
+      }
+
+      methods.length = 0;
+      const ran = await settle(handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] }));
+      expect(ran.isError).toBe(false);
+      expect(ran.structuredContent).toMatchObject({ plan_id: 51, status: "queued", terminal: false, human_control: true,
+        next_action: { tool: "plan_status", arguments: { plan_id: 51, wait_until: "terminal", timeout_seconds: 60 } } });
+      expect(ran.content[0].text).toContain("nothing was cancelled");
+      expect(methods).not.toContain("cancel");
+    } finally { vi.useRealTimers(); }
   });
 });

@@ -35,12 +35,17 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.19.9") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.20.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
   if (JSON.stringify(names) !== JSON.stringify(expected)) throw new Error(`tool mismatch: ${names}`);
   if (/agent_id|companion|background|image|lua|console/i.test(JSON.stringify(tools))) throw new Error("forbidden schema/content exposed");
+  const summaryTool = tools.find((tool: any) => tool.name === "map_summary");
+  const includeSchema = summaryTool?.inputSchema?.properties?.include;
+  if (JSON.stringify(includeSchema?.items?.enum) !== JSON.stringify(["stockpiles", "sites", "patches", "power", "problems", "flows_all"])
+    || (summaryTool?.inputSchema?.required ?? []).includes("include")) throw new Error("map_summary must expose optional include with the six player-parity sections");
+  if (!/charted/.test(summaryTool?.description ?? "") || !/remote: true/.test(tools.find((tool: any) => tool.name === "inspect_entity")?.description ?? "")) throw new Error("map_summary and inspect_entity must disclose the charted own-force read scope");
   if (surface === "read-only") {
     const forbidden = ["walk_to", "mine", "pickup_items", "place_entity", "craft_items", "insert_items", "extract_items",
       "set_recipe", "rotate_entity", "build_plan", "queue_plan", "run_plan", "start_research", "stop"];
@@ -76,6 +81,7 @@ try {
   if (mineSchema.target_kind?.default !== undefined || JSON.stringify(mineSchema.target_kind?.enum) !== JSON.stringify(["natural", "owned"])) throw new Error("mine must expose optional natural|owned target identity for overlap disambiguation");
   if (!mineSchema.expected_name || mineSchema.observed_tick?.minimum !== 0) throw new Error("mine must expose optional exact observation provenance");
   const pickupSchema = tools.find((tool: any) => tool.name === "pickup_items")?.inputSchema ?? {};
+  if (!/transport belt/.test(tools.find((tool: any) => tool.name === "pickup_items")?.description ?? "")) throw new Error("pickup_items must disclose belt pickup");
   if (!pickupSchema.required?.includes("x") || !pickupSchema.required?.includes("y") || !pickupSchema.required?.includes("item") || !pickupSchema.required?.includes("count")) throw new Error("pickup_items must require exact observed position/item/count");
   const runPlanSchema = tools.find((tool: any) => tool.name === "run_plan")?.inputSchema ?? {};
   if (runPlanSchema.properties?.steps?.maxItems !== 25 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-25 steps");

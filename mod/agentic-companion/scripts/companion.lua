@@ -16,7 +16,10 @@ end
 local function is_native_codex(player)
   return player and player.valid ~= false and player.connected ~= false
     and player.name == CODEX_LABEL
-    and player.controller_type == defines.controllers.character
+    -- In map or remote view the client's input drives the view, not the
+    -- body, and the character stays script-controllable (native 2.0.77).
+    and (player.controller_type == defines.controllers.character
+      or player.controller_type == defines.controllers.remote)
     and player.character and player.character.valid
 end
 
@@ -56,6 +59,30 @@ end
 
 function M.record()
   return storage.companion
+end
+
+-- Human takeover. afk_time counts ticks since the Codex client's last real
+-- keyboard or mouse input; script-driven walking does not reset it. While the
+-- player is connected and in its character, the owner holds the body until that
+-- input is older than the release interval. Map or remote view never holds:
+-- input there moves the view, so the bot keeps working while the owner looks
+-- around. A missing character or any other controller keeps the hold, so
+-- queued work stays parked instead of failing for want of a body. Returns
+-- held, idle ticks; unreadable state and a disconnected player never hold.
+local HUMAN_RELEASE_IDLE_TICKS = 300
+function M.human_control()
+  local rec = storage.companion
+  if not (rec and rec.player_index) then return false end
+  local ok, idle, bodiless, viewing = pcall(function()
+    local player = get_player(rec.player_index)
+    if not (player and player.valid ~= false and player.connected) then return nil end
+    local has_body = player.character and player.character.valid
+    if has_body and player.controller_type == defines.controllers.remote then return player.afk_time, false, true end
+    return player.afk_time, not (player.controller_type == defines.controllers.character and has_body) and true or false
+  end)
+  if not ok or type(idle) ~= "number" then return false end
+  if viewing then return false, idle end
+  return bodiless or idle < HUMAN_RELEASE_IDLE_TICKS, idle
 end
 
 function M.require_companion()

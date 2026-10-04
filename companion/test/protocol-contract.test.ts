@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 
-describe("bridge protocol v22", () => {
+describe("bridge protocol v23", () => {
   it("has the expected version and retained methods", () => {
-    expect(PROTOCOL_VERSION).toBe(22);
+    expect(PROTOCOL_VERSION).toBe(23);
     expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk"]);
   });
   it("matches the exact Lua registrations", () => {
@@ -41,6 +41,13 @@ describe("bridge protocol v22", () => {
     const inspectSource = read("mod/agentic-companion/scripts/inspect.lua");
     expect(inspectSource).not.toMatch(/unit_number|get_entity_by_unit_number|connected_players|params\.position|return inspect_one\(params/);
     expect(inspectSource).toMatch(/evidence_class = "fresh_local_exact"[\s\S]*entities = out/);
+    // Every envelope variant and map_summary section the mod returns is in the companion types.
+    const types = fs.readFileSync(path.join(root, "companion/src/types.ts"), "utf8");
+    const variants = [...inspectSource.matchAll(/(?:evidence_class|scope) = "([^"]+)"/g)].map((match) => match[1]!);
+    expect(variants).toEqual(expect.arrayContaining(["fresh_exact_local_and_charted_remote", "within_30_tiles_or_own_force_charted_at_source_tick"]));
+    for (const variant of variants) expect(types).toContain(`"${variant}"`);
+    expect(read("mod/agentic-companion/scripts/map_summary.lua")).toMatch(/sections\.problems_by_status/);
+    expect(types).toMatch(/problems_by_status\?: Record<string, number>/);
     expect(read("mod/agentic-companion/scripts/research.lua")).not.toMatch(/companion\.get|game\.forces\.player|connected_players/);
     expect(read("mod/agentic-companion/scripts/research.lua")).toMatch(/companion\.require_companion\(\)\.force/);
     expect(read("mod/agentic-companion/scripts/actions/mine.lua"))
@@ -50,7 +57,13 @@ describe("bridge protocol v22", () => {
     expect(pickupSource).toMatch(/update_selected_entity/);
     expect(pickupSource).toMatch(/selected\s*~=\s*task\._entity/);
     expect(pickupSource).toMatch(/picking_state\s*=\s*true/);
-    expect(pickupSource).not.toMatch(/\bdestroy\s*\(|\bmine\s*\(|\binsert\s*\(|\bstack\.count\s*=|spill_item_stack|create_entity|teleport/);
+    expect(pickupSource).not.toMatch(/\bdestroy\s*\(|\bmine\s*\(|\bstack\.count\s*=|spill_item_stack|create_entity|give_item|teleport/);
+    // Belt pickup is an exact conserved transfer: an inventory insert appears
+    // only where the transport line's remove_item feeds it, in the same function.
+    expect(pickupSource).toMatch(/remove_item\s*\(/);
+    const inserts = [...pickupSource.matchAll(/(?<!table)[.:]insert\s*\(/g)].map((match) => match.index!);
+    expect(inserts.length).toBeGreaterThan(0);
+    for (const at of inserts) expect(pickupSource.slice(pickupSource.lastIndexOf("function", at), at)).toMatch(/remove_item\s*\(/);
     expect(read("mod/agentic-companion/scripts/actions/build_plan.lua")).not.toMatch(/step\.entity/);
     expect(luaSources).not.toMatch(/register\(["']run_plan/);
     expect(read("mod/agentic-companion/scripts/tasks.lua")).toMatch(/wait_for_item/);

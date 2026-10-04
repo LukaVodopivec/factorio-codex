@@ -4,14 +4,17 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 
-describe("bridge protocol v23", () => {
+describe("bridge protocol v24", () => {
   it("has the expected version and retained methods", () => {
-    expect(PROTOCOL_VERSION).toBe(23);
-    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk"]);
+    expect(PROTOCOL_VERSION).toBe(24);
+    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk", "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now"]);
   });
   it("matches the exact Lua registrations", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-    const sources = ["mod/agentic-companion/control.lua", "mod/agentic-companion/scripts/rpc.lua"].map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
+    // control.lua, rpc.lua, and the optional modules that register their own RPCs.
+    const luaRoot = path.join(root, "mod/agentic-companion");
+    const sources = fs.readdirSync(luaRoot, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".lua"))
+      .map((file) => fs.readFileSync(path.join(luaRoot, file), "utf8")).join("\n");
     const registered = [...sources.matchAll(/(?:rpc|M)\.register\("([^"]+)"/g)].map((match) => match[1]).sort();
     expect(registered).toEqual([...RPC_METHODS].sort());
   });

@@ -8,12 +8,15 @@ import { companionVersion, dataDir, loadConfig } from "../config.js";
 import { operationsLedgerSchema } from "../coordination/ledger.js";
 import { RconClient } from "../rcon.js";
 import { atomicWriteFile } from "../setup/atomic.js";
+import { createThoughtFeed, type ThoughtFeed, type ThoughtRole } from "./thoughts.js";
 
 const countRow = z.object({ name: z.string(), count: z.number() }).strict();
 const resourceName = z.object({ type: z.enum(["item", "fluid"]), name: z.string() }).strict();
 export const runSnapshotSchema = z.object({
   tick: z.number().int().nonnegative(), character: z.record(z.string(), z.unknown()),
   progression: z.record(z.string(), z.unknown()), factory: z.record(z.string(), z.unknown()),
+  lines: z.object({ line_count: z.number().int().nonnegative(), running_line_count: z.number().int().nonnegative(),
+    self_sustaining_line_count: z.number().int().nonnegative(), hand_fed_line_count: z.number().int().nonnegative() }).strict().optional(),
   statistics: z.object({
     items: z.object({ produced: z.array(countRow), consumed: z.array(countRow), unavailable: z.boolean().optional() }).strict(),
     fluids: z.object({ produced: z.array(countRow), consumed: z.array(countRow), unavailable: z.boolean().optional() }).strict(),
@@ -100,7 +103,8 @@ export function snapshotDelta(current: RunSnapshot, baseline: RunSnapshot) {
 export function runRoot(root = path.join(dataDir(), "runs")): string { return root; }
 function runPaths(root: string, id: string) {
   const dir = path.join(root, `run-${encodeURIComponent(id)}`);
-  return { dir, manifest: path.join(dir, "manifest.json"), samples: path.join(dir, "samples.jsonl"), events: path.join(dir, "events.jsonl") };
+  return { dir, manifest: path.join(dir, "manifest.json"), samples: path.join(dir, "samples.jsonl"), events: path.join(dir, "events.jsonl"),
+    thoughts: path.join(dir, "thoughts.jsonl") };
 }
 function writeManifest(file: string, manifest: RunManifest): void {
   atomicWriteFile(file, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
@@ -131,7 +135,24 @@ export function markRunAssisted(root: string, id: string, reason: string, at = n
   writeManifest(files.manifest, { ...manifest, assisted: true });
 }
 
-export interface RecordRunOptions { ledger: string; variant: string; change: string; kind: "debug" | "benchmark"; root?: string }
+/** Resolves a role's rollout file from <run_dir>/rollouts.json. Only an absent
+ *  pointer file falls back to the launch flag; any other read or parse error
+ *  (for example a partly written file) returns null, which keeps the file the
+ *  feed already follows instead of switching back to a retired session. */
+export function rolloutResolver(pointer: string, role: ThoughtRole, flag: string | undefined): () => string | null {
+  return () => {
+    let text: string;
+    try { text = fs.readFileSync(pointer, "utf8"); }
+    catch (error) { return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? flag ?? null : null; }
+    try {
+      const value = JSON.parse(text)?.[role];
+      return typeof value === "string" && value ? value : flag ?? null;
+    } catch { return null; }
+  };
+}
+
+export interface RecordRunOptions { ledger: string; variant: string; change: string; kind: "debug" | "benchmark"; root?: string;
+  pilotRollout?: string; strategistRollout?: string }
 export function checkpointDelay(checkpoint: number, elapsedMs: number): number {
   return Math.max(0, checkpoint * 300_000 - elapsedMs);
 }
@@ -141,6 +162,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
   const ledger = operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8")));
   assertConnectionCompatibility(config.rcon);
   const rcon = new RconClient(config.rcon), bridge = new Bridge(rcon);
+  let feed: ThoughtFeed | undefined;
   try {
   await rcon.connect(); await bridge.unlock();
   const ping = await bridge.call<any>("ping"); assertRuntimeCompatibility(ping, companionVersion());
@@ -157,6 +179,18 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     tick: baseline.tick, tick_delta: 0, snapshot: baseline, delta: snapshotDelta(baseline, baseline) };
   appendJson(files.samples, baselineSample);
   console.log(`GO ${manifest.started_at} tick=${manifest.start_tick} run=${manifest.run.id}`);
+  // <run_dir>/rollouts.json ({"luna": path, "astra": path}), which the
+  // supervisor rewrites when it replaces a role session, overrides the flags.
+  const pointer = path.join(path.dirname(options.ledger), "rollouts.json");
+  const rollout = (role: ThoughtRole, flag: string | undefined) => rolloutResolver(pointer, role, flag);
+  const sources = ([["luna", options.pilotRollout], ["astra", options.strategistRollout]] as const)
+    .map(([role, flag]) => ({ role, file: rollout(role, flag) }));
+  const nowObjective = () => {
+    try { return operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8"))).task_list.NOW.objective; }
+    catch { return null; }
+  };
+  feed = createThoughtFeed({ sources, out: files.thoughts, say: (role, text) => bridge.call("say", { role, text }),
+    now: { read: nowObjective, say: (text) => bridge.call("say_now", { text }) } });
 
   let nextCheckpoint = 1, finishing = false, timer: NodeJS.Timeout | undefined, chain = Promise.resolve();
   const capture = async (kind: "checkpoint" | "final", scheduled: number): Promise<RunSample> => {
@@ -190,6 +224,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     process.once("SIGINT", finish); process.once("SIGTERM", finish);
   });
   await chain;
+  feed?.stop(); feed = undefined;
   const final = await capture("final", performance.now() - startedMono); appendJson(files.samples, final);
   const currentManifest = readManifest(root, manifest.run.id);
   manifest = { ...manifest, assisted: currentManifest.assisted,
@@ -198,6 +233,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
   writeManifest(files.manifest, manifest);
   console.log(`FINISH ${manifest.ended_at} run=${manifest.run.id} status=${manifest.status}`);
   } finally {
+    feed?.stop();
     rcon.close();
   }
 }

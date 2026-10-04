@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkpointDelay, compareRuns, createRunStore, markRunAssisted, readManifest, resourceVerdict,
-  parseRunSnapshot, sampleSchema, snapshotDelta, type RunManifest, type RunSample, type RunSnapshot } from "../src/runs/telemetry.js";
+  parseRunSnapshot, rolloutResolver, sampleSchema, snapshotDelta, type RunManifest, type RunSample, type RunSnapshot } from "../src/runs/telemetry.js";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => fs.rmSync(root, { recursive: true, force: true })));
@@ -61,6 +61,26 @@ describe("five-minute run telemetry", () => {
     const onBelt: any = snapshot(100, 0);
     onBelt.character.standing_on = { name: "transport-belt", type: "transport-belt", direction: 4 };
     expect(parseRunSnapshot(onBelt).character.standing_on).toEqual({ name: "transport-belt", type: "transport-belt", direction: 4 });
+  });
+
+  it("accepts the mod's production-line counts and snapshots without them", () => {
+    const lines = { line_count: 3, running_line_count: 2, self_sustaining_line_count: 1, hand_fed_line_count: 1 };
+    const withLines: any = { ...snapshot(100, 0), lines };
+    expect(parseRunSnapshot(withLines).lines).toEqual(lines);
+    expect(parseRunSnapshot(snapshot(100, 0)).lines).toBeUndefined();
+    expect(() => parseRunSnapshot({ ...snapshot(100, 0), lines: { ...lines, line_count: -1 } })).toThrow();
+  });
+
+  it("resolves a role rollout from the pointer file and falls back to the flag only when it is absent", () => {
+    const dir = root(), pointer = path.join(dir, "rollouts.json");
+    const luna = rolloutResolver(pointer, "luna", "/first/pilot.jsonl");
+    expect(luna()).toBe("/first/pilot.jsonl");
+    fs.writeFileSync(pointer, JSON.stringify({ luna: "/second/pilot.jsonl" }));
+    expect(luna()).toBe("/second/pilot.jsonl");
+    fs.writeFileSync(pointer, '{"luna": "/second/pi');
+    expect(luna()).toBeNull();
+    fs.writeFileSync(pointer, JSON.stringify({ astra: "/astra.jsonl" }));
+    expect(luna()).toBe("/first/pilot.jsonl");
   });
 
   it("uses conservative vector dominance instead of summing resources", () => {

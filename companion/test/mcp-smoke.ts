@@ -5,9 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const surface = process.env.MCP_SURFACE ?? "full";
+const readOnly = ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block"];
 const expected = (surface === "read-only"
-  ? ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement"]
-  : ["connect_status","observe_local","inspect_entity","describe_prototype","progression_status","can_place","find_placement","map_summary","production_requirements","connect_entities","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","plan_status","run_plan","start_research","stop"]).sort();
+  ? readOnly
+  : [...readOnly, "get_items","connect_entities","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","run_plan","start_research","stop"]).sort();
 const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = process.env.MCP_ENTRY ?? "src/cli.ts";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-mcp-home-"));
@@ -35,7 +36,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.20.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.21.0") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -47,10 +48,14 @@ try {
     || (summaryTool?.inputSchema?.required ?? []).includes("include")) throw new Error("map_summary must expose optional include with the six player-parity sections");
   if (!/charted/.test(summaryTool?.description ?? "") || !/remote: true/.test(tools.find((tool: any) => tool.name === "inspect_entity")?.description ?? "")) throw new Error("map_summary and inspect_entity must disclose the charted own-force read scope");
   if (surface === "read-only") {
-    const forbidden = ["walk_to", "mine", "pickup_items", "place_entity", "craft_items", "insert_items", "extract_items",
+    const forbidden = ["get_items", "walk_to", "mine", "pickup_items", "place_entity", "craft_items", "insert_items", "extract_items",
       "set_recipe", "rotate_entity", "build_plan", "queue_plan", "run_plan", "start_research", "stop"];
     if (forbidden.some((name) => names.includes(name))) throw new Error(`read-only surface exposed mutation: ${names}`);
-    console.log("PASS initialize, exact 10 read-only tools, no physical mutation surface");
+    for (const name of ["build_layout", "build_block"]) {
+      const checkOnly = tools.find((tool: any) => tool.name === name)?.inputSchema?.properties?.check_only;
+      if (checkOnly?.const !== true && JSON.stringify(checkOnly?.enum) !== "[true]") throw new Error(`read-only ${name} must be a dry run only: ${JSON.stringify(checkOnly)}`);
+    }
+    console.log("PASS initialize, exact 15 read-only tools, dry-run-only layouts, no physical mutation surface");
   } else {
   const placementTool = tools.find((tool: any) => tool.name === "find_placement");
   if (!/input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12/.test(placementTool?.description ?? "")) throw new Error("find_placement must disclose the targeted cardinal constraint");
@@ -79,15 +84,17 @@ try {
   const mineSchema = tools.find((tool: any) => tool.name === "mine")?.inputSchema?.properties ?? {};
   if (mineSchema.count?.default !== 1 || mineSchema.count?.maximum !== 200) throw new Error("mine must expose count 1-200 default 1");
   if (mineSchema.target_kind?.default !== undefined || JSON.stringify(mineSchema.target_kind?.enum) !== JSON.stringify(["natural", "owned"])) throw new Error("mine must expose optional natural|owned target identity for overlap disambiguation");
-  if (!mineSchema.expected_name || mineSchema.observed_tick?.minimum !== 0) throw new Error("mine must expose optional exact observation provenance");
+  if (!mineSchema.expected_name || mineSchema.observed_tick?.minimum !== 0
+    || (tools.find((tool: any) => tool.name === "mine")?.inputSchema?.required ?? []).some((field: string) => field === "expected_name" || field === "observed_tick")) throw new Error("mine must keep expected_name and observed_tick optional");
   const pickupSchema = tools.find((tool: any) => tool.name === "pickup_items")?.inputSchema ?? {};
-  if (!/transport belt/.test(tools.find((tool: any) => tool.name === "pickup_items")?.description ?? "")) throw new Error("pickup_items must disclose belt pickup");
+  if (!/belt tile/.test(tools.find((tool: any) => tool.name === "pickup_items")?.description ?? "")) throw new Error("pickup_items must disclose belt pickup");
   if (!pickupSchema.required?.includes("x") || !pickupSchema.required?.includes("y") || !pickupSchema.required?.includes("item") || !pickupSchema.required?.includes("count")) throw new Error("pickup_items must require exact observed position/item/count");
   const runPlanSchema = tools.find((tool: any) => tool.name === "run_plan")?.inputSchema ?? {};
-  if (runPlanSchema.properties?.steps?.maxItems !== 25 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-25 steps");
+  if (runPlanSchema.properties?.steps?.maxItems !== 200 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-200 steps");
   if (runPlanSchema.properties?.final_observation_radius?.default !== 15 || runPlanSchema.properties?.observation_radius) throw new Error("run_plan must expose only final_observation_radius");
   const serializedSteps = JSON.stringify(runPlanSchema.properties?.steps);
-  for (const action of ["wait_for_research", "validate_factory_component"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
+  for (const action of ["wait_for_research", "get_items", "build_layout", "build_block"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
+  if (/validate_factory_component|duration_seconds/.test(serializedSteps)) throw new Error("run_plan exposes the removed validation step");
   const serializedRunPlan = JSON.stringify(runPlanSchema);
   if (/"const":"(?:build_plan|start_research|stop|sleep)"|"by_name":/.test(serializedRunPlan)) throw new Error("run_plan exposes a forbidden nested step");
   const status = await request("tools/call", { name: "connect_status", arguments: {} });
@@ -99,7 +106,9 @@ try {
   const statusSchema = tools.find((tool: any) => tool.name === "plan_status")?.inputSchema?.properties ?? {};
   if (statusSchema.wait_until?.default !== "current" || statusSchema.timeout_seconds?.default !== 30
     || statusSchema.timeout_seconds?.maximum !== 60) throw new Error("plan_status bounded wait schema mismatch");
-  console.log("PASS initialize, exact 25 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
+  const eventSchema = tools.find((tool: any) => tool.name === "next_event")?.inputSchema?.properties ?? {};
+  if (eventSchema.timeout_seconds?.minimum !== 1 || eventSchema.timeout_seconds?.maximum !== 120 || !eventSchema.since_tick) throw new Error("next_event must take timeout_seconds 1-120 and since_tick");
+  console.log("PASS initialize, exact 31 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
   }
 } finally {
   child.kill();

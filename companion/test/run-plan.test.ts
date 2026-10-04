@@ -15,7 +15,8 @@ describe("current queued-plan protocol", () => {
     await expect(handlers.run_plan!({ steps: [{ action: "walk_to", x: 0, y: 0, sleep: 1 }] })).rejects.toThrow();
     expect(provider).not.toHaveBeenCalled();
     expect(runPlanSchema.safeParse({ steps: [] }).success).toBe(false);
-    expect(runPlanSchema.safeParse({ steps: Array(26).fill({ action: "walk_to", x: 0, y: 0 }) }).success).toBe(false);
+    expect(runPlanSchema.safeParse({ steps: Array(200).fill({ action: "walk_to", x: 0, y: 0 }) }).success).toBe(true);
+    expect(runPlanSchema.safeParse({ steps: Array(201).fill({ action: "walk_to", x: 0, y: 0 }) }).success).toBe(false);
     expect(runPlanSchema.parse({ steps: [{ action: "craft_items", recipe: "gear", crafts: 1 }] }).steps[0]).toMatchObject({ crafts: 1, wait_for_completion: true });
     expect(runPlanSchema.safeParse({ steps: [{ action: "craft_items", recipe: "gear", count: 1 }] }).success).toBe(false);
     expect(runPlanSchema.parse({ steps: [{ action: "mine", x: 0, y: 0 }] }).steps[0]).toMatchObject({ count: 1 });
@@ -29,10 +30,10 @@ describe("current queued-plan protocol", () => {
     const call = vi.fn(async () => ({ plan_id: 8 }));
     const handlers: Record<string, (args: unknown) => Promise<any>> = {};
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, async () => ({ call } as unknown as Bridge), validConfig);
-    const output = await handlers.queue_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "full" });
+    const output = await handlers.queue_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "compact" });
     expect(output.structuredContent).toMatchObject({ plan_id: 8, status: "queued", terminal: false,
-      next_action: { tool: "plan_status", arguments: { plan_id: 8, wait_until: "progress", timeout_seconds: 30 } } });
-    expect(call).toHaveBeenCalledWith("queue_plan", queuePlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "full" }));
+      next_action: { tool: "next_event", arguments: { timeout_seconds: 60 } } });
+    expect(call).toHaveBeenCalledWith("queue_plan", queuePlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "compact" }));
   });
 
   it("accepts exact grounded pickup steps and rejects incomplete targets", () => {
@@ -45,7 +46,25 @@ describe("current queued-plan protocol", () => {
     expect(queuePlanSchema.safeParse({ steps: [{ action: "walk_to", x: 1, y: 2, arrival_radius: 7 }] }).success).toBe(false);
     expect(queuePlanSchema.safeParse({ steps: [{ action: "wait_for_research", technology: "automation", timeout_seconds: 30 }] }).success).toBe(true);
     expect(queuePlanSchema.safeParse({ steps: [{ action: "validate_factory_component", source_tick: 4,
-      positions: [{ x: 1, y: 2 }], duration_seconds: 30 }] }).success).toBe(true);
+      positions: [{ x: 1, y: 2 }] }] }).success).toBe(false);
+  });
+
+  it("accepts the goal-level steps and auto_supply, and checks a layout's anchor or site", () => {
+    const layout = { action: "build_layout", entities: [{ name: "stone-furnace", dx: 0, dy: 2, direction: 0 }],
+      connections: [{ kind: "belt", prototype: "transport-belt", from: { dx: 0, dy: 0 }, to: { dx: 4, dy: 0 } }] };
+    const parsed = queuePlanSchema.parse({ steps: [
+      { action: "get_items", item: "iron-gear-wheel", count: 10 },
+      { ...layout, anchor: { x: 10, y: 20 } },
+      { ...layout, site: { near: { x: 0, y: 0 }, on_resource: "iron-ore" } },
+      { action: "build_block", block: "mining", count: 4, resource: "iron-ore", near: { x: 5, y: 5 } },
+      { action: "place_entity", name: "wooden-chest", x: 1, y: 1, auto_supply: false },
+      { action: "insert_items", x: 1, y: 1, items: { coal: 5 }, auto_supply: true },
+    ] });
+    expect(parsed.steps.map((step) => step.action)).toEqual(["get_items", "build_layout", "build_layout", "build_block", "place_entity", "insert_items"]);
+    expect(queuePlanSchema.safeParse({ steps: [layout] }).success).toBe(false);
+    expect(queuePlanSchema.safeParse({ steps: [{ ...layout, anchor: { x: 0, y: 0 }, site: { near: { x: 0, y: 0 } } }] }).success).toBe(false);
+    expect(queuePlanSchema.safeParse({ steps: [{ ...layout, anchor: { x: 0, y: 0 }, check_only: true }] }).success).toBe(false);
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "build_block", block: "rails", count: 1 }] }).success).toBe(false);
   });
 
   it("preserves exact inserter input and output targets through queued plans", () => {
@@ -124,17 +143,15 @@ describe("current queued-plan protocol", () => {
     expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status", "cancel", "plan_status"]);
   });
 
-  it("preserves structured split selector identities in a failed terminal bridge response", async () => {
+  it("preserves a structured failure result in a failed terminal bridge response", async () => {
     const positions = [{ x: 0, y: 0 }, { x: 2, y: 0 }];
-    const selector = { code: "FACTORY_COMPONENT_SPLIT", stage: "selector",
-      component_signatures_by_position: positions.map((position, i) => ({ position,
-        component_id: `component-${i + 1}`, component_signature: `exact-component-${i + 1}` })) };
+    const selector = { code: "LAYOUT_PARTIAL", failed: positions.map((position, index) => ({ index, code: "BLOCKED", position })) };
     const terminal = { plan_id: 17, status: "failed", completed_steps: 0,
-      outcomes: [{ step: 1, action: "validate_factory_component", status: "failed",
-        error: "FACTORY_COMPONENT_SPLIT", result: selector }] };
+      outcomes: [{ step: 1, action: "build_layout", status: "failed",
+        error: "LAYOUT_PARTIAL", result: selector }] };
     const call = vi.fn(async (method: string) => method === "queue_plan" ? { plan_id: 17 } : terminal);
     const result = await executeRunPlan({ call } as unknown as Bridge, runPlanSchema.parse({ steps: [
-      { action: "validate_factory_component", source_tick: 300, positions, duration_seconds: 1 },
+      { action: "build_layout", anchor: { x: 0, y: 0 }, entities: positions.map(({ x, y }) => ({ name: "stone-furnace", dx: x, dy: y })) },
       { action: "walk_to", x: 3, y: 0 },
     ] }));
     expect(result).toEqual(terminal);
@@ -198,21 +215,20 @@ describe("run_plan and direct tools under a human hold", () => {
     expect(now).toBe(DEFAULT_TASK_TIMEOUT_MS);
   });
 
-  it("run_plan charges only unheld time and still cancels a plan stalled past it", async () => {
+  it("run_plan returns a plan still running at the call limit without cancelling it: the mod owns its budget", async () => {
     let now = 0;
     const clock: TaskClock = { now: () => now, sleep: async (ms) => { now += ms; } };
-    const cancelled = { plan_id: 32, status: "cancelled", outcomes: [] };
-    let cancelledAt: number | undefined;
     // An earlier plan's sticky human_control must not count as a current hold.
-    const call = vi.fn(async (method: string) => {
-      if (method === "queue_plan") return { plan_id: 32 };
-      if (method === "cancel") { cancelledAt = now; return { cancelled: 1 }; }
-      return cancelledAt !== undefined ? cancelled
-        : { plan_id: 32, status: "running", outcomes: [], human_control: true, fifo: { human_control: false } };
-    });
+    const call = vi.fn(async (method: string) => method === "queue_plan" ? { plan_id: 32 }
+      : method === "cancel" ? { cancelled: 1 }
+      : { plan_id: 32, status: "running", outcomes: [], human_control: true, fifo: { human_control: false } });
     const result = await executeRunPlan({ call } as unknown as Bridge, steps, undefined, clock);
-    expect(result.status).toBe("cancelled");
-    expect(cancelledAt).toBe(DEFAULT_TASK_TIMEOUT_MS);
+    expect(result).toMatchObject({ plan_id: 32, status: "running",
+      wait: { condition: "terminal", timed_out: true, waited_ms: DEFAULT_TASK_TIMEOUT_MS } });
+    expect(result).not.toHaveProperty("human_control");
+    expect(result.summary).toMatch(/570 s call limit; nothing was cancelled and the mod enforces the plan's own budget/);
+    expect(call.mock.calls.map(([method]) => method)).not.toContain("cancel");
+    expect(now).toBe(DEFAULT_TASK_TIMEOUT_MS);
   });
 
   it("run_plan reports the latest sample: a plan running long after a hold ended is not reported as held", async () => {
@@ -227,7 +243,7 @@ describe("run_plan and direct tools under a human hold", () => {
       wait: { condition: "terminal", timed_out: true, waited_ms: DEFAULT_TASK_TIMEOUT_MS } });
     expect(result).not.toHaveProperty("human_control");
     expect(result.summary).not.toMatch(/a human holds the body/);
-    expect(result.summary).toMatch(/earlier human hold delayed it; nothing was cancelled, so wait with plan_status/);
+    expect(result.summary).toMatch(/earlier human hold delayed it; nothing was cancelled, so wait with next_event/);
     expect(call.mock.calls.map(([method]) => method)).not.toContain("cancel");
   });
 
@@ -270,7 +286,7 @@ describe("run_plan and direct tools under a human hold", () => {
       const ran = await settle(handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] }));
       expect(ran.isError).toBe(false);
       expect(ran.structuredContent).toMatchObject({ plan_id: 51, status: "queued", terminal: false, human_control: true,
-        next_action: { tool: "plan_status", arguments: { plan_id: 51, wait_until: "terminal", timeout_seconds: 60 } } });
+        next_action: { tool: "next_event", arguments: { timeout_seconds: 60 } } });
       expect(ran.content[0].text).toContain("nothing was cancelled");
       expect(methods).not.toContain("cancel");
     } finally { vi.useRealTimers(); }

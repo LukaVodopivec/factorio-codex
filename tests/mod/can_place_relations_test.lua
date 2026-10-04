@@ -105,8 +105,8 @@ local range_edge = spatial.can_place({ placements = {
   { item = "burner-inserter", position = { x = 30.75, y = 0.5 } },
   { item = "burner-inserter", position = { x = 29, y = 0.5 }, direction = 12 },
 } }).results
-check(not range_edge[1].can_place and range_edge[2].output_lands_on == false,
-  "planned recipient centre beyond local range is omitted like an existing recipient")
+check(range_edge[1].can_place and range_edge[2].output_lands_on and range_edge[2].output_lands_on.batch_index == 0,
+  "a planned recipient beyond 30 tiles of Codex still resolves: can_place works anywhere charted")
 force.is_chunk_charted = function(_, chunk) return chunk.x == 0 end
 local chart_edge = spatial.can_place({ placements = {
   { item = "burner-inserter", position = { x = -0.05, y = 0.5 } },

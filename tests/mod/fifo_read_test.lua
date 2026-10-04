@@ -11,7 +11,7 @@ _G.storage = { rpc_outbox = { next_id = 1, by_id = {} } }
 _G.game = { tick = 6000 }
 _G.defines = { events = setmetatable({}, { __index = function(_, key) return key end }) }
 _G.script = {
-  active_mods = { ["agentic-companion"] = "0.20.0", base = "2.0.0" },
+  active_mods = { ["agentic-companion"] = "0.21.0", base = "2.0.0" },
   on_init = function() end, on_configuration_changed = function() end,
   on_event = function() end, on_nth_tick = function() end,
 }

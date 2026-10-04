@@ -1,9 +1,11 @@
 -- Building actions: place, rotate, set_recipe. Each approaches its target
 -- first (build_distance for place, reach_distance otherwise).
 local companion = require("scripts.companion")
+local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
 local output_targets = require("scripts.output_target")
 local placement_geometry = require("scripts.placement_geometry")
+local supply = require("scripts.actions.supply")
 
 local M = {}
 
@@ -80,7 +82,73 @@ local function pairing_note(pairing)
 end
 M.pairing_note = pairing_note
 
+-- ------------------------------------------------- footprint housekeeping
+
+-- Trees and rocks never stop a placement: the body mines them first, one by
+-- one, through the ordinary physical mine action. Returns "ok" once the
+-- footprint holds none, nil while clearing, or a failed result.
+local MAX_CLEARS = 16
+local NATURAL_BLOCKERS = { "simple-entity", "tree" }
+local function natural_blocker(c, area)
+  local ok, found = pcall(c.surface.find_entities_filtered, { area = area, type = NATURAL_BLOCKERS })
+  if not ok or type(found) ~= "table" then return nil end
+  for _, e in ipairs(found) do
+    local ok_minable, minable = pcall(function()
+      return e.valid and e.force ~= c.force and e.prototype.mineable_properties.minable
+    end)
+    if ok_minable and minable and (not e.bounding_box or placement_geometry.overlaps(area, e.bounding_box)) then return e end
+  end
+  return nil
+end
+
+function M.clear_footprint(task, c, proto, position, direction)
+  if task._clear then
+    local result = supply.step(task, "_clear")
+    if not result then return nil end
+    if result.status ~= "done" then
+      return { status = "failed", detail = "couldn't clear the placement footprint: " .. tostring(result.detail) }
+    end
+  end
+  if task.auto_clear == false then return "ok" end
+  local blocker = natural_blocker(c, placement_geometry.footprint(proto, position, direction))
+  if not blocker then task._clears = nil; return "ok" end
+  task._clears = (task._clears or 0) + 1
+  if task._clears > MAX_CLEARS then
+    return { status = "failed", detail = string.format("the placement footprint still holds %s after clearing %d trees and rocks",
+      blocker.name, MAX_CLEARS) }
+  end
+  local ok, err = pcall(supply.begin, task, "_clear", { type = "mine", entity = blocker, count = 1,
+    target = { x = blocker.position.x, y = blocker.position.y }, target_kind = "natural" })
+  if not ok then
+    return { status = "failed", detail = string.format("couldn't clear %s from the placement footprint: %s", blocker.name, tostring(err)) }
+  end
+  return nil
+end
+
+-- A spot beside the placement footprint where the body stands clear of it,
+-- nearest first; nil when none is found.
+function M.footprint_exit(c, proto, position, direction)
+  local area = placement_geometry.footprint(proto, position, direction)
+  local p, lt, rb = c.position, area.left_top, area.right_bottom
+  local candidates = { { x = p.x, y = lt.y - 2 }, { x = p.x, y = rb.y + 2 },
+    { x = lt.x - 2, y = p.y }, { x = rb.x + 2, y = p.y } }
+  table.sort(candidates, function(a, b)
+    local da = (a.x - p.x) ^ 2 + (a.y - p.y) ^ 2
+    local db = (b.x - p.x) ^ 2 + (b.y - p.y) ^ 2
+    if da ~= db then return da < db end
+    return a.y == b.y and a.x < b.x or a.y < b.y
+  end)
+  for _, candidate in ipairs(candidates) do
+    local ok, clear = pcall(c.surface.find_non_colliding_position, c.name or "character", candidate, 0.5, 0.1)
+    if ok and clear and not placement_geometry.overlaps(area,
+      { left_top = { x = clear.x - 1.25, y = clear.y - 1.25 }, right_bottom = { x = clear.x + 1.25, y = clear.y + 1.25 } }) then
+      return { x = clear.x, y = clear.y }
+    end
+  end
+end
+
 M.place = {}
+M.place.resume = supply.resume
 
 function M.place.start(task)
   local c = companion.require_companion()
@@ -98,7 +166,7 @@ function M.place.start(task)
   if not result then
     error(task.item .. " is not a placeable item")
   end
-  if c.get_item_count(task.item) == 0 then
+  if c.get_item_count(task.item) == 0 and task.auto_supply == false then
     error("I don't have any " .. task.item .. " in my inventory — craft or collect one first")
   end
   task.direction = math.floor(tonumber(task.direction) or 0) % 16
@@ -176,6 +244,23 @@ function M.place.tick(task)
     }
   end
 
+  -- Auto-supply (default on): fetch the item once, up to a stack.
+  if c.get_item_count(task.item) == 0 and task.auto_supply ~= false and not task._supplied then
+    local supplied = supply.ensure(task, { { name = task.item, count = 1 } }, { bulk = true })
+    if not supplied then return nil end
+    task._supplied = true
+    if supplied.status ~= "done" then
+      return { status = "failed", detail = "can't place " .. task.item .. ": " .. tostring(supplied.detail),
+        outcome = supplied.outcome }
+    end
+  end
+
+  local proto = prototypes.item[task.item].place_result
+  -- A tree or rock being cleared moves the body: finish that first.
+  if task._clear then
+    local cleared = M.clear_footprint(task, c, proto, task.position, task.direction)
+    if cleared ~= "ok" then return cleared end
+  end
   local reached = approach.ensure(task, c, task.position, c.build_distance)
   if type(reached) == "table" then return reached end
   if reached ~= "ok" then return nil end
@@ -183,6 +268,8 @@ function M.place.tick(task)
   if c.get_item_count(task.item) == 0 then
     return { status = "failed", detail = "I no longer have any " .. task.item .. " in my inventory" }
   end
+  local cleared = M.clear_footprint(task, c, proto, task.position, task.direction)
+  if cleared ~= "ok" then return cleared end
 
   local expected_input, expected_output
   if task._input_target then
@@ -237,6 +324,8 @@ function M.place.tick(task)
     }
   end
   c.remove_item({ name = task.item, count = 1 })
+  -- raise_built also reaches the registry; add is idempotent.
+  pcall(registry.add, built)
   if expected_input or expected_output then
     task._placed_entity, task._placed_tick = built, game.tick
     task._expected_input, task._expected_output = expected_input, expected_output

@@ -34,7 +34,6 @@ function ledger() {
         completion_condition: "a functional platform sustains ordinary operation", essential_prerequisite: "rocket capacity" },
     },
     assumptions: [],
-    pilot_plan_ids: { current_plan_id: null, queued_successor_plan_id: null, predecessor_plan_id: null },
     build_packages: [] as unknown[],
   };
 }
@@ -44,7 +43,7 @@ function envelope(sourceTick = 100) {
   return { run_id: current.run.id, save_identity: current.run.save_identity, source_tick: sourceTick,
     update: { phase: current.phase, bottleneck: current.bottleneck,
       latest_measured_capacity: current.latest_measured_capacity, task_list: current.task_list,
-      assumptions: current.assumptions, pilot_plan_ids: current.pilot_plan_ids, build_packages: [] as unknown[] } };
+      assumptions: current.assumptions, build_packages: [] as unknown[] } };
 }
 
 function initialization(sourceTick: number | null = 100) {
@@ -212,7 +211,7 @@ describe("compact strategist operations ledger", () => {
   });
 });
 
-describe("validated build packages", () => {
+describe("build packages the bridge queues", () => {
   const drillPair = (id = "coal-drill-furnace", tick = 100) => ({
     package_id: id, serves: "NOW" as const, intent: "burner drill feeding a stone furnace on the nearest iron patch",
     after_package_id: null, source_tick: tick, anchor: { x: 40, y: -30 },
@@ -222,11 +221,11 @@ describe("validated build packages", () => {
       { action: "place_entity", x: 45, y: -32, name: "burner-mining-drill", direction: 8, output_target: { x: 45, y: -30 } },
       { action: "insert_items", x: 45, y: -32, items: { coal: 5 } },
     ],
-    validated_place_steps: [0, 1], success_check: "furnace receives ore from the drill without a character transfer",
+    success_check: "furnace receives ore from the drill",
   });
   const withPackages = (packages: unknown[], tick = 101) => ({ ...envelope(tick), update: { ...envelope(tick).update, build_packages: packages } });
 
-  it("stores up to two validated packages and keeps old ledgers without the field valid", () => {
+  it("stores up to two packages and keeps old ledgers without the field valid", () => {
     const second = { ...drillPair("fuel-loop"), serves: "NEXT" as const, after_package_id: "coal-drill-furnace" };
     const reduced = reduceLedger(ledger(), withPackages([drillPair(), second]));
     expect(reduced.result).toMatchObject({ status: "applied", revision: 1 });
@@ -235,35 +234,29 @@ describe("validated build packages", () => {
     expect(reduceLedger(older, envelope(101)).result).toMatchObject({ status: "applied" });
   });
 
-  it("accepts a segment package that ends by waiting for output and validating the component", () => {
-    const validated = { ...drillPair(), steps: [...drillPair().steps,
-      { action: "wait_for_item", x: 45, y: -30, inventory: "output", item: "iron-plate", count: 2, timeout_seconds: 120 },
-      { action: "validate_factory_component", source_tick: 100, positions: [{ x: 45, y: -30 }], duration_seconds: 60 }] };
-    expect(reduceLedger(ledger(), withPackages([validated])).result).toMatchObject({ status: "applied", revision: 1 });
-  });
-
-  it("accepts a package that empties and removes one owned entity it supersedes", () => {
-    const removal = { ...drillPair(), steps: [...drillPair().steps,
-      { action: "extract_items", x: 48, y: -30, items: { "iron-plate": 10 } },
-      { action: "mine", x: 48, y: -30, target_kind: "owned", expected_name: "wooden-chest" }] };
-    const reduced = reduceLedger(ledger(), withPackages([removal]));
+  it("accepts goal-level packages of any plan action, up to 200 steps", () => {
+    const blocks = { ...drillPair(), steps: [
+      { action: "get_items", item: "stone-furnace", count: 8 },
+      { action: "build_block", block: "smelting", count: 8, near: { x: 40, y: -30 } },
+      { action: "build_layout", anchor: { x: 40, y: -40 }, entities: [{ name: "burner-mining-drill", dx: 0, dy: 0, direction: 8 }] },
+      { action: "walk_to", x: 1, y: 2 }, { action: "craft_items", recipe: "iron-chest", crafts: 2 },
+      { action: "mine", x: 48, y: -30 }] };
+    const reduced = reduceLedger(ledger(), withPackages([blocks]));
     expect(reduced.result).toMatchObject({ status: "applied", revision: 1 });
     expect(reduced.ledger?.build_packages[0].steps.at(-1)).toMatchObject({ action: "mine", count: 1, allow_fluid_loss: false });
+    const long = { ...drillPair(), steps: Array.from({ length: 201 }, () => ({ action: "walk_to", x: 1, y: 2 })) };
+    expect(reduceLedger(ledger(), withPackages([long])).result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
   });
 
-  it("rejects package removals that are not one guarded owned entity, or that it places on", () => {
-    const mine = { action: "mine", x: 48, y: -30, target_kind: "owned", expected_name: "wooden-chest" };
-    const removal = (step: Record<string, unknown>) => ({ ...drillPair(), steps: [step], validated_place_steps: [] });
-    const { target_kind: _kind, ...untargeted } = mine;
-    const { expected_name: _name, ...unnamed } = mine;
-    for (const step of [untargeted, { ...mine, target_kind: "natural" }, unnamed, { ...mine, count: 2 }, { ...mine, allow_fluid_loss: true }]) {
-      const result = reduceLedger(ledger(), withPackages([removal(step)])).result;
-      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+  it("rejects a layout without exactly one of anchor or site, and placement on its own mine step", () => {
+    const layout = { action: "build_layout", entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] };
+    for (const step of [layout, { ...layout, anchor: { x: 0, y: 0 }, site: { near: { x: 0, y: 0 } } }]) {
+      const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), steps: [step] }])).result;
       expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("build_packages.0.steps.0")
-        && issue.includes("one owned entity"))).toBe(true);
+        && issue.includes("anchor or site"))).toBe(true);
     }
-    const replaced = { ...drillPair(), steps: [{ ...mine, x: 45, y: -30, expected_name: "wooden-chest" }, ...drillPair().steps],
-      validated_place_steps: [1, 2] };
+    const mine = { action: "mine", x: 45, y: -30, target_kind: "owned", expected_name: "wooden-chest" };
+    const replaced = { ...drillPair(), steps: [mine, ...drillPair().steps] };
     const result = reduceLedger(ledger(), withPackages([replaced])).result;
     expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("build_packages.0.steps.1")
@@ -274,16 +267,14 @@ describe("validated build packages", () => {
     const cases: Array<[unknown[], string]> = [
       [[drillPair("a"), drillPair("b"), drillPair("c")], "build_packages"],
       [[drillPair("a", 500)], "build_packages.0.source_tick"],
-      [[{ ...drillPair(), steps: [{ action: "walk_to", x: 1, y: 2 }] }], "build_packages.0.steps.0"],
-      [[{ ...drillPair(), validated_place_steps: [0] }], "build_packages.0.steps.1"],
-      [[{ ...drillPair(), validated_place_steps: [0, 1, 2] }], "build_packages.0.validated_place_steps"],
+      [[{ ...drillPair(), steps: [{ action: "validate_factory_component", source_tick: 1, positions: [{ x: 1, y: 2 }] }] }], "build_packages.0.steps.0"],
+      [[{ ...drillPair(), validated_place_steps: [0, 1] }], "validated_place_steps"],
       [[{ ...drillPair("a"), after_package_id: "a" }], "build_packages.0.after_package_id"],
       [[{ ...drillPair("a"), after_package_id: "b" }, { ...drillPair("b"), after_package_id: "a" }], "depend on themselves or on each other"],
-      [[{ ...drillPair(), steps: [{ action: "craft_items", recipe: "stone-furnace", crafts: 1 }], validated_place_steps: [] }], "build_packages.0.steps.0"],
       [[drillPair("same"), drillPair("same")], "package ids must be unique"],
       [[{ ...drillPair(), intent: "x".repeat(240), success_check: "y".repeat(240), steps: Array.from({ length: 25 }, (_, i) =>
         ({ action: "insert_items", x: i, y: i, items: Object.fromEntries(Array.from({ length: 8 }, (_, j) => [`item-${j}-${"z".repeat(20)}`, 1])) })),
-        validated_place_steps: [] }], "bytes"],
+      }], "bytes"],
     ];
     for (const [packages, path] of cases) {
       const result = reduceLedger(ledger(), withPackages(packages)).result;
@@ -299,6 +290,26 @@ describe("validated build packages", () => {
     const result = reduceLedger(ledger(), { ...envelope(101), update }).result;
     expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("update.build_packages"))).toBe(true);
+  });
+
+  it("rejects a package id the bridge already queued or failed unless it is repeated unchanged", () => {
+    const file = ledgerFile();
+    expect(applyLedgerFile(file, initialization())).toMatchObject({ status: "applied", revision: 1 });
+    expect(applyLedgerFile(file, withPackages([drillPair()], 101))).toMatchObject({ status: "applied", revision: 2 });
+    fs.writeFileSync(path.join(path.dirname(file), "package-queue.json"), JSON.stringify({ packages: {
+      "coal-drill-furnace": { status: "failed", revision: 2, at: "2026-10-04T00:00:00Z", reason: "check failed" } } }));
+    // Repeated unchanged: still the same package, accepted.
+    expect(applyLedgerFile(file, withPackages([drillPair()], 102))).toMatchObject({ status: "applied", revision: 3 });
+    // The same id with changed steps would never be queued: rejected with the path.
+    const changed = { ...drillPair(), steps: drillPair().steps.slice(0, 2) };
+    const result = applyLedgerFile(file, withPackages([changed], 103));
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("build_packages.0.package_id")
+      && issue.includes("already used (status failed)"))).toBe(true);
+    // Dropped, then listed again under the old id: rejected too.
+    expect(applyLedgerFile(file, withPackages([], 104))).toMatchObject({ status: "applied", revision: 4 });
+    expect(applyLedgerFile(file, withPackages([drillPair()], 105))).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(applyLedgerFile(file, withPackages([drillPair("coal-drill-furnace-2")], 106))).toMatchObject({ status: "applied", revision: 5 });
   });
 
   it("stores negative zero as JSON does without failing the readback", () => {

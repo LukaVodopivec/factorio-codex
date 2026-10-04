@@ -1,6 +1,6 @@
 # Agent play performance
 
-Release 0.20.0 retains each exact placed entity and validates the live output
+Release 0.21.0 retains each exact placed entity and validates the live output
 point through Factorio's 1×1 output-tile entity query rather than selection-box
 containment. Exact geometry is distinct from runtime binding: a nil
 `drop_target` is reported as pending first output, while a non-nil wrong target
@@ -24,7 +24,7 @@ one physical Codex body, one task lane, and honest Factorio mechanics.
 The prior one-shot live baseline required **22 MCP calls** for the initial
 mine/craft/place/fuel/inspect milestone. Those September 2026 measurements
 came from Linux Factorio 2.0.77 with app/mod 0.8.0 and are comparison data, not
-0.20.0 validation.
+0.21.0 validation.
 
 The next fresh-run topology has two persistent reasoning sessions and one
 physical writer. The `gpt-6-luna` pilot uses `low` reasoning with fast mode
@@ -586,6 +586,33 @@ brackets):
 - takeover: the bot parks within 1 s of the owner's input, resumes within 10 s of
   idle, and loses no plan.
 
+## 0.21.0: the mod does the chores, and the cycle-10 targets
+
+In cycle 9's first 70 minutes (0.20.0) the pilot spent 81% of its time thinking
+and the body was busy 6% of the time at `GO+20m`, with 12 machines at
+`GO+50m`. Of 298 pilot calls, 72 were `queue_plan` (mostly 1 to 3 steps), 69
+`plan_status` polls, 31 reports to Astra, 30 ledger reads, 33 notebook reads or
+writes, 21 `map_summary` and 18 `observe_local`; 5 validation waits of up to
+300 s each. The four instruction files were 53 KB, mostly protocol.
+
+0.21.0 (protocol v24) moves everything deterministic into the mod: line
+tracking replaces validation windows and proofs, `factory_status` and
+`next_event` replace polling, `get_items`, `build_layout` and `build_block`
+fetch, clear, walk and build whole blocks, upkeep refuels dry burners, and
+Astra's packages queue themselves. Pilot reports are gone, and the bots'
+reasoning summaries are shown in the game. Cycle 10 is a fresh game on the
+fixed seed, accepted against these targets (cycle 9 in brackets):
+
+- machines at `GO+60m`: 40 or more (about 14);
+- body busy 60% or more of the time (6% at `GO+20m`); a package starts within
+  5 s of Astra writing it, with no pilot turn; pilot calls per machine built
+  under 8 (about 25);
+- validation waits 0 (5); pilot reports 0 (31); ledger reads by shell 0 (30);
+- instruction files about 20 KB (53 KB);
+- no dry burner machine for more than 60 s while coal is in stock;
+- both roles' thinking visible in chat and panel, lag under 10 s;
+- server holds 60 UPS; no client drops; takeover works as in 0.20.0.
+
 ## Prior 0.8.0 structured timings
 
 All gameplay perception and action below used the Factorio MCP text surface.
@@ -653,7 +680,7 @@ not their commands, coordinates, blueprints, or exact build routes:
 
 The retained design is deliberately smaller: MCP synchronously sequences or
 immediately queues plans, Lua composes the existing physical task runners, and
-terminal plans return concise deltas unless compact/full observation is
+terminal plans return concise deltas unless a compact observation is
 explicitly requested.
 
 R5's bounded Firecrawl reuse review found maintained agent projects with deterministic
@@ -755,7 +782,7 @@ Lua contiguity, predecessor success/failure cancellation, explicit
 cancellation, and productive overlap with nonblocking hand-crafting; also
 verify TypeScript `queue_plan`/`plan_status`/`run_plan`, compact/full
 observations including exact `ground_items`, physical `pickup_items`, recipe
-disambiguation, progression, protocol v23, version 0.20.0, and exactly 25 tools.
+disambiguation, progression, protocol v24, version 0.21.0, and exactly 31 tools.
 Exercise `find_placement` at a shoreline,
 `map_summary` without charting, ambiguous and selected
 `production_requirements`, and physical belt, pipe, and power
@@ -825,7 +852,7 @@ through the existing inspection path.
 Candidate B superseded the earlier prospective wave matrix for its historical
 run series. Do not reuse its candidate labels as active topology instructions.
 The completed result below retains its exact baseline/release hashes; do not
-present historical timings as 0.20.0 benchmark results.
+present historical timings as 0.21.0 benchmark results.
 
 #### Candidate B R7 recorded result
 

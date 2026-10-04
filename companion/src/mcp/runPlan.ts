@@ -1,40 +1,63 @@
 import { z } from "zod";
-import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, ModError, TaskCancelledError, type TaskClock } from "../bridge.js";
+import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, TaskCancelledError, type TaskClock } from "../bridge.js";
 import type { Bridge } from "../bridge.js";
 import { normalizeObservation } from "./observation.js";
 
 const position = { x: z.number(), y: z.number() };
+const point = z.object(position).strict();
 const items = z.record(z.string(), z.number().int().positive());
+const offset = z.object({ dx: z.number(), dy: z.number() }).strict();
+/** Relative layout the mod sites, checks, supplies, clears and builds (build_layout). */
+export const layoutFields = {
+  anchor: point.optional(),
+  site: z.object({ near: point, on_resource: z.string().min(1).optional(), near_water: z.boolean().optional() }).strict().optional(),
+  entities: z.array(z.object({ name: z.string().min(1), dx: z.number(), dy: z.number(),
+    direction: z.number().int().min(0).max(15).optional(), recipe: z.string().min(1).optional() }).strict()).min(1).max(100),
+  connections: z.array(z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string().min(1),
+    from: offset, to: offset }).strict()).max(32).optional(),
+};
+/** Parametric block expanded by the mod into a layout (build_block). */
+export const blockFields = {
+  block: z.enum(["mining", "smelting", "assembly", "power", "labs"]),
+  count: z.number().int().min(1).max(32),
+  resource: z.string().min(1).optional(),
+  recipe: z.string().min(1).optional(),
+  near: point.optional(),
+};
+const autoSupply = { auto_supply: z.boolean().optional() };
 export const planStepSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("walk_to"), ...position,
     arrival_mode: z.enum(["exact", "vicinity"]).default("exact"),
     arrival_radius: z.number().min(0.5, "arrival_radius is 0.5–6 tiles").max(6, "arrival_radius is 0.5–6 tiles; for a farther goal walk to the target and use vicinity arrival").default(1) }).strict(),
   z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict(),
   z.object({ action: z.literal("pickup_items"), ...position, item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
-  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: z.object(position).strict().optional(), output_target: z.object(position).strict().optional(), belt_to_ground_type: z.enum(["input", "output"]).optional() }).strict(),
+  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: point.optional(), output_target: point.optional(), belt_to_ground_type: z.enum(["input", "output"]).optional(), ...autoSupply }).strict(),
   z.object({ action: z.literal("craft_items"), recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict(),
-  z.object({ action: z.literal("insert_items"), ...position, items }).strict(),
+  z.object({ action: z.literal("insert_items"), ...position, items, ...autoSupply }).strict(),
   z.object({ action: z.literal("extract_items"), ...position, items: items.optional() }).strict(),
   z.object({ action: z.literal("set_recipe"), ...position, recipe: z.string() }).strict(),
   z.object({ action: z.literal("rotate_entity"), ...position, direction: z.number().int().min(0).max(15).optional() }).strict(),
-  z.object({ action: z.literal("inspect_entities"), positions: z.array(z.object(position).strict()).min(1).max(16) }).strict(),
+  z.object({ action: z.literal("inspect_entities"), positions: z.array(point).min(1).max(16) }).strict(),
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("wait_for_research"), technology: z.string().min(1), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
-  z.object({ action: z.literal("validate_factory_component"), source_tick: z.number().int().nonnegative(),
-    positions: z.array(z.object(position).strict()).min(1, "give 1-16 exact node positions; they only identify the component")
-      .max(16, "give 1-16 exact node positions; they only identify the component, and one position validates the whole component"),
-    duration_seconds: z.number().min(1).max(300).default(60) }).strict(),
+  z.object({ action: z.literal("get_items"), item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
+  z.object({ action: z.literal("build_layout"), ...layoutFields }).strict(),
+  z.object({ action: z.literal("build_block"), ...blockFields }).strict(),
 ]);
+export const MAX_PLAN_STEPS = 200;
 export const queuePlanSchema = z.object({
-  steps: z.array(planStepSchema).min(1).max(25),
+  steps: z.array(planStepSchema).min(1).max(MAX_PLAN_STEPS),
   final_observation_radius: z.number().int().min(5, "final_observation_radius is an integer 5–30 (default 15)").max(30, "final_observation_radius is an integer 5–30 (default 15)").default(15),
-  observation_detail: z.enum(["none", "compact", "full"]).default("none"),
+  observation_detail: z.enum(["none", "compact"]).default("none"),
   after_plan_id: z.number().int().positive().optional(),
 }).strict().superRefine((plan, context) => {
   plan.steps.forEach((step, index) => {
     if (step.action === "walk_to" && step.arrival_mode === "exact" && step.arrival_radius !== 1) {
       context.addIssue({ code: "custom", path: ["steps", index, "arrival_radius"],
         message: "exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius" });
+    }
+    if (step.action === "build_layout" && (step.anchor === undefined) === (step.site === undefined)) {
+      context.addIssue({ code: "custom", path: ["steps", index], message: "build_layout takes exactly one of anchor or site" });
     }
   });
 });
@@ -111,14 +134,18 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
         return status;
       }
       if (budget.remaining() <= 0) {
-        if (!budget.parked()) throw new ModError("run_plan gave up after 570s");
-        // Credited hold time is left: report the latest read, not the plan's sticky hold marker.
+        // The call returns before the MCP timeout but never cancels: the mod
+        // owns the plan's active budget (up to 12 s per step, so a large
+        // build_layout or build_block may run well past 570 s). Report the
+        // latest read, not the plan's sticky hold marker.
         const { human_control: _sticky, ...latest } = status;
         return { ...latest, ...(budget.holding ? { human_control: true } : {}),
           wait: { condition: "terminal", timed_out: true, waited_ms: Math.max(0, clock.now() - started) },
           summary: budget.holding
-            ? `plan ${plan_id} is still ${status.status}: a human holds the body, so nothing was cancelled; it runs in order once they are idle, so wait with plan_status`
-            : `plan ${plan_id} is still ${status.status} at the call time limit after an earlier human hold delayed it; nothing was cancelled, so wait with plan_status` };
+            ? `plan ${plan_id} is still ${status.status}: a human holds the body, so nothing was cancelled; it runs in order once they are idle, so wait with next_event`
+            : budget.parked()
+              ? `plan ${plan_id} is still ${status.status} at the call time limit after an earlier human hold delayed it; nothing was cancelled, so wait with next_event`
+              : `plan ${plan_id} is still ${status.status} at the 570 s call limit; nothing was cancelled and the mod enforces the plan's own budget, so wait with next_event` };
       }
       await clock.sleep(Math.min(1_000, budget.remaining()));
     }

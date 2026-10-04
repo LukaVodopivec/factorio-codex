@@ -1,20 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
 import { MCP_SERVER_VERSION, registerMcpTools } from "../src/mcp/server.js";
-import { normalizeCanPlace, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
+import { normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
 import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v23 DTO and tool registry", () => {
-  it("declares v23 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(23);
-    expect(MCP_SERVER_VERSION).toBe("0.20.0");
-    expect(RPC_METHODS).toHaveLength(19);
-    expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities"]));
+describe("protocol v24 DTO and tool registry", () => {
+  it("declares v24 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(24);
+    expect(MCP_SERVER_VERSION).toBe("0.21.0");
+    expect(RPC_METHODS).toHaveLength(26);
+    expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
+      "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now"]));
   });
 
-  it("registers exactly 25 tools and forwards exact v23 payloads", async () => {
+  it("registers exactly 31 tools and forwards exact v24 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -23,7 +24,7 @@ describe("protocol v23 DTO and tool registry", () => {
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(25);
+    expect(Object.keys(handlers)).toHaveLength(31);
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
     await handlers.find_placement(find);
@@ -35,6 +36,8 @@ describe("protocol v23 DTO and tool registry", () => {
     const place = schemas.place_entity.parse({ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
     await handlers.place_entity(place);
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 1, y: 2 }, direction: undefined, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
+    await handlers.place_entity({ ...place, auto_supply: false });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith(expect.objectContaining({ type: "place", auto_supply: false }));
     const build = schemas.build_plan.parse({ steps: [{ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
     await handlers.build_plan(build);
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
@@ -183,10 +186,14 @@ describe("protocol v23 DTO and tool registry", () => {
     expect(normalizeInspection({ entities: [{ name: "drill", type: "mining-drill", drop_target: false }] }).entities[0].drop_target).toBeNull();
     expect(normalizeMapSummary({ resources: {}, water_edges: {}, factory_landmarks: {} })).toMatchObject({ resources: [], water_edges: [], factory_landmarks: [] });
     expect(normalizeMapSummary({ factory: { groups: {}, force_flows: {}, character_transfers: {
-      inserted_items: {}, extracted_items: {}, target_actions: {}, events: {}, validations: {},
+      inserted_items: {}, extracted_items: {}, target_actions: {}, events: {},
     } } })).toMatchObject({ factory: { groups: [], force_flows: [], character_transfers: {
-      inserted_items: [], extracted_items: [], target_actions: [], events: [], validations: [],
+      inserted_items: [], extracted_items: [], target_actions: [], events: [],
     } } });
+    expect(normalizeFactoryStatus({ lines: {}, problems: {}, power: {}, patches: {}, stock: [{ item: "coal", holders: {} }],
+      research: { available: {}, queue: {} }, body: { inventory_summary: [] } })).toEqual({ lines: [], problems: [], power: [], patches: [],
+      stock: [{ item: "coal", holders: [] }], research: { available: [], queue: [] }, body: { inventory_summary: {} } });
+    expect(normalizeActivityLog({ tick: 5, entries: {}, omitted: 0 })).toEqual({ tick: 5, entries: [], omitted: 0 });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);
     expect(normalizePhysicalRoute({ steps: {} }).steps).toEqual([]);
   });

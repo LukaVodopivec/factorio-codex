@@ -5,8 +5,8 @@ export const toolPayloads = {
   mine: ({ x, y, count, target_kind, allow_fluid_loss, expected_name, observed_tick }: { x: number; y: number; count?: number; target_kind?: "natural" | "owned"; allow_fluid_loss?: boolean; expected_name?: string; observed_tick?: number }) => ({ target: { x, y }, count, ...(target_kind ? { target_kind } : {}), ...(allow_fluid_loss ? { allow_fluid_loss: true } : {}), ...(expected_name ? { expected_name } : {}), ...(observed_tick === undefined ? {} : { observed_tick }) }),
   pickup: ({ x, y, item, count }: { x: number; y: number; item: string; count: number }) => ({ target: { x, y }, item, count }),
   craft: ({ recipe, crafts, wait_for_completion }: { recipe: string; crafts: number; wait_for_completion?: boolean }) => ({ recipe, count: crafts, ...(wait_for_completion === undefined ? {} : { wait_for_completion }) }),
-  place: ({ x, y, name, direction, input_target, output_target, belt_to_ground_type }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; belt_to_ground_type?: "input" | "output" }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}), ...(belt_to_ground_type ? { belt_to_ground_type } : {}) }),
-  insert: ({ x, y, items: values }: { x: number; y: number; items: Record<string, number> }) => ({ target: { x, y }, items: values }),
+  place: ({ x, y, name, direction, input_target, output_target, belt_to_ground_type, auto_supply }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; belt_to_ground_type?: "input" | "output"; auto_supply?: boolean }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}), ...(belt_to_ground_type ? { belt_to_ground_type } : {}), ...(auto_supply === undefined ? {} : { auto_supply }) }),
+  insert: ({ x, y, items: values, auto_supply }: { x: number; y: number; items: Record<string, number>; auto_supply?: boolean }) => ({ target: { x, y }, items: values, ...(auto_supply === undefined ? {} : { auto_supply }) }),
   extract: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y }, all: true }) : ({ target: { x, y }, items: values }),
   recipe: ({ x, y, recipe }: { x: number; y: number; recipe: string }) => ({ target: { x, y }, recipe }),
   rotate: ({ x, y, direction }: { x: number; y: number; direction?: number }) => ({ target: { x, y }, direction }),
@@ -48,7 +48,7 @@ export function normalizeCanPlace(value: any, placements: Array<{ name: string; 
   }) };
 }
 
-function luaArray(value: unknown): unknown[] {
+export function luaArray(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   if (value && typeof value === "object" && Object.keys(value).length === 0) return [];
   return value as unknown[];
@@ -134,10 +134,29 @@ export function normalizeMapSummary(value: any): any {
       ...(transfers ? { character_transfers: { ...transfers,
         inserted_items: luaArray(transfers.inserted_items), extracted_items: luaArray(transfers.extracted_items),
         target_actions: luaArray(transfers.target_actions), events: luaArray(transfers.events),
-        validations: luaArray(transfers.validations),
       } } : {}),
     } } : {}),
   };
+}
+
+// A Lua record serialized empty may arrive as [].
+const record = (value: unknown) => Array.isArray(value) && value.length === 0 ? {} : value;
+
+export function normalizeFactoryStatus(value: any): any {
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = { ...value };
+  for (const key of ["lines", "problems", "power", "patches"]) if (value[key] !== undefined) out[key] = luaArray(value[key]);
+  if (value.stock !== undefined) out.stock = luaArray(value.stock).map((row: any) =>
+    row && typeof row === "object" ? { ...row, holders: luaArray(row.holders) } : row);
+  if (value.research && typeof value.research === "object") out.research = { ...value.research,
+    available: luaArray(value.research.available),
+    ...(value.research.queue === undefined ? {} : { queue: luaArray(value.research.queue) }) };
+  if (value.body && typeof value.body === "object") out.body = { ...value.body, inventory_summary: record(value.body.inventory_summary) };
+  return out;
+}
+
+export function normalizeActivityLog(value: any): any {
+  return value && typeof value === "object" ? { ...value, entries: luaArray(value.entries) } : value;
 }
 
 export function normalizeProductionRequirements(value: any): any {

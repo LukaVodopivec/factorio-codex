@@ -12,6 +12,12 @@ local production_requirements = require("scripts.production_requirements")
 local connect_entities = require("scripts.connect_entities")
 local run_snapshot = require("scripts.run_snapshot")
 local human_inputs = require("scripts.human_inputs")
+local autonomy = require("scripts.autonomy")
+local factory_status = require("scripts.factory_status")
+local thoughts = require("scripts.thoughts")
+local chores = require("scripts.chores")
+local registry = require("scripts.registry")
+local timing = require("scripts.profiler")
 
 -- Every read-only RPC result carries the body's FIFO state from the same Lua
 -- read, so a reader sees an idle body without another round trip.
@@ -50,7 +56,7 @@ end
 
 rpc.register("ping", read(function()
   return {
-    protocol_version = 23,
+    protocol_version = 24,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
@@ -76,6 +82,10 @@ rpc.register("get_task", read(tasks.get))
 rpc.register("queue_plan", tasks.queue_plan)
 rpc.register("plan_status", read(tasks.plan_status))
 rpc.register("cancel", tasks.cancel)
+rpc.register("factory_status", read(factory_status.factory_status))
+rpc.register("activity_log", read(tasks.activity_log))
+rpc.register("event_state", factory_status.event_state)
+thoughts.register_rpcs(rpc)
 -- get_chunk is registered inside rpc.lua itself.
 
 remote.add_interface("agentic", {
@@ -92,21 +102,84 @@ local function initialize()
     companion.on_player_available({ player_index = player.index })
   end
   companion.enforce_normal_speed()
+  -- An upgrade keeps the old version's GUI elements: rebuild the panel.
+  thoughts.init()
 end
 tasks.set_observer(spatial.observe_local)
 
 script.on_init(initialize)
 script.on_configuration_changed(initialize)
-script.on_nth_tick(120, function()
-  companion.update_map_tag()
-end)
-script.on_event(defines.events.on_tick, function(event)
+-- One handler per period: on_nth_tick replaces an earlier registration.
+-- chores.on_nth is {[period] = function(event)}.
+local nth = { [120] = { function() companion.update_map_tag() end } }
+for period, handler in pairs(chores.on_nth) do
+  nth[period] = nth[period] or {}
+  table.insert(nth[period], handler)
+end
+for period, handlers in pairs(nth) do
+  script.on_nth_tick(period, function(event)
+    timing.measure(function()
+      for _, handler in ipairs(handlers) do handler(event) end
+    end)
+  end)
+end
+-- Tick work is bounded by item budgets: the registry bootstrap and then the
+-- patch cache read a few chunks a tick, the line sampler about machines/30.
+local function tick(event)
   tasks.on_tick(event)
+  registry.on_tick(event.tick)
+  -- Patch work starts the tick after the registry is ready, never on the
+  -- tick that finishes the bootstrap and runs the first line refresh.
+  if registry.ready() and (storage.registry.ready_tick or 0) < event.tick then
+    map_summary.patch_tick(event.tick)
+    map_summary.status_tick(event.tick)
+  end
+  autonomy.on_tick(event.tick)
   companion.follow_spectators()
+end
+script.on_event(defines.events.on_tick, function(event)
+  timing.measure(tick, event)
+  timing.log_ticks(event.tick)
 end)
 script.on_event(defines.events.on_script_path_request_finished, walk.on_path_finished)
-script.on_event(defines.events.on_player_created, companion.on_player_available)
-script.on_event(defines.events.on_player_joined_game, companion.on_player_available)
+local function player_available(event)
+  companion.on_player_available(event)
+  thoughts.on_player_joined(event)
+end
+script.on_event(defines.events.on_player_created, player_available)
+script.on_event(defines.events.on_player_joined_game, player_available)
+-- Own entities built, cloned, mined or destroyed by anyone keep the registry
+-- current; machines among them refresh the factory lines.
+for _, name in ipairs({ "on_built_entity", "on_robot_built_entity", "on_space_platform_built_entity",
+  "script_raised_built", "script_raised_revive", "on_entity_cloned" }) do
+  if defines.events[name] then
+    script.on_event(defines.events[name], function(event)
+      registry.on_built(event)
+      autonomy.on_entity_changed(event.entity and event or { entity = event.destination })
+    end)
+  end
+end
+for _, name in ipairs({ "on_player_mined_entity", "on_robot_mined_entity", "on_space_platform_mined_entity",
+  "on_entity_died", "script_raised_destroy" }) do
+  if defines.events[name] then
+    script.on_event(defines.events[name], function(event)
+      registry.on_removed(event)
+      autonomy.on_entity_changed(event)
+    end)
+  end
+end
+-- Removals no event above names (e.g. the body mining, a script destroy
+-- without raise): every registered entity reports here.
+script.on_event(defines.events.on_object_destroyed, function(event)
+  local removed = registry.on_object_destroyed(event)
+  if type(removed) == "table" and registry.MACHINE_TYPES[removed.type] then autonomy.mark_dirty() end
+end)
+-- factory_status keeps the available technologies until research changes.
+for _, name in ipairs(factory_status.RESEARCH_EVENTS) do
+  if defines.events[name] then script.on_event(defines.events[name], factory_status.on_research_changed) end
+end
+script.on_event(defines.events.on_chunk_charted, map_summary.on_chunk_charted)
+script.on_event(defines.events.on_resource_depleted, map_summary.on_resource_depleted)
 script.on_event(defines.events.on_player_left_game, companion.on_player_left)
 script.on_event(defines.events.on_player_died, companion.on_player_died)
 script.on_event(defines.events.on_player_respawned, companion.on_player_respawned)

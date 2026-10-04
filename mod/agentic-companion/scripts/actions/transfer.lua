@@ -3,6 +3,7 @@
 -- per-item results including shortfalls.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
+local supply = require("scripts.actions.supply")
 
 local M = {}
 
@@ -63,9 +64,30 @@ function M.insert.start(task)
   task._items = validate_items(task.items, "insert")
 end
 
+M.insert.resume = supply.resume
+
+local function shortfall_note(task)
+  return task._shortfall and ("; " .. task._shortfall) or ""
+end
+
 function M.insert.tick(task)
   local c = companion.get()
   if not c then return gone() end
+
+  -- Auto-supply (default on): fetch what is not carried, once, never from the
+  -- target itself. A shortfall still inserts what is carried and is named.
+  if task.auto_supply ~= false and not task._supplied then
+    local needs = {}
+    for _, it in ipairs(task._items) do
+      if c.get_item_count(it.name) < it.count then needs[#needs + 1] = { name = it.name, count = it.count } end
+    end
+    if #needs > 0 then
+      local result = supply.ensure(task, needs, { exclude = task.target })
+      if not result then return nil end
+      if result.status ~= "done" then task._shortfall = result.detail end
+    end
+    task._supplied = true
+  end
 
   local reached = approach.ensure(task, c, task.target, c.reach_distance)
   if type(reached) == "table" then return reached end
@@ -117,15 +139,16 @@ function M.insert.tick(task)
   if total == 0 then
     return {
       status = "failed",
-      detail = string.format("couldn't insert anything into the %s — %s",
-        e.name, table.concat(problems, "; ")),
+      detail = string.format("couldn't insert anything into the %s — %s%s",
+        e.name, table.concat(problems, "; "), shortfall_note(task)),
       outcome = { code = "ZERO_PROGRESS", total_inserted = 0, transfers = transfers, target = target_identity(e) },
     }
   end
   if #problems > 0 then
     return {
       status = "partial",
-      detail = string.format("partial insert into the %s — %s", e.name, table.concat(problems, "; ")),
+      detail = string.format("partial insert into the %s — %s%s", e.name, table.concat(problems, "; "),
+        shortfall_note(task)),
       outcome = { code = "PARTIAL_INSERT", total_inserted = total, transfers = transfers, target = target_identity(e) },
     }
   end
@@ -158,19 +181,33 @@ end
 -- Move `count` of `name` from an entity/inventory into the companion;
 -- overflow that doesn't fit goes straight back. Returns kept, removed.
 -- (LuaObjects error on unknown members, so the source kind is explicit.)
+-- Moves up to count of name from source into the body. Never removes more
+-- than the body has room for: an entity's insert works like an inserter and
+-- cannot put a furnace's or assembler's products back into its output, so
+-- an overflow would be lost. What still fails to go back is spilled at the
+-- body, never deleted. Returns kept, removed, and whether room capped it.
 local function pull(c, source, is_inventory, name, count)
+  local inventory = c.get_main_inventory()
+  local room = inventory and inventory.get_insertable_count(name) or 0
+  local full = room < count
+  if room <= 0 then return 0, 0, true end
+  if full then count = room end
   local removed
   if is_inventory then
     removed = source.remove({ name = name, count = count })
   else
     removed = source.remove_item({ name = name, count = count })
   end
-  if removed == 0 then return 0, 0 end
+  if removed == 0 then return 0, 0, full end
   local kept = c.insert({ name = name, count = removed })
   if kept < removed then
-    source.insert({ name = name, count = removed - kept })
+    local back = source.insert({ name = name, count = removed - kept })
+    if back < removed - kept then
+      pcall(c.surface.spill_item_stack, { position = c.position,
+        stack = { name = name, count = removed - kept - back }, force = c.force, allow_belts = false })
+    end
   end
-  return kept, removed
+  return kept, removed, full
 end
 
 local function extract_all(task, c, e)
@@ -234,16 +271,16 @@ end
 local function extract_items(task, c, e)
   local taken, problems, total, transfers = {}, {}, 0, {}
   for _, it in ipairs(task._items) do
-    local kept, removed = pull(c, e, false, it.name, it.count)
+    local kept, removed, full = pull(c, e, false, it.name, it.count)
     total = total + kept
     transfers[#transfers + 1] = { item = it.name, requested = it.count, extracted = kept,
       remainder = it.count - kept }
     if kept >= it.count then
       taken[#taken + 1] = string.format("%d %s", kept, it.name)
     elseif kept > 0 then
-      local why = kept < removed and "my inventory is full" or "that's all it had"
+      local why = (full or kept < removed) and "my inventory is full" or "that's all it had"
       taken[#taken + 1] = string.format("%d of %d %s (%s)", kept, it.count, it.name, why)
-    elseif removed > 0 then
+    elseif full or removed > 0 then
       problems[#problems + 1] = "my inventory is full"
     else
       problems[#problems + 1] = "it has no " .. it.name
@@ -283,5 +320,8 @@ function M.extract.tick(task)
   end
   return extract_items(task, c, e)
 end
+
+-- Auto-supply takes from chests and machine outputs through extract.
+supply.register_runner("extract", M.extract)
 
 return M

@@ -6,16 +6,24 @@
 -- recorded and skipped unless stop_on_error. Output-target verification keeps
 -- the exact placed entity. Mining-drill starter insertion happens once before
 -- waiting for first output to expose Factorio's authoritative runtime target.
+-- Auto-supply (default on) fetches what the rest of the plan needs of a
+-- step's items in one trip; trees and rocks in a footprint are mined first.
+-- Bounded recoveries, once per step: walk out of a footprint the body
+-- overlaps, re-approach a placed entity out of reach, retry a partial
+-- starter insert after a second.
 local companion = require("scripts.companion")
+local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
 local output_targets = require("scripts.output_target")
 local placement_geometry = require("scripts.placement_geometry")
 local factory_activity = require("scripts.factory_activity")
 local build = require("scripts.actions.build")
+local supply = require("scripts.actions.supply")
 
 local M = {}
 
-local MAX_STEPS = 25
+local MAX_STEPS = 200
+local INSERT_RETRY_TICKS = 60
 local MAX_FAILURES_LISTED = 5
 
 -- ------------------------------------------------------------- validation
@@ -181,10 +189,9 @@ function M.start(task)
     end
   end
 
-  task.auto_craft = task.auto_craft ~= false
-  task._auto_crafted = 0
-  task._waiting_for_crafts = false
-  task._craft_attempted = nil
+  -- auto_craft is the 0.20 name of auto_supply.
+  task.auto_supply = task.auto_supply ~= false and task.auto_craft ~= false
+  task._short, task._supplied_index = {}, nil
   task._built = nil
 
   task.stop_on_error = task.stop_on_error ~= false
@@ -194,51 +201,25 @@ function M.start(task)
   task._failures = {}
 end
 
--- Conservative number of the requested item produced by one recipe craft.
--- A matching uncertain product counts as one conservative output. A recipe
--- with no matching item product is not the requested item's recipe at all and
--- must never be auto-crafted under that item key.
-local function output_per_craft(recipe, item_name)
-  local found, total = false, 0
-  for _, product in ipairs(recipe.products or {}) do
-    if product.type == "item" and product.name == item_name then
-      found = true
-      local amount = product.amount
-      if amount == nil and type(product.amount_min) == "number"
-          and product.amount_min == product.amount_max then
-        amount = product.amount_min
+-- What the rest of the plan needs of this step's item and starter items,
+-- for each one the body carries too few of: fetched in one trip.
+local function step_needs(task, c, step)
+  local names = { step.item }
+  for _, it in ipairs(step._insert or {}) do names[#names + 1] = it.name end
+  local needs, seen = {}, {}
+  for _, name in ipairs(names) do
+    if not seen[name] and not task._short[name] then
+      seen[name] = true
+      local total = 0
+      for index = task._index, #task.steps do
+        local later = task.steps[index]
+        if later.item == name then total = total + 1 end
+        for _, it in ipairs(later._insert or {}) do if it.name == name then total = total + it.count end end
       end
-      if product.probability ~= nil and product.probability ~= 1 then
-        amount = 1
-      elseif type(amount) ~= "number" or amount <= 0 then
-        amount = 1
-      end
-      total = total + amount
+      if c.get_item_count(name) < total then needs[#needs + 1] = { name = name, count = total } end
     end
   end
-  if not found then
-    return nil, "recipe " .. (recipe.name or "<unknown>")
-      .. " does not produce requested item " .. item_name
-  end
-  return total
-end
-
--- Prepare only the current step. Returns true when a real crafting queue entry
--- started and the plan must wait before attempting placement.
-local function start_current_craft(task, c, step)
-  local missing = math.max(1 - c.get_item_count(step.item), 0)
-  local recipe = c.force.recipes[step.item]
-  task._craft_attempted = task._index
-  if missing == 0 or not recipe or not recipe.enabled then return false end
-
-  local output, why = output_per_craft(recipe, step.item)
-  if not output then return false, why end
-  local count = math.ceil(missing / output)
-  local started = c.begin_crafting({ count = count, recipe = recipe.name or step.item })
-  if started <= 0 then return false end
-  task._auto_crafted = task._auto_crafted + started
-  task._waiting_for_crafts = true
-  return true
+  return needs
 end
 
 -- ------------------------------------------------------------ step pieces
@@ -351,10 +332,6 @@ end
 
 local function summary(task)
   local s = string.format("placed %d/%d", task._placed, #task.steps)
-  if task._auto_crafted > 0 then
-    s = s .. string.format(" (ran %d preparation craft%s)",
-      task._auto_crafted, task._auto_crafted == 1 and "" or "s")
-  end
   local f = task._failures
   if #f > 0 then
     local parts = {}
@@ -374,9 +351,16 @@ local function summary(task)
   return s
 end
 
+-- A failed build names its own code, so the dispatcher never reruns the
+-- whole plan from its first placement.
+local function failure(task, detail)
+  return { status = "failed", detail = detail, outcome = { code = "BUILD_PLAN_STEP_FAILED",
+    placed = task._placed, total = #task.steps, failures = task._failures } }
+end
+
 local function finished(task)
   if task._placed == 0 then
-    return { status = "failed", detail = summary(task) }
+    return failure(task, summary(task))
   end
   return { status = "done", detail = summary(task) }
 end
@@ -389,11 +373,12 @@ local function advance(task, ok, why)
   if not ok then
     task._failures[#task._failures + 1] = { index = i, why = why }
   end
-  task._built, task._interactions_applied = nil, nil
+  task._built, task._interactions_applied, task._recipe_applied = nil, nil, nil
+  task._insert_remainder, task._insert_first, task._retry_tick = nil, nil, nil
   task._expected_input, task._expected_output, task._output_verification_tick = nil, nil, nil
   task._index = i + 1
   if not ok and task.stop_on_error then
-    return { status = "failed", detail = summary(task) .. " — stopped at the first failure (stop_on_error)" }
+    return failure(task, summary(task) .. " — stopped at the first failure (stop_on_error)")
   end
   if task._index > #task.steps then
     return finished(task)
@@ -441,6 +426,11 @@ local function finish_placed_step(task, c, step, built)
 
   if (step.recipe or step._insert) and not task._interactions_applied then
     local reached = approach.ensure_entity(task, c, built)
+    if type(reached) == "table" and task._reach_index ~= task._index then
+      -- Out of reach once: approach the placed entity again from scratch.
+      task._reach_index, task._approach, task._approach_close = task._index, nil, nil
+      return nil
+    end
     if type(reached) == "table" then
       task._built = nil
       return advance(task, false, string.format("placed the %s, but %s", step.item, reached.detail))
@@ -449,19 +439,41 @@ local function finish_placed_step(task, c, step, built)
   end
 
   if not task._interactions_applied then
+    if task._retry_tick and game.tick < task._retry_tick then return nil end
     local issues = {}
     if not built.valid then
       issues[#issues + 1] = "the placed entity vanished immediately (another mod removed it?)"
     else
-      if step.recipe then
+      if step.recipe and not task._recipe_applied then
+        task._recipe_applied = true
         local why = apply_recipe(c, built, step.recipe)
         if why then issues[#issues + 1] = why end
       end
-      if step._insert then
-        local problems, inserted, transfers = insert_items(c, built, step._insert)
+      local list = task._insert_remainder or step._insert
+      if list then
+        local problems, inserted, transfers = insert_items(c, built, list)
         factory_activity.record("insert", { target = {
           name = built.name, type = built.type, position = built.position,
         }, transfers = transfers })
+        local first = task._insert_first
+        if first then
+          -- The retry's rows join the first attempt's: requested stays the original.
+          for _, row in ipairs(first.transfers) do
+            for _, again in ipairs(transfers) do
+              if again.item == row.item then row.inserted, row.remainder = row.inserted + again.inserted, row.remainder - again.inserted end
+            end
+          end
+          inserted, transfers = first.inserted + inserted, first.transfers
+        elseif #problems > 0 and inserted > 0 and #issues == 0 then
+          -- Partial once: retry the remainder after a second.
+          local remainder = {}
+          for _, row in ipairs(transfers) do
+            if row.remainder > 0 then remainder[#remainder + 1] = { name = row.item, count = row.remainder } end
+          end
+          task._insert_first, task._insert_remainder = { inserted = inserted, transfers = transfers }, remainder
+          task._retry_tick = game.tick + INSERT_RETRY_TICKS
+          return nil
+        end
         for _, problem in ipairs(problems) do issues[#issues + 1] = problem end
         if #problems > 0 and inserted > 0 then
           task._built = nil
@@ -497,20 +509,32 @@ end
 
 -- ------------------------------------------------------------------- tick
 
+M.resume = supply.resume
+
 function M.tick(task)
   local c = companion.get()
   if not c then
     return { status = "failed", detail = summary(task) .. " — the companion character is gone" }
   end
-
-  if task._waiting_for_crafts then
-    if c.crafting_queue_size > 0 then return nil end
-    task._waiting_for_crafts = false
+  -- A build started by 0.20 before an in-place upgrade has auto_craft and no
+  -- supply state: give it what start() gives a new one. Crafts it already
+  -- queued finish in the crafting queue; supply tops up what is missing.
+  if task._short == nil then
+    task._short = {}
+    task.auto_supply = task.auto_supply ~= false and task.auto_craft ~= false
   end
 
   local step = task.steps[task._index]
   if not step then return finished(task) end
   if task._built then return finish_placed_step(task, c, step, task._built) end
+  if task._exit then
+    local walked = supply.step(task, "_exit")
+    if not walked then return nil end
+    if walked.status ~= "done" then
+      return advance(task, false, string.format("can't place %s at (%.1f, %.1f) — CODEX_BODY_OVERLAP and walking clear failed: %s",
+        step.item, step.position.x, step.position.y, tostring(walked.detail)))
+    end
+  end
 
   -- Checks that walking can never fix (mirrors place.start, which also runs
   -- before any walking): unknown item, unplaceable item, none in inventory.
@@ -522,21 +546,37 @@ function M.tick(task)
   if not place_result then
     return advance(task, false, step.item .. " is not a placeable item")
   end
-  if c.get_item_count(step.item) == 0 and task.auto_craft
-      and task._craft_attempted ~= task._index then
-    local started, why = start_current_craft(task, c, step)
-    if why then return advance(task, false, why) end
-    if started then return nil end
+  if task.auto_supply and task._supplied_index ~= task._index then
+    local needs = step_needs(task, c, step)
+    if #needs > 0 then
+      local result = supply.ensure(task, needs)
+      if not result then return nil end
+      if result.status ~= "done" then
+        -- An item once short is not fetched again in this build; its reason stays.
+        for _, row in ipairs(result.outcome and result.outcome.missing or {}) do task._short[row.item] = result.detail end
+      end
+    end
+    task._supplied_index = task._index
   end
   if c.get_item_count(step.item) == 0 then
-    return advance(task, false, "I don't have any " .. step.item .. " left in my inventory")
+    return advance(task, false, "I don't have any " .. step.item .. " left in my inventory"
+      .. (task._short[step.item] and (" — " .. task._short[step.item]) or ""))
   end
 
+  -- A tree or rock being cleared moves the body: finish that first.
+  if task._clear then
+    local cleared = build.clear_footprint(task, c, place_result, step.position, step.direction)
+    if cleared == nil then return nil end
+    if cleared ~= "ok" then return advance(task, false, cleared.detail) end
+  end
   local reached = approach.ensure(task, c, step.position, c.build_distance)
   if type(reached) == "table" then
     return advance(task, false, reached.detail)
   end
   if reached ~= "ok" then return nil end
+  local cleared = build.clear_footprint(task, c, place_result, step.position, step.direction)
+  if cleared == nil then return nil end
+  if cleared ~= "ok" then return advance(task, false, cleared.detail) end
 
   local entity_name = place_result.name
 
@@ -572,6 +612,14 @@ function M.tick(task)
   end
 
   local can_place, placement_reason = placement_geometry.can_place(c, place_result, step.position, step.direction)
+  if not can_place and placement_reason == "CODEX_BODY_OVERLAP" and task._exit_index ~= task._index then
+    -- Standing in the footprint once: walk clear of it, then try again.
+    task._exit_index = task._index
+    local exit = build.footprint_exit(c, place_result, step.position, step.direction)
+    if exit and pcall(supply.begin, task, "_exit", { type = "walk_to", target = exit, arrival_mode = "exact", arrival_radius = 1 }) then
+      return nil
+    end
+  end
   if not can_place then
     return advance(task, false, string.format("can't place %s at (%.1f, %.1f) — %s",
       step.item, step.position.x, step.position.y,
@@ -592,6 +640,8 @@ function M.tick(task)
       step.item, step.position.x, step.position.y))
   end
   c.remove_item({ name = step.item, count = 1 })
+  -- raise_built also reaches the registry; add is idempotent.
+  pcall(registry.add, built)
   step._placed_entity = built
   task._placed = task._placed + 1
   if expected_input or expected_output then

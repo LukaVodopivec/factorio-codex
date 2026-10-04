@@ -1,3 +1,4 @@
+local autonomy = require("scripts.autonomy")
 local companion = require("scripts.companion")
 local map_summary = require("scripts.map_summary")
 local research = require("scripts.research")
@@ -54,12 +55,14 @@ end
 function M.capture()
   local body = companion.require_companion()
   local observation = spatial.observe_local({ radius = 5, detail = "compact" })
-  local factory = map_summary.map_summary({ detail = "aggregate", flow_precision = "one_minute" })
   return {
     tick = game.tick,
     character = observation.character,
     progression = research.progression_status({}),
-    factory = factory.factory,
+    -- Counts from the event-maintained registry: no chunk walk per sample.
+    factory = map_summary.registry_factory(),
+    -- Production lines (autonomy.lua): how many run, self-sustain or are hand-fed.
+    lines = autonomy.counts(),
     statistics = {
       items = statistics(body.force, body.surface, "get_item_production_statistics"),
       fluids = statistics(body.force, body.surface, "get_fluid_production_statistics"),

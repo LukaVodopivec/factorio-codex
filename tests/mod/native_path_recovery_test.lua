@@ -496,10 +496,19 @@ task = reset({ x = 10.5, y = 0.5 })
 walk.start(task)
 walk.tick(task); deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
 body.position = { x = 10.5, y = 0.5 }
+check(walk.tick(task) == nil and task._walk.phase == "settling" and task._walk.settle.to.y == -3.5,
+  "a belt wider than 2 tiles is left toward the nearest clear tile within 4")
+
+belts = { belt(5, -5, 12, 12) }
+task = reset({ x = 10.5, y = 0.5 })
+walk.start(task)
+walk.tick(task); deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
+body.position = { x = 10.5, y = 0.5 }
 local covered = walk.tick(task)
 check(covered and covered.status == "failed" and covered.detail:match("^BODY_ON_CONVEYOR:")
+  and covered.detail:match("within 4 tiles")
   and covered.outcome.diagnostics.path.settle_rejected.conveyor > 0,
-  "no off-belt tile within 2 tiles fails truthfully as BODY_ON_CONVEYOR")
+  "no off-belt tile within 4 tiles fails truthfully as BODY_ON_CONVEYOR")
 
 belts = { belt(10, 0, 1, 1) }
 task = reset({ x = 10.5, y = 0.5 })

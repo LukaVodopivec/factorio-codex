@@ -1,4 +1,5 @@
--- Offline tests for build_plan's automatic preparation of placeable items.
+-- Offline tests for build_plan's auto-supply of placeable items (hand-crafting
+-- when no own stock holds them) and its bounded follow-up recoveries.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
@@ -29,6 +30,7 @@ character = {
       products = { { type = "item", name = "uncertain-machine", amount = 3, probability = 0.5 } } },
   } },
   get_item_count = function(name) return inventory[name] or 0 end,
+  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
   begin_crafting = function(args)
     crafted[args.recipe] = (crafted[args.recipe] or 0) + args.count
     character.crafting_queue_size = character.crafting_queue_size + args.count
@@ -78,15 +80,23 @@ local task = { steps = {
   { item = "transport-belt", position = { x = 1, y = 0 } },
 } }
 build_plan.start(task)
-check(next(crafted) == nil and task._auto_crafted == 0,
-  "build_plan: does not pre-craft future steps during start")
-check(build_plan.tick(task) == nil and crafted["transport-belt"] == 1
-  and task._waiting_for_crafts == true and placed_count == 0,
-  "build_plan: one two-output recipe craft satisfies two missing belts")
+check(next(crafted) == nil and task._supply == nil,
+  "build_plan: does not supply anything during start")
+-- Supply runs one source scan a tick (holders, then belts), so the craft
+-- starts a few ticks in.
+local function tick_until(t, done)
+  local result
+  for _ = 1, 5 do result = build_plan.tick(t); if result or done() then break end end
+  return result
+end
+check(tick_until(task, function() return crafted["transport-belt"] end) == nil and crafted["transport-belt"] == 1
+  and task._supply ~= nil and placed_count == 0,
+  "build_plan: one two-output recipe craft supplies both belts the plan needs")
 check(build_plan.tick(task) == nil and placed_count == 0,
   "build_plan: construction waits for the real crafting queue")
 inventory["transport-belt"] = 2
 character.crafting_queue_size = 0
+game.tick = game.tick + 30
 check(build_plan.tick(task) == nil and placed_count == 1 and inventory["transport-belt"] == 1,
   "build_plan: places the current step only after crafting completes")
 local two_belts = build_plan.tick(task)
@@ -98,7 +108,7 @@ local wrong_product = { steps = {
   { item = "misleading-machine", position = { x = 0, y = 0 } },
 } }
 build_plan.start(wrong_product)
-local wrong_product_failure = build_plan.tick(wrong_product)
+local wrong_product_failure = tick_until(wrong_product, function() return false end)
 check(wrong_product_failure and wrong_product_failure.status == "failed"
   and wrong_product_failure.detail:match("does not produce requested item misleading%-machine")
   and crafted["misleading-machine"] == nil,
@@ -108,8 +118,8 @@ local uncertain_product = { steps = {
   { item = "uncertain-machine", position = { x = 0, y = 0 } },
 } }
 build_plan.start(uncertain_product)
-local uncertain_wait = build_plan.tick(uncertain_product)
-check(uncertain_wait == nil and uncertain_product._waiting_for_crafts == true
+local uncertain_wait = tick_until(uncertain_product, function() return crafted["uncertain-machine"] end)
+check(uncertain_wait == nil and uncertain_product._supply ~= nil
   and crafted["uncertain-machine"] == 1,
   "build_plan: matching uncertain item product uses a conservative yield of one")
 
@@ -119,13 +129,13 @@ build_plan.start({ auto_craft = false, steps = {
   { item = "transport-belt", position = { x = 0, y = 0 } },
   { item = "transport-belt", position = { x = 1, y = 0 } },
 } })
-check(next(crafted) == nil, "build_plan: auto-crafting can be disabled")
+check(next(crafted) == nil, "build_plan: auto-supply can be disabled (auto_craft is its 0.20 name)")
 
 local too_many = {}
-for i = 1, 26 do too_many[i] = { item = "transport-belt", position = { x = i, y = 0 } } end
+for i = 1, 201 do too_many[i] = { item = "transport-belt", position = { x = i, y = 0 } } end
 local accepted, limit_error = pcall(build_plan.start, { steps = too_many })
-check(not accepted and tostring(limit_error):match("at most 25 steps") ~= nil,
-  "build_plan: Lua rejects more than 25 steps")
+check(not accepted and tostring(limit_error):match("at most 200 steps") ~= nil,
+  "build_plan: Lua rejects more than 200 steps")
 
 inventory["transport-belt"] = 1
 local create_entity = character.surface.create_entity
@@ -232,8 +242,10 @@ local unreachable_plan = { auto_craft = false, steps = {
     recipe = "iron-gear-wheel", insert = { coal = 1 } },
 } }
 build_plan.start(unreachable_plan)
+check(build_plan.tick(unreachable_plan) == nil and unreachable_plan._reach_index == 1,
+  "build_plan: an out-of-reach placed entity is approached once more")
 local unreachable = build_plan.tick(unreachable_plan)
-check(unreachable and unreachable.status == "failed"
+check(unreachable and unreachable.status == "failed" and unreachable.outcome.code == "BUILD_PLAN_STEP_FAILED"
   and unreachable.detail:match("placed the assembling%-machine%-1, but couldn't get within physical reach")
   and recipe_mutations == 1 and insert_mutations == 1,
   "build_plan: unreachable placed follow-ups fail honestly before either mutation")

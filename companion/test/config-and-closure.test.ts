@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Bridge } from "../src/bridge.js";
 import { companionVersion, configPath, diagnoseConfig, existingRconPassword, loadConfig, saveConfig } from "../src/config.js";
 import { collectDoctorReport } from "../src/doctor.js";
-import { connectStatus } from "../src/mcp/server.js";
+import { connectStatus, READ_ONLY_TOOLS } from "../src/mcp/server.js";
 import { RconClient } from "../src/rcon.js";
 
 const homes: string[] = [];
@@ -109,8 +109,8 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "mod", ok: false, detail: expect.stringMatching(/RPC unavailable: (unlock|ping) failed/), fix: expect.stringContaining("install and enable") }));
   });
   it.each([
-    { ping: { protocol_version: 6, mod_version: "0.20.0" }, failedCheck: "protocol" },
-    { ping: { protocol_version: 23, mod_version: "0.6.0" }, failedCheck: "mod" },
+    { ping: { protocol_version: 6, mod_version: "0.21.0" }, failedCheck: "protocol" },
+    { ping: { protocol_version: 24, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();
@@ -128,7 +128,7 @@ describe("exact local configuration", () => {
     expect(report.checks).toContainEqual(expect.objectContaining({ name: "rcon-config", ok: false, detail: "must be 127.0.0.1:19015" }));
     expect(connect).not.toHaveBeenCalled();
   });
-  it("keeps root, package, lockfile, runtime, mod, and docs at 0.20.0", () => {
+  it("keeps root, package, lockfile, runtime, mod, and docs at 0.21.0", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const read = (relative: string) => JSON.parse(fs.readFileSync(path.join(root, relative), "utf8"));
     const lock = read("package-lock.json");
@@ -140,16 +140,16 @@ describe("exact local configuration", () => {
       lock.packages[""].version,
       lock.packages.companion.version,
       companionVersion(),
-    ]).toEqual(Array(7).fill("0.20.0"));
-    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.20.0**");
-    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.20.0**");
+    ]).toEqual(Array(7).fill("0.21.0"));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toContain("Current release: **0.21.0**");
+    expect(fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8")).toContain("release **0.21.0**");
   });
   it("keeps visible locale title and description aligned with one-body mod metadata", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const info = JSON.parse(fs.readFileSync(path.join(root, "mod/agentic-companion/info.json"), "utf8"));
     const locale = fs.readFileSync(path.join(root, "mod/agentic-companion/locale/en/agentic-companion.cfg"), "utf8");
     const values = [...locale.matchAll(/^agentic-companion=(.+)$/gm)].map((match) => match[1]);
-    expect(info).toMatchObject({ version: "0.20.0", title: "Factorio Codex Companion" });
+    expect(info).toMatchObject({ version: "0.21.0", title: "Factorio Codex Companion" });
     expect(values).toEqual([info.title, info.description]);
     expect(locale).not.toMatch(/movement.speed|multiplier/i);
     expect(locale).not.toMatch(/Agentic Companion|AI companion|companions|characters|vehicles/i);
@@ -161,7 +161,7 @@ describe("exact local configuration", () => {
     expect(config).toContain('command = "./scripts/start-factorio-mcp"');
     expect(config).toMatch(/\[mcp_servers\.factorio\][\s\S]*args = \[\][\s\S]*enabled = true/);
     expect(config).toMatch(/\[mcp_servers\.factorio-readonly\][\s\S]*args = \["--surface", "read-only"\][\s\S]*enabled = false/);
-    expect(config).toContain('enabled_tools = ["connect_status", "map_summary", "progression_status", "production_requirements", "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement"]');
+    expect(config).toContain(`enabled_tools = [${READ_ONLY_TOOLS.map((name) => `"${name}"`).join(", ")}]`);
     const launcher = fs.readFileSync(path.join(root, "scripts/start-factorio-mcp"), "utf8");
     expect(launcher).toContain('"$nvm_root/versions/node/v*/bin/node"');
     expect(launcher).not.toContain('source "$nvm_root/nvm.sh"');
@@ -322,7 +322,9 @@ describe("exact local configuration", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const agentGuide = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8");
     const skill = fs.readFileSync(path.join(root, ".agents/skills/factorio-player/SKILL.md"), "utf8");
-    for (const text of [agentGuide, skill]) {
+    // Engineering reuse is supervisor guidance: AGENTS.md owns it, the player skill does not repeat it.
+    expect(skill).not.toMatch(/greenfield code/);
+    for (const text of [agentGuide]) {
       const normalized = text.replace(/\s+/g, " ");
       expect(text).toMatch(/newly observed gameplay difficulty appears to require greenfield code[\s\S]*bounded Firecrawl reuse survey/i);
       expect(normalized).toMatch(/license,.*maintenance,.*current Factorio API compatibility,.*one-body\/one-writer\/\s*text-only physical fit/i);

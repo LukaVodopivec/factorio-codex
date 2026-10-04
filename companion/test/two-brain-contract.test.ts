@@ -2,394 +2,239 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { READ_ONLY_TOOLS } from "../src/mcp/server.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const read = (relative: string) => fs.readFileSync(path.join(root, relative), "utf8");
+const flat = (text: string) => text.replace(/\s+/g, " ");
 const skill = read(".agents/skills/factorio-player/SKILL.md");
 const pilot = read(".agents/skills/factorio-player/GOAL-PILOT-v1.md");
 const strategist = read(".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md");
+const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md");
+const agents = flat(read("AGENTS.md"));
+const live = flat(read("docs/LIVE-VALIDATION.md"));
+const readme = flat(read("README.md"));
 const active = `${skill}\n${pilot}\n${strategist}`;
-const normalized = active.replace(/\s+/g, " ").toLowerCase();
+const normalized = flat(active).toLowerCase();
+const registered = new Set([...read("companion/src/mcp/server.ts").matchAll(/registerTool\("([a-z_]+)"/g)].map((match) => match[1]));
 
 describe("persistent two-brain coordination contract", () => {
-  it("selects Luna-low-fast and Astra-medium-normal while preserving one writer, body, and FIFO lane", () => {
+  it("keeps the instructions short, with shared rules only in SKILL.md", () => {
+    const size = [skill, pilot, strategist, knowledge].reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
+    expect(size).toBeLessThan(23_000);
+    expect(skill).not.toMatch(/## Engineering reuse/);
+    for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
+  });
+
+  it("states the showcase purpose and asks each role to say what it intends", () => {
+    expect(flat(skill)).toMatch(/The run shows how two bots think about and architect a factory/);
+    expect(flat(skill)).toMatch(/Before each decision, say in a sentence or two what you see and what you intend/);
+    for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/in a sentence or two/);
+    expect(flat(skill)).toMatch(/The mod does the chores/);
+    expect(agents).toMatch(/Project goal: Show how Codex bots think about and architect a Factorio factory/);
+  });
+
+  it("selects Luna-low-fast and Astra-medium-normal around one writer, body, and FIFO lane", () => {
     expect(active).toMatch(/gpt-6-luna[\s\S]*low[\s\S]*fast mode enabled/i);
     expect(active).toMatch(/gpt-6-astra[\s\S]*medium[\s\S]*normal speed/i);
     expect(active).not.toMatch(/gpt-6\.1-sol/);
-    expect(active).toMatch(/pilot[\s\S]*sole (?:Factorio )?(?:MCP|gameplay) writer/i);
+    expect(active).toMatch(/pilot[\s\S]*sole gameplay writer/i);
     expect(normalized).toMatch(/one body, one physical fifo/);
     expect(normalized).toMatch(/exactly one physical mcp call may be in flight/);
-    expect(strategist).toMatch(/never (?:call|use)[\s\S]*(?:movement|mine|mining|craft|placement|insert|extract|recipe mutation|research mutation|queue|cancel|stop)/i);
+    expect(strategist).toMatch(/never (?:call|use)[\s\S]*(?:movement|mining|crafting|placement|queue|cancel|stop)/i);
   });
 
-  it("gives Astra only the named read-only evidence surface and keeps reads outside the physical lane", () => {
-    for (const tool of ["connect_status", "map_summary", "progression_status", "production_requirements",
-      "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement"]) {
-      expect(strategist).toContain(`\`${tool}\``);
+  it("gives Astra exactly the read-only surface, with layout and block checks as dry runs", () => {
+    for (const tool of READ_ONLY_TOOLS) expect(strategist).toContain(`\`${tool}\``);
+    expect(strategist).toMatch(/mechanically read-only[\s\S]*never enter[\s\S]*physical FIFO/i);
+    expect(strategist).not.toMatch(/`(?:walk_to|mine|craft_items|place_entity|insert_items|extract_items|set_recipe|start_research|queue_plan|run_plan|get_items|stop)`/);
+    expect(live).toContain(`enabled_tools=[${READ_ONLY_TOOLS.map((tool) => `"${tool}"`).join(",")}]`);
+  });
+
+  it("makes factory_status the single read and next_event the only wait", () => {
+    expect(flat(skill)).toMatch(/`factory_status` is the single routine read/);
+    for (const state of ["running", "starved", "output_full", "no_fuel", "no_power", "idle"]) expect(skill).toContain(`\`${state}\``);
+    for (const event of ["plan_ended", "queue_empty", "new_problem", "package_failed", "orders_changed", "human_hold_started", "human_hold_ended"])
+      expect(skill).toContain(`\`${event}\``);
+    expect(flat(pilot)).toMatch(/Call `next_event` \(up to 120 s\) with the last `tick` you saw as `since_tick`/);
+    expect(flat(pilot)).toMatch(/Never poll `plan_status`, `factory_status`, or any read in a loop/);
+    expect(flat(strategist)).toMatch(/Never poll in a loop/);
+  });
+
+  it("drops validation, proofs, evidence classes, reports, and ledger-revision protocol", () => {
+    for (const text of [skill, pilot, strategist, knowledge]) {
+      expect(text).not.toMatch(/validate_factory_component|duration_seconds|autonomous_end_to_end|evidence class|evidence_class|fresh_local_exact|character_transfer_observed|validation window|service debt|report checkpoint|jq -c|send_message_to_thread` to the exact thread/);
     }
-    expect(strategist).toMatch(/mechanically read-only[\s\S]*(?:never enter|outside)[\s\S]*(?:physical )?FIFO/i);
-    expect(strategist).not.toMatch(/`(?:walk_to|mine|craft_items|place_entity|insert_items|extract_items|set_recipe|start_research|queue_plan|run_plan|stop)`/);
+    expect(flat(skill)).toMatch(/Do not monitor, prove, or keep books/);
+    expect(flat(skill)).toMatch(/A line is good when `factory_status` says `running`; expansion never waits for more proof than that/);
+    expect(flat(pilot)).toMatch(/\*\*No reports\.\*\* You send no messages to Astra/);
+    expect(agents).toMatch(/There are no pilot reports, ledger reads by shell, revision checks, or package revalidation/);
+    expect(agents).not.toMatch(/steam gate|validate_factory_component|under about 300 bytes/);
+    expect(live).not.toMatch(/### Live steam gate before GO|## Full graph and downstream acceptance validation|supervision_record\.py steam-gate/);
+    expect(readme).not.toMatch(/validate_factory_component` uses|FACTORY_COMPONENT_NOT_READY|steam gate/);
   });
 
-  it("makes Astra the compact NOW/NEXT/LATER owner and keeps the pilot fail-open", () => {
-    expect(strategist).toMatch(/(?:own|maintain)[\s\S]*NOW[\s\S]*NEXT[\s\S]*LATER/i);
-    for (const field of ["objective", "strategic_reason", "completion_condition", "essential_prerequisite"])
-      expect(strategist).toContain(`\`${field}\``);
-    expect(strategist).toMatch(/`essential_prerequisite` is one outcome sentence \(at most 160 characters\)/);
-    expect(pilot).toMatch(/missing, malformed, stale, unavailable[\s\S]*continue/i);
-    expect(pilot).toMatch(/fresh (?:physical|exact local) evidence[\s\S]*(?:falsified|falsifies|invalidates)[\s\S]*(?:report|continue)/i);
-    expect(active).not.toMatch(/blocking acknowledgement|wait for (?:Astra|the strategist|advice)/i);
+  it("keeps packages out of the ledger before GO and gives package_failed to Astra alone", () => {
+    expect(flat(strategist)).toMatch(/Every ledger write before `GO`, the init included, has `build_packages: \[\]`; write your first package only after `GO`/);
+    expect(flat(strategist)).toMatch(/all listed packages together at most 8 KB; drop a package from the list once `activity_log` shows it queued/);
+    expect(strategist).not.toMatch(/1-200 steps, at most 8 KB/);
+    expect(agents).toMatch(/Astra writes no build package before `GO`/);
+    expect(live).toMatch(/`build_packages: \[\]` \(required for every write before `GO`/);
+    expect(flat(pilot)).toMatch(/On `package_failed`, leave the redesign to Astra and never rebuild a package's purpose or geometry yourself/);
+    expect(flat(pilot)).toMatch(/Any result with `body\.fifo_empty` true \(and no human hold\) means the body is idle: queue work before waiting again/);
   });
 
-  it("prioritizes compounding input growth over a tiny immediate deficit", () => {
-    expect(normalized).toMatch(/principal objective is to maximize useful, sustained, autonomous production growth/i);
-    expect(normalized).toMatch(/highest-payback capacity expansion.*before another manual deficit batch/i);
-    expect(active).toMatch(/tiny immediate science deficit[\s\S]*larger reusable capacity deficit/i);
-    expect(normalized).toMatch(/research normally consumes surplus|research consuming surplus/i);
-    expect(normalized).toMatch(/factory growth means connected[\s\S]*utilized production/i);
-    expect(active).toMatch(/manual (?:work|bridge|batch)[\s\S]*(?:durable|payback|numeric (?:stop|sunset))/i);
-    const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ");
-    for (const text of [strategist.replace(/\s+/g, " "), knowledge])
-      expect(text).toMatch(/input rate \(ore and plates per minute\)/i);
-    expect(strategist).toMatch(/Never plan hand-crafted science to push research while raw input is the bottleneck/);
-    expect(pilot).toMatch(/Never hand-craft science to push research while raw input is the bottleneck/);
-    expect(strategist).toMatch(/principle, not a build or technology order/);
+  it("re-observes after an explicit stop until the body is idle", () => {
+    expect(agents).toMatch(/waits at least 2 s, re-observes `observe_local`[\s\S]*calls `stop` again and re-observes until idle; then finishes the recorder/);
+    expect(live).toMatch(/wait at least 2 s[\s\S]*call factorio `stop` again and re-observe until idle; only then run recorder FINISH/);
   });
 
-  it("covers the full Space Age horizon without fixing the inner-planet order", () => {
-    for (const horizon of ["Nauvis", "orbital platform", "Vulcanus", "Fulgora", "Gleba", "Aquilo", "Solar System Edge"])
-      expect(active.replace(/\s+/g, " ")).toContain(horizon);
-    expect(normalized).toMatch(/never prescribe a fixed planetary order/);
-    expect(active).not.toContain("132,480");
-  });
-
-  it("preserves continuation, exact local authority, and non-autonomous terminology", () => {
-    expect(pilot).toMatch(/continuation is the default[\s\S]*progress report is not a completion or pause boundary/i);
-    expect(pilot).toMatch(/latest exact local state/i);
-    expect(active).toMatch(/hand-fed machine[\s\S]*not[\s\S]*(?:autonomous|automation)/i);
-    expect(active).toMatch(/reserve[\s\S]*loop[\s\S]*automation[\s\S]*continuous[\s\S]*autonomous_end_to_end/i);
-    expect(normalized).toMatch(/`autonomous_end_to_end` only from tool evidence of physical upstream supply/);
-  });
-
-  it("yields at report checkpoints without pausing, and keeps Astra on the ledger only", () => {
-    const agents = read("AGENTS.md");
-    const live = read("docs/LIVE-VALIDATION.md");
-    expect(skill).toMatch(/ending\s+the turn is neither a pause nor a completion/i);
-    for (const text of [pilot, skill, agents]) expect(text).toMatch(/1,000 bytes/);
-    expect(pilot).toMatch(/never calls `update_goal`/);
-    expect(agents).toMatch(/native goal continuation, not a supervisor assignment per batch/i);
+  it("lets packages queue themselves while Astra stays the sole ledger writer", () => {
+    expect(flat(skill)).toMatch(/The pilot's bridge queues each new package into the FIFO itself, in ledger order, after the mod's placement check, with no pilot turn/);
+    expect(flat(skill)).toMatch(/the ledger is Astra's only channel to the pilot/);
     expect(strategist).toMatch(/ledger is your only channel to the pilot; never message the pilot/i);
-    expect(agents).toMatch(/ledger is Astra's only\s+channel to the pilot/i);
-    expect(`${pilot}\n${strategist}`).toMatch(/never mark the goal complete without milestone proof/i);
-    expect(agents).toMatch(/calls factorio\s+`stop`[\s\S]*pauses both role goals/i);
-    expect(live).toMatch(/call factorio `stop`[\s\S]*`\/goal pause`[\s\S]*`turn\/interrupt`[\s\S]*server stop/i);
-    expect(live).toMatch(/resume both role goals[\s\S]*before|resume both role goals[\s\S]*only then start the recorder/i);
+    expect(agents).toMatch(/The ledger is Astra's only channel to the pilot/);
+    expect(agents).toMatch(/queues each new package into the FIFO by itself, in ledger order, as a plan with source `package:<id>`/);
+    expect(flat(pilot)).toMatch(/The bridge queues Astra's packages, not you/);
+    expect(pilot).toMatch(/Never write `operations\.json` or `notebook\/astra\/`/);
+    expect(flat(strategist)).toMatch(/Size packages as whole blocks: `build_block` or `build_layout` steps, never single placements/);
+    expect(flat(strategist)).toMatch(/Keep at least one package queued ahead so the body never waits for a design/);
+    expect(flat(strategist)).toMatch(/Rewrite the ledger only when NOW changes or a new package is ready, about six times an hour at most; never to record progress, which `activity_log` holds/);
+    expect(flat(strategist)).toMatch(/Give each package a new `package_id`/);
+    expect(flat(strategist)).toMatch(/`essential_prerequisite` is one outcome sentence \(at most 160 characters\)/);
+    for (const field of ["objective", "strategic_reason", "completion_condition", "essential_prerequisite"]) expect(strategist).toContain(`\`${field}\``);
     expect(`${strategist}\n${live}`).not.toMatch(/companion\/dist\/cli\.js ledger-apply/);
   });
 
-  it("reserves emergency cancellation to the supervisor and recovers through retained FIFO state", () => {
-    const flatSkill = skill.replace(/\s+/g, " ");
-    expect(flatSkill).toMatch(/pilot never calls the `stop` tool/);
-    for (const boundary of ["ordinary gameplay", "report checkpoints", "turn endings",
-      "monitoring timeouts", "package changes", "recovery from failed or partially committed plans"])
-      expect(flatSkill).toContain(boundary);
-    expect(flatSkill).toMatch(/supervisor alone may use `stop` for an explicit the owner stop, retained-work reconciliation, or recorded emergency cancellation needed for physical quiescence during replacement/);
-    expect(flatSkill).toMatch(/A TUI interruption alone does not authorize physical cancellation/);
-    expect(flatSkill).toMatch(/a role told of it never calls `stop`, makes no further write/i);
-    expect(pilot).toMatch(/If the supervisor says the owner stopped the run, do not call `stop`/);
-    expect(pilot).toMatch(/Never call `stop`; it is the supervisor's emergency cancellation/);
-    expect(pilot).toMatch(/To abandon a stalled wait, queue the corrective plan without `after_plan_id`: it runs while the wait is parked\. Otherwise let the wait's bounded timeout end it/);
-    expect(pilot).not.toMatch(/queue the corrective plan as its successor/);
-    expect(read("AGENTS.md").replace(/\s+/g, " ")).toMatch(/`stop` is the supervisor's recorded emergency cancellation \(the pilot never calls it\)/);
-    expect(pilot).toMatch(/obtain fresh structured state and inspect exact known plan IDs with `plan_status`/);
-    expect(pilot).toMatch(/A monitoring timeout leaves the plan pending/);
-    expect(pilot).toMatch(/Retain completed physical effects; there is no rollback/);
-    expect(pilot).toMatch(/Reconcile active and queued work[\s\S]*existing FIFO[\s\S]*without duplicating committed or pending steps or blanket-cancelling queued work/);
+  it("makes Luna the foreman who queues goal-level work", () => {
+    expect(flat(pilot)).toMatch(/You are the foreman, not the hands/);
+    expect(flat(pilot)).toMatch(/Queue multi-step, goal-level work[\s\S]*?Never queue single-step or walk-only plans/);
+    expect(flat(skill)).toMatch(/These actions walk to their own targets: never queue a `walk_to` before them\. `wait_for_item` does not walk and observes only within 30 tiles/);
+    expect(flat(pilot)).toMatch(/Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet/);
+    expect(pilot).toMatch(/Never hand-craft science to push research while raw input is the bottleneck/);
+    expect(strategist).toMatch(/Never plan hand-crafted science to push research while raw input is the bottleneck/);
+    expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);
+    for (const action of ["get_items", "build_layout", "build_block"]) expect(skill).toContain(`\`${action}\``);
   });
 
-  it("forbids thread polling and re-reads the hard rules after compaction", () => {
-    const agents = read("AGENTS.md").replace(/\s+/g, " ");
-    const live = read("docs/LIVE-VALIDATION.md").replace(/\s+/g, " ");
-    for (const text of [skill, pilot, strategist].map((entry) => entry.replace(/\s+/g, " ")).concat(agents))
-      expect(text).toMatch(/never call `list_threads`, `read_thread`, or `wait_threads`/i);
-    expect(skill.replace(/\s+/g, " ")).toMatch(/after any context compaction, re-read your goal file and this file before any other call; the pilot then re-reads the ledger, and each role its notebook index/i);
-    expect(pilot).toMatch(/After any context compaction, re-read this file, `SKILL\.md`, and the ledger before any other call, then your notebook index/);
+  it("keeps the opening, input-first, and power hints", () => {
+    const flatKnowledge = flat(knowledge);
+    expect(flatKnowledge).toMatch(/Automate iron and coal together in the first ten minutes: the first iron drill and furnace come before a second coal drill\. Never open fuel-first/);
+    for (const text of [flat(strategist), flatKnowledge]) expect(text).toMatch(/input rate \(ore and plates per minute\)/i);
+    expect(flat(strategist)).toMatch(/This is a principle, not a build or technology order/);
+    expect(flat(strategist)).toMatch(/power shows satisfaction below 100% or production at capacity, more generation is NOW/);
+    expect(flatKnowledge).toMatch(/add a boiler and two engines whenever `power` satisfaction is below 100%/);
+    expect(flatKnowledge).toMatch(/hints are starting points that newer structured evidence may override/);
+  });
+
+  it("covers the Space Age horizon without fixing the planet order", () => {
+    for (const horizon of ["Nauvis", "orbital platform", "Vulcanus", "Fulgora", "Gleba", "Aquilo", "Solar System Edge"])
+      expect(flat(active)).toContain(horizon);
+    expect(normalized).toMatch(/never prescribe a fixed planetary order/);
+    expect(normalized).toMatch(/principal objective is to maximize useful, sustained, autonomous production growth/);
+    expect(normalized).toMatch(/research normally consumes surplus/);
+  });
+
+  it("shows the thinking in the game as output only", () => {
+    expect(agents).toMatch(/spawned with `-c model_reasoning_summary=detailed`/);
+    expect(agents).toMatch(/game chat never controls the bot, and the panel never triggers a takeover hold/);
+    expect(live).toMatch(/session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on \\? ?-c model_reasoning_summary=detailed/);
+    expect(live).toMatch(/session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off \\? ?-c model_reasoning_summary=detailed/);
+    expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"\][^}]*enabled_tools=/);
+    expect(live).not.toMatch(/mcp_servers\.[a-z-]+\.enabled=/);
+    for (const text of [readme, live]) expect(text).toMatch(/--pilot-rollout[\s\S]*--strategist-rollout/);
+    expect(readme).toMatch(/The feed is output only: game chat never controls the bot/);
+  });
+
+  it("keeps continuation native and forbids thread tools, with a compaction re-read", () => {
+    for (const text of [skill, pilot, strategist].map(flat).concat(agents))
+      expect(text).toMatch(/never call `list_threads`, `read_thread`, or `wait_threads`|never call `list_threads`, `read_thread`, or `wait_threads`/i);
+    expect(flat(skill)).toMatch(/After any context compaction, re-read your goal file and this file before any other call, then your notebook index/);
+    expect(pilot).toMatch(/After any context compaction, re-read this file and `SKILL\.md` before any other call, then your notebook index/);
     expect(strategist).toMatch(/After any context compaction, re-read this file, `SKILL\.md`, and `notebook\/astra\/INDEX\.md` before any other call/);
+    expect(flat(skill)).toMatch(/Ending the turn is neither a pause nor a completion/);
+    expect(pilot).toMatch(/Ending a turn never calls `update_goal`/);
+    expect(agents).toMatch(/native goal continuation, not a supervisor assignment per batch/i);
+    expect(`${pilot}\n${strategist}`).toMatch(/Never mark the goal complete without milestone proof/);
     expect(live).toMatch(/The pilot's GO text names Astra's exact thread ID/);
     expect(live).toMatch(/Never call list_threads, read_thread or wait_threads; after any compaction re-read your goal file and SKILL\.md, then your notebook INDEX\.md/);
   });
 
+  it("reserves stop to the supervisor", () => {
+    expect(flat(skill)).toMatch(/Never call the `stop` tool: it is the supervisor's emergency cancellation/);
+    expect(pilot).toMatch(/To abandon a stalled wait, queue the corrective plan without `after_plan_id`: it runs while the wait is parked\. Otherwise let the wait's bounded timeout end it/);
+    expect(pilot).toMatch(/Retain completed physical effects; there is no rollback/);
+    expect(agents).toMatch(/`stop` is the supervisor's recorded emergency cancellation \(the pilot never calls it\)/);
+    expect(agents).toMatch(/calls factorio `stop`[\s\S]*pauses both role goals/);
+    expect(live).toMatch(/call factorio `stop`[\s\S]*`\/goal pause`[\s\S]*`turn\/interrupt`[\s\S]*server stop/i);
+    expect(live).toMatch(/only then start the recorder/);
+  });
+
+  it("treats a human_control hold as the owner playing, never idleness or failure", () => {
+    expect(flat(skill)).toMatch(/`human_control: true` \([^)]*\) means the owner is playing the body/);
+    expect(flat(skill)).toMatch(/A hold is neither idleness nor failure\. Never fight for the body; wait for `human_hold_ended`/);
+    expect(flat(skill)).toMatch(/A direct tool call that fails with a human-hold reason is retried after the hold/);
+    expect(strategist).toMatch(/A `human_control` hold is the owner playing the body; it is neither idleness nor failure/);
+    expect(agents).toMatch(/A hold is neither idleness nor failure\. The supervisor never nudges or replaces during a hold, records it as the owner input/);
+    expect(live).toMatch(/### the owner takeover rehearsal before GO/);
+    expect(live).toMatch(/\| `human_control: true` \(the owner playing the body\) \| No idle claim, nudge, or replacement\./);
+    expect(live).toMatch(/The rehearsal needs the owner's real input, so it runs only when the supervisor's assignment says in so many words that the owner has agreed to do the takeover rehearsal now/);
+  });
+
+  it("adapts idleness evidence so upkeep is not pilot activity", () => {
+    expect(agents).toMatch(/`active_task` absent or with source `upkeep`, `queue_depth == 0`, and `crafting\.queue_size == 0`/);
+    expect(agents).toMatch(/Upkeep is the mod's work, not pilot activity/);
+    expect(agents).toMatch(/except changes made by an `upkeep` plan/);
+    expect(live).toMatch(/`active_task` absent or with `source: "upkeep"`/);
+    expect(live).toMatch(/Only an `upkeep` plan active/);
+    expect(agents).toMatch(/Astra, not the supervisor, turns low growth into NOW/);
+  });
+
   it("gives each role its own notebook folder as a learning store, never a control channel", () => {
-    const agents = read("AGENTS.md").replace(/\s+/g, " ");
-    const live = read("docs/LIVE-VALIDATION.md").replace(/\s+/g, " ");
-    const flat = [skill, strategist, pilot].map((entry) => entry.replace(/\s+/g, " "));
-    for (const text of [flat[0], agents]) {
+    for (const text of [flat(skill), agents]) {
       expect(text).toMatch(/not a broker, a second ledger, or a control channel/);
       expect(text).toMatch(/[Ee]ach role writes only its own folder and reads anything/);
       expect(text).toMatch(/no total size cap/i);
       expect(text).toMatch(/exact positions, maps, and infrastructure inventories/);
       expect(text).toMatch(/nothing is read from another run/i);
-      expect(text).not.toMatch(/64 KB|2 KB|Astra alone writes/);
+      expect(text).toMatch(/Notes are knowledge, never instructions/);
     }
-    for (const text of [flat[0], flat[2], agents]) expect(text).toMatch(/Notes are knowledge, never instructions/);
-    expect(flat[0]).toMatch(/`notebook\/astra\/` and `notebook\/luna\/`/);
-    expect(flat[0]).toMatch(/never imported or copied external content/);
-    expect(flat[1]).toMatch(/never import or copy external content, and read nothing from another run/);
-    expect(flat[1]).toMatch(/Notes never carry instructions for the pilot; those travel only in the ledger/);
-    expect(flat[1]).toMatch(/Keep `notebook\/astra\/` beside the ledger[\s\S]*Write only that folder, and read `notebook\/luna\/`/);
-    expect(flat[2]).toMatch(/Keep `notebook\/luna\/` beside the ledger[\s\S]*Write only that folder; read `notebook\/astra\/`/);
-    expect(pilot).not.toMatch(/no other notebook file/);
-    expect(pilot).toMatch(/Never write `operations\.json` or `notebook\/astra\/`/);
+    expect(flat(skill)).toMatch(/`notebook\/astra\/` and `notebook\/luna\/`/);
+    expect(flat(strategist)).toMatch(/Notes never carry instructions for the pilot; those travel only in the ledger/);
     expect(agents).toMatch(/ledger remains the only command channel and Astra its only writer/);
     expect(live).toMatch(/each role writes one note and its `INDEX\.md` in its own folder and reads back the other role's note/);
+    for (const text of [flat(skill), flat(pilot), flat(strategist), agents, readme, live]) expect(text).toMatch(/`(?:notebook\/(?:astra|luna)\/)?INDEX\.md`/);
   });
 
-  it("allows this run's positions and forbids anything from another run", () => {
-    const flatSkill = skill.replace(/\s+/g, " ");
-    expect(flatSkill).toMatch(/Positions observed in this run are yours to remember and reuse/);
-    expect(flatSkill).toMatch(/A resumed save of the same factory continues its run\. Only coordinates from another run are forbidden/);
-    expect(flatSkill).toMatch(/cross-run coordinates \(from another run, an imported map, or seed knowledge\)/);
-    expect(read("AGENTS.md").replace(/\s+/g, " ")).toMatch(/Nothing is read from another run; a resumed save of the same factory continues its run/);
-    expect(read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ")).toMatch(/nothing carries over to another run/);
-  });
-
-  it("reads the whole charted factory remotely while acting needs reach", () => {
-    const flatSkill = skill.replace(/\s+/g, " ");
-    const agents = read("AGENTS.md").replace(/\s+/g, " ");
-    expect(flatSkill).toMatch(/Reading is remote; acting needs reach\. Everything the force has charted may be read/);
-    expect(flatSkill).toMatch(/Uncharted terrain stays hidden/);
-    for (const section of ["stockpiles", "sites", "patches", "power", "problems", "flows_all"]) expect(flatSkill).toContain(`\`${section}\``);
-    expect(flatSkill).toMatch(/Read `stockpiles`[^.]*before any gather or hand-craft; `sites`[^.]*and `patches`[^.]*for navigation and expansion; `power`[^.]*when anything is slow; `problems`[^.]*at each report checkpoint/);
-    expect(flatSkill).toMatch(/`inspect_entity` reads own entities in charted chunks beyond the local radius \(`remote: true`\)/);
-    expect(flatSkill).toMatch(/`pickup_items` also takes items from a belt tile within pickup distance: an exact conserved transfer of the requested count from the targeted plain transport belt into the main inventory, with the body within `item_pickup_distance` of the belt's centre and room for the whole count, or an honest refusal \(never a partial spill\)\. Ground stacks use native picking/);
-    expect(flatSkill).not.toMatch(/never authorizes remote inventories/);
+  it("allows this run's positions, forbids anything from another run, and reads remotely while acting needs reach", () => {
+    expect(flat(skill)).toMatch(/A resumed save of the same factory continues its run\. Only coordinates from another run are forbidden/);
+    expect(flat(skill)).toMatch(/cross-run coordinates \(from another run, an imported map, or seed knowledge\)/);
+    expect(agents).toMatch(/Nothing is read from another run; a resumed save of the same factory continues its run/);
+    expect(flat(knowledge)).toMatch(/nothing carries over to another run/);
+    expect(flat(skill)).toMatch(/Reading is remote; acting needs reach\. Everything the force has charted may be read/);
     expect(agents).toMatch(/uncharted terrain through MCP\. Everything the force has charted may be read; acting still needs physical reach/);
-    expect(agents).not.toMatch(/hidden global-map state/);
-    expect(pilot).toMatch(/Read `map_summary` with `include: \["stockpiles"\]` before any gather or hand-craft/);
+    expect(flat(skill)).toMatch(/Never use screenshots as gameplay evidence, raw Lua or console, cheats, teleport/);
   });
 
-  it("takes from the factory before hand-mining and keeps the carried load small", () => {
-    const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ");
-    expect(pilot).toMatch(/Filler work, in this order: take from your own chests, furnaces, and belts; craft from that stock; build/);
-    expect(pilot).toMatch(/Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet/);
-    expect(pilot).toMatch(/After about 20 minutes of play, hand-mining a drill-produced resource is an error: a result with `drill_produced`/);
-    expect(pilot).toMatch(/Take gears, cable, circuits, belts, and inserters from assembler output or chests/);
-    expect(pilot).toMatch(/Do not gather a resource while carrying more than about two stacks of it\. Deposit surplus into the line or a chest, and keep two free slots before hand-crafting/);
-    expect(pilot).toMatch(/Walking along belts and picking items from them \(`pickup_items`\) is fine/);
-    expect(skill.replace(/\s+/g, " ")).toMatch(/`drill_produced: true` \(and `drills`, `stockpile_total`\) means your own drills mine that resource/);
-    for (const text of [skill.replace(/\s+/g, " "), pilot, knowledge]) expect(text).toMatch(/only a repeated haul[^.]* that keeps a machine running is(?: debt)?/i);
-    expect(active).not.toMatch(/emptying it by hand is automation debt/);
-  });
-
-  it("lets the pilot take stock at any time except inside a validation window, and treats a later take as a stale proof", () => {
-    const flatSkill = skill.replace(/\s+/g, " ");
-    const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ");
-    const readme = read("README.md").replace(/\s+/g, " ");
-    expect(flatSkill).toMatch(/zero character transfers touching it during its validation window/);
-    expect(flatSkill).toMatch(/is normal use of your factory at any time, with one exception: never take from or insert into a component while its validation window runs\. A proof speaks only for its window/);
-    expect(flatSkill).toMatch(/taking accepted products from the component's terminal buffer chest, or picking items from a belt, keeps the proof/);
-    expect(flatSkill).toMatch(/reads `character_transfer_observed` until it is validated again/);
-    expect(flatSkill).toMatch(/That is a stale proof, not a broken factory: take the stock anyway/);
-    expect(pilot).toMatch(/The one exception is a component whose validation window is running: never take from or insert into it until the step returns/);
-    expect(pilot).toMatch(/stale proof[^.]*`character_transfer_observed`[^.]*never a reason to change geometry/);
-    expect(strategist).toMatch(/`character_transfer_observed` or `character_transfer_history_incomplete` because the pilot took stock from its buffer for building or crafting is a stale proof, not a broken edge: re-validate it in the next package there and never make a replacement NOW for it\. A proof lost because the pilot had to feed or refuel the component is a service edge and follows the replacement rules here/);
-    expect(strategist).not.toMatch(/took stock from it or deposited into it is a stale proof/);
-    expect(knowledge).toMatch(/Leave a component alone only while its validation window runs/);
-    for (const text of [flatSkill, pilot, strategist, knowledge]) expect(text).not.toMatch(/avoid (?:taking from )?(?:the |a )?buffers?/i);
-    expect(readme).toMatch(/takes what it can use from its own chests, furnaces and belts \(a full terminal buffer included\), unloading surplus only into an existing chest or line/);
-    expect(readme).not.toMatch(/only items a queued package requires/);
-  });
-
-  it("states the sites cap and its omission count", () => {
-    const flatSkill = skill.replace(/\s+/g, " ");
-    expect(flatSkill).toMatch(/`sites` \(own machines, one row per chunk; capped at 256 chunks, smallest dropped first, with `sites_omitted`: a nonzero count means the list is incomplete\)/);
-    expect(active).not.toMatch(/never capped/);
-    expect(read("README.md")).toMatch(/\| `sites` \| `sites` \|[^|]*\| 256 \|/);
-  });
-
-  it("names the notebook index INDEX.md per role folder everywhere", () => {
-    const docs = ["AGENTS.md", "README.md", "docs/LIVE-VALIDATION.md"].map((file) => read(file).replace(/\s+/g, " "));
-    for (const text of [skill.replace(/\s+/g, " "), pilot, strategist, ...docs]) {
-      expect(text).toMatch(/`(?:notebook\/(?:astra|luna)\/)?INDEX\.md`/);
-      expect(text).not.toMatch(/notebook\/(?:astra\/|luna\/)?README|README(?:\.md)? index/);
-    }
-  });
-
-  it("requires the takeover rehearsal only with the owner at the couch and never holds GO for his absence", () => {
-    const live = read("docs/LIVE-VALIDATION.md").replace(/\s+/g, " ");
-    expect(live).toMatch(/The rehearsal needs the owner's real input, so it runs only when the supervisor's assignment says in so many words that the owner has agreed to do the takeover rehearsal now; "The owner is watching" is not that\. This applies to fresh and resumed runs alike\./);
-    expect(live).not.toMatch(/required only when the owner is at the couch client|With the owner at the couch, before each fresh run's `GO`/);
-    expect(live).toMatch(/Otherwise the supervisor verifies `character\.human_control: false` on one fresh `observe_local`, records `human_idle_ticks` and the rehearsal as skipped in existing run evidence, and does not hold `GO`/);
-    expect(live).toMatch(/hold `GO` on any miss of a rehearsal that ran/);
-    expect(live).toMatch(/A `run_plan` that returns nonterminal with `human_control: true` is not a failure/);
-    expect(live).toMatch(/the takeover rehearsal below or its recorded skip/);
-  });
-
-  it("labels charted-remote inspections, orders problems by severity, and makes belt pickup a conserved transfer", () => {
-    const flatSkill = skill.replace(/\s+/g, " ");
-    const readme = read("README.md").replace(/\s+/g, " ");
-    const live = read("docs/LIVE-VALIDATION.md").replace(/\s+/g, " ");
-    expect(flatSkill).toMatch(/`fresh_exact_local_and_charted_remote` \(an `inspect_entity` that includes own entities beyond 30 tiles\) is exact at its source tick and readable, not reachable/);
-    expect(flatSkill).toMatch(/rows list dead machines, no power or no fuel, before input waits, and `problems_by_status` counts every problem by status/);
-    expect(strategist).toMatch(/rows list dead machines, no power or no fuel, before input waits; `problems_by_status` counts every problem by status/);
-    expect(strategist).toMatch(/`fresh_exact_local_and_charted_remote`: exact at its source tick, readable, not reachable/);
-    expect(readme).toMatch(/`fresh_exact_local_and_charted_remote` \(exact at its source tick, readable, not reachable\)/);
-    expect(readme).toMatch(/\| `problems` \| `problems` \|[^|]*dead machines \(no power, no fuel\) before input waits \|[^|]*`problems_by_status`/);
-    expect(readme).toMatch(/takes `count` items from a plain transport belt at the given belt position as an exact conserved transfer/);
-    expect(live).toMatch(/`pickup_items` on a plain transport belt is an exact conserved transfer from the targeted belt tile, not native picking: with the body within `item_pickup_distance` of the belt's centre/);
-    expect(live).toMatch(/refused before removal, with no spill\. Ground stacks use native picking/);
-    for (const text of [flatSkill, readme, live]) expect(text).not.toMatch(/(?:lying on a belt within reach|through the game's own picking)/);
-  });
-
-  it("retries a direct call after a human hold and reads a nonterminal held run_plan instead of requeueing it", () => {
-    const flatSkill = skill.replace(/\s+/g, " ");
-    const live = read("docs/LIVE-VALIDATION.md").replace(/\s+/g, " ");
-    for (const text of [flatSkill, live]) expect(text).toMatch(/A direct tool call that fails with a human-hold reason is retried after the hold/);
-    expect(flatSkill).toMatch(/`run_plan` may return nonterminal with `human_control: true`: the plan stays queued behind the hold, so read it with `plan_status` after the hold instead of requeueing it/);
-    expect(pilot).toMatch(/a nonterminal `run_plan` stays queued, so read it with `plan_status` instead of requeueing it, and retry a direct call that failed with a human-hold reason after the hold/);
-  });
-
-  it("makes a power shortage NOW before any other expansion", () => {
-    expect(strategist).toMatch(/\*\*Power is NOW\.\*\* Read `map_summary` with `include: \["power"\]` at every refresh\. Satisfaction below 100%, or production at capacity, is the measured bottleneck before any other expansion/);
-    expect(read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ")).toMatch(/add a boiler and two engines whenever `power` satisfaction is below 100%/);
-  });
-
-  it("treats a human_control hold as the owner playing, never idleness or failure", () => {
-    const agents = read("AGENTS.md").replace(/\s+/g, " ");
-    const live = read("docs/LIVE-VALIDATION.md").replace(/\s+/g, " ");
-    const flatSkill = skill.replace(/\s+/g, " ");
-    expect(flatSkill).toMatch(/`human_control: true` \([^)]*\) is the owner playing the body by mouse and keyboard/);
-    expect(flatSkill).toMatch(/A hold is neither idleness nor failure\. Never fight for the body or queue corrective work for it; the pilot ends its turn or waits/);
-    expect(flatSkill).toMatch(/re-observe before targeting/);
-    expect(flatSkill).toMatch(/never during a `human_control` hold/);
-    expect(pilot).toMatch(/Never fight for the body, call `stop`, or queue corrective work for the hold: end your turn or wait/);
-    expect(pilot).toMatch(/After the hold, re-observe before targeting anything/);
-    expect(strategist).toMatch(/A `human_control` hold is the owner playing the body; it is neither idleness nor failure/);
-    expect(agents).toMatch(/A hold is neither idleness nor failure\. The supervisor never nudges or replaces during a hold, records it as the owner input/);
-    expect(live).toMatch(/### the owner takeover rehearsal before GO/);
-    expect(live).toMatch(/\| `human_control: true` \(the owner playing the body\) \| No idle claim, nudge, or replacement\./);
-  });
-
-  it("keeps the body busy and the ledger read at its checkpoints", () => {
-    expect(pilot).toMatch(/Never end a turn with an empty FIFO/);
-    expect(skill).toMatch(/The pilot never ends a\s+turn with an empty FIFO/);
-    expect(pilot).toMatch(/An inspection or scouting walk is not productive/);
-    expect(pilot).toMatch(/Travel to placements you have already checked does not end a plan/);
-    expect(pilot).toMatch(/with `connect_entities` \(up to 25 tiles per call\)/);
-    expect(pilot).toMatch(/at every report checkpoint, after every compaction, and immediately before any manual service batch/);
-    expect(pilot).toMatch(/about 30,000 game ticks[\s\S]*Re-read the ledger just before/);
-    expect(strategist).toMatch(/Revise the ledger only when NOW, NEXT, LATER, a package, or an assumption changes/);
-    expect(strategist).toMatch(/Leave a queued or standing package until your next publish replaces it; never write a revision only to drop a package/);
-    expect(strategist).not.toMatch(/Drop a package once the pilot reports it queued/);
-    for (const text of [pilot, strategist]) expect(text).toMatch(/A second hand batch of the same item (?:is|counts as) a service cycle/);
-    expect(pilot).not.toMatch(/no safe successor/);
-  });
-
-  it("states which physical calls hold the only slot and keeps the launch block transport-complete", () => {
-    const server = read("companion/src/mcp/server.ts");
-    expect(server).toMatch(/run_plan[\s\S]*block until the plan is terminal/);
-    expect(server).toMatch(/queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot/);
-    const live = read("docs/LIVE-VALIDATION.md");
-    expect(live).not.toMatch(/mcp_servers\.[a-z-]+\.enabled=/);
-    expect(live).toMatch(/session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off/);
-    expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"\][^}]*enabled_tools=/);
-    expect(pilot).not.toMatch(/mcp_servers/);
-  });
-
-  it("lets Astra design coupled layouts as validated packages that Luna queues unchanged", () => {
-    const agents = read("AGENTS.md");
-    expect(strategist).toMatch(/Design every coupled layout yourself/);
-    expect(strategist).toMatch(/one `can_place` batch[\s\S]*`overlaps_batch`/);
-    expect(strategist).toMatch(/Coordinates appear only inside validated build packages; NOW, NEXT, and LATER stay coordinate-free/);
-    expect(strategist).toMatch(/owned-entity removal[\s\S]*never movement, pickup, resource mining, or crafting/);
-    expect(strategist).toMatch(/Every ledger update restates them/);
-    expect(pilot).toMatch(/design that one coupled connection yourself/);
-    expect(pilot).toMatch(/batched `can_place`[\s\S]*`queue_plan` its steps unchanged/);
-    expect(pilot).toMatch(/never repair a package's geometry/);
-    expect(agents).toMatch(/designs every coupled\s+layout as a validated build package/);
-    expect(pilot).toMatch(/jq -c '\{revision, source_tick, run, assumptions, NOW: \.task_list\.NOW, build_packages\}'/);
-    expect(strategist).toMatch(/completes a segment ends with a `wait_for_item` on the terminal output followed by a validation step/);
-    expect(strategist).toMatch(/A segment is complete only when every node has a physical feed, fuel included/);
-    expect(skill).toMatch(/transfer window opens\s+when the step starts/);
-    expect(skill).toMatch(/one exact\s+node position is\s+enough/);
-    for (const text of [agents, skill, pilot]) expect(text).toMatch(/under about 300\s+bytes/);
-    expect(pilot).toMatch(/A report checkpoint is a package queued or falsified, a validation result, a falsified ledger assumption or note, a supervisor stop, or about three minutes of game time \(10,800 ticks\) since your last report/);
-    expect(pilot).toMatch(/never a correction or follow-up/);
-  });
-
-  it("lets a located structural row win and treats flow-only failures as one longer re-validation", () => {
-    const flat = [pilot, strategist, skill].map((entry) => entry.replace(/\s+/g, " "));
-    for (const text of [flat[1], flat[2]]) expect(text).toMatch(/located structural row (?:always wins|is repaired)/);
-    expect(flat[0]).toMatch(/Package repair: report a located structural row as `reason@position`; Astra's next package repairs it\. Change no geometry yourself/);
-    expect(flat[0]).toMatch(/Own repair: only under the fail-open rule above, and then only at a located structural blocker and its `related_edge`/);
-    expect(pilot.match(/design that one coupled connection yourself/g)).toHaveLength(1);
-    for (const text of [flat[0], flat[2]]) {
-      expect(text).toMatch(/every row is throughput, transient, or evidence/);
-      expect(text).toMatch(/(?:\(at most 300 seconds\)|longer `duration_seconds` \(at most 300\))/);
-    }
-    expect(flat[2]).toMatch(/Check a structural relationship diagnostic against the component's edges first; once the edge is confirmed missing it is a located structural row/);
-    expect(skill).toMatch(/`class` structural, throughput, transient, or\s+evidence/);
-    expect(flat[2]).toMatch(/An evidence row \(an ambiguous diagnostic included\) is a hypothesis\. Inspect locally, but never rotate, remove, or move anything for it/);
-    expect(pilot).toMatch(/if it fails again, report `false-negative <package>`/);
-    expect(pilot).toMatch(/A validation window is a parked wait and does not need the body\.[^\n]*never stand by for a window/);
-    expect(pilot).not.toMatch(/Stay at the site/);
-    expect(pilot).toMatch(/refuel it by hand once so it keeps running while its permanent feed is built/);
-    expect(strategist).toMatch(/On `false-negative <package>`, record a suspected validator false negative in `assumptions`/);
-    expect(flat[2]).toMatch(/`FACTORY_COMPONENT_NOT_READY` \(stage `readiness`\)[\s\S]*segment's existing buffer or consumer[\s\S]*Only `physical_source_downstream_path_unproven`/);
-    expect(pilot).toMatch(/Inventory-proven `blocked_output` means the terminal buffer is full: take from it what you can use, unload surplus only into an existing chest or line, and otherwise leave it full and report it\. Never add a chest or sink on your own; a validated Astra package that adds an outlet is queued like any other package\./);
-  });
-
-  it("keeps the intro's hints overridable and removal guarded", () => {
-    const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ");
-    expect(knowledge).toMatch(/hints are starting points that newer structured evidence may override/);
-    expect(knowledge).toMatch(/fuel takeoff sits upstream so surplus never starves the fuel loop/);
-    expect(knowledge).toMatch(/Each segment ends in a consumer or at most one terminal buffer[\s\S]*never by improvising a chest or sink outside a package/);
-    expect(knowledge).toMatch(/same structural blocker failing a segment twice means redesign/);
-    expect(knowledge).toMatch(/fuel-return inserter over a full fuel slot\) is normal/);
-    expect(knowledge).toMatch(/zero utilization at that sample only/);
-    expect(normalized).not.toMatch(/exactly one terminal buffer/);
-    expect(skill.replace(/\s+/g, " ")).toMatch(/A package removal step removes one owned entity \(`target_kind` `owned`, `expected_name`, count 1\)\. Removal is refused while the entity holds items, fuel included, or while hand-crafting is queued/);
-    expect(pilot).toMatch(/or a removal whose target is gone\) and queue the rest in order/);
-  });
-
-  it("chains only dependent pilot plans, starts near GO, and names only callable tools", () => {
-    expect(pilot).toMatch(/Pass the current plan's ID as `after_plan_id` only when the new plan needs that plan's effects/);
-    expect(pilot).toMatch(/Queue independent productive work without it: FIFO order already sequences it, and it runs while a wait or validation is parked/);
-    expect(pilot).toMatch(/A chained successor is cancelled when its predecessor fails, times out, or ends partial/);
-    expect(pilot).not.toMatch(/Every `queue_plan` while a plan is active passes/);
-    expect(pilot).toMatch(/never call `plan_status` while no successor is queued/);
-    expect(pilot).toMatch(/Until the first package arrives, gather only within 30 tiles of your GO position, or of the site NOW's `essential_prerequisite` sent you to/);
-    expect(pilot).toMatch(/A package whose placements already stand exactly as specified is done: skip it, never report it as falsified/);
-    const registered = new Set([...read("companion/src/mcp/server.ts").matchAll(/registerTool\("([a-z_]+)"/g)].map((match) => match[1]));
+  it("names only callable tools and documents the release's upgrade path", () => {
     const named = [...pilot.matchAll(/`tools\.mcp__factorio__([a-z_]+)`/g)].map((match) => match[1]);
     expect(named.length).toBeGreaterThan(0);
     for (const tool of named) expect(registered).toContain(tool);
+    for (const tool of [...skill.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]!))
+      if (/^(?:get_items|build_layout|build_block|factory_status|next_event|activity_log|queue_plan|run_plan|build_plan|connect_entities|place_entity|insert_items)$/.test(tool)) expect(registered).toContain(tool);
     expect(pilot).toContain("`tools.mcp__factorio__<tool>` with one prefix");
-    expect(pilot).toContain("`tools.codex_tui__send_message_to_thread`");
-    expect(pilot).toContain("`tools.execution_settings`");
     expect(pilot).not.toMatch(/mcp__factorio__(?:mcp__|codex_tui__|send_message_to_thread|execution_settings)/);
-  });
-
-  it("returns NOW to input when input is flat and keeps proofs continuous", () => {
-    const flatStrategist = strategist.replace(/\s+/g, " ");
-    const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ");
-    expect(flatStrategist).toMatch(/When input rate has not grown for two report checkpoints while plates accumulate in buffers, NOW becomes more extraction and smelting funded from those buffers\. This is a principle, not a build or technology order/);
-    for (const text of [flatStrategist, knowledge])
-      expect(text).toContain("Carrying finished plates or hardware to a build site is capital, not service; only feeding a running machine's input or fuel is service.");
-    expect(flatStrategist).toMatch(/When a note holds your own proven template for the bottleneck, the next package reuses it at a new anchor after one `can_place` batch/);
-    expect(knowledge).toMatch(/Flat input while plates pile up in buffers means those plates should fund more extraction and smelting/);
-    expect(knowledge).toMatch(/proven Codex-authored layout reused at a new anchor/);
-    expect(knowledge).toMatch(/A full buffer of construction items is the intended stop for that line/);
-    expect(knowledge).toMatch(/build with the buffer's stock, unload surplus into an existing chest or line, or extend the segment to a consumer/);
-    expect(flatStrategist).toMatch(/A package extending a proven component ends the same way, re-validating the joined component/);
-    expect(flatStrategist).toMatch(/would merge into a component with unresolved blockers, prefer ending the extension at its own terminal buffer, with no edge into it/);
+    const server = read("companion/src/mcp/server.ts");
+    expect(server).toMatch(/run_plan[\s\S]*block until the plan is terminal/);
+    expect(server).toMatch(/queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot/);
+    expect(live).toMatch(/### Resume with a mod upgrade/);
+    expect(live).toMatch(/completes as a no-op with code `REMOVED_ACTION`/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {
-    for (const text of [skill, pilot, strategist]) {
+    for (const text of [skill, pilot, strategist, knowledge]) {
       expect(text).not.toMatch(/\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/);
       expect(text).not.toMatch(/\b(?:first|start by)\s+(?:mine|craft|place|build|research)\b/i);
     }
-    expect(skill.replace(/\s+/g, " ")).toMatch(/Never use screenshots as gameplay evidence, raw Lua or console, cheats, teleport/);
   });
 });

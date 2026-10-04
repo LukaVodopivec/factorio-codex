@@ -37,8 +37,9 @@ export interface MapSummary {
     groups: Array<Record<string, unknown>>; force_flows: Array<Record<string, unknown>>;
     material_flow: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>>;
       components: Array<Record<string, unknown>>; diagnostics: Array<Record<string, unknown>>;
-      component_count: number; edge_count: number; autonomous_component_count: number;
-      validated_component_count: number; products_finished_total: number };
+      component_count: number; edge_count: number; products_finished_total: number;
+      /** Production lines the mod tracks (factory_status lines), whole factory. */
+      line_count: number; running_line_count: number; self_sustaining_line_count: number; hand_fed_line_count: number };
     character_transfers: Record<string, unknown>; omissions: Record<string, number>; partial: boolean;
   };
   // Present only when named in `include`; own-force and charted-chunk scope.
@@ -50,6 +51,7 @@ export interface MapSummary {
   patches_omitted?: number;
   power?: { networks_omitted: number; networks: Array<{ id: number; production_w?: number; consumption_w?: number; capacity_w: number;
     satisfaction: number; accumulator_j: number; accumulator_capacity_j: number; statistics_available: boolean;
+    demand_w?: number; engines_needed?: number;
     starved_consumers: number; producers: Record<string, number>; consumers: Record<string, number> }> };
   problems?: Array<{ entity: string; position: Position; status: string }>; problems_total?: number;
   /** Every problem machine counted by normalized status, including rows past the cap. */

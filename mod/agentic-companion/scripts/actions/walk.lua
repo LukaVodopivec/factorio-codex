@@ -20,7 +20,9 @@ local MIN_FRONTIER_PROGRESS_SQ = 0.01
 local ESCAPE_TICKS = 90
 local FRONTIER_RADIUS = 0.5 -- each probe must reach its own frontier point
 local MAX_FRONTIER_PROBES = 16
-local SETTLE_RADIUS_SQ = 4 -- off-belt tiles within 2 tiles of the body's tile
+-- Off-belt tiles within 2 tiles of the body's tile, then (a belt crossing
+-- or a wide splitter) within 4.
+local SETTLE_RADII = { 2, 4 }
 local SETTLE_TICKS = 60
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
@@ -493,15 +495,15 @@ local function conveyor_label(conveyor)
     position = { x = conveyor.position.x, y = conveyor.position.y } }
 end
 
--- Nearest charted tile centre within 2 tiles whose body box touches no
+-- Nearest charted tile centre within `radius` tiles whose body box touches no
 -- conveyor and no character collider, optionally within `limit` of `anchor`.
-local function settle_cell(c, anchor, limit)
+local function settle_cell(c, anchor, limit, radius)
   local pos = c.position
   local tx, ty = math.floor(pos.x), math.floor(pos.y)
   local cells = {}
-  for dy = -2, 2 do
-    for dx = -2, 2 do
-      if dx * dx + dy * dy <= SETTLE_RADIUS_SQ then
+  for dy = -radius, radius do
+    for dx = -radius, radius do
+      if dx * dx + dy * dy <= radius * radius then
         local cell = { x = tx + dx + 0.5, y = ty + dy + 0.5 }
         cells[#cells + 1] = { position = cell, distance = dist_sq(pos, cell) }
       end
@@ -544,11 +546,16 @@ function M.begin_settle(state, c, anchor, limit)
   state.settle_anchor = anchor and { x = anchor.x, y = anchor.y } or nil
   state.settle_limit = limit
   state.settle_attempted = true
-  local cell, rejected = settle_cell(c, state.settle_anchor, limit)
+  local cell, rejected
+  for _, radius in ipairs(SETTLE_RADII) do
+    cell, rejected = settle_cell(c, state.settle_anchor, limit, radius)
+    if cell then break end
+  end
   if not cell then
     return fail(c, "BODY_ON_CONVEYOR", string.format(
-      "the body stands on %s at (%.1f, %.1f) and no charted clear off-belt tile lies within 2 tiles%s",
-      conveyor.name, conveyor.position.x, conveyor.position.y, anchor and " and within reach of the target" or ""),
+      "the body stands on %s at (%.1f, %.1f) and no charted clear off-belt tile lies within %d tiles%s",
+      conveyor.name, conveyor.position.x, conveyor.position.y, SETTLE_RADII[#SETTLE_RADII],
+      anchor and " and within reach of the target" or ""),
       { code = "BODY_ON_CONVEYOR", diagnostics = { path = { evidence_scope = "charted_visible_only",
         start = { x = c.position.x, y = c.position.y }, conveyor = conveyor_label(conveyor),
         settle_rejected = rejected, settle_anchor = state.settle_anchor, settle_limit = limit } } })

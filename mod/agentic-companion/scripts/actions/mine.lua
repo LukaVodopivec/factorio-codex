@@ -2,7 +2,7 @@
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 -- Optional: the charted-stock reader may be absent or fail to load.
-local map_summary_ok, map_summary = pcall(require, "scripts.map_summary")
+local registry = require("scripts.registry")
 local M = {}
 local NATURAL_MINABLE_TYPES = { resource = true, tree = true, ["simple-entity"] = true }
 
@@ -213,7 +213,19 @@ function M.start(task)
   if target_kind == "owned" and (tonumber(c.crafting_queue_size) or 0) > 0 then
     error("refusing to recover a player-owned entity while Codex has active hand-crafting")
   end
-  local candidates = c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } } })
+  -- The mod's own supply and footprint clearing name the exact natural entity
+  -- (a tree on an ore tile shares its coordinate with the resource).
+  local exact = task.entity
+  if exact ~= nil then
+    local ok, natural_entity = pcall(function()
+      return exact.valid and NATURAL_MINABLE_TYPES[exact.type] and exact.force ~= c.force
+    end)
+    if not (ok and natural_entity) or target_kind ~= "natural" then
+      error("mine entity must be a valid natural minable entity")
+    end
+  end
+  local candidates = exact and { exact }
+    or c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } } })
   local natural, owned
   for _, e in ipairs(candidates) do
     local is_owned = e.force == c.force and e.type ~= "character" and not NATURAL_MINABLE_TYPES[e.type]
@@ -265,27 +277,23 @@ end
 
 -- Hand-mining a resource that own mining drills already mine spends body time
 -- on something the factory produces. Name the drills and the drill-fed stock
--- so the caller sees the better source. The search names no area: a filter
--- by force and type reads the surface's own lists, while a huge area makes
--- the game walk every chunk in it and stalls every peer for many seconds
--- (live on 2.0.77, cycle 9).
+-- so the caller sees the better source. Drills and stock come from the
+-- event-maintained registry: no entity query at the end of a mine task.
 local function drill_hint(c, task)
   if task._resolved_target.type ~= "resource" then return nil end
-  local ok, found = pcall(c.surface.find_entities_filtered,
-    { type = "mining-drill", force = c.force })
+  local ok, found = pcall(registry.machines, { "mining-drill" })
   if not ok or type(found) ~= "table" then return nil end
   local drills = 0
-  for _, drill in ipairs(found) do
-    local ok_target, target = pcall(function()
-      return drill.valid and drill.type == "mining-drill" and drill.force == c.force and drill.mining_target
-    end)
+  for _, entry in ipairs(found) do
+    local ok_target, target = pcall(function() return entry.entity.mining_target end)
     if ok_target and target and target.valid and target.name == task._entity_name then drills = drills + 1 end
   end
   if drills == 0 then return nil end
   local hint = { drill_produced = true, drills = drills }
-  if map_summary_ok and type(map_summary) == "table" and map_summary.stock_total and task._expected_items[1] then
-    local ok_stock, total = pcall(map_summary.stock_total, task._expected_items[1])
-    if ok_stock and type(total) == "number" then hint.stockpile_total = total end
+  local item = task._expected_items[1]
+  if item then
+    local ok_stock, totals = pcall(registry.stock_totals, { item })
+    if ok_stock and type(totals) == "table" and type(totals[item]) == "number" then hint.stockpile_total = totals[item] end
   end
   return hint
 end

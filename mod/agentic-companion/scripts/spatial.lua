@@ -484,8 +484,10 @@ local function can_place_one(c, surface, item, position, direction)
     error("can_place requires item = <item name>")
   end
   local pos = require_position(position, "can_place requires position = {x, y}")
-  local dx, dy = pos.x - c.position.x, pos.y - c.position.y
-  if math.sqrt(dx * dx + dy * dy) > 30 then error("can_place positions must be within 30 tiles of Codex") end
+  -- Anywhere the force has charted; building there still needs the body.
+  if not c.force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) }) then
+    error("can_place positions must be in charted terrain")
+  end
   direction = math.floor(tonumber(direction) or 0) % 16
 
   local item_proto = prototypes.item[item]
@@ -518,13 +520,14 @@ local function can_place_one(c, surface, item, position, direction)
 
   -- Best-effort explanation: name whatever occupies the would-be footprint.
   local area = placement_geometry.footprint(entity_proto, pos, direction)
-  local blocker, companion_in_way
+  local blocker, companion_in_way, only_natural = nil, nil, true
   for _, e in ipairs(surface.find_entities_filtered({ area = area, limit = 65 })) do
     if e.valid then
       if e == c then
         companion_in_way = true
-      elseif not placement_geometry.NON_BLOCKING_TYPES[e.type] and not blocker then
-        blocker = e
+      elseif not placement_geometry.NON_BLOCKING_TYPES[e.type] then
+        blocker = blocker or e
+        if e.type ~= "tree" and e.type ~= "simple-entity" then only_natural = false end
       end
     end
   end
@@ -533,6 +536,10 @@ local function can_place_one(c, surface, item, position, direction)
   if blocker then
     reason = string.format("blocked by %s at (%.1f, %.1f)",
       blocker.name, blocker.position.x, blocker.position.y)
+    if only_natural and not footprint_touches_water(surface, area) then
+      reason = reason .. " — only trees or rocks: placing mines them first"
+      identity.clears_natural = true
+    end
     if companion_in_way then
       reason = reason .. " — and I'm standing in the footprint too, I'll need to step aside"
     end
@@ -597,14 +604,10 @@ function M.can_place(params)
     end
   end
   local function lands_on(point, kind, self_index, producer_type)
-    -- Local perception bounds apply to planned and existing relations alike.
-    local dx, dy = point.x - c.position.x, point.y - c.position.y
-    if dx * dx + dy * dy > 900 then return { state = "out_of_range" } end
     local match, count = nil, 0
     for j = 1, #params.placements do
       local other = planned[j]
-      local dx, dy = other and other.position.x - c.position.x, other and other.position.y - c.position.y
-      if j ~= self_index and other and dx * dx + dy * dy <= 900
+      if j ~= self_index and other
         and c.force.is_chunk_charted(c.surface, { x = math.floor(other.position.x / 32), y = math.floor(other.position.y / 32) })
         and output_targets.can_target_type(other.proto.type, kind)
         and output_targets.recipient_contains(other.area, point, producer_type, kind) then

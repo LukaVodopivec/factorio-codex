@@ -335,4 +335,14 @@ local natural_loss, natural_loss_error = pcall(mine.start,
 check(not natural_loss and tostring(natural_loss_error):match("only with target_kind=owned") ~= nil,
   "fluid-loss permission cannot broaden natural-resource mining")
 
+-- The mod's own supply and footprint clearing name the exact natural entity:
+-- a tree standing on an ore tile is mined without a coordinate ambiguity.
+local shaded_tree = minable("tree-02", "tree", 5, nil)
+local named = { target = { x = 5, y = 0 }, count = 1, entity = shaded_tree }; mine.start(named)
+check(named._entity == shaded_tree and named._initial_failure == nil,
+  "mine with an exact natural entity resolves it although a resource shares its coordinate")
+local owned_named = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, entity = machine })
+local owned_kind = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, entity = shaded_tree, target_kind = "owned" })
+check(not owned_named and not owned_kind, "an exact entity is only ever a natural one")
+
 os.exit(failures == 0 and 0 or 1)

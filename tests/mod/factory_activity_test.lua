@@ -5,6 +5,8 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 
 _G.game = { tick = 100 }
 _G.storage = {}
+local transfers_seen = {}
+package.loaded["scripts.autonomy"] = { on_transfer = function(position) transfers_seen[#transfers_seen + 1] = position end }
 local activity = require("scripts.factory_activity")
 activity.record("insert", { target = { name = "furnace", type = "furnace", position = { x = 1, y = 2 } },
   transfers = { { item = "ore", inserted = 3 }, { item = "fuel", inserted = 2 } } })
@@ -15,6 +17,10 @@ activity.record("craft", { transfers = { { item = "plate", extracted = 99 } } })
 activity.record("build_plan", { transfers = { { item = "ore", inserted = 99 } } })
 activity.record("insert", { transfers = { { item = "ore", inserted = 0 } } })
 local snapshot = activity.snapshot(100)
+check(#transfers_seen == 1 and transfers_seen[1].x == 1 and transfers_seen[1].y == 2,
+  "only a transfer into a machine tells the factory lines it was hand-fed; taking its output does not")
+check(snapshot.validations == nil and storage.factory_activity.validations == nil,
+  "activity keeps no component proofs")
 check(snapshot.transfer_actions == 2 and snapshot.transferred_items == 8,
   "activity counts only successful queued character transfers")
 check(snapshot.inserted_items[1].name == "fuel" and snapshot.inserted_items[2].name == "ore"
@@ -36,21 +42,6 @@ local internal = activity.snapshot(100, true)
 check(#internal.events == 128 and #internal.target_actions == 128
   and internal.events[1].action == "insert" and internal.events[1].items[1].name == "ore",
   "internal attribution retains action and items beyond both public presentation caps")
-for i = 1, 33 do activity.record_validation({ proven = true, component_signature = "component-" .. i,
-  start_tick = 300, end_tick = 301, duration_ticks = 1, products_finished_delta = i + 2,
-  downstream_kind = "consumer", downstream_acceptance_samples = 3, source_cycles_observed = 3,
-  character_transfer_actions = 0 }, "exact-component-" .. i) end
-local validations = activity.snapshot(100)
-check(#validations.validations == 32 and validations.validations_omitted == 1
-  and validations.validations[1].component_signature == "component-2"
-  and validations.validations[32]._signature == nil
-  and activity.snapshot(100, true).validations[1]._signature == "exact-component-2"
-  and validations.validations[32].evidence_class == "bounded_multi_tick_component_validation",
-  "component validations reuse a bounded run-local history with explicit omission count")
-activity.record_validation({ proven = false, component_signature = "not-proven" })
-check(#activity.snapshot(100).validations == 32,
-  "unproven component samples never enter autonomy evidence")
-
 storage = {}; game.tick = 500
 activity.record("insert", { target = { name = "selected", type = "furnace", position = { x = 0, y = 0 } },
   transfers = { { item = "ore", inserted = 1 } } })

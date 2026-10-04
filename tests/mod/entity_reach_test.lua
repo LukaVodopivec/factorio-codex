@@ -29,6 +29,7 @@ local body = {
     get_tile = function() return { collides_with = function() return false end } end },
   reach_distance = 6,
   walking_state = {},
+  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
   can_reach_entity = function() reach_checks = reach_checks + 1 return false end,
 }
 local edge_entity = { valid = true, name = "wooden-chest", position = { x = 7.5, y = 0 } }
@@ -169,7 +170,9 @@ body.get_item_count = function() return 1 end
 entity.insert = function(stack) mutations.insert = mutations.insert + 1 return stack.count end
 local partial_insert = { id = 30, target = { x = 6, y = 0 }, items = { coal = 2 } }
 transfer.insert.start(partial_insert)
-local partial_insert_result = transfer.insert.tick(partial_insert)
+-- Auto-supply looks for the missing coal one source scan a tick first.
+local partial_insert_result
+for _ = 1, 10 do partial_insert_result = transfer.insert.tick(partial_insert); if partial_insert_result then break end end
 check(partial_insert_result and partial_insert_result.status == "partial"
   and partial_insert_result.detail:match("requested 2 coal, inserted 1, remainder 1")
   and partial_insert_result.outcome.total_inserted == 1

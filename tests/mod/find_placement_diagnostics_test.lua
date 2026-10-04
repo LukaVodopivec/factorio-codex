@@ -188,7 +188,7 @@ local adjacent = finder.find_placement({ item = "burner-inserter", preferred = {
 check(#adjacent.candidates == 0 and adjacent.hint and adjacent.hint:find("adjacent (0 free tiles)", 1, true)
   and adjacent.hint:find("exactly 1 free tile", 1, true),
   "an inserter between adjacent endpoints returns an actionable endpoint-gap hint")
-local fixed_keys = { outside_codex_reach = true, uncharted = true, pickup_not_on_source = true, output_endpoint_unknown = true,
+local fixed_keys = { uncharted = true, pickup_not_on_source = true, output_endpoint_unknown = true,
   output_not_on_recipient = true, planned_recipient_unplaceable = true, codex_body_overlap = true, blocked = true,
   no_compatible_resource = true }
 local keys_ok, total = true, 0
@@ -248,8 +248,8 @@ check(#capped.candidates == 0 and capped.truncated == true and capped.evaluated 
   "an all-blocked radius-30 search stops at the engine-call budget and says why")
 blocked_areas = {}
 local far_body = finder.find_placement({ item = "wooden-chest", preferred = { x = 0.5, y = 50.5 }, radius = 2, limit = 4 })
-check(#far_body.candidates == 0 and far_body.hint:find("30 tiles", 1, true),
-  "a search beyond Codex reach says so")
+check(#far_body.candidates == 4 and far_body.candidates[1].position.y == 50.5,
+  "find_placement searches charted terrain however far it is from Codex")
 
 -- 2.0.77: adjacent narrow burner recipients accept fuel in every cardinal
 -- rotation although the 1.2-tile drop lies outside their collision box.

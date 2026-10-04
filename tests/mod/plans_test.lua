@@ -29,10 +29,12 @@ check(not old_count_ok and not missing_crafts_ok and not fractional_crafts_ok,
   "direct queue_plan rejects old count and requires integer crafts from 1 to 100")
 check(not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 2 } }, observation_detail = "brief" }),
   "direct queue_plan accepts only none, compact, or full terminal observation detail")
-check(not pcall(tasks.queue_plan, { steps = { { action = "wait_for_research", technology = "x", timeout_seconds = 1.5 } } })
-  and not pcall(tasks.queue_plan, { steps = { { action = "validate_factory_component", source_tick = 0,
-    positions = {}, duration_seconds = 1 } } }),
-  "parked research and factory validation steps enforce their bounded DTOs in Lua")
+check(not pcall(tasks.queue_plan, { steps = { { action = "wait_for_research", technology = "x", timeout_seconds = 1.5 } } }),
+  "parked research steps enforce their bounded DTOs in Lua")
+local removed_ok, removed_error = pcall(tasks.queue_plan, { steps = { { action = "validate_factory_component",
+  source_tick = 0, positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+check(not removed_ok and tostring(removed_error):match("unknown plan action") ~= nil,
+  "the removed validate_factory_component action is no longer accepted")
 local first = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 2,
   arrival_mode = "within_radius", arrival_radius = 2 }, { action = "mine", x = 3, y = 4, count = 1 } }, observation_detail = "compact" })
 local successor = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 1, wait_for_completion = false } }, after_plan_id = first.plan_id })
@@ -178,6 +180,161 @@ local unknown_ok, unknown_error = pcall(tasks.queue_plan, { steps = { { action =
 check(not unknown_ok and tostring(unknown_error):match("PREDECESSOR_UNKNOWN") ~= nil,
   "an unknown or pruned predecessor is refused at enqueue instead of silently cancelling the successor")
 
+
+-- 0.21: step limit, plan source, activity log.
+tasks.set_observer(function(params) return { tick = game.tick } end)
+local many = {}
+for i = 1, 200 do many[i] = { action = "walk_to", x = i, y = 0 } end
+local limit_ok = pcall(tasks.queue_plan, { steps = many })
+many[201] = { action = "walk_to", x = 201, y = 0 }
+local over_ok, over_error = pcall(tasks.queue_plan, { steps = many })
+check(limit_ok and not over_ok and tostring(over_error):match("1%-200 steps") ~= nil,
+  "a plan takes up to 200 steps")
+tasks.cancel({ all = true })
+check(not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 1 } }, source = "astra" })
+  and not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 1 } }, source = "package:" }),
+  "plan source is pilot, upkeep or package:<id>")
+local from_package = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } }, source = "package:iron-1" })
+local again = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } }, source = "package:iron-1" })
+check(again.plan_id == from_package.plan_id and again.duplicate == true and #storage.tasks.queue + (storage.tasks.active and 1 or 0) == 1,
+  "a package queued again (a retried call whose answer was lost) gets its existing plan, not a second one")
+local from_pilot = tasks.queue_plan({ steps = { { action = "walk_to", x = 2, y = 2 } } })
+game.tick = 172; tasks.on_tick(); game.tick = 173; tasks.on_tick()
+local log = tasks.activity_log({ since_plan_id = from_package.plan_id - 1 })
+check(tasks.plan_status({ plan_id = from_package.plan_id }).source == "package:iron-1"
+  and log.entries[1].plan_id == from_package.plan_id and log.entries[1].source == "package:iron-1"
+  and log.entries[1].status == "completed" and log.entries[1].steps == 1 and log.entries[1].end_tick == 172
+  and log.entries[2].plan_id == from_pilot.plan_id and log.entries[2].source == "pilot",
+  "activity_log keeps each plan outcome with its source")
+check(tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } }, source = "package:iron-1" }).plan_id
+  == from_package.plan_id, "a package that already ran is not queued again")
+check(#tasks.activity_log({ limit = 1 }).entries == 1 and tasks.activity_log({ limit = 1 }).omitted > 0
+  and not pcall(tasks.activity_log, { limit = 65 }),
+  "activity_log is bounded by limit")
+check(storage.tasks.last_plan_ended.plan_id == from_pilot.plan_id and storage.tasks.last_plan_ended.status == "completed",
+  "the last plan to end is kept for event_state")
+local from_upkeep = tasks.queue_plan({ steps = { { action = "walk_to", x = 3, y = 3 } }, source = "upkeep" })
+game.tick = 174; tasks.on_tick(); game.tick = 175; tasks.on_tick()
+local upkeep_log = tasks.activity_log({ since_plan_id = from_upkeep.plan_id - 1 })
+check(upkeep_log.entries[1] and upkeep_log.entries[1].source == "upkeep"
+  and storage.tasks.last_plan_ended.plan_id == from_pilot.plan_id,
+  "an upkeep plan's end is logged but never wakes the pilot through event_state")
+for i = 1, 70 do
+  tasks.queue_plan({ steps = { { action = "walk_to", x = i, y = 3 } } })
+  game.tick = 175 + i; tasks.on_tick()
+end
+check(#storage.activity_log == 64, "the activity log is a ring of 64 plan outcomes")
+
+-- A step saved by 0.20 completes as a no-op.
+game.tick = 300
+storage.tasks.next_id = storage.tasks.next_id + 1
+local legacy = { type = "plan", id = storage.tasks.next_id - 1, status = "waiting", current_step = 1, completed_steps = 0,
+  outcomes = {}, steps = { { action = "validate_factory_component", source_tick = 1, positions = { { x = 0, y = 0 } },
+  duration_seconds = 60 }, { action = "walk_to", x = 1, y = 1 } }, current_task = { type = "validate_factory_component" },
+  started_tick = 290, next_check_tick = 299, observation_detail = "none" }
+table.insert(storage.tasks.queue, legacy)
+game.tick = 301; tasks.on_tick(); game.tick = 302; tasks.on_tick()
+local legacy_status = tasks.plan_status({ plan_id = legacy.id })
+check(legacy_status.status == "completed" and legacy_status.outcomes[1].result.code == "REMOVED_ACTION",
+  "a persisted validate_factory_component step completes as REMOVED_ACTION")
+
+-- Upkeep gives way to queued work at the next step boundary.
+local upkeep = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 }, { action = "walk_to", x = 2, y = 2 } },
+  source = "upkeep" })
+game.tick = 303; tasks.on_tick()
+local after_upkeep = tasks.queue_plan({ steps = { { action = "walk_to", x = 3, y = 3 } } })
+game.tick = 304; tasks.on_tick(); game.tick = 305; tasks.on_tick()
+local upkeep_status = tasks.plan_status({ plan_id = upkeep.plan_id })
+check(upkeep_status.status == "cancelled" and upkeep_status.completed_steps == 1
+  and tasks.plan_status({ plan_id = after_upkeep.plan_id }).status == "completed"
+  and tasks.activity_log({ since_plan_id = upkeep.plan_id - 1 }).entries[1].code == "PREEMPTED",
+  "an upkeep plan is preempted by queued work at a step boundary")
+
+-- Deterministic recoveries.
+local function scripted(results)
+  local calls = 0
+  return function(task)
+    calls = calls + 1
+    local result = results[math.min(calls, #results)]
+    return type(result) == "function" and result(task) or result
+  end
+end
+local insert_runner = package.loaded["scripts.actions.transfer"].insert
+local inserted_items = {}
+local original_insert_tick = insert_runner.tick
+insert_runner.tick = scripted({
+  function(task) inserted_items[#inserted_items + 1] = task.items; return { status = "partial", detail = "partial insert",
+    outcome = { code = "PARTIAL_INSERT", transfers = { { item = "coal", requested = 5, inserted = 2, remainder = 3 } },
+      target = { name = "stone-furnace", type = "furnace", position = { x = 1, y = 1 } } } } end,
+  function(task) inserted_items[#inserted_items + 1] = task.items; return { status = "done", detail = "inserted" } end,
+})
+local refuel = tasks.queue_plan({ steps = { { action = "insert_items", x = 1, y = 1, items = { coal = 5 } } } })
+for tick = 306, 370 do game.tick = tick; tasks.on_tick() end
+local refuel_status = tasks.plan_status({ plan_id = refuel.plan_id })
+check(refuel_status.status == "completed" and inserted_items[2].coal == 3
+  and refuel_status.outcomes[1].recovery.code == "PARTIAL_INSERT" and refuel_status.outcomes[1].recovery.fix == "retry_remainder",
+  "a partial insert retries its remainder once")
+insert_runner.tick = original_insert_tick
+
+local walk_tick, mine_tick = walk.tick, mine.tick
+local mined
+walk.tick = scripted({
+  { status = "failed", detail = "BODY_ENCLOSED: boxed in", outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
+    suggested_recovery = { tool = "mine", target_kind = "owned", x = 5.5, y = 0.5, expected_name = "wooden-chest" } } } } },
+  { status = "done", detail = "arrived" },
+})
+mine.tick = function(task) mined = task; return { status = "done", detail = "mined" } end
+local enclosed = tasks.queue_plan({ steps = { { action = "walk_to", x = 20, y = 0 } } })
+for tick = 371, 374 do game.tick = tick; tasks.on_tick() end
+local enclosed_status = tasks.plan_status({ plan_id = enclosed.plan_id })
+check(enclosed_status.status == "completed" and mined and mined.target.x == 5.5 and mined.target_kind == "owned"
+  and mined.count == 1 and enclosed_status.outcomes[1].recovery.fix == "mine",
+  "an enclosed body mines the suggested owned blocker and walks again")
+walk.tick = scripted({
+  { status = "failed", detail = "BODY_ENCLOSED: boxed in", outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
+    suggested_recovery = { x = 5.5, y = 0.5 } } } } },
+})
+mine.tick = function() return { status = "failed", detail = "refusing to recover a chest with contents" } end
+local still_enclosed = tasks.queue_plan({ steps = { { action = "walk_to", x = 20, y = 0 } } })
+for tick = 375, 380 do game.tick = tick; tasks.on_tick() end
+local still_status = tasks.plan_status({ plan_id = still_enclosed.plan_id })
+check(still_status.status == "failed" and still_status.outcomes[1].error:match("^BODY_ENCLOSED")
+  and still_status.outcomes[1].recovery.fix_error:match("refusing"),
+  "a failed recovery returns the original failure with the fix error")
+walk.tick, mine.tick = walk_tick, mine_tick
+
+local reach_calls = 0
+mine.tick = function()
+  reach_calls = reach_calls + 1
+  if reach_calls == 1 then return { status = "failed", detail = "TARGET_OUT_OF_REACH: moved", outcome = { code = "TARGET_OUT_OF_REACH" } } end
+  return { status = "done", detail = "mined" }
+end
+local reach = tasks.queue_plan({ steps = { { action = "mine", x = 7, y = 7, count = 1 } } })
+for tick = 381, 384 do game.tick = tick; tasks.on_tick() end
+check(tasks.plan_status({ plan_id = reach.plan_id }).status == "completed" and reach_calls == 2,
+  "an out-of-reach step re-approaches once")
+mine.tick = mine_tick
+
+local place_runner = package.loaded["scripts.actions.build"].place
+local place_tick = place_runner.tick
+local walked_to
+_G.prototypes = { item = { ["stone-furnace"] = { place_result = { collision_box = {
+  left_top = { x = -1, y = -1 }, right_bottom = { x = 1, y = 1 } } } } } }
+body.position = { x = 10, y = 10 }
+body.surface = { find_non_colliding_position = function(_, position) return { x = position.x, y = position.y } end }
+place_runner.tick = scripted({
+  { status = "failed", detail = "can't place stone-furnace at (10.0, 10.0) — CODEX_BODY_OVERLAP — walk clear" },
+  { status = "done", detail = "placed" },
+})
+local walk_start = walk.start
+walk.start = function(task) walked_to = task.target end
+local overlap = tasks.queue_plan({ steps = { { action = "place_entity", name = "stone-furnace", x = 10, y = 10 } } })
+for tick = 385, 390 do game.tick = tick; tasks.on_tick() end
+check(tasks.plan_status({ plan_id = overlap.plan_id }).status == "completed" and walked_to
+  and (walked_to.y <= 10 - 1 - 1.25 or walked_to.y >= 10 + 1 + 1.25 or walked_to.x <= 10 - 1 - 1.25 or walked_to.x >= 10 + 1 + 1.25),
+  "a body standing in the placement footprint walks clear and places again")
+walk.start, place_runner.tick = walk_start, place_tick
+body.position = { x = 0, y = 0 }
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1
 check(tasks.cancel({ all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")
 os.exit(failures == 0 and 0 or 1)

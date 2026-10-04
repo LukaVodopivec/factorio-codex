@@ -5,12 +5,15 @@ import { Bridge } from "../bridge.js";
 import { RconClient } from "../rcon.js";
 import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../compatibility.js";
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
+import { createOrdersTracker, createPackageQueue, packageFailures, readPackageQueue, type RunDir } from "../coordination/orders.js";
+import { currentRunDir } from "../server/server.js";
+import { eventSummary, nextEventSchema, waitForEvent, type FailureDelivery } from "./events.js";
 import { normalizeObservation } from "./observation.js";
-import { executeRunPlan, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
-import { normalizeCanPlace, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
+import { blockFields, executeRunPlan, layoutFields, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
+import { normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.20.0";
+export const MCP_SERVER_VERSION = "0.21.0";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();
@@ -51,11 +54,13 @@ function failure(error: unknown, prefix = "Error") {
 /** Optional map_summary sections; each adds a top-level key of the same name
  *  (flows_all adds force_flows_all), scoped to charted chunks. */
 export const MAP_SUMMARY_SECTIONS = ["stockpiles", "sites", "patches", "power", "problems", "flows_all"] as const;
+export const FACTORY_STATUS_SECTIONS = ["lines", "problems", "power", "stock", "research", "body", "patches"] as const;
 
 export type McpSurface = "full" | "read-only";
 export const READ_ONLY_TOOLS = [
   "connect_status", "map_summary", "progression_status", "production_requirements",
   "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement",
+  "factory_status", "activity_log", "next_event", "build_layout", "build_block",
 ] as const;
 
 export async function connectStatus(
@@ -95,14 +100,31 @@ type ToolRegistrar = {
   registerTool(name: string, config: unknown, handler: (args: any, extra?: { signal?: AbortSignal }) => Promise<unknown>): unknown;
 };
 
+function factoryStatusSummary(value: any): string {
+  const lines: any[] = Array.isArray(value?.lines) ? value.lines : [];
+  const states: Record<string, number> = {};
+  for (const line of lines) states[line?.state ?? "unknown"] = (states[line?.state ?? "unknown"] ?? 0) + 1;
+  const parts = [`${lines.length} lines${lines.length ? ` (${Object.entries(states).map(([state, count]) => `${count} ${state}`).join(", ")})` : ""}`];
+  if (Array.isArray(value?.problems)) parts.push(`${value.problems.length} problems`);
+  if (value?.body) parts.push(`queue ${value.body.queue_depth ?? 0}${value.body.human_control ? ", human hold" : ""}`);
+  return `tick ${value?.tick}: ${parts.join("; ")}`;
+}
+
 /** Register the complete public surface against an injectable bridge provider.
- *  Tests use the same handlers with a fake Bridge to prove the exact Lua DTOs. */
+ *  Tests use the same handlers with a fake Bridge to prove the exact Lua DTOs.
+ *  runDir names the current run, whose ledger supplies the attached orders. */
 export function registerMcpTools(
   server: ToolRegistrar,
   bridge: () => Promise<Bridge>,
   configDiagnostic: () => ConfigDiagnostic,
   surface: McpSurface = "full",
+  runDir: RunDir = () => null,
 ): void {
+  const orders = createOrdersTracker(runDir);
+  const failureDelivery: FailureDelivery = { keys: null };
+  // Every result carries Astra's orders once per new ledger revision.
+  const tools: ToolRegistrar = { registerTool: (name, config, handler) =>
+    server.registerTool(name, config, async (args, extra) => orders.attach(await handler(args, extra))) };
   const rpc = async (method: any, params: unknown = {}) => {
     try { return result(await (await bridge()).call(method, params)); }
     catch (error) { return failure(error); }
@@ -119,8 +141,40 @@ export function registerMcpTools(
         ...(terminal.outcome ?? {}), next_action: null }, status === "failed" || status === "cancelled");
     } catch (error) { return failure(error); }
   };
+  const runPlan = async (input: unknown, signal?: AbortSignal) => {
+    const parsed = runPlanSchema.parse(input);
+    try {
+      const outcome = await executeRunPlan(await bridge(), parsed, signal);
+      const terminal = ["completed", "partial", "failed", "cancelled"].includes(outcome.status);
+      return result(normalizePlanDiagnostics({ ...outcome, terminal, next_action: terminal ? null
+        : { tool: "next_event", arguments: { timeout_seconds: 60 } } }),
+      outcome.status === "failed" || outcome.status === "cancelled");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = signal?.aborted ? "cancelled" : "failed";
+      const outcome: RunPlanResult = {
+        status,
+        outcomes: [],
+        observation_error: message,
+        execution: { mode: "sequential_nontransactional", rollback: "none", effects_state: "unknown" },
+      };
+      return result(normalizePlanDiagnostics({ ...outcome, terminal: true, next_action: null }), true);
+    }
+  };
+  // build_layout/build_block: a dry run is a read-only mod check; a build is a one-step plan.
+  const build = async (action: "build_layout" | "build_block", { check_only, ...params }: Record<string, unknown>, signal?: AbortSignal) => {
+    if (check_only) return rpc(action, { ...params, check_only: true });
+    return runPlan({ steps: [{ action, ...params }] }, signal);
+  };
+  const layoutSite = (layout: { anchor?: unknown; site?: unknown }) => (layout.anchor === undefined) !== (layout.site === undefined);
+  const siteMessage = { message: "give exactly one of anchor or site" };
+  const layoutSchema = z.object({ ...layoutFields, check_only: surface === "full" ? z.boolean().default(false) : z.literal(true).default(true) })
+    .strict().refine(layoutSite, siteMessage);
+  const blockSchema = z.object({ ...blockFields, check_only: surface === "full" ? z.boolean().default(false) : z.literal(true).default(true) }).strict();
+  const dryRun = (surface === "full" ? " check_only: true is a dry run that builds nothing." : " Dry run only: checks without building.")
+    + " A dry run does one tick of site search: SITE_SEARCH_INCOMPLETE means no site was found yet, not that none fits.";
 
-  server.registerTool("connect_status", { description: "Validate config, RCON, mod, app and protocol, then bind the exact connected native player named Codex without creating a character.", inputSchema: z.object({}) }, async () => {
+  tools.registerTool("connect_status", { description: "Check config, RCON, mod and protocol versions, then bind the connected native player named Codex.", inputSchema: z.object({}) }, async () => {
     try {
       return await connectStatus(bridge, configDiagnostic, surface === "full");
     } catch (error) {
@@ -128,21 +182,21 @@ export function registerMcpTools(
       return result({ status: "offline", terminal: true, summary: `Offline: ${message}`, next_action: null }, false);
     }
   });
-  server.registerTool("observe_local", { description: "Current deterministic local observation. Compact returns bounded nearest entities, ground items, and resource patches with explicit omission counts; full deliberately requests larger bounded detail.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15), detail: z.enum(["compact", "full"]).default("compact") }) }, async ({ radius, detail }) => {
+  tools.registerTool("observe_local", { description: "Nearby entities, ground items and resource patches around the body. compact is bounded; full returns more.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15), detail: z.enum(["compact", "full"]).default("compact") }) }, async ({ radius, detail }) => {
     try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }))); }
     catch (error) { return failure(error); }
   });
-  server.registerTool("inspect_entity", { description: 'Batch-inspect up to 16 exact positions. Within 30 tiles any entity is read; beyond that only own-force entities in charted chunks are read, marked remote: true (reading is not reach: acting on them still needs the body there). Canonical input: {"positions":[{"x":1.5,"y":2.5}]}.', inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
+  tools.registerTool("inspect_entity", { description: 'Inspect up to 16 exact positions. Beyond 30 tiles only own entities in charted chunks are read, marked remote: true. Input: {"positions":[{"x":1.5,"y":2.5}]}.', inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
     try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions)))); }
     catch (error) { return failure(error); }
   });
-  server.registerTool("describe_prototype", { description: "Batch-describe up to 10 exact item, entity, or recipe prototypes; kind=auto resolves placeable items as entities, then genuine items, then recipes.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
-  server.registerTool("progression_status", { description: "Read researched technologies, ordinary queueable research, and action/trigger unlocks with authoritative item/entity quality filters and scripted descriptions from Codex's live force.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
-  server.registerTool("can_place", { description: "Batch-check up to 24 identified placements within 30 tiles without side effects; every result retains the requested item, position, direction and rejection reason, and reports overlaps_batch (0-based indexes of other placements in the batch it overlaps), output_position/output_lands_on and pickup_position/pickup_from (a batch_index, an existing entity, null for nothing there, or {state} when out_of_range, uncharted, ambiguous, or unknown).", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
+  tools.registerTool("describe_prototype", { description: "Describe up to 10 item, entity or recipe prototypes; auto tries entity, then item, then recipe.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
+  tools.registerTool("progression_status", { description: "Researched technologies, what can be researched now, and what each unlocks.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
+  tools.registerTool("can_place", { description: "Check up to 24 placements without building. Each result keeps the request and gives can_place, the reason, overlaps_batch (indexes of overlapping placements in the batch), and what an inserter would pick up from and drop onto.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
     catch (error) { return failure(error); }
   });
-  server.registerTool("find_placement", { description: "Find stable force-charted placements, nearest first. Requests containing input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12. Optional belt_to_ground_type selects an underground belt input or output end; pairing requires observation after construction. Optional input_target constrains an inserter pickup. Use either an existing output_target or output_recipient_item to search a provisional recipient-first pair; geometry never claims runtime binding. Each candidate's plan_steps go verbatim into queue_plan steps (with insert_items for burner inlets when fuel is given). An empty result carries rejections, closest_rejected and a hint: change the request as the hint says and never repeat it unchanged.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), input_target: position.optional(), output_target: position.optional(), output_recipient_item: z.string().min(1).optional(), belt_to_ground_type: beltToGroundType, fuel: items.optional() }).strict().refine((p) => !(p.output_target && p.output_recipient_item), "use output_target or output_recipient_item, not both").refine((p) => !(p.input_target !== undefined || p.output_target !== undefined || p.output_recipient_item !== undefined) || p.directions.every((direction) => direction % 4 === 0), { message: "targeted placement directions must be cardinal: 0, 4, 8, or 12", path: ["directions"] }) }, async (p) => {
+  tools.registerTool("find_placement", { description: "Find valid placements near a point, nearest first. Requests with input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12. Each candidate's plan_steps go straight into queue_plan (with fuel inserts when fuel is given). An empty result has a hint: change the request as it says.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), input_target: position.optional(), output_target: position.optional(), output_recipient_item: z.string().min(1).optional(), belt_to_ground_type: beltToGroundType, fuel: items.optional() }).strict().refine((p) => !(p.output_target && p.output_recipient_item), "use output_target or output_recipient_item, not both").refine((p) => !(p.input_target !== undefined || p.output_target !== undefined || p.output_recipient_item !== undefined) || p.directions.every((direction) => direction % 4 === 0), { message: "targeted placement directions must be cardinal: 0, 4, 8, or 12", path: ["directions"] }) }, async (p) => {
     try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p)), p.fuel)); }
     catch (error) { return failure(error); }
   });
@@ -154,7 +208,7 @@ export function registerMcpTools(
     activity_since_tick: z.number().int().nonnegative().optional(),
     include: z.array(z.enum(MAP_SUMMARY_SECTIONS)).max(MAP_SUMMARY_SECTIONS.length).optional(),
   }).strict();
-  server.registerTool("map_summary", { description: "Compact aggregate of already charted, player-force factory entities: installed capacity estimates, normalized status, native force/surface flow rates, conservative physical connectivity, and run-local character transfers. Read material_flow.components[].state (autonomy_blockers, downstream_kind) and character_transfers to find the automation-debt head. Rows are capped; material_flow component_count, edge_count, autonomous_component_count, validated_component_count and products_finished_total count the whole graph. It never charts terrain and reads nothing from uncharted chunks. Optional include adds capped top-level sections for own-force entities and resources in charted chunks, each with an omission count: stockpiles before hand-mining or hand-crafting anything, to find the chests, machine outputs and belts that already hold it; sites to locate every chunk holding own machines; patches to choose the next resource patch by amount and position; power to check each electric network's production, consumption, capacity and satisfaction before adding consumers; problems to list machines that are unpowered, unfuelled, starved or blocked (rows are capped; problems_by_status counts every problem machine by status and problems_total sums them); flows_all (force_flows_all) for lifetime and per-minute production and consumption of every item and fluid. Reading is not reach: taking or changing anything still needs the body there. Use detail=full only for rare bounded landmark/resource/shoreline scouting.", inputSchema: mapSummarySchema }, async (p) => {
+  tools.registerTool("map_summary", { description: "Detailed graph of the charted own factory: machine groups, flow rates, connections, line counts and character transfers. Prefer factory_status for routine reads. include adds capped sections: stockpiles, sites, patches, power, problems (problems_by_status counts every problem machine by status), flows_all. Reading is not reach.", inputSchema: mapSummarySchema }, async (p) => {
     try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", mapSummarySchema.parse(p)))); }
     catch (error) { return failure(error); }
   });
@@ -167,25 +221,65 @@ export function registerMcpTools(
     const modes = Number(value.targets !== undefined) + Number(value.technology !== undefined) + Number(value.location !== undefined);
     if (modes !== 1) ctx.addIssue({ code: "custom", message: "provide exactly one of targets, technology, or location" });
   });
-  server.registerTool("production_requirements", { description: 'Expand one item/fluid target map, technology prerequisite closure, or space-location unlock closure. Canonical inputs: {"targets":{"automation-science-pack":10}}, {"technology":"automation"}, or {"location":"solar-system-edge"}. Technology/location results separate deterministic requirements from triggers, ambiguities, and variable operating costs; exact remote inventories are never credited.', inputSchema: productionRequirementsSchema }, async (p) => {
+  tools.registerTool("production_requirements", { description: 'Expand item targets, a technology, or a space location into recipes, raw materials and prerequisites. Input: {"targets":{"automation-science-pack":10}}, {"technology":"automation"} or {"location":"solar-system-edge"}.', inputSchema: productionRequirementsSchema }, async (p) => {
     try { return result(normalizeProductionRequirements(await (await bridge()).call("production_requirements", toolPayloads.productionRequirements(p)))); }
     catch (error) { return failure(error); }
   });
-  server.registerTool("plan_status", { description: "Read plan state immediately, or wait up to 60 seconds for a completed step, waiting state, or terminal outcome. Waiting monitors only and never cancels physical work. human_control: true means a human held the body and delayed the plan: it is neither idleness nor failure, so re-observe after it.", inputSchema: planStatusSchema }, async (input, extra) => {
+  tools.registerTool("plan_status", { description: "Read one plan by plan_id, or wait up to 60 s for its progress or end. Waiting never cancels work. human_control: true means a human held the body: delayed, not failed.", inputSchema: planStatusSchema }, async (input, extra) => {
     try {
       const p = planStatusSchema.parse(input);
       const value: any = await waitForPlanStatus(await bridge(), p.plan_id, p.wait_until, p.timeout_seconds * 1_000, extra?.signal);
       if (value.observation) value.observation = normalizeObservation(value.observation);
       const terminal = ["completed", "partial", "failed", "cancelled"].includes(value.status);
       return result(normalizePlanDiagnostics({ ...value, terminal, summary: planStatusSummary(value, terminal),
-        next_action: terminal ? null : { tool: "plan_status", arguments: {
-          plan_id: value.plan_id, wait_until: p.wait_until === "current" ? "progress" : p.wait_until, timeout_seconds: p.timeout_seconds,
-        } },
+        next_action: terminal ? null : { tool: "next_event", arguments: { timeout_seconds: 60 } },
       }), value.status === "failed" || value.status === "cancelled");
     } catch (error) { return failure(error); }
   });
+  const factoryStatusSchema = z.object({
+    since_tick: z.number().int().nonnegative().optional(),
+    sections: z.array(z.enum(FACTORY_STATUS_SECTIONS)).min(1).max(FACTORY_STATUS_SECTIONS.length).optional(),
+  }).strict();
+  tools.registerTool("factory_status", { description: "One compact read of the whole factory: production lines with state (running, starved, output_full, no_fuel, no_power, idle), rate, cause and position; problem machines; power; stock; research; the body; nearby resource patches. since_tick returns only lines and problems changed since then; sections picks parts.", inputSchema: factoryStatusSchema }, async (p) => {
+    try {
+      const value = normalizeFactoryStatus(await (await bridge()).call("factory_status", factoryStatusSchema.parse(p)));
+      return result({ ...value, summary: factoryStatusSummary(value) });
+    } catch (error) { return failure(error); }
+  });
+  const activityLogSchema = z.object({ since_plan_id: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(64).default(16) }).strict();
+  tools.registerTool("activity_log", { description: "What the body did: recent plan outcomes, oldest first, each with source (pilot, upkeep or package:<id>), status and a summary; plus the queue status of Astra's packages.", inputSchema: activityLogSchema }, async (p) => {
+    try {
+      const value = normalizeActivityLog(await (await bridge()).call("activity_log", activityLogSchema.parse(p)));
+      const dir = runDir();
+      const packages = Object.entries((dir ? readPackageQueue(dir)?.packages : undefined) ?? {}).slice(-16)
+        .map(([package_id, record]) => ({ package_id, ...record }));
+      const entries: any[] = value?.entries ?? [];
+      return result({ ...value, ...(packages.length ? { packages } : {}),
+        summary: `${entries.length} plan outcomes${entries.length ? `; last: plan ${entries.at(-1)?.plan_id} ${entries.at(-1)?.summary ?? ""}` : ""}` });
+    } catch (error) { return failure(error); }
+  });
+  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended, queue_empty, new_problem, package_failed, orders_changed, human_hold_started, human_hold_ended, or timeout. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, problem or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
+    try {
+      const value = await waitForEvent(await bridge(), nextEventSchema.parse(input), {
+        ordersChanged: orders.changed,
+        packageFailures: () => { const dir = runDir(); return dir ? packageFailures(dir) : []; },
+        delivery: failureDelivery,
+      }, extra?.signal);
+      return result({ ...value, status: "completed", terminal: true, summary: eventSummary(value), next_action: null });
+    } catch (error) { return failure(error); }
+  });
+  tools.registerTool("build_layout", { description: `Build a layout given as offsets (dx, dy) from an anchor, or from a site the mod finds (near a point, on a resource, near water): entities with direction and recipe, plus belt, pipe and power connections. The mod checks every placement, fetches or crafts the materials, clears trees and rocks, walks and builds.${dryRun}`, inputSchema: layoutSchema }, async (p, extra) => {
+    try { return await build("build_layout", layoutSchema.parse(p), extra?.signal); }
+    catch (error) { return failure(error); }
+  });
+  tools.registerTool("build_block", { description: `Build count copies of a standard block near a point: mining (drills on a resource), smelting (furnace column), assembly (assembler row for a recipe), power (steam at water), labs. The mod works out tiles and directions, then builds it like build_layout.${dryRun}`, inputSchema: blockSchema }, async (p, extra) => {
+    try { return await build("build_block", blockSchema.parse(p), extra?.signal); }
+    catch (error) { return failure(error); }
+  });
   if (surface === "read-only") return;
-  server.registerTool("connect_entities", { description: "Build a deterministic physical belt, pipe or power route between exact force-charted endpoints through the existing inventory-backed build runner, respecting the selected prototype, maximum length, walking, reach, collision and elapsed time; never creates ghosts.", inputSchema: z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string(), from: position, to: position, max_length: z.number().int().min(1).max(25).default(25) }).strict() }, async (p, extra) => {
+  tools.registerTool("get_items", { description: "Get count of an item into the inventory: from the nearest own chest, belt or machine output, else by crafting it with its intermediates, else by hand-gathering a raw resource no drill produces. The result names any shortfall.", inputSchema: z.object({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) =>
+    runPlan({ steps: [{ action: "get_items", ...p }] }, extra?.signal));
+  tools.registerTool("connect_entities", { description: "Build a belt, pipe or power-pole route of at most 25 pieces between two exact points, walking and placing from the inventory.", inputSchema: z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string(), from: position, to: position, max_length: z.number().int().min(1).max(25).default(25) }).strict() }, async (p, extra) => {
     try {
       const b = await bridge();
       const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities(p)));
@@ -240,46 +334,27 @@ export function registerMcpTools(
     }
     catch (error) { return failure(error); }
   });
-  server.registerTool("walk_to", { description: "Scout or relocate through ordinary native walking. exact uses the fixed 1-tile goal tolerance; vicinity explicitly permits a reported collision-free point within arrival_radius only after native path confirmation. Goal collisions and route failures are distinct, and recovery is capped at three progress-monotonic nonrepeated frontiers. Positional actions already auto-approach.", inputSchema: walkInput }, async (p, extra) => task("walk_to", toolPayloads.target(p), extra?.signal));
-  server.registerTool("mine", { description: 'Auto-approach and physically mine the exact observed target without substituting a neighbor. A resource result carrying drill_produced: true (with drills and stockpile_total) means own drills already mine it: take it from their chests and belts instead. Canonical fresh-observation input: {"x":3.25,"y":4.75,"count":1,"expected_name":"tree-01","observed_tick":12345}. Overlapping natural/owned targets require explicit target_kind; target_kind=owned recovers one empty player-owned entity through ordinary mining.', inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict() }, async (p, extra) => task("mine", toolPayloads.mine(p), extra?.signal));
-  server.registerTool("pickup_items", { description: "Auto-approach and physically pick up one exact item stack reported by observe_local, or items riding a plain transport belt tile at the given belt position. For a ground stack the item and count must still match and the full stack must fit, and Factorio's normal picking state performs collection. For a belt, count is the exact number wanted: the body must stand within item_pickup_distance of the belt tile's centre, the whole count must fit in the main inventory (otherwise it is refused, nothing is taken or spilled), and items of that kind move from that tile's transport lines into the inventory as they arrive, never more than removed; nothing is created. A tile that runs dry ends the step failed with the actual picked_up count kept. Underground belts, splitters and loaders are refused.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) => task("pickup", toolPayloads.pickup(p), extra?.signal));
-  server.registerTool("place_entity", { description: 'Auto-approach and place one inventory item. Optional input_target/output_target require exact runtime binding after placement; a failure leaves the placed entity committed. Canonical input: {"name":"wooden-chest","x":1.5,"y":2.5}; use name, never item. Underground belts take belt_to_ground_type input|output and report the paired end.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType }).strict() }, async (p, extra) => task("place", toolPayloads.place(p), extra?.signal));
+  tools.registerTool("walk_to", { description: "Walk to a point. exact stops within 1 tile; vicinity accepts a free spot within arrival_radius. Other actions walk to their targets by themselves.", inputSchema: walkInput }, async (p, extra) => task("walk_to", toolPayloads.target(p), extra?.signal));
+  tools.registerTool("mine", { description: "Mine the entity or resource at a position, count times. target_kind picks natural or owned where both overlap; owned removes your own empty building. A result with drill_produced: true means own drills already mine it: take it from their output instead.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict() }, async (p, extra) => task("mine", toolPayloads.mine(p), extra?.signal));
+  tools.registerTool("pickup_items", { description: "Pick up one item stack from the ground, or take count items riding a plain belt tile. The whole count must fit in the inventory or nothing is taken; nothing is created; a belt tile that runs dry ends the step with the count actually picked up.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) => task("pickup", toolPayloads.pickup(p), extra?.signal));
+  tools.registerTool("place_entity", { description: 'Place one item at a position. auto_supply (default on) fetches or crafts it first; trees and rocks in the way are cleared. Use name, never item: {"name":"wooden-chest","x":1.5,"y":2.5}. Optional input_target/output_target must match what an inserter picks from and drops into. Underground belts take belt_to_ground_type input|output.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, auto_supply: z.boolean().optional() }).strict() }, async (p, extra) => task("place", toolPayloads.place(p), extra?.signal));
   const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict();
-  server.registerTool("craft_items", { description: 'Queue exact recipe crafts, not output items. Canonical input: {"recipe":"iron-gear-wheel","crafts":2}; use recipe/crafts, never items.', inputSchema: craftInput }, async (p, extra) => task("craft", toolPayloads.craft(p), extra?.signal));
-  server.registerTool("insert_items", { description: "Auto-approach and insert exact carried item counts into an exact-position entity. Reports full completion, useful bounded partial completion with the truthful remainder, or zero-progress failure; dependent plan steps stop after a partial result.", inputSchema: position.extend({ items }) }, async (p, extra) => task("insert", toolPayloads.insert(p), extra?.signal));
-  server.registerTool("extract_items", { description: "Auto-approach and extract named items, or everything when items is omitted, from an exact-position entity.", inputSchema: position.extend({ items: items.optional() }) }, async (p, extra) => task("extract", toolPayloads.extract(p), extra?.signal));
-  server.registerTool("set_recipe", { description: "Auto-approach and set a player-owned crafting-machine recipe. Furnaces auto-select from inserted input; never call set_recipe on a furnace.", inputSchema: position.extend({ recipe: z.string() }) }, async (p, extra) => task("set_recipe", toolPayloads.recipe(p), extra?.signal));
-  server.registerTool("rotate_entity", { description: "Auto-approach and rotate an exact-position entity once, or set Factorio direction 0–15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate", toolPayloads.rotate(p), extra?.signal));
-  server.registerTool("build_plan", { description: "Build up to 25 sequential placements. Optional input_target/output_target require exact runtime binding; use recipient-first build_steps returned by find_placement for coupled construction. Geometry is provisional, failures leave earlier placements committed, and failures stop by default.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
-  server.registerTool("queue_plan", { description: "Queue one contiguous 1–25-step physical plan and return immediately, so the body works while you read, reason, and queue one grounded successor with after_plan_id (a current plan ID). Use steps and documented action discriminators; never use summary/actions. A physical audit uses walk_to followed by inspect_entities (1–16 local positions), preserving per-step ticks and truthful partial results. The result carries the exact plan_status next action.", inputSchema: queuePlanSchema }, async (input) => {
+  tools.registerTool("craft_items", { description: 'Hand-craft a recipe a number of times: {"recipe":"iron-gear-wheel","crafts":2}.', inputSchema: craftInput }, async (p, extra) => task("craft", toolPayloads.craft(p), extra?.signal));
+  tools.registerTool("insert_items", { description: "Put items from the inventory into the entity at a position. auto_supply (default on) fetches missing items first. A partial insert reports what is left.", inputSchema: position.extend({ items, auto_supply: z.boolean().optional() }) }, async (p, extra) => task("insert", toolPayloads.insert(p), extra?.signal));
+  tools.registerTool("extract_items", { description: "Take the named items, or everything when items is omitted, out of the entity at a position.", inputSchema: position.extend({ items: items.optional() }) }, async (p, extra) => task("extract", toolPayloads.extract(p), extra?.signal));
+  tools.registerTool("set_recipe", { description: "Set the recipe of your assembler at a position. Furnaces choose their own recipe from their input.", inputSchema: position.extend({ recipe: z.string() }) }, async (p, extra) => task("set_recipe", toolPayloads.recipe(p), extra?.signal));
+  tools.registerTool("rotate_entity", { description: "Rotate the entity at a position once, or set its direction 0-15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate", toolPayloads.rotate(p), extra?.signal));
+  tools.registerTool("build_plan", { description: "Place up to 25 items in order; each may set a recipe and insert items. Stops at the first failure by default; earlier placements stay.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), auto_supply: z.boolean().optional(), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
+  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, build_block. after_plan_id runs it only after that plan completes. Wait with next_event.", inputSchema: queuePlanSchema }, async (input) => {
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
       return result({ ...queued, status: "queued", terminal: false, summary: queuedPlanSummary(queued),
-        next_action: { tool: "plan_status", arguments: { plan_id: queued.plan_id, wait_until: "progress", timeout_seconds: 30 } } });
+        next_action: { tool: "next_event", arguments: { timeout_seconds: 60 } } });
     } catch (error) { return failure(error); }
   });
-  server.registerTool("run_plan", { description: 'Run 1–25 dependent physical or local-inspection steps and block until the plan is terminal (up to 570 s): the physical FIFO stays empty while you then reason, so prefer queue_plan when a successor can be prepared. Canonical input: {"steps":[{"action":"craft_items","recipe":"iron-gear-wheel","crafts":2,"wait_for_completion":true}]}; physical audit pattern: walk_to then inspect_entities. Steps commit sequentially without rollback; use steps, never summary/actions.', inputSchema: runPlanSchema }, async (input, extra) => {
-    const parsed = runPlanSchema.parse(input);
-    try {
-      const outcome = await executeRunPlan(await bridge(), parsed, extra?.signal);
-      const terminal = ["completed", "partial", "failed", "cancelled"].includes(outcome.status);
-      return result(normalizePlanDiagnostics({ ...outcome, terminal, next_action: terminal ? null
-        : { tool: "plan_status", arguments: { plan_id: outcome.plan_id, wait_until: "terminal", timeout_seconds: 60 } } }),
-      outcome.status === "failed" || outcome.status === "cancelled");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const status = extra?.signal?.aborted ? "cancelled" : "failed";
-      const outcome: RunPlanResult = {
-        status,
-        outcomes: [],
-        observation_error: message,
-        execution: { mode: "sequential_nontransactional", rollback: "none", effects_state: "unknown" },
-      };
-      return result(normalizePlanDiagnostics({ ...outcome, terminal: true, next_action: null }), true);
-    }
-  });
-  server.registerTool("start_research", { description: "Start ordinary unlocked research using the force's real queue; requested trigger technologies and missing trigger prerequisites return explicit in-game action guidance.", inputSchema: z.object({ technology: z.string() }) }, async (p) => rpc("start_research", p));
-  server.registerTool("stop", { description: "Emergency cancellation of active tasks, queued plans, and character crafting. Supervisor only: explicit the owner stop, retained-work reconciliation, or recorded emergency quiescence under AGENTS.md. Never for pilot gameplay or routine recovery; a TUI interruption alone is not authorization.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true }));
+  tools.registerTool("run_plan", { description: "Run 1-200 steps and block until the plan is terminal (up to 570 s, then it returns the plan still running and never cancels it); the queue stays empty while you then think, so prefer queue_plan.", inputSchema: runPlanSchema }, async (input, extra) => runPlan(input, extra?.signal));
+  tools.registerTool("start_research", { description: "Start researching an unlocked technology.", inputSchema: z.object({ technology: z.string() }) }, async (p) => rpc("start_research", p));
+  tools.registerTool("stop", { description: "Emergency stop: cancels the active and queued plans and hand-crafting. Supervisor only, never for gameplay or routine recovery.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true }));
 }
 
 type Connection = { rcon: RconClient; bridge: Bridge };
@@ -342,9 +417,14 @@ export async function runMcpServer(
 ): Promise<void> {
   const instructions = surface === "read-only"
     ? "Read Factorio state without moving, mutating, queueing, cancelling, or controlling the Codex character."
-    : "Control one physical Factorio character named Codex. Keep one rolling current plan plus one prepared successor: queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot until they finish. Never use screenshots or screen capture.";
+    : "Control one physical Factorio character named Codex. queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot until they finish. Wait with next_event instead of polling. Never use screenshots or screen capture.";
   const server = new McpServer({ name: "factorio-codex", version: MCP_SERVER_VERSION }, { instructions });
   const bridge = createBridgeProvider(configDiagnostic);
-  registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface);
+  registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface, currentRunDir);
+  if (surface === "full") {
+    // Astra's packages start without a pilot turn; one full-surface process per run queues them.
+    const packages = createPackageQueue(currentRunDir, bridge);
+    setInterval(() => { void packages.tick(); }, 1_000).unref();
+  }
   await server.connect(new StdioServerTransport());
 }

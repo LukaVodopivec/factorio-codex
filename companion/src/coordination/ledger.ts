@@ -3,7 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { atomicWriteFile } from "../setup/atomic.js";
-import { planStepSchema } from "../mcp/runPlan.js";
+import { MAX_PLAN_STEPS, planStepSchema } from "../mcp/runPlan.js";
 
 const text = (max: number) => z.string().min(1).max(max);
 const gitSha = z.string().regex(/^[0-9a-f]{40}$/);
@@ -29,29 +29,6 @@ const capacity = z.object({
   observed_tick: z.number().int().nonnegative(),
 }).strict();
 const assumption = z.object({ assumption: text(400), invalidation_condition: text(400) }).strict();
-const planIds = z.object({
-  current_plan_id: z.number().int().positive().nullable(),
-  queued_successor_plan_id: z.number().int().positive().nullable(),
-  predecessor_plan_id: z.number().int().positive().nullable(),
-}).strict().superRefine((plans, ctx) => {
-  const hasSuccessor = plans.queued_successor_plan_id !== null;
-  if (hasSuccessor !== (plans.predecessor_plan_id !== null)) {
-    ctx.addIssue({ code: "custom", message: "successor and predecessor IDs must be reported together" });
-  }
-  if (hasSuccessor && plans.predecessor_plan_id !== plans.current_plan_id) {
-    ctx.addIssue({ code: "custom", message: "successor predecessor must equal the current pilot plan" });
-  }
-});
-
-const PACKAGE_STEP_ACTIONS = new Set(["place_entity", "insert_items", "extract_items", "set_recipe", "rotate_entity",
-  "mine", "inspect_entities", "wait_for_item", "validate_factory_component"]);
-// A package may remove one owned entity it supersedes; resource mining stays the pilot's.
-const packageStep = planStepSchema
-  .refine((step) => PACKAGE_STEP_ACTIONS.has(step.action),
-    "package steps are placement, insertion, extraction, recipe, rotation, owned-entity removal, inspection, item waits, and validation; the pilot adds its own travel, gathering, and crafting")
-  .refine((step) => step.action !== "mine" || (step.target_kind === "owned" && step.expected_name !== undefined
-    && step.count === 1 && !step.allow_fluid_loss),
-  "package mine steps remove one owned entity: target_kind owned, expected_name, count 1, no fluid loss");
 // A strategist note in the run's notebook, relative to the ledger's directory.
 const notePath = z.string().max(160).refine((note) => {
   const segments = note.split("/");
@@ -59,8 +36,8 @@ const notePath = z.string().max(160).refine((note) => {
     && segments.slice(1).every((segment) => /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(segment));
 }, "notes are relative notebook/<name>.md paths without '..' or absolute parts");
 const packageId = z.string().regex(/^[a-z0-9-]{1,32}$/, "package ids are 1-32 lowercase letters, digits or dashes");
-// A coupled layout Astra designed and checked with find_placement/can_place; the
-// pilot revalidates it, adds its own travel and gathering, and queues the steps.
+// A plan Astra designed; the pilot's bridge checks its placements and queues it
+// into the FIFO by itself, in ledger order (coordination/orders.ts).
 const buildPackage = z.object({
   package_id: packageId,
   serves: z.enum(["NOW", "NEXT"]),
@@ -70,8 +47,7 @@ const buildPackage = z.object({
   anchor: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
   required_items: z.record(z.string().min(1), z.number().int().positive())
     .refine((required) => Object.keys(required).length <= 16, "at most 16 required items"),
-  steps: z.array(packageStep).min(1).max(25),
-  validated_place_steps: z.array(z.number().int().nonnegative()).max(24),
+  steps: z.array(planStepSchema).min(1).max(MAX_PLAN_STEPS),
   success_check: text(240),
   notes: z.array(notePath).max(3).optional(),
 }).strict();
@@ -83,7 +59,7 @@ export const operationsLedgerSchema = z.object({
   phase: text(120), bottleneck: text(240),
   latest_measured_capacity: z.array(capacity).max(12),
   task_list: z.object({ NOW: priority, NEXT: priority, LATER: priority }).strict(),
-  assumptions: z.array(assumption).max(8), pilot_plan_ids: planIds,
+  assumptions: z.array(assumption).max(8),
   build_packages: z.array(buildPackage).max(2).default([]),
 }).strict();
 
@@ -103,21 +79,15 @@ function packageIssues(packages: BuildPackage[], sourceTick: number | null): str
       || (entry.after_package_id !== null && after.get(entry.after_package_id) === entry.package_id)) {
       issues.push(`${at}.after_package_id: packages cannot depend on themselves or on each other`);
     }
-    if (entry.steps.filter((step) => step.action === "place_entity").length > 24) {
-      issues.push(`${at}.steps: at most 24 placements, so one can_place batch checks them`);
-    }
     const removed = new Set(entry.steps.flatMap((step) => step.action === "mine" ? [`${step.x},${step.y}`] : []));
     entry.steps.forEach((step, stepIndex) => {
-      if (step.action === "place_entity" && !entry.validated_place_steps.includes(stepIndex)) {
-        issues.push(`${at}.steps.${stepIndex}: placement not listed in validated_place_steps`);
-      }
       if (step.action === "place_entity" && removed.has(`${step.x},${step.y}`)) {
         issues.push(`${at}.steps.${stepIndex}: placement targets the position of this package's own mine step`);
       }
+      if (step.action === "build_layout" && (step.anchor === undefined) === (step.site === undefined)) {
+        issues.push(`${at}.steps.${stepIndex}: build_layout takes exactly one of anchor or site`);
+      }
     });
-    if (entry.validated_place_steps.some((stepIndex) => entry.steps[stepIndex]?.action !== "place_entity")) {
-      issues.push(`${at}.validated_place_steps: must index place_entity steps`);
-    }
   });
   return issues.slice(0, 3);
 }
@@ -177,6 +147,29 @@ export function reduceLedger(existingValue: unknown, envelopeValue: unknown):
   return { result: { status: "applied", revision: ledger.revision, source_tick: ledger.source_tick! }, ledger };
 }
 
+/** Package ids the bridge already queued or failed (package-queue.json beside
+ *  the ledger) that an update lists changed or again after dropping them: the
+ *  queue keys on the id, so such a package would never be queued. An
+ *  unchanged repeat of a listed package is fine. Unreadable queue: no check
+ *  (the queue itself then queues nothing). */
+function reusedPackageIds(file: string, existing: unknown, packages: Array<{ package_id: string }>): string[] {
+  let records: Record<string, { status?: string }>;
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(path.dirname(file), "package-queue.json"), "utf8"));
+    if (!value || typeof value.packages !== "object" || Array.isArray(value.packages)) return [];
+    records = value.packages;
+  } catch { return []; }
+  const listed = (existing as { build_packages?: unknown })?.build_packages;
+  const previous = Array.isArray(listed) ? listed as Array<{ package_id?: unknown }> : [];
+  return packages.flatMap((entry, index) => {
+    const record = records[entry.package_id];
+    if (!record) return [];
+    const same = previous.find((old) => old?.package_id === entry.package_id);
+    if (same && isDeepStrictEqual(same, JSON.parse(JSON.stringify(entry)))) return [];
+    return [`build_packages.${index}.package_id: ${entry.package_id} was already used (status ${record.status ?? "unknown"}); give a changed or re-listed package a new package_id`];
+  });
+}
+
 export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApplyResult {
   const envelope = applyEnvelopeSchema.safeParse(envelopeValue);
   if (!envelope.success) {
@@ -212,6 +205,8 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
     catch { return discard("LEDGER_READ_FAILED"); }
     try { existing = JSON.parse(contents); }
     catch { return discard("MALFORMED_OR_UNSUPPORTED_LEDGER"); }
+    const reused = reusedPackageIds(file, existing, envelope.data.update.build_packages);
+    if (reused.length > 0) return discard("MALFORMED_REPORT", reused);
     reduced = reduceLedger(existing, envelope.data);
   }
   if (!reduced.ledger) return reduced.result;

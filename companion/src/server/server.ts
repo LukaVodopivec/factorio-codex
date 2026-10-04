@@ -8,7 +8,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Bridge } from "../bridge.js";
 import { assertRuntimeCompatibility } from "../compatibility.js";
-import { companionVersion, loadConfig } from "../config.js";
+import { companionVersion, dataDir, loadConfig } from "../config.js";
 import { RconClient } from "../rcon.js";
 import { atomicWriteFile } from "../setup/atomic.js";
 import { installMod } from "../setup/installMod.js";
@@ -113,6 +113,17 @@ export function serverPid(paths: RunPaths, identify: (pid: number) => ProcessIde
   } catch { return null; }
 }
 
+/** The run directory `server start` last launched; its ledger feeds the MCP bridge's orders. */
+export const currentRunPointer = () => path.join(dataDir(), "current-run");
+/** That run directory while its recorded server is running, else null. */
+export function currentRunDir(identify: (pid: number) => ProcessIdentity = procIdentity): string | null {
+  let dir: string;
+  try { dir = fs.readFileSync(currentRunPointer(), "utf8").trim(); } catch { return null; }
+  if (!dir) return null;
+  const paths = runPaths(dir);
+  return serverPid(paths, identify) ? paths.dir : null;
+}
+
 async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
   for (const deadline = Date.now() + timeoutMs; Date.now() < deadline; await sleep(500)) {
     try { process.kill(pid, 0); } catch { return true; }
@@ -142,6 +153,7 @@ export async function startServer(runDir: string, options: { factorio?: string; 
         await stopServer(runDir).catch(() => undefined);
         throw error;
       }
+      atomicWriteFile(currentRunPointer(), `${paths.dir}\n`);
       return { pid: child.pid, save: paths.save, log: paths.log, factorio_version: ping.factorio_version, mod_version: ping.mod_version, protocol_version: ping.protocol_version };
     } catch (error) {
       if (!(error instanceof Error) || !/cannot connect to RCON|auth timed out|ECONNRESET|closed/i.test(error.message)) throw error;

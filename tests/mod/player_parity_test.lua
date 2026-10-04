@@ -1,4 +1,4 @@
--- Player-parity reads: map_summary include sections, stock_total and remote
+-- Player-parity reads: map_summary include sections and remote
 -- inspection. The fixture reproduces the cycle-8 blindness: a home factory that
 -- fills the landmark cap, a remote oil site with a stocked chest, and own
 -- entities in uncharted chunks that must stay hidden.
@@ -218,7 +218,7 @@ surface = mock.surface({
   end,
 })
 body.surface = surface
-package.loaded["scripts.companion"] = { require_companion = function() return body end,
+package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end,
   burning_item = dofile(here .. "/../../mod/agentic-companion/scripts/companion.lua").burning_item }
 
 local map_summary = require("scripts.map_summary")
@@ -247,6 +247,15 @@ check(not pcall(map_summary.map_summary, { include = { "everything" } })
   and not pcall(map_summary.map_summary, { include = "sites" }),
   "an unknown or malformed include is rejected")
 
+-- Patches come from the per-chunk patch cache (filled a few chunks a tick),
+-- never from a resource scan per read.
+require("scripts.state").init()
+for tick = 1, 10 do map_summary.patch_tick(tick); if storage.patch_cache.filled then break end end
+check(storage.patch_cache.filled, "the patch cache reads the charted chunks")
+entity_queries = 0
+local cached_patches = map_summary.map_summary({ include = { "patches" } })
+check(entity_queries == plain_queries and #cached_patches.patches == 3 and cached_patches.patches_complete == true
+  and cached_patches.patches_omitted == 0, "include patches reads the cache: no resource query per read")
 local everything = { "stockpiles", "sites", "patches", "power", "problems", "flows_all" }
 local full = map_summary.map_summary({ detail = "full", include = everything })
 
@@ -333,26 +342,14 @@ check(all_flows[1] == oil_flow and oil_flow.kind == "fluid" and oil_flow.produce
 
 -- Mutation guard: without the per-entity charted-chunk filter the refinery
 -- centred in uncharted chunk 11,10 (returned by chunk 10,10's area query)
--- leaks into every section, and stock_total counts the hidden chest.
+-- leaks into every section.
 local leaked = {}
 for _, needle in ipairs({ "hidden", "leaked", "oil-refinery", "uranium", "foreign" }) do
   if names_anywhere(full, needle) then leaked[#leaked + 1] = needle end
 end
 check(#leaked == 0, "uncharted and foreign entities appear in no section (leaked: " .. table.concat(leaked, ",") .. ")")
-check(map_summary.stock_total("iron-plate") == 651 and map_summary.stock_total("plastic-bar") == 77
-  and map_summary.stock_total("hidden-item") == 0 and map_summary.stock_total("leaked-item") == 0
-  and map_summary.stock_total("foreign-item") == 0 and map_summary.stock_total("no-such-item") == 0,
-  "stock_total counts own charted chests, machine outputs and belts only")
-local queries_before = entity_queries
-map_summary.stock_total("iron-plate")
-check(entity_queries == queries_before + 1 and map_summary.stock_total(nil) == 0, "stock_total costs one typed query")
-local intact_body = body
-package.loaded["scripts.companion"].require_companion = function() error("no body") end
-check(map_summary.stock_total("iron-plate") == 0, "stock_total returns 0 on failure")
-package.loaded["scripts.companion"].require_companion = function() return intact_body end
 
--- Sections add no entity query beyond the per-chunk scan (patches add the
--- per-chunk resource query only).
+-- Sections add no entity query beyond the per-chunk scan.
 entity_queries = 0
 map_summary.map_summary({ include = { "stockpiles", "sites", "power", "problems", "flows_all" } })
 check(entity_queries == plain_queries, "entity sections reuse the existing per-chunk scan")

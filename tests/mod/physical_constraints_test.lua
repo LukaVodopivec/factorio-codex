@@ -30,6 +30,7 @@ local body = {
   reach_distance = 10,
   walking_state = {},
   get_item_count = function(name) return inventory[name] or 0 end,
+  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
   remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count end,
 }
 package.loaded["scripts.companion"] = {
@@ -48,10 +49,19 @@ package.loaded["scripts.actions.approach"] = approach
 
 local build = require("scripts.actions.build")
 local no_item, no_item_error = pcall(build.place.start, {
-  item = "stone-furnace", position = { x = 4, y = 0 },
+  item = "stone-furnace", position = { x = 4, y = 0 }, auto_supply = false,
 })
 check(not no_item and tostring(no_item_error):match("inventory") ~= nil,
-  "placement refuses to create a building without the carried item")
+  "placement without auto-supply refuses to create a building without the carried item")
+local unsupplied = { item = "stone-furnace", position = { x = 4, y = 0 } }
+build.place.start(unsupplied)
+-- Auto-supply runs one source scan a tick, so the shortfall comes a few ticks in.
+local shortfall
+for _ = 1, 10 do shortfall = build.place.tick(unsupplied); if shortfall then break end end
+check(shortfall and shortfall.status == "failed" and shortfall.outcome.code == "SUPPLY_SHORTFALL"
+  and shortfall.outcome.missing[1].item == "stone-furnace" and shortfall.detail:match("no recipe makes it")
+  and inventory["stone-furnace"] == 0,
+  "auto-supply names the shortfall when nothing holds, crafts or yields the item, and nothing is created")
 
 inventory["stone-furnace"] = 1
 local place = { item = "stone-furnace", position = { x = 4, y = 0 } }
@@ -149,7 +159,8 @@ inventory["stone-furnace"] = 2
 body.crafting_queue_size = 0
 body.position = { x = 0, y = 0 }
 game.tick = 0
-local continuation = { id = 91, stop_on_error = false, steps = {
+-- Carried items only: these checks are about reach and escape, not supply.
+local continuation = { id = 91, stop_on_error = false, auto_supply = false, steps = {
   { item = "stone-furnace", position = { x = 4, y = 0 } },
   { item = "stone-furnace", position = { x = 5, y = 0 } },
   { item = "stone-furnace", position = { x = 5.5, y = 0 } },
@@ -174,7 +185,7 @@ check(partial_done and not continuation._results[3].ok and continuation._results
   "failed embedded escape preserves the committed placement and unused item")
 physical_blocker.name, physical_blocker.type = "mined-remains", "corpse"
 physical_blocker.prototype.collision_mask = { layers = {} }
-local resume = { id = 92, steps = { { item = "stone-furnace", position = { x = 5, y = 0 } } } }
+local resume = { id = 92, auto_supply = false, steps = { { item = "stone-furnace", position = { x = 5, y = 0 } } } }
 storage.tasks.active = resume
 build_plan.start(resume)
 check(build_plan.tick(resume).status == "done" and #committed == 2 and inventory["stone-furnace"] == 0,

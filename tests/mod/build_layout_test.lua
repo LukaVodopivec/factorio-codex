@@ -1,0 +1,521 @@
+-- Offline tests for build_layout / build_block: every block expands to a
+-- collision-free, connected layout in every rotation; sites are found on a
+-- resource patch and at a shore; check_only has no side effects; a build
+-- places recipients first and reports {anchor, placed, failed}.
+local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
+
+local failures = 0
+local function check(cond, what)
+  if cond then print("ok   " .. what) else failures = failures + 1; print("FAIL " .. what) end
+end
+
+_G.storage = {}
+_G.game = { tick = 100 }
+_G.defines = { build_check_type = { manual = 1, ghost_revive = 2 }, inventory = { chest = 1 } }
+
+-- Factorio 2.0.77 base geometry for the block entities.
+local function box(w, h) return { left_top = { x = -w / 2, y = -h / 2 }, right_bottom = { x = w / 2, y = h / 2 } } end
+local function entity(name, type, w, h, extra)
+  local proto = { name = name, type = type, tile_width = w, tile_height = h, collision_box = box(w - 0.3, h - 0.3) }
+  for k, v in pairs(extra or {}) do proto[k] = v end
+  return proto
+end
+local pole_reach = function() return 7.5 end
+local entities = {
+  ["burner-mining-drill"] = entity("burner-mining-drill", "mining-drill", 2, 2,
+    { mining_drill_radius = 0.99, vector_to_place_result = { -0.5, -1.3 } }),
+  ["electric-mining-drill"] = entity("electric-mining-drill", "mining-drill", 3, 3,
+    { mining_drill_radius = 2.49, vector_to_place_result = { 0, -1.85 }, electric = true }),
+  ["stone-furnace"] = entity("stone-furnace", "furnace", 2, 2),
+  ["steel-furnace"] = entity("steel-furnace", "furnace", 2, 2),
+  ["electric-furnace"] = entity("electric-furnace", "furnace", 3, 3, { electric = true }),
+  ["burner-inserter"] = entity("burner-inserter", "inserter", 1, 1, { pickup = { 0, -1 }, drop = { 0, 1.2 } }),
+  ["inserter"] = entity("inserter", "inserter", 1, 1, { pickup = { 0, -1 }, drop = { 0, 1.2 }, electric = true }),
+  ["transport-belt"] = entity("transport-belt", "transport-belt", 1, 1),
+  ["wooden-chest"] = entity("wooden-chest", "container", 1, 1),
+  ["iron-chest"] = entity("iron-chest", "container", 1, 1),
+  ["assembling-machine-1"] = entity("assembling-machine-1", "assembling-machine", 3, 3, { electric = true }),
+  ["assembling-machine-2"] = entity("assembling-machine-2", "assembling-machine", 3, 3, { electric = true }),
+  ["lab"] = entity("lab", "lab", 3, 3, { electric = true }),
+  ["small-electric-pole"] = entity("small-electric-pole", "electric-pole", 1, 1,
+    { get_max_wire_distance = pole_reach, supply = 2.5 }),
+  ["offshore-pump"] = entity("offshore-pump", "offshore-pump", 1, 1),
+  ["boiler"] = entity("boiler", "boiler", 3, 2),
+  ["steam-engine"] = entity("steam-engine", "generator", 3, 5, { electric = true }),
+  ["pipe"] = entity("pipe", "pipe", 1, 1),
+}
+local items = {}
+for name, proto in pairs(entities) do items[name] = { name = name, place_result = proto, stack_size = 50 } end
+items["iron-plate"] = { name = "iron-plate", stack_size = 100 }
+_G.prototypes = { item = items, entity = { ["iron-ore"] = { name = "iron-ore", type = "resource" } },
+  tile = { water = { collision_mask = { layers = { water_tile = true } } },
+    grass = { collision_mask = { layers = { ground_tile = true } } } } }
+
+-- The world: a resource patch, a lake west of x = 0, and a body far away.
+local created, crafted = {}, 0
+local inventory = {}
+-- Power comes from the event-maintained registry (registry.lua), never an
+-- entity query: a steam engine is registered or not.
+storage.registry = { entries = {}, machines = {}, electric = {}, holders = {}, burners = {}, poles = {},
+  belts = {}, belt_count = 0, ready = true }
+local function set_powered(on)
+  local r = storage.registry
+  if on then
+    r.entries[900] = { entity = { valid = true }, unit = 900, name = "steam-engine", type = "generator",
+      position = { x = 0, y = 0 } }
+    r.machines.generator, r.electric[900] = { [900] = true }, true
+  else
+    r.entries[900], r.machines.generator, r.electric[900] = nil, nil, nil
+  end
+end
+local resources = {}
+for x = 40, 79 do for y = 40, 59 do resources[#resources + 1] = { valid = true, name = "iron-ore", type = "resource",
+  position = { x = x + 0.5, y = y + 0.5 } } end end
+local water = {}
+for x = -20, -1 do for y = -20, 20 do water[#water + 1] = { position = { x = x, y = y } } end end
+local function is_water(x, y) return x < 0 and x >= -20 and y >= -20 and y <= 20 end
+local blockers = {}
+local permissive = false -- the expansion tests check geometry only
+local character
+local crowded = false     -- a built-up base: every land tile holds a wall
+local engine = { can_place = 0, find = 0 }
+local surface = {
+  can_place_entity = function(args)
+    engine.can_place = engine.can_place + 1
+    if permissive then return true end
+    if crowded then return false end
+    local proto = entities[args.name]
+    local area = require("scripts.placement_geometry").footprint(proto, args.position, args.direction)
+    local land = true
+    for y = math.floor(area.left_top.y), math.ceil(area.right_bottom.y) - 1 do
+      for x = math.floor(area.left_top.x), math.ceil(area.right_bottom.x) - 1 do
+        if is_water(x, y) then land = false end
+      end
+    end
+    if proto.type == "offshore-pump" then
+      -- Land under the pump, water on the side it takes water from.
+      local back = ({ [0] = { 0, -1 }, [4] = { 1, 0 }, [8] = { 0, 1 }, [12] = { -1, 0 } })[args.direction]
+      local x, y = math.floor(args.position.x), math.floor(args.position.y)
+      return land and is_water(x + back[1], y + back[2])
+    end
+    if not land then return false end
+    if proto.type == "mining-drill" then
+      local r = proto.mining_drill_radius
+      for _, e in ipairs(resources) do
+        if math.abs(e.position.x - args.position.x) < r and math.abs(e.position.y - args.position.y) < r then return true end
+      end
+      return false
+    end
+    for _, b in ipairs(blockers) do
+      if b.position.x > area.left_top.x and b.position.x < area.right_bottom.x
+        and b.position.y > area.left_top.y and b.position.y < area.right_bottom.y then return false end
+    end
+    return true
+  end,
+  find_entities_filtered = function(filter)
+    engine.find = engine.find + 1
+    if crowded and filter.area then
+      return { { valid = true, name = "stone-wall", type = "wall", position = filter.area.left_top } }
+    end
+    if filter.type == "resource" then
+      local out = {}
+      for _, e in ipairs(resources) do
+        local dx, dy = e.position.x - filter.position.x, e.position.y - filter.position.y
+        if dx * dx + dy * dy <= filter.radius * filter.radius then out[#out + 1] = e end
+      end
+      return out
+    end
+    assert(filter.area or filter.position, "no entity query may search the whole surface")
+    if filter.area then
+      local out = {}
+      for _, b in ipairs(blockers) do
+        if b.position.x > filter.area.left_top.x and b.position.x < filter.area.right_bottom.x
+          and b.position.y > filter.area.left_top.y and b.position.y < filter.area.right_bottom.y then out[#out + 1] = b end
+      end
+      return out
+    end
+    return {}
+  end,
+  find_tiles_filtered = function(filter)
+    local out = {}
+    for _, t in ipairs(water) do
+      local dx, dy = t.position.x + 0.5 - filter.position.x, t.position.y + 0.5 - filter.position.y
+      if dx * dx + dy * dy <= filter.radius * filter.radius then out[#out + 1] = t end
+    end
+    return out
+  end,
+  create_entity = function(args)
+    created[#created + 1] = args
+    return { valid = true, name = args.name, type = entities[args.name].type, position = args.position }
+  end,
+}
+local recipes = {}
+for name in pairs(items) do recipes[name] = { name = name, enabled = true,
+  products = { { type = "item", name = name, amount = 1 } }, ingredients = {} } end
+recipes["iron-gear-wheel"] = { name = "iron-gear-wheel", enabled = true }
+recipes["locked-thing"] = { name = "locked-thing", enabled = false }
+character = {
+  valid = true, name = "character", position = { x = 500.5, y = 500.5 },
+  bounding_box = { left_top = { x = 500.3, y = 500.3 }, right_bottom = { x = 500.7, y = 500.7 } },
+  force = { recipes = recipes, is_chunk_charted = function() return true end },
+  surface = surface, build_distance = 10, crafting_queue_size = 0,
+  get_item_count = function(name) return inventory[name] or 0 end,
+  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
+  remove_item = function(args) inventory[args.name] = (inventory[args.name] or 0) - args.count; return args.count end,
+  begin_crafting = function() crafted = crafted + 1; return 0 end,
+  can_reach_entity = function() return true end,
+}
+package.loaded["scripts.companion"] = { require_companion = function() return character end, get = function() return character end }
+package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end, ensure_entity = function() return "ok" end }
+package.loaded["scripts.factory_activity"] = { record = function() end }
+
+local geometry = require("scripts.placement_geometry")
+local layout = require("scripts.actions.build_layout")
+local blocks = require("scripts.blocks")
+
+-- ---------------------------------------------------------------- helpers
+
+local function turn(v, direction)
+  local x, y = v[1], v[2]
+  for _ = 1, direction / 4 do x, y = -y, x end
+  return { x = x, y = y }
+end
+local function inside(area, p)
+  return p.x > area.left_top.x and p.x < area.right_bottom.x and p.y > area.left_top.y and p.y < area.right_bottom.y
+end
+local function placements_of(result)
+  local out = {}
+  for _, p in ipairs(result.placements) do
+    out[#out + 1] = { proto = p.entity.proto, position = p.position, direction = p.entity.direction, area = p.area }
+  end
+  return out
+end
+local function at(list, point, exclude)
+  for _, p in ipairs(list) do
+    if p ~= exclude and inside(geometry.footprint(p.proto, p.position, p.direction), point) then return p end
+  end
+end
+local function no_overlaps(list)
+  for i = 1, #list do for j = i + 1, #list do
+    if geometry.overlaps(list[i].area, list[j].area) then return false end
+  end end
+  return true
+end
+-- Every inserter takes from and drops into layout entities (or one end is
+-- open for the bot); every drill drops onto a belt or chest; every
+-- electric entity is inside a pole's supply area.
+local function connected(list, open_inserter_ends)
+  for _, p in ipairs(list) do
+    if p.proto.type == "inserter" then
+      local pick = turn(p.proto.pickup, p.direction)
+      local drop = turn(p.proto.drop, p.direction)
+      local from = at(list, { x = p.position.x + pick.x, y = p.position.y + pick.y }, p)
+      local to = at(list, { x = p.position.x + drop.x, y = p.position.y + drop.y }, p)
+      if not (from and to) and not open_inserter_ends then return false, "inserter at " .. p.position.x .. "," .. p.position.y end
+    end
+    if p.proto.type == "mining-drill" then
+      local v = turn(p.proto.vector_to_place_result, p.direction)
+      local to = at(list, { x = p.position.x + v.x, y = p.position.y + v.y }, p)
+      if not to or (to.proto.type ~= "transport-belt" and to.proto.type ~= "container") then return false, "drill output" end
+    end
+    if p.proto.electric then
+      local powered = false
+      for _, pole in ipairs(list) do
+        if pole.proto.type == "electric-pole" then
+          local s = pole.proto.supply
+          local area = { left_top = { x = pole.position.x - s, y = pole.position.y - s },
+            right_bottom = { x = pole.position.x + s, y = pole.position.y + s } }
+          if geometry.overlaps(area, p.area) then powered = true end
+        end
+      end
+      if not powered then return false, p.proto.name .. " unpowered" end
+    end
+  end
+  return true
+end
+
+local function block_variants(params)
+  local request = layout._block_request(character, params)
+  local results = {}
+  for q = 1, 4 do
+    local one = { anchor = { x = 1000, y = 1000 }, layouts = { request.layouts[q] } }
+    results[q] = layout._resolve(character, one)
+  end
+  return results, request
+end
+
+-- ------------------------------------------------------------------ blocks
+
+permissive = true
+local cases = {
+  { block = "mining", count = 1, resource = "iron-ore" },
+  { block = "mining", count = 5, resource = "iron-ore" },
+  { block = "smelting", count = 4 },
+  { block = "assembly", count = 3, recipe = "iron-gear-wheel" },
+  { block = "labs", count = 3 },
+  { block = "power", count = 3 },
+}
+for _, powered in ipairs({ false, true }) do
+  set_powered(powered)
+  for _, case in ipairs(cases) do
+    local label = string.format("%s x%d (%s)", case.block, case.count, powered and "electric" or "burner")
+    local results = block_variants(case)
+    for q, result in ipairs(results) do
+      local list = placements_of(result)
+      local ok, why = connected(list)
+      check(#result.failed == 0 and no_overlaps(list) and ok,
+        string.format("block %s rotation %d expands to a collision-free connected layout%s", label, q - 1,
+          #result.failed > 0 and (": " .. result.failed[1].reason) or why and (": " .. why) or ""))
+    end
+  end
+end
+
+set_powered(false)
+permissive = false
+local burner_mining = layout._block_request(character, { block = "mining", count = 4, resource = "iron-ore" })
+check(burner_mining.tiers.drill == "burner-mining-drill" and burner_mining.tiers.output == "transport-belt",
+  "mining picks burner drills without power and a belt for three or more drills")
+set_powered(true)
+local electric_mining = layout._block_request(character, { block = "mining", count = 2, resource = "iron-ore" })
+check(electric_mining.tiers.drill == "electric-mining-drill" and electric_mining.tiers.output == "iron-chest",
+  "mining picks electric drills once the force generates power, and chests for one or two drills")
+recipes["electric-mining-drill"].enabled = false
+local fallback = layout._block_request(character, { block = "mining", count = 1, resource = "iron-ore" })
+check(fallback.tiers.drill == "burner-mining-drill", "a tier the force cannot craft and the body lacks is skipped")
+inventory["electric-mining-drill"] = 1
+check(layout._block_request(character, { block = "mining", count = 1, resource = "iron-ore" }).tiers.drill == "electric-mining-drill",
+  "a tier the body already carries is used")
+inventory["electric-mining-drill"] = nil
+recipes["electric-mining-drill"].enabled = true
+set_powered(false)
+
+local power = layout._block_request(character, { block = "power", count = 2 })
+local engines, boilers, pumps = 0, 0, 0
+for _, e in ipairs(power.layouts[1].entities) do
+  if e.name == "steam-engine" then engines = engines + 1 end
+  if e.name == "boiler" then boilers = boilers + 1 end
+  if e.name == "offshore-pump" then pumps = pumps + 1 end
+end
+check(pumps == 1 and boilers == 2 and engines == 4, "power keeps one pump and two steam engines per boiler")
+local pump, first_boiler
+for _, e in ipairs(power.layouts[1].entities) do
+  if e.name == "offshore-pump" then pump = e end
+  if e.name == "boiler" and not first_boiler then first_boiler = e end
+end
+-- Pump facing 0 outputs south (0, 1); boiler facing 0 has its west water port at (-1, 0.5).
+local out = turn({ 0, 1 }, pump.direction)
+check(pump.dx + out.x == first_boiler.dx - 1 and pump.dy + out.y == first_boiler.dy + 0.5,
+  "the offshore pump outputs straight into the first boiler's water port")
+
+local bad = pcall(blocks.validate, { block = "rocket", count = 1 })
+local too_many = pcall(blocks.validate, { block = "power", count = 99 })
+local no_resource = pcall(blocks.validate, { block = "mining", count = 2 })
+check(not bad and not too_many and not no_resource, "build_block validation rejects unknown blocks, oversized counts, mining without resource")
+
+-- ------------------------------------------------------------- site search
+
+local mined = layout.check_block({ block = "mining", count = 4, resource = "iron-ore", near = { x = 30, y = 50 }, check_only = true })
+local on_patch = mined.ok
+for _, row in ipairs(mined.placed) do
+  if row.name == "burner-mining-drill" and not (row.x > 40 and row.x < 80 and row.y > 40 and row.y < 60) then on_patch = false end
+end
+check(on_patch and #mined.failed == 0, "a mining block finds a site with every drill on the resource patch")
+local nowhere = layout.check_block({ block = "mining", count = 2, resource = "iron-ore", near = { x = -300, y = -300 }, check_only = true })
+check(not nowhere.ok and nowhere.failed[1].code == "SITE_NOT_FOUND", "no resource near the site is SITE_NOT_FOUND")
+
+local shore = layout.check_block({ block = "power", count = 2, near = { x = 5, y = 3 }, check_only = true })
+local pump_row
+for _, row in ipairs(shore.placed) do if row.name == "offshore-pump" then pump_row = row end end
+check(shore.ok and pump_row and not is_water(math.floor(pump_row.x), math.floor(pump_row.y))
+  and is_water(math.floor(pump_row.x) - 1, math.floor(pump_row.y)),
+  "a power block turns to fit the shore: pump on land with water behind it")
+local landlocked = layout.check_block({ block = "power", count = 1, near = { x = 300, y = 300 }, check_only = true })
+check(not landlocked.ok and landlocked.failed[1].code == "SITE_NOT_FOUND", "no water near the site is SITE_NOT_FOUND")
+
+local smelt = layout.check_block({ block = "smelting", count = 2, near = { x = 10.5, y = 10.5 }, check_only = true })
+local nearest = math.huge
+for _, row in ipairs(smelt.placed) do nearest = math.min(nearest, (row.x - 10.5) ^ 2 + (row.y - 10.5) ^ 2) end
+check(smelt.ok and nearest < 25, "a smelting block is sited around near")
+
+-- ----------------------------------------------------------- layout checks
+
+local function dry(params)
+  params.check_only = true
+  return layout.check_layout(params)
+end
+local overlap = dry({ anchor = { x = 10, y = 10 }, entities = {
+  { name = "stone-furnace", dx = 1, dy = 1 }, { name = "wooden-chest", dx = 1.5, dy = 1.5 } } })
+check(not overlap.ok and overlap.failed[1].code == "LAYOUT_OVERLAP" and overlap.failed[1].index == 1,
+  "overlapping layout entities are LAYOUT_OVERLAP with a 0-based index")
+local unknown = dry({ anchor = { x = 10, y = 10 }, entities = { { name = "warp-drive", dx = 0, dy = 0 } } })
+check(not unknown.ok and unknown.failed[1].code == "UNKNOWN_ENTITY", "an unknown entity is UNKNOWN_ENTITY")
+local locked = dry({ anchor = { x = 10, y = 10 }, entities = {
+  { name = "assembling-machine-1", dx = 1.5, dy = 1.5, recipe = "locked-thing" },
+  { name = "stone-furnace", dx = 5, dy = 1, recipe = "iron-gear-wheel" } } })
+check(not locked.ok and locked.failed[1].code == "RECIPE_LOCKED" and locked.failed[2].code == "RECIPE_NOT_SETTABLE",
+  "locked recipes and recipes on furnaces are named before anything is built")
+local wet = dry({ anchor = { x = -5, y = 0 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
+check(not wet.ok and wet.failed[1].code == "BLOCKED", "a placement on water is BLOCKED")
+blockers = { { valid = true, name = "tree-01", type = "tree", position = { x = 20.5, y = 20.5 } } }
+local trees = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
+check(trees.ok and trees.clears == 1, "trees in a footprint pass the check: placing clears them")
+blockers = { { valid = true, name = "stone-wall", type = "wall", position = { x = 20.5, y = 20.5 } } }
+local walled = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
+check(not walled.ok and walled.failed[1].reason:match("blocked by stone%-wall") ~= nil, "an owned blocker is named")
+blockers = {}
+
+local routed = dry({ anchor = { x = 100, y = 100 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "stone-furnace", dx = 4, dy = 1 },
+  { name = "wooden-chest", dx = 8.5, dy = 0.5 } },
+  connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 8.5, dy = 0.5 } },
+    { kind = "power", prototype = "small-electric-pole", from = { dx = 0.5, dy = 3.5 }, to = { dx = 20.5, dy = 3.5 } } } })
+local belts, poles, around = 0, 0, true
+for _, row in ipairs(routed.placed) do
+  if row.name == "transport-belt" then
+    belts = belts + 1
+    if row.x >= 103 and row.x <= 105 and row.y >= 100 and row.y <= 102 then around = false end
+    if (row.x == 100.5 or row.x == 108.5) and row.y == 100.5 then around = false end
+  end
+  if row.name == "small-electric-pole" then poles = poles + 1 end
+end
+check(routed.ok and belts >= 7 and around, "a belt route between planned endpoints goes around planned footprints, not onto them")
+check(poles == 4, "a power route places endpoint poles and spans within wire reach")
+local order_ok, seen_pole = true, false
+for _, row in ipairs(routed.placed) do
+  if row.name == "small-electric-pole" then seen_pole = true elseif seen_pole then order_ok = false end
+end
+check(order_ok, "poles are placed last")
+
+local bad_layout = pcall(layout.layout_action.validate, { action = "build_layout", entities = {} }, 1)
+local both = pcall(layout.layout_action.validate, { anchor = { x = 0, y = 0 }, site = { near = { x = 0, y = 0 } },
+  entities = { { name = "pipe", dx = 0, dy = 0 } } }, 1)
+check(not bad_layout and not both, "queue_plan validation rejects empty layouts and anchor plus site")
+local rpc_build = pcall(layout.check_layout, { anchor = { x = 0, y = 0 }, entities = { { name = "pipe", dx = 0, dy = 0 } } })
+check(not rpc_build, "the RPC only dry-runs: without check_only it refuses")
+
+-- ---------------------------------------------------- check_only is read-only
+
+created, crafted = {}, 0
+local storage_before = next(storage)
+local inventory_before = {}
+for k, v in pairs(inventory) do inventory_before[k] = v end
+layout.check_block({ block = "smelting", count = 3, near = { x = 10, y = 10 }, check_only = true })
+layout.check_block({ block = "power", count = 1, near = { x = 5, y = 3 }, check_only = true })
+dry({ anchor = { x = 100, y = 100 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
+local same = true
+for k, v in pairs(inventory) do if inventory_before[k] ~= v then same = false end end
+check(#created == 0 and crafted == 0 and next(storage) == storage_before and same,
+  "check_only creates nothing, crafts nothing, and touches no storage or inventory")
+
+-- ------------------------------------------------- site search work budget
+
+-- Every tick of a search stays within its work budget (a candidate started
+-- may reach twice the tick share; an uncached ground check costs 4 items for
+-- at most two can_place_entity calls and one blocker query), the
+-- anchor-independent overlap check runs once per rotation, and a dry run
+-- takes one tick.
+local per_tick_engine = 2 * (2 * layout.WORK_PER_TICK / 4)
+local overlap_calls = 0
+local real_overlaps = geometry.overlaps
+geometry.overlaps = function(a, b) overlap_calls = overlap_calls + 1; return real_overlaps(a, b) end
+crowded = true
+local big = { block = "assembly", count = 16, recipe = "iron-gear-wheel", near = { x = 10.5, y = 10.5 } }
+local entity_count = #layout._block_request(character, big).layouts[1].entities
+overlap_calls, engine.can_place, engine.find = 0, 0, 0
+local search_task = { id = 30, block = big.block, count = big.count, recipe = big.recipe, near = big.near }
+-- tasks.lua runs start and the first tick in one game tick: they share one
+-- tick's budget, so the counters are reset only after that first tick.
+layout.block_action.runner.start(search_task)
+local worst, ticks, outcome = 0, 0, nil
+while not outcome and ticks < 100 do
+  outcome = layout.block_action.runner.tick(search_task)
+  worst, ticks = math.max(worst, engine.can_place), ticks + 1
+  engine.can_place = 0
+end
+check(entity_count > 150 and outcome and outcome.status == "failed" and outcome.outcome.failed[1].code == "SITE_NOT_FOUND",
+  "a 16-assembler block in a built-up base fails as SITE_NOT_FOUND")
+check(worst <= per_tick_engine and ticks <= layout.MAX_WORK / layout.WORK_PER_TICK + 2,
+  string.format("the site search spreads over ticks within its budget (worst tick %d placement checks, %d ticks)", worst, ticks))
+check(overlap_calls <= 4 * entity_count * 4,
+  string.format("layout overlaps are checked once per rotation, not per candidate (%d footprint comparisons)", overlap_calls))
+engine.can_place, engine.find = 0, 0
+local dry_big = layout.check_block({ block = big.block, count = big.count, recipe = big.recipe, near = big.near, check_only = true })
+check(not dry_big.ok and dry_big.incomplete and dry_big.failed[1].code == "SITE_SEARCH_INCOMPLETE"
+  and engine.can_place <= per_tick_engine,
+  string.format("a dry run stops at one tick's work and says it is incomplete (%d placement checks)", engine.can_place))
+crowded = false
+geometry.overlaps = real_overlaps
+
+-- A connection whose goal is walled in by planned entities fails as a route
+-- within its own budget, not after the whole area within its length.
+engine.can_place = 0
+local walled_route = dry({ anchor = { x = 300, y = 300 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 20.5, dy = 0.5 },
+  { name = "wooden-chest", dx = 19.5, dy = 0.5 }, { name = "wooden-chest", dx = 21.5, dy = 0.5 },
+  { name = "wooden-chest", dx = 20.5, dy = -0.5 }, { name = "wooden-chest", dx = 20.5, dy = 1.5 } },
+  connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 20.5, dy = 0.5 } } } })
+check(not walled_route.ok and walled_route.failed[1].code == "ROUTE_FAILED" and engine.can_place <= per_tick_engine,
+  string.format("a walled-in route fails as ROUTE_FAILED within one tick's work (%d placement checks)", engine.can_place))
+engine.can_place = 0
+local long_route = dry({ anchor = { x = 400, y = 400 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 25.5, dy = 6.5 } },
+  connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 25.5, dy = 6.5 } } } })
+local long_belts = 0
+for _, row in ipairs(long_route.placed) do if row.name == "transport-belt" then long_belts = long_belts + 1 end end
+check(long_route.ok and long_belts == 30 and engine.can_place < 200,
+  string.format("an open 31-tile route is found by its shortest path without searching the whole area (%d placement checks)",
+    engine.can_place))
+
+-- ------------------------------------------------------------------ build
+
+inventory = { ["wooden-chest"] = 1, ["burner-inserter"] = 1, ["stone-furnace"] = 1 }
+local task = { id = 7, anchor = { x = 200, y = 200 }, entities = {
+  { name = "burner-inserter", dx = 2.5, dy = 0.5, direction = 12 },
+  { name = "stone-furnace", dx = 4, dy = 1 },
+  { name = "wooden-chest", dx = 1.5, dy = 0.5 } } }
+layout.layout_action.runner.start(task)
+local result
+for _ = 1, 20 do
+  result = layout.layout_action.runner.tick(task)
+  if result then break end
+end
+check(result and result.status == "done" and result.outcome.code == "LAYOUT_BUILT" and #result.outcome.placed == 3
+  and result.outcome.anchor.x == 200, "a layout builds through build_plan and reports anchor and placed")
+check(#created == 3 and created[3].name == "burner-inserter", "recipients are built before the inserter that feeds them")
+
+inventory = { ["wooden-chest"] = 1 }
+created = {}
+local short = { id = 8, anchor = { x = 210, y = 200 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "lab", dx = 3.5, dy = 1.5 } } }
+recipes.lab.enabled = false
+layout.layout_action.runner.start(short)
+for _ = 1, 40 do
+  result = layout.layout_action.runner.tick(short)
+  if result then break end
+end
+recipes.lab.enabled = true
+check(result and result.status == "partial" and result.outcome.code == "LAYOUT_PARTIAL"
+  and result.outcome.failed[1].index == 1 and result.outcome.shortfall and result.outcome.shortfall[1].item == "lab",
+  "a partial build names the failed entity index and the shortfall")
+
+created = {}
+local blocked_task = { id = 9, anchor = { x = -5, y = 0 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } }
+layout.layout_action.runner.start(blocked_task)
+local refused = layout.layout_action.runner.tick(blocked_task)
+check(refused.status == "failed" and refused.outcome.code == "LAYOUT_CHECK_FAILED" and #created == 0,
+  "a layout that fails its check builds nothing")
+local held = { id = 10, anchor = { x = 220, y = 200 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } }
+inventory = { ["wooden-chest"] = 1 }
+layout.layout_action.runner.start(held)
+layout.layout_action.runner.tick(held) -- the first tick decides the site and starts the nested build
+held._plan._approach, held._plan._approach_close = { phase = "walking" }, true
+layout.layout_action.runner.resume(held)
+check(held._plan._approach == nil and held._plan._approach_close == nil,
+  "after a takeover hold the nested build approaches again from where the body stands")
+check(layout.layout_action.budget_steps({ entities = { {}, {} },
+  connections = { { from = { dx = 0, dy = 0 }, to = { dx = 3, dy = 4 } } } }) == 10,
+  "a layout's plan budget counts placements and route tiles")
+
+print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
+os.exit(failures == 0 and 0 or 1)

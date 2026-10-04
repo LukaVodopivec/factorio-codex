@@ -17,10 +17,10 @@ package.loaded["scripts.spatial"] = { observe_local = function(params)
   check(params.radius == 5 and params.detail == "compact", "snapshot reuses a bounded compact observation")
   return { character = { inventory = { ["iron-ore"] = 7 } } }
 end }
-package.loaded["scripts.map_summary"] = { map_summary = function(params)
-  check(params.detail == "aggregate", "snapshot reuses the aggregate factory summary")
-  return { factory = { machine_count = 2 } }
-end }
+package.loaded["scripts.map_summary"] = {
+  map_summary = function() error("a snapshot never walks the charted chunks") end,
+  registry_factory = function() return { scope = "registry", machine_count = 2 } end,
+}
 package.loaded["scripts.research"] = { progression_status = function() return { researched = { "automation" } } end }
 
 _G.game = { tick = 18000 }

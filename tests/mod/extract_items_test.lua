@@ -18,6 +18,9 @@ function body.insert(stack)
   body.received[stack.name] = (body.received[stack.name] or 0) + inserted
   return inserted
 end
+function body.get_main_inventory()
+  return { get_insertable_count = function() return math.max(body.capacity - received_total(), 0) end }
+end
 function body.remove_item(stack)
   local removed = math.min(stack.count, body.received[stack.name] or 0)
   body.received[stack.name] = (body.received[stack.name] or 0) - removed
@@ -106,6 +109,31 @@ check(partial_all.status == "failed" and partial_all.detail:match("nothing was t
   "all extraction reports aggregate capacity shortfall instead of partial success")
 check(contents.coal == 7 and contents.stone == 3 and received_total() == 0,
   "failed all extraction restores every source item and every earlier transfer")
+body.capacity = 100
+
+-- A furnace's plates: its insert works like an inserter and cannot put
+-- plates back into the result slot, so only what fits is ever removed.
+local result_slot = { ["iron-plate"] = 100 }
+local spilled = 0
+body.surface = { spill_item_stack = function(args) spilled = spilled + args.stack.count end }
+local furnace = { valid = true, name = "stone-furnace" }
+function furnace.remove_item(stack)
+  local n = math.min(result_slot[stack.name] or 0, stack.count)
+  result_slot[stack.name] = (result_slot[stack.name] or 0) - n
+  return n
+end
+function furnace.insert() return 0 end
+prototypes.item["iron-plate"] = {}
+local real_find = package.loaded["scripts.actions.approach"].find_entity_near
+package.loaded["scripts.actions.approach"].find_entity_near = function() return furnace end
+body.capacity, body.received = 30, {}
+local plates_task = { target = { x = 1, y = 2 }, items = { ["iron-plate"] = 100 } }
+extract.start(plates_task)
+local plates = extract.tick(plates_task)
+check(plates.status == "done" and body.received["iron-plate"] == 30 and result_slot["iron-plate"] == 70 and spilled == 0
+  and plates.detail:match("30 of 100 iron%-plate %(my inventory is full%)") ~= nil,
+  "taking from a machine output removes only what fits, so nothing is lost")
+package.loaded["scripts.actions.approach"].find_entity_near = real_find
 body.capacity = 100
 
 local missing, missing_error = pcall(extract.start, { target = { x = 1, y = 2 } })

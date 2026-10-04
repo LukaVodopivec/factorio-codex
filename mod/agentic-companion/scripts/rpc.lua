@@ -4,6 +4,8 @@
 -- CHUNK_SIZE are stored in storage.rpc_outbox and streamed back to the
 -- app part by part via get_chunk.
 local companion = require("scripts.companion")
+local build_layout = require("scripts.actions.build_layout")
+local timing = require("scripts.profiler")
 
 local M = {}
 
@@ -51,7 +53,7 @@ local function prune_outbox()
   end
 end
 
-function M.dispatch(method, params_json)
+local function run(method, params_json)
   prune_outbox()
   local handler = M.handlers[method]
   if not handler then
@@ -74,6 +76,19 @@ function M.dispatch(method, params_json)
     respond({ ok = false, error = tostring(result) })
   end
 end
+
+-- Each command's whole Lua time (decode, handler, encode) goes to the game
+-- log; get_chunk only replays stored parts and is not logged.
+function M.dispatch(method, params_json)
+  local profiler = method ~= "get_chunk" and timing.start() or nil
+  run(method, params_json)
+  timing.log_rpc(method, profiler)
+end
+
+-- build_layout/build_block dry runs (check_only, read-only); the builds
+-- themselves are plan steps.
+M.register("build_layout", build_layout.check_layout)
+M.register("build_block", build_layout.check_block)
 
 -- Built-in transport helpers; everything else registers from control.lua.
 

@@ -50,31 +50,6 @@ local place_runner = runner("place")
 package.loaded["scripts.actions.build"] = { place = place_runner, rotate = runner(), set_recipe = runner() }
 package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract") }
 package.loaded["scripts.actions.build_plan"] = runner()
-local component_sample_count, component_ready, component_transfers, sampled_since = 0, true, 0, {}
-local source_only = false
-local split_after
-package.loaded["scripts.map_summary"] = { factory_component_sample = function(params)
-  component_sample_count = component_sample_count + 1
-  sampled_since[#sampled_since + 1] = params.source_tick
-  if split_after and component_sample_count > split_after then
-    local rows = {}
-    for i, position in ipairs(params.positions) do
-      rows[i] = { position = { x = position.x, y = position.y },
-        component_id = "component-" .. i, component_signature = "exact-component-" .. i }
-    end
-    return { code = "FACTORY_COMPONENT_SPLIT", stage = "selector", component_signatures_by_position = rows }
-  end
-  return { tick = game.tick, source_tick = params.source_tick, component_id = "component-1",
-    component_signature = "source:0:0|processor:1:0|sink:2:0", selected_node_ids = { "node-1" },
-    products_finished_total = source_only and 0 or 9 + component_sample_count,
-    _signature = "exact", _production = source_only and {} or { processor = 9 + component_sample_count },
-    _source_production = { source = { working = true, progress = 1 - component_sample_count / 10, remaining = 100 - component_sample_count, resource_key = "ore" } },
-    _downstream = { sink = { kind = "consumer", accepting = true, products = { ["item:plate"] = true } } }, downstream_kind = "consumer", blocked_output = false,
-    character_transfer_actions = component_transfers, character_history_complete = true,
-    topology_ready = component_ready, blockers = component_ready and {} or { "material_input_provenance_unresolved:item:ore" },
-    graph_omissions = { nodes = 20, edges = 30, diagnostics = 40 }, exact_remote_inventories = false,
-  }
-end }
 _G.defines = { inventory = { fuel = 1, furnace_result = 2 }, entity_status = {}, shooting = { not_shooting = 0 } }
 _G.game = { tick = 0 }
 _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
@@ -129,10 +104,10 @@ check(inspect_calls == 1,
 check(tasks.plan_status({ plan_id = dependent.plan_id }).status == "queued" and tasks.queue_length() == 1,
   "the failed wait's dependent successor stays blocked in the same FIFO lane")
 
--- Research and component validation use the same parked read-only queue path,
--- leaving independent physical work runnable while their next sample is due.
+-- Research waits use the same parked read-only queue path, leaving
+-- independent physical work runnable while their next check is due.
 storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil },
-  factory_activity = { epoch_tick = 100, events = {}, events_omitted = 0, validations = {}, validations_omitted = 0 } }
+  factory_activity = { epoch_tick = 100, events = {}, events_omitted = 0 } }
 technology.researched = false; force.current_research = technology
 local research_wait = tasks.queue_plan({ steps = { { action = "wait_for_research",
   technology = "automation", timeout_seconds = 3 } } })
@@ -150,133 +125,36 @@ check(research_done.status == "completed" and research_done.outcomes[1].result.c
   and research_done.outcomes[1].result.technology == "automation",
   "wait_for_research completes with a compact authoritative DTO")
 
-storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil },
-  factory_activity = { epoch_tick = 100, events = {}, events_omitted = 0, validations = {}, validations_omitted = 0 } }
-component_sample_count, component_ready = 0, true
-local validation = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 100,
-  positions = { { x = 0, y = 0 }, { x = 2, y = 0 } }, duration_seconds = 1 } } })
-game.tick = 101; tasks.on_tick()
-check(tasks.plan_status({ plan_id = validation.plan_id }).status == "waiting",
-  "factory validation parks between bounded charted counter samples")
-game.tick = 121; tasks.on_tick(); game.tick = 141; tasks.on_tick()
-game.tick = 160; tasks.on_tick()
-check(tasks.plan_status({ plan_id = validation.plan_id }).status == "waiting",
-  "factory validation remains pending until its full requested interval")
-game.tick = 161; tasks.on_tick()
-local validation_done = tasks.plan_status({ plan_id = validation.plan_id })
-check(validation_done.status == "completed" and validation_done.outcomes[1].result.proven
-  and validation_done.outcomes[1].result.products_finished_delta == 3
-  and validation_done.outcomes[1].result.character_transfer_actions == 0
-  and validation_done.outcomes[1].result.exact_remote_inventories == false,
-  "consumer validation proves several cycles despite serialization omissions, without remote inventory access")
-check(sampled_since[1] == 101 and sampled_since[#sampled_since] == 101
-  and validation_done.outcomes[1].result.source_tick == 100
-  and validation_done.outcomes[1].result.transfer_window_start_tick == 101,
-  "the transfer window opens when validation starts, so earlier bootstrap insertions are historical debt")
-local activity = require("scripts.factory_activity").snapshot(100)
-check(#activity.validations == 1 and activity.validations[1].component_signature == validation_done.outcomes[1].result.component_signature,
-  "successful validation is retained in the existing bounded activity evidence")
-
-for _, after in ipairs({ 0, 1 }) do
-  storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil },
-    factory_activity = { epoch_tick = 300, events = {}, events_omitted = 0 } }
-  component_sample_count, split_after, physical_starts, physical_ticks = 0, after, 0, 0
-  all_physical_starts, all_physical_ticks, transfer_effects, placement_effects = 0, 0, 0, {}
-  local positions = { { x = 0, y = 0 }, { x = 2, y = 0 } }
-  local split_plan = tasks.queue_plan({ steps = {
-    { action = "place_entity", name = "stone-furnace", x = 1, y = 0 },
-    { action = "validate_factory_component", source_tick = 300, positions = positions, duration_seconds = 1 },
-    { action = "walk_to", x = 3, y = 0 },
-  } })
-  for _, tick in ipairs({ 301, 302, 322, 342, 362, 382 }) do game.tick = tick; tasks.on_tick() end
-  local terminal = tasks.plan_status({ plan_id = split_plan.plan_id })
-  local outcome = terminal.outcomes[2].result
-  check(terminal.status == "failed" and terminal.completed_steps == 1 and #terminal.outcomes == 2
-    and terminal.outcomes[1].status == "completed" and terminal.outcomes[2].status == "failed"
-    and outcome.code == "FACTORY_COMPONENT_SPLIT" and outcome.stage == "selector"
-    and #outcome.component_signatures_by_position == 2,
-    "split at sample " .. (after + 1) .. " terminates with structured selector failure and retains committed prior step")
-  for i, row in ipairs(outcome.component_signatures_by_position) do
-    check(row.position.x == positions[i].x and row.position.y == positions[i].y
-      and row.component_id == "component-" .. i and row.component_signature == "exact-component-" .. i,
-      "plan split preserves position " .. i .. " and its exact component identity")
-  end
-  check(#placement_effects == 1 and placement_effects[1].name == "stone-furnace"
-    and placement_effects[1].x == 1 and placement_effects[1].y == 0,
-    "split validation preserves the earlier committed placement effect")
-  check(all_physical_starts == 1 and all_physical_ticks == 1 and transfer_effects == 0
-    and physical_starts == 0 and physical_ticks == 0 and component_sample_count == after + 1
-    and require("scripts.factory_activity").snapshot(300).transfer_actions == 0,
-    "split validation starts no physical action or transfer and never executes its dependent walk")
-end
-split_after = nil
-
-source_only, component_sample_count = true, 0
+-- A plan that finishes at tick 223 starts the body's idle clock.
 storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
-local source_validation = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 161,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
-for _, tick in ipairs({ 162, 182, 202, 222 }) do game.tick = tick; tasks.on_tick() end
-local source_done = tasks.plan_status({ plan_id = source_validation.plan_id })
-check(source_done.status == "completed" and source_done.outcomes[1].result.products_finished_delta == 0
-  and source_done.outcomes[1].result.source_cycles_observed == 3,
-  "source-only parked proof requires source cycles and acceptance without processor counters")
-check(#storage.factory_activity.validations == 1 and storage.factory_activity.validations[1].products_finished_delta == 0,
-  "existing validation recorder retains source-only proof with zero crafting production")
-source_only = false
-game.tick = 161
-
-storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
-component_sample_count, component_ready = 0, false
-local rejected = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 161,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
-game.tick = 162; tasks.on_tick(); game.tick = 222; tasks.on_tick()
-local rejected_status = tasks.plan_status({ plan_id = rejected.plan_id })
-check(rejected_status.status == "failed" and rejected_status.outcomes[1].result.proven == false
-  and rejected_status.outcomes[1].result.blockers[1].reason:match("material_input_provenance_unresolved"),
-  "unproven material provenance fails with its structured diagnostic instead of advancing successors")
-check(rejected_status.outcomes[1].result.blockers[1].class == "structural"
-  and rejected_status.outcomes[1].result.stage == "preflight" and rejected_status.outcomes[1].result.refused == nil,
-  "bare blocker names from an older sample shape are wrapped as structural preflight rows")
-
-storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
-component_sample_count, component_ready, component_transfers = 0, false, 2
-local fed = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 222,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+game.tick = 222
+local finished = tasks.queue_plan({ steps = { { action = "pickup_items", x = 0, y = 0, item = "iron-ore", count = 1 } } })
 game.tick = 223; tasks.on_tick()
-local fed_blockers = {}
-for _, blocker in ipairs(tasks.plan_status({ plan_id = fed.plan_id }).outcomes[1].result.blockers) do fed_blockers[blocker.reason] = true end
-check(fed_blockers.character_transfer_observed, "a preflight refused for character transfers names that blocker")
+check(tasks.plan_status({ plan_id = finished.plan_id }).status == "completed", "a short physical plan completes")
 game.tick = 400
-local idle_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 400,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
-local busy_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 400,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+local idle_queued = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
+local busy_queued = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
 check(idle_queued.body_idle_ticks == 400 - 223 and busy_queued.body_idle_ticks == 0,
   "queue_plan reports how long the FIFO sat empty before it, and zero while work is pending")
 storage.tasks.queue, storage.tasks.last_finished_tick = {}, 500
 game.tick, body.crafting_queue_size = 700, 2
-local crafting_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 700,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+local crafting_queued = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
 storage.tasks.queue = {}
 tasks.on_tick()
 body.crafting_queue_size = nil
 game.tick = 760
-local after_craft = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 760,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+local after_craft = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
 check(after_craft.body_idle_ticks == 60,
   "idle time after asynchronous hand-crafting counts from when crafting ended, not from the task that queued it")
 storage.tasks.queue, storage.tasks.last_finished_tick = {}, nil
-local fresh_queued = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 700,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+local fresh_queued = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
 check(crafting_queued.body_idle_ticks == 0 and fresh_queued.body_idle_ticks == 0,
   "hand-crafting in progress and a cleared or pre-upgrade clock are not idle time")
 tasks.cancel({ all = true })
 game.tick = 900
-check(tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 900,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } }).body_idle_ticks == 0,
+check(tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } }).body_idle_ticks == 0,
   "emergency cancel-all clears the idle clock, so the first plan after it is not blamed")
-local emptied = tasks.queue_plan({ steps = { { action = "validate_factory_component", source_tick = 900,
-  positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
+local emptied = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
 check(tasks.plan_status({ plan_id = emptied.plan_id }).fifo_empty == false, "a queued plan keeps the FIFO non-empty")
 tasks.cancel({ all = true })
 check(tasks.plan_status({ plan_id = emptied.plan_id }).fifo_empty == true, "plan_status reports an empty FIFO once nothing is pending")

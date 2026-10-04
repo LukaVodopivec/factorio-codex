@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.20.0**. Prior live evidence remains historical
-until the fresh 0.20.0 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.21.0**. Prior live evidence remains historical
+until the fresh 0.21.0 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -89,7 +89,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.20.0 reliability pass, also record these observable checks without
+For the 0.21.0 release, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
 
 - A compact observation stays bounded, names every omission count, and appears
@@ -112,7 +112,30 @@ turning them into a fixed opening or map-specific sequence:
   any other plan the idle body shows no belt drift and
   `observe_local.character.standing_on` is absent.
 - Neither role calls a thread-reading tool after `GO`, each role's notebook
-  folder is non-empty, and at least one package names a note.
+  folder is non-empty, the pilot sends no reports, and the ledger is never
+  read by shell.
+- A package Astra writes starts within about 5 s with no pilot turn: its plan
+  appears in `activity_log` with source `package:<id>`, and a package the mod
+  check rejects appears as `package_failed` in `next_event`.
+- `factory_status` stays under about 6 KB and costs under about 8 ms of Lua
+  time at 200 machines (60 UPS holds); `since_tick` returns only changed lines
+  and problems. Each line's `state` matches what the machines do: starve a
+  line, stop its fuel, block its output, and cut its power in turn.
+- Frame time: the game log carries one `rpc <method> Duration: …` line per
+  RPC and one `on_tick 600 ticks Duration: …` line per 600 ticks (Lua time,
+  logged only). On the upgraded save, `factory_status.registry_ready` and
+  `patches_ready` turn true within about a minute of load; after that no
+  `factory_status`, `event_state` or `activity_log` line exceeds about 8 ms,
+  and the 600-tick aggregate averages well under 8 ms a tick at 200 machines.
+- `build_layout` and each `build_block` kind (`mining`, `smelting`, `assembly`,
+  `power`, `labs`) build end to end from a dry run that matched; auto-supply
+  takes from a chest and from a belt before crafting, and placement clears
+  trees and rocks in the footprint.
+- With the FIFO empty, a dry burner machine is refuelled by `upkeep` within
+  about 60 s while coal is in stock, and a queued plan takes over at the next
+  step boundary.
+- Both roles' reasoning summaries and messages appear in chat and in the panel
+  within about 10 s, and the panel does not start a takeover hold.
 - `map_summary` `include` sections (`stockpiles`, `sites`, `patches`, `power`,
   `problems`, `flows_all`) name a site and its stock beyond 30 tiles from the
   body and nothing in an uncharted chunk; `inspect_entity` there returns
@@ -132,36 +155,19 @@ turning them into a fixed opening or map-specific sequence:
 - Read-only results carry `fifo`; after more than 30 s of idle body the pilot's
   next read shows the `body idle` hint and the pilot queues work before reading
   further.
-- A powered line on the steam network stays its own component: it carries
-  `power_supply_component_not_proven` until the plant's component is proven
-  (on run history, so a line validated later still sees that proof; only a
-  transfer into the plant revokes it, never unrelated later proofs), then
-  validates on its own, with the plant's boilers, their refill inserters and
-  their fuel sources' supply judged in the line's window. A
-  lab-ended segment with no research
-  selected is refused as `consumer_idle_no_research`; with research active,
-  any lab, working or not, is refused as
-  `consumer_missing_required_science_pack` unless the segment supplies every
-  pack the research needs (directly or through an upstream lab), and a lab's acceptance counts only after the window
-  sees it working. An inserter on `low_power` is
-  judged by throughput.
 - Growth is input first: from the run recorder's samples at `GO+20m` and
-  `GO+60m`, record drills and furnaces by entity and ore and plates produced
-  per minute, and compare them with the same checkpoints of debug cycle 6
-  (target: both checkpoints above cycle 6). Science is not hand-crafted while
-  plate production per minute is below its consumption. Compare per resource:
-  use each raw resource in the recorder delta (coal included) and each plate.
-  Report both the last 5-minute interval, where a stall shows as 0, and the
-  average since the recorder baseline. Take the sample captured nearest
-  `GO+20m` and `GO+60m` by wall clock: the recorder baseline precedes the `GO`
-  receipt by about 20 s. Recorder flow rows are capped. Component, autonomy,
-  validation, edge and product counts are whole-factory only when the sample
-  carries the mod's whole-graph counters. Otherwise they are partial and must be
-  labelled so.
-- Record every `topology_sample_flicker` and every `topology_diff`. A window
-  must not end on one differing sample (target: zero flicker early ends), and
-  a lazy fuel-only feeder at a stocked burner must not fail
-  `transport_starved_before_end` (target: zero such false negatives).
+  `GO+60m`, record machines by entity, lines (running, self-sustaining,
+  hand-fed), and ore and plates produced per minute. Cycle-10 targets (cycle 9
+  in brackets): 40 or more machines at `GO+60m` (about 14); body busy 60% or
+  more of the time (6% at `GO+20m`); pilot calls per machine built under 8
+  (about 25); validation waits 0 (5); pilot reports 0 (31); ledger reads by
+  shell 0 (30); no dry burner machine for more than 60 s while coal is in
+  stock; server at 60 UPS with no client drops. Science is not hand-crafted
+  while plate production per minute is below its consumption. Report both the
+  last 5-minute interval, where a stall shows as 0, and the average since the
+  recorder baseline. Take the sample captured nearest `GO+20m` and `GO+60m` by
+  wall clock: the recorder baseline precedes the `GO` receipt by about 20 s.
+  Recorder flow rows are capped and must be labelled partial.
 - For path-start recovery, record the deployed source SHA, packaged mod archive
   SHA-256, Factorio version, exact plan identities/outcomes, and structured
   character position plus `path_start` at the starting and later ticks. Exercise
@@ -199,169 +205,12 @@ turning them into a fixed opening or map-specific sequence:
 - Queue and plan responses carry a self-describing `terminal` state and exact
   `next_action`; a terminal continuation handle is never waited a second time.
 - A plan with `observation_detail=none` returns compact outcomes, execution
-  metadata, and inventory deltas without an embedded observation. Explicit
-  compact/full requests retain bounded detail and omission counts.
+  metadata, and inventory deltas without an embedded observation. An explicit
+  compact request retains bounded detail and omission counts; a terminal
+  observation is never full (call `observe_local` for that).
 - A bounded `plan_status` wait returns on a meaningful step outcome, waiting
   state, or terminal result. A monitoring timeout does not cancel the plan and
   returns a self-describing continuation.
-
-## Full graph and downstream acceptance validation
-
-Offline Lua fixtures and MCP tests verify graph computation versus capped
-presentation and validation failure cases; they are stub evidence, not live
-Factorio evidence. Live confirmation requires an installed supported Factorio
-2.0.x game. No deployment or server/client replacement is implied by offline
-checks.
-
-- Observe an already charted connected segment exceeding 12 nodes and 24 edges.
-  Confirm full component counts and accurate presentation omissions. Select
-  exact positions beyond returned rows with `validate_factory_component`; an
-  unrelated component's presentation omissions must not reject the segment.
-- Observe a physically supplied drill–furnace–chest segment with ordinary fuel
-  supply and power. Confirm `downstream_kind=buffer`, then validate an unattended
-  interval with at least three processor cycles, three observed drill cycles
-  (progress wrap plus depletion of the same charted resource) and three distinct
-  arrival samples for each relevant output item. Sampling aliasing, unsupported
-  source counters and shared mining-target attribution remain unproven. Contrast with a working consumer-ended segment reporting
-  `downstream_kind=consumer`. A buffer is storage, never a consuming sink or a
-  production source inferred from existing stock; agents decide its usefulness.
-- Also check a processor-free source-to-transport-to-buffer or consumer segment.
-  Require three observed mining-progress wraps with same-target depletion per
-  source and three distinct acceptance samples per relevant output at every
-  endpoint, unchanged topology, complete transfer history and zero component
-  transfers. Require processor cycles only for processors actually present;
-  source-only proof may have `products_finished_delta=0`. For a burner mining
-  its own fuel, record the exact directed physical return bindings. Compatible
-  mined output and finite starter stock alone cannot prove replenishment.
-  Topology readiness and local operation alone are not `autonomous_end_to_end`.
-  A working consumer must accept every relevant output through its native input
-  inventory at each counted sample. Reject incompatible outputs, full inputs,
-  and unsupported consumer acceptance; unrelated stocked inputs and
-  working status alone cannot prove endpoint acceptance.
-  The historical coal-buffer increase and offline fixtures do not prove live
-  autonomy; live evidence needs the exact deployed source/archive identity and
-  a fresh structured multi-tick interval. A belt run that ends at an inserter
-  pickup, an underground pair, or a loader into a container must not report
-  `belt_dead_end_without_consumer`; a run with no consumer reports it once, at
-  its last tile, with a position. A queued repair is not complete until
-  re-observed.
-- Separately authorized live steam-power confirmation must use a **fresh
-  supervised Factorio 2.0.x run**, with matching server/client mod sets and
-  recorded source commit, release/archive digest and save identity. Do not
-  upgrade, replace or restart the existing active run to validate this change.
-  Source publication and offline fixtures do not establish installation or
-  live steam-power autonomy; both remain unverified until these receipts exist.
-  Build a legitimately supplied offshore-pump → separate-pipe boiler → native
-  steam transport → thermal generator segment powering a material participant
-  with a consuming endpoint or terminal buffer with space. Derive identities
-  from the source tile, native fluidbox filters/temperature constraints and
-  generator/boiler prototypes, never stocked contents or recipe guesses.
-  Keep electrical dependencies separate from material/fuel/acceptance paths.
-  Run the existing parked component validator for 1–300 s, long enough to
-  exercise boiler fuel replenishment. Require three consecutive-tick bursts
-  (eight ticks, extended up to 60, and at most a third of the window, while a
-  boiler's balance has not cleared its reserve of one unit per steam-domain
-  segment, so a saturated domain needs about 30 kW per segment at 4 s or
-  more): native pump activity, generator output, uniquely attributed boiler
-  output mass balance with fuel use/non-draining input, endpoint arrivals or
-  actual steam consumption, and three electrical delivery events. Preserve mining/crafting proof for the entities that have those
-  counters, complete transfer history, zero character transfers, exact private
-  topology and per-path recency. Record the compact native aggregate fields;
-  exact fluid quantities, network counts and internal signatures stay private.
-  Unknown electrical suppliers/accumulator discharge, several boilers sharing
-  one fluid domain, unreadable or aliased samples, or idle drain-free
-  consumers with full buffers remain unproven. More duration alone need
-  not resolve these limits. Check native pumps and underground connectivity,
-  multiple observed generators and terminal fluid-buffer acceptance.
-  Interrupt water, fuel and electrical supply separately; also test wrong fluid
-  or temperature, disconnected pipes, full endpoints, replaced entities,
-  changed network bindings and a character transfer. Re-observe revoked
-  current autonomy, locate each blocker, and obtain a new bounded proof after
-  repair. Finite starter water/steam/fuel/electrical energy must not pass.
-- Make the buffer full or nonaccepting. Confirm `blocked_output` and revoked
-  current autonomy. Buffer capacity alone and production without accepted
-  arrivals must never establish autonomous operation. Unsupported buffer
-  acceptance remains unproven; no exact remote inventory/fluid counts appear.
-- In an authorized supported Factorio 2.0.x run, observe an exact connected
-  fuel-return inserter waiting at the burner's ordinary replenishment target
-  while useful production continues, both with held fuel and with an empty
-  held stack. For the empty case, capture the supported burning pair and the
-  single matching stocked fuel/quality pair; never read empty-stack identity.
-  Capture `identity_source`, pickup/drop
-  bindings, compatible upstream production, working burner with remaining
-  energy, matching stocked fuel and fuel-inventory space. Confirm the waiting
-  status stays visible with `fuel_return_saturation` and the corresponding
-  diagnostic's `nonblocking_reason`, while that branch alone does not set
-  component `blocked_output` or either other output blocker. Do not infer the
-  normal replenishment target from a hard-coded count or relabel the inserter
-  as working. Unsupported or ambiguous compartment/fuel evidence stays blocked.
-- Observe exact `waiting_for_source_items` snapshots at preflight and during
-  sampling on both a fuel-return and a material-transport inserter. Confirm the
-  status stays visible as a `transient` row and never refuses preflight. Record
-  all required source and processor cycles, matching acceptance at every
-  endpoint and zero transfers. A node nonproductive for the stall interval, or
-  still dead at the window end, must fail as `persistent_nonproductive_status`
-  even when independent downstream stock grows. Starve one takeoff from the
-  window's first third to its end while stock carries its consumers; it must
-  fail as `transport_starved_before_end` at that inserter. A burner's sole
-  fuel inlet, a fuel-only feeder, waiting while it still holds its top-up stock (five items)
-  owes it nothing in that sample; confirm a lazy furnace fuel feeder proves
-  although its swings are further apart than the recency limit, and that a
-  feeder stopped behind stocked fuel still fails once a draw goes unanswered.
-  A second fuel inlet into that burner, including one from a hand-stocked
-  chest, removes the exemption.
-- Observe fuel consumption, resumed ordinary replenishment, and renewed waiting
-  with unchanged topology. Record continued source/processor production,
-  downstream acceptance and zero character transfers across the bounded
-  validation interval. Then independently exercise genuine productive-output
-  and full/nonaccepting buffer blockage, incompatible/unresolved fuel, and a
-  belt run without a consumer; each must still reject autonomy with a located
-  row. A segment without a fuel edge or downstream buffer must be refused as
-  `FACTORY_COMPONENT_NOT_READY` (`stage=readiness`) before any window.
-- Check positive burning energy and matching compatible stocked fuel during
-  the window, including after the return inserter resumes working. Independently
-  remove stock, interrupt burning energy, or make fuel evidence unsupported,
-  and keep downstream output growing through another branch. Each broken return
-  must still fail validation with a located fuel row; aggregate output growth is
-  not continuous fuel evidence.
-- Record the exact deployed source revision and mod archive digest with live
-  structured observations. The Lua saturation/replenishment fixture is offline
-  simulated evidence, not confirmation of the reported release 0.19.5 live
-  observation or any later deployed candidate. This source change has no live confirmation or deployment;
-  perform that check only in a separately authorized run, without restarting or
-  altering an unrelated active run.
-- During separate validation intervals, interrupt fuel/power, change a physical
-  relationship, stop production, or perform a character transfer. Each must
-  produce structured rejection. Hold a fuel/power interruption past the
-  20-second stall, or until throughput stops: a short interruption while output
-  continues is a transient wait that passes and appears only in
-  `transient_conditions`. The sustained one must end the window with
-  `persistent_nonproductive_status:no_fuel` or `:no_power` at the producer, and
-  a validated producer at that status must lose `autonomous_end_to_end`. A
-  burner loop running on starter fuel with its fuel return starved must fail
-  with that stall row or `fuel_replenishment_not_observed`, even when it
-  produced earlier in the window. Check complete transfer attribution even when
-  the public target-action rows are omitted. Bounded validation samples the
-  interval; it cannot guarantee every intervening tick or future buffer demand.
-- For the sampling correction, compare repeated 60-second windows at
-  varied start phases in a separately authorized isolated run. Record deployed
-  commit, archive digest, save identity and start/end ticks. The 29/28-tick
-  cadence reduces aliasing but may miss short swings. A private sampled fuel
-  rise resets only the exact unique supplied inserter inlet's source-wait
-  streak; another possible fuel inlet forbids that attribution. Confirm the
-  reset does not excuse a stopped return after one early delivery or borrow
-  replenishment from a competing inlet. Keep the ordinary fuel-demand,
-  replenishment, supply-deficit, path-recency and structural checks intact.
-  Distinguish total wait samples from the final uninterrupted sampled streak:
-  in 60 seconds, `transport_starved_before_end` requires a streak strictly older
-  than 1,200 ticks, except for pending longer-window evidence at the exact drop
-  target. Record saturation and pending rows separately. Equal topology,
-  production and wait totals do not establish equivalent physical activity.
-  Exact inventories, fuel quantities and internal identities remain private;
-  report only bounded outcomes and relevant transport/replenishment evidence.
-  The supplied short-swing and boundary fixtures are offline synthetic evidence;
-  they establish a possible aliasing mechanism, not the cause of the reported
-  release 0.19.6 windows. This correction has no installation or live receipt.
 
 ## Persistent two-brain, one-writer contract
 
@@ -369,30 +218,40 @@ The dedicated server and agent session run on the headless workstation, while
 the exact `Codex` client and characterless spectator/follower run only on the
 couch PC. Do not launch a local GUI as a recovery shortcut.
 
-The next fresh supervised-debug topology has exactly two persistent reasoning
+The fresh supervised-debug topology has exactly two persistent reasoning
 sessions and one physical writer. Start the sole gameplay pilot as
 `gpt-6-luna` with `low` reasoning and fast mode enabled. Start the persistent
-strategist as `gpt-6-astra` with `medium` reasoning at normal speed and expose only the disabled-
-by-default `factorio-readonly` MCP server to it; disable the full `factorio`
-server in that Astra session. Astra owns NOW/NEXT/LATER and is the sole atomic writer
-of one compact `operations.json`, including its initial revision. The ledger is
-Astra's only channel to the pilot. Astra designs every coupled layout as a build
-package checked with `find_placement` and `can_place` (the only coordinates in
-the ledger); Luna revalidates and queues packages unchanged and owns immediate
-safety, travel, gathering, physical plans, actions, and latest exact local
-evidence. Astra reads never enter
-the physical FIFO, and Luna continues without waiting when Astra or its ledger is
-stale or unavailable. Record both profiles, their MCP surfaces, release SHA,
-archive hash, and save hash before `GO`. Never apply this cutover to the current
-run.
+strategist as `gpt-6-astra` with `medium` reasoning at normal speed and expose
+only the disabled-by-default `factorio-readonly` MCP server to it; disable the
+full `factorio` server in that Astra session. Astra owns NOW/NEXT/LATER and the
+architecture, and is the sole atomic writer of one compact `operations.json`,
+including its initial revision. The ledger is Astra's only channel to the
+pilot. Astra designs build packages of whole blocks, dry-run with
+`build_block`/`build_layout` `check_only` (the only coordinates in the ledger).
+The pilot's full-surface bridge queues each new package into the FIFO by
+itself, as a plan with source `package:<id>` after the mod's placement check,
+with no pilot turn, and records outcomes in `<run_dir>/package-queue.json`.
+It queues nothing while the mod's FIFO latch is closed (a fresh map before the
+pilot's first plan, or after `stop`); any plan that runs opens it, including
+the supervisor's takeover-rehearsal plans and a pilot `queue_plan` already in
+flight when `stop` lands. So Astra writes no build package before `GO` (every
+pre-`GO` ledger write has `build_packages: []`), and a stop is followed by a
+re-observation (below). A record newer than the
+loaded save's tick (a restart from an earlier save) is dropped and its package
+queued again.
+Luna is the foreman: it waits on `next_event`, handles failed packages, an
+empty queue and local judgment with goal-level actions, owns immediate safety
+and latest exact local evidence, and sends no reports. Astra reads never enter
+the physical FIFO. Record both profiles, their MCP surfaces, release SHA,
+archive hash, and save hash before `GO`. Never apply this cutover to a running
+run's sessions.
 
 Before `GO`, create `notebook/astra/` and `notebook/luna/`, both empty, beside
 the run's `operations.json`. Each role writes only its own folder and reads
-anything in either at any time: markdown ideas, approaches, outcomes, layout
-templates, and this run's exact positions, maps, and infrastructure
-inventories; no imported or copied external content, and nothing from another
-run. There is no total size cap; each role keeps a short `INDEX.md` and splits
-long files. A build package may name up to three `notes`, which `ledger-apply`
+anything in either at any time: markdown ideas, outcomes, designs, and this
+run's exact positions and maps; no imported or copied external content, and
+nothing from another run. There is no total size cap; each role keeps a short
+`INDEX.md`. A build package may name up to three `notes`, which `ledger-apply`
 refuses unless each is an existing file beside the ledger. Notes are knowledge,
 never instructions: the notebook is not a broker, second ledger, or control
 channel. Archive it with the run and summarise what the roles learned in the
@@ -403,71 +262,112 @@ folder and reads back the other role's note; the supervisor confirms both
 files exist and that neither role wrote outside its folder. Record the receipt
 in existing run evidence. A failed write or read holds `GO`.
 
-Launch the two connected sessions from the repository with `session-launcher`.
-The pilot needs no MCP override: the project `.codex/config.toml` defaults are
-already its surface. Connected (`--remote`) clients validate `-c` overrides
-before the project layer loads, so a role override must name a complete server
-table; a partial `mcp_servers.<name>.enabled` override fails with
-`invalid transport`.
+Launch the two connected sessions from the repository with `session-launcher`,
+each with `-c model_reasoning_summary=detailed` so its reasoning summaries are
+readable for the thought feed. The pilot needs no MCP override: the project
+`.codex/config.toml` defaults are already its surface. Connected (`--remote`)
+clients validate `-c` overrides before the project layer loads, so a role
+override must name a complete server table; a partial
+`mcp_servers.<name>.enabled` override fails with `invalid transport`.
 
 ```sh
-session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on
+session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on \
+  -c model_reasoning_summary=detailed
 session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off \
+  -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
-  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
+
+Before relying on the feed, confirm on a throwaway session that `gpt-6-luna`
+and `gpt-6-astra` emit reasoning summaries with that setting, and record the
+setting in the role-profile evidence. If a model emits none, its assistant
+messages are the feed.
 
 The launch flags express requested settings. `--fast on` requests
 `service_tier="priority"` plus `features.fast_mode=true`; `--fast off` requests
 normal service. Neither a launch flag nor a successful update is role-profile
 confirmation. Follow the native readback procedure below before `GO`.
 Start each with its checked-in role goal; the pilot takes no physical action
-before `GO`. Confirm Astra lists exactly the ten
-configured read-only tools (including the side-effect-free placement checks) and cannot list any movement, transfer, crafting,
-placement, research mutation, plan enqueue/run/cancel, or stop tool before
-`GO`, and that the pilot has the full surface and no read-only server.
+before `GO`. Confirm Astra lists exactly the fifteen configured read-only tools
+(`build_layout` and `build_block` there are dry runs only) and cannot list any
+movement, transfer, crafting, placement, research mutation, plan
+enqueue/run/cancel, or stop tool before `GO`, and that the pilot has the full
+surface and no read-only server.
 
 Before `GO`, verify the requested fresh save and release hashes, permanent
 peaceful mode/enemy bases disabled, exact native player, viewer, and one
-body/lane/writer. Archive the previous run's `operations.json` into that previous
-run's directory and verify the current ledger destination is absent. Give Astra
-the new ledger's absolute path and the exact `run` object
-(`id`, `release_sha`, `baseline_save_sha256`, `save_identity`, `created_at`,
-`roles` per the ledger schema: `{"pilot":{"model":"gpt-6-luna","reasoning":"low","fast":true},`
-`"strategist":{"model":"gpt-6-astra","reasoning":"medium","fast":false}}`), and have Astra create it by piping an
+body/lane/writer. Archive the previous run's `operations.json` and
+`package-queue.json` into that previous run's directory and verify the current
+destinations are absent. The bridge reads the ledger at
+`<run-dir>/operations.json` of the server `server start` started. Give Astra
+that absolute path and the exact `run` object (`id`, `release_sha`,
+`baseline_save_sha256`, `save_identity`, `created_at`, `roles` per the ledger
+schema: `{"pilot":{"model":"gpt-6-luna","reasoning":"low","fast":true},`
+`"strategist":{"model":"gpt-6-astra","reasoning":"medium","fast":false}}`), and
+have Astra create it by piping an
 `{"init": true, "run": <that object>, "source_tick": null, "update": ...}`
 envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger
-<absolute operations.json path>` from its worktree. Supply a fresh observed
-`source_tick` when available; `null` means no observation yet. Fill `update`
-with the validated current mutable fields (`phase`, `bottleneck`,
-`latest_measured_capacity`, `task_list` with NOW/NEXT/LATER, `assumptions`,
-`pilot_plan_ids`, and `build_packages`, usually `[]` at init; every later update
-restates it). Verify the receipt returns `status: "applied"`, revision 1,
-and the submitted source tick; verify the persisted schema-2 ledger contains
-the exact run metadata, revision, source tick, mutable content, and mode `0600`.
-The command validates this readback before reporting success. Initialization
-refuses every existing destination, including malformed ledgers, without
-replacement. Subsequent reports use the unchanged
-`{run_id, save_identity, source_tick, update}` envelope and require a newer tick;
-an ordinary update cannot initialize an absent ledger. Never hand-seed revision
-0: Astra is the sole atomic host writer, including initialization, and Luna
-continues fail-open if Astra or the ledger is missing, malformed, stale, or
-unavailable. On any resumed save or after a mod upgrade,
-reconcile retained work: if `observe_local` reports an active task or queue
-depth, call `stop` and re-observe until idle, and treat pre-`GO` plan IDs as
-invalid `after_plan_id` values. Rehearse the stop sequence below on the live
-role sessions without stopping the server; a role turn must end within about
-five seconds of pause plus interrupt. Then resume both role goals through the
-native procedure below, pass the live steam gate below, the notebook check
-above, and the takeover rehearsal below or its recorded skip before starting the recorder; an active goal plus an idle thread does not prove that queued `GO`
-will start a turn. At `GO+20m`
-record the GO+20 recorder checkpoint as the run's comparison snapshot without
-stopping anything; assisted debug progress is still not benchmark evidence. Continue past
-20 minutes toward the assigned milestone
-(currently sustained autonomous Nauvis production: a validated
-`autonomous_end_to_end` segment that still holds at the next two recorder
-checkpoints, plus useful research consuming produced science); Candidate B and
-R1-R7 freeze rules are historical unless the owner starts a benchmark.
+<absolute operations.json path>` from its worktree. Fill `update` with the
+mutable fields (`phase`, `bottleneck`, `latest_measured_capacity`, `task_list`
+with NOW/NEXT/LATER, `assumptions`, and `build_packages: []` (required for
+every write before `GO`; every later update restates the list). Verify the
+receipt returns `status: "applied"`, revision 1, and the submitted source
+tick, that the persisted schema-2 ledger has mode `0600` and an empty
+`build_packages`, and that `<run_dir>/package-queue.json` is absent or has no
+records. Initialization refuses every
+existing destination without replacement. Later updates use the
+`{run_id, save_identity, source_tick, update}` envelope and require a newer
+tick. Never hand-seed the ledger: Astra is its sole atomic host writer.
+
+Rehearse the stop sequence below on the live role sessions without stopping the
+server; a role turn must end within about five seconds of pause plus
+interrupt. Then resume both role goals through the native procedure below,
+pass the notebook check above and the takeover rehearsal below or its recorded
+skip, and only then start the recorder; an active goal plus an idle thread
+does not prove that queued `GO` will start a turn. At `GO+20m` record the GO+20
+recorder checkpoint as the run's comparison snapshot without stopping
+anything; assisted debug progress is still not benchmark evidence. Continue
+past 20 minutes toward the assigned milestone (currently sustained Nauvis
+production: lines that `factory_status` reports `running` and
+`self_sustaining` at the next two recorder checkpoints, plus research consuming
+produced science); Candidate B and R1-R7 freeze rules are historical unless
+The owner starts a benchmark.
+
+### Resume with a mod upgrade
+
+To continue a run's factory with a new release instead of a fresh map:
+
+1. Stop the old run with the explicit-stop sequence below (factorio `stop`,
+   both goals paused, active turns interrupted, recorder finished, `server
+   stop <run-dir>`), recording each step. Its final `save.zip` holds the
+   factory.
+2. Build the new release (`npm ci && npm run build && npm run package:mod`)
+   and create a new run directory with `server create <new-run-dir>`, which
+   installs the new mod into its run-local mod directory. Replace its
+   `save.zip` with the old run's final save, unchanged, and copy the old run's
+   `notebook/`. The supervisor tooling's resume path (`--resume <old-run-dir>
+   --allow-upgrade`) does exactly this and refuses an upgrade it was not told
+   to allow.
+3. Update the couch `Codex` client to the same mod version, then
+   `server start <new-run-dir>`; it refuses a protocol or mod version mismatch.
+   Confirm `connect_status` versions and that `observe_local` shows an idle
+   body. A plan step saved by an older release that no longer exists completes
+   as a no-op with code `REMOVED_ACTION`; treat every pre-upgrade plan ID as
+   invalid for `after_plan_id`. If an active task or queue depth remains, call
+   `stop` and re-observe until idle.
+4. The old run's `operations.json` and `package-queue.json` stay archived in
+   its directory. Astra initialises the new run's ledger from fresh reads
+   (packages from the old ledger are not queued again); the copied notebook
+   continues, because a resumed save of the same factory continues its run.
+5. Spawn the role sessions with this release's settings (for 0.21.0:
+   `-c model_reasoning_summary=detailed` and the fifteen read-only tools
+   above) and their updated goal files, redo the role-profile readback, start
+   the recorder with `--pilot-rollout` and `--strategist-rollout` (a later
+   replacement writes its rollout path to `<run_dir>/rollouts.json` as
+   `{"luna": path, "astra": path}`, which the recorder follows), and release
+   `GO` through the native procedure below. Record the upgrade as an
+   intervention.
 
 ### Native role-profile evidence before GO
 
@@ -596,174 +496,6 @@ checks covered the integrated source before this evidence-only update; the
 final focused contract and diff checks were rerun afterward. The earlier
 prerequisite failure remains historical, not a current readiness failure.
 
-### Live steam gate before GO
-
-Release 0.19.7 called a `LuaEntity` method that Factorio 2.0.77 does not have,
-and the offline mocks supplied it, so every steam or powered component in debug
-cycle 7 was refused. Strict offline mocks now reject members absent
-from the vendored 2.0.77 runtime list, but they still cannot prove
-native values or behavior.
-an earlier issue exposed a different native-value mismatch in 0.19.8: successful
-`get_fluid_segment_id` and `get_fluid_segment_contents` reads return `nil` for
-offshore-pump and separate-pipe boiler output boxes, and for a `pump`'s single
-box (volume 400, `production_type` none, carrying both its input and output
-connections). Their products, filters, temperatures, own buffer stock and
-directed connections remain readable. The retained sampler preserves that
-absence without inventing a segment or stock; a failed or half-present read
-still refuses the sample. `get_capacity` is the box's own capacity, while a
-segment's contents include every member box (a boiler's water input reads its
-own 200 plus its pipes). Private validation therefore balances fluid
-domains: a segment's native contents, or an out-of-segment box's own buffer,
-joined to the segment on its exact proven pipe connection. A segment's
-capacity is the sum of its sampled member boxes, and an engine still accepts
-steam while it generated last tick, because an inline pump refills its segment
-to exactly full.
-
-Electric network `output_counts` records generation, one tick ahead of
-`energy_generated_last_tick`; attribution allows only the native counter
-rounding (1/65536 J per increment, or float32 precision of the observed
-amount). Exact electrical dependents remain separate material components, but
-their private energy observations establish delivery by the supplying plant. A
-supplied consumer's buffer can read full every tick, so a positive,
-nondecreasing buffer under a positive native drain, or on a working drain-free
-consumer (an electric mining drill) while its network's consumption for its
-prototype rose, proves consumption and replacement; empty or draining buffers,
-or a drain-free idle buffer, do not. Three
-consecutive 120-tick bursts allow low-demand boiler transformation to exceed
-the retained mass reserve (one unit per member segment of the domain, for the
-documented uint32 contract). A tick gap between samples restarts the burst at
-the gap instead of discarding the window, and flow is never inferred across
-the gap. A boiler unproven only in a shortened burst (a
-window under 7 s, or a burst clamped after a recovered flicker) while its
-input domain held is evidence naming a strictly longer window; at 300 s it is
-a throughput row with no suggestion. An external dependent idle throughout at
-a full drain-free buffer (an output-blocked drill) is neutral for its supplying
-plant. Shared producers, disconnected paths, aliased
-samples and finite starter fluid, fuel or electricity remain insufficient
-evidence.
-
-Before each fresh run's `GO`, the supervisor therefore proves the steam path on
-the native runtime and records the result in `supervision.json` under
-`steam_gate`. `GO` waits until the gate passes.
-
-The strict offline mocks model these native facts, but still cannot prove
-native values or behavior.
-
-The validator is bound to the companion character's surface and charted chunks,
-so it cannot validate a temporary surface of the live run. Building the fixture
-on the run's own surface would also change the comparison save. Run the gate
-instead as an isolated engineering fixture, following the occupied-belt and
-burner-inserter fixtures below:
-
-- Use a separate dedicated server with the run server's Factorio executable and
-  version, and its own write-data directory and fresh peaceful save with enemy
-  bases disabled. Bind it to loopback only, on an OS-assigned port, with no RCON
-  listener, no LAN or public advertisement, and no client. It never touches the
-  run's server, save, recorder, or ledger.
-- Load an instrumented copy of the exact release mod archive. The fixture block
-  appended to its `control.lua` binds the companion accessor to a fixture
-  character. If the disconnected server does not chart, substitute
-  generated-chunk checks for chart checks in that copy only, and record the
-  substitution. Record the SHA-256 of the release archive and of the
-  instrumented archive.
-- On dry ground beside fixture water, build an offshore pump and pipes to a
-  boiler. An electric mining drill on a coal patch fills a chest, and an
-  electric inserter feeds the boiler from it, so the fuel has physical
-  provenance and the plant component holds electric consumers (a hand-stocked
-  coal chest is correctly refused: starter coal alone cannot establish the
-  retained fuel provenance or replenishment proof, and a load in another
-  component cannot make `native_power_required` true). The boiler feeds a
-  steam engine. Poles also power a load in its own components: two electric
-  furnaces fed from chests of finite ore and unloaded into chests with space
-  (about 480 kW). An engine with no demand is not delivering power.
-- After a change to fluid, pump, power or burst code, also run the
-  `pump-low-load` variant: the engine two tiles further on behind an inline
-  `pump`, primed with steam so it can power that pump, and no furnace load
-  (about 90 kW on its steam domain, so only a long consecutive burst clears
-  the mass reserve). It must also prove.
-- Run the release's real `validate_factory_component` with the component's
-  positions and `duration_seconds: 120`. The outcome must be
-  `FACTORY_COMPONENT_AUTONOMY_PROVEN` with `native_power_required: true`,
-  `power_delivery_samples >= 3`, and `fluid_activity_samples >= 3`.
-- When the plan reaches a terminal status (`completed` when proven), empty the
-  ore chests and bar the coal chest full, so every consumer on the network
-  idles with a charged buffer and the engine serves only the consumers' native
-  idle drain (zero generation when there is no drain). A `map_summary` read must still show
-  the plant's power component `autonomous_end_to_end` with no `blocked_output`
-  among its blockers. Record it as
-  `standby: {autonomous_end_to_end, blocked_output}`.
-- On the same fixture entities, probe once that `fluidbox.get_prototype`,
-  `get_fluid_source_fluid`, and `neighbours` exist and return without error.
-  Use the boiler, the offshore pump, and a pipe-to-ground pair. This probe only
-  reads.
-- Write the outcome and probe receipts to the fixture's script output. Then
-  delete the fixture surface, confirm in a later receipt that it is absent, stop
-  the server, and remove its write-data directory. That is cleanup verified.
-
-Record the validation outcome, the standby read, the probe results,
-`cleanup_verified`, and the
-executable, version, and archive identities. Use the supervisor tooling's
-`supervision_record.py steam-gate` command, which recomputes `passed` from the
-thresholds above. If any condition fails, hold `GO` and report the failing
-fields. Never weaken the fixture or the thresholds to make it pass. A fixture pass is engineering
-evidence of the native steam path only. It proves neither gameplay steam
-autonomy nor the fuller live steam-power confirmation above, and it is never
-benchmark evidence.
-
-The isolated engineering fixture passed on 2026-10-03 with Factorio
-**2.0.77, build 84539, linux64 headless**, using the bundled Space Age mod set.
-The material source candidate was based on
-`31704489973c1affabb42ef2268c7c154c279205`. Executable and archive SHA-256 receipts:
-
-- Executable: `c9ac91d318bdbcce5afaac30d48f4b71dc38af257712a5d4d4c4feb625737198`.
-- Release 0.19.8 archive: `42378f29ad1e133a343769a9f6932dee8e9d7977754f9b4ec9157d7cb05d4957`.
-- Instrumented archive: `fa034396ad109cfa1a9839a8bd7f558e23005e8407ac2d4ddf9ef93294a1904b`.
-
-Every released source file matched the candidate mod. Instrumentation was
-limited to the appended fixture block and the documented generated-chunk
-substitution. A burner coal drill with a splitter and separate self-fuel and
-feeder branches replenished the finite coal chest. Earlier underfed fixture
-attempts failed provenance and were cleaned up; their failures were not treated
-as validation passes.
-
-The real request ran from tick 601 to 7801, exactly 7,200 ticks, and returned
-`FACTORY_COMPONENT_AUTONOMY_PROVEN`, `native_power_required:true`,
-`power_delivery_samples:360` and `fluid_activity_samples:3`, with no blockers
-or character transfers. After all 500 finite plates left the source chest,
-the final transfer settled, the hand was empty, and the inserter remained in
-native `waiting_for_source_items` status for 120 ticks. Its positive buffer
-held about 1,054.22 J, while generation of 8.33333 J/tick matched its observed
-native idle drain. The tick-12180 read reported `autonomous_end_to_end:true`
-and `blocked_output:false`. All three API-member probes returned without error.
-The surface was deleted and confirmed absent at tick 12181; the owned server
-exited with status 0, no owned Factorio process remained, and its separate
-write-data directory was removed and its absence verified.
-
-The 0.19.9 merged mechanism (fluid domains over native segment absence,
-summed member capacities, drain or drain-free working delivery, 120-tick
-bursts) passed the same isolated runtime on 2026-10-03 with the redesigned
-drill-fed plant above. Archive SHA-256
-`40b9f6fedbb42a107cf3767f311bcb6af4b73cca812c02e27e622c7e81e5c8f3`; after the
-external-dependent and burst-evidence fixes the rebuilt archive
-`665cb760a921ed65a6b008a63b09638ba12230769133c1a75ba94b410fd9dab0` returned the
-same results in both variants. The
-`standard` and `pump-low-load` variants each returned
-`FACTORY_COMPONENT_AUTONOMY_PROVEN` over 7,200 ticks with
-`native_power_required:true`, `power_delivery_samples:360`,
-`fluid_activity_samples:3` and no blockers; the standby reads reported
-`autonomous_end_to_end:true` and `blocked_output:false`, all three probes
-returned, and cleanup was verified. A preceding candidate with only the drain
-rule failed both variants on the drain-free electric mining drill
-(`bounded_power_delivery_not_observed`), which is why the working drain-free
-rule remains.
-
-These receipts cover the exact isolated engineering archive above. They do not
-record installation into a gameplay run, a supervisor `GO`, gameplay autonomy,
-or benchmark results. Any subsequent gameplay deployment still needs its own
-fresh supervised run and matching runtime receipts, including that run's
-native steam gate. Node 22 offline verification and independent source review
-supplement these receipts; neither substitutes for native behavior.
-
 ### The owner takeover rehearsal before GO
 
 The owner may take the Codex body over by mouse and keyboard at any time, through
@@ -803,7 +535,9 @@ after `GO`:
    neither lost, cancelled, or failed.
 
 Record the four receipts in existing run evidence and hold `GO` on any miss of
-a rehearsal that ran. A `run_plan` that returns nonterminal with
+a rehearsal that ran. The rehearsal's plans open the package latch, so end it
+with one recorded factorio `stop` and a fresh `observe_local` showing no active
+task and queue depth 0; the latch is closed again at `GO`. A `run_plan` that returns nonterminal with
 `human_control: true` is not a failure, in the rehearsal or during a run: the
 plan is still queued or active behind the hold, so read it with `plan_status`
 after release instead of requeueing it. A direct tool call that fails with a
@@ -854,7 +588,8 @@ schemas when the runtime changes; a schema establishes capability, not success.
    Submit one `GO` per role with `thread/queue/add` using
    `{threadId, clientUserMessageId, input: [{type: "text", text: <GO>}]}`.
    The pilot's GO text names Astra's exact thread ID, as does any replacement
-   pilot's assignment, so the pilot never reads threads to address reports.
+   pilot's assignment, so neither role reads threads to find the other; the
+   pilot still sends Astra no reports.
    Each role's GO text also carries this line: "Never call list_threads,
    read_thread or wait_threads; after any compaction re-read your goal file and
    SKILL.md, then your notebook INDEX.md." No configuration or
@@ -922,13 +657,9 @@ supervised run records both roles consuming GO and subsequent pilot physical
 work through the ordinary lane. No mod release or deployment is required for
 this documentation correction.
 
-For the 0.19.0 role split, measure at `GO+20m` against the 0.18.0 baseline in
-`docs/AGENT-PLAY-PERFORMANCE.md`: first `queue_plan` within 3 minutes of `GO`
-(was 13.6); pilot model time under 60% of wall time (was 96%); body busy (active
-task or queue depth) at least half the time after the first package; at most 3
-pilot `find_placement` calls and no identical empty retry; at least 80% of
-packages passing pilot revalidation; at least 6 machines and 4 physical edges
-(was 2 and 1); no supervisor nudge; and no Sol-to-pilot message.
+Measure each run at `GO+20m` and `GO+60m` against the cycle-10 targets in the
+release checklist above and the earlier cycles in
+`docs/AGENT-PLAY-PERFORMANCE.md`.
 
 The parent is the debug supervisor and may diagnose or recover through its
 separate surfaces. That authority does not pass to the pilot. Record each
@@ -950,7 +681,11 @@ active task and every queued plan within seconds); in each role TUI run
 with the native TUI stop control or app-server `turn/interrupt` for that role's
 exact `threadId` and `turnId`, and read back the interrupted turn; check
 separately that no task-owned command or job is still running; confirm Astra
-makes no further ledger write; then run recorder FINISH and
+makes no further ledger write; wait at least 2 s (more than one 1 s bridge
+tick), call `observe_local`, and if it shows an `active_task` or
+`queue_depth > 0` (a pilot `queue_plan` in flight before the interrupt lands
+after `stop` and reopens the package latch), call factorio `stop` again and
+re-observe until idle; only then run recorder FINISH and
 `server stop <run-dir>`. The debug supervisor of this contract may use these
 native controls on its own role sessions as recorded interventions. A steered
 `CANCEL` reaches a busy role at its next step but stops nothing by itself.
@@ -1002,13 +737,16 @@ pilot as a capability test. Missing delivery or retirement capability must be
 resolved before `GO`.
 
 While milestone goals remain open, use fresh valid `observe_local.character`:
-`active_task` absent, numeric `queue_depth == 0`, and numeric
-`crafting.queue_size == 0` together prove idle, and only while
-`human_control` is false: a hold is the owner playing, never idle. A missing character or required
+`active_task` absent or with `source: "upkeep"`, numeric `queue_depth == 0`,
+and numeric `crafting.queue_size == 0` together prove idle, and only while
+`human_control` is false: a hold is the owner playing, never idle. Upkeep is the
+mod's own refuelling, not pilot work; a package plan (`source:
+"package:<id>"`) is work. A missing character or required
 queue/crafting field, malformed response, stale sample, or failed call is
 uncertain, not idle. An absent `active_task` in an otherwise valid complete
 character observation is the normal no-task representation. Parked waiting
-plans and predecessor-blocked queued plans count as pending work. Inspect a
+plans, predecessor-blocked queued plans, and queued packages count as pending
+work. A pilot waiting on `next_event` while a package runs is not idle. Inspect a
 known plan only with its exact `plan_id`; `plan_status {}` is invalid.
 
 Record receipt timestamps and character position, carried inventory,
@@ -1023,11 +761,17 @@ single-nudge state; a run change or uncertain observation invalidates timing.
 Re-establish a fresh lower bound after uncertainty rather than counting the gap.
 
 The supervisor's observation helper is the only nudge and replacement gate;
-never dispatch on an inline idle predicate. Pipe every fresh `observe_local`
-result and its receipt time through the helper, in the same step that may
-dispatch. The helper compares the full physical signature (position, carried
-inventory, `active_task`, `queue_depth`, crafting state) with the retained one
-and keeps the conservative idle lower bound across unchanged samples. It
+never dispatch on an inline idle predicate. In the same step that may
+dispatch, pipe every fresh `observe_local` result together with a fresh
+`activity_log` read (`limit: 64`) and its receipt time through the helper
+(`{"observe_local": ..., "activity_log": ...}`). The helper compares the full
+physical signature (position, carried inventory, `active_task`, `queue_depth`,
+crafting state) with the retained one and keeps the conservative idle lower
+bound across unchanged samples. It discounts position, inventory and task
+changes when either sample shows an `upkeep` task, or when every
+`activity_log` plan overlapping the ticks between the two samples was an
+`upkeep` plan (an upkeep refuel that started and ended between samples is
+visible only there); any other plan in that window is activity. It
 returns `eligible_nudge` only when the signature has stayed unchanged for at
 least 120 s from that bound and no nudge was sent in this interval. It returns
 `eligible_replace` from 300 s, under the conditions below.
@@ -1052,7 +796,8 @@ through structured state before proceeding. Interruption does not roll back
 committed plans. If emergency cancellation is necessary, record `stop` and its
 effects. Then freshly prove absent active work, zero queued work, and zero
 crafting. Without both retirement proof and physical quiescence, do not launch
-the replacement. Preserve Astra, the one body/FIFO/write path, invalidate affected
+the replacement. Once it runs, write its rollout file to `luna` in
+`<run_dir>/rollouts.json` so the thought feed follows it. Preserve Astra, the one body/FIFO/write path, invalidate affected
 state, and give the replacement latest structured state and the open milestone.
 Record all interventions; assisted progress and timing are not benchmark proof.
 
@@ -1064,6 +809,8 @@ delivery/replacement only in an authorized supervised run:
 | Open goals, no active task, queue depth 0, crafting queue size 0 | Valid fresh evidence starts or continues the idle interval. Closed goals do not trigger intervention. |
 | Active work, even with queue depth 0 | No idle claim or intervention; reset the prior interval. |
 | Character crafting with no active task or queued plans | No idle claim; crafting queue size greater than 0 is work. |
+| Only an `upkeep` plan active (the mod refuelling), no queued plans or crafting | Idle evidence continues: upkeep is not pilot work, and its movement or inventory changes do not reset the interval. |
+| A package plan (`source: "package:<id>"`) active or queued while the pilot waits on `next_event` | No idle claim; the body is working. |
 | Parked waiting plan or predecessor-blocked queued plan, body still | Queue depth greater than 0 means pending work; no idle claim. Read status only with a known exact plan ID. |
 | Repeated unchanged character samples while ticks/factory output advance | Retain the original idle timestamp. For an evidenced idle transition at 00:00, unchanged samples at 02:03 and 03:12 report 123 s and 192 s; they do not restart timing. |
 | Unknown transition, first idle observation at 02:03 and unchanged sample at 03:12 | Report at least 69 s observed idle, not an exact start before 02:03. |
@@ -1080,14 +827,12 @@ Offline verification proves neither message delivery nor live
 retirement/replacement. Claim live behavior only with an authorized supervised
 validation and confirmed delivery and retirement receipts.
 
-The native `/goal` owns continuation. Waypoints, batches, plans, and progress
-reports are nonterminal. While later-tick milestone proof is absent, immediately
-continue whenever productive work or bounded recovery exists. Keep the current
-plan and one grounded successor when safe, and end the turn at report
-checkpoints with work queued; native goal continuation starts the next batch.
-Growth, automation, and packet-sizing policy lives in
-`.agents/skills/factorio-player/SKILL.md`; a progress report states the measured
-capacity change or quantitatively justifies a short manual bridge.
+The native `/goal` owns continuation. Waypoints, batches, and plans are
+nonterminal. While later-tick milestone proof is absent, immediately continue
+whenever productive work or bounded recovery exists. Keep the current plan and
+one grounded successor when safe; native goal continuation starts the next
+batch. Growth and gameplay policy lives in
+`.agents/skills/factorio-player/SKILL.md`.
 
 Exactly one physical MCP call may be in flight. Parallelize only read-only
 observations when inconsistent ticks are acceptable, then revalidate the newest
@@ -1097,7 +842,7 @@ If a pilot goal terminates after an intervention, retire it before starting one
 replacement; never keep two pilots active.
 
 Use the current public schema shown by `tools/list`. Keep the same persistent
-pilot across packets. An empty intermediate turn or report does not satisfy the
+pilot across packets. An empty intermediate turn does not satisfy the
 goal and must not add another action writer.
 
 Watch the run through the ordinary couch viewer client, which the mod makes a
@@ -1226,7 +971,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.20.0 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.21.0 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -1257,14 +1002,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.20.0. They
+The successful observations below were collected before release 0.21.0. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.20.0. Complete the fresh run above after installing 0.20.0 before recording a
+0.21.0. Complete the fresh run above after installing 0.21.0 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.20.0 run must instead report protocol v23 and mod/app 0.20.0.
+  0.8.0. A 0.21.0 run must instead report protocol v24 and mod/app 0.21.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

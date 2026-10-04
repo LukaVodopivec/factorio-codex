@@ -313,7 +313,7 @@ function M.find_placement(params)
   -- One reason per evaluated position and direction, in check order; a later
   -- stage means the request got further, so it drives the hint.
   local stage = {
-    outside_codex_reach = 1, uncharted = 2, pickup_not_on_source = 3, output_endpoint_unknown = 4,
+    uncharted = 2, pickup_not_on_source = 3, output_endpoint_unknown = 4,
     output_not_on_recipient = 5, planned_recipient_unplaceable = 6, no_compatible_resource = 7,
     codex_body_overlap = 8, blocked = 9,
   }
@@ -344,7 +344,6 @@ function M.find_placement(params)
       evaluated = evaluated + 1
       local pos = { x = x, y = y }
       local area = placement_geometry.footprint(proto, pos, direction)
-      if codex_distance_sq > 900 then reject("outside_codex_reach", pos, direction); goto continue end
       if not footprint_charted(c.force, c.surface, area) then reject("uncharted", pos, direction); goto continue end
       do
         local output_position = output_targets.output_position(proto, pos, direction)
@@ -484,8 +483,7 @@ function M.find_placement(params)
     hint = endpoint_gap_hint(params.item, proto, input_target, output_target)
     if not hint and closest_rejected then
       local reason = closest_rejected.reason
-      if reason == "outside_codex_reach" then hint = "the searched area is more than 30 tiles from Codex; walk closer or move preferred"
-      elseif reason == "uncharted" then hint = "the searched area is not charted; move preferred into charted terrain or walk to chart it"
+      if reason == "uncharted" then hint = "the searched area is not charted; move preferred into charted terrain or walk to chart it"
       elseif reason == "pickup_not_on_source" then hint = "no position puts the pickup point on input_target; move preferred next to it or check radius"
       elseif reason == "output_endpoint_unknown" then hint = "the output point lands on several or uncharted recipients; move preferred or use a clearer endpoint"
       elseif reason == "output_not_on_recipient" then hint = "no position puts the output point on output_target; move preferred next to it or check radius"

@@ -6,7 +6,9 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 
 local checks = 0
 local surface = { can_place_entity = function() checks = checks + 1 return true end }
-local body = { valid = true, position = { x = 0, y = 0 }, surface = surface, force = { recipes = {} } }
+local charted_chunks = function(_, chunk) return chunk.y < 2 end
+local body = { valid = true, position = { x = 0, y = 0 }, surface = surface,
+  force = { recipes = {}, is_chunk_charted = function(...) return charted_chunks(...) end } }
 package.loaded["scripts.companion"] = {
   require_companion = function() return body end,
   get = function() return body end,
@@ -48,7 +50,7 @@ check(accepted.results[1].can_place == true and accepted.results[1].reason == "p
   and accepted.results[1].entity == "transport-belt"
   and accepted.results[1].position.x == 30 and accepted.results[1].direction == 0
   and checks == 2,
-  "can_place returns authoritative placement identity and reason at the exact 30-tile boundary")
+  "can_place returns authoritative placement identity and reason")
 
 local beyond, beyond_error = pcall(spatial.can_place, {
   item = "transport-belt", position = { x = 30.000001, y = 0 },
@@ -80,9 +82,12 @@ check(not oversized and tostring(oversized_error):match("at most 24 placements")
 
 local batch = spatial.can_place({ placements = {
   { item = "transport-belt", position = { x = 0, y = 30.000001 } },
+  { item = "transport-belt", position = { x = 0, y = 64.5 } },
 } })
-check(batch.results[1].can_place == false and batch.results[1].reason:match("within 30 tiles") ~= nil and checks == 2,
-  "batched can_place reports an over-range public placement as a physical rejection")
+check(batch.results[1].can_place == true and checks == 4,
+  "can_place checks a charted position however far it is from Codex")
+check(batch.results[2].can_place == false and batch.results[2].reason:match("charted terrain") ~= nil and checks == 4,
+  "can_place rejects an uncharted position without querying the surface")
 
 local ten_names = {}
 for index = 1, 10 do ten_names[index] = "unknown-" .. index end

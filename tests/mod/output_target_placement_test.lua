@@ -282,6 +282,10 @@ local partial_insert_plan = { steps = {
   { item = "wooden-chest", position = { x = 3.5, y = 0.5 } },
 } }
 build_plan.start(partial_insert_plan)
+check(build_plan.tick(partial_insert_plan) == nil and inserted == 7 and partial_insert_plan._insert_remainder[1].count == 3,
+  "build_plan retries a partial starter insert's remainder once")
+check(build_plan.tick(partial_insert_plan) == nil and inserted == 7, "the retry waits a second")
+game.tick, insert_limit = game.tick + 60, 0 -- the drill is still full
 local partial_insert_result = build_plan.tick(partial_insert_plan)
 check(partial_insert_result and partial_insert_result.status == "partial"
   and partial_insert_result.outcome.code == "PARTIAL_INSERT"
@@ -289,7 +293,7 @@ check(partial_insert_result and partial_insert_result.status == "partial"
   and partial_insert_result.outcome.transfers[1].requested == 10
   and partial_insert_result.outcome.transfers[1].remainder == 3
   and created == 1 and inserted == 7,
-  "build_plan stops after useful bounded partial insertion and reports its exact remainder")
+  "build_plan stops after a retried bounded partial insertion and reports its exact remainder")
 check(activity.snapshot(insertion_tick).events[#activity.snapshot(insertion_tick).events].item_count == 7,
   "capacity-limited partial insertion records only accepted items")
 

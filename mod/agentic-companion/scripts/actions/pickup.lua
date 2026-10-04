@@ -189,6 +189,12 @@ local function belt_tick(task, c)
   if not (belt and belt.valid) then return belt_stopped(c, task, "the belt at the observed position is gone") end
   local distance = tonumber(c.item_pickup_distance) or 0
 
+  -- The transfer needs reach, not a resting place: take what is in reach now,
+  -- also while still approaching or while standing on a belt in a dense area.
+  if not task._picking_started and within(c.position, belt.position, distance) then
+    task._lane = task._lane or (lane_count(belt, 1, task.item) >= lane_count(belt, 2, task.item) and 1 or 2)
+    task._picking_started, task._progress_tick = true, game.tick
+  end
   if not task._picking_started then
     if inventory.get_insertable_count(task.item) < task.count - task._picked then
       return belt_stopped(c, task, string.format("Codex inventory cannot hold the %d %s still requested; nothing was taken from the belt for them",

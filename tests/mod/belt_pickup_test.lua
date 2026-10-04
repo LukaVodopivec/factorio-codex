@@ -183,6 +183,19 @@ check(body.picking_state == false and result.outcome.source == "belt" and result
   and result.detail:match("picked up 3 iron%-plate from the transport%-belt"),
   "the result reports the count the belt gave up and native picking_state was never left on")
 
+-- A body already within pickup distance of the belt centre, as when it stands
+-- on a belt in a dense area with no free tile, takes the items at once even
+-- though no approach could settle.
+north = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 5 })
+reset(north)
+body.position = { x = 5.5, y = 1.2 }
+task = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 3 }
+pickup.start(task)
+approach_result = { status = "failed", detail = "couldn't get in range: BODY_ON_CONVEYOR" }
+result = run(task, 5)
+check(result and result.status == "done" and contents["iron-plate"] == 3 and on_belt(north, "iron-plate") == 2 and approaches == 0,
+  "a belt already in reach is picked from without needing a place to stand")
+
 -- Reach refusal: an approach that cannot get in range fails without picking.
 north = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 5 })
 reset(north)

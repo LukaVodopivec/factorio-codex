@@ -55,8 +55,10 @@ known `plan_id`, never a global work query.
 
 The owner may take the body over by mouse and keyboard at any time. A
 `human_control: true` hold (`observe_local.character` and every `fifo` block) is
-The owner playing: the mod parks the FIFO without cancelling plans and resumes after
-about five seconds without input. A hold is neither idleness nor failure. The
+The owner playing: real control input on the Codex client (movement, mining,
+building, opening a GUI, holding an item) parks the FIFO without cancelling
+plans; mouse hovering, map view, and camera movement do not. The mod resumes
+about five seconds after the last such input. A hold is neither idleness nor failure. The
 supervisor never nudges or replaces during a hold, records it as the owner input,
 invalidates idle timing, and needs fresh idle evidence after it.
 

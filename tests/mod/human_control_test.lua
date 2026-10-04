@@ -1,9 +1,12 @@
--- Human takeover: real input on the Codex client (LuaPlayer.afk_time under
--- 300 ticks while connected) parks the FIFO dispatcher without cancelling or
--- reordering anything, the mod stops writing body state, and the interrupted
--- step re-plans from wherever the body stands once the input goes idle.
+-- Human takeover: real control input on the Codex client (a linked custom
+-- input, an open GUI, an item in the cursor, walking the mod did not command)
+-- parks the FIFO dispatcher without cancelling or reordering anything, the mod
+-- stops writing body state, and the interrupted step re-plans from wherever
+-- the body stands 300 ticks after the last such input. LuaPlayer.afk_time is
+-- not a signal: on native 2.0.77 the bot's own walking resets it.
 -- Offline: the real dispatcher, walker and companion module over a mocked
--- LuaPlayer; afk_time semantics themselves are live-client evidence.
+-- LuaPlayer; that the linked inputs fire on real key presses is live-client
+-- evidence.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
@@ -16,6 +19,7 @@ end
 _G.defines = {
   direction = { north = 0, northeast = 2, east = 4, southeast = 6, south = 8, southwest = 10, west = 12, northwest = 14 },
   controllers = { character = 1, spectator = 4, remote = 7 },
+  gui_type = { none = 0, entity = 1, controller = 3, item = 5 },
   events = setmetatable({}, { __index = function(_, key) return key end }),
 }
 _G.prototypes = { entity = { character = { collision_mask = { layers = { player = true } },
@@ -47,8 +51,11 @@ local function body_writes()
 end
 
 local player = { index = 1, valid = true, connected = true, name = "Codex", character = body,
-  controller_type = defines.controllers.character, afk_time = 100000 }
-local players = { player }
+  controller_type = defines.controllers.character, afk_time = 100000,
+  opened_gui_type = defines.gui_type.none, cursor_stack = { valid_for_read = false } }
+local viewer = { index = 2, valid = true, connected = true, name = "The owner",
+  controller_type = defines.controllers.spectator, afk_time = 0, opened_gui_type = defines.gui_type.none }
+local players = { player, viewer }
 _G.game = { tick = 0, get_player = function(index) return players[index] end, connected_players = players }
 
 local inert = { start = function() end, tick = function() return { status = "done", detail = "done" } end }
@@ -67,15 +74,24 @@ local function reset()
   state.position, state.walking_state, state.mining_state, state.picking_state = { x = 0, y = 0 }, {}, {}, false
   player.connected, player.afk_time = true, 100000
   player.controller_type, player.character = defines.controllers.character, body
+  player.opened_gui_type, player.cursor_stack = defines.gui_type.none, { valid_for_read = false }
   game.tick = 0
   _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil },
     companion = { player_index = 1, entity = body } }
 end
 local function tick()
   game.tick = game.tick + 1
-  if player.afk_time then player.afk_time = player.afk_time + 1 end
+  player.afk_time = player.afk_time + 1
   tasks.on_tick()
 end
+-- A linked custom input (or on_gui_opened) raised for one player's client.
+local function press(index)
+  companion.on_human_input({ player_index = index or 1 })
+end
+local EAST, SOUTH = defines.direction.east, defines.direction.south
+-- The owner keeps a movement key down: the game, not the mod, sets walking_state.
+local function hold_key() state.walking_state = { walking = true, direction = SOUTH } end
+local function release_key() state.walking_state = { walking = false } end
 local function queue_walk(x)
   return tasks.queue_plan({ steps = { { action = "walk_to", x = x, y = 0 } } })
 end
@@ -83,23 +99,55 @@ local function answer_path(x)
   walk.on_path_finished({ id = storage.path_request.id, path = { { position = { x = x, y = 0 } } } })
 end
 
--- The single helper decides the hold from the Codex player's afk_time.
+-- The single helper decides the hold from the recorded activity tick.
 reset()
 check(companion.get() == body, "fixture binds the native Codex player's character as the body")
 local held, idle = companion.human_control()
-check(held == false and idle == 100000, "a long-idle connected player does not hold the body")
-player.afk_time = 299
+check(held == false and idle >= 1000000, "a player that never gave control input does not hold the body and reports a large idle count")
+game.tick = 1000
+press()
+held, idle = companion.human_control()
+check(held == true and idle == 0 and storage.tasks.human_activity_tick == 1000, "a control input records its tick and holds the body")
+game.tick = 1299
 held, idle = companion.human_control()
 check(held == true and idle == 299, "input younger than 300 ticks holds the body")
-player.afk_time = 300
-check(companion.human_control() == false, "the hold releases at exactly 300 idle ticks")
-player.afk_time, player.connected = 0, false
+game.tick = 1300
 held, idle = companion.human_control()
-check(held == false and idle == nil, "a disconnected player never holds, whatever its afk_time")
-player.connected, player.afk_time = true, nil
-check(companion.human_control() == false, "an unreadable afk_time never holds")
+check(held == false and idle == 300, "the hold releases at exactly 300 idle ticks")
+player.afk_time = 0
+check(companion.human_control() == false, "a reset afk_time alone never holds")
+game.tick = 1301
+press(2)
+check(companion.human_control() == false and storage.tasks.human_activity_tick == 1000, "another player's input is not recorded and never holds")
+press()
+player.connected = false
+held, idle = companion.human_control()
+check(held == false and idle == nil, "a disconnected player never holds, whatever its last input")
+player.connected = true
+storage.tasks.human_activity_tick = nil
+press()
+storage.tasks = nil
+check(companion.human_control() == false, "missing task storage (a save from before this field) never holds")
 storage.companion = nil
 check(companion.human_control() == false, "no bound Codex player never holds")
+
+-- Regression (native 2.0.77): the bot's own walking scrolls the view under a
+-- resting mouse cursor, which resets afk_time every tick. That is not input.
+reset()
+local solo = queue_walk(300)
+tick()
+answer_path(300)
+local parked_ticks, stalled_ticks = 0, 0
+for step = 1, 400 do
+  player.afk_time = 0
+  tasks.on_tick()
+  game.tick = game.tick + 1
+  if storage.tasks.human_hold or companion.human_control() then parked_ticks = parked_ticks + 1 end
+  if state.walking_state.walking ~= true or state.walking_state.direction ~= EAST then stalled_ticks = stalled_ticks + 1 end
+  state.position = { x = step * 0.15, y = 0 }
+end
+check(parked_ticks == 0 and stalled_ticks == 0 and tasks.plan_status({ plan_id = solo.plan_id }).human_control == nil,
+  "afk_time reset on every tick of a bot walk never parks the bot")
 
 -- Input parks an active walk without cancelling it; queued plans keep order.
 reset()
@@ -112,18 +160,18 @@ check(state.walking_state.walking == true and storage.tasks.active.id == first.p
   "the first walk is active and the mod drives the body before any input")
 state.position = { x = 2, y = 0 }
 
-player.afk_time = 0
+press()
 writes = {}
 tick()
 check(storage.tasks.human_hold ~= nil and state.walking_state.walking == false and writes.walking_state == 1
   and writes.mining_state == 1 and writes.picking_state == 1,
-  "real input releases the body exactly once")
+  "a custom input releases the body exactly once")
 writes = {}
 local requests_before = #path_requests
 for step = 1, 200 do
   -- The owner walks the body himself; the game, not the mod, moves it.
   state.position = { x = 2, y = step / 20 }
-  state.walking_state = { walking = true, direction = defines.direction.south }
+  hold_key()
   tick()
 end
 check(body_writes() == 0, "the mod writes no walking, mining or picking state during the hold")
@@ -143,15 +191,16 @@ check(tasks.plan_status({ plan_id = second.plan_id }).human_control == true
   "a queued plan delayed by the hold reports human_control while still queued")
 
 -- Fresh input restarts the idle clock: the hold continues.
-player.afk_time = 0
+release_key()
+press()
 for _ = 1, 299 do tick() end
 check(storage.tasks.human_hold ~= nil and body_writes() == 0 and #path_requests == requests_before,
   "renewed input keeps the dispatcher parked until 300 idle ticks")
 
 -- Idle for 300 ticks: the walk re-plans from where the owner left the body.
-state.walking_state = {}
 tick()
-check(player.afk_time == 300 and storage.tasks.human_hold == nil, "300 idle ticks release the hold")
+check(select(2, companion.human_control()) == 300 and storage.tasks.human_hold == nil,
+  "300 ticks after the last input release the hold")
 local replanned = path_requests[#path_requests]
 check(#path_requests == requests_before + 1 and replanned.x == 2 and replanned.y == 10,
   "the interrupted walk requests a new path from the body's current position")
@@ -184,12 +233,15 @@ local long = queue_walk(10)
 tick()
 answer_path(10)
 tick()
-player.afk_time = 0
+press()
 tick()
+hold_key()
 game.tick = game.tick + 700 * 60
 tasks.on_tick()
-check(storage.tasks.active and storage.tasks.active.id == long.plan_id, "a long hold keeps the plan active")
-player.afk_time = 300
+check(storage.tasks.human_hold ~= nil and storage.tasks.active and storage.tasks.active.id == long.plan_id,
+  "a long hold keeps the plan active")
+release_key()
+game.tick = game.tick + 299
 tick()
 check(tasks.plan_status({ plan_id = long.plan_id }).status == "running",
   "a hold longer than the plan budget does not fail the resumed plan")
@@ -198,7 +250,7 @@ state.position = { x = 10, y = 0 }
 tick()
 check(tasks.plan_status({ plan_id = long.plan_id }).status == "completed", "the plan completes after the long hold")
 local finished = storage.tasks.last_finished_tick
-player.afk_time = 0
+press()
 for _ = 1, 50 do tick() end
 check(storage.tasks.last_finished_tick == game.tick and finished < game.tick,
   "time the owner plays the body with an empty queue is not counted as body idle time")
@@ -208,11 +260,14 @@ check(queue_walk(10).body_idle_ticks == 0, "a plan queued during the hold report
 -- no body, fails the work instead of parking it).
 reset()
 local running = queue_walk(10)
-player.connected, player.afk_time = false, 0
+press()
+player.connected = false
+press()
+player.opened_gui_type = defines.gui_type.entity
 tick()
 check(storage.tasks.human_hold == nil and tasks.plan_status({ plan_id = running.plan_id }).status == "failed"
   and tasks.plan_status({ plan_id = running.plan_id }).human_control == nil,
-  "a disconnected player's afk_time never parks the dispatcher")
+  "a disconnected player's last input never parks the dispatcher")
 
 -- Runners with body-bound progress restart it after a hold.
 local mine_task = { _mining_started = true, _completed = 2 }
@@ -234,13 +289,17 @@ tick()
 answer_path(10)
 tick()
 player.controller_type = defines.controllers.remote
-player.afk_time = 0
-tick()
+player.opened_gui_type, player.cursor_stack = defines.gui_type.entity, { valid_for_read = true }
+for _ = 1, 5 do
+  press()
+  tick()
+end
 held, idle = companion.human_control()
-check(held == false and storage.tasks.human_hold == nil and companion.get() == body,
-  "fresh input in map or remote view does not hold the body, which stays script-controllable")
+check(held == false and storage.tasks.human_hold == nil and companion.get() == body
+  and storage.tasks.human_activity_tick == nil and state.walking_state.walking == true,
+  "inputs, an open GUI and a held item in map or remote view never hold the body, which stays script-controllable")
+player.opened_gui_type, player.cursor_stack = defines.gui_type.none, { valid_for_read = false }
 player.controller_type, player.character = defines.controllers.character, nil
-player.afk_time = 100000
 tick()
 check(tasks.plan_status({ plan_id = kept_first.plan_id }).status == "running"
   and tasks.plan_status({ plan_id = kept_second.plan_id }).status == "queued"
@@ -249,7 +308,9 @@ check(tasks.plan_status({ plan_id = kept_first.plan_id }).status == "running"
 check(companion.human_control() == true and storage.tasks.human_hold ~= nil
   and tasks.plan_status({ plan_id = kept_first.plan_id }).status == "running",
   "a connected player without a character keeps the hold")
+-- The body that comes back stands still: the game, not the mod, stopped it.
 player.character = body
+release_key()
 tick()
 check(storage.tasks.human_hold == nil and tasks.plan_status({ plan_id = kept_first.plan_id }).status == "running",
   "the hold releases once the idle player is back in its character")
@@ -263,6 +324,114 @@ check(tasks.plan_status({ plan_id = kept_first.plan_id }).status == "completed"
   and tasks.plan_status({ plan_id = kept_second.plan_id }).status == "completed"
   and tasks.plan_status({ plan_id = kept_third.plan_id }).status == "completed",
   "every plan held while the body was missing completes afterwards")
+
+-- The remaining signals, each starting or keeping a hold on its own.
+do
+  local function walking_bot()
+    reset()
+    local plan = queue_walk(300)
+    tick()
+    answer_path(300)
+    for step = 1, 5 do
+      tick()
+      state.position = { x = step * 0.15, y = 0 }
+    end
+    check(storage.tasks.human_hold == nil and state.walking_state.walking == true and state.walking_state.direction == EAST,
+      "fixture: the bot walks east with no hold")
+    return plan
+  end
+  local function ticks_held(limit)
+    local count = 0
+    while storage.tasks.human_hold and count < limit do tick(); count = count + 1 end
+    return count
+  end
+
+  -- A key held down fires its custom input once; walking_state keeps the hold.
+  local plan = walking_bot()
+  press()
+  tick()
+  for _ = 1, 900 do
+    hold_key()
+    tick()
+  end
+  check(storage.tasks.human_hold ~= nil and body_writes() >= 3 and tasks.plan_status({ plan_id = plan.plan_id }).status == "running",
+    "a key held down keeps the hold far beyond 300 ticks after its press")
+  release_key()
+  check(ticks_held(1000) == 300, "the hold releases 300 ticks after the held key stops")
+
+  -- Mining during a hold keeps it alive the same way.
+  walking_bot()
+  press()
+  tick()
+  for _ = 1, 500 do
+    state.mining_state = { mining = true }
+    tick()
+  end
+  check(storage.tasks.human_hold ~= nil, "mining during a hold keeps it beyond 300 ticks")
+  state.mining_state = { mining = false }
+  check(ticks_held(1000) == 300, "the hold releases 300 ticks after the mining stops")
+
+  -- An open GUI holds until it is closed plus 300 ticks.
+  plan = walking_bot()
+  press()
+  player.opened_gui_type = defines.gui_type.entity
+  for _ = 1, 700 do tick() end
+  check(storage.tasks.human_hold ~= nil and state.walking_state.walking == false, "an open GUI holds the body while it stays open")
+  player.opened_gui_type = defines.gui_type.none
+  check(ticks_held(1000) == 300 and tasks.plan_status({ plan_id = plan.plan_id }).status == "running",
+    "the hold releases 300 ticks after the GUI closes and the walk is still running")
+  walking_bot()
+  player.opened_gui_type = defines.gui_type.controller
+  tick()
+  check(storage.tasks.human_hold ~= nil, "an open GUI alone, without any input event, starts a hold")
+
+  -- An item in the cursor holds while it is held.
+  walking_bot()
+  player.cursor_stack = { valid_for_read = true }
+  for _ = 1, 400 do tick() end
+  check(storage.tasks.human_hold ~= nil, "an item in the cursor holds the body while it is held")
+  player.cursor_stack = { valid_for_read = false }
+  check(ticks_held(1000) == 300, "the hold releases 300 ticks after the cursor is cleared")
+
+  -- Walking the mod did not command, with the bot idle.
+  reset()
+  for _ = 1, 10 do tick() end
+  check(storage.tasks.human_hold == nil and companion.human_control() == false, "fixture: an idle bot with no input has no hold")
+  hold_key()
+  tick()
+  check(storage.tasks.human_hold ~= nil and companion.human_control() == true,
+    "walking the mod did not command starts a hold while the bot is idle")
+  local queued = queue_walk(10)
+  check(queued.human_control == true and tasks.plan_status({ plan_id = queued.plan_id }).status == "queued",
+    "a plan queued while the owner walks the idle body is parked")
+  release_key()
+  check(ticks_held(1000) == 300, "that hold releases 300 ticks after the walking stops")
+
+  -- Walking in another direction than the bot commanded.
+  walking_bot()
+  state.walking_state = { walking = true, direction = SOUTH }
+  writes = {}
+  tick()
+  check(storage.tasks.human_hold ~= nil and writes.walking_state == 1 and state.walking_state.walking == false,
+    "walking in a direction the mod did not command starts a hold during a bot walk")
+  -- The mod's own stop, and the game clearing a script-set walk, are not input.
+  walking_bot()
+  state.walking_state = { walking = false }
+  tick()
+  check(storage.tasks.human_hold == nil and state.walking_state.walking == true,
+    "a walking state the game cleared between ticks is not human input")
+
+  -- Other players and a disconnected Codex player never hold.
+  walking_bot()
+  viewer.opened_gui_type = defines.gui_type.entity
+  for _ = 1, 5 do
+    press(2)
+    tick()
+  end
+  viewer.opened_gui_type = defines.gui_type.none
+  check(storage.tasks.human_hold == nil and storage.tasks.human_activity_tick == nil and state.walking_state.walking == true,
+    "another player's inputs and GUI never hold the body")
+end
 
 -- A parked wait is not charged for the hold, and its condition is read
 -- before its deadline is applied.
@@ -278,11 +447,13 @@ do
   local waiting = wait(60)
   for _ = 1, 100 do tick() end
   check(tasks.plan_status({ plan_id = waiting.plan_id }).status == "waiting", "fixture: the wait is parked before the hold")
-  player.afk_time = 0
+  press()
   tick()
+  hold_key()
   game.tick, plates = game.tick + 3600, 10
   tasks.on_tick()
-  player.afk_time = 299
+  release_key()
+  game.tick = game.tick + 299
   tick()
   check(storage.tasks.human_hold == nil and tasks.plan_status({ plan_id = waiting.plan_id }).status ~= "failed",
     "a hold longer than a parked wait's timeout does not expire the wait on release")
@@ -296,11 +467,13 @@ do
   plates = 0
   local extended = wait(60)
   for _ = 1, 100 do tick() end
-  player.afk_time = 0
+  press()
   tick()
+  hold_key()
   game.tick = game.tick + 3600
   tasks.on_tick()
-  player.afk_time = 299
+  release_key()
+  game.tick = game.tick + 299
   for _ = 1, 100 do tick() end
   check(storage.tasks.human_hold == nil and tasks.plan_status({ plan_id = extended.plan_id }).status == "waiting",
     "an unmet parked wait keeps its remaining timeout after a hold longer than the timeout")
@@ -427,9 +600,10 @@ end
 do
   reset()
   local responded
+  local handlers = {}
   _G.script = { active_mods = { ["agentic-companion"] = "test", base = "2.0.77" },
     on_init = function() end, on_configuration_changed = function() end,
-    on_event = function() end, on_nth_tick = function() end }
+    on_event = function(event, handler) handlers[event] = handler end, on_nth_tick = function() end }
   local registered
   _G.remote = { add_interface = function(_, value) registered = value end }
   local params = {}
@@ -452,7 +626,37 @@ do
     registered.rpc(method, "{}")
     return responded and responded.ok and responded.data and responded.data.fifo
   end
-  player.afk_time = 42
+  -- control.lua listens to every custom input data.lua defines, and to
+  -- on_gui_opened, with the handler that records the Codex player's input.
+  local defined = {}
+  _G.data = { extend = function(_, prototypes) for _, prototype in ipairs(prototypes) do defined[#defined + 1] = prototype end end }
+  assert(loadfile(here .. "/../../mod/agentic-companion/data.lua"))()
+  _G.data = nil
+  local wired, linked = #defined >= 14, {}
+  for _, prototype in ipairs(defined) do
+    linked[prototype.linked_game_control] = true
+    storage.tasks.human_activity_tick = nil
+    game.tick = game.tick + 1
+    local handler = handlers[prototype.name]
+    if handler then handler({ player_index = 2, input_name = prototype.name }) end
+    local ignored = storage.tasks.human_activity_tick == nil
+    if handler then handler({ player_index = 1, input_name = prototype.name }) end
+    wired = wired and prototype.type == "custom-input" and prototype.key_sequence == ""
+      and prototype.name == "agentic-companion-" .. prototype.linked_game_control
+      and ignored and storage.tasks.human_activity_tick == game.tick
+  end
+  for _, control in ipairs({ "move-up", "move-down", "move-left", "move-right", "mine", "build", "build-ghost", "open-gui",
+    "open-character-gui", "pick-items", "drop-cursor", "rotate", "reverse-rotate", "toggle-driving" }) do
+    wired = wired and linked[control] == true
+  end
+  check(wired, "every linked custom input of data.lua records the Codex player's input and ignores other players")
+  storage.tasks.human_activity_tick = nil
+  handlers.on_gui_opened({ player_index = 2 })
+  check(companion.human_control() == false, "another player's opened GUI never holds")
+  handlers.on_gui_opened({ player_index = 1 })
+  check(companion.human_control() == true, "the Codex player's opened GUI holds through on_gui_opened")
+  press()
+  game.tick = game.tick + 42
   -- get_task is the direct tools' poll: it carries the same block.
   storage.tasks.records[5] = { status = "done", detail = "" }
   params = { task_id = 5 }
@@ -463,10 +667,11 @@ do
   local held_fifo = fifo("observe_local")
   check(held_fifo and held_fifo.human_control == true and held_fifo.human_idle_ticks == 42,
     "a read RPC's fifo block reports human_control and human_idle_ticks during a hold")
-  player.afk_time = 900
+  game.tick = game.tick + 858
+  player.afk_time = 0
   local free_fifo = fifo("map_summary")
   check(free_fifo and free_fifo.human_control == false and free_fifo.human_idle_ticks == 900,
-    "a read RPC's fifo block reports human_control false once input is idle")
+    "a read RPC's fifo block reports human_control false once input is idle, whatever afk_time says")
   player.connected = false
   local away_fifo = fifo("ping")
   check(away_fifo and away_fifo.human_control == false and away_fifo.human_idle_ticks == nil,

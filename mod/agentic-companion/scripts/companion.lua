@@ -61,28 +61,77 @@ function M.record()
   return storage.companion
 end
 
--- Human takeover. afk_time counts ticks since the Codex client's last real
--- keyboard or mouse input; script-driven walking does not reset it. While the
--- player is connected and in its character, the owner holds the body until that
--- input is older than the release interval. Map or remote view never holds:
--- input there moves the view, so the bot keeps working while the owner looks
--- around. A missing character or any other controller keeps the hold, so
--- queued work stays parked instead of failing for want of a body. Returns
--- held, idle ticks; unreadable state and a disconnected player never hold.
+-- Human takeover. Real control input on the Codex client holds the body until
+-- 300 ticks after the last of it; storage.tasks.human_activity_tick is that
+-- last input. Input is a linked custom input (scripts/human_inputs.lua), an
+-- open GUI, an item in the cursor, or walking the mod did not command; during
+-- a hold, any walking or mining. Mouse hover, camera movement and afk_time are
+-- not input: afk_time also resets when the bot's own walking scrolls the view
+-- under a resting cursor (native 2.0.77). Everything counts only for the
+-- connected Codex player in its character: map or remote view moves the view,
+-- so the bot keeps working while the owner looks around.
 local HUMAN_RELEASE_IDLE_TICKS = 300
-function M.human_control()
+local NEVER_ACTIVE_IDLE_TICKS = 2147483647
+
+local function codex_player()
   local rec = storage.companion
-  if not (rec and rec.player_index) then return false end
-  local ok, idle, bodiless, viewing = pcall(function()
-    local player = get_player(rec.player_index)
-    if not (player and player.valid ~= false and player.connected) then return nil end
+  local player = rec and get_player(rec.player_index)
+  if player and player.valid ~= false and player.connected then return player end
+  return nil
+end
+local function in_character(player)
+  return player.controller_type == defines.controllers.character and player.character and player.character.valid
+end
+local function note_activity()
+  if storage.tasks then storage.tasks.human_activity_tick = game.tick end
+end
+
+-- A linked custom input or on_gui_opened (the mod never opens a GUI).
+function M.on_human_input(event)
+  local rec = storage.companion
+  if not (rec and rec.player_index and event.player_index == rec.player_index) then return end
+  local player = codex_player()
+  if player and in_character(player) then note_activity() end
+end
+
+-- Called once per tick before the dispatcher decides the hold and before the
+-- mod writes any body state. A press event marks only the moment of a press;
+-- this keeps the hold alive while a key is held down or a GUI stays open.
+function M.poll_human_activity(holding)
+  local player = codex_player()
+  if not (player and in_character(player)) then return end
+  local body = player.character
+  local cursor = player.cursor_stack
+  local active = player.opened_gui_type ~= defines.gui_type.none or (cursor and cursor.valid_for_read) or false
+  local walking = body.walking_state
+  if walking and walking.walking then
+    -- The mod is the only script writer of walking_state and records each
+    -- write (human_inputs.set_walking): walking it did not command, or in
+    -- another direction, is the client's movement keys.
+    local commanded = storage.tasks and storage.tasks.commanded_walk
+    if holding or not (commanded and commanded.walking) or commanded.direction ~= walking.direction then active = true end
+  end
+  if holding and body.mining_state and body.mining_state.mining then active = true end
+  if active then note_activity() end
+end
+
+-- Returns held, idle ticks. A missing character or any controller other than
+-- character or remote keeps the hold, so queued work stays parked instead of
+-- failing for want of a body. Unreadable state and a disconnected player
+-- never hold.
+function M.human_control()
+  local ok, held, idle = pcall(function()
+    local player = codex_player()
+    if not player then return false end
+    local last = storage.tasks and storage.tasks.human_activity_tick
+    local idle = last and math.max(0, game.tick - last) or NEVER_ACTIVE_IDLE_TICKS
     local has_body = player.character and player.character.valid
-    if has_body and player.controller_type == defines.controllers.remote then return player.afk_time, false, true end
-    return player.afk_time, not (player.controller_type == defines.controllers.character and has_body) and true or false
+    if has_body and player.controller_type == defines.controllers.remote then return false, idle end
+    if not in_character(player) then return true, idle end
+    return idle < HUMAN_RELEASE_IDLE_TICKS, idle
   end)
-  if not ok or type(idle) ~= "number" then return false end
-  if viewing then return false, idle end
-  return bodiless or idle < HUMAN_RELEASE_IDLE_TICKS, idle
+  if not ok then return false end
+  return held, idle
 end
 
 function M.require_companion()

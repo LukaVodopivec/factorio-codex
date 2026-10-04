@@ -9,6 +9,7 @@ local build = require("scripts.actions.build")
 local craft = require("scripts.actions.craft")
 local transfer = require("scripts.actions.transfer")
 local build_plan = require("scripts.actions.build_plan")
+local set_walking = require("scripts.human_inputs").set_walking
 local factory_activity = require("scripts.factory_activity")
 local map_summary = require("scripts.map_summary")
 local M = {}
@@ -25,9 +26,10 @@ function M.set_observer(fn) observer = fn end
 local function stop_body()
   local c = companion.get()
   if not c then return end
-  c.walking_state, c.mining_state, c.picking_state = { walking = false }, { mining = false }, false
+  set_walking(c, { walking = false })
+  c.mining_state, c.picking_state = { mining = false }, false
 end
--- The owner's real input on the Codex client holds the body (companion.human_control
+-- The owner's real control input on the Codex client holds the body (companion.human_control
 -- owns the rule). A failed read never holds.
 local function human_control()
   local ok, held, idle = pcall(companion.human_control)
@@ -1671,6 +1673,7 @@ end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end
   local tasks = storage.tasks
+  pcall(companion.poll_human_activity, tasks.human_hold ~= nil)
   if human_control() then
     if not tasks.human_hold then enter_hold(tasks) end
     -- The owner playing the body is not idle time.

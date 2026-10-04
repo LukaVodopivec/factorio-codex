@@ -168,10 +168,12 @@ is that state, not a prototype); after more than 30 idle seconds it adds the `hi
 bounded work before further reads" and leads its text with it. The read-only
 strategist, which cannot queue, sees the hint too. Each `fifo` block and
 `observe_local.character` also state `human_control` and `human_idle_ticks`:
-while the connected Codex player has given real keyboard or mouse input within
-the last 300 ticks, the FIFO is parked (no step starts or ticks, no plan is
+while the connected Codex player, in its character, has given real control
+input (movement, mining, building, opening a GUI, holding an item) within the
+last 300 ticks (about 5 s), the FIFO is parked (no step starts or ticks, no plan is
 cancelled or reordered, `queue_plan` still queues) and the hint becomes a
-human-control notice; a step that depended on the body position re-plans from
+human-control notice; mouse hovering, map view and camera movement never park
+it; a step that depended on the body position re-plans from
 where the body then stands. `plan_status`, `run_plan` and `queue_plan` results
 carry `human_control: true` when a hold delayed the plan, which is neither
 idleness nor failure. Placement checks share exact collision geometry and explicitly reject

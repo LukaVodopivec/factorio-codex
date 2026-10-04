@@ -11,6 +11,7 @@ local map_summary = require("scripts.map_summary")
 local production_requirements = require("scripts.production_requirements")
 local connect_entities = require("scripts.connect_entities")
 local run_snapshot = require("scripts.run_snapshot")
+local human_inputs = require("scripts.human_inputs")
 
 -- Every read-only RPC result carries the body's FIFO state from the same Lua
 -- read, so a reader sees an idle body without another round trip.
@@ -29,8 +30,8 @@ local function fifo_state()
   elseif t.last_finished_tick then
     idle_seconds = math.floor(math.max(0, game.tick - t.last_finished_tick) / 60)
   end
-  -- human_control: The owner's input holds the body and the FIFO is parked, which
-  -- is neither idleness nor failure; human_idle_ticks counts since that input.
+  -- human_control: The owner's control input holds the body and the FIFO is parked,
+  -- which is neither idleness nor failure; human_idle_ticks counts since it.
   -- A failed read never holds.
   local ok, human_control, human_idle_ticks = pcall(companion.human_control)
   human_control = ok and human_control == true
@@ -109,6 +110,12 @@ script.on_event(defines.events.on_player_joined_game, companion.on_player_availa
 script.on_event(defines.events.on_player_left_game, companion.on_player_left)
 script.on_event(defines.events.on_player_died, companion.on_player_died)
 script.on_event(defines.events.on_player_respawned, companion.on_player_respawned)
+-- Human takeover: real control input on the Codex client (data.lua's linked
+-- custom inputs, and any GUI it opens) parks the FIFO.
+for _, control in ipairs(human_inputs.controls) do
+  script.on_event(human_inputs.input_name(control), companion.on_human_input)
+end
+script.on_event(defines.events.on_gui_opened, companion.on_human_input)
 script.on_event(defines.events.on_surface_created, companion.enforce_peaceful_world)
 if defines.events.on_player_removed then
   script.on_event(defines.events.on_player_removed, companion.on_player_removed)

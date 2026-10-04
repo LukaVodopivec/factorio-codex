@@ -3,6 +3,7 @@
 -- through on_script_path_request_finished → M.on_path_finished (wired in
 -- control.lua); storage.path_request belongs to the sole active task.
 local companion = require("scripts.companion")
+local set_walking = require("scripts.human_inputs").set_walking
 local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
@@ -76,7 +77,7 @@ local function request_path(state, c, task_id, target, phase, radius)
 end
 
 local function stop(c)
-  c.walking_state = { walking = false }
+  set_walking(c, { walking = false })
 end
 
 local function fail(c, code, detail, outcome)
@@ -555,7 +556,7 @@ function M.begin_settle(state, c, anchor, limit)
   state.phase = "settling"
   state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
     conveyor = conveyor_label(conveyor), started_tick = game.tick }
-  c.walking_state = { walking = true, direction = direction_toward(c.position, cell) }
+  set_walking(c, { walking = true, direction = direction_toward(c.position, cell) })
   return nil
 end
 
@@ -576,7 +577,7 @@ local function step_settle(state, c)
       { code = "BODY_ON_CONVEYOR", diagnostics = { path = { evidence_scope = "charted_visible_only",
         start = { x = pos.x, y = pos.y }, settle = settle } } })
   end
-  c.walking_state = { walking = true, direction = direction_toward(pos, settle.to) }
+  set_walking(c, { walking = true, direction = direction_toward(pos, settle.to) })
   return nil
 end
 
@@ -668,7 +669,7 @@ function M.step(state, c, task_id)
         collision_labels(evidence.collisions), state.escape_target.x, state.escape_target.y, ESCAPE_TICKS),
         { code = "START_COLLISION", diagnostics = { path_start = evidence, escape_target = state.escape_target } })
     end
-    c.walking_state = { walking = true, direction = direction_toward(pos, state.escape_target) }
+    set_walking(c, { walking = true, direction = direction_toward(pos, state.escape_target) })
     return nil
   end
 
@@ -832,7 +833,7 @@ function M.step(state, c, task_id)
   end
 
   -- walking_state only lasts one tick, so it must be re-set every tick
-  c.walking_state = { walking = true, direction = direction_toward(pos, goal) }
+  set_walking(c, { walking = true, direction = direction_toward(pos, goal) })
   return nil
 end
 

@@ -6,7 +6,8 @@
 -- 2.0.77 (isolated headless api-probe); documented members the native binding
 -- lacks are omitted: LuaEntity crane_grappler_destination(_3d). LuaPlayer has
 -- no headless instance: its group lists only the members read on a live
--- 2.0.77 client (the connected Codex player of a debug run).
+-- 2.0.77 client (the connected Codex player of a debug run), plus cursor_stack,
+-- a documented LuaControl member the human-takeover poll reads.
 -- LuaFluidBox's numeric [] and length operators are implemented by the mock.
 return {
   LuaEntity = {
@@ -1260,6 +1261,7 @@ return {
     ["character"] = true,
     ["connected"] = true,
     ["controller_type"] = true,
+    ["cursor_stack"] = true,
     ["force"] = true,
     ["index"] = true,
     ["last_online"] = true,

@@ -4,7 +4,7 @@ _G.storage = {}
 _G.defines = { events = {
   on_tick = 2, on_script_path_request_finished = 3, on_player_created = 4,
   on_player_joined_game = 5, on_player_left_game = 6, on_player_died = 7,
-  on_player_respawned = 8, on_surface_created = 9, on_player_removed = 10,
+  on_player_respawned = 8, on_surface_created = 9, on_player_removed = 10, on_gui_opened = 11,
 }, controllers = { character = 1, spectator = 4 }, direction = { north = 0, northeast = 2, east = 4, southeast = 6, south = 8, southwest = 10, west = 12, northwest = 14 } }
 local registered
 local events = {}
@@ -20,4 +20,17 @@ _G.rcon = { print = function() end }
 assert(loadfile(here .. "/../../mod/agentic-companion/control.lua"))()
 assert(type(registered) == "table" and type(registered.rpc) == "function")
 for _, id in pairs(defines.events) do assert(type(events[id]) == "function") end
+-- Every custom input the data stage defines has a runtime listener and links
+-- an official 2.0.77 game control.
+local official_controls = dofile(here .. "/fixtures/factorio-2.0.77-linked-game-controls.lua")
+local defined = 0
+_G.data = { extend = function(_, prototypes)
+  for _, prototype in ipairs(prototypes) do
+    assert(prototype.type == "custom-input" and type(events[prototype.name]) == "function", prototype.name)
+    assert(official_controls[prototype.linked_game_control] and prototype.key_sequence == "", prototype.name)
+    defined = defined + 1
+  end
+end }
+assert(loadfile(here .. "/../../mod/agentic-companion/data.lua"))()
+assert(defined > 0)
 print("ok   packaged control.lua loads and registers the agentic RPC interface")

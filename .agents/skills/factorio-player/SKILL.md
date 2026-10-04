@@ -73,8 +73,10 @@ numeric sunset.
   FIFO is parked: plans keep their order, nothing is cancelled, and
   `queue_plan` is still accepted. A hold is neither idleness nor failure.
   Never fight for the body or queue corrective work for it; the pilot ends its
-  turn or waits. The owner looking around in map or remote view is not a hold:
-  work continues. After the hold (about 5 s without input) re-observe before
+  turn or waits. Only real control input on the Codex client (movement,
+  mining, building, opening a GUI, holding an item) holds; mouse hovering,
+  camera movement, and the owner looking around in map or remote view are not a
+  hold: work continues. After the hold (about 5 s after the last such input) re-observe before
   targeting: The owner may have moved the body and changed the factory. `run_plan`
   may return nonterminal with `human_control: true`: the plan stays queued
   behind the hold, so read it with `plan_status` after the hold instead of

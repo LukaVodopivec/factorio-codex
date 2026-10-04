@@ -767,14 +767,18 @@ supplement these receipts; neither substitutes for native behavior.
 ### The owner takeover rehearsal before GO
 
 The owner may take the Codex body over by mouse and keyboard at any time, through
-the native `Codex` client window on the couch PC. The mod reads that player's
-`afk_time`: while it is connected and under 300 ticks since real input, the
-FIFO dispatcher is parked and the mod writes no walking, mining, or picking
-state. Plans are not cancelled and keep their order, `queue_plan` is still
-accepted, and hold ticks are charged to no plan or wait deadline. At 300 ticks without input the
-dispatcher resumes, and a step that depended on the body position re-plans from
-the current position. Script-driven walking does not reset `afk_time`
-(confirmed on native 2.0.77).
+the native `Codex` client window on the couch PC. Real control input on that
+client while it is in its character (movement, mining, building, rotating,
+crafting, item transfers, opening a GUI, holding an item in the cursor) parks
+the FIFO dispatcher, and the mod writes no walking, mining, or picking state.
+Mouse hovering, camera movement, and looking around in map or remote view do
+not. Plans are not cancelled and keep their order, `queue_plan` is still
+accepted, and hold ticks are charged to no plan or wait deadline. About 5 s
+(300 ticks) after the last such input, with no GUI open and the cursor empty,
+the dispatcher resumes, and a step that depended on the body position re-plans
+from the current position. `afk_time` is not the signal: on native 2.0.77 the
+bot's own walking resets it whenever the view scrolls under a resting mouse
+cursor.
 
 The rehearsal needs the owner's real input, so it runs only when the supervisor's
 assignment says in so many words that the owner has agreed to do the takeover

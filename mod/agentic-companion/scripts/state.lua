@@ -12,6 +12,11 @@ function M.init()
     queue = tasks.queue or {},
     active = tasks.active,
     last_finished_tick = tasks.last_finished_tick,
+    -- Human takeover (companion.human_control): the last real control input
+    -- on the Codex client, absent when there never was one, and the walking
+    -- state the mod last commanded.
+    human_activity_tick = tasks.human_activity_tick,
+    commanded_walk = tasks.commanded_walk,
   }
 
   -- At most one path request exists because only the sole active task runs.

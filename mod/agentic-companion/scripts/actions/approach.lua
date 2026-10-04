@@ -1,6 +1,7 @@
 -- Shared "walk within reach first" phase for every action task with a map
 -- target. Sub-state lives under task._approach.
 local walk = require("scripts.actions.walk")
+local set_walking = require("scripts.human_inputs").set_walking
 local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
@@ -19,7 +20,7 @@ function M.ensure(task, c, target_pos, reach)
   -- Proven clearance retires it; a failed blocked start survives step changes.
   if active and (active.walk.phase == "escaping" or active.walk.escape_failed) and evidence.clear then
     task._approach = nil
-    c.walking_state = { walking = false }
+    set_walking(c, { walking = false })
   end
   if dist_sq(c.position, target_pos) <= reach * reach
     and evidence.clear then
@@ -51,7 +52,7 @@ function M.ensure(task, c, target_pos, reach)
     if active and active.target.x == target_pos.x and active.target.y == target_pos.y
       and active.reach == reach then
       task._approach = nil
-      c.walking_state = { walking = false }
+      set_walking(c, { walking = false })
     end
     return "ok"
   end
@@ -107,7 +108,7 @@ function M.ensure_entity(task, c, e)
     and not placement_geometry.conveyor_under(c) then
     if task._approach then
       task._approach = nil
-      c.walking_state = { walking = false }
+      set_walking(c, { walking = false })
     end
     task._approach_close = nil
     return "ok"

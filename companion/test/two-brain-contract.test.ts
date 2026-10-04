@@ -195,14 +195,14 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/if it fails again, report `false-negative <package>`/);
     expect(strategist).toMatch(/On `false-negative <package>`, record a suspected validator false negative in `assumptions`/);
     expect(flat[2]).toMatch(/`FACTORY_COMPONENT_NOT_READY` \(stage `readiness`\)[\s\S]*segment's existing buffer or consumer[\s\S]*Only `physical_source_downstream_path_unproven`/);
-    expect(pilot).toMatch(/Inventory-proven `blocked_output` means the terminal buffer is full: empty it only for items a queued package requires; otherwise leave it full and report it\. Never add a chest or sink/);
+    expect(pilot).toMatch(/Inventory-proven `blocked_output` means the terminal buffer is full: empty it only for items a queued package requires; otherwise leave it full and report it\. Never add a chest or sink on your own; a validated Astra package that adds an outlet is queued like any other package\./);
   });
 
   it("keeps the intro's hints overridable and removal guarded", () => {
     const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md").replace(/\s+/g, " ");
     expect(knowledge).toMatch(/hints are starting points that newer structured evidence may override/);
     expect(knowledge).toMatch(/fuel takeoff sits upstream so surplus never starves the fuel loop/);
-    expect(knowledge).toMatch(/Each segment ends in a consumer or at most one terminal buffer[\s\S]*never by adding a chest or sink/);
+    expect(knowledge).toMatch(/Each segment ends in a consumer or at most one terminal buffer[\s\S]*never by improvising a chest or sink outside a package/);
     expect(knowledge).toMatch(/same structural blocker failing a segment twice means redesign/);
     expect(knowledge).toMatch(/fuel-return inserter over a full fuel slot\) is normal/);
     expect(knowledge).toMatch(/zero utilization at that sample only/);

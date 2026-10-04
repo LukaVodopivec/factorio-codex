@@ -65,8 +65,8 @@ using it.
 - **One terminal buffer.** Each segment ends in a consumer or at most one
   terminal buffer. Fix full or blocked output at its cause (take from the buffer
   only what a queued package requires, or extend the segment to a consumer),
-  never by adding a chest or sink. A full buffer of construction items is the
-  intended stop for that line.
+  never by improvising a chest or sink outside a package. A full buffer of
+  construction items is the intended stop for that line.
 - **Validation timing.** Cover several processor cycles and one fuel item per
   burner. Queue the validation after a `wait_for_item` on the segment's terminal
   output, once bootstrap insertions are done and the segment produces.

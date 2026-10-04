@@ -331,6 +331,9 @@ describe("persistent two-brain coordination contract", () => {
     expect(skill).toMatch(/`class` structural, throughput, transient, or\s+evidence/);
     expect(flat[2]).toMatch(/An evidence row \(an ambiguous diagnostic included\) is a hypothesis\. Inspect locally, but never rotate, remove, or move anything for it/);
     expect(pilot).toMatch(/if it fails again, report `false-negative <package>`/);
+    expect(pilot).toMatch(/A validation window is a parked wait and does not need the body\.[^\n]*never stand by for a window/);
+    expect(pilot).not.toMatch(/Stay at the site/);
+    expect(pilot).toMatch(/refuel it by hand once so it keeps running while its permanent feed is built/);
     expect(strategist).toMatch(/On `false-negative <package>`, record a suspected validator false negative in `assumptions`/);
     expect(flat[2]).toMatch(/`FACTORY_COMPONENT_NOT_READY` \(stage `readiness`\)[\s\S]*segment's existing buffer or consumer[\s\S]*Only `physical_source_downstream_path_unproven`/);
     expect(pilot).toMatch(/Inventory-proven `blocked_output` means the terminal buffer is full: take from it what you can use, unload surplus only into an existing chest or line, and otherwise leave it full and report it\. Never add a chest or sink on your own; a validated Astra package that adds an outlet is queued like any other package\./);

@@ -29,7 +29,8 @@
 
 **Recovery.** After an unexpected, failed, interrupted, or partial result, obtain fresh structured state and inspect exact known plan IDs with `plan_status` as needed. A monitoring timeout leaves the plan pending. Retain completed physical effects; there is no rollback. Reconcile active and queued work before resuming the remaining safe work through the existing FIFO, without duplicating committed or pending steps or blanket-cancelling queued work.
 
-**Validation results.** Stay at the site.
+**Validation results.** A validation window is a parked wait and does not need the body. While it runs, queue independent work that does not touch the validated component (fuel or feed another line, craft, take stock from other buffers, build the next package) without `after_plan_id`; never stand by for a window.
+- Keep lines alive: when a burner machine is dry and coal sits in a chest or on a belt, refuel it by hand once so it keeps running while its permanent feed is built.
 - Package repair: report a located structural row as `reason@position`; Astra's next package repairs it. Change no geometry yourself.
 - Own repair: only under the fail-open rule above, and then only at a located structural blocker and its `related_edge`.
 - An evidence row is a hypothesis to inspect, never a reason to rotate, remove, or move.

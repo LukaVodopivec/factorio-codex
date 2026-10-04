@@ -81,6 +81,12 @@ local body = {
   can_reach_entity = function(entity) return entity.valid end,
   get_main_inventory = function() return inventory end,
   surface = { find_entities_filtered = function(filter)
+    -- The drill hint asks for own drills by force and type; a whole-surface
+    -- area there stalls the game, so that one query names no area at all.
+    if filter.type == "mining-drill" then
+      check(filter.area == nil and filter.radius == nil and filter.force ~= nil, "the drill hint search names a force and no area")
+      return {}
+    end
     check(filter.area ~= nil and filter.radius == nil, "mining queries an exact area without a nearby radius")
     return candidates
   end },

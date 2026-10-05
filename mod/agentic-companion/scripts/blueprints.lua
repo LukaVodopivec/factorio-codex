@@ -195,13 +195,59 @@ end
 -- Construction robots of the networks whose construction area covers the
 -- position: who builds ghosts and carries out orders there.
 function M.construction_robots(c, position)
-  local ok, networks = pcall(c.surface.find_logistic_networks_by_construction_area, position, c.force)
-  local robots = 0
-  for _, network in ipairs(ok and networks or {}) do
-    local ok_count, n = pcall(function() return network.all_construction_robots end)
-    if ok_count and type(n) == "number" then robots = robots + n end
+  return M.robot_readiness(c, position).construction_robots or 0
+end
+
+-- Readiness at an exact target, never inferred from the area centre or the
+-- capped nearest-network display. Native robots still decide dispatch and
+-- consume stock; these counts are observations, not reservations/promises.
+function M.robot_readiness(c, position, item, quality, count)
+  local space_ok, platform = pcall(function() return c.surface.platform end)
+  if space_ok and platform then
+    local row = { mechanism = "platform_hub", counts_complete = true }
+    if item then
+      local ok_stock, stock = pcall(function()
+        return platform.hub.get_inventory(defines.inventory.hub_main).get_item_count({ name = item, quality = quality or "normal" })
+      end)
+      row.counts_complete = ok_stock and type(stock) == "number"
+      row.material = { item = item, quality = quality or "normal", needed = count or 1,
+        observed_stock = row.counts_complete and stock or nil, counts_complete = row.counts_complete }
+      if row.counts_complete then row.material.can_supply = stock >= (count or 1) end
+    end
+    return row
   end
-  return robots
+  local ok, networks = pcall(c.surface.find_logistic_networks_by_construction_area, position, c.force)
+  if not ok or networks == nil then return { coverage = "unknown", counts_complete = false } end
+  local total = #networks
+  local row = { coverage = total > 0 and "covered" or "uncovered", networks = total,
+    construction_robots = 0, available_construction_robots = 0, counts_complete = total <= 4 }
+  if total > 4 then row.omitted_networks = total - 4 end
+  local stock, can_supply, stock_complete = 0, false, total <= 4
+  for i = 1, math.min(total, 4) do
+    local network = networks[i]
+    local robots_ok, all, available = pcall(function()
+      return network.all_construction_robots, network.available_construction_robots
+    end)
+    if robots_ok and type(all) == "number" then row.construction_robots = row.construction_robots + all
+    else row.counts_complete = false end
+    if robots_ok and type(available) == "number" then row.available_construction_robots = row.available_construction_robots + available
+    else row.counts_complete = false end
+    if item then
+      local id = { name = item, quality = quality or "normal" }
+      local have_ok, have = pcall(network.get_item_count, id)
+      local supply_ok, supplied = pcall(network.can_satisfy_request, id, count or 1, true)
+      if have_ok and type(have) == "number" then stock = stock + have else stock_complete = false end
+      if supply_ok then can_supply = can_supply or supplied == true else stock_complete = false end
+    end
+  end
+  if item then
+    local supply = can_supply
+    if not can_supply and not stock_complete then supply = nil end
+    row.material = { item = item, quality = quality or "normal", needed = count or 1,
+      observed_stock = stock, can_supply = supply,
+      counts_complete = stock_complete }
+  end
+  return row
 end
 
 -- ---------------------------------------------------------------- reading
@@ -479,12 +525,112 @@ function M.layout(name, flip, label)
   return { entities = entities }
 end
 
+-- Body construction has a smaller settings vocabulary than a native ghost.
+-- Refuse blueprint content it would otherwise silently discard.
+local HAND_FIELDS = { entity_number = true, name = true, position = true, direction = true,
+  recipe = true, recipe_quality = true, mirror = true, type = true, items = true, quality = true, wires = true,
+  bar = true, filters = true, filter_mode = true, use_filters = true, override_stack_size = true,
+  spoil_priority = true, input_priority = true, output_priority = true, filter = true,
+  ["chunk-filter"] = true, use_transitional_requests = true }
+function M.hand_layout(name, flip, label)
+  local stack = stack_of(name, label)
+  if stack.blueprint_snap_to_grid or #(stack.get_blueprint_tiles() or {}) > 0 then
+    error(label .. ": hand placement cannot preserve blueprint tiles or grid snapping; use native ghosts", 0)
+  end
+  local function normal(filter)
+    return type(filter) ~= "table" or ((not filter.quality or filter.quality == "normal")
+      and (not filter.comparator or filter.comparator == "="))
+  end
+  for _, e in ipairs(stack.get_blueprint_entities() or {}) do
+    for key in pairs(e) do
+      if not HAND_FIELDS[key] then error(label .. ": hand placement cannot preserve blueprint field " .. key .. "; use native ghosts", 0) end
+    end
+    if (e.wires and #e.wires > 0) or (e.quality and e.quality ~= "normal")
+      or (e.recipe_quality and e.recipe_quality ~= "normal") or not normal(e.filter) then
+      error(label .. ": hand placement cannot preserve blueprint wires or quality; use native ghosts", 0)
+    end
+    for i, filter in ipairs(e.filters or {}) do
+      if not normal(filter) or filter.index ~= i then
+        error(label .. ": hand placement cannot preserve blueprint filter quality or sparse slots; use native ghosts", 0)
+      end
+    end
+    for _, request in ipairs(e.items or {}) do
+      if (request.id.quality and request.id.quality ~= "normal") or (request.items and request.items.grid_count) then
+        error(label .. ": hand placement cannot preserve blueprint item quality or equipment; use native ghosts", 0)
+      end
+    end
+  end
+  return M.layout(name, flip, label)
+end
+
+-- Platform ghosts use the same checked foundation path as build_layout.
+-- Keep native settings and insert plans; reject features that path cannot
+-- preserve before issuing any construction. Planet ghosts use the native
+-- blueprint stack, including its wires and grid settings.
+local PLATFORM_FIELDS = { entity_number = true, name = true, position = true, direction = true,
+  recipe = true, recipe_quality = true, mirror = true, type = true, items = true, quality = true,
+  wires = true, tags = true, control_behavior = true, bar = true, filters = true, filter_mode = true, request_filters = true,
+  use_filters = true, override_stack_size = true, spoil_priority = true, filter = true,
+  input_priority = true, output_priority = true, ["chunk-filter"] = true }
+function M.platform_layout(name, flip, quarters, label)
+  if stack_of(name, label).blueprint_snap_to_grid then
+    error(label .. ": platform placement cannot preserve blueprint grid snapping", 0)
+  end
+  local stack = M.build_stack(name, flip, label)
+  local ok, result = pcall(function()
+    local entities, tiles = stack.get_blueprint_entities() or {}, stack.get_blueprint_tiles() or {}
+    if #entities > M.MAX_ENTITIES or #tiles > 400 then error(label .. ": platform blueprint exceeds the layout work bounds", 0) end
+    local layout = { entities = {}, tiles = {} }
+    local function turn(x, y)
+      for _ = 1, quarters do x, y = -y, x end
+      return x, y
+    end
+    for i, e in ipairs(entities) do
+      for key in pairs(e) do
+        if not PLATFORM_FIELDS[key] then error(label .. ": platform placement cannot preserve blueprint field " .. key, 0) end
+      end
+      if e.wires and #e.wires > 0 then error(label .. ": platform placement cannot preserve blueprint wires", 0) end
+      if (e.quality and e.quality ~= "normal") or (e.recipe_quality and e.recipe_quality ~= "normal") then
+        error(label .. ": platform placement currently requires normal entity and recipe quality", 0)
+      end
+      local requests = e.items or {}
+      if #requests > 8 then error(label .. ": at most 8 insert plans per platform blueprint entity", 0) end
+      for _, request in ipairs(requests) do
+        if #(request.items and request.items.in_inventory or {}) > 32 then
+          error(label .. ": platform blueprint insert plan exceeds 32 inventory slots", 0)
+        end
+      end
+      local row, raw = layout_entity(e), {}
+      row.dx, row.dy = turn(row.dx, row.dy)
+      row.direction = ((row.direction or 0) + 4 * quarters) % 16
+      row.insert = nil -- native requests, never starter items from the body
+      for key, value in pairs(e) do
+        if key ~= "entity_number" and key ~= "name" and key ~= "position" and key ~= "direction"
+          and key ~= "wires" and key ~= "items" then raw[key] = value end
+      end
+      row._blueprint, row._insert_plan = raw, e.items
+      layout.entities[i] = row
+    end
+    for i, tile in ipairs(tiles) do
+      local x, y = turn(tile.position.x + 0.5, tile.position.y + 0.5)
+      layout.tiles[i] = { name = tile.name, dx = x - 0.5, dy = y - 0.5 }
+    end
+    return layout
+  end)
+  if flip then M.clear_scratch() end
+  if not ok then error(result, 0) end
+  return result
+end
+
 -- The stack to build ghosts from: the stored blueprint, or a flipped copy of
 -- it in the scratch slot (tiles flipped too).
 function M.build_stack(name, flip, label)
   check_flip(flip, label)
   local stack = stack_of(name, label)
   if not flip then return stack end
+  if stack.blueprint_snap_to_grid then
+    error(label .. ": flipped placement cannot preserve blueprint grid snapping", 0)
+  end
   local entities, tiles = {}, {}
   for i, e in ipairs(stack.get_blueprint_entities() or {}) do entities[i] = flipped(e, flip) end
   for i, t in ipairs(stack.get_blueprint_tiles() or {}) do

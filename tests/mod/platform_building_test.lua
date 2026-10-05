@@ -157,16 +157,19 @@ local jobs = require("scripts.jobs")
 -- absolutely snapped 1x1 blueprint's box (the top-left tile of its entities'
 -- footprints and its tiles, not its (0, 0)) to the cell under position (or
 -- `shift` tiles off, to prove the read-back) and returns its ghosts.
-local built, created, destroyed, shift = {}, {}, 0, 0
-local fail_create
+local built, created, created_ghosts, destroyed, shift = {}, {}, {}, 0, 0
+local fail_create, fail_requests
 platform_surface.create_entity = function(args)
   created[#created + 1] = args
   assert(args.name == "entity-ghost" or args.name == "tile-ghost", "only ghosts, never free machines or foundation")
   assert(args.force == own and args.raise_built and args.player == nil, "ghosts do not affect the player or undo queue")
   if fail_create and #created == fail_create then return nil end
-  return mock.entity({ valid = true, type = args.name, name = args.name, ghost_name = args.inner_name,
+  local g = mock.entity({ valid = true, type = args.name, name = args.name, ghost_name = args.inner_name,
     position = { x = args.position.x + shift, y = args.position.y }, direction = args.direction or 0,
     destroy = function() destroyed = destroyed + 1; return true end })
+  created_ghosts[#created_ghosts + 1] = g
+  if fail_requests then mock.write(g, "insert_plan", function() error("native request assignment refused") end) end
+  return g
 end
 local scratch_state = {}
 local scratch
@@ -404,13 +407,67 @@ local dry_place = jobs.run_now(area_ops.place_check_job, { name = "cell", positi
 check(dry_place.ok and dry_place.surface == "platform:1" and dry_place.missing[1].item == "crusher" and #built == built_before
   and bp.built[1] == nil, "blueprint_place {platform} check_only checks ghosts on the platform and names what the hub lacks")
 bp.built = {}
-local placed = run(area_ops.place_action, { name = "cell", position = { x = -4, y = 0 }, platform = "Forge" })
-local args = bp.built[1]
-check(placed.status == "done" and placed.outcome.surface == "platform:1" and args.surface == platform_surface
-  and args.build_mode == defines.build_mode.normal and args.position.x == -2 and args.position.y == 2 and walked == 0,
+local created_before = #created
+local placed = run(area_ops.place_action, { name = "cell", position = { x = -6, y = 0 }, platform = "Forge" })
+local args = created[created_before + 1]
+check(placed.status == "done" and placed.outcome.surface == "platform:1" and bp.built[1] == nil
+  and args.name == "entity-ghost" and args.position.x == -4 and args.position.y == 2.5
+  and args.recipe == "carbonic-asteroid-crushing" and walked == 0,
   "blueprint_place {platform} builds the ghosts on the platform at hub + position, remotely")
 check(area_ops.place_action.remote({ platform = 1 }) and area_ops.place_action.budget_steps({ name = "cell", platform = 1 }) == 1,
-  "blueprint_place {platform} is a remote one-tick step")
+  "blueprint_place {platform} is remote and uses the bounded ghost runner")
+
+-- The blueprint's foundation and its entities share both dry-run and runner.
+local cell_stack = storage.blueprints.inventory[storage.blueprints.by_name.cell.slot]
+local native_cell = bp.state(cell_stack)
+local original_entities, original_tiles = native_cell.entities, native_cell.tiles
+native_cell.entities = { { entity_number = 1, name = "crusher", position = { x = 0, y = 0.5 },
+  recipe = "carbonic-asteroid-crushing", items = { { id = { name = "speed-module", quality = "uncommon" },
+    items = { in_inventory = { { inventory = 4, stack = 0, count = 1 } } } } } } }
+native_cell.tiles = {}
+for x = 0, 1 do for y = -1, 1 do
+  native_cell.tiles[#native_cell.tiles + 1] = { name = "space-platform-foundation", position = { x = x, y = y } }
+end end
+local floor_check = jobs.run_now(area_ops.place_check_job, { name = "cell", position = { x = 8, y = 0 },
+  platform = 1, check_only = true })
+check(floor_check.ok and floor_check.tiles.would_place == 6 and floor_check.needs_planned_tiles[1] == 0,
+  "platform blueprint dry run checks the same foundation needed by its machine")
+created_before = #created
+local floor_place, floor_task = run(area_ops.place_action, { name = "cell", position = { x = 8, y = 0 }, platform = 1 })
+local native_ghost = created_ghosts[#created_ghosts]
+check(floor_place.status == "done" and floor_place.outcome.tiles_placed == 6 and floor_place.outcome.ghosts_placed == 1
+  and created[created_before + 1].name == "tile-ghost" and created[#created].inner_name == "crusher",
+  "platform blueprint places connected foundation first, then its configured machine, through the shared runner")
+check(native_ghost.insert_plan[1].id.name == "speed-module" and native_ghost.insert_plan[1].id.quality == "uncommon"
+  and native_ghost.insert_plan[1].items.in_inventory[1].stack == 0,
+  "platform blueprint retains the native item-request quality, inventory and slot instead of flattening starter items")
+-- The shared runner's request setter must fail honestly and remove only its own ghosts.
+fail_requests = true
+local destroyed_before = destroyed
+local refused = run(area_ops.place_action, { name = "cell", position = { x = 8, y = 0 }, platform = 1 })
+check(refused.status == "failed" and refused.outcome.failed[1].code == "GHOST_REQUESTS_NOT_SET"
+  and refused.outcome.ghosts_placed == 0 and refused.outcome.tiles_placed == 0 and destroyed == destroyed_before + 7,
+  "native insert-plan refusal rolls back this blueprint's ghosts and never reports success")
+fail_requests = nil
+native_cell.entities[1].wires = { { 1, 1, 2, 1 } }
+created_before = #created
+check(raises(function() run(area_ops.place_action, { name = "cell", position = { x = 8, y = 0 }, platform = 1 }) end,
+  "cannot preserve blueprint wires") and #created == created_before,
+  "unsupported platform blueprint wiring is rejected before construction, never dropped silently")
+native_cell.entities, native_cell.tiles = original_entities, original_tiles
+cell_stack.blueprint_snap_to_grid = { x = 2, y = 2 }
+check(raises(function() run(area_ops.place_action, { name = "cell", position = { x = -6, y = 0 },
+  platform = 1, flip = "horizontal" }) end, "cannot preserve blueprint grid snapping") and #created == created_before,
+  "flipping a platform blueprint cannot hide unsupported source grid snapping")
+cell_stack.blueprint_snap_to_grid = nil
+local existing_cell = spawn("crusher", { x = -4, y = 2.5 })
+existing_cell.recipe = "metallic-asteroid-crushing"
+local overlapped = run(area_ops.place_action, { name = "cell", position = { x = -6, y = 0 }, platform = 1 })
+check(overlapped.status == "partial" and overlapped.outcome.code == "BLUEPRINT_EXISTING_UNVERIFIED"
+  and overlapped.outcome.configuration_verified == false and existing_cell.recipe == "metallic-asteroid-crushing",
+  "matching existing geometry never claims the blueprint's recipe or module completion and does not change it")
+existing_cell.valid = false
+
 
 -- --------------------------------------------------------- deconstruct_area
 
@@ -563,10 +620,10 @@ local aboard_dry = jobs.run_now(layout.layout_check_job, { check_only = true, pl
   entities = { { name = "crusher", dx = -10, dy = 6.5 } } })
 check(aboard_dry.check_only and aboard_dry.platform.name == "Forge", "aboard, a platform layout dry run works")
 bp.built = {}
-local aboard_place = run(area_ops.place_action, { name = "cell", position = { x = -8, y = 4 }, platform = 1 })
-local aboard_place_dry = jobs.run_now(area_ops.place_check_job, { name = "cell", position = { x = -8, y = 4 }, platform = 1,
+local aboard_place = run(area_ops.place_action, { name = "cell", position = { x = -6, y = -4 }, platform = 1 })
+local aboard_place_dry = jobs.run_now(area_ops.place_check_job, { name = "cell", position = { x = -6, y = -4 }, platform = 1,
   check_only = true })
-check(aboard_place.status == "done" and bp.built[1] ~= nil and aboard_place_dry.surface == "platform:1",
+check(aboard_place.status == "done" and bp.built[1] == nil and aboard_place_dry.surface == "platform:1",
   "aboard, blueprint_place {platform} and its dry run work")
 local aboard_orders = #orders
 local aboard_clear = run(D, { area = { left_top = { x = 6, y = 5.5 }, right_bottom = { x = 8, y = 8 } }, platform = 1 })

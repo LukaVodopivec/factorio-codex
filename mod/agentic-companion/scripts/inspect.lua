@@ -12,6 +12,7 @@ local entity_settings = require("scripts.entity_settings")
 local jobs = require("scripts.jobs")
 local rocket = require("scripts.actions.rocket")
 local requests = require("scripts.requests")
+local blueprints = require("scripts.blueprints")
 
 local M = {}
 
@@ -352,6 +353,63 @@ local function inspect_one(position, c)
     end
   end
 
+  -- Exact native construction state. A real entity is present, not proof
+  -- that an untracked blueprint completed; modules may still be requested.
+  if e.force == c.force and e.type ~= "resource" and e.type ~= "character" then
+    local ghost = e.type == "entity-ghost" or e.type == "tile-ghost"
+    local proxy = e.type == "item-request-proxy"
+    local work = { state = ghost and "ghost_pending" or proxy and "item_requests_pending" or "entity_present" }
+    local requests_entity = e
+    if not ghost and not proxy then
+      local proxy_ok, pending = pcall(function() return e.item_request_proxy end)
+      if proxy_ok and pending and pending.valid then requests_entity = pending; work.state = "item_requests_pending" end
+      if proxy_ok and not pending then work.request_count = 0 end
+    end
+    local first_request
+    local request_ok, pending = pcall(function() return requests_entity.item_requests end)
+    if request_ok and pending then
+      local total, items = #pending, {}
+      first_request = pending[1]
+      for i = 1, math.min(total, 8) do
+        local request = pending[i]
+        local quality = request.quality
+        if type(quality) ~= "string" then quality = quality and quality.name or "normal" end
+        local key = request.name .. ":" .. quality
+        items[key] = (items[key] or 0) + request.count
+      end
+      work.request_items, work.request_count = items, total
+      if total > 8 then work.omitted_requests = total - 8 end
+    end
+    if not ghost and not proxy then
+      local deconstruct_ok, deconstruct = pcall(e.to_be_deconstructed)
+      local upgrade_ok, upgrade = pcall(e.to_be_upgraded)
+      if deconstruct_ok then work.deconstruction_ordered = deconstruct end
+      if upgrade_ok then work.upgrade_ordered = upgrade end
+    end
+    local item, needed, quality
+    pcall(function()
+      quality = e.quality.name
+      local proto = ghost and e.ghost_prototype or e.prototype
+      local placement = proto.items_to_place_this[1]
+      if ghost and placement then item, needed = placement.name, placement.count end
+    end)
+    if first_request and (proxy or work.state == "item_requests_pending") then
+      item, needed, quality = first_request.name, first_request.count, first_request.quality
+      if type(quality) ~= "string" then quality = quality and quality.name or "normal" end
+    end
+    if ghost or proxy or work.state == "item_requests_pending" then
+      work.readiness = blueprints.robot_readiness(c, e.position, item, quality, needed)
+    end
+    out.construction = work
+    local health_ok, health, maximum = pcall(function() return e.health, e.max_health end)
+    if not ghost and not proxy and health_ok and type(health) == "number" and type(maximum) == "number" then
+      out.repair = { health = round1(health), max_health = round1(maximum), damaged = health < maximum }
+      if health < maximum then
+        out.repair.readiness = blueprints.robot_readiness(c, e.position, "repair-pack", "normal", 1)
+      end
+    end
+  end
+
   collect_fluids(e, out)
   local connections = fluid_connections.live(e)
   if #connections > 0 then out.fluid_connections = connections end
@@ -360,10 +418,10 @@ local function inspect_one(position, c)
 end
 
 -- Positions one call reads. Each costs about PER_TARGET work items (an area
--- query, a few dozen reads and the inventories), so a job reads about 15 a
+-- query, a few dozen reads and the inventories), so a job reads about 7 a
 -- tick and a call of 64 spreads over a few ticks.
 M.MAX_TARGETS = 64
-M.PER_TARGET = 40
+M.PER_TARGET = 80
 
 -- inspect as a job (jobs.lua) of up to MAX_TARGETS entities in ONE call —
 -- reading machines one at a time costs the brain a full round of thinking per

@@ -38,8 +38,8 @@ local function wrap(class, values, simulation)
     return value
   end
   for key, value in pairs(data) do data[key] = nested(key, value); rawset(values, key, nil) end
-  local readers = {}
-  objects[values] = { class = class, simulation = simulation or {}, unreadable = unreadable, readers = readers }
+  local readers, writers = {}, {}
+  objects[values] = { class = class, simulation = simulation or {}, unreadable = unreadable, readers = readers, writers = writers }
   return setmetatable(values, {
     __metatable = "strict Factorio mock",
     __index = function(_, key)
@@ -52,6 +52,7 @@ local function wrap(class, values, simulation)
     end,
     __newindex = function(_, key, value)
       if not allowed(class, key) then invalid(class, key, "assignment") end
+      if writers[key] then writers[key](value) end
       data[key] = nested(key, value)
     end,
     __len = function()
@@ -109,6 +110,11 @@ function M.read(object, key, reader)
   local record = assert(objects[object], "native read simulation requires a strict mock")
   if not allowed(record.class, key) then invalid(record.class, key, "read simulation definition") end
   record.readers[key] = reader
+end
+function M.write(object, key, writer)
+  local record = assert(objects[object], "native write simulation requires a strict mock")
+  if not allowed(record.class, key) then invalid(record.class, key, "write simulation definition") end
+  record.writers[key] = writer
 end
 function M.length(object, reader)
   assert(objects[object] and INDEXED[objects[object].class], "length requires a fluidbox or inventory mock")

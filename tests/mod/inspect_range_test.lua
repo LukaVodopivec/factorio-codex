@@ -379,5 +379,74 @@ local unreadable_pair = inspect.inspect({ targets = { underground.position } }).
 check(unreadable_pair.belt_to_ground_type == "output" and unreadable_pair.underground_neighbour == nil,
   "an unreadable pairing does not invent an unpaired result or erase the readable end type")
 
+-- Exact construction and repair readiness does not claim dispatch/completion.
+local native_calls = 0
+local network = { all_construction_robots = 3, available_construction_robots = 0,
+  get_item_count = function(id)
+    native_calls = native_calls + 1
+    check(id.name == "repair-pack" and id.quality == "normal", "repair stock query names its exact quality")
+    return 2
+  end,
+  can_satisfy_request = function(id, count, buffers)
+    native_calls = native_calls + 1
+    check(count == 1 and buffers == true, "readiness asks native supply without moving items")
+    return true
+  end }
+surface.find_logistic_networks_by_construction_area = function(position, force)
+  check(position.x == found_entity.position.x and force == body.force, "readiness queries only the inspected own target")
+  return { network }
+end
+local damaged = mock.entity({ valid = true, name = "stone-furnace", type = "furnace", force = body.force,
+  position = { x = 1.5, y = 1.5 }, health = 150, max_health = 200,
+  to_be_deconstructed = function() return false end, to_be_upgraded = function() return true end })
+found_entity = damaged
+local repair = inspect.inspect({ targets = { damaged.position } }).entities[1]
+check(repair.repair.damaged and repair.repair.health == 150 and repair.repair.max_health == 200
+  and repair.repair.readiness.coverage == "covered" and repair.repair.readiness.available_construction_robots == 0
+  and repair.repair.readiness.material.can_supply and repair.construction.state == "entity_present"
+  and repair.construction.upgrade_ordered and native_calls == 2,
+  "damaged entity exposes health, busy native robots, pack supply and an uncompleted upgrade order")
+damaged.health = 200
+check(not inspect.inspect({ targets = { damaged.position } }).entities[1].repair.damaged and native_calls == 2,
+  "healthy entity avoids unnecessary repair network queries")
+local proxy = { valid = true, item_requests = { { name = "speed-module", quality = "uncommon", count = 2 } } }
+network.get_item_count = function(id)
+  check(id.name == "speed-module" and id.quality == "uncommon", "pending module readiness keeps the requested native quality")
+  return 2
+end
+network.can_satisfy_request = function(id, count, buffers)
+  check(id.name == "speed-module" and id.quality == "uncommon" and count == 2 and buffers == true,
+    "pending module readiness checks native supply for that request")
+  return true
+end
+damaged.item_request_proxy = proxy
+local pending = inspect.inspect({ targets = { damaged.position } }).entities[1].construction
+check(pending.state == "item_requests_pending" and pending.request_items["speed-module:uncommon"] == 2,
+  "a built entity with an outstanding native module proxy is not described as fully supplied")
+local ghost = mock.entity({ valid = true, name = "entity-ghost", type = "entity-ghost", force = body.force,
+  position = { x = 2.5, y = 2.5 }, ghost_prototype = { items_to_place_this = { { name = "stone-furnace", count = 1 } } },
+  quality = { name = "normal" }, item_requests = {} })
+found_entity = ghost
+surface.find_logistic_networks_by_construction_area = function() return {} end
+local ghost_read = inspect.inspect({ targets = { ghost.position } }).entities[1].construction
+check(ghost_read.state == "ghost_pending" and ghost_read.readiness.coverage == "uncovered"
+  and ghost_read.readiness.material.can_supply == false,
+  "uncovered ghost remains pending even though submission succeeded")
+surface.find_logistic_networks_by_construction_area = function() error("native read unavailable") end
+check(inspect.inspect({ targets = { ghost.position } }).entities[1].construction.readiness.coverage == "unknown",
+  "failed coverage query reports uncertainty rather than no robots")
+local count_queries = 0
+surface.find_logistic_networks_by_construction_area = function()
+  local list = {}
+  for i = 1, 7 do list[i] = { all_construction_robots = 1, available_construction_robots = 1,
+    get_item_count = function() count_queries = count_queries + 1; return 1 end,
+    can_satisfy_request = function() return false end } end
+  return list
+end
+local capped = inspect.inspect({ targets = { ghost.position } }).entities[1].construction.readiness
+check(capped.omitted_networks == 3 and not capped.counts_complete and not capped.material.counts_complete
+  and capped.construction_robots == 4 and count_queries == 4,
+  "readiness caps work at four networks and marks truncated counts incomplete")
+
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

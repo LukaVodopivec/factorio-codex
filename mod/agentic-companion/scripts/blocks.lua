@@ -310,7 +310,7 @@ function M.expand(c, params)
   M.validate(params)
   local tiers, entities, site = {}, nil, nil
   if params.block == "blueprint" then
-    entities = blueprints.layout(params.blueprint, nil, "build_block").entities
+    entities = blueprints.hand_layout(params.blueprint, nil, "build_block").entities
     site, tiers.blueprint = { on_resource = params.resource }, params.blueprint
   else
     local l

@@ -327,7 +327,8 @@ local function prepare(c, layout, surface)
       if code then failed[#failed + 1] = { index = i - 1, code = code, reason = message } end
       variant.entities[#variant.entities + 1] = { index = i - 1, item = item, proto = proto, dx = e.dx, dy = e.dy,
         direction = math.floor(e.direction or 0) % 16, recipe = e.recipe, insert = e.insert, settings = e.settings,
-        mirror = e.mirror, belt_to_ground_type = proto.type == "underground-belt" and belt_end(e) or nil }
+        mirror = e.mirror, belt_to_ground_type = proto.type == "underground-belt" and belt_end(e) or nil,
+        _blueprint = e._blueprint, _insert_plan = e._insert_plan }
     end
   end
   for j, route in ipairs(layout.connections or {}) do
@@ -1264,6 +1265,14 @@ local function ghost_plan(result)
       local row = { recipe = e.recipe, mirror = e.mirror or nil,
         type = e.proto.type == "underground-belt" and belt_end(e) or nil }
       if e.settings then entity_settings.to_blueprint(e.settings, row, e.proto.type) end
+      for key, value in pairs(e._blueprint or {}) do row[key] = value end
+      row._insert_plan = e._insert_plan
+      if e._insert_plan then
+        row._request_work = 0
+        for _, request in ipairs(e._insert_plan) do
+          row._request_work = row._request_work + 1 + #(request.items and request.items.in_inventory or {})
+        end
+      end
       add(e.proto.name, e.item, e.proto, p.position, e.direction, row)
     end
   end
@@ -1330,14 +1339,16 @@ local function begin_ghosts(ctx, result)
   local materials, missing = ghost_materials(ctx, plan)
   local outcome = { anchor = result.given_anchor or result.anchor, platform = platform_row(ctx),
     surface = ctx.space and ("platform:" .. ctx.space.platform) or nil, hub = ctx.space and ctx.space.hub_position or nil,
-    ghosts_placed = 0, tiles_placed = 0, already = noted(result, "ALREADY"),
+    ghosts_placed = 0, tiles_placed = 0, construction_complete = false, already = noted(result, "ALREADY"),
     tiles_already = result.foundation and result.foundation.already or nil, failed = {}, materials = materials,
     missing = missing and #missing > 0 and missing or nil }
   return { ctx = ctx, plan = plan, outcome = outcome, next = 1, placed = {} }
 end
 
 local function remove_placed(g)
-  for _, ghost in ipairs(g.placed) do if ghost.valid then pcall(ghost.destroy) end end
+  for _, ghost in ipairs(g.placed) do
+    if ghost.valid then pcall(ghost.destroy) else g.outcome.native_completion_unverified = true end
+  end
   g.outcome.ghosts_placed, g.outcome.tiles_placed = 0, 0
 end
 
@@ -1365,6 +1376,16 @@ local function place_batch(c, g, label)
   end
   local batch = ctx.space and PLATFORM_GHOST_BATCH or GHOST_BATCH
   local from, to = g.next, math.min(g.next + batch - 1, total)
+  if ctx.space then
+    local work, last = 0, from - 1
+    for k = from, to do
+      local source = k <= n_tiles and plan.tiles[k] or plan.entities[k - n_tiles]
+      local cost = GHOST_WORK + (k <= n_tiles and 0 or 2 + (source._request_work or 0))
+      if work + cost > WORK_PER_TICK then break end
+      work, last = work + cost, k
+    end
+    to = last
+  end
   g.next = to + 1
   local ghosts, ok = {}, true
   if ctx.space then
@@ -1372,7 +1393,9 @@ local function place_batch(c, g, label)
       local tile = k <= n_tiles
       local source = tile and plan.tiles[k] or plan.entities[k - n_tiles]
       local args = {}
-      for key, value in pairs(source) do args[key] = value end
+      for key, value in pairs(source) do
+        if key ~= "_insert_plan" and key ~= "_request_work" then args[key] = value end
+      end
       args.name, args.inner_name = tile and "tile-ghost" or "entity-ghost", source.name
       args.position = { x = source.position.x + (tile and 0.5 or 0), y = source.position.y + (tile and 0.5 or 0) }
       args.force, args.raise_built = force, true
@@ -1383,7 +1406,19 @@ local function place_batch(c, g, label)
       end
       local created, ghost = false, nil
       if allowed then created, ghost = pcall(surface.create_entity, args) end
-      if created and ghost and ghost.valid then ghosts[#ghosts + 1] = ghost else
+      if created and ghost and ghost.valid then
+        ghosts[#ghosts + 1] = ghost
+        if source._insert_plan then
+          ctx.calls = ctx.calls + (source._request_work or 0)
+          local set, err = pcall(function() ghost.insert_plan = source._insert_plan end)
+          if not set then
+            outcome.failed[#outcome.failed + 1] = { name = source.name, position = source.position,
+              code = "GHOST_REQUESTS_NOT_SET", reason = plain(err) }
+            ok = false
+            break
+          end
+        end
+      else
         outcome.failed[#outcome.failed + 1] = { name = source.name, position = source.position,
           code = "GHOST_NOT_PLACED", reason = why or (created and "the game returned no ghost" or plain(ghost)) }
         break
@@ -1418,7 +1453,7 @@ local function place_batch(c, g, label)
     blueprints.clear_scratch()
   end
   local misplaced, placed = nil, 0
-  for _, ghost in ipairs(ok and ghosts or {}) do
+  for _, ghost in ipairs(type(ghosts) == "table" and ghosts or {}) do
     if ghost.valid then
       local tile = ghost.type == "tile-ghost"
       local key = tile and ("tile|" .. ghost.ghost_name .. "|" .. cell(math.floor(ghost.position.x), math.floor(ghost.position.y)))
@@ -1435,14 +1470,14 @@ local function place_batch(c, g, label)
     remove_placed(g)
     outcome.code = "GHOSTS_MISPLACED"
     return { status = "failed", outcome = outcome,
-      detail = string.format("GHOSTS_MISPLACED: %s: the game put a %s ghost at (%.1f, %.1f), off the layout; all removed again",
+      detail = string.format("GHOSTS_MISPLACED: %s: the game put a %s ghost at (%.1f, %.1f), off the layout; remaining owned ghosts removed",
         label, name, at.x, at.y) }, handled
   end
-  if placed ~= handled then
+  if not ok or placed ~= handled then
     remove_placed(g)
     outcome.code = "GHOSTS_NOT_PLACED"
     return { status = "failed", outcome = outcome,
-      detail = string.format("GHOSTS_NOT_PLACED: %s: the game placed %d/%d requested ghosts; all removed again%s", label,
+      detail = string.format("GHOSTS_NOT_PLACED: %s: the game placed %d/%d requested ghosts; remaining owned ghosts removed%s", label,
         placed, handled, ok and (#outcome.failed > 0 and (": " .. outcome.failed[1].reason) or "") or (": " .. plain(ghosts))) }, handled
   end
   if g.next <= total then return nil, handled end

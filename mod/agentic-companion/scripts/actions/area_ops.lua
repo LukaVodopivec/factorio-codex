@@ -153,7 +153,8 @@ end
 
 -- The blueprint as a layout at the requested turn.
 local function placed_layout(task, label)
-  local layout = blueprints.layout(task.name, task.flip, label)
+  local layout = task.mode == "ghosts" and blueprints.layout(task.name, task.flip, label)
+    or blueprints.hand_layout(task.name, task.flip, label)
   return build_layout._rotated(layout, math.floor((task.direction or 0) / 4))
 end
 
@@ -182,7 +183,13 @@ function Place.start(task)
     local space
     space, task._anchor = platform_anchor(c, task)
     task.mode, task._platform = "ghosts", { index = space.platform, name = space.name }
-    blueprints.layout(task.name, task.flip, label)
+    local layout = blueprints.platform_layout(task.name, task.flip, math.floor((task.direction or 0) / 4), label)
+    local nested = { id = task.id, anchor = { x = task._anchor.x - space.hub_position.x,
+      y = task._anchor.y - space.hub_position.y }, entities = layout.entities, tiles = layout.tiles,
+      connections = {}, mode = "ghosts", platform = task._platform.index }
+    build_layout.validate_layout(nested, label)
+    build_layout.layout_action.runner.start(nested)
+    task._layout = nested
     return
   end
   task.mode = task.mode or "hand"
@@ -206,22 +213,22 @@ end
 
 local function place_ghosts(task, c)
   local label = "blueprint_place " .. task.name
-  -- On a platform: its surface, all or nothing, its own (always visible) map.
-  local surface, platform = c.surface, nil
-  if task._platform then
-    local p, code, why = platforms.resolve(c.force, task._platform.index)
-    if not p then return { status = "failed", detail = code .. ": " .. why, outcome = { code = code } } end
-    surface, platform = p.surface, p
-  end
   local stack = blueprints.build_stack(task.name, task.flip, label)
-  local ok, ghosts = pcall(stack.build_blueprint, { surface = surface, force = c.force, position = task._anchor,
-    direction = task.direction or 0, build_mode = platform and defines.build_mode.normal or defines.build_mode.forced,
-    skip_fog_of_war = not platform, raise_built = true })
+  local expected = #(stack.get_blueprint_entities() or {}) + #(stack.get_blueprint_tiles() or {})
+  if expected > 1100 then
+    if task.flip then blueprints.clear_scratch() end
+    return { status = "failed", detail = "GHOSTS_NOT_PLACED: blueprint exceeds the bounded ghost count",
+      outcome = { code = "GHOSTS_NOT_PLACED" } }
+  end
+  local ok, ghosts = pcall(stack.build_blueprint, { surface = c.surface, force = c.force, position = task._anchor,
+    direction = task.direction or 0, build_mode = defines.build_mode.forced,
+    skip_fog_of_war = true, raise_built = true })
   if task.flip then blueprints.clear_scratch() end
   if not ok then return { status = "failed", detail = "GHOSTS_NOT_PLACED: " .. plain(ghosts),
     outcome = { code = "GHOSTS_NOT_PLACED" } } end
-  local rows = {}
+  local rows, count = {}, 0
   for _, ghost in ipairs(ghosts or {}) do
+    if ghost.valid then count = count + 1 end
     if ghost.valid and #rows < 20 then
       -- Entity and tile ghosts both name what they hold.
       local ok_name, name = pcall(function() return ghost.ghost_name end)
@@ -229,45 +236,44 @@ local function place_ghosts(task, c)
       rows[#rows + 1] = { name = name, x = ghost.position.x, y = ghost.position.y, direction = ghost.direction }
     end
   end
-  local count = #(ghosts or {})
-  if platform then
-    local outcome = { code = count > 0 and "GHOSTS_PLACED" or "GHOSTS_NOT_PLACED", blueprint = task.name,
-      anchor = task._anchor, surface = platforms.surface_ref(platform), platform = task._platform, ghosts = count,
-      placed = rows }
-    if count == 0 then
-      return { status = "failed", outcome = outcome, detail = string.format(
-        "GHOSTS_NOT_PLACED: %s placed no ghosts at (%d, %d) on platform %s — something stands in its way or it needs foundation",
-        task.name, task._anchor.x, task._anchor.y, platform.name) }
-    end
-    return { status = "done", outcome = outcome, detail = string.format(
-      "blueprint_place %s: %d ghosts at (%d, %d) on platform %s; its hub builds them from its own inventory",
-      task.name, count, task._anchor.x, task._anchor.y, platform.name) }
-  end
-  local robots = blueprints.construction_robots(c, task._anchor)
-  local outcome = { code = count > 0 and "GHOSTS_PLACED" or "GHOSTS_NOT_PLACED", blueprint = task.name,
-    anchor = task._anchor, ghosts = count, placed = rows, construction_robots = robots,
+  local readiness = blueprints.robot_readiness(c, task._anchor)
+  local robots = readiness.construction_robots or 0
+  local complete = count == expected and expected > 0
+  local outcome = { code = complete and "GHOSTS_PLACED" or count > 0 and "GHOSTS_PARTIAL" or "GHOSTS_NOT_PLACED",
+    blueprint = task.name, expected = expected, submission_complete = complete, construction_complete = false,
+    anchor = task._anchor, ghosts = count, placed = rows, construction_robots = robots, readiness = readiness,
     tool_unlock = blueprints.tool_unlock(c, "blueprint") }
   if count == 0 then
     return { status = "failed", outcome = outcome,
       detail = string.format("GHOSTS_NOT_PLACED: %s placed no ghosts at (%d, %d) — something stands in its way",
         task.name, task._anchor.x, task._anchor.y) }
   end
-  local detail = string.format("blueprint_place %s: %d ghosts at (%d, %d); %d construction robots cover the spot",
+  local detail = string.format("blueprint_place %s: %d ghosts at (%d, %d); observed construction robots at anchor: %d",
     task.name, count, task._anchor.x, task._anchor.y, robots)
-  if robots == 0 then
+  if robots == 0 and readiness.counts_complete then
     outcome.note = "no construction robots cover the spot: build_ghosts builds them by hand"
     detail = detail .. " — " .. outcome.note
+  elseif not readiness.counts_complete then
+    outcome.note = "construction coverage/counts are incomplete: inspect the pending targets"
+    detail = detail .. " — " .. outcome.note
   end
-  return { status = "done", detail = detail, outcome = outcome }
+  if not complete then detail = detail .. string.format(" — only %d/%d requested ghosts observed; inspect retained work", count, expected) end
+  return { status = complete and "done" or "partial", detail = detail, outcome = outcome }
 end
 
 function Place.tick(task)
-  if task._platform then return place_ghosts(task, companion.require_present()) end
-  local c = companion.get()
+  local c = task._platform and companion.require_present() or companion.get()
   if not c then return { status = "failed", detail = "the companion character is gone" } end
-  if task.mode == "ghosts" then return place_ghosts(task, c) end
+  if task.mode == "ghosts" and not task._layout then return place_ghosts(task, c) end
   local result = build_layout.layout_action.runner.tick(task._layout)
   if not result then return nil end
+  if task._platform and result.outcome and result.outcome.already and #result.outcome.already > 0 then
+    -- Layout checks establish footprint/name/direction, not the stored
+    -- blueprint's native settings or outstanding item requests.
+    if result.status == "done" then result.status = "partial"; result.outcome.code = "BLUEPRINT_EXISTING_UNVERIFIED" end
+    result.outcome.configuration_verified = false
+    result.detail = result.detail .. "; existing targets were left unchanged: inspect their settings and requests"
+  end
   result.detail = "blueprint_place " .. task.name .. ": " .. tostring(result.detail)
   if type(result.outcome) == "table" then result.outcome.blueprint = task.name end
   return result
@@ -302,34 +308,37 @@ M.place_check_job = {
     end
     validate_place(params, label)
     local c = actor(params.platform)
-    local layout = placed_layout(params, label)
     if params.platform ~= nil then
-      -- Ghost checks on the platform's surface; no other spot is searched.
       local space, anchor = platform_anchor(c, params)
-      return { name = params.name, mode = "ghosts", anchor = anchor, layout = layout, phase = "at",
-        platform = { index = space.platform, name = space.name }, hub = space.hub_position,
-        search = build_layout.search_start(c, { anchor = anchor, layouts = { layout }, ghosts = true, space = space }) }
+      local layout = blueprints.platform_layout(params.name, params.flip, math.floor((params.direction or 0) / 4), label)
+      local nested = { anchor = { x = anchor.x - space.hub_position.x, y = anchor.y - space.hub_position.y },
+        platform = space.platform, mode = "ghosts", entities = layout.entities, tiles = layout.tiles,
+        check_only = true }
+      return { name = params.name, platform = { index = space.platform, name = space.name }, hub = space.hub_position,
+        anchor = anchor, layout_check = build_layout.layout_check_job.start(nested) }
     end
+    local layout = placed_layout(params, label)
     local anchor = anchor_of(params.position)
     return { name = params.name, mode = params.mode or "hand", anchor = anchor, layout = layout, phase = "at",
       search = build_layout.search_start(c, { anchor = anchor, layouts = { layout } }) }
   end,
   step = function(job, budget)
+    if job.layout_check then
+      local report = build_layout.layout_check_job.step(job.layout_check, budget)
+      if not report then return nil end
+      local collisions = {}
+      for i = 1, math.min(MAX_ROWS, #report.failed) do collisions[i] = report.failed[i] end
+      return { check_only = true, blueprint = job.name, mode = "ghosts", platform = job.platform, hub = job.hub,
+        surface = "platform:" .. job.platform.index, position = job.anchor, ok = report.ok, collisions = collisions,
+        already = report.already, needs_planned_tiles = report.needs_planned_tiles, materials = report.materials,
+        tiles = report.tiles, configuration_verified = false, missing = report.missing or {} }
+    end
     local c = actor(job.platform)
     local s = job.search
     local before = s.ctx.calls
     local result = build_layout.search_step(c, s, math.max(1, budget.left))
     budget.left = budget.left - (s.ctx.calls - before)
     if not result then return nil end
-    if job.platform then
-      local report = build_layout.check_report(c, result, nil, s)
-      local collisions = {}
-      for i = 1, math.min(MAX_ROWS, #report.failed) do collisions[i] = report.failed[i] end
-      return { check_only = true, blueprint = job.name, mode = "ghosts", platform = job.platform, hub = job.hub,
-        surface = "platform:" .. job.platform.index, position = job.anchor, ok = report.ok, collisions = collisions,
-        already = report.already, needs_planned_tiles = report.needs_planned_tiles, materials = report.materials,
-        missing = report.missing or {} }
-    end
     local report = build_layout.check_report(c, result)
     if job.phase == "at" and not report.ok then
       -- Blocked here: look for the first free position near it.

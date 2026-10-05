@@ -236,6 +236,50 @@ check(not pcall(area_ops.place_action.validate, { name = "gears", position = { x
   "a plan step needs a quarter-turn direction, a known mode and no check_only")
 check(area_ops.place_action.budget_steps({ name = "gears" }) == 2, "a hand placement's budget follows the blueprint's size")
 
+-- Native callbacks can return invalid or missing ghosts after a partial placement.
+local native_stack = storage.blueprints.inventory[storage.blueprints.by_name.gears.slot]
+local native_build = native_stack.build_blueprint
+native_stack.build_blueprint = function(args)
+  local result = native_build(args)
+  result[2].valid = false
+  return result
+end
+local partial = run(area_ops.place_action, { name = "gears", position = { x = 45, y = 30 }, mode = "ghosts" })
+check(partial.status == "partial" and partial.outcome.code == "GHOSTS_PARTIAL" and partial.outcome.ghosts == 1
+  and partial.outcome.expected == 2 and partial.outcome.submission_complete == false
+  and partial.outcome.construction_complete == false and #partial.outcome.placed == 1,
+  "a partial native blueprint result counts only valid ghosts and never claims full placement or robot completion")
+native_stack.build_blueprint = function() return {} end
+local absent = run(area_ops.place_action, { name = "gears", position = { x = 50, y = 30 }, mode = "ghosts" })
+check(absent.status == "failed" and absent.outcome.ghosts == 0 and absent.outcome.expected == 2,
+  "no native ghosts remains a failed submission, with expected work visible")
+native_stack.build_blueprint = native_build
+local native_networks = surface.find_logistic_networks_by_construction_area
+surface.find_logistic_networks_by_construction_area = function() error("native network read unavailable") end
+local uncertain = run(area_ops.place_action, { name = "gears", position = { x = 52, y = 30 }, mode = "ghosts" })
+check(uncertain.status == "done" and uncertain.outcome.readiness.coverage == "unknown"
+  and uncertain.outcome.readiness.counts_complete == false and uncertain.outcome.note:match("incomplete"),
+  "native coverage read failure leaves submission observable without falsely claiming no construction robots")
+surface.find_logistic_networks_by_construction_area = native_networks
+
+
+stored.entities[1].wires = { { 1, 1, 2, 1 } }
+local before_hand = #created
+check(not pcall(run, area_ops.place_action, { name = "gears", position = { x = 55, y = 30 } }) and #created == before_hand,
+  "hand blueprint placement refuses native wiring before building instead of dropping it")
+check(not pcall(run, layout.block_action, { block = "blueprint", blueprint = "gears", near = { x = 55, y = 30 } })
+  and #created == before_hand,
+  "the physical blueprint block entry point applies the same wiring refusal before spending body stock")
+stored.entities[1].wires = nil
+stored.entities[1].items = { { id = { name = "speed-module", quality = "uncommon" },
+  items = { in_inventory = { { inventory = 4, stack = 0, count = 1 } } } } }
+check(not pcall(run, area_ops.place_action, { name = "gears", position = { x = 55, y = 30 } }) and #created == before_hand,
+  "hand blueprint placement refuses qualified item requests before spending normal body stock")
+check(not pcall(jobs.run_now, layout.block_check_job, { block = "blueprint", blueprint = "gears",
+  near = { x = 55, y = 30 }, check_only = true }) and #created == before_hand,
+  "blueprint block dry run and physical action share qualified item-request refusal")
+stored.entities[1].items = nil
+
 -- build_block may name a blueprint.
 local block = jobs.run_now(layout.block_check_job, { block = "blueprint", blueprint = "gears", near = { x = 60, y = 60 }, check_only = true })
 check(block.ok and #block.placed == 2 and block.tiers.blueprint == "gears", "build_block builds a stored blueprint at a free site")

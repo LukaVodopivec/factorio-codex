@@ -11,30 +11,50 @@ local function dist_sq(a, b)
   return dx * dx + dy * dy
 end
 
+local function failed(failure)
+  return { status = "failed", detail = "couldn't get in range: " .. failure.failed, outcome = failure.outcome }
+end
+
+-- One approach is bounded. task._approach_guard = {escapes, cleared, retried}
+-- outlives the walks of an approach (a caller whose target moves starts a new
+-- walk): every walk draws on the same escape allowance (walk.lua), so a start
+-- that keeps clearing and blocking again cannot restart the approach for
+-- ever, and a walk that fails after an escape cleared the start is started
+-- over once, with a fresh allowance, never more. A completed approach clears
+-- the guard. Made when first needed (a step from an older save has none).
+local function begin(task, c, target_pos, reach)
+  local a = { target = { x = target_pos.x, y = target_pos.y }, reach = reach, walk = {} }
+  walk.begin(a.walk, c, a.target, math.max(reach - 0.5, 0.5), "reach")
+  a.walk.settle_anchor, a.walk.settle_limit = a.target, reach
+  a.walk.escapes = task._approach_guard and task._approach_guard.escapes or nil
+  task._approach = a
+  return a
+end
+
 -- Call every tick before acting on target_pos. Returns "ok" once within
--- `reach` tiles, nil while still walking, or {status="failed", detail=...}.
+-- `reach` tiles, nil while still walking, or {status="failed", detail=...,
+-- outcome={code=...}} as soon as the walk fails: every walk failure ends the
+-- approach with the walk's own code.
 function M.ensure(task, c, target_pos, reach)
   local evidence = placement_geometry.path_start(c)
   local active = task._approach
-  -- Recovery belongs to the physical start, even when a plan advances targets.
-  -- Proven clearance retires it; a failed blocked start survives step changes.
-  if active and (active.walk.phase == "escaping" or active.walk.escape_failed) and evidence.clear then
-    task._approach = nil
+  -- A failed blocked start survives step changes; proven clearance retires it.
+  if active and active.walk.escape_failed and evidence.clear then
+    task._approach, active = nil, nil
     set_walking(c, { walking = false })
   end
   if dist_sq(c.position, target_pos) <= reach * reach
     and evidence.clear then
-    local active = task._approach
     -- A belt carries a standing body, so "in reach" first means off the belt,
     -- with the off-belt tile still within reach of the target.
     if active and active.walk.phase == "settling" then
       local r = walk.step(active.walk, c, task.id)
       if r == "arrived" then
-        task._approach = nil
+        task._approach, task._approach_guard = nil, nil
         return "ok"
       elseif type(r) == "table" then
         task._approach = nil
-        return { status = "failed", detail = "couldn't get in range: " .. r.failed, outcome = r.outcome }
+        return failed(r)
       end
       return nil
     end
@@ -45,12 +65,19 @@ function M.ensure(task, c, target_pos, reach)
       local failure = walk.begin_settle(a.walk, c, a.target, reach)
       if failure then
         task._approach = nil
-        return { status = "failed", detail = "couldn't get in range: " .. failure.failed, outcome = failure.outcome }
+        return failed(failure)
       end
       return nil
     end
+    -- This target's own walk is complete. An escape that cleared the start
+    -- is over whatever it was heading for; any other walk toward another
+    -- point (the exact entity, see ensure_entity) is left to its own call.
     if active and active.target.x == target_pos.x and active.target.y == target_pos.y
       and active.reach == reach then
+      task._approach, task._approach_guard = nil, nil
+      set_walking(c, { walking = false })
+    elseif active and active.walk.phase == "escaping" then
+      if task._approach_guard then task._approach_guard.cleared = true end
       task._approach = nil
       set_walking(c, { walking = false })
     end
@@ -58,21 +85,40 @@ function M.ensure(task, c, target_pos, reach)
   end
 
   local a = task._approach
-  if not a or (a.walk.phase ~= "escaping" and not a.walk.escape_failed
-    and (a.target.x ~= target_pos.x or a.target.y ~= target_pos.y or a.reach ~= reach)) then
-    a = { target = { x = target_pos.x, y = target_pos.y }, reach = reach, walk = {} }
-    task._approach = a
-    walk.begin(a.walk, c, a.target, math.max(reach - 0.5, 0.5), "reach")
-    a.walk.settle_anchor, a.walk.settle_limit = a.target, reach
+  local moved = a and (a.target.x ~= target_pos.x or a.target.y ~= target_pos.y or a.reach ~= reach)
+  -- Recovery belongs to the physical start, even when a plan advances
+  -- targets: an escape still under way is never restarted for a new target.
+  if not a or (moved and not a.walk.escape_failed and (a.walk.phase ~= "escaping" or evidence.clear)) then
+    a = begin(task, c, target_pos, reach)
   end
 
   local r = walk.step(a.walk, c, task.id)
   if r == "arrived" then
-    task._approach = nil
+    task._approach, task._approach_guard = nil, nil
     return "ok"
-  elseif type(r) == "table" then
+  end
+  local guard = task._approach_guard
+  if a.walk.escapes and not guard then
+    guard = {}
+    task._approach_guard = guard
+  end
+  if guard then
+    guard.escapes = a.walk.escapes
+    -- Past its escape: the start cleared (the walk is no longer escaping).
+    if a.walk.escape_cleared_tick or (a.walk.escapes and a.walk.phase ~= "escaping" and not a.walk.escape_failed) then
+      guard.cleared = true
+    end
+  end
+  if type(r) == "table" then
+    if guard and guard.cleared and not guard.retried then
+      -- The escape worked and the walk from the new spot failed: once more
+      -- from scratch.
+      task._approach_guard = { retried = true }
+      task._approach = nil
+      return nil
+    end
     if a.walk.phase ~= "escaping" and not a.walk.escape_failed then task._approach = nil end
-    return { status = "failed", detail = "couldn't get in range: " .. r.failed, outcome = r.outcome }
+    return failed(r)
   end
   return nil
 end
@@ -110,7 +156,7 @@ function M.ensure_entity(task, c, e)
       task._approach = nil
       set_walking(c, { walking = false })
     end
-    task._approach_close = nil
+    task._approach_close, task._approach_guard = nil, nil
     return "ok"
   end
 

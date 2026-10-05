@@ -112,6 +112,8 @@ default); placements clear trees and rocks.
 These actions walk to their own targets: never queue a `walk_to` before them.
 `wait_for_item` does not walk and observes only within 30 tiles: put it after
 an action at that target or after a `walk_to`.
+A `STEP_STALLED` or `START_COLLISION` step means the body could not move:
+re-read `factory_status` body position and choose a reachable target.
 
 **Building tools.**
 

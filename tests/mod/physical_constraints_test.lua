@@ -181,9 +181,15 @@ pinned = true
 check(build_plan.tick(continuation) == nil and continuation._approach.walk.phase == "escaping"
   and #committed == 1 and inventory["stone-furnace"] == 1,
   "partial-plan continuation cannot place within reach while the body is pinned")
-game.tick = 60
-local first_failure = build_plan.tick(continuation)
-check(first_failure == nil and continuation._index == 3 and continuation._approach.walk.escape_failed,
+-- The pinned body tries each escape direction for half a second.
+local first_failure
+for _ = 1, 4 do
+  game.tick = game.tick + 30
+  first_failure = build_plan.tick(continuation)
+  if first_failure or continuation._index == 3 then break end
+end
+check(first_failure == nil and continuation._index == 3 and continuation._approach.walk.escape_failed
+  and game.tick <= 120,
   "failed physical start remains attached when a partial build plan advances")
 local partial_done = build_plan.tick(continuation)
 check(partial_done and not continuation._results[3].ok and continuation._results[3].why:match("previous bounded escape failed")

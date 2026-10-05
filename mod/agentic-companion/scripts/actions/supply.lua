@@ -414,6 +414,13 @@ local function advance(task, c, frame)
   if need > 0 then need = need - craft.queued(c, frame.name) end
   if need <= 0 then table.remove(task._stack); return false end
 
+  -- The body cannot leave where it stands (a nested walk ended with
+  -- START_COLLISION): no other source is walked to in this supply.
+  if task._pinned and (frame.phase == "take" or frame.phase == "smelt" or frame.phase == "gather") then
+    frame.error, frame.phase = task._pinned, "end"
+    return false
+  end
+
   if frame.phase == "take" then
     -- Never walk to a source for more than the inventory has room for.
     local inventory = c.get_main_inventory()
@@ -658,6 +665,9 @@ function M.tick(task)
     -- Taking from a chest or machine (or loading a furnace) is a character
     -- transfer like any other.
     if kind == "extract" or kind == "insert" then factory_activity.record(kind, result.outcome) end
+    if result.status == "failed" and type(result.outcome) == "table" and result.outcome.code == "START_COLLISION" then
+      task._pinned = result.detail
+    end
     local frame = task._stack[#task._stack]
     if frame and kind == "insert" then
       -- Ore and fuel went into a furnace: the smelt waits, or fails.

@@ -4,7 +4,12 @@
 -- control.lua); storage.path_request belongs to the sole active task.
 -- A blocked start is recovered in the body's own way: a tree or rock in the
 -- way is mined (once), otherwise the body walks to the nearest charted tile
--- centre whose box touches no water, building or belt.
+-- centre whose box touches no water, building or belt, trying a few such
+-- centres in different directions before it gives up. The start check is not
+-- run against a body moving along a native path: Factorio's pathfinder owns
+-- what is traversable there (a shore route keeps the body's centre on the
+-- walkable margin of water tiles, which the tile-based check reads as
+-- blocked), and a body that really cannot move is caught by the stuck check.
 local companion = require("scripts.companion")
 local set_walking = require("scripts.human_inputs").set_walking
 local placement_geometry = require("scripts.placement_geometry")
@@ -20,7 +25,10 @@ local MAX_RETRIES = 3
 local MAX_RECOVERIES = 1
 local MAX_FRONTIER_SEGMENTS = 3
 local MIN_FRONTIER_PROGRESS_SQ = 0.01
-local ESCAPE_TICKS = 90
+local ESCAPE_TICKS = 90 -- one escape direction's deadline
+local ESCAPE_STUCK_TICKS = 30 -- no progress for this long: try the next direction
+local MAX_ESCAPE_ATTEMPTS = 4 -- free tile centres tried, each in another direction
+local MAX_ESCAPES = 2 -- escapes one walk may begin (typically its start and its end)
 local FRONTIER_RADIUS = 0.5 -- each probe must reach its own frontier point
 local MAX_FRONTIER_PROBES = 16
 -- Off-belt tiles within 2 tiles of the body's tile, then (a belt crossing
@@ -89,9 +97,11 @@ end
 -- (mine.lua sets itself: it needs this module through approach.lua).
 local NATURAL_BLOCKERS = { tree = true, ["simple-entity"] = true, plant = true }
 
+-- Every failure carries its code in the outcome, so the step that embeds
+-- the walk ends with that code.
 local function fail(c, code, detail, outcome)
   stop(c)
-  return { failed = code .. ": " .. detail, outcome = outcome }
+  return { failed = code .. ": " .. detail, outcome = outcome or { code = code } }
 end
 
 local function escape_fail(state, c, code, detail, outcome)
@@ -109,33 +119,89 @@ local function collision_labels(collisions)
 end
 
 local settle_cell
+-- Free tile centres around the body, nearest first, one for each walking
+-- direction (at most MAX_ESCAPE_ATTEMPTS).
+local function escape_cells(c)
+  local cells, seen = {}, {}
+  pcall(settle_cell, c, nil, nil, SETTLE_RADII[#SETTLE_RADII], function(cell)
+    local direction = direction_toward(c.position, cell)
+    if not seen[direction] then
+      seen[direction] = true
+      cells[#cells + 1] = { x = cell.x, y = cell.y }
+    end
+    return #cells >= MAX_ESCAPE_ATTEMPTS
+  end)
+  return cells
+end
+
 local function begin_escape(state, c, evidence)
   local collisions = evidence.collisions
-  if state.escape_attempted then
-    return escape_fail(state, c, "START_COLLISION", "start became blocked again after the bounded escape; observe and choose a reachable local route")
+  -- A walk begun by 0.22.0 kept a flag, not a count.
+  local escapes = state.escapes or (state.escape_attempted and 1 or 0)
+  if escapes >= MAX_ESCAPES then
+    return escape_fail(state, c, "START_COLLISION", "start became blocked again after the bounded escape; observe and choose a reachable local route",
+      { code = "START_COLLISION", diagnostics = { path_start = evidence, escapes = escapes,
+        position = { x = c.position.x, y = c.position.y } } })
   end
-  state.escape_attempted = true
+  state.escapes, state.escape_attempted = escapes + 1, true
   local pending = storage.path_request
   if pending and pending.id == state.request_id then storage.path_request = nil end
   state.path, state.request_id = nil, nil
-  -- A tile centre whose whole body box is clear: a point merely beside the
+  -- Tile centres whose whole body box is clear: a point merely beside the
   -- blocked one (find_non_colliding_position) can leave the body on the
   -- water edge.
-  local target
-  for _, radius in ipairs(SETTLE_RADII) do
-    local ok, cell = pcall(settle_cell, c, nil, nil, radius)
-    if ok and cell then target = cell; break end
-  end
-  if not target then
+  local targets = escape_cells(c)
+  if #targets == 0 then
     return escape_fail(state, c, "START_COLLISION", "character path body overlaps " .. collision_labels(collisions)
-      .. string.format("; no charted clear tile centre within %d tiles", SETTLE_RADII[#SETTLE_RADII]))
+      .. string.format("; no charted clear tile centre within %d tiles", SETTLE_RADII[#SETTLE_RADII]),
+      { code = "START_COLLISION", diagnostics = { path_start = evidence, escape_targets = {},
+        position = { x = c.position.x, y = c.position.y } } })
   end
   state.phase = "escaping"
-  state.escape_target = { x = target.x, y = target.y }
+  state.escape_targets, state.escape_index, state.escape_stuck = targets, 1, 0
+  state.escape_target = targets[1]
   state.escape_started_tick = game.tick
+  state.escape_attempt_tick = game.tick
   state.escape_check_tick = game.tick
   state.escape_check_position = { x = c.position.x, y = c.position.y }
   return true
+end
+
+-- One tick of an escape whose start is still blocked: a direction that makes
+-- no progress, or does not clear the start in time, gives way to the next
+-- free tile centre; the escape fails when none is left.
+local function step_escape(state, c, evidence)
+  local pos = c.position
+  if not state.escape_targets then
+    -- An escape begun by 0.22.0 had one target and one clock.
+    state.escape_targets, state.escape_index, state.escape_stuck = { state.escape_target }, 1, 0
+    state.escape_attempt_tick = state.escape_started_tick
+  end
+  local stuck = false
+  if game.tick - state.escape_check_tick >= ESCAPE_STUCK_TICKS then
+    stuck = dist_sq(pos, state.escape_check_position) < STUCK_EPSILON_SQ
+    state.escape_check_tick = game.tick
+    state.escape_check_position = { x = pos.x, y = pos.y }
+  end
+  if not stuck and game.tick - state.escape_attempt_tick < ESCAPE_TICKS then return nil end
+  if stuck then state.escape_stuck = state.escape_stuck + 1 end
+  local tried = state.escape_index
+  local nxt = state.escape_targets[tried + 1]
+  if nxt then
+    state.escape_index, state.escape_target, state.escape_attempt_tick = tried + 1, nxt, game.tick
+    return nil
+  end
+  local outcome = { code = "START_COLLISION", diagnostics = { path_start = evidence,
+    escape_target = state.escape_target, escape_targets = state.escape_targets,
+    position = { x = pos.x, y = pos.y } } }
+  if state.escape_stuck >= tried then
+    return escape_fail(state, c, "START_COLLISION", string.format(
+      "ordinary escape made no physical progress in %d direction(s); %s; the free destination does not prove a traversable approach",
+      tried, collision_labels(evidence.collisions)), outcome)
+  end
+  return escape_fail(state, c, "START_COLLISION", string.format(
+    "ordinary walking could not clear %s toward %d free tile centre(s), the last (%.1f, %.1f), within %d ticks each; observe and choose a reachable local route",
+    collision_labels(evidence.collisions), tried, state.escape_target.x, state.escape_target.y, ESCAPE_TICKS), outcome)
 end
 
 local function blocker_evidence(state, c, goal)
@@ -513,7 +579,9 @@ end
 
 -- Nearest charted tile centre within `radius` tiles whose body box touches no
 -- conveyor and no character collider, optionally within `limit` of `anchor`.
-function settle_cell(c, anchor, limit, radius)
+-- `accept` (optional) sees each such centre, nearest first, and ends the
+-- search by returning true.
+function settle_cell(c, anchor, limit, radius, accept)
   local pos = c.position
   local tx, ty = math.floor(pos.x), math.floor(pos.y)
   local cells = {}
@@ -546,7 +614,7 @@ function settle_cell(c, anchor, limit, radius)
         rejected.conveyor = rejected.conveyor + 1
       elseif goal_occupancy(c, cell).state ~= "clear" then
         rejected.collision = rejected.collision + 1
-      else
+      elseif not accept or accept(cell) then
         return cell, rejected
       end
     end
@@ -710,7 +778,10 @@ function M.step(state, c, task_id)
     return fail(c, "START_COLLISION_UNKNOWN", evidence.reason .. "; re-observe collision evidence before retrying",
       { code = "START_COLLISION_UNKNOWN", diagnostics = { path_start = evidence } })
   end
-  if evidence.state == "blocked" then
+  -- A body moving along a native path is not at a start: the check waits for
+  -- the path's end, the goal, or the stuck check's new request.
+  local following = (state.phase == "following" or state.phase == "frontier_following") and not at_goal(state, pos)
+  if evidence.state == "blocked" and not following then
     if state.phase ~= "escaping" and begin_clear(state, c, task_id, evidence) then return nil end
     if state.escape_failed then
       return fail(c, "START_COLLISION", "the previous bounded escape failed and the current start remains blocked: "
@@ -721,21 +792,8 @@ function M.step(state, c, task_id)
       local failure = begin_escape(state, c, evidence)
       if type(failure) == "table" then return failure end
     end
-    if game.tick - state.escape_check_tick >= STUCK_CHECK_TICKS then
-      if dist_sq(pos, state.escape_check_position) < STUCK_EPSILON_SQ then
-        return escape_fail(state, c, "START_COLLISION", "ordinary escape made no physical progress; "
-          .. collision_labels(evidence.collisions) .. "; the free destination does not prove a traversable approach",
-          { code = "START_COLLISION", diagnostics = { path_start = evidence, escape_target = state.escape_target } })
-      end
-      state.escape_check_tick = game.tick
-      state.escape_check_position = { x = pos.x, y = pos.y }
-    end
-    if game.tick - state.escape_started_tick >= ESCAPE_TICKS then
-      return escape_fail(state, c, "START_COLLISION", string.format(
-        "ordinary walking could not clear %s toward free position (%.1f, %.1f) within %d ticks; observe and choose a reachable local route",
-        collision_labels(evidence.collisions), state.escape_target.x, state.escape_target.y, ESCAPE_TICKS),
-        { code = "START_COLLISION", diagnostics = { path_start = evidence, escape_target = state.escape_target } })
-    end
+    local failure = step_escape(state, c, evidence)
+    if failure then return failure end
     set_walking(c, { walking = true, direction = direction_toward(pos, state.escape_target) })
     return nil
   end

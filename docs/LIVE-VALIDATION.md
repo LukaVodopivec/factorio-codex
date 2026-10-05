@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.22.0**. Prior live evidence remains historical
-until the 0.22.0 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.22.1**. Prior live evidence remains historical
+until the 0.22.1 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -88,6 +88,27 @@ not provide a Linux visual client launcher.
    teleporting. A debug supervisor may use those surfaces only for recorded
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
+
+For the 0.22.1 release, record these observable checks (offline fixtures
+cover them; none is live evidence yet):
+
+- From a body standing on a shoreline (its centre on the walkable margin of a
+  water tile, `path_start` `state=blocked`), an `insert_items` and a
+  `build_layout` step whose target is far away walk there and finish. Record
+  the body position and the step's diagnostics `route.phase` each second: the
+  body may step to a dry tile centre first, then follows the native path along
+  the shore without stopping at each margin tile.
+- A start no direction clears fails its step in a few seconds with
+  `START_COLLISION` (the outcome names `path_start`, the body position and the
+  `escape_targets` tried), never with `plan exceeded its ... active budget`.
+- A step whose body position, inventory, hand-crafting, mining and step state
+  stand still for 60 seconds of game time fails with `STEP_STALLED`, naming
+  the action and its phase, and the next queued plan starts. `wait_for_item`,
+  `wait_for_research`, a hand-crafting queue that advances and a human hold
+  never produce it; a `STEP_STALLED` on a step that was making real progress
+  is a defect to record with the step's action and phase.
+- A step in flight when a 0.22.0 save is loaded with 0.22.1 finishes or fails
+  with a code; it does not raise a script error.
 
 For the 0.22.0 release, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
@@ -424,7 +445,7 @@ To continue a run's factory with a new release instead of a fresh map:
    its directory. Astra initialises the new run's ledger from fresh reads
    (packages from the old ledger are not queued again); the copied notebook
    continues, because a resumed save of the same factory continues its run.
-5. Spawn the role sessions with this release's settings (for 0.22.0:
+5. Spawn the role sessions with this release's settings (for 0.22.1:
    `-c model_reasoning_summary=detailed` and the twenty-one read-only tools
    above) and their updated goal files, redo the role-profile readback, start
    the recorder with `--pilot-rollout` and `--strategist-rollout` (a later
@@ -1034,7 +1055,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.22.0 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.22.1 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -1065,14 +1086,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.22.0. They
+The successful observations below were collected before release 0.22.1. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.22.0. Complete the fresh run above after installing 0.22.0 before recording a
+0.22.1. Complete the fresh run above after installing 0.22.1 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.22.0 run must instead report protocol v26 and mod/app 0.22.0.
+  0.8.0. A 0.22.1 run must instead report protocol v26 and mod/app 0.22.1.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

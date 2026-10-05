@@ -30,6 +30,10 @@ local PLAN_BUDGET_TICKS, STEP_BUDGET_TICKS = 570 * 60, 12 * 60
 local MAX_PLAN_STEPS = 200
 local ACTIVITY_LOG_SIZE = 64
 local INSPECT_PER_TICK = 16 -- positions an inspect_entities step reads a tick
+-- Watchdog: a running step with no progress for 60 s fails with STEP_STALLED.
+-- Progress is read once a second; the body counts as moved once it is more
+-- than a tile from where it last stood and from where it stood before that.
+local STALL_TICKS, STALL_SAMPLE_TICKS, STALL_MOVE_SQ = 60 * 60, 60, 1
 local runners = {
   walk_to = walk, mine = mine, pickup = pickup, place = build.place, rotate = build.rotate,
   set_recipe = build.set_recipe, craft = craft, insert = transfer.insert,
@@ -911,6 +915,109 @@ local function dispatch(tasks)
     finish(task, result.status, result.detail, nil, result.outcome)
   end
 end
+-- The step watchdog. No single step may hold the FIFO for minutes: a running
+-- plan step or direct task fails with STEP_STALLED once the body's position,
+-- its inventory, its hand-crafting and mining, and the step's own progress
+-- have all stood still for STALL_TICKS. Deliberate waits are exempt:
+-- wait_for_item and wait_for_research park the plan (it is not running), a
+-- crafting queue that advances is progress, and a human hold stops the
+-- watchdog and restarts its clock. Its state (storage.tasks.stall) is made
+-- when first needed, so a save from before it needs no migration.
+local NESTED_STEPS = { "_plan", "_layout", "_supply", "_sub", "_clear", "_exit" }
+-- What a step shows of its own progress, read from its plain task state: the
+-- phase names go to the failure, the scalars to the progress signature. A
+-- walker's state is left out: a walk that re-plans without the body getting
+-- anywhere is exactly what the watchdog must see as standing still.
+local function describe_step(task, phases, progress, depth)
+  if type(task) ~= "table" or depth > 6 then return end
+  local keys = {}
+  for key, value in pairs(task) do
+    local kind = type(value)
+    if type(key) == "string" and key:sub(1, 1) == "_" and not key:find("poll", 1, true)
+      and (kind == "number" or kind == "string" or kind == "boolean") then
+      keys[#keys + 1] = key
+    end
+  end
+  table.sort(keys)
+  for _, key in ipairs(keys) do progress[#progress + 1] = key .. "=" .. tostring(task[key]) end
+  if task._search then phases[#phases + 1] = "site_search" end
+  local frame = type(task._stack) == "table" and task._stack[#task._stack]
+  if type(frame) == "table" then
+    phases[#phases + 1] = string.format("supply %s:%s", tostring(frame.name), tostring(frame.phase))
+    local smelt = type(frame.smelt) == "table" and frame.smelt or {}
+    progress[#progress + 1] = string.format("stack=%d:%s:%s:%s:%s:%s:%s", #task._stack, tostring(frame.name),
+      tostring(frame.phase), tostring(frame.takes), tostring(frame.gathers), tostring(smelt.left), tostring(smelt.made))
+  end
+  if task._mining_started then phases[#phases + 1] = "mining" end
+  local walker = type(task._approach) == "table" and task._approach.walk or task._walk
+  if type(walker) == "table" then
+    phases[#phases + 1] = (task._walk and "walk:" or "approach:") .. tostring(walker.phase)
+  end
+  for _, field in ipairs(NESTED_STEPS) do
+    local nested = task[field]
+    if type(nested) == "table" then
+      phases[#phases + 1] = field:sub(2) .. (type(nested.type) == "string" and ("(" .. nested.type .. ")") or "")
+      describe_step(nested, phases, progress, depth + 1)
+    end
+  end
+end
+local function body_signature(c, progress)
+  local parts = {}
+  for _, item in ipairs(c.get_main_inventory and c.get_main_inventory() and c.get_main_inventory().get_contents() or {}) do
+    parts[#parts + 1] = tostring(item.name) .. ":" .. tostring(item.quality or "") .. "=" .. tostring(item.count)
+  end
+  table.sort(parts)
+  for _, member in ipairs({ "crafting_queue_size", "crafting_queue_progress", "character_mining_progress" }) do
+    local ok, value = pcall(function() return c[member] end)
+    parts[#parts + 1] = member .. "=" .. tostring(ok and value or nil)
+  end
+  for _, row in ipairs(progress) do parts[#parts + 1] = row end
+  return table.concat(parts, ";")
+end
+-- True when it failed the active step this tick.
+local function watchdog(tasks)
+  local task = tasks.active
+  local plan = task.type == "plan" and task or nil
+  local step = plan and plan.current_step or 0
+  local stall = tasks.stall
+  if not stall or stall.id ~= task.id or stall.step ~= step then
+    stall = { id = task.id, step = step, next_check = game.tick }
+    tasks.stall = stall
+  end
+  if game.tick < stall.next_check then return false end
+  stall.next_check = game.tick + STALL_SAMPLE_TICKS
+  local c = companion.get()
+  local current = plan and plan.current_task or not plan and task or nil
+  if not (c and c.valid and current) then tasks.stall = nil; return false end
+  local phases, progress = {}, { "outcomes=" .. (plan and #plan.outcomes or 0) }
+  describe_step(current, phases, progress, 0)
+  local ok, signature = pcall(body_signature, c, progress)
+  if not ok then tasks.stall = nil; return false end
+  local p = c.position
+  local function beyond(anchor)
+    return not anchor or (p.x - anchor.x) ^ 2 + (p.y - anchor.y) ^ 2 > STALL_MOVE_SQ
+  end
+  local moved = beyond(stall.anchor) and beyond(stall.previous)
+  if beyond(stall.anchor) then stall.previous, stall.anchor = stall.anchor, { x = p.x, y = p.y } end
+  if moved or signature ~= stall.signature or not stall.since then
+    stall.since, stall.signature = game.tick, signature
+    return false
+  end
+  if game.tick - stall.since < STALL_TICKS then return false end
+  tasks.stall = nil
+  local action = plan and plan.steps[step] and plan.steps[step].action or task.type
+  local phase = #phases > 0 and table.concat(phases, " > ") or "running"
+  local stalled = game.tick - stall.since
+  local detail = string.format("STEP_STALLED: %s made no progress for %d seconds in phase %s: the body stayed at (%.1f, %.1f) with"
+    .. " its inventory, crafting and step state unchanged; re-read the body position and choose a reachable target",
+    tostring(action), math.floor(stalled / 60), phase, p.x, p.y)
+  local outcome = { code = "STEP_STALLED", action = action, phase = phase, stalled_ticks = stalled,
+    position = { x = p.x, y = p.y } }
+  storage.path_request, task._path_result = nil, nil
+  if plan then finish_step(plan, { status = "failed", detail = detail, outcome = outcome })
+  else finish(task, "failed", detail, nil, outcome) end
+  return true
+end
 -- Human takeover. While the owner's input holds the body the dispatcher is parked:
 -- no step starts or ticks, nothing is cancelled or reordered, and the mod
 -- writes no walking, mining or picking state after one release on entry, so
@@ -920,6 +1027,7 @@ local function mark_held(task)
 end
 local function enter_hold(tasks)
   tasks.human_hold = { since = game.tick }
+  tasks.stall = nil
   if tasks.active then stop_body() end
   mark_held(tasks.active)
   for _, queued in ipairs(tasks.queue) do mark_held(queued) end
@@ -944,7 +1052,7 @@ local function resume_active(tasks)
   storage.path_request, task._path_result = nil, nil
   local current = task.type == "plan" and task.current_task or task
   if not current then return end
-  current._approach, current._approach_close = nil, nil
+  current._approach, current._approach_close, current._approach_guard = nil, nil, nil
   local runner = runners[current.type]
   if runner and runner.resume then
     local ok, err = pcall(runner.resume, current)
@@ -983,6 +1091,7 @@ function M.on_tick()
   -- asynchronous craft task that queued it finished.
   local body = storage.tasks.last_finished_tick and companion.get()
   if body and body.valid and (body.crafting_queue_size or 0) > 0 then storage.tasks.last_finished_tick = game.tick end
+  if storage.tasks.active and watchdog(storage.tasks) then return end
   if storage.tasks.active or #storage.tasks.queue > 0 then dispatch(storage.tasks) end
 end
 return M

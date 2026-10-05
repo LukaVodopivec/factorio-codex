@@ -65,6 +65,16 @@ local function reset(target)
   return task
 end
 
+-- A pinned body tries each escape direction for half a second: advance in
+-- those windows until the call answers (at most four directions).
+local function until_answer(call)
+  for _ = 1, 4 do
+    game.tick = game.tick + 30
+    local answer = call()
+    if answer then return answer end
+  end
+end
+
 local function deliver(path, transient)
   local id = storage.path_request.id
   local event_path
@@ -369,11 +379,11 @@ task = reset({ x = 0.1, y = 0 })
 check(geometry.path_start(body).state == "blocked" and walk.step(task._walk, body, task.id) == nil
   and task._walk.phase == "escaping" and not storage.path_request,
   "genuine overlap inside arrival tolerance cannot report arrival")
-game.tick = 60
-result = walk.step(task._walk, body, task.id)
+result = until_answer(function() return walk.step(task._walk, body, task.id) end)
 check(result and result.failed:match("no physical progress") and not storage.path_request
-  and not body.walking_state.walking,
-  "stationary escape terminates with current evidence before an unchanged retry or native request")
+  and not body.walking_state.walking and game.tick <= 120 and result.outcome.code == "START_COLLISION"
+  and #result.outcome.diagnostics.escape_targets == task._walk.escape_index,
+  "stationary escape tries each direction once, then terminates with current evidence before any native request")
 
 task = reset({ x = 0.1, y = 0 })
 check(approach.ensure(task, body, task.target, 2) == nil and task._approach.walk.phase == "escaping",
@@ -458,11 +468,11 @@ check(result and result.status == "failed" and result.detail:match("START_COLLIS
   and task._approach == retained and retained.walk.escape_started_tick == 0,
   "unknown evidence cannot discard active recovery or reset its bounded escape timer")
 body.surface.find_entities_filtered = entity_query
-game.tick = 60
-result = approach.ensure(task, body, { x = 4, y = 0 }, 2)
+result = until_answer(function() return approach.ensure(task, body, { x = 4, y = 0 }, 2) end)
 check(result and result.detail:match("no physical progress") and retained.walk.escape_failed
-  and not storage.path_request and not body.walking_state.walking,
-  "revalidated unchanged recovery fails within its original physical progress bound")
+  and task._approach == retained and not storage.path_request and not body.walking_state.walking
+  and game.tick <= 150,
+  "revalidated unchanged recovery fails within its bounded escape directions")
 
 -- Belt settle: a walk or approach never finishes with the body on a conveyor.
 -- Conveyors answer only the typed query; collision queries see nothing here.

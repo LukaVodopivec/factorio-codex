@@ -14,6 +14,9 @@ local M = {}
 local SCAN_DEFAULT_RADIUS = 15
 local SCAN_MIN_RADIUS = 5
 local SCAN_MAX_RADIUS = 30
+-- A full observation paints a grid: its work grows with the square of the
+-- radius, so it stops at 20 (requested_radius says when it was asked more).
+local SCAN_MAX_FULL_RADIUS = 20
 local DESCRIBE_MAX_NAMES = 10
 
 local UPPER_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -197,11 +200,14 @@ local function observe_start(params)
   local radius = math.floor(tonumber(params.radius) or SCAN_DEFAULT_RADIUS)
   radius = math.max(SCAN_MIN_RADIUS, math.min(radius, SCAN_MAX_RADIUS))
   local compact = params.detail ~= "full"
+  local requested_radius
+  if not compact and radius > SCAN_MAX_FULL_RADIUS then requested_radius, radius = radius, SCAN_MAX_FULL_RADIUS end
   local center = { x = c.position.x, y = c.position.y }
   local ox, oy = math.floor(center.x) - radius, math.floor(center.y) - radius
   local size = radius * 2 + 1
   local margin = max_footprint_extent()
-  local S = { radius = radius, compact = compact, center = center, ox = ox, oy = oy, size = size, margin = margin,
+  local S = { radius = radius, requested_radius = requested_radius, compact = compact, center = center,
+    ox = ox, oy = oy, size = size, margin = margin,
     entity_limit = compact and 12 or 256, ground_limit = compact and 12 or 256, patch_limit = compact and 8 or 256,
     stage = compact and "query" or "terrain", row = 1, band = 0, visible = {},
     -- Fixed symbols are pre-registered so dynamically assigned letters can
@@ -583,7 +589,7 @@ local function observe_finish(S, c)
   table.sort(patches, patch_order)
   for _, patch in ipairs(patches) do patch._members = nil end
   local result = {
-    tick = game.tick, radius = S.radius, detail = S.compact and "compact" or "full",
+    tick = game.tick, radius = S.radius, requested_radius = S.requested_radius, detail = S.compact and "compact" or "full",
     character = character_state(c),
     entities = details, resource_patches = patches, ground_items = ground_items,
     omitted_entities = S.detail_total - #details, omitted_ground_items = S.ground_total - #ground_items,
@@ -624,8 +630,8 @@ local function observe_step(S, budget)
   return nil
 end
 
--- observe_local {radius? (5-30, default 15), detail? (compact | full)}: the
--- job definition (jobs.lua registers it).
+-- observe_local {radius? (5-30, default 15; full at most 20), detail?
+-- (compact | full)}: the job definition (jobs.lua registers it).
 M.observe_job = { start = observe_start, step = observe_step, truncated = observe_truncated }
 
 -- A compact observation at radius at most the default, within this call:

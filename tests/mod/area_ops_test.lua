@@ -34,7 +34,7 @@ end
 local entities = {
   ["assembling-machine-1"] = proto("assembling-machine-1", "assembling-machine", 3, 3, { fast_replaceable_group = "assembling-machine" }),
   ["assembling-machine-2"] = proto("assembling-machine-2", "assembling-machine", 3, 3, { fast_replaceable_group = "assembling-machine" }),
-  inserter = proto("inserter", "inserter", 1, 1, { fast_replaceable_group = "inserter" }),
+  inserter = proto("inserter", "inserter", 1, 1, { fast_replaceable_group = "inserter", filter_count = 5 }),
   ["transport-belt"] = proto("transport-belt", "transport-belt", 1, 1, { fast_replaceable_group = "transport-belt" }),
   ["fast-transport-belt"] = proto("fast-transport-belt", "transport-belt", 1, 1, { fast_replaceable_group = "transport-belt" }),
   ["wooden-chest"] = proto("wooden-chest", "container", 1, 1, { fast_replaceable_group = "container" }),
@@ -45,6 +45,7 @@ local items = {}
 for name, p in pairs(entities) do if p.type ~= "tree" and p.type ~= "resource" then items[name] = { name = name, place_result = p, stack_size = 50 } end end
 items.blueprint = { name = "blueprint" }
 items["iron-gear-wheel"] = { name = "iron-gear-wheel", stack_size = 100 }
+items["iron-plate"] = { name = "iron-plate", stack_size = 100 }
 _G.prototypes = { item = items, entity = entities, shortcut = {}, tile = {} }
 
 local own = { name = "player", technologies = {} }

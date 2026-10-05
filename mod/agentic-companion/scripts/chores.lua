@@ -14,6 +14,7 @@ local tasks = require("scripts.tasks")
 local registry = require("scripts.registry")
 local supply = require("scripts.actions.supply")
 local explore = require("scripts.actions.explore")
+local jobs = require("scripts.jobs")
 
 local M = {}
 
@@ -25,6 +26,9 @@ local MAX_REFUELS = 8
 local FUEL_PER_MACHINE = 10
 local MAX_LABS = 8
 local PACKS_PER_LAB = 10
+-- Machines one upkeep pass looks at per status: the line sampler keeps the
+-- units in each chore status, so a pass never walks every machine.
+local MAX_CANDIDATES = 64
 
 local function held()
   local ok, value = pcall(companion.human_control)
@@ -39,22 +43,28 @@ local function fifo_empty()
 end
 
 -- Own machines in a raw sampler state (of one type when given), not served
--- within the cooldown, nearest first, at most `limit`.
+-- within the cooldown, nearest first, at most `limit`: from the sampler's
+-- set of that state, at most MAX_CANDIDATES of them looked at.
 local function machines_in(c, tick, raw, kind, served, limit)
   local a = storage.autonomy
-  local rows = {}
-  for unit, rec in pairs(a and a.machines or {}) do
-    if rec.raw == raw and (kind == nil or rec.type == kind) and rec.entity and rec.entity.valid
-      and not (served[unit] and tick - served[unit] < REFUEL_COOLDOWN_TICKS) then
-      local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
-      rows[#rows + 1] = { unit = unit, position = rec.position, distance = dx * dx + dy * dy }
-    end
-  end
-  table.sort(rows, function(x, y)
+  local rows, seen = {}, 0
+  local function nearer(x, y)
     if x.distance ~= y.distance then return x.distance < y.distance end
     return x.unit < y.unit
-  end)
-  while #rows > limit do table.remove(rows) end
+  end
+  for unit in pairs(a and a.waiting and a.waiting[raw] or {}) do
+    if seen >= MAX_CANDIDATES then break end
+    local rec = a.machines[unit]
+    if rec and rec.raw == raw and (kind == nil or rec.type == kind)
+      and not (served[unit] and tick - served[unit] < REFUEL_COOLDOWN_TICKS) then
+      seen = seen + 1
+      if rec.entity and rec.entity.valid then
+        local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
+        jobs.keep_first(rows, limit, { unit = unit, position = rec.position, distance = dx * dx + dy * dy }, nearer)
+      end
+    end
+  end
+  table.sort(rows, nearer)
   return rows
 end
 

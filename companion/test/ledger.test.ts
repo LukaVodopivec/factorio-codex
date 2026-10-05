@@ -289,6 +289,28 @@ describe("build packages the bridge queues", () => {
     }
   });
 
+  it("accepts the 0.22.0 actions in packages and rejects ones the mod could not run", () => {
+    const steps = [
+      { action: "build_layout", anchor: { x: 0, y: 0 }, entities: [{ name: "filter-inserter", dx: 0, dy: 0, settings: { inserter: { filters: ["coal"] } } }] },
+      { action: "configure_entity", x: 0.5, y: 0.5, chest: { slots: 4 } },
+      { action: "place_tiles", item: "landfill", positions: [{ x: 10, y: 10 }] },
+      { action: "set_requests", target: { x: 2.5, y: 2.5 }, requests: [{ item: "iron-plate", min: 100 }] },
+      { action: "flush_fluid", x: 5.5, y: 5.5 },
+      { action: "extract_items", x: 1.5, y: 1.5, inventory: "burnt_result" }];
+    expect(reduceLedger(ledger(), withPackages([{ ...drillPair(), steps }])).result).toMatchObject({ status: "applied", revision: 1 });
+    const cases: Array<[unknown[], string]> = [
+      [[{ action: "configure_entity", x: 0, y: 0 }], "at least one of inserter, splitter or chest"],
+      [[{ action: "place_tiles", item: "landfill" }], "exactly one of area"],
+      [[{ action: "set_requests", target: { x: 0, y: 0 } }], "requests, remove, request_from_buffers or mode set"],
+      [[{ action: "equip" }], "armor, put or take"],
+    ];
+    for (const [bad, text] of cases) {
+      const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), steps: bad }])).result;
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(text)), text).toBe(true);
+    }
+  });
+
   it("rejects packages it could not execute as written, with the offending path", () => {
     const cases: Array<[unknown[], string]> = [
       [[drillPair("a"), drillPair("b"), drillPair("c")], "build_packages"],
@@ -316,6 +338,33 @@ describe("build packages the bridge queues", () => {
     const result = reduceLedger(ledger(), { ...envelope(101), update }).result;
     expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("update.build_packages"))).toBe(true);
+  });
+
+  it("reads a 0.21.1 ledger whose layout entities kept free-form blueprint settings, and applies updates to it", () => {
+    const legacy = { ...drillPair("belt-hop"), steps: [{ action: "build_layout", anchor: { x: 40, y: -40 }, entities: [
+      { name: "underground-belt", dx: 0, dy: 0, direction: 4, settings: { type: "input" } },
+      { name: "underground-belt", dx: 4, dy: 0, direction: 4, settings: { type: "output" } },
+      { name: "filter-inserter", dx: 5, dy: 0, settings: { use_filters: true, filters: [{ index: 1, name: "coal" }] } },
+      { name: "chemical-plant", dx: 8, dy: 0, settings: { mirror: true } },
+      { name: "iron-chest", dx: 6, dy: 0, settings: { bar: 4 } }] }] };
+    const old = { ...ledger(), revision: 7, source_tick: 90, build_packages: [legacy] };
+    const parsed = operationsLedgerSchema.parse(old);
+    expect((parsed.build_packages[0].steps[0] as any).entities).toEqual([
+      { name: "underground-belt", dx: 0, dy: 0, direction: 4, belt_to_ground_type: "input" },
+      { name: "underground-belt", dx: 4, dy: 0, direction: 4, belt_to_ground_type: "output" },
+      { name: "filter-inserter", dx: 5, dy: 0, settings: { inserter: { filters: ["coal"] } } },
+      { name: "chemical-plant", dx: 8, dy: 0, mirror: true },
+      { name: "iron-chest", dx: 6, dy: 0, settings: { chest: { slots: 3 } } }]);
+    expect(reduceLedger(old, envelope(101)).result).toMatchObject({ status: "applied", revision: 8 });
+    // On disk, with the package already queued: Astra's next write applies,
+    // and restating the 0.21.1 package unchanged is still the same package.
+    const file = ledgerFile();
+    fs.writeFileSync(file, JSON.stringify(old), { mode: 0o600 });
+    fs.writeFileSync(path.join(path.dirname(file), "package-queue.json"), JSON.stringify({ packages: {
+      "belt-hop": { status: "queued", revision: 7, at: "2026-10-04T00:00:00Z" } } }));
+    expect(applyLedgerFile(file, withPackages([], 101))).toMatchObject({ status: "applied", revision: 8 });
+    fs.writeFileSync(file, JSON.stringify(old), { mode: 0o600 });
+    expect(applyLedgerFile(file, withPackages([legacy], 102))).toMatchObject({ status: "applied", revision: 8 });
   });
 
   it("rejects a package id the bridge already queued or failed unless it is repeated unchanged", () => {

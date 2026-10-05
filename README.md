@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.21.1**.
+Current release: **0.22.0**.
 
 Factorio Codex shows how Codex bots think about and architect a Factorio
 factory. Two reasoning sessions plan and direct one physical character named
@@ -126,8 +126,9 @@ replacement.
 - **Line tracking.** The mod groups machines into production lines (same
   product, near each other) on build, removal and recipe events, and samples
   each machine every 30 ticks through stored references. Each line has a
-  `state` (`running`, `starved` with the missing item as `cause`,
-  `output_full`, `no_fuel`, `no_power`, `idle`), the position that causes a
+  `state` (`running`, `starved` with the missing item or fluid as `cause`,
+  `output_full`, `no_fuel`, `no_power`, `no_heat`, `disabled`, `idle` with
+  `no_recipe` or `recipe_not_researched`), the position that causes a
   problem, `rate_per_min`, `hand_fed` (a character transfer in the last
   minute), `self_sustaining` (a minute of running with no character
   transfer and no stall) and, from the second hand transfer into or out of
@@ -143,6 +144,18 @@ replacement.
   carried, and own lines that make a missing item add their `rate_per_min`
   and `expected_minutes` for the rest.
 - **Auto-clear.** Placement mines trees and rocks in the footprint first.
+- **Power model.** Each `factory_status` power row splits production by
+  source (steam, solar, burner, nuclear), adds accumulator charge,
+  `sustained_w` (solar at the planet's day-average light) and `headroom_w`,
+  and, when demand exceeds `sustained_w`, `add_to_cover`: the steam engines,
+  solar panels or accumulators that would cover it. Counts come from the
+  entity registry, never a read-time scan.
+- **Settings at build time.** Inserter filters and stack size, splitter
+  priorities and filter, and chest slot limits or storage filters given as
+  `settings` on `build_layout`, `build_plan` and `blueprint_create` entities
+  are applied as each entity is built (blueprint ghosts carry them);
+  `move_entity` and `copy_settings` carry them, and `configure_entity`
+  changes them later.
 - **Recoveries.** Stepping off a belt, leaving a placement footprint, mining an
   owned blocker that encloses the body, one re-approach after an out-of-reach
   result, and one retry of a partial insert happen inside the action.
@@ -163,7 +176,7 @@ replacement.
 
 ## MCP tools
 
-The full surface has 44 tools; the read-only surface used by Astra has 20.
+The full surface has 47 tools; the read-only surface used by Astra has 21.
 Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
 `idle_seconds`, `human_control`). Heavy reads (`map_summary`, a full
 `observe_local`, route and site searches, dry runs, blueprint capture and
@@ -173,7 +186,7 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | Tool | Surface | Purpose |
 | --- | --- | --- |
 | `connect_status` | both | config, RCON, mod and protocol check; binds the `Codex` player |
-| `factory_status` | both | the single routine read: lines, problems, power, stock, research, body, patches; `since_tick`, `sections` |
+| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover`, stock, research, body, patches; `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
 | `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change), `research_finished`, `queue_empty`, `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, or `timeout` |
 | `activity_log` | both | recent plan outcomes with `source` (`pilot`, `upkeep`, `package:<id>`), cancels with their `origin`, blueprint changes, and package statuses |
 | `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections |
@@ -181,8 +194,9 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | `connect_entities` | both (read-only: dry run) | belt, pipe or power route of up to 200 pieces between entities or free tiles, underground past obstacles |
 | `blueprint_list`, `blueprint_describe`, `blueprint_export` | both | this run's stored blueprints; export is a string for notes, never imported |
 | `blueprint_place` | both (read-only: dry run) | build a stored blueprint by hand or as ghosts |
+| `place_tiles` | both (read-only: dry run) | lay landfill, stone path, concrete, foundation or ice platform over an area or up to 1,024 positions, nearest first; a dry run counts the items |
 | `map_summary` | both | full flow graph of the charted factory; `include` adds `stockpiles`, `sites`, `patches`, `power`, `problems`, `flows_all` |
-| `observe_local`, `inspect_entity` | both | nearby entities and exact entity state (own entities anywhere charted) |
+| `observe_local`, `inspect_entity` | both | nearby entities and exact entity state with settings, up to 64 positions (own entities anywhere charted) |
 | `can_place`, `find_placement` | both | placement checks anywhere charted |
 | `production_requirements`, `progression_status`, `describe_prototype` | both | recipe arithmetic, research, prototypes |
 | `plan_status` | both | one exact plan, optionally waiting up to 60 s |
@@ -190,6 +204,8 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | `queue_plan`, `run_plan` | full | 1-200 plan steps; `queue_plan` returns at once |
 | `walk_to`, `mine`, `pickup_items`, `place_entity`, `craft_items`, `insert_items`, `extract_items`, `set_recipe`, `rotate_entity`, `build_plan`, `start_research` | full | single physical actions |
 | `move_entity`, `explore`, `build_ghosts`, `deconstruct_area`, `upgrade_area`, `copy_settings` | full | one-step plans: move a building with its contents, scout and chart, build ghosts by hand, clear or upgrade an area, copy settings |
+| `configure_entity` | full | inserter filters, mode and stack size, splitter priorities and filter, chest slot limit or storage filter; walks there, changes only what is named, reads back |
+| `set_requests` | full | requests of a requester or buffer chest (`merge`, `set`, `remove`); only robots deliver, `network: null` when no roboport covers it |
 | `blueprint_capture`, `blueprint_create`, `blueprint_delete` | full | store a blueprint from own buildings or a layout; delete one |
 | `stop` | full | supervisor-only emergency cancellation |
 
@@ -197,7 +213,13 @@ Plan steps are `walk_to`, `mine`, `pickup_items`, `place_entity`,
 `craft_items`, `insert_items`, `extract_items`, `set_recipe`, `rotate_entity`,
 `inspect_entities`, `wait_for_item`, `wait_for_research`, `get_items`,
 `build_layout`, `build_block`, `explore`, `move_entity`, `blueprint_place`,
-`build_ghosts`, `deconstruct_area`, `upgrade_area` and `copy_settings`. A build
+`build_ghosts`, `deconstruct_area`, `upgrade_area`, `copy_settings`,
+`configure_entity`, `place_tiles`, `set_requests`, `equip` and `flush_fluid`;
+`equip` (wear armor, fit or remove equipment from the inventory) and
+`flush_fluid` (empty a pipe, pump or tank system; the fluid is destroyed) are
+plan steps only. `extract_items` and `insert_items` take an optional
+`inventory` (`output`, `input`, `fuel`, `burnt_result`, `modules`, `trash`,
+`main`, `robots`, `material`); without it they behave as before. A build
 package may also start with `blueprint_capture` steps, which the bridge makes
 before it queues the rest (after its `after_package_id` plan has ended).
 `craft_items` does not hold the body unless `wait_for_completion` is true; a

@@ -41,9 +41,17 @@ check(type(storage.thoughts.lines) == "table", "state.init creates the thoughts 
 local function machine(unit, x, raw)
   return { unit = unit, raw = raw, position = { x = x, y = 0 }, entity = { valid = true } }
 end
-storage.autonomy = { machines = {
-  [1] = machine(1, 20, "no_fuel"), [2] = machine(2, 5, "no_fuel"), [3] = machine(3, 8, "working"),
-} }
+-- The line sampler keeps machines by unit and, per chore status, the units
+-- in it (autonomy.lua); upkeep reads only those sets.
+local function sampled(machines)
+  local waiting = {}
+  for unit, rec in pairs(machines) do
+    waiting[rec.raw] = waiting[rec.raw] or {}
+    waiting[rec.raw][unit] = true
+  end
+  storage.autonomy = { machines = machines, waiting = waiting }
+end
+sampled({ [1] = machine(1, 20, "no_fuel"), [2] = machine(2, 5, "no_fuel"), [3] = machine(3, 8, "working") })
 
 chores.upkeep(game.tick)
 local plan = queued[1]
@@ -88,8 +96,8 @@ check(#queued == 3 and queued[3].steps[1].items.wood == 10, "another fuel is use
 local function lab(unit, x, raw)
   return { unit = unit, type = "lab", raw = raw, position = { x = x, y = 4 }, entity = { valid = true } }
 end
-storage.autonomy.machines = { [7] = lab(7, 3, "missing_science_packs"), [8] = lab(8, 9, "missing_science_packs"),
-  [9] = lab(9, 6, "working"), [10] = machine(10, 2, "no_fuel") }
+sampled({ [7] = lab(7, 3, "missing_science_packs"), [8] = lab(8, 9, "missing_science_packs"),
+  [9] = lab(9, 6, "working"), [10] = machine(10, 2, "no_fuel") })
 storage.chores.refueled = {}
 stocked = { coal = 20, ["automation-science-pack"] = 30, ["logistic-science-pack"] = 1 }
 prototypes.item["automation-science-pack"], prototypes.item["logistic-science-pack"] = { stack_size = 200 }, { stack_size = 200 }
@@ -107,6 +115,19 @@ game.tick = 12300
 chores.upkeep(game.tick)
 check(#queued == before + 1, "a lab fed in the last minute is not fed again")
 body.force.current_research = nil
+
+-- Bounded: 2,000 sampled machines, 300 of them dry. One pass reads at most
+-- 64 machine records (the dry ones it looks at) and never walks the rest.
+body.force.current_research = nil
+local many, reads = {}, 0
+for unit = 1, 2000 do many[unit] = machine(unit, unit, unit <= 300 and "no_fuel" or "working") end
+sampled(many)
+storage.autonomy.machines = setmetatable({}, { __index = function(_, unit) reads = reads + 1; return many[unit] end })
+storage.chores.refueled, stocked = {}, { coal = 1000 }
+game.tick, before = 30000, #queued
+chores.upkeep(game.tick)
+check(#queued == before + 1 and #queued[#queued].steps == 8 and reads <= 64,
+  "an upkeep pass over 300 dry machines among 2,000 reads at most 64 of them (" .. reads .. " reads)")
 
 local ok = pcall(chores.on_nth[300], { tick = 9300 })
 check(ok and chores.on_nth[3600] ~= nil, "chores run on their periods")

@@ -4,11 +4,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { JOB_METHODS, PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 
-describe("bridge protocol v25", () => {
+describe("bridge protocol v26", () => {
   it("has the expected version and retained methods", () => {
-    expect(PROTOCOL_VERSION).toBe(25);
+    expect(PROTOCOL_VERSION).toBe(26);
     expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk", "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now",
-      "get_job", "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place"]);
+      "get_job", "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles"]);
   });
   it("matches the exact Lua registrations", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -17,11 +17,13 @@ describe("bridge protocol v25", () => {
     const sources = fs.readdirSync(luaRoot, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".lua"))
       .map((file) => fs.readFileSync(path.join(luaRoot, file), "utf8")).join("\n");
     const registered = [...sources.matchAll(/(?:rpc|M)\.register\("([^"]+)"/g)].map((match) => match[1]!);
-    // Job reads register in one loop over their kinds (control.lua).
+    // Most job reads register in one loop over their kinds (control.lua);
+    // a module may also answer its own RPC through its job (find_placement).
     const loop = /for _, kind in ipairs\(\{([^}]*)\}\) do\s*rpc\.register\(kind, read\(jobs\.rpc\(kind\)\)\)/.exec(sources);
-    const jobs = [...(loop?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
+    const looped = [...(loop?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
+    const jobs = [...sources.matchAll(/jobs\.register\("([^"]+)"/g)].map((match) => match[1]!);
     expect(jobs.sort()).toEqual([...JOB_METHODS].sort());
-    expect([...registered, ...jobs].sort()).toEqual([...RPC_METHODS].sort());
+    expect([...registered, ...looped].sort()).toEqual([...RPC_METHODS].sort());
   });
   it("keeps replaced callable paths absent from retained Lua sources", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -48,7 +50,7 @@ describe("bridge protocol v25", () => {
     expect(read("mod/agentic-companion/scripts/spatial.lua")).not.toMatch(/return can_place_one\(c, surface, params\.item/);
     const inspectSource = read("mod/agentic-companion/scripts/inspect.lua");
     expect(inspectSource).not.toMatch(/unit_number|get_entity_by_unit_number|connected_players|params\.position|return inspect_one\(params/);
-    expect(inspectSource).toMatch(/evidence_class = "fresh_local_exact"[\s\S]*entities = out/);
+    expect(inspectSource).toMatch(/evidence_class = "fresh_local_exact"[\s\S]*entities = state\.entities/);
     // Every envelope variant and map_summary section the mod returns is in the companion types.
     const types = fs.readFileSync(path.join(root, "companion/src/types.ts"), "utf8");
     const variants = [...inspectSource.matchAll(/(?:evidence_class|scope) = "([^"]+)"/g)].map((match) => match[1]!);

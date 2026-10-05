@@ -22,6 +22,7 @@ package.loaded["scripts.companion"] = { require_companion = function() return bo
 local runner = { start = function() end, tick = function() return nil end }
 runner.place, runner.rotate, runner.set_recipe = runner, runner, runner
 runner.insert, runner.extract = runner, runner
+runner.flush_action = { runner = runner, make_task = function() return {} end }
 for _, name in ipairs({ "walk", "mine", "pickup", "build", "transfer" }) do package.loaded["scripts.actions." .. name] = runner end
 local crafting_runner = {
   start = function()

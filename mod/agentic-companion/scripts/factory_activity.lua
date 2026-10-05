@@ -113,4 +113,27 @@ function M.snapshot(since_tick, internal)
   }
 end
 
+-- on_player_crafted_item: each finished hand-craft of the Codex player
+-- (intermediates included) adds its product to a run-long counter, so
+-- tooling can tell hand-made output from machine-made. Counting starts
+-- at hand_crafted_since_tick (the new game, or the upgrade that added it).
+function M.on_player_crafted_item(event)
+  local rec = storage.companion
+  if not (rec and rec.player_index and event.player_index == rec.player_index) then return end
+  local ok, name, count = pcall(function() return event.item_stack.name, event.item_stack.count end)
+  if not (ok and type(name) == "string" and (tonumber(count) or 0) > 0) then return end
+  local activity = ensure()
+  activity.hand_crafted = activity.hand_crafted or {}
+  activity.hand_crafted[name] = (activity.hand_crafted[name] or 0) + count
+end
+
+-- {since_tick, items = [{name, count}]}: hand-crafted totals, sorted.
+function M.hand_crafted()
+  local activity = ensure()
+  local items = {}
+  for name, count in pairs(activity.hand_crafted or {}) do items[#items + 1] = { name = name, count = count } end
+  table.sort(items, function(a, b) return a.name < b.name end)
+  return { since_tick = activity.hand_crafted_since_tick or activity.epoch_tick, items = items }
+end
+
 return M

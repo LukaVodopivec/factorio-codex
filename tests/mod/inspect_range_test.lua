@@ -39,8 +39,9 @@ local surface = {
   end,
 }
 entity.surface = surface
-_G.defines = { inventory = { fuel = 1, chest = 1, furnace_source = 2, furnace_result = 3,
-  assembling_machine_input = 4, assembling_machine_output = 5 }, entity_status = {} }
+_G.defines = { inventory = { fuel = 1, chest = 1, crafter_input = 2, crafter_output = 3, crafter_trash = 4,
+  crafter_modules = 5, assembling_machine_dump = 6, lab_input = 2, lab_trash = 3, cargo_wagon = 1, character_corpse = 1,
+  car_trunk = 2 }, entity_status = {} }
 _G.game = { connected_players = { { surface = surface, position = { x = 1000, y = 1000 } } } }
 
 local inspect = require("scripts.inspect")
@@ -223,31 +224,69 @@ local belt_result = inspect.inspect({ targets = { belt.position } }).entities[1]
 check(belt_result.belt_contents["iron-ore"] == 5 and belt_result.belt_contents.coal == 1,
   "belt inspection retains contents from every transport line")
 
+-- Inventories by role: typed getters, and the type's own define only where
+-- no getter exists (never an alias probe).
+local function stock(contents)
+  return { is_empty = function() return #contents == 0 end, get_contents = function() return contents end }
+end
 found_entity = entity
 entity.type = "furnace"
 entity.burner = { remaining_burning_fuel = 0 }
-entity.get_inventory = function(index)
-  local contents = index == defines.inventory.fuel and { { name = "coal", count = 1 } } or {}
-  return { is_empty = function() return #contents == 0 end, get_contents = function() return contents end }
-end
-local furnace_buffers = inspect.inspect({ targets = { entity.position } }).entities[1].inventories
-check(furnace_buffers.fuel.coal == 1 and next(furnace_buffers.input) == nil and next(furnace_buffers.output) == nil,
-  "furnace inspection exposes fuel, input, and output buffers even when relevant compartments are empty")
-
-entity.burner = nil
+local getters = {}
+entity.get_fuel_inventory = function() getters[#getters + 1] = "fuel"; return stock({ { name = "coal", count = 1 } }) end
+entity.get_output_inventory = function() getters[#getters + 1] = "output"; return stock({}) end
+entity.get_burnt_result_inventory = function() getters[#getters + 1] = "burnt_result"; return nil end
+entity.get_module_inventory = function() getters[#getters + 1] = "modules"; return stock({ { name = "speed-module", count = 2 } }) end
 local probed = {}
 entity.get_inventory = function(index)
   probed[#probed + 1] = index
-  if index == defines.inventory.furnace_source or index == defines.inventory.furnace_result then
-    return { is_empty = function() return true end, get_contents = function() return {} end }
-  end
+  if index == defines.inventory.crafter_input then return stock({}) end
+  if index == defines.inventory.crafter_trash then return stock({ { name = "iron-ore", count = 3 } }) end
+  return nil
+end
+local furnace_buffers = inspect.inspect({ targets = { entity.position } }).entities[1].inventories
+check(furnace_buffers.fuel.coal == 1 and next(furnace_buffers.input) == nil and next(furnace_buffers.output) == nil
+  and furnace_buffers.modules["speed-module"] == 2 and furnace_buffers.trash["iron-ore"] == 3
+  and furnace_buffers.burnt_result == nil and furnace_buffers.main == nil,
+  "furnace inspection shows fuel, input and output even when empty, and modules and trash when they hold items")
+check(#probed == 2 and probed[1] == defines.inventory.crafter_input and probed[2] == defines.inventory.crafter_trash
+  and table.concat(getters, ",") == "output,fuel,burnt_result,modules",
+  "inventories are read through the typed getters and the furnace's crafter defines only")
+
+entity.burner = nil
+entity.get_fuel_inventory = function() return nil end
+entity.get_module_inventory = function() return nil end
+entity.get_inventory = function(index)
+  if index == defines.inventory.crafter_input then return stock({}) end
   return nil
 end
 local electric_buffers = inspect.inspect({ targets = { entity.position } }).entities[1].inventories
 check(electric_buffers.fuel == nil and next(electric_buffers.input) == nil and next(electric_buffers.output) == nil
-  and #probed == 2 and probed[1] == defines.inventory.furnace_source
-  and probed[2] == defines.inventory.furnace_result,
+  and electric_buffers.modules == nil and electric_buffers.trash == nil,
   "furnace inspection exposes only inventory compartments that actually exist")
+
+-- A cargo wagon's cargo, a car's trunk and a corpse's contents are its main
+-- inventory, through the define of its own type.
+local function main_of(kind, define, contents)
+  entity.type = kind
+  entity.get_fuel_inventory = function() return nil end
+  entity.get_burnt_result_inventory = function() return nil end
+  entity.get_module_inventory = function() return nil end
+  entity.get_output_inventory = function() error("a vehicle's or corpse's contents are not read as output") end
+  entity.get_inventory = function(index)
+    if index == defines.inventory[define] then return stock(contents) end
+    return nil
+  end
+  return inspect.inspect({ targets = { entity.position } }).entities[1].inventories
+end
+local wagon = main_of("cargo-wagon", "cargo_wagon", { { name = "iron-plate", count = 400 } })
+check(wagon and wagon.main["iron-plate"] == 400 and wagon.output == nil, "a cargo wagon's cargo shows as main")
+local corpse = main_of("character-corpse", "character_corpse", { { name = "coal", count = 7 } })
+check(corpse and corpse.main.coal == 7, "a character corpse's contents show as main")
+local trunk = main_of("car", "car_trunk", { { name = "wood", count = 3 } })
+check(trunk and trunk.main.wood == 3, "a car's trunk shows as main")
+entity.type = "furnace"
+entity.get_output_inventory = function() return stock({}) end
 
 local queries_before_single = inspection_queries
 local single, single_error = pcall(inspect.inspect, { position = { x = 0, y = 0 } })
@@ -259,11 +298,28 @@ local empty, empty_error = pcall(inspect.inspect, { targets = {} })
 check(not empty and tostring(empty_error):match("targets must be a non%-empty array") ~= nil,
   "inspection rejects an empty targets array")
 
+-- Up to 64 positions are read; the rest are reported as omitted.
 local too_many = {}
-for i = 1, 17 do too_many[i] = { x = 0, y = 0 } end
-local oversized, oversized_error = pcall(inspect.inspect, { targets = too_many })
-check(not oversized and tostring(oversized_error):match("at most 16 targets") ~= nil,
-  "inspection rejects more than 16 targets")
+for i = 1, 70 do too_many[i] = { x = entity.position.x, y = entity.position.y } end
+local queries_before_many = inspection_queries
+local oversized = inspect.inspect({ targets = too_many })
+check(#oversized.entities == 64 and oversized.omitted == 6 and inspection_queries - queries_before_many == 64
+  and oversized.entities[64].name == "stone-furnace",
+  "inspection reads the first 64 targets and reports the other 6 as omitted")
+-- As a job, 64 positions spread over ticks: about 15 a tick at 600 work items.
+local state = inspect.job.start({ targets = too_many })
+local per_tick, result = {}, nil
+repeat
+  local before = inspection_queries
+  result = inspect.job.step(state, { left = 600 })
+  per_tick[#per_tick + 1] = inspection_queries - before
+until result or #per_tick > 10
+local most = 0
+for _, n in ipairs(per_tick) do most = math.max(most, n) end
+check(result and #result.entities == 64 and result.omitted == 6 and #per_tick >= 4 and most <= 15,
+  "an inspect job reads 64 positions over " .. #per_tick .. " ticks, at most " .. most .. " a tick")
+local exact = inspect.inspect({ targets = { too_many[1] } })
+check(exact.omitted == nil, "a call within the limit omits nothing")
 
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

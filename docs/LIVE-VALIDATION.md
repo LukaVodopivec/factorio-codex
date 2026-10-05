@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.21.1**. Prior live evidence remains historical
-until the fresh 0.21.1 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.22.0**. Prior live evidence remains historical
+until the 0.22.0 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -89,7 +89,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.21.1 release, also record these observable checks without
+For the 0.22.0 release, also record these observable checks without
 turning them into a fixed opening or map-specific sequence:
 
 - A compact observation stays bounded, names every omission count, and appears
@@ -118,7 +118,7 @@ turning them into a fixed opening or map-specific sequence:
   appears in `activity_log` with source `package:<id>`, and a package the mod
   check rejects appears as `package_failed` in `next_event`.
 - `factory_status` stays under about 6 KB and costs under about 8 ms of Lua
-  time at 200 machines (60 UPS holds); `since_tick` returns only changed lines
+  time at 300 machines (60 UPS holds); `since_tick` returns only changed lines
   and problems. Each line's `state` matches what the machines do: starve a
   line, stop its fuel, block its output, and cut its power in turn.
 - Frame time: the game log carries one `rpc <method> Duration: …` line per
@@ -153,10 +153,39 @@ turning them into a fixed opening or map-specific sequence:
   `<tool>/direct-task-timeout` or `<tool>/<role>`), where the role is the one
   its MCP process was started with (`--role`); `unknown` means a session was
   started without it.
-- Loading a copy of a 0.21.0 save that still has queued plans (taken before
-  any stop) with 0.21.1 keeps them queued, a walk that was waiting for its
-  path asks again, and removed actions complete as `REMOVED_ACTION`. The live
-  upgrade procedure still stops first.
+- Loading a copy of a 0.21.1 save that still has queued plans and running
+  jobs (taken before any stop) with 0.22.0 keeps them queued and finishes the
+  jobs, and removed actions complete as `REMOVED_ACTION`. The live upgrade
+  procedure still stops first.
+- `factory_status` line causes name the fluid, `no_recipe`,
+  `recipe_not_researched` or `burnt_result`; `no_heat` and `disabled` appear
+  where a machine is cold or disabled. Each power row splits production by
+  source; while demand exceeds `sustained_w` it gives `add_to_cover`, and
+  building what it names makes `headroom_w` non-negative. `sections:
+  ["logistics"]` lists robot networks under about 900 bytes and the default
+  read omits it.
+- `configure_entity` sets a filter inserter's filters and a chest's slot limit
+  with the body walking into reach; repeating it returns `changed: []`.
+  A `build_layout` entity with `settings` comes out configured,
+  `inspect_entity` shows the settings, `move_entity` keeps them, and a
+  blueprint placed as ghosts carries them.
+- `place_tiles` with `check_only` counts the items an area needs; laying
+  landfill takes one item per tile, nearest tiles first, walking along, skips
+  tiles that already have it, and names the item to use for a tile it cannot
+  cover. No game-log `rpc` or `on_tick` line exceeds about 8 ms while it runs.
+- `set_requests` on a requester chest outside roboport coverage returns
+  `network: null`; inside coverage only robots deliver, and the body's
+  inventory does not change.
+- `extract_items` with `inventory: "fuel"` or `"modules"` takes only from that
+  inventory, and a role the building lacks fails `INVENTORY_NOT_PRESENT`
+  listing those it has. A `flush_fluid` step empties a pipe system;
+  on a crafting machine it fails `NOT_FLUSHABLE`. An `equip` step wears armor
+  and fits equipment from the inventory, which loses those items.
+- None of the new tools or steps starts a `human_control` hold: nothing uses
+  the cursor or opens a GUI.
+- `inspect_entity` reads up to 64 positions and counts the rest as omitted; a
+  long `find_placement` search returns its result, not a pending marker.
+  Blueprint tools work before construction robotics is researched and say so.
 - With the FIFO empty and a plan finished since the last stop, a dry burner
   machine is refuelled by `upkeep` within about 60 s while coal is in stock,
   and a queued plan takes over at the next step boundary. Right after the
@@ -306,7 +335,7 @@ session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low
 session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
-  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
 `--role` names the session in the `origin` of every cancel its MCP process
@@ -324,8 +353,8 @@ The launch flags express requested settings. `--fast on` requests
 normal service. Neither a launch flag nor a successful update is role-profile
 confirmation. Follow the native readback procedure below before `GO`.
 Start each with its checked-in role goal; the pilot takes no physical action
-before `GO`. Confirm Astra lists exactly the twenty configured read-only tools
-(`build_layout`, `build_block`, `connect_entities` and `blueprint_place` there are dry runs only) and cannot list any
+before `GO`. Confirm Astra lists exactly the twenty-one configured read-only tools
+(`build_layout`, `build_block`, `connect_entities`, `blueprint_place` and `place_tiles` there are dry runs only) and cannot list any
 movement, transfer, crafting, placement, research mutation, plan
 enqueue/run/cancel, or stop tool before `GO`, and that the pilot has the full
 surface and no read-only server.
@@ -395,8 +424,8 @@ To continue a run's factory with a new release instead of a fresh map:
    its directory. Astra initialises the new run's ledger from fresh reads
    (packages from the old ledger are not queued again); the copied notebook
    continues, because a resumed save of the same factory continues its run.
-5. Spawn the role sessions with this release's settings (for 0.21.1:
-   `-c model_reasoning_summary=detailed` and the twenty read-only tools
+5. Spawn the role sessions with this release's settings (for 0.22.0:
+   `-c model_reasoning_summary=detailed` and the twenty-one read-only tools
    above) and their updated goal files, redo the role-profile readback, start
    the recorder with `--pilot-rollout` and `--strategist-rollout` (a later
    replacement writes its rollout path to `<run_dir>/rollouts.json` as
@@ -1005,7 +1034,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.21.1 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.22.0 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -1036,14 +1065,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.21.1. They
+The successful observations below were collected before release 0.22.0. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.21.1. Complete the fresh run above after installing 0.21.1 before recording a
+0.22.0. Complete the fresh run above after installing 0.22.0 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.21.1 run must instead report protocol v25 and mod/app 0.21.1.
+  0.8.0. A 0.22.0 run must instead report protocol v26 and mod/app 0.22.0.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

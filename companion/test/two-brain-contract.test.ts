@@ -21,7 +21,7 @@ const registered = new Set([...read("companion/src/mcp/server.ts").matchAll(/reg
 describe("persistent two-brain coordination contract", () => {
   it("keeps the instructions short, with shared rules only in SKILL.md", () => {
     const size = [skill, pilot, strategist, knowledge].reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
-    expect(size).toBeLessThan(26_000);
+    expect(size).toBeLessThan(28_000);
     expect(skill).not.toMatch(/## Engineering reuse/);
     for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
   });
@@ -53,7 +53,7 @@ describe("persistent two-brain coordination contract", () => {
 
   it("makes factory_status the single read and next_event the only wait", () => {
     expect(flat(skill)).toMatch(/`factory_status` is the single routine read/);
-    for (const state of ["running", "starved", "output_full", "no_fuel", "no_power", "idle"]) expect(skill).toContain(`\`${state}\``);
+    for (const state of ["running", "starved", "output_full", "no_fuel", "no_power", "no_heat", "disabled", "idle"]) expect(skill).toContain(`\`${state}\``);
     for (const event of ["plan_ended", "queue_empty", "new_problem", "package_failed", "orders_changed", "human_hold_started", "human_hold_ended"])
       expect(skill).toContain(`\`${event}\``);
     expect(flat(pilot)).toMatch(/Call `next_event` \(up to 120 s\) with the last `tick` you saw as `since_tick`/);
@@ -231,6 +231,24 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/ledger remains the only command channel and Astra its only writer/);
     expect(live).toMatch(/each role writes one note and its `INDEX\.md` in its own folder and reads back the other role's note/);
     for (const text of [flat(skill), flat(pilot), flat(strategist), agents, readme, live]) expect(text).toMatch(/`(?:notebook\/(?:astra|luna)\/)?INDEX\.md`/);
+  });
+
+  it("teaches the 0.22.0 tools, power model and build-time settings in plain words", () => {
+    const flatSkill = flat(skill);
+    expect(flatSkill).toMatch(/`add_to_cover` says how many steam engines, solar panels, or accumulators would cover demand/);
+    expect(flatSkill).toMatch(/`sections: \['logistics'\]` shows robot networks/);
+    expect(flatSkill).toMatch(/`configure_entity` sets what a building's window sets[\s\S]*changes only what you name/);
+    expect(flatSkill).toMatch(/Give `build_layout` entities `settings` \(and `mirror`, and `belt_to_ground_type: input\|output` for an underground belt\) instead to build a sorter or a mall already configured/);
+    expect(flatSkill).toMatch(/`place_tiles` lays landfill[\s\S]*nearest tiles first, walking along[\s\S]*`check_only` counts the items/);
+    expect(flatSkill).toMatch(/`set_requests` sets what a requester or buffer chest asks robots for\. Only robots deliver/);
+    expect(flatSkill).toMatch(/`extract_items` and `insert_items` take an `inventory`/);
+    expect(flatSkill).toMatch(/Plan steps only: `equip` wears armor[\s\S]*`flush_fluid` empties a pipe or tank system/);
+    for (const tool of ["configure_entity", "place_tiles", "set_requests"]) expect(registered).toContain(tool);
+    for (const step of ["equip", "flush_fluid"]) expect(registered).not.toContain(step);
+    expect(flat(strategist)).toMatch(/a site cut off by water starts with a `place_tiles` landfill step \(steps after it, and a successor package, are checked only when they run, so they need no dry run on the water\)\. Give layout entities their `settings`/);
+    expect(flat(knowledge)).toMatch(/solar panels with accumulators are an option that needs no fuel/);
+    expect(flat(knowledge)).toMatch(/Filter inserters and filtered splitters sort mixed belts, such as Fulgora's scrap/);
+    expect(flat(knowledge)).toMatch(/Landfill joins a site across water; Aquilo's ocean takes ice platform/);
   });
 
   it("allows this run's positions, forbids anything from another run, and reads remotely while acting needs reach", () => {

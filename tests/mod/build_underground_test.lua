@@ -119,4 +119,40 @@ check(created[#created].type == "output" and result and result.status == "done"
   and result.detail:match("step 2: placed underground%-belt as output end paired with underground%-belt at %(0%.5, 0%.5%)") ~= nil,
   "build_plan: the output end reaches create_entity and its pairing is reported")
 
+-- mirror: place and build_plan pass it to create_entity; settings are
+-- checked before anything is built.
+task = { item = "transport-belt", position = { x = 2.5, y = 0.5 }, mirror = true }
+build.place.start(task)
+build.place.tick(task)
+check(created[#created].mirror == true, "place: mirror reaches create_entity")
+ok, err = pcall(build.place.start, { item = "transport-belt", position = { x = 2.5, y = 0.5 }, mirror = "yes" })
+check(not ok and tostring(err):match("mirror must be true or false") ~= nil, "place: a non-boolean mirror is rejected")
+inventory["transport-belt"] = 4
+local built_before = #created
+ok, err = pcall(build_plan.start, { auto_craft = false, steps = {
+  { item = "transport-belt", position = { x = 4.5, y = 0.5 }, mirror = true, settings = { inserter = { stack_size = 1 } } },
+} })
+check(not ok and tostring(err):match("step 1 is malformed: CONFIG_NOT_APPLICABLE: the transport%-belt %(transport%-belt%) takes no inserter settings")
+  and #created == built_before and inventory["transport-belt"] == 4,
+  "build_plan: settings the entity cannot take fail CONFIG_NOT_APPLICABLE before anything is built")
+ok, err = pcall(build_plan.start, { auto_craft = false, steps = {
+  { item = "transport-belt", position = { x = 4.5, y = 0.5 }, settings = { inserter = { filters = { "iron-plates" } } } },
+} })
+check(not ok and tostring(err):match("UNKNOWN_ITEM: settings.inserter.filters%[0%]: no item called 'iron%-plates'"),
+  "build_plan: an unknown filter item fails UNKNOWN_ITEM before anything is built")
+ok, err = pcall(build_plan.start, { auto_craft = false, steps = {
+  { item = "transport-belt", position = { x = 4.5, y = 0.5 }, settings = { inserter = { filters = "iron-plate" } } },
+} })
+check(not ok and tostring(err):match("CONFIG_INVALID: settings.inserter.filters must list"),
+  "build_plan: a malformed settings shape is CONFIG_INVALID")
+plan = { auto_craft = false, steps = {
+  { item = "transport-belt", position = { x = 4.5, y = 0.5 }, mirror = true, settings = { use_filters = true } },
+} }
+build_plan.start(plan)
+result = build_plan.tick(plan)
+check(created[#created].mirror == true and result and result.status == "done",
+  "build_plan: mirror reaches create_entity; a 0.21.1 step's blueprint-style settings still start")
+ok, err = pcall(build_plan.start, { steps = { { item = "transport-belt", position = { x = 0.5, y = 0.5 }, mirror = 1 } } })
+check(not ok and tostring(err):match("mirror must be true or false") ~= nil, "build_plan: a non-boolean mirror is rejected")
+
 if failures > 0 then os.exit(1) end

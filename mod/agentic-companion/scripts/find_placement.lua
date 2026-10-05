@@ -4,6 +4,7 @@ local build = require("scripts.actions.build")
 local output_targets = require("scripts.output_target")
 local placement_geometry = require("scripts.placement_geometry")
 local fluid_connections = require("scripts.fluid_connections")
+local jobs = require("scripts.jobs")
 
 local M = {}
 
@@ -82,7 +83,8 @@ local function mining_radius(proto)
 end
 
 -- Returns the coverage rows and how many resource entities were read, which the
--- caller charges against its engine budget. Categories are cached per name.
+-- caller charges against its engine budget (about four reads each: valid,
+-- position, name, amount). Categories are cached per name.
 local function drill_resource_coverage(force, surface, proto, pos, category_by_name)
   local radius = mining_radius(proto)
   if not radius then return nil end
@@ -104,17 +106,18 @@ local function drill_resource_coverage(force, surface, proto, pos, category_by_n
       and resource_x >= area.left_top.x and resource_x < area.right_bottom.x
       and resource_y >= area.left_top.y and resource_y < area.right_bottom.y
     if center_inside then
-      local category = category_by_name[resource.name]
+      local name = resource.name
+      local category = category_by_name[name]
       if category == nil then
         local ok_category, value = pcall(function() return resource.prototype.resource_category end)
         category = ok_category and type(value) == "string" and value or false
-        category_by_name[resource.name] = category
+        category_by_name[name] = category
       end
       if category and categories[category] then
-        local row = by_name[resource.name] or { name = resource.name, entity_count = 0, total_amount = 0 }
+        local row = by_name[name] or { name = name, entity_count = 0, total_amount = 0 }
         row.entity_count = row.entity_count + 1
         row.total_amount = row.total_amount + (tonumber(resource.amount) or 0)
-        by_name[resource.name] = row
+        by_name[name] = row
       end
     end
   end
@@ -124,8 +127,15 @@ local function drill_resource_coverage(force, surface, proto, pos, category_by_n
   return rows, #resources
 end
 
+-- The whole search's ceilings (it is spread over ticks by the job budget).
+-- Engine calls are charged as made: COST_DIRECTION per direction (footprint
+-- and its four chunk checks), COST_RECIPIENT + COST_PER_ENTITY per entity an
+-- endpoint query reads, COST_PLACE_CHECK per can_place_entity (plus the body
+-- box), COST_COVERAGE + COST_PER_ENTITY per resource a drill spot reads, and
+-- COST_TILE per terrain tile.
 local MAX_EVALUATIONS = 2048
-local MAX_ENGINE_CALLS = 600
+local MAX_ENGINE_CALLS = 24000
+local COST_DIRECTION, COST_RECIPIENT, COST_PER_ENTITY, COST_PLACE_CHECK, COST_COVERAGE, COST_TILE = 6, 6, 4, 2, 7, 5
 
 local function fuel_inlet(proto)
   local ok, burner = pcall(function() return proto.burner_prototype end)
@@ -199,7 +209,36 @@ local function endpoint_gap_hint(item, proto, input_target, output_target)
     or string.format("have %d free tile%s", gap, gap == 1 and "" or "s"), requirement)
 end
 
-function M.find_placement(params)
+-- find_placement is a job (jobs.lua): the positions within the radius (up
+-- to 61 x 61) are listed a row at a time, then visited nearest first, each
+-- evaluation charged by the engine calls it makes, then the kept candidates
+-- get their terrain and fluid endpoints one at a time. Its state S is plain
+-- data (names, positions and the resolved target entities) between ticks.
+-- MAX_EVALUATIONS and MAX_ENGINE_CALLS bound the whole search; past either
+-- it stops and says so (truncated, with a hint).
+local function placement_context(S, c)
+  local item = prototypes.item[S.item]
+  local proto = item and item.place_result
+  if not proto then error(S.item .. " is not a placeable item") end
+  local X = { proto = proto, drop_offset = output_targets.output_offset(proto) }
+  -- Read once a step, not per evaluation.
+  X.force, X.surface, X.position = c.force, c.surface, c.position
+  X.output_capable = proto.type == "mining-drill" or proto.type == "inserter" or X.drop_offset ~= nil
+  if proto.type == "inserter" then
+    local ok_pickup, raw_pickup = pcall(function() return proto.inserter_pickup_position end)
+    local ok_drop, raw_drop = pcall(function() return proto.inserter_drop_position end)
+    if ok_pickup and raw_pickup and ok_drop and raw_drop then
+      X.inserter_pickup_offset = prototype_vector(raw_pickup)
+      X.inserter_drop_offset = prototype_vector(raw_drop)
+    end
+  end
+  if S.output_recipient_item then
+    X.output_recipient_proto = prototypes.item[S.output_recipient_item].place_result
+  end
+  return X
+end
+
+local function search_start(params)
   local c = companion.require_companion()
   if type(params.item) ~= "string" then error("find_placement item must be an item name") end
   local item = prototypes.item[params.item]
@@ -228,19 +267,8 @@ function M.find_placement(params)
     error("find_placement accepts output_target or output_recipient_item, not both")
   end
 
-  local inserter_pickup_offset, inserter_drop_offset
-  if proto.type == "inserter" then
-    local ok_pickup, raw_pickup = pcall(function() return proto.inserter_pickup_position end)
-    local ok_drop, raw_drop = pcall(function() return proto.inserter_drop_position end)
-    if ok_pickup and raw_pickup and ok_drop and raw_drop then
-      inserter_pickup_offset = prototype_vector(raw_pickup)
-      inserter_drop_offset = prototype_vector(raw_drop)
-    end
-  end
-
   local input_target, output_target, output_recipient_item, output_recipient_proto = nil, nil, nil, nil
   local drop_offset = output_targets.output_offset(proto)
-  local output_capable = proto.type == "mining-drill" or proto.type == "inserter" or drop_offset ~= nil
   if params.input_target ~= nil then
     if proto.type ~= "inserter" or not output_targets.input_offset(proto) then
       error(params.item .. " has no deterministic input offset")
@@ -276,173 +304,209 @@ function M.find_placement(params)
 
   local width, height = tonumber(proto.tile_width) or 1, tonumber(proto.tile_height) or 1
   local origin_x, origin_y = snapped(preferred.x, width), snapped(preferred.y, height)
-  -- Nearest positions first, so the caps keep the most relevant area. Positions
-  -- are bucketed by whole-tile distance and each bucket is sorted only when the
-  -- search reaches it; the visiting order is exactly distance, then y, then x.
-  local buckets = {}
-  for y = origin_y - radius, origin_y + radius do
-    for x = origin_x - radius, origin_x + radius do
-      local pdx, pdy = x - preferred.x, y - preferred.y
+  return {
+    item = params.item, belt_to_ground_type = params.belt_to_ground_type,
+    output_recipient_item = params.output_recipient_item,
+    preferred = preferred, radius = radius, limit = limit, directions = directions,
+    input_target = input_target, output_target = output_target,
+    origin_x = origin_x, origin_y = origin_y, stage = "positions", row = origin_y - radius,
+    buckets = {}, band = 0, index = 0,
+    rejections = {}, closest_rejected = nil, evaluated = 0, truncated = false, engine_calls = 0,
+    candidates = {}, rejected_no_compatible_resource = 0, category_by_name = {}, finished = 0,
+    -- Positions are visited in final order for every entity except drills,
+    -- which rank useful coverage first among the nearest valid positions found.
+    wanted = mining_radius(proto) and math.min(limit * 2, 48) or limit,
+  }
+end
+
+-- Nearest positions first, so the caps keep the most relevant area. Positions
+-- are bucketed by whole-tile distance a row at a time and each bucket is
+-- sorted only when the search reaches it; the visiting order is exactly
+-- distance, then y, then x.
+local POSITION_COST = 0.125
+local function list_positions(S, budget)
+  local radius = S.radius
+  while S.row <= S.origin_y + radius do
+    if budget.left <= 0 then return false end
+    local y = S.row
+    for x = S.origin_x - radius, S.origin_x + radius do
+      local pdx, pdy = x - S.preferred.x, y - S.preferred.y
       local distance_sq = pdx * pdx + pdy * pdy
       if distance_sq <= radius * radius then
         local band = math.floor(math.sqrt(distance_sq)) + 1
-        local bucket = buckets[band] or {}
+        local bucket = S.buckets[band] or {}
         bucket[#bucket + 1] = { x = x, y = y, distance_sq = distance_sq }
-        buckets[band] = bucket
+        S.buckets[band] = bucket
       end
     end
+    budget.left = budget.left - (2 * radius + 1) * POSITION_COST
+    S.row = y + 1
   end
-  local function by_distance(a, b)
-    if a.distance_sq ~= b.distance_sq then return a.distance_sq < b.distance_sq end
-    if a.y ~= b.y then return a.y < b.y end
-    return a.x < b.x
-  end
-  local function nearest_positions()
-    local band, index, current = 0, 0, nil
-    return function()
-      while true do
-        if current and index < #current then index = index + 1; return current[index] end
-        band = band + 1
-        if band > radius + 1 then return nil end
-        current, index = buckets[band], 0
-        if current then table.sort(current, by_distance) end
-      end
-    end
-  end
+  return true
+end
 
-  -- One reason per evaluated position and direction, in check order; a later
-  -- stage means the request got further, so it drives the hint.
-  local stage = {
-    uncharted = 2, pickup_not_on_source = 3, output_endpoint_unknown = 4,
-    output_not_on_recipient = 5, planned_recipient_unplaceable = 6, no_compatible_resource = 7,
-    codex_body_overlap = 8, blocked = 9,
-  }
-  local rejections, closest_rejected, evaluated, truncated = {}, nil, 0, false
-  local candidates, rejected_no_compatible_resource = {}, 0
-  -- Positions are visited in final order for every entity except drills, which
-  -- rank useful coverage first among the nearest valid positions found.
-  local wanted = mining_radius(proto) and math.min(limit * 2, 48) or limit
-  local category_by_name = {}
-  local function reject(reason, pos, direction, area)
-    rejections[reason] = (rejections[reason] or 0) + 1
-    if not closest_rejected or stage[reason] > stage[closest_rejected.reason] then
-      closest_rejected = { reason = reason, position = { x = pos.x, y = pos.y }, direction = direction, area = area }
-    end
+local function by_distance(a, b)
+  if a.distance_sq ~= b.distance_sq then return a.distance_sq < b.distance_sq end
+  if a.y ~= b.y then return a.y < b.y end
+  return a.x < b.x
+end
+
+local function next_spot(S)
+  while true do
+    local current = S.buckets[S.band]
+    if current and S.index < #current then S.index = S.index + 1; return current[S.index] end
+    S.band, S.index = S.band + 1, 0
+    if S.band > S.radius + 1 then return nil end
+    current = S.buckets[S.band]
+    if current then table.sort(current, by_distance) end
   end
-  -- Engine queries dominate the cost of one search (about 10-15 microseconds
-  -- each); the budget keeps a call within one game tick.
-  local engine_calls = 0
-  for spot in nearest_positions() do
-    if truncated or #candidates >= wanted then break end
-    local x, y = spot.x, spot.y
-    local cdx, cdy = x - c.position.x, y - c.position.y
-    local codex_distance_sq = cdx * cdx + cdy * cdy
-    -- A drill's mining area does not depend on direction: query it once per spot.
-    local spot_coverage, spot_coverage_read = nil, false
-    for _, direction in ipairs(directions) do
-      if evaluated >= MAX_EVALUATIONS or engine_calls >= MAX_ENGINE_CALLS then truncated = true; break end
-      evaluated = evaluated + 1
-      local pos = { x = x, y = y }
-      local area = placement_geometry.footprint(proto, pos, direction)
-      if not footprint_charted(c.force, c.surface, area) then reject("uncharted", pos, direction); goto continue end
-      do
-        local output_position = output_targets.output_position(proto, pos, direction)
-        local pickup_offset = inserter_pickup_offset and rotate(inserter_pickup_offset, direction) or nil
-        local inserter_output_offset = inserter_drop_offset and rotate(inserter_drop_offset, direction) or nil
-        local pickup_position = pickup_offset and { x = x + pickup_offset.x, y = y + pickup_offset.y } or nil
-        local drop_position = inserter_output_offset and { x = x + inserter_output_offset.x, y = y + inserter_output_offset.y } or nil
-        if proto.type == "inserter" and output_target then output_position = drop_position end
-        local candidate_input_target
-        if input_target then
-          engine_calls = engine_calls + 1
-          local input_entity, input_identity = output_targets.recipient_at(c, pickup_position, "input", proto.type)
-          if input_entity ~= input_target.entity then reject("pickup_not_on_source", pos, direction); goto continue end
-          candidate_input_target = input_identity
-        end
-        if output_position then engine_calls = engine_calls + 1 end
-        local recipient, recipient_identity, recipient_state = output_targets.recipient_at(c, output_position, "output", proto.type)
-        if output_capable and not (output_position ~= nil and (recipient_state == "bound" or recipient_state == "none")) then
-          reject("output_endpoint_unknown", pos, direction); goto continue
-        end
-        if output_target and recipient ~= output_target.entity then
-          reject("output_not_on_recipient", pos, direction); goto continue
-        end
-        local candidate_output_target
-        if output_position and recipient_state == "bound" then candidate_output_target = recipient_identity end
-        if output_position and recipient_state == "none" then candidate_output_target = false end
-        local recipient_placement
-        if output_recipient_item then
-          if output_position and recipient_state == "none" then
-            for _, recipient_position in ipairs(output_targets.planned_recipient_positions(
-              output_recipient_proto, output_position, pos, proto.type)) do
-              local recipient_area = placement_geometry.footprint(output_recipient_proto, recipient_position, 0)
-              if not placement_geometry.overlaps(area, recipient_area)
-                and footprint_charted(c.force, c.surface, recipient_area) then
-                local recipient_ok, _, _, checks = placement_geometry.can_place(c, output_recipient_proto, recipient_position, 0)
-                engine_calls = engine_calls + checks
-                if recipient_ok then
-                  recipient_placement = { item = params.output_recipient_item,
-                    entity = output_recipient_proto.name, position = recipient_position, direction = 0 }
-                  break
-                end
+end
+
+-- One reason per evaluated position and direction, in check order; a later
+-- stage means the request got further, so it drives the hint.
+local STAGE = {
+  uncharted = 2, pickup_not_on_source = 3, output_endpoint_unknown = 4,
+  output_not_on_recipient = 5, planned_recipient_unplaceable = 6, no_compatible_resource = 7,
+  codex_body_overlap = 8, blocked = 9,
+}
+local function reject(S, reason, pos, direction, area)
+  S.rejections[reason] = (S.rejections[reason] or 0) + 1
+  local closest = S.closest_rejected
+  if not closest or STAGE[reason] > STAGE[closest.reason] then
+    S.closest_rejected = { reason = reason, position = { x = pos.x, y = pos.y }, direction = direction, area = area }
+  end
+end
+
+-- Every direction at one spot: rejections or candidates.
+local function evaluate_spot(S, X, c, spot)
+  local proto, x, y = X.proto, spot.x, spot.y
+  local input_target, output_target = S.input_target, S.output_target
+  local cdx, cdy = x - X.position.x, y - X.position.y
+  local codex_distance_sq = cdx * cdx + cdy * cdy
+  -- A drill's mining area does not depend on direction: query it once per spot.
+  local spot_coverage, spot_coverage_read = nil, false
+  for _, direction in ipairs(S.directions) do
+    if S.evaluated >= MAX_EVALUATIONS or S.engine_calls >= MAX_ENGINE_CALLS then S.truncated = true; return end
+    S.evaluated = S.evaluated + 1
+    S.engine_calls = S.engine_calls + COST_DIRECTION
+    local pos = { x = x, y = y }
+    local area = placement_geometry.footprint(proto, pos, direction)
+    if not footprint_charted(X.force, X.surface, area) then reject(S, "uncharted", pos, direction); goto continue end
+    do
+      local output_position = output_targets.output_position(proto, pos, direction)
+      local pickup_offset = X.inserter_pickup_offset and rotate(X.inserter_pickup_offset, direction) or nil
+      local inserter_output_offset = X.inserter_drop_offset and rotate(X.inserter_drop_offset, direction) or nil
+      local pickup_position = pickup_offset and { x = x + pickup_offset.x, y = y + pickup_offset.y } or nil
+      local drop_position = inserter_output_offset and { x = x + inserter_output_offset.x, y = y + inserter_output_offset.y } or nil
+      if proto.type == "inserter" and output_target then output_position = drop_position end
+      local candidate_input_target
+      if input_target then
+        local input_entity, input_identity, _, read = output_targets.recipient_at(c, pickup_position, "input", proto.type)
+        S.engine_calls = S.engine_calls + COST_RECIPIENT + COST_PER_ENTITY * (read or 0)
+        if input_entity ~= input_target.entity then reject(S, "pickup_not_on_source", pos, direction); goto continue end
+        candidate_input_target = input_identity
+      end
+      local recipient, recipient_identity, recipient_state, read = output_targets.recipient_at(c, output_position, "output", proto.type)
+      if output_position then S.engine_calls = S.engine_calls + COST_RECIPIENT + COST_PER_ENTITY * (read or 0) end
+      if X.output_capable and not (output_position ~= nil and (recipient_state == "bound" or recipient_state == "none")) then
+        reject(S, "output_endpoint_unknown", pos, direction); goto continue
+      end
+      if output_target and recipient ~= output_target.entity then
+        reject(S, "output_not_on_recipient", pos, direction); goto continue
+      end
+      local candidate_output_target
+      if output_position and recipient_state == "bound" then candidate_output_target = recipient_identity end
+      if output_position and recipient_state == "none" then candidate_output_target = false end
+      local recipient_placement
+      if S.output_recipient_item then
+        local recipient_proto = X.output_recipient_proto
+        if output_position and recipient_state == "none" then
+          for _, recipient_position in ipairs(output_targets.planned_recipient_positions(
+            recipient_proto, output_position, pos, proto.type)) do
+            local recipient_area = placement_geometry.footprint(recipient_proto, recipient_position, 0)
+            if not placement_geometry.overlaps(area, recipient_area)
+              and footprint_charted(X.force, X.surface, recipient_area) then
+              local recipient_ok, _, _, checks = placement_geometry.can_place(c, recipient_proto, recipient_position, 0)
+              S.engine_calls = S.engine_calls + COST_DIRECTION + COST_PLACE_CHECK * (1 + checks)
+              if recipient_ok then
+                recipient_placement = { item = S.output_recipient_item,
+                  entity = recipient_proto.name, position = recipient_position, direction = 0 }
+                break
               end
             end
           end
-          if not recipient_placement then reject("planned_recipient_unplaceable", pos, direction); goto continue end
         end
-        -- Factorio refuses drills without ore, so coverage (one query per spot)
-        -- runs before the engine placement check and names the real reason.
-        if not spot_coverage_read then
-          spot_coverage_read = true
-          local resources_read
-          spot_coverage, resources_read = drill_resource_coverage(c.force, c.surface, proto, pos, category_by_name)
-          if resources_read then engine_calls = engine_calls + 1 + math.ceil(resources_read / 8) end
-        end
-        local resource_coverage = spot_coverage
-        if resource_coverage and #resource_coverage == 0 then
-          rejected_no_compatible_resource = rejected_no_compatible_resource + 1
-          reject("no_compatible_resource", pos, direction); goto continue
-        end
-        local can_place, placement_reason, _, checks = placement_geometry.can_place(c, proto, pos, direction)
-        engine_calls = engine_calls + checks
-        if not can_place then
-          reject(placement_reason == "CODEX_BODY_OVERLAP" and "codex_body_overlap" or "blocked", pos, direction, area)
-          goto continue
-        end
-        local producer_step = { name = params.item, x = pos.x, y = pos.y, direction = direction }
-        producer_step.belt_to_ground_type = params.belt_to_ground_type
-        if fuel_inlet(proto) then producer_step.fuel_inlet = true end
-        if input_target then producer_step.input_target = input_target.position end
-        if output_target then producer_step.output_target = output_target.position end
-        if recipient_placement then producer_step.output_target = recipient_placement.position end
-        local build_steps = {}
-        if recipient_placement then
-          build_steps[#build_steps + 1] = { name = recipient_placement.item,
-            x = recipient_placement.position.x, y = recipient_placement.position.y,
-            direction = recipient_placement.direction,
-            fuel_inlet = fuel_inlet(output_recipient_proto) or nil }
-        end
-        build_steps[#build_steps + 1] = producer_step
-        candidates[#candidates + 1] = {
-          item = params.item, entity = proto.name, position = pos, direction = direction,
-          distance = math.sqrt(spot.distance_sq),
-          distance_from_codex = math.sqrt(codex_distance_sq),
-          area = area,
-          output_position = output_position,
-          output_target = candidate_output_target,
-          input_target = candidate_input_target,
-          pickup_position = pickup_position,
-          drop_position = drop_position,
-          geometry = (input_target or output_target or output_recipient_item) and "provisional" or nil,
-          output_recipient_placement = recipient_placement,
-          build_steps = build_steps,
-          resource_coverage = resource_coverage,
-        }
+        if not recipient_placement then reject(S, "planned_recipient_unplaceable", pos, direction); goto continue end
       end
-      ::continue::
+      -- Factorio refuses drills without ore, so coverage (one query per spot)
+      -- runs before the engine placement check and names the real reason.
+      if not spot_coverage_read then
+        spot_coverage_read = true
+        local resources_read
+        spot_coverage, resources_read = drill_resource_coverage(X.force, X.surface, proto, pos, S.category_by_name)
+        if resources_read then S.engine_calls = S.engine_calls + COST_COVERAGE + COST_PER_ENTITY * resources_read end
+      end
+      local resource_coverage = spot_coverage
+      if resource_coverage and #resource_coverage == 0 then
+        S.rejected_no_compatible_resource = S.rejected_no_compatible_resource + 1
+        reject(S, "no_compatible_resource", pos, direction); goto continue
+      end
+      local can_place, placement_reason, _, checks = placement_geometry.can_place(c, proto, pos, direction)
+      S.engine_calls = S.engine_calls + COST_PLACE_CHECK * (1 + checks)
+      if not can_place then
+        reject(S, placement_reason == "CODEX_BODY_OVERLAP" and "codex_body_overlap" or "blocked", pos, direction, area)
+        goto continue
+      end
+      local producer_step = { name = S.item, x = pos.x, y = pos.y, direction = direction }
+      producer_step.belt_to_ground_type = S.belt_to_ground_type
+      if fuel_inlet(proto) then producer_step.fuel_inlet = true end
+      if input_target then producer_step.input_target = input_target.position end
+      if output_target then producer_step.output_target = output_target.position end
+      if recipient_placement then producer_step.output_target = recipient_placement.position end
+      local build_steps = {}
+      if recipient_placement then
+        build_steps[#build_steps + 1] = { name = recipient_placement.item,
+          x = recipient_placement.position.x, y = recipient_placement.position.y,
+          direction = recipient_placement.direction,
+          fuel_inlet = fuel_inlet(X.output_recipient_proto) or nil }
+      end
+      build_steps[#build_steps + 1] = producer_step
+      S.candidates[#S.candidates + 1] = {
+        item = S.item, entity = proto.name, position = pos, direction = direction,
+        distance = math.sqrt(spot.distance_sq),
+        distance_from_codex = math.sqrt(codex_distance_sq),
+        area = area,
+        output_position = output_position,
+        output_target = candidate_output_target,
+        input_target = candidate_input_target,
+        pickup_position = pickup_position,
+        drop_position = drop_position,
+        geometry = (input_target or output_target or S.output_recipient_item) and "provisional" or nil,
+        output_recipient_placement = recipient_placement,
+        build_steps = build_steps,
+        resource_coverage = resource_coverage,
+      }
     end
+    ::continue::
   end
-  table.sort(candidates, function(a, b)
+end
+
+-- Visits positions until the wanted candidates are found, the radius is
+-- done or a cap is reached; true once the search is over.
+local function search(S, X, c, budget)
+  while budget.left > 0 do
+    if S.truncated or #S.candidates >= S.wanted then return true end
+    local spot = next_spot(S)
+    if not spot then return true end
+    local before = S.engine_calls
+    evaluate_spot(S, X, c, spot)
+    budget.left = budget.left - math.max(1, S.engine_calls - before)
+  end
+  return false
+end
+
+local function rank(proto)
+  return function(a, b)
     if proto.type == "mining-drill" then
       local function coverage(candidate)
         local amount, count = 0, 0
@@ -459,14 +523,34 @@ function M.find_placement(params)
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
     if a.position.x ~= b.position.x then return a.position.x < b.position.x end
     return a.direction < b.direction
-  end)
-  while #candidates > limit do table.remove(candidates) end
-  -- Terrain and fluid detail only for returned candidates.
-  for _, candidate in ipairs(candidates) do
-    candidate.terrain = terrain(c.force, c.surface, proto, candidate.area)
-    candidate.fluid_connections = fluid_connections.prototype(proto, candidate.position, candidate.direction)
-    candidate.area = nil
   end
+end
+
+-- Terrain and fluid detail only for returned candidates, one a slice: a
+-- candidate's terrain reads its footprint's tiles and their chart.
+local function detail_candidates(S, X, c, budget)
+  if S.finished == 0 then
+    table.sort(S.candidates, rank(X.proto))
+    while #S.candidates > S.limit do table.remove(S.candidates) end
+  end
+  while S.finished < #S.candidates do
+    if budget.left <= 0 then return false end
+    local candidate = S.candidates[S.finished + 1]
+    local area = candidate.area
+    candidate.terrain = terrain(X.force, X.surface, X.proto, area)
+    candidate.fluid_connections = fluid_connections.prototype(X.proto, candidate.position, candidate.direction)
+    candidate.area = nil
+    local tiles = (math.ceil(area.right_bottom.x) - math.floor(area.left_top.x) + 2)
+      * (math.ceil(area.right_bottom.y) - math.floor(area.left_top.y) + 2)
+    budget.left = budget.left - COST_TILE * tiles - 4
+    S.finished = S.finished + 1
+  end
+  return true
+end
+
+local function search_result(S, X, c)
+  local proto, candidates, closest_rejected = X.proto, S.candidates, S.closest_rejected
+  local input_target, output_target = S.input_target, S.output_target
   local blocker
   if closest_rejected and closest_rejected.reason == "blocked" and closest_rejected.area then
     for _, entity in ipairs(c.surface.find_entities_filtered({ area = closest_rejected.area })) do
@@ -480,34 +564,58 @@ function M.find_placement(params)
   if closest_rejected then closest_rejected.area = nil end
   local hint
   if #candidates == 0 then
-    hint = endpoint_gap_hint(params.item, proto, input_target, output_target)
+    hint = endpoint_gap_hint(S.item, proto, input_target, output_target)
     if not hint and closest_rejected then
       local reason = closest_rejected.reason
       if reason == "uncharted" then hint = "the searched area is not charted; move preferred into charted terrain or walk to chart it"
       elseif reason == "pickup_not_on_source" then hint = "no position puts the pickup point on input_target; move preferred next to it or check radius"
       elseif reason == "output_endpoint_unknown" then hint = "the output point lands on several or uncharted recipients; move preferred or use a clearer endpoint"
       elseif reason == "output_not_on_recipient" then hint = "no position puts the output point on output_target; move preferred next to it or check radius"
-      elseif reason == "planned_recipient_unplaceable" then hint = "no free spot for " .. tostring(params.output_recipient_item) .. " at any producer output point; clear the area or move preferred"
+      elseif reason == "planned_recipient_unplaceable" then hint = "no free spot for " .. tostring(S.output_recipient_item) .. " at any producer output point; clear the area or move preferred"
       elseif reason == "codex_body_overlap" then hint = "only Codex's own body blocks the best positions; walk clear and search again"
       elseif reason == "blocked" then hint = "the best positions are blocked" .. (blocker and string.format(" by %s at (%.17g, %.17g)", blocker.name, blocker.position.x, blocker.position.y) or "") .. "; clear it or move preferred"
       elseif reason == "no_compatible_resource" then hint = "no compatible resource under the mining area near preferred; move preferred onto the resource patch" end
     end
-    if truncated then
-      local stopped = "the search stopped after " .. evaluated .. " evaluations, before covering the whole radius; reduce radius or move preferred closer"
+    if S.truncated then
+      local stopped = "the search stopped after " .. S.evaluated .. " evaluations, before covering the whole radius; reduce radius or move preferred closer"
       hint = hint and (hint .. "; " .. stopped) or stopped
     end
   end
-  return { item = params.item, entity = proto.name, preferred = preferred,
+  return { item = S.item, entity = proto.name, preferred = S.preferred,
     input_target = input_target and input_target.identity or nil,
     output_target = output_target and output_target.identity or nil,
-    output_recipient_item = params.output_recipient_item,
-    geometry = (input_target or output_target or output_recipient_item) and "provisional" or nil,
-    rejected_no_compatible_resource = proto.type == "mining-drill" and rejected_no_compatible_resource or nil,
-    evaluated = evaluated, truncated = truncated or nil,
-    rejections = next(rejections) and rejections or nil,
+    output_recipient_item = S.output_recipient_item,
+    geometry = (input_target or output_target or S.output_recipient_item) and "provisional" or nil,
+    rejected_no_compatible_resource = proto.type == "mining-drill" and S.rejected_no_compatible_resource or nil,
+    evaluated = S.evaluated, truncated = S.truncated or nil,
+    rejections = next(S.rejections) and S.rejections or nil,
     closest_rejected = #candidates == 0 and closest_rejected or nil,
     hint = hint,
     candidates = candidates }
 end
+
+local NEXT_STAGE = { positions = "search", search = "detail", detail = "result" }
+
+local function search_step(S, budget)
+  local c = companion.require_companion()
+  local X = placement_context(S, c)
+  while budget.left > 0 do
+    local stage, done = S.stage, nil
+    if stage == "positions" then done = list_positions(S, budget)
+    elseif stage == "search" then done = search(S, X, c, budget)
+    elseif stage == "detail" then done = detail_candidates(S, X, c, budget)
+    else return search_result(S, X, c) end
+    if done then S.stage = NEXT_STAGE[stage] end
+  end
+  return nil
+end
+
+-- find_placement {item, preferred, radius?, limit?, directions?, input_target?,
+-- output_target?, output_recipient_item?, belt_to_ground_type?}: the job
+-- definition; the RPC answers at once when the search fits this tick.
+M.job = { start = search_start, step = search_step }
+jobs.register("find_placement", M.job)
+
+function M.find_placement(params) return jobs.start("find_placement", params) end
 
 return M

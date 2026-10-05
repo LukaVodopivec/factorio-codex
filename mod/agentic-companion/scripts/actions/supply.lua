@@ -146,11 +146,18 @@ local function nearest_of(c, task, item, tried, entities, charted_only)
   return best
 end
 
+-- The registry's stock (the maintenance cursor's last reads) picks the few
+-- nearest holders that held the item; only those are read live. None held
+-- any: no holder is walked.
+local HOLDERS_READ = 4
 local function nearest_holder(c, task, item, tried)
+  local ok_totals, totals = pcall(registry.stock_totals, { item })
+  if ok_totals and (totals[item] or 0) == 0 then return nil end
+  local function skip(entry) return tried[string.format("%.2f,%.2f", entry.position.x, entry.position.y)] end
+  local ok, entries = pcall(registry.holders_with, item, c.position, HOLDERS_READ, skip)
   local holders = {}
-  local ok, entries = pcall(registry.list, "holders")
   for _, entry in ipairs(ok and entries or {}) do holders[#holders + 1] = entry.entity end
-  return nearest_of(c, task, item, tried, holders, false)
+  return nearest_of(c, task, item, tried, holders, true)
 end
 
 local function nearest_belt(c, task, item, tried)

@@ -35,7 +35,12 @@
   uncharted terrain through MCP. Everything the force has charted may be read;
   acting still needs physical reach.
 - No RPC or on_tick work may take more than about 8 ms of Lua time in one tick,
-  and nothing scans the whole surface: the server holds 60 UPS.
+  and nothing scans the whole surface: the server holds 60 UPS. Lua has no
+  clock, so every handler budgets a fixed count of work items per tick and
+  spreads the rest across ticks as a job.
+- Mod actions never use the cursor, open a GUI, or pass the player to
+  `set_tiles`, `put`, `take`, or `copy_settings`: that would start the owner's
+  takeover hold or fill his undo queue.
 - Use Node 22 and Factorio 2.0.x. Run the proportional offline suite before
   publication; live gameplay validation requires an installed Factorio game.
 - Complete private-repository changes on clean, pushed `main` with exact

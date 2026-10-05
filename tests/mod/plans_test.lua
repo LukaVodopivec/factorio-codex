@@ -14,10 +14,11 @@ local function runner(kind) return { start = function(task) starts[#starts + 1] 
 local walk, mine, craft = runner("walk_to"), runner("mine"), runner("craft")
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = walk, mine, runner("pickup"), craft
 package.loaded["scripts.actions.build"] = { place = runner("place"), rotate = runner("rotate"), set_recipe = runner("set_recipe") }
-package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract") }
+package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract"),
+  flush_action = { runner = runner("flush_fluid"), make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = runner("build_plan")
 local inspected = 0
-package.loaded["scripts.inspect"] = { inspect = function() inspected = inspected + 1; return { entities = { { inventories = { output = { ["iron-plate"] = inspected >= 2 and 1 or 0 } } } } } end }
+package.loaded["scripts.inspect"] = { MAX_TARGETS = 64, inspect = function() inspected = inspected + 1; return { entities = { { inventories = { output = { ["iron-plate"] = inspected >= 2 and 1 or 0 } } } } } end }
 _G.game, _G.defines = { tick = 0 }, { shooting = { not_shooting = 0 } }
 _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
 local tasks = require("scripts.tasks")
@@ -35,6 +36,16 @@ local removed_ok, removed_error = pcall(tasks.queue_plan, { steps = { { action =
   source_tick = 0, positions = { { x = 0, y = 0 } }, duration_seconds = 1 } } })
 check(not removed_ok and tostring(removed_error):match("unknown plan action") ~= nil,
   "the removed validate_factory_component action is no longer accepted")
+local role_ok, role_error = pcall(tasks.queue_plan, { steps = { { action = "extract_items", x = 1, y = 1,
+  inventory = "furnace_source" } } })
+check(not role_ok and tostring(role_error):match("inventory must be one of main, input, output") ~= nil
+  and not pcall(tasks.queue_plan, { steps = { { action = "insert_items", x = 1, y = 1, items = { coal = 1 }, inventory = "rocket" } } }),
+  "insert and extract inventory roles are checked at queue time")
+check(not pcall(tasks.queue_plan, { steps = { { action = "configure_entity", x = 1, y = 1 } } })
+  and not pcall(tasks.queue_plan, { steps = { { action = "place_tiles", item = "landfill" } } })
+  and not pcall(tasks.queue_plan, { steps = { { action = "equip" } } })
+  and not pcall(tasks.queue_plan, { steps = { { action = "set_requests", target = { x = 1, y = 1 }, requests = {} } } }),
+  "the stage A actions are plan actions whose steps are validated at queue time")
 local first = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 2,
   arrival_mode = "within_radius", arrival_radius = 2 }, { action = "mine", x = 3, y = 4, count = 1 } }, observation_detail = "compact" })
 local successor = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 1, wait_for_completion = false } }, after_plan_id = first.plan_id })

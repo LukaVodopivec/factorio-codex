@@ -43,7 +43,7 @@ surface = {
   end,
 }
 local body = { valid = true, position = { x = 0.5, y = 0.5 }, build_distance = 6, force = force, surface = surface,
-  get_item_count = function() return 1 end, remove_item = function(args) removed = removed + args.count end }
+  get_item_count = function() return 1 end, remove_item = function(args) removed = removed + args.count; return args.count end }
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 package.loaded["scripts.actions.approach"] = {
   ensure = function() return "ok" end,
@@ -276,7 +276,7 @@ check(planned_unbound_result and planned_unbound_result.status == "failed"
   "build_plan fails honestly when the live output tile has no recipient")
 
 created, removed, inserted, insert_limit, target_matches = 0, 0, 0, 7, {}
-body.get_item_count = function(name) return name == "wood" and 10 or 1 end
+body.get_item_count = function(name) return (type(name) == "table" and name.name or name) == "wood" and 10 or 1 end
 local partial_insert_plan = { steps = {
   { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, insert = { wood = 10 } },
   { item = "wooden-chest", position = { x = 3.5, y = 0.5 } },
@@ -301,11 +301,12 @@ check(activity.snapshot(insertion_tick).events[#activity.snapshot(insertion_tick
 local function starter_case(items, stock, limit, rejected, later_steps, stop_on_error)
   storage = {}; game.tick = game.tick + 1
   created, removed, inserted, insert_limit, rejected_item, target_matches = 0, 0, 0, limit, rejected, {}
-  body.get_item_count = function(name) return stock[name] or 0 end
+  body.get_item_count = function(name) return stock[type(name) == "table" and name.name or name] or 0 end
   body.remove_item = function(stack)
     assert((stock[stack.name] or 0) >= stack.count)
     stock[stack.name] = stock[stack.name] - stack.count
     removed = removed + stack.count
+    return stack.count
   end
   local steps = { { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, insert = items } }
   for _, step in ipairs(later_steps or {}) do steps[#steps + 1] = step end
@@ -363,8 +364,8 @@ for _, terminal in ipairs({ "cancel", "target-invalid", "entity-invalid", "compl
   created, removed, inserted, insert_limit, rejected_item, drop_target, target_matches = 0, 0, 0, nil, nil, nil, { recipient }
   recipient.valid = true
   local stock = { ["burner-mining-drill"] = 1, wood = 1 }
-  body.get_item_count = function(name) return stock[name] or 0 end
-  body.remove_item = function(stack) stock[stack.name] = stock[stack.name] - stack.count end
+  body.get_item_count = function(name) return stock[type(name) == "table" and name.name or name] or 0 end
+  body.remove_item = function(stack) stock[stack.name] = stock[stack.name] - stack.count; return stack.count end
   local id = tasks.enqueue({ task = { type = "build_plan", steps = {
     { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, insert = { wood = 1 }, output_target = { x = 2.5, y = 0.5 } },
   } } }).task_id
@@ -388,7 +389,7 @@ recipient.valid = true
 -- Restore the shared fixture defaults for the remaining placement cases.
 insert_limit, rejected_item = nil, nil
 body.get_item_count = function() return 1 end
-body.remove_item = function(stack) removed = removed + stack.count end
+body.remove_item = function(stack) removed = removed + stack.count; return stack.count end
 -- A tile-corner coordinate inside an owned entity names that entity's exact
 -- position instead of a bare "does not identify" failure.
 local resolver = require("scripts.output_target")

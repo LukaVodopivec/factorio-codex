@@ -3,8 +3,8 @@
 -- (its contents go into the inventory with it, mining time kept), walks to
 -- `to` and places it there (auto-clear and the checks of place_entity), then
 -- restores what the API allows: the recipe, the direction (unless one is
--- given), filters, splitter and chest settings, the mirror, and the fuel,
--- modules and ingredients it held. Products it held stay in the inventory.
+-- given), its settings (entity_settings), the mirror (placed mirrored), and
+-- the fuel, modules and ingredients it held. Products it held stay in the inventory.
 -- Result: {moved, from, to, restored:{recipe, direction, items, settings},
 -- shortfall?}. A placement that fails leaves the entity in the inventory and
 -- says so. Before mining, the target spot is checked so a move that cannot
@@ -14,6 +14,7 @@ local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
 local placement_geometry = require("scripts.placement_geometry")
 local build = require("scripts.actions.build")
+local entity_settings = require("scripts.entity_settings")
 local supply = require("scripts.actions.supply")
 
 local M = {}
@@ -130,9 +131,12 @@ function M.start(task)
   if e.type == "assembling-machine" or e.type == "rocket-silo" then pcall(function() local r = e.get_recipe(); recipe = r and r.name end) end
   local held = {}
   for group, inventory in pairs(inventories(e)) do held[group] = contents(inventory) end
+  local ok_mirror, mirrored = pcall(function() return e.mirroring == true end)
+  mirrored = ok_mirror and mirrored
   task._entity, task._proto, task._item, task._to, task._direction = e, proto, item, to, direction
   task._snapshot = { name = e.name, from = { x = e.position.x, y = e.position.y }, direction = e.direction,
-    recipe = recipe, settings = build.read_settings(e), held = held,
+    recipe = recipe, settings = entity_settings.read(e), held = held,
+    mirror = mirrored or nil,
     belt_to_ground_type = e.type == "underground-belt" and e.belt_to_ground_type or nil }
   task._phase = "mine"
 end
@@ -158,7 +162,7 @@ local function restore(task, c, e)
     else notes[#notes + 1] = "couldn't set recipe " .. snap.recipe end
   end
   if snap.settings then
-    local unset = build.apply_settings(e, snap.settings)
+    local _, unset = entity_settings.apply(e, snap.settings)
     for _, issue in ipairs(unset) do notes[#notes + 1] = issue end
     restored.settings = #unset == 0
   end
@@ -232,7 +236,7 @@ function M.tick(task)
   end
   if task._phase == "place" then
     local ok, err = pcall(supply.begin, task, "_sub", { type = "place", item = task._item, position = task._to,
-      direction = task._direction, auto_supply = false, belt_to_ground_type = snap.belt_to_ground_type })
+      direction = task._direction, mirror = snap.mirror, auto_supply = false, belt_to_ground_type = snap.belt_to_ground_type })
     if not ok then
       return failed(task, "MOVE_PLACE_FAILED", string.format("the %s is in my inventory — %s", task._item, plain(err)), true)
     end

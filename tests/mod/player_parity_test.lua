@@ -19,7 +19,8 @@ _G.defines = {
   inventory = { fuel = 1, chest = 1, furnace_source = 2, furnace_result = 3,
     assembling_machine_input = 4, assembling_machine_output = 5 },
 }
-_G.prototypes = { tile = {}, item = {}, recipe = {}, entity = {} }
+_G.prototypes = { tile = {}, item = {}, recipe = {}, entity = { ["steam-engine"] = { type = "generator" },
+  ["solar-panel"] = { type = "solar-panel" }, accumulator = { type = "accumulator" } } }
 _G.game = { tick = 4242 }
 _G.storage = {}
 
@@ -94,7 +95,7 @@ local function belt(x, y, contents, kind)
     belt_neighbours = { inputs = {}, outputs = {} } })
 end
 local function electric(per_tick_production, per_tick_usage)
-  return mock.entity_prototype({
+  return mock.entity_prototype({ electric_energy_source_prototype = {},
     get_max_energy_production = function() return per_tick_production end,
     get_max_energy_usage = function() return per_tick_usage end,
   })
@@ -126,7 +127,7 @@ add({ name = "assembling-machine-1", type = "assembling-machine", position = { x
 add({ name = "lab", type = "lab", position = { x = 22.5, y = 24.5 }, status = defines.entity_status.no_power,
   electric_network_id = 1, prototype = electric(0, 5000) })
 add({ name = "accumulator", type = "accumulator", position = { x = 26, y = 24 }, electric_network_id = 1,
-  energy = 2000000, electric_buffer_size = 5000000 })
+  energy = 2000000, electric_buffer_size = 5000000, prototype = electric(0, 0) })
 add({ name = "assembling-machine-1", type = "assembling-machine", position = { x = 18.5, y = 28.5 },
   status = defines.entity_status.item_ingredient_shortage })
 
@@ -189,7 +190,7 @@ local function type_matches(filter, entity)
 end
 local entity_queries = 0
 surface = mock.surface({
-  name = "nauvis",
+  name = "nauvis", index = 1,
   get_chunks = function()
     local index = 0
     return function() index = index + 1; return ALL_CHUNKS[index] end
@@ -218,6 +219,7 @@ surface = mock.surface({
   end,
 })
 body.surface = surface
+for _, record in ipairs(world) do record.entity.surface = surface end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end,
   burning_item = dofile(here .. "/../../mod/agentic-companion/scripts/companion.lua").burning_item }
 
@@ -259,6 +261,12 @@ entity_queries = 0
 local cached_patches = summarize({ include = { "patches" } })
 check(entity_queries == plain_queries and #cached_patches.patches == 3 and cached_patches.patches_complete == true
   and cached_patches.patches_omitted == 0, "include patches reads the cache: no resource query per read")
+-- Power rows come from the registry's network aggregates: entities are
+-- registered as built, and the maintenance cursor reads their networks.
+local registry = require("scripts.registry")
+storage.registry.ready, storage.registry.force = true, "player"
+for _, record in ipairs(world) do pcall(registry.add, record.entity) end
+for tick = 1, 50 do registry.maintain(tick); if storage.registry.pass_tick then break end end
 local everything = { "stockpiles", "sites", "patches", "power", "problems", "flows_all" }
 local full = summarize({ detail = "full", include = everything })
 
@@ -304,17 +312,18 @@ check(#full.patches == 3 and full.patches[1].name == "crude-oil" and full.patche
   "patches sum amounts and tiles, merge touching chunks and keep distant ones apart")
 
 local home, oil = full.power.networks[1], full.power.networks[2]
-check(#full.power.networks == 2 and full.power.networks_omitted == 0 and home.id == 1 and oil.id == 2,
+check(#full.power.networks == 2 and full.power.networks_omitted == 0 and home.network_id == 1 and oil.network_id == 2,
   "power reports each electric network once")
-check(home.production_w == 300000 and home.consumption_w == 300000 and home.capacity_w == 900000
-  and home.satisfaction == 0.333 and home.starved_consumers == 2
-  and home.accumulator_j == 2000000 and home.accumulator_capacity_j == 5000000
-  and home.producers["steam-engine"] == 1 and home.consumers.lab == 1
-  and home.consumers["assembling-machine-1"] == 1 and home.consumers["small-electric-pole"] == nil,
-  "a starved network reports native production, nameplate capacity, accumulators and satisfaction below 1")
-check(oil.production_w == 60000 and oil.consumption_w == 60000 and oil.capacity_w == 60000 and oil.satisfaction == 1
-  and oil.producers["solar-panel"] == 1 and oil.consumers.pumpjack == 2 and oil.accumulator_capacity_j == 0,
-  "a healthy remote network reports satisfaction 1")
+check(home.production_w == 300000 and home.capacity_w == 900000 and home.demand_w == 900000
+  and home.satisfaction == 0.333 and #home.sources == 1 and home.sources[1].kind == "steam"
+  and home.sources[1].count == 1 and home.sources[1].nameplate_w == 900000 and home.sources[1].production_w == 300000
+  and home.accumulators.stored_j == 2000000 and home.accumulators.capacity_j == 5000000 and home.accumulators.charge == 0.4
+  and home.sustained_w == 900000 and home.headroom_w == 0 and home.add_to_cover == nil and home.engines_needed == nil,
+  "a starved network reports native production by source, nameplate capacity, accumulators and satisfaction below 1")
+check(oil.production_w == 60000 and oil.capacity_w == 60000 and oil.satisfaction == 1 and oil.demand_w == 90000
+  and oil.sources[1].kind == "solar" and oil.sources[1].count == 1 and oil.accumulators == nil
+  and oil.sustained_w == 42000 and oil.add_to_cover.solar_panel == 2 and oil.add_to_cover.accumulator > 0,
+  "a healthy remote solar network reports satisfaction 1 and what covers its day average")
 
 local function problem(status) return row(full.problems, "status", status) end
 check(full.problems_total == 75 and #full.problems == 64

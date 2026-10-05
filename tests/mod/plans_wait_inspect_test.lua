@@ -10,6 +10,7 @@ local empty_inventory = { is_empty = function() return true end, get_contents = 
 local entity = { valid = true, name = "stone-furnace", type = "furnace", direction = 0,
   position = { x = 2, y = 2 }, fluidbox = {},
   get_inventory = function(index) return index == 2 and output_inventory or empty_inventory end,
+  get_output_inventory = function() return output_inventory end,
   get_recipe = function() return nil end, get_fluid_contents = function() return {} end }
 local surface = { find_entities_filtered = function(filter)
   inspect_calls = inspect_calls + 1
@@ -48,7 +49,8 @@ package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], 
 package.loaded["scripts.actions.pickup"] = runner()
 local place_runner = runner("place")
 package.loaded["scripts.actions.build"] = { place = place_runner, rotate = runner(), set_recipe = runner() }
-package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract") }
+package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract"),
+  flush_action = { runner = runner("flush_fluid"), make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = runner()
 _G.defines = { inventory = { fuel = 1, furnace_result = 2 }, entity_status = {}, shooting = { not_shooting = 0 } }
 _G.game = { tick = 0 }
@@ -174,4 +176,29 @@ check(tasks.plan_status({ plan_id = undergrounds.plan_id }).status == "completed
   and placed[1].belt_to_ground_type == "input" and placed[2].belt_to_ground_type == "output"
   and placed[3].belt_to_ground_type == nil,
   "queued place_entity steps pass belt_to_ground_type through to the place task")
+-- An inspect_entities step of 40 positions reads at most 16 a tick.
+local same = {}
+for i = 1, 40 do same[i] = { x = 2, y = 2 } end
+local read40 = tasks.queue_plan({ steps = { { action = "inspect_entities", positions = same } } })
+local reads, ticks_reading = {}, 0
+for tick = 1100, 1110 do
+  game.tick = tick
+  local before = inspect_calls
+  tasks.on_tick()
+  if inspect_calls > before then reads[#reads + 1] = inspect_calls - before end
+end
+local read_status = tasks.plan_status({ plan_id = read40.plan_id })
+check(read_status.status == "completed" and #reads == 3 and reads[1] == 16 and reads[2] == 16 and reads[3] == 8
+  and #read_status.outcomes[1].result.entities == 40,
+  "an inspect_entities step of 40 positions reads 16, 16 and 8 over three ticks")
+-- An inspect_entities step takes as many positions as one inspection reads.
+local function positions(n)
+  local out = {}
+  for i = 1, n do out[i] = { x = i, y = 0 } end
+  return out
+end
+local most_ok = pcall(tasks.queue_plan, { steps = { { action = "inspect_entities", positions = positions(64) } } })
+local over_ok, over_err = pcall(tasks.queue_plan, { steps = { { action = "inspect_entities", positions = positions(65) } } })
+check(most_ok and not over_ok and tostring(over_err):find("requires 1-64 positions", 1, true),
+  "an inspect_entities step takes 1-64 positions")
 os.exit(failures == 0 and 0 or 1)

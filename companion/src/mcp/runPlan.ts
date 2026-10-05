@@ -8,6 +8,30 @@ const point = z.object(position).strict();
 const items = z.record(z.string(), z.number().int().positive());
 const offset = z.object({ dx: z.number(), dy: z.number() }).strict();
 const direction = z.number().int().min(0).max(15);
+const itemName = z.string().min(1);
+/** null or false is "none" (the mod receives false: a Lua table cannot hold null). */
+const orNone = <T extends z.ZodType>(value: T) => z.union([value, z.null(), z.literal(false)])
+  .transform((setting) => setting === null ? false as const : setting);
+const named = { message: "name at least one setting" };
+const side = z.enum(["left", "none", "right"]);
+/** What a player sets in an entity's window: one object for configure_entity,
+ *  layout and blueprint entities and build_plan steps. */
+export const settingsGroups = {
+  inserter: z.object({ filters: z.array(itemName).max(5).optional(), mode: z.enum(["whitelist", "blacklist"]).optional(),
+    stack_size: z.number().int().min(0).optional(), spoil_priority: z.enum(["fresh_first", "spoiled_first", "none"]).optional() })
+    .strict().refine((group) => Object.keys(group).length > 0, named).optional(),
+  splitter: z.object({ input_priority: side.optional(), output_priority: side.optional(), filter: orNone(itemName).optional() })
+    .strict().refine((group) => Object.keys(group).length > 0, named).optional(),
+  chest: z.object({ slots: orNone(z.number().int().min(0)).optional(), storage_filter: orNone(itemName).optional() })
+    .strict().refine((group) => Object.keys(group).length > 0, named).optional(),
+};
+export const settingsIssue = (value: { inserter?: unknown; splitter?: unknown; chest?: unknown }) =>
+  value.inserter === undefined && value.splitter === undefined && value.chest === undefined
+    ? "settings name at least one of inserter, splitter or chest" : null;
+export const entitySettings = z.object(settingsGroups).strict()
+  .refine((value) => settingsIssue(value) === null, { message: "settings name at least one of inserter, splitter or chest" });
+/** An entity's inventories by role (extract_items, insert_items). */
+export const inventoryRole = z.enum(["main", "input", "output", "fuel", "burnt_result", "modules", "trash", "robots", "material"]);
 /** A stored blueprint's name (the mod's rule). */
 export const blueprintName = z.string().min(1).max(64)
   .regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/, "blueprint names are letters, digits, spaces, dots, dashes or underscores");
@@ -17,12 +41,62 @@ export const blueprintName = z.string().min(1).max(64)
 export const layoutEntitiesRule = (layout: { anchor?: unknown; entities: unknown[]; connections?: unknown[] }) =>
   layout.entities.length > 0 || (layout.anchor !== undefined && (layout.connections?.length ?? 0) > 0);
 export const layoutEntitiesMessage = { message: "a layout needs entities, or connections from an anchor" };
+type Fields = Record<string, unknown>;
+const isFields = (value: unknown): value is Fields => !!value && typeof value === "object" && !Array.isArray(value);
+const SPOIL_FROM_BLUEPRINT: Record<string, string> = { "fresh-first": "fresh_first", "spoiled-first": "spoiled_first" };
+const filterName = (filter: unknown) => typeof filter === "string" ? filter
+  : isFields(filter) && typeof filter.name === "string" ? filter.name : undefined;
+/** 0.21.1 blueprint fields (what free-form layout settings held then) as
+ *  typed settings, by the fields each group's window has: a filtering
+ *  inserter's filters, mode, stack size and spoil priority; a splitter's
+ *  priorities and filter; a chest's bar (0.21.1 kept the inventory's bar
+ *  index: slots = bar - 1). Anything else is dropped. */
+function legacySettings(old: Fields): Fields | undefined {
+  const out: Fields = {};
+  const inserter: Fields = {};
+  if (old.use_filters === true && Array.isArray(old.filters)) {
+    const names = [...old.filters].filter(isFields)
+      .sort((a, b) => Number(a.index ?? 0) - Number(b.index ?? 0))
+      .map(filterName).filter((name): name is string => !!name).slice(0, 5);
+    if (names.length > 0) inserter.filters = names;
+  }
+  if (old.filter_mode === "blacklist") inserter.mode = "blacklist";
+  if (typeof old.override_stack_size === "number" && old.override_stack_size > 0) inserter.stack_size = old.override_stack_size;
+  if (typeof old.spoil_priority === "string" && SPOIL_FROM_BLUEPRINT[old.spoil_priority]) inserter.spoil_priority = SPOIL_FROM_BLUEPRINT[old.spoil_priority];
+  if (Object.keys(inserter).length > 0) out.inserter = inserter;
+  const splitter: Fields = {};
+  for (const sideField of ["input_priority", "output_priority"]) {
+    if (old[sideField] === "left" || old[sideField] === "right") splitter[sideField] = old[sideField];
+  }
+  const filter = filterName(old.filter);
+  if (filter) splitter.filter = filter;
+  if (Object.keys(splitter).length > 0) out.splitter = splitter;
+  if (typeof old.bar === "number") out.chest = { slots: Math.max(0, Math.floor(old.bar) - 1) };
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+/** A 0.21.1 layout entity kept its underground end (settings.type), mirror
+ *  and blueprint fields in free-form settings; an operations ledger or a
+ *  notebook from then still holds them. They become belt_to_ground_type,
+ *  mirror and typed settings; settings that already name a group, or none,
+ *  are left for the schema to judge. */
+export function upgradeLayoutEntity(value: unknown): unknown {
+  if (!isFields(value) || !isFields(value.settings)) return value;
+  const old = value.settings;
+  const keys = Object.keys(old);
+  if (keys.length === 0 || keys.some((key) => key === "inserter" || key === "splitter" || key === "chest")) return value;
+  const { settings: _legacy, ...entity } = value;
+  if (entity.belt_to_ground_type === undefined && (old.type === "input" || old.type === "output")) entity.belt_to_ground_type = old.type;
+  if (entity.mirror === undefined && typeof old.mirror === "boolean") entity.mirror = old.mirror;
+  const typed = legacySettings(old);
+  return typed ? { ...entity, settings: typed } : entity;
+}
 export const layoutFields = {
   anchor: point.optional(),
   site: z.object({ near: point, on_resource: z.string().min(1).optional(), near_water: z.boolean().optional() }).strict().optional(),
-  entities: z.array(z.object({ name: z.string().min(1), dx: z.number(), dy: z.number(),
+  entities: z.array(z.preprocess(upgradeLayoutEntity, z.object({ name: z.string().min(1), dx: z.number(), dy: z.number(),
     direction: direction.optional(), recipe: z.string().min(1).optional(), insert: items.optional(),
-    settings: z.record(z.string(), z.unknown()).optional() }).strict()).max(100),
+    mirror: z.boolean().optional(), belt_to_ground_type: z.enum(["input", "output"]).optional(),
+    settings: entitySettings.optional() }).strict())).max(100),
   connections: z.array(z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string().min(1),
     from: offset, to: offset, underground: z.union([z.string().min(1), z.literal(false)]).optional() }).strict()).max(32).optional(),
 };
@@ -58,22 +132,37 @@ export const insertFields = {
   x: z.number().optional(), y: z.number().optional(),
   targets: z.union([z.array(point).min(1).max(32),
     z.object({ name: z.string().min(1), near: point, radius: z.number().positive().max(32).optional() }).strict()]).optional(),
-  items: items.optional(), per_target: items.optional(),
+  items: items.optional(), per_target: items.optional(), inventory: inventoryRole.optional(),
 };
+/** Positions one inspection reads; the mod reports the rest as omitted. */
+export const INSPECT_LIMIT = 64;
 const autoSupply = { auto_supply: z.boolean().optional() };
+export const configureFields = { ...position, ...settingsGroups };
+/** place_tiles: exactly one of area or positions, at most 1,024 tiles. */
+export const tilesFields = { item: itemName, area: z.object({ left_top: point, right_bottom: point }).strict().optional(),
+  positions: z.array(point).min(1).max(1024).optional(), ...autoSupply };
+export const requestsFields = { target: point, section: z.union([z.number().int().min(1), z.string().min(1)]).optional(),
+  mode: z.enum(["merge", "set"]).optional(),
+  requests: z.array(z.object({ item: itemName, min: z.number().int().min(0), max: z.number().int().min(0).optional(),
+    quality: z.literal("normal").optional() }).strict()).max(60).optional(),
+  remove: z.array(itemName).min(1).max(60).optional(), request_from_buffers: z.boolean().optional() };
+export const equipFields = { armor: z.union([itemName, z.literal(false)]).optional(),
+  put: z.array(z.object({ name: itemName, x: z.number().int().min(0).optional(), y: z.number().int().min(0).optional() }).strict()).min(1).max(20).optional(),
+  take: z.array(z.union([z.object({ name: itemName }).strict(), z.object({ x: z.number().int().min(0), y: z.number().int().min(0) }).strict()])).min(1).max(20).optional(),
+  ...autoSupply };
 const planSteps = [
   z.object({ action: z.literal("walk_to"), ...position,
     arrival_mode: z.enum(["exact", "vicinity"]).default("exact"),
     arrival_radius: z.number().min(0.5, "arrival_radius is 0.5–6 tiles").max(6, "arrival_radius is 0.5–6 tiles; for a farther goal walk to the target and use vicinity arrival").default(1) }).strict(),
   z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict(),
   z.object({ action: z.literal("pickup_items"), ...position, item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
-  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: point.optional(), output_target: point.optional(), belt_to_ground_type: z.enum(["input", "output"]).optional(), insert: items.optional(), ...autoSupply }).strict(),
+  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: point.optional(), output_target: point.optional(), belt_to_ground_type: z.enum(["input", "output"]).optional(), mirror: z.boolean().optional(), insert: items.optional(), ...autoSupply }).strict(),
   z.object({ action: z.literal("craft_items"), recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("insert_items"), ...insertFields, ...autoSupply }).strict(),
-  z.object({ action: z.literal("extract_items"), ...position, items: items.optional() }).strict(),
+  z.object({ action: z.literal("extract_items"), ...position, items: items.optional(), inventory: inventoryRole.optional() }).strict(),
   z.object({ action: z.literal("set_recipe"), ...position, recipe: z.string() }).strict(),
   z.object({ action: z.literal("rotate_entity"), ...position, direction: direction.optional() }).strict(),
-  z.object({ action: z.literal("inspect_entities"), positions: z.array(point).min(1).max(16) }).strict(),
+  z.object({ action: z.literal("inspect_entities"), positions: z.array(point).min(1).max(INSPECT_LIMIT) }).strict(),
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("wait_for_research"), technology: z.string().min(1), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("get_items"), item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
@@ -86,6 +175,11 @@ const planSteps = [
   z.object({ action: z.literal("deconstruct_area"), ...deconstructFields }).strict(),
   z.object({ action: z.literal("upgrade_area"), ...upgradeFields }).strict(),
   z.object({ action: z.literal("copy_settings"), ...copySettingsFields }).strict(),
+  z.object({ action: z.literal("configure_entity"), ...configureFields }).strict(),
+  z.object({ action: z.literal("flush_fluid"), ...position, fluid: itemName.optional() }).strict(),
+  z.object({ action: z.literal("place_tiles"), ...tilesFields }).strict(),
+  z.object({ action: z.literal("set_requests"), ...requestsFields }).strict(),
+  z.object({ action: z.literal("equip"), ...equipFields }).strict(),
 ] as const;
 export const planStepSchema = z.discriminatedUnion("action", [...planSteps]);
 /** A build package may also start with blueprint captures, which the bridge
@@ -116,6 +210,25 @@ export function blockIssue(value: { block: string; count?: number; blueprint?: s
   if (value.blueprint !== undefined) return "blueprint goes with block: \"blueprint\"";
   return value.count === undefined ? `a ${value.block} block needs count` : null;
 }
+export function tilesIssue(value: { area?: unknown; positions?: unknown }): string | null {
+  return (value.area === undefined) === (value.positions === undefined)
+    ? "give exactly one of area {left_top, right_bottom} or positions" : null;
+}
+export function requestsIssue(value: { mode?: string; requests?: Array<{ item: string; min: number; max?: number }>; remove?: unknown;
+  request_from_buffers?: unknown }): string | null {
+  const requests = value.requests ?? [];
+  if (requests.length === 0 && value.remove === undefined && value.request_from_buffers === undefined && value.mode !== "set")
+    return "give requests, remove, request_from_buffers or mode set";
+  const bad = requests.find((request) => request.max !== undefined && request.max < request.min);
+  if (bad) return `${bad.item}: max must be at least min`;
+  const names = requests.map((request) => request.item);
+  const repeated = names.find((name, index) => names.indexOf(name) !== index);
+  return repeated ? `${repeated} is requested twice` : null;
+}
+export function equipIssue(value: { armor?: unknown; put?: Array<{ x?: number; y?: number }>; take?: unknown }): string | null {
+  if (value.armor === undefined && value.put === undefined && value.take === undefined) return "give armor, put or take";
+  return value.put?.some((entry) => (entry.x === undefined) !== (entry.y === undefined)) ? "a put entry gives x and y together, or neither" : null;
+}
 export function stepIssue(step: PackageStep): string | null {
   switch (step.action) {
     case "walk_to": return step.arrival_mode === "exact" && step.arrival_radius !== 1
@@ -124,6 +237,10 @@ export function stepIssue(step: PackageStep): string | null {
     case "build_block": return blockIssue(step);
     case "insert_items": return insertIssue(step);
     case "build_ghosts": case "deconstruct_area": case "upgrade_area": case "blueprint_capture": return areaIssue(step);
+    case "configure_entity": return settingsIssue(step);
+    case "place_tiles": return tilesIssue(step);
+    case "set_requests": return requestsIssue(step);
+    case "equip": return equipIssue(step);
     default: return null;
   }
 }

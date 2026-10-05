@@ -26,6 +26,7 @@ M.WORK_PER_TICK = 600
 M.MIN_WORK = 100
 M.MAX_JOBS = 8
 M.RESULT_TTL_TICKS = 5 * 60 * 60
+M.RAW_JSON = require("scripts.rpc").RAW_JSON
 
 local kinds = {}
 
@@ -58,25 +59,209 @@ local function allowance(jobs)
   return math.max(M.MIN_WORK, M.WORK_PER_TICK - used(jobs))
 end
 
+-- A result finished on a tick is encoded to JSON on the ticks after it, so
+-- get_job only copies a string: one table_to_json of a large result is a
+-- long frame. The encoder walks the result from an explicit stack kept in
+-- storage, charging every node it looks at: a table of at most ENCODE_NODES
+-- nodes (tables and values) is one table_to_json call costing 1 + its nodes;
+-- a larger list goes out in slices of at most ENCODE_SLICE elements and
+-- ENCODE_NODES nodes, and a larger object key by key, so no tick's encoding
+-- outgrows the allowance by more than one such call.
+M.ENCODE_SLICE = 16
+M.ENCODE_NODES = 48 -- below MIN_WORK, so a slice always fits a fresh tick
+local SCAN_PER_ITEM = 16 -- table entries a pure-Lua scan (counting, keys) visits per work item
+
+local function list_length(value)
+  if type(value) ~= "table" or value[1] == nil then return 0 end
+  local n, count = #value, 0
+  for _ in pairs(value) do
+    count = count + 1
+    if count > n then return 0 end
+  end
+  return count == n and n or 0
+end
+
+-- Sorted string keys, or nil when the table is empty or has another key.
+local function object_keys(value)
+  if type(value) ~= "table" or next(value) == nil then return nil end
+  local keys = {}
+  for key in pairs(value) do
+    if type(key) ~= "string" then return nil end
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  return keys
+end
+
+-- Nodes in value (the table itself, each value and nested table), counting
+-- no further than past cap.
+local function count_nodes(value, cap)
+  if type(value) ~= "table" then return 1 end
+  local count, pending = 1, { value }
+  while #pending > 0 do
+    local t = table.remove(pending)
+    for _, v in pairs(t) do
+      count = count + 1
+      if count > cap then return count end
+      if type(v) == "table" then pending[#pending + 1] = v end
+    end
+  end
+  return count
+end
+
+local JSON_ESCAPES = { ['"'] = '\\"', ["\\"] = "\\\\", ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t" }
+local function json_string(text)
+  return '"' .. text:gsub('[%c"\\]', function(c) return JSON_ESCAPES[c] or string.format("\\u%04x", c:byte()) end) .. '"'
+end
+
+local function strip(json) return string.sub(json, 2, -2) end
+local function value_json(value)
+  if type(value) == "table" then return helpers.table_to_json(value) end
+  return strip(helpers.table_to_json({ value }))
+end
+
+local function child_path(path, key)
+  local child = { table.unpack(path) }
+  child[#child + 1] = key
+  return child
+end
+
+local function resolve(result, path)
+  local value = result
+  for _, key in ipairs(path) do value = value[key] end
+  return value
+end
+
+-- The encoder's state: a stack of frames {path} (a value not yet looked
+-- at), {path, keys, i} (an object) or {path, n, i} (a list). Paths, not
+-- references, keep it plain data in storage.
+local function encoding(result)
+  return { stack = { { path = {} } }, pieces = {} }
+end
+
+-- One table_to_json of `cost` work items: deferred once to a fresh tick when
+-- it does not fit what is left, then written whatever its size.
+local function fits(frame, cost, budget)
+  if cost <= budget.left or frame.waited then frame.waited = nil; return true end
+  frame.waited = true
+  return false
+end
+
+-- Writes JSON pieces while budget is left; the JSON once all are written.
+local function encode_step(e, result, budget)
+  local stack, pieces = e.stack, e.pieces
+  while #stack > 0 do
+    if budget.left <= 0 then return nil end
+    local f = stack[#stack]
+    local value = resolve(result, f.path)
+    if f.keys then
+      if f.i > #f.keys then
+        pieces[#pieces + 1], stack[#stack] = "}", nil
+      else
+        local key = f.keys[f.i]
+        pieces[#pieces + 1] = (f.i > 1 and "," or "") .. json_string(key) .. ":"
+        f.i = f.i + 1
+        stack[#stack + 1] = { path = child_path(f.path, key) }
+        budget.left = budget.left - 1
+      end
+    elseif f.n then
+      if f.i > f.n then
+        pieces[#pieces + 1], stack[#stack] = "]", nil
+      else
+        if not f.sized then
+          -- The next slice, element by element: up to ENCODE_SLICE elements
+          -- and ENCODE_NODES nodes.
+          f.to, f.size = f.to or f.i - 1, f.size or 0
+          while f.to < f.n and f.to - f.i + 1 < M.ENCODE_SLICE do
+            if budget.left <= 0 then return nil end
+            local nodes = count_nodes(value[f.to + 1], M.ENCODE_NODES)
+            budget.left = budget.left - math.ceil(nodes / SCAN_PER_ITEM)
+            if f.to >= f.i and f.size + nodes > M.ENCODE_NODES then break end
+            f.to, f.size = f.to + 1, f.size + nodes
+            if f.size > M.ENCODE_NODES then break end
+          end
+          f.sized = true
+        end
+        if f.to == f.i and f.size > M.ENCODE_NODES then
+          -- One element too large for a slice is taken apart.
+          pieces[#pieces + 1] = f.i > 1 and "," or ""
+          stack[#stack + 1] = { path = child_path(f.path, f.i) }
+          f.i, f.to, f.size, f.sized = f.i + 1, nil, nil, nil
+          budget.left = budget.left - 1
+        else
+          if not fits(f, 1 + f.size, budget) then return nil end
+          local slice = {}
+          for k = f.i, f.to do slice[#slice + 1] = value[k] end
+          pieces[#pieces + 1] = (f.i > 1 and "," or "") .. strip(helpers.table_to_json(slice))
+          budget.left = budget.left - 1 - f.size
+          f.i, f.to, f.size, f.sized = f.to + 1, nil, nil, nil
+        end
+      end
+    elseif type(value) ~= "table" then
+      pieces[#pieces + 1], stack[#stack] = value_json(value), nil
+      budget.left = budget.left - 1
+    else
+      if not f.size then
+        f.size = count_nodes(value, M.ENCODE_NODES)
+        budget.left = budget.left - math.ceil(f.size / SCAN_PER_ITEM)
+      end
+      local n, keys = 0, nil
+      if f.size > M.ENCODE_NODES then
+        -- Telling a list from an object scans every entry.
+        if not fits(f, 1 + math.ceil(#value / SCAN_PER_ITEM), budget) then return nil end
+        n = list_length(value)
+        keys = n == 0 and object_keys(value) or nil
+        budget.left = budget.left - 1 - math.ceil(n / SCAN_PER_ITEM)
+      end
+      if n > 0 then
+        pieces[#pieces + 1], f.n, f.i = "[", n, 1
+      elseif keys then
+        pieces[#pieces + 1], f.keys, f.i = "{", keys, 1
+        budget.left = budget.left - math.ceil(#keys / SCAN_PER_ITEM)
+      else
+        -- Small, or a table that is neither list nor object: one call,
+        -- charged by its real size.
+        if f.size > M.ENCODE_NODES and not f.counted then
+          f.size, f.counted = count_nodes(value, math.huge), true
+          budget.left = budget.left - math.ceil(f.size / SCAN_PER_ITEM)
+        end
+        if not fits(f, 1 + f.size, budget) then return nil end
+        pieces[#pieces + 1], stack[#stack] = value_json(value), nil
+        budget.left = budget.left - 1 - f.size
+      end
+    end
+  end
+  return table.concat(pieces)
+end
+
 -- Advances one job by the budget; true once it is finished (done or failed).
-local function work(jobs, job, budget)
+-- encode: a finished result is encoded before the job is done.
+local function work(jobs, job, budget, encode)
   local definition = kinds[job.kind]
   local before = budget.left
   local ok, result
-  if not definition then
+  if job.encoding then
+    ok, result = pcall(encode_step, job.encoding, job.result, budget)
+    if ok and result ~= nil then job.json, job.encoding, result = result, nil, job.result end
+  elseif not definition then
     ok, result = false, "job kind " .. tostring(job.kind) .. " is not known to this mod version"
   else
     ok, result = pcall(definition.step, job.state, budget)
+    if ok and result ~= nil and encode and type(result) == "table" then
+      job.state, job.result, job.encoding = nil, result, encoding(result)
+      ok, result = pcall(encode_step, job.encoding, job.result, budget)
+      if ok and result ~= nil then job.json, job.encoding, result = result, nil, job.result end
+    end
   end
   jobs.used = used(jobs) + math.max(0, before - budget.left)
   job.ticks = (job.ticks or 0) + 1
   if ok and result == nil then return false end
-  job.state = nil
+  job.state, job.encoding = nil, nil
   job.finished_tick = now()
   if ok then
     job.status, job.result = "done", result
   else
-    job.status, job.error = "failed", (tostring(result):gsub("^.-:%d+:%s*", ""))
+    job.status, job.result, job.json, job.error = "failed", nil, nil, (tostring(result):gsub("^.-:%d+:%s*", ""))
   end
   return true
 end
@@ -99,7 +284,10 @@ end
 local function public(job)
   local out = { job_id = job.id, kind = job.kind, job_status = job.status, started_tick = job.started_tick,
     ticks = job.ticks }
-  if job.status == "done" then out.result = job.result
+  if job.status == "done" then
+    out.result = job.result
+    -- The RPC sends the encoded copy (rpc.lua splices raw JSON fields).
+    if job.json then out[M.RAW_JSON] = { result = job.json } end
   elseif job.status == "failed" then out.error = job.error end
   if job.finished_tick then out.finished_tick = job.finished_tick end
   return out
@@ -168,7 +356,7 @@ function M.on_tick()
   for _, id in ipairs({ table.unpack(jobs.order) }) do
     if budget.left <= 0 then break end
     local job = jobs.by_id[id]
-    if job and job.status == "pending" then work(jobs, job, budget) end
+    if job and job.status == "pending" then work(jobs, job, budget, true) end
   end
 end
 

@@ -3,6 +3,9 @@
 -- reads only own-force entities in charted chunks and marks them remote.
 local companion = require("scripts.companion")
 local fluid_connections = require("scripts.fluid_connections")
+local inventory_roles = require("scripts.inventory_roles")
+local entity_settings = require("scripts.entity_settings")
+local jobs = require("scripts.jobs")
 
 local M = {}
 
@@ -34,73 +37,23 @@ local function entity_identity(entity)
   return nil
 end
 
--- Probe order matters: several defines.inventory values share the same numeric
--- index across entity types (e.g. fuel and chest), so each index is probed
--- once. The fuel slot is relabeled "main" when the entity has no burner.
-local INVENTORY_PROBES = {
-  { "fuel", "fuel" },
-  { "chest", "main" },
-  { "furnace_source", "input" },
-  { "furnace_result", "output" },
-  { "assembling_machine_input", "input" },
-  { "assembling_machine_output", "output" },
-}
+-- Inventories by role (inventory_roles). input, output and fuel show when
+-- the entity has them, empty or not; the other roles only when they hold
+-- something.
+local ALWAYS_SHOWN = { input = true, output = true, fuel = true }
 
 local function collect_inventories(entity)
-  local ok_burner, burner = pcall(function() return entity.burner end)
-  local has_burner = ok_burner and burner ~= nil
-
-  local function contents(inv)
-    local bucket = {}
-    for _, item in ipairs(inv.get_contents()) do
-      bucket[item.name] = (bucket[item.name] or 0) + item.count
-    end
-    return bucket
-  end
-
-  -- A furnace's three buffers are gameplay evidence in their own right. Probe
-  -- the exact furnace inventory IDs rather than the generic alias order, and
-  -- expose an empty bucket only when Factorio says that compartment exists.
-  if entity.type == "furnace" then
-    local result, found = {}, false
-    local probes = {}
-    if has_burner then probes[#probes + 1] = { defines.inventory.fuel, "fuel" } end
-    probes[#probes + 1] = { defines.inventory.furnace_source, "input" }
-    probes[#probes + 1] = { defines.inventory.furnace_result, "output" }
-    for _, probe in ipairs(probes) do
-      if probe[1] then
-        local ok, inv = pcall(entity.get_inventory, probe[1])
-        if ok and inv then
-          result[probe[2]] = contents(inv)
-          found = true
-        end
+  local result, found = {}, false
+  for _, role in ipairs(inventory_roles.ORDER) do
+    local inventories = inventory_roles.get(entity, role)
+    local bucket, any = {}, false
+    for _, inventory in ipairs(inventories) do
+      for _, item in ipairs(inventory.get_contents()) do
+        bucket[item.name] = (bucket[item.name] or 0) + item.count
+        any = true
       end
     end
-    if found then return result end
-    return nil
-  end
-
-  local result = {}
-  local seen = {}
-  local found = false
-  for _, probe in ipairs(INVENTORY_PROBES) do
-    local index = defines.inventory[probe[1]]
-    if index and not seen[index] then
-      seen[index] = true
-      local ok, inv = pcall(entity.get_inventory, index)
-      if ok and inv then
-        local label = probe[2]
-        if probe[1] == "fuel" and not has_burner then label = "main" end
-        if not inv.is_empty() then
-          local bucket = result[label] or {}
-          result[label] = bucket
-          for _, item in ipairs(inv.get_contents()) do
-            bucket[item.name] = (bucket[item.name] or 0) + item.count
-          end
-          found = true
-        end
-      end
-    end
+    if any or (#inventories > 0 and ALWAYS_SHOWN[role]) then result[role], found = bucket, true end
   end
   if found then return result end
   return nil
@@ -347,6 +300,12 @@ local function inspect_one(position, c)
   local inventories = collect_inventories(e)
   if inventories then out.inventories = inventories end
 
+  -- What the entity's window would show as set (non-default values only).
+  local ok_settings, settings = pcall(entity_settings.read, e)
+  if ok_settings and settings then out.settings = settings end
+  local ok_mirror, mirroring = pcall(function() return e.mirroring end)
+  if ok_mirror and mirroring == true then out.mirror = true end
+
   local belt = collect_belt_contents(e)
   if belt then out.belt_contents = belt end
 
@@ -357,49 +316,69 @@ local function inspect_one(position, c)
   return out
 end
 
-local MAX_TARGETS = 16
+-- Positions one call reads. Each costs about PER_TARGET work items (an area
+-- query, a few dozen reads and the inventories), so a job reads about 15 a
+-- tick and a call of 64 spreads over a few ticks.
+M.MAX_TARGETS = 64
+M.PER_TARGET = 40
 
--- Inspect up to MAX_TARGETS entities in ONE call — reading machines one at a
--- time costs the brain a full round of thinking per machine.
-function M.inspect(params)
-  local c = companion.require_companion()
-  local targets = type(params) == "table" and params.targets or nil
-  if type(targets) ~= "table" or #targets == 0 then
-    error("targets must be a non-empty array of {x, y}")
-  end
-  if #targets > MAX_TARGETS then
-    error("inspect takes at most " .. MAX_TARGETS .. " targets per call — split the list")
-  end
-  local out = {}
-  local evidence_class = "fresh_local_exact"
-  local scope = "within_30_tiles_of_codex_at_source_tick"
-  for i, target in ipairs(targets) do
-    local ok, res = pcall(inspect_one, target, c)
-    if ok then
-      out[i] = res
-      -- A remote entity is read through the chart: the envelope must not
-      -- claim the whole result is local.
-      if res.remote then
-        evidence_class = "fresh_exact_local_and_charted_remote"
-        scope = "within_30_tiles_or_own_force_charted_at_source_tick"
-      end
-    else
-      local position = nil
-      if type(target) == "table" then
-        position = { x = tonumber(target.x), y = tonumber(target.y) }
-      end
-      out[i] = {
-        error = tostring(res):gsub("^.-:%d+:%s*", ""),
-        position = position,
-      }
+-- inspect as a job (jobs.lua) of up to MAX_TARGETS entities in ONE call —
+-- reading machines one at a time costs the brain a full round of thinking per
+-- machine. Positions past the limit are not read; `omitted` counts them.
+M.job = {
+  start = function(params)
+    companion.require_companion()
+    local targets = type(params) == "table" and params.targets or nil
+    if type(targets) ~= "table" or #targets == 0 then
+      error("targets must be a non-empty array of {x, y}")
     end
-  end
-  return {
-    tick = game.tick,
-    evidence_class = evidence_class,
-    scope = scope,
-    entities = out,
-  }
+    local omitted = math.max(0, #targets - M.MAX_TARGETS)
+    local list = {}
+    for i = 1, #targets - omitted do list[i] = targets[i] end
+    return { targets = list, omitted = omitted, index = 1, entities = {}, first_tick = game.tick,
+      evidence_class = "fresh_local_exact", scope = "within_30_tiles_of_codex_at_source_tick" }
+  end,
+  step = function(state, budget)
+    local c = companion.require_companion()
+    while state.index <= #state.targets do
+      if budget.left <= 0 then return nil end
+      local i, target = state.index, state.targets[state.index]
+      local ok, res = pcall(inspect_one, target, c)
+      if ok then
+        state.entities[i] = res
+        -- A remote entity is read through the chart: the envelope must not
+        -- claim the whole result is local.
+        if res.remote then
+          state.evidence_class = "fresh_exact_local_and_charted_remote"
+          state.scope = "within_30_tiles_or_own_force_charted_at_source_tick"
+        end
+      else
+        local position = nil
+        if type(target) == "table" then
+          position = { x = tonumber(target.x), y = tonumber(target.y) }
+        end
+        state.entities[i] = {
+          error = tostring(res):gsub("^.-:%d+:%s*", ""),
+          position = position,
+        }
+      end
+      state.index, budget.left = i + 1, budget.left - M.PER_TARGET
+    end
+    return {
+      tick = game.tick,
+      -- Reads spread over ticks name the tick they began.
+      first_tick = state.first_tick ~= game.tick and state.first_tick or nil,
+      evidence_class = state.evidence_class,
+      scope = state.scope,
+      entities = state.entities,
+      omitted = state.omitted > 0 and state.omitted or nil,
+    }
+  end,
+}
+
+-- All targets read within this call (one target, or tests).
+function M.inspect(params)
+  return (jobs.run_now(M.job, params))
 end
 
 return M

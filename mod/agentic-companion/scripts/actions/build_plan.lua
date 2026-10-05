@@ -1,7 +1,7 @@
 -- build_plan: place many entities in one task. Walks within build reach of
 -- each step, places the item, then
--- optionally sets a recipe, settings (a blueprint's filters, priorities,
--- bar, mirror: build.apply_settings) and inserts starter items — mirroring the exact
+-- optionally mirrored, sets a recipe, settings (entity_settings: inserter
+-- filters, splitter priorities, chest limits) and inserts starter items — mirroring the exact
 -- validation rules of the single-step place/set_recipe/insert actions
 -- (scripts/actions/build.lua, scripts/actions/transfer.lua). A failed step is
 -- recorded and skipped unless stop_on_error. Output-target verification keeps
@@ -21,6 +21,7 @@ local output_targets = require("scripts.output_target")
 local placement_geometry = require("scripts.placement_geometry")
 local factory_activity = require("scripts.factory_activity")
 local build = require("scripts.actions.build")
+local entity_settings = require("scripts.entity_settings")
 local supply = require("scripts.actions.supply")
 local transfer = require("scripts.actions.transfer")
 local craft = require("scripts.actions.craft")
@@ -85,7 +86,21 @@ local function malformed(step)
     return "recipe must be a recipe name string"
   end
   if step.settings ~= nil and type(step.settings) ~= "table" then
-    return "settings must be an object of blueprint settings"
+    return "settings must be an object of inserter, splitter or chest settings"
+  end
+  -- Settings are checked before anything is built, as build_layout does; a
+  -- 0.21.1 step still queued keeps its blueprint-style settings unchecked.
+  if step.settings ~= nil and not entity_settings.legacy(step.settings) then
+    local ok, err = pcall(entity_settings.validate, step.settings, "settings")
+    if not ok then return tostring(err) end
+    local item = prototypes.item[step.item]
+    local result = item and item.place_result
+    local code, message
+    if result then code, message = entity_settings.check_prototype(result, step.settings) end
+    if code then return message end
+  end
+  if step.mirror ~= nil and type(step.mirror) ~= "boolean" then
+    return "mirror must be true or false"
   end
   if step.insert ~= nil then
     if type(step.insert) ~= "table" then
@@ -445,9 +460,9 @@ local function finish_placed_step(task, c, step, built)
       if step.settings and not task._settings_applied then
         -- A setting the entity does not take is a note, never a failure.
         task._settings_applied = true
-        local unset = build.apply_settings(built, step.settings)
-        if #unset > 0 then
-          task._note = (task._note and (task._note .. "; ") or "") .. table.concat(unset, "; ")
+        local _, notes = entity_settings.apply(built, step.settings)
+        if #notes > 0 then
+          task._note = (task._note and (task._note .. "; ") or "") .. table.concat(notes, "; ")
         end
       end
       local list = task._insert_remainder or step._insert
@@ -554,7 +569,7 @@ function M.tick(task)
   end
   if task._existing then
     local e = task._existing
-    local how = build.adopt(task, c, e, step.direction)
+    local how = build.adopt(task, c, e, step.direction, step.mirror)
     if how == nil then return nil end
     task._existing = nil
     if type(how) == "table" then return advance(task, false, how.detail) end
@@ -654,6 +669,7 @@ function M.tick(task)
     name = entity_name,
     position = step.position,
     direction = step.direction,
+    mirror = step.mirror or nil,
     type = step.belt_to_ground_type,
     force = c.force,
     raise_built = true,

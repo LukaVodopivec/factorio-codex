@@ -35,6 +35,8 @@ export interface MapSummary {
     /** Read over several ticks (a job): started_tick to collected_at_tick. */
     scope: "force_charted"; started_tick: number; collected_at_tick: number; consistency: "spread_over_ticks";
     charted_chunks: number; currently_visible_charted_chunks: number; machine_count: number;
+    /** Productive machines the registry counts: the one count factory_status and tooling use. */
+    registry_machine_count: number;
     groups: Array<Record<string, unknown>>; force_flows: Array<Record<string, unknown>>;
     material_flow: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>>;
       components: Array<Record<string, unknown>>; diagnostics: Array<Record<string, unknown>>;
@@ -50,10 +52,7 @@ export interface MapSummary {
   sites?: Array<{ chunk: Position; position: Position; machines: Record<string, number> }>; sites_omitted?: number;
   patches?: Array<{ name: string; amount: number; tiles: number; bbox: { left_top: Position; right_bottom: Position }; centroid: Position }>;
   patches_omitted?: number;
-  power?: { networks_omitted: number; networks: Array<{ id: number; production_w?: number; consumption_w?: number; capacity_w: number;
-    satisfaction: number; accumulator_j: number; accumulator_capacity_j: number; statistics_available: boolean;
-    demand_w?: number; engines_needed?: number;
-    starved_consumers: number; producers: Record<string, number>; consumers: Record<string, number> }> };
+  power?: { networks_omitted: number; networks: PowerRow[] };
   problems?: Array<{ entity: string; position: Position; status: string }>; problems_total?: number;
   /** Every problem machine counted by normalized status, including rows past the cap. */
   problems_by_status?: Record<string, number>;
@@ -61,12 +60,46 @@ export interface MapSummary {
     lifetime_produced: number; lifetime_consumed: number }>;
   force_flows_all_omitted?: number;
 }
+/** One electric network (factory_status power, map_summary include power). */
+export interface PowerRow {
+  network_id: number; satisfaction: number; production_w?: number; demand_w: number;
+  /** Available now: steam/burner nameplate plus solar at the light now. */
+  capacity_w: number;
+  /** Day average with solar at its average light (planets only). */
+  sustained_w?: number; headroom_w?: number;
+  sources: Array<{ kind: "steam" | "solar" | "burner" | "nuclear" | "other"; count: number; nameplate_w: number; production_w?: number }>;
+  accumulators: { count: number; stored_j: number; capacity_j: number; charge: number } | null;
+  night_s?: number;
+  /** Only while sustained_w < demand_w. */
+  add_to_cover?: { steam_engine?: number; solar_panel?: number; accumulator?: number };
+}
+export type LineState = "running" | "starved" | "output_full" | "no_fuel" | "no_power" | "no_heat" | "disabled" | "idle";
+export interface FactoryLine {
+  id: number | string; product?: string; entity?: string; machines: number; working: number; state: LineState;
+  rate_per_min?: number; hand_fed: boolean; self_sustaining: boolean; position: Position; hand_transfers?: number;
+  /** Why the worst machine stops: a fluid name, no_recipe, recipe_not_researched, burnt_result, an item. */
+  cause?: string; cause_position?: Position;
+  /** Lowest heat-source temperature on a line with a reactor or heat exchanger. */
+  temperature?: number;
+}
+/** factory_status sections:["logistics"]: robot networks nearest the body. */
+export interface LogisticsSection {
+  networks: Array<{ network_id: number; cells: number; cells_read?: number;
+    robots: { logistic: { all: number; available: number }; construction: { all: number; available: number } };
+    charging_queue: number; coverage: Array<{ position: Position; logistic_radius: number; construction_radius: number }>;
+    contents: Array<{ item: string; count: number }> }>;
+  omitted_networks?: number;
+}
 /** inspect_entity envelope: a remote (own-force, charted) read widens the evidence class and scope. */
 export interface InspectionResult {
   tick: number;
+  /** The tick the read began, when it spread over several (about 15 entities a tick). */
+  first_tick?: number;
   evidence_class: "fresh_local_exact" | "fresh_exact_local_and_charted_remote";
   scope: "within_30_tiles_of_codex_at_source_tick" | "within_30_tiles_or_own_force_charted_at_source_tick";
   entities: Array<Record<string, unknown>>;
+  /** Positions past the 64 read. */
+  omitted?: number;
 }
 /** Human takeover state carried by every fifo block and observe_local.character. */
 export interface HumanControl { human_control: boolean; human_idle_ticks?: number }

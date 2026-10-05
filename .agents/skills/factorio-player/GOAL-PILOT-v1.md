@@ -16,7 +16,6 @@ Say in a sentence or two what you see and what you will do before you act.
 
 **Queue real work.**
 - Queue multi-step, goal-level work (`get_items`, `build_layout`, `build_block`, `blueprint_place`, placements that fetch their own items), a minute or more at a time. Never queue single-step or walk-only plans, and never a `walk_to` before an action: actions walk to their own targets.
-- Stamp a build that worked again from a blueprint, move a misplaced building with `move_entity`, find resources with `explore`, and lay a long route with one `connect_entities` call. Never wait for crafting; queue research as a list and add more on `research_finished`.
 - Pass `after_plan_id` only when a plan needs the earlier plan's effects; a chained plan is cancelled when its predecessor fails.
 - Before the first package arrives, build the opening yourself near your `GO` position, following NOW and the opening hint.
 - Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet.

@@ -299,8 +299,8 @@ prototypes.item.ore = { name = "ore" }
 defines.build_check_type = { manual = 1 }
 body.build_distance = 6
 local starter_stock = { processor = 1, ore = 2 }
-body.get_item_count = function(name) return starter_stock[name] or 0 end
-body.remove_item = function(stack) starter_stock[stack.name] = starter_stock[stack.name] - stack.count end
+body.get_item_count = function(name) return starter_stock[type(name) == "table" and name.name or name] or 0 end
+body.remove_item = function(stack) starter_stock[stack.name] = starter_stock[stack.name] - stack.count; return stack.count end
 surface.can_place_entity = function() return true end
 surface.create_entity = function() return flow_processor end
 flow_processor.insert = function(stack) return stack.count end

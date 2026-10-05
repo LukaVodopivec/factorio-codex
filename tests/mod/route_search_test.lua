@@ -11,6 +11,7 @@ end
 
 _G.game = { tick = 1 }
 _G.storage = {}
+_G.helpers = { table_to_json = dofile(here .. "/table_to_json.lua") }
 _G.defines = { build_check_type = { manual = 1, ghost_revive = 2 } }
 
 local function box(w, h) return { left_top = { x = -w / 2, y = -h / 2 }, right_bottom = { x = w / 2, y = h / 2 } } end

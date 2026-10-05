@@ -10,6 +10,10 @@ local M = {}
 M.handlers = {}
 
 local CHUNK_SIZE = 3400
+-- A handler's result may carry, under this key, {field = JSON string}:
+-- fields already encoded (a job's result, encoded over earlier ticks) that
+-- replace the same fields of the result, so they are not encoded again.
+M.RAW_JSON = "__json"
 local OUTBOX_TTL_TICKS = 5 * 60 * 60 -- stored chunked responses expire after 5 minutes
 
 function M.register(name, fn)
@@ -19,8 +23,25 @@ end
 -- never_chunk: get_chunk replies must always arrive whole — chunking a chunk
 -- would recurse from the companion's point of view. A single part plus the
 -- envelope stays well within what RCON's multi-packet responses handle.
+local function encode(tbl)
+  local data = tbl.data
+  local raw = type(data) == "table" and data[M.RAW_JSON]
+  if not raw then return helpers.table_to_json(tbl) end
+  data[M.RAW_JSON] = nil
+  local fields = {}
+  for field, json in pairs(raw) do
+    data[field] = nil
+    fields[#fields + 1] = string.format("%q", field) .. ":" .. json
+  end
+  table.sort(fields)
+  local body = helpers.table_to_json(data)
+  body = body == "{}" and "{" .. table.concat(fields, ",") .. "}"
+    or string.sub(body, 1, -2) .. "," .. table.concat(fields, ",") .. "}"
+  return '{"ok":true,"data":' .. body .. "}"
+end
+
 local function respond(tbl, never_chunk)
-  local json = helpers.table_to_json(tbl)
+  local json = encode(tbl)
   if never_chunk or #json <= CHUNK_SIZE then
     rcon.print(json)
     return

@@ -30,6 +30,7 @@ local protos = {
 }
 _G.defines = { build_check_type = { manual = 1 } }
 _G.prototypes = { item = {}, entity = {} }
+_G.helpers = { table_to_json = dofile(here .. "/table_to_json.lua") }
 for name, proto in pairs(protos) do prototypes.item[name] = { place_result = proto } end
 
 local output_targets = require("scripts.output_target")
@@ -156,10 +157,13 @@ end
 local body = { position = { x = 60, y = -30 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
 local finder = require("scripts.find_placement")
+local jobs = require("scripts.jobs")
+-- find_placement is a job: tests run the whole search in one call.
+local function find(params) return jobs.run_now(finder.job, params) end
 
 lay_ore(45, -30, 6)
 for _, dir in ipairs({ 0, 4, 8, 12 }) do
-  local result = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 45, y = -30 }, radius = 4,
+  local result = find({ item = "burner-mining-drill", preferred = { x = 45, y = -30 }, radius = 4,
     directions = { dir }, limit = 3, output_recipient_item = "stone-furnace" })
   local first = result.candidates[1]
   local steps = first and first.build_steps
@@ -172,7 +176,7 @@ for _, dir in ipairs({ 0, 4, 8, 12 }) do
 end
 
 add_entity("stone-furnace", { x = 45, y = -30 })
-local flush = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 45, y = -32 }, radius = 1,
+local flush = find({ item = "burner-mining-drill", preferred = { x = 45, y = -32 }, radius = 1,
   directions = { 8 }, limit = 1, output_target = { x = 45, y = -30 } })
 check(flush.candidates[1] and flush.candidates[1].position.x == 45 and flush.candidates[1].position.y == -32,
   "a drill flush against an existing furnace is found by output_target, as the engine binds it")
@@ -183,7 +187,7 @@ lay_ore(0, 0, 0); ore = {}
 add_entity("wooden-chest", { x = 38.5, y = -47.5 })
 add_entity("stone-furnace", { x = 40, y = -48 })
 body.position = { x = 39.5, y = -45 }
-local adjacent = finder.find_placement({ item = "burner-inserter", preferred = { x = 39.5, y = -46.5 }, radius = 4,
+local adjacent = find({ item = "burner-inserter", preferred = { x = 39.5, y = -46.5 }, radius = 4,
   limit = 10, input_target = { x = 38.5, y = -47.5 }, output_target = { x = 40, y = -48 } })
 check(#adjacent.candidates == 0 and adjacent.hint and adjacent.hint:find("adjacent (0 free tiles)", 1, true)
   and adjacent.hint:find("exactly 1 free tile", 1, true),
@@ -198,18 +202,18 @@ check(keys_ok and total == adjacent.evaluated, "every evaluation has exactly one
 entities = {}
 add_entity("wooden-chest", { x = 36.5, y = -47.5 })
 add_entity("stone-furnace", { x = 40, y = -48 })
-local far = finder.find_placement({ item = "burner-inserter", preferred = { x = 38, y = -47.5 }, radius = 4,
+local far = find({ item = "burner-inserter", preferred = { x = 38, y = -47.5 }, radius = 4,
   limit = 10, input_target = { x = 36.5, y = -47.5 }, output_target = { x = 40, y = -48 } })
 check(#far.candidates == 0 and far.hint and far.hint:find("have 2 free tiles", 1, true),
   "an inserter between endpoints two tiles apart reports the gap it has and needs")
-local long = finder.find_placement({ item = "long-handed-inserter", preferred = { x = 38, y = -47.5 }, radius = 4,
+local long = find({ item = "long-handed-inserter", preferred = { x = 38, y = -47.5 }, radius = 4,
   limit = 10, input_target = { x = 36.5, y = -47.5 }, output_target = { x = 40, y = -48 } })
 check(long.candidates[1] and long.candidates[1].position.x == 38.5 and long.hint == nil,
   "a long-handed inserter reaches the far tile of a 2x2 recipient across two free tiles")
 entities = {}
 add_entity("wooden-chest", { x = 33.5, y = -47.5 })
 add_entity("stone-furnace", { x = 40, y = -48 })
-local too_far = finder.find_placement({ item = "long-handed-inserter", preferred = { x = 37, y = -47.5 }, radius = 4,
+local too_far = find({ item = "long-handed-inserter", preferred = { x = 37, y = -47.5 }, radius = 4,
   limit = 10, input_target = { x = 33.5, y = -47.5 }, output_target = { x = 40, y = -48 } })
 check(#too_far.candidates == 0 and too_far.hint and too_far.hint:find("have 5 free tiles", 1, true)
   and too_far.hint:find("2-3 free tiles", 1, true),
@@ -218,7 +222,7 @@ check(#too_far.candidates == 0 and too_far.hint and too_far.hint:find("have 5 fr
 entities = {}
 add_entity("wooden-chest", { x = 37.5, y = -47.5 })
 add_entity("stone-furnace", { x = 40, y = -48 })
-local fits = finder.find_placement({ item = "burner-inserter", preferred = { x = 38.5, y = -47.5 }, radius = 2,
+local fits = find({ item = "burner-inserter", preferred = { x = 38.5, y = -47.5 }, radius = 2,
   limit = 4, input_target = { x = 37.5, y = -47.5 }, output_target = { x = 40, y = -48 } })
 check(fits.candidates[1] and fits.candidates[1].position.x == 38.5 and fits.candidates[1].position.y == -47.5
   and fits.candidates[1].direction == 12 and fits.hint == nil,
@@ -228,7 +232,7 @@ entities, blocked_areas = {}, {}
 body.position = { x = 0.5, y = 20.5 }
 blocked_areas[1] = { left_top = { x = -5, y = -5 }, right_bottom = { x = 5, y = 5 } }
 add_entity("wooden-chest", { x = 0.5, y = 0.5 })
-local blocked = finder.find_placement({ item = "wooden-chest", preferred = { x = 0.5, y = 0.5 }, radius = 1, limit = 1 })
+local blocked = find({ item = "wooden-chest", preferred = { x = 0.5, y = 0.5 }, radius = 1, limit = 1 })
 check(#blocked.candidates == 0 and blocked.closest_rejected and blocked.closest_rejected.reason == "blocked"
   and blocked.closest_rejected.blocker and blocked.closest_rejected.blocker.name == "wooden-chest"
   and blocked.hint:find("wooden-chest", 1, true),
@@ -237,17 +241,36 @@ check(#blocked.candidates == 0 and blocked.closest_rejected and blocked.closest_
 blocked_areas = {}
 entities = {}
 body.position = { x = 0.5, y = 0.5 }
-local wide = finder.find_placement({ item = "wooden-chest", preferred = { x = 0.5, y = 0.5 }, radius = 30, limit = 4 })
+local wide = find({ item = "wooden-chest", preferred = { x = 0.5, y = 0.5 }, radius = 30, limit = 4 })
 check(#wide.candidates == 4 and wide.evaluated <= 8 and wide.truncated == nil
   and wide.candidates[1].position.x == 0.5 and wide.candidates[1].position.y == 0.5,
   "a search stops as soon as the nearest limit candidates are found")
 blocked_areas[1] = { left_top = { x = -40, y = -40 }, right_bottom = { x = 40, y = 40 } }
-local capped = finder.find_placement({ item = "wooden-chest", preferred = { x = 0.5, y = 0.5 }, radius = 30, limit = 4 })
-check(#capped.candidates == 0 and capped.truncated == true and capped.evaluated == 600
-  and capped.closest_rejected.reason == "blocked" and capped.hint:find("blocked", 1, true),
-  "an all-blocked radius-30 search stops at the engine-call budget and says why")
+local capped, capped_ticks = find({ item = "wooden-chest", preferred = { x = 0.5, y = 0.5 }, radius = 30, limit = 4 })
+check(#capped.candidates == 0 and capped.truncated == true and capped.evaluated == 2048
+  and capped.closest_rejected.reason == "blocked" and capped.hint:find("blocked", 1, true)
+  and capped.hint:find("stopped after 2048 evaluations", 1, true),
+  "an all-blocked radius-30 search stops at its evaluation ceiling and says why")
+check(capped_ticks > 1, "a large search is spread over " .. capped_ticks .. " ticks of the job budget")
+
+-- In the game the RPC starts a job: a search that does not fit this tick
+-- answers pending and on_tick finishes it within the per-tick allowance.
+_G.game, _G.storage = { tick = 1 }, {}
+local pending = finder.find_placement({ item = "wooden-chest", preferred = { x = 0.5, y = 0.5 }, radius = 30, limit = 4 })
+local most, ticks_taken, done = 0, 0, nil
+while not done and ticks_taken < 100 do
+  game.tick, ticks_taken = game.tick + 1, ticks_taken + 1
+  jobs.on_tick()
+  most = math.max(most, storage.jobs.used)
+  local job = storage.jobs.by_id[pending.job_id]
+  if job.status ~= "pending" then done = jobs.get({ job_id = pending.job_id }) end
+end
+check(pending.job_status == "pending" and done and done.job_status == "done" and done.result.truncated == true
+  and most <= jobs.WORK_PER_TICK + 64,
+  "the RPC answers pending and the job finishes over " .. ticks_taken .. " ticks, at most " .. most .. " work items a tick")
+_G.game, _G.storage = nil, nil
 blocked_areas = {}
-local far_body = finder.find_placement({ item = "wooden-chest", preferred = { x = 0.5, y = 50.5 }, radius = 2, limit = 4 })
+local far_body = find({ item = "wooden-chest", preferred = { x = 0.5, y = 50.5 }, radius = 2, limit = 4 })
 check(#far_body.candidates == 4 and far_body.candidates[1].position.y == 50.5,
   "find_placement searches charted terrain however far it is from Codex")
 
@@ -264,13 +287,13 @@ for _, dir in ipairs({ 0, 4, 8, 12 }) do
   check(not output_targets.box_contains(target.bounding_box, point)
     and output_targets.recipient_at(body, point, "output", "inserter") == target,
     "narrow native fuel recipient resolves beyond collision containment facing " .. dir)
-  local existing = finder.find_placement({ item = "burner-inserter", preferred = producer,
+  local existing = find({ item = "burner-inserter", preferred = producer,
     radius = 1, directions = { dir }, limit = 1, output_target = target_position })
   check(existing.geometry == "provisional" and existing.candidates[1]
     and existing.candidates[1].position.x == producer.x and existing.candidates[1].position.y == producer.y,
     "search finds the native adjacent existing fuel recipient facing " .. dir)
   entities = {}
-  local planned = finder.find_placement({ item = "burner-inserter", preferred = producer,
+  local planned = find({ item = "burner-inserter", preferred = producer,
     radius = 1, directions = { dir }, limit = 1, output_recipient_item = "burner-inserter" })
   local candidate = planned.candidates[1]
   check(candidate and candidate.output_recipient_placement.position.x == target_position.x

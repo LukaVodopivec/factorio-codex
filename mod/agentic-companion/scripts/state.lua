@@ -2,6 +2,9 @@ local M = {}
 M.AUTONOMY_VERSION = 1
 M.REGISTRY_VERSION = 1
 M.PATCH_CACHE_VERSION = 1
+-- Machine types the registry gained in 0.22 (a 0.21 registry holds these
+-- entities in its other sets, not yet as machines).
+M.MACHINE_TYPES_0_22 = { reactor = true, beacon = true, roboport = true }
 -- Blueprint slots (blueprints.lua): 32 named blueprints and a scratch slot.
 M.BLUEPRINT_SLOTS = 33
 
@@ -45,6 +48,11 @@ function M.init()
   local activity = storage.factory_activity
   activity.validations, activity.validations_omitted, activity.supply_proof_tick = nil, nil, nil
   activity.target_last_tick, activity.target_last_tick_after = nil, nil
+  -- Hand-crafted items by name (factory_activity.on_player_crafted_item),
+  -- counted from the tick this version first ran (0.22).
+  if not activity.hand_crafted then
+    activity.hand_crafted, activity.hand_crafted_since_tick = {}, game and game.tick or 0
+  end
   -- Upkeep (chores.lua): unit_number -> tick of the last refuel attempt,
   -- and of the last science-pack delivery to a lab.
   storage.chores = storage.chores or {}
@@ -74,15 +82,24 @@ function M.init()
     }
   end
   storage.autonomy.patches = nil -- replaced by storage.patch_cache
+  -- Units of the machines sampled for problems only (beacons, roboports),
+  -- and per chore status (no_fuel, missing_science_packs) the units in it,
+  -- so upkeep reads those machines without walking every one (0.22).
+  -- A 0.21 line store gains them on its next refresh, due at once.
+  if not storage.autonomy.waiting then
+    storage.autonomy.problem_only, storage.autonomy.waiting = {}, {}
+    storage.autonomy.dirty_tick = storage.autonomy.dirty_tick or (game and game.tick or 0)
+  end
   -- Own entities (registry.lua), kept by build/remove events. A new game or
   -- an upgrade from a save without it starts the bootstrap, which reads the
   -- charted chunks a few per tick until ready.
-  local registry = storage.registry
-  if not registry or registry.version ~= M.REGISTRY_VERSION then
+  local own = storage.registry
+  if not own or own.version ~= M.REGISTRY_VERSION then
     storage.registry = {
       version = M.REGISTRY_VERSION, ready = false, force = nil,
       started_tick = game and game.tick or 0, ready_tick = nil,
-      -- unit_number -> {entity, unit, name, type, position, surface}
+      -- unit_number -> {entity, unit, name, type, position, surface, and
+      -- the maintenance cursor's role, network, share and stock}
       entries = {},
       -- machines[type][unit]; the other sets are unit -> true.
       machines = {}, holders = {}, burners = {}, electric = {}, poles = {},
@@ -91,21 +108,41 @@ function M.init()
       -- chunks: charted chunk positions to read (listed on the first tick);
       -- cursor: the next one. nil once ready.
       bootstrap = { chunks = nil, cursor = 1 },
+      -- Filled below: order, cursor, write, pass_tick, networks, stock, types.
     }
+  end
+  -- Aggregates and the maintenance cursor (registry.lua, 0.22): the
+  -- entries in cursor order, per network shares, per surface stock and type
+  -- counts. A 0.21 registry keeps its entries and gains them here (pure
+  -- Lua, no engine call), with the machine types 0.22 added; each entry's
+  -- network, power role and stock arrive on the cursor's first pass.
+  local r = storage.registry
+  if not r.order then
+    r.order, r.cursor, r.write, r.pass_tick = {}, 1, 1, nil
+    r.networks, r.stock, r.types = {}, {}, {}
+    for unit, entry in pairs(r.entries) do
+      r.order[#r.order + 1] = unit
+      local surface = entry.surface or 0
+      r.types[surface] = r.types[surface] or {}
+      local row = r.types[surface][entry.type] or { count = 0, nameplate_w = 0 }
+      r.types[surface][entry.type], row.count = row, row.count + 1
+      if M.MACHINE_TYPES_0_22[entry.type] then
+        r.machines[entry.type] = r.machines[entry.type] or {}
+        r.machines[entry.type][unit] = true
+      end
+    end
+    table.sort(r.order)
   end
   -- Resource patches per charted chunk (map_summary.patches): chunk key ->
   -- {cx, cy, cells = {[resource] = cell}} for chunks holding resources;
   -- known: every chunk read once. Pending chunks are (re)read a few per tick
   -- from head, seeded with every charted chunk on the first tick.
-  -- factory_status stock and power (map_summary.status_tick): the last
-  -- finished sections, every item's stock total (totals, which
-  -- registry.stock_totals reads), and the refresh job in progress,
-  -- restarted on load.
-  local status_cache = storage.status_cache or {}
-  status_cache.job = nil
-  storage.status_cache = status_cache
-  -- factory_status research: the available technologies, dropped by every
-  -- research event (factory_status.on_research_changed).
+  -- 0.21 kept factory_status stock and power in a refresh cache; the
+  -- registry's aggregates replace it.
+  storage.status_cache = nil
+  -- factory_status research: the available technologies, rebuilt on the
+  -- next read after a load or upgrade and kept by the research events
+  -- (factory_status.on_research_changed).
   storage.research_cache = nil
   -- charted: every charted chunk once, in the order it became known, and
   -- charted_set its keys (map_summary's chunk list, read without a query).
@@ -133,10 +170,10 @@ function M.init()
     for _, chunk in ipairs(list) do patch_cache.charted_set[chunk.x .. "," .. chunk.y] = true end
   end
   -- Heavy reads in progress and unread results (jobs.lua). Jobs are plain
-  -- data and survive save and load; a mod change drops them (their state is
-  -- this version's shape), keeping the id counter so no id is reused.
-  local jobs = storage.jobs
-  storage.jobs = { next_id = jobs and jobs.next_id or 1, by_id = {}, order = {}, tick = nil, used = 0 }
+  -- data and survive save, load and a mod upgrade: a kind this version no
+  -- longer knows fails with its reason when it is next worked on.
+  local jobs = storage.jobs or {}
+  storage.jobs = { next_id = jobs.next_id or 1, by_id = jobs.by_id or {}, order = jobs.order or {}, tick = nil, used = 0 }
   -- Blueprints (blueprints.lua): real blueprint items in a script inventory,
   -- by_name: name -> {slot, entities, tiles, size, wires, source,
   -- created_tick}. An inventory that is gone takes its names with it.

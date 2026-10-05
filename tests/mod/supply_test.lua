@@ -41,14 +41,14 @@ local body
 body = {
   valid = true, position = { x = 0, y = 0 }, force = own_force,
   prototype = { crafting_categories = { crafting = true } },
-  get_item_count = function(name) return inventory[name] or 0 end,
+  get_item_count = function(name) return inventory[type(name) == "table" and name.name or name] or 0 end,
   get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
 }
 own_force.recipes = recipes
 own_force.is_chunk_charted = function(_, chunk) return chunk.x < 4 end
 
 local function holder(items)
-  return { get_item_count = function(name) return items[name] or 0 end }
+  return { get_item_count = function(name) return items[type(name) == "table" and name.name or name] or 0 end }
 end
 local function add(entity)
   entity.valid = true
@@ -134,11 +134,23 @@ local function own_entries(keep)
   return rows
 end
 local registry_reads = 0
+local holder_rows_read = 0
 package.loaded["scripts.registry"] = {
-  list = function(set)
-    assert(set == "holders", "supply reads the registry's holders")
+  -- The registry's last read of each holder is its live content here.
+  holders_with = function(item, position, cap, skip)
     registry_reads = registry_reads + 1
-    return own_entries(function(e) return HOLDER_TYPES[e.type] end)
+    local rows = {}
+    for _, row in ipairs(own_entries(function(e) return HOLDER_TYPES[e.type] and (e.items[item] or 0) > 0 end)) do
+      if not skip(row) then rows[#rows + 1] = row end
+    end
+    table.sort(rows, function(a, b)
+      local da = (a.position.x - position.x) ^ 2 + (a.position.y - position.y) ^ 2
+      local db = (b.position.x - position.x) ^ 2 + (b.position.y - position.y) ^ 2
+      return da < db
+    end)
+    while #rows > cap do table.remove(rows) end
+    holder_rows_read = holder_rows_read + #rows
+    return rows
   end,
   machines = function(types)
     assert(#types == 1 and (types[1] == "mining-drill" or types[1] == "furnace"), "supply reads drills or furnaces")
@@ -384,6 +396,29 @@ check(most_scans == 1 and not natural_with_other and ticks > 4,
   "a circuit -> plate/cable -> copper chain runs at most one registry, belt, drill or natural scan per tick (" .. ticks .. " ticks)")
 recipes["electronic-circuit"], recipes["copper-cable"] = nil, nil
 
+-- Holders are read live only where the registry's stock says the item is:
+-- none of it anywhere walks no holder, and of many holders only the nearest
+-- four that held it are read.
+reset()
+for i = 1, 30 do chest({ x = 2.5 + i, y = 4.5 }, { ["iron-plate"] = 10 }) end
+local live_reads = 0
+for _, e in ipairs(world) do
+  local get_inventory = e.get_inventory
+  e.get_inventory = function(...) live_reads = live_reads + 1; return get_inventory(...) end
+end
+local walks_before = registry_reads
+prototypes.item["copper-ore"] = prototypes.item["copper-ore"] or { stack_size = 50 }
+local nothing = { items = { { name = "copper-ore", count = 1 } } }
+supply.start(nothing)
+supply.tick(nothing)
+check(registry_reads == walks_before and live_reads == 0, "an item no holder held walks no holder")
+local rows_before = holder_rows_read
+local plates = { items = { { name = "iron-plate", count = 5 } } }
+supply.start(plates)
+supply.tick(plates)
+check(holder_rows_read - rows_before == 4 and live_reads == 4 and calls[#calls].kind == "extract"
+  and calls[#calls].task.target.x == 3.5, "of 30 holders only the nearest 4 are read live")
+
 -- A take never asks for more than the inventory has room for.
 reset()
 local room = 30
@@ -553,7 +588,7 @@ supply.register_runner("extract", stub("extract", function(task)
   for name, count in pairs(task.items) do move(source, name, count) end
   return { status = "done", detail = "took" }
 end))
-body.remove_item = function(stack) inventory[stack.name] = inventory[stack.name] - stack.count end
+body.remove_item = function(stack) inventory[stack.name] = inventory[stack.name] - stack.count; return stack.count end
 local fed = 0
 local furnace = add({ type = "furnace", name = "stone-furnace", position = { x = 2.5, y = 0.5 }, items = { coal = 30 } })
 furnace.get_output_inventory = function() return holder({}) end

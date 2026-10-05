@@ -21,6 +21,8 @@ local jobs = require("scripts.jobs")
 local build_layout = require("scripts.actions.build_layout")
 local blueprints = require("scripts.blueprints")
 local area_ops = require("scripts.actions.area_ops")
+local tiles = require("scripts.actions.tiles")
+local factory_activity = require("scripts.factory_activity")
 local timing = require("scripts.profiler")
 
 -- Every read-only RPC result carries the body's FIFO state from the same Lua
@@ -60,7 +62,7 @@ end
 
 rpc.register("ping", read(function()
   return {
-    protocol_version = 25,
+    protocol_version = 26,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
@@ -85,8 +87,12 @@ jobs.register("build_block", build_layout.block_check_job)
 jobs.register("blueprint_capture", blueprints.capture_job)
 jobs.register("blueprint_describe", blueprints.describe_job)
 jobs.register("blueprint_place", area_ops.place_check_job)
-for _, kind in ipairs({ "observe_local", "map_summary", "connect_entities", "build_layout", "build_block",
-  "blueprint_capture", "blueprint_describe", "blueprint_place" }) do
+-- place_tiles over RPC is its check_only dry run: two work items per tile read.
+jobs.register("place_tiles", tiles.check_job)
+-- inspect reads about 15 entities a tick.
+jobs.register("inspect", inspect.job)
+for _, kind in ipairs({ "observe_local", "inspect", "map_summary", "connect_entities", "build_layout", "build_block",
+  "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles" }) do
   rpc.register(kind, read(jobs.rpc(kind)))
 end
 rpc.register("blueprint_create", blueprints.create)
@@ -95,7 +101,6 @@ rpc.register("blueprint_delete", blueprints.delete)
 rpc.register("blueprint_export", read(blueprints.export))
 blueprints.set_logger(tasks.log_event)
 rpc.register("get_job", read(jobs.get))
-rpc.register("inspect", read(inspect.inspect))
 rpc.register("start_research", research.start_research)
 rpc.register("can_place", read(spatial.can_place))
 rpc.register("find_placement", read(find_placement.find_placement))
@@ -208,6 +213,8 @@ end)
 for _, name in ipairs(factory_status.RESEARCH_EVENTS) do
   if defines.events[name] then script.on_event(defines.events[name], factory_status.on_research_changed) end
 end
+-- Hand-crafted items of the Codex player, counted for run_snapshot.
+script.on_event(defines.events.on_player_crafted_item, factory_activity.on_player_crafted_item)
 script.on_event(defines.events.on_chunk_charted, map_summary.on_chunk_charted)
 script.on_event(defines.events.on_resource_depleted, map_summary.on_resource_depleted)
 script.on_event(defines.events.on_player_left_game, companion.on_player_left)

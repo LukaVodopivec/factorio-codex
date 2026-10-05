@@ -11,7 +11,7 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 
 local RAW = { working = 1, no_fuel = 2, normal = 3, no_power = 4, no_ingredients = 5 }
 _G.defines = { entity_status = RAW, inventory = { chest = 1, fuel = 2, furnace_source = 3 },
-  target_type = { entity = 7, gui_element = 9 } }
+  target_type = { entity = 7, gui_element = 9 }, flow_precision_index = { five_seconds = 0 } }
 _G.prototypes = { item = { coal = { stack_size = 50 }, wood = { stack_size = 100 } }, recipe = {}, entity = {} }
 _G.game = { tick = 0 }
 _G.storage = {}
@@ -65,9 +65,11 @@ package.loaded["scripts.companion"] = { get = function() return body end, requir
   human_control = function() return false, 999 end }
 
 local next_unit = 0
+local content_reads = 0
 local function inventory(contents)
   return mock.inventory({
     get_contents = function()
+      content_reads = content_reads + 1
       local rows = {}
       for name, count in pairs(contents) do rows[#rows + 1] = { name = name, quality = "normal", count = count } end
       table.sort(rows, function(a, b) return a.name < b.name end)
@@ -77,6 +79,10 @@ local function inventory(contents)
   })
 end
 local ELECTRIC = {}
+-- What changes without an event (status, network, charge) is read through
+-- live[entity], and every such read is counted.
+local live, state_reads = {}, 0
+local LIVE_KEYS = { "status", "electric_network_id", "energy" }
 local function entity(values)
   next_unit = next_unit + 1
   values.valid, values.unit_number = true, values.unit_number or next_unit
@@ -92,7 +98,13 @@ local function entity(values)
     values.prototype = mock.entity_prototype({ name = values.name })
   end
   values.electric, values.production = nil, nil
+  local current = {}
+  for _, key in ipairs(LIVE_KEYS) do current[key], values[key] = values[key], nil end
   local e = mock.entity(values)
+  live[e] = current
+  for _, key in ipairs(LIVE_KEYS) do
+    mock.read(e, key, function() state_reads = state_reads + 1; return live[e][key] end)
+  end
   world[#world + 1] = e
   return e
 end
@@ -211,7 +223,8 @@ clone.valid = false
 check(#registry.machines({ "furnace" }) == 1, "an entity gone without an event is dropped on read")
 
 -- Reads after the bootstrap make no entity query.
-package.loaded["scripts.research"] = { progression_status = function() return { available = {} } end }
+package.loaded["scripts.research"] = { research_trigger = function() return nil end }
+force.technologies = {}
 local queued = {}
 package.loaded["scripts.tasks"] = { queue_length = function() return 0 end, active_summary = function() return nil end,
   queue_plan = function(params) queued[#queued + 1] = params; return { plan_id = #queued } end }
@@ -225,40 +238,53 @@ for tick = 5, 700 do game.tick = tick; autonomy.on_tick(tick) end
 local lines = autonomy.lines()
 check(#lines == 4 and finds.all == 0, "autonomy builds its lines from the registry with no entity query ("
   .. #lines .. " lines, " .. finds.all .. " queries)")
--- Stock and power come from a cache refreshed a few entities a tick; a read
--- before its first refresh says so instead of scanning.
+-- Stock and power are the registry's aggregates: build events count at
+-- once, and the maintenance cursor (a budget of work items a tick) keeps
+-- networks, statuses, charge and contents current. A read before the first
+-- full pass says so instead of scanning.
 for i = 1, 100 do registry.on_built({ entity = chest(40.5 + i % 50, 20.5 + math.floor(i / 50), {}) }) end
 local early = factory_status.factory_status({ sections = { "stock", "power" } })
 check(early.stock_power_ready == false and #early.stock == 0 and #early.power == 0 and early.stock_power_tick == nil,
-  "before the first refresh factory_status reports stock and power not ready, without scanning")
-local per_tick, refresh_ticks = {}, 0
-for tick = 701, 760 do
+  "before the first pass factory_status reports stock and power not ready, without scanning")
+local per_tick, pass_ticks, most_reads = {}, 0, 0
+for tick = 701, 800 do
   game.tick = tick
-  local job = storage.status_cache.job
-  local before = job and job.cursor or 1
+  local before_reads, before_contents = state_reads, content_reads
   map_summary.status_tick(tick)
-  refresh_ticks = refresh_ticks + 1
-  job = storage.status_cache.job
-  if job then per_tick[#per_tick + 1] = job.cursor - before end
-  if storage.status_cache.updated_tick then break end
+  pass_ticks = pass_ticks + 1
+  most_reads = math.max(most_reads, state_reads - before_reads + content_reads - before_contents)
+  if storage.registry.pass_tick then break end
 end
-local most = 0
-for _, n in ipairs(per_tick) do most = math.max(most, n) end
-check(finds.all == 0 and storage.status_cache.updated_tick == 700 + refresh_ticks and refresh_ticks >= 4
-  and most <= map_summary.STATUS_ENTITIES_PER_TICK and storage.status_cache.job == nil,
-  "the stock and power cache reads at most " .. map_summary.STATUS_ENTITIES_PER_TICK
-    .. " entities a tick over " .. refresh_ticks .. " ticks with no entity query (most " .. most .. ")")
-local refreshed_at = storage.status_cache.updated_tick
-for tick = refreshed_at + 1, refreshed_at + 299 do game.tick = tick; map_summary.status_tick(tick) end
-check(storage.status_cache.job == nil and storage.status_cache.updated_tick == refreshed_at,
-  "the next refresh waits 300 ticks")
-check(storage.status_cache.totals.coal == 30 and registry.stock_totals({ "coal", "wood" }).coal == 30
+check(finds.all == 0 and storage.registry.pass_tick == 700 + pass_ticks and pass_ticks >= 2
+  and most_reads <= registry.MAINTAIN_WORK_PER_TICK,
+  "the maintenance cursor passes over every entry in " .. pass_ticks .. " ticks, at most " .. most_reads
+    .. " state reads a tick, with no entity query")
+local refreshed_at = storage.registry.pass_tick
+check(storage.registry.stock[1].coal.total == 30 and registry.stock_totals({ "coal", "wood" }).coal == 30
   and registry.stock_totals({ "wood", "stone" }).wood == 5 and registry.stock_totals({ "stone" }).stone == 0,
-  "the refresh keeps every item's stock total for stock_totals")
+  "the registry keeps every item's stock total for stock_totals")
+local coal_holders = registry.holders_with("coal", { x = 0, y = 0 }, 1)
+check(#coal_holders == 1 and coal_holders[1].stock.coal > 0 and #registry.holders_with("stone", { x = 0, y = 0 }, 4) == 0
+  and #registry.holders_with("coal", { x = 0, y = 0 }, 4, function() return true end) == 0,
+  "holders_with lists the nearest holders whose last read held the item, without an engine read")
+local network = storage.registry.networks[5]
+check(network and network.pole == pole and network.sources.steam.count == 1 and network.sources.steam.nameplate_w == 900000
+  and network.demand_w == 120000 and network.starved == 1 and network.members == 3,
+  "a network keeps its pole, its sources by kind and the nominal demand of consumers trying to run")
 finds.all = 0
 chores.upkeep(game.tick)
 check(#queued == 1 and queued[1].steps[1].items.coal == 10 and queued[1].steps[1].x == 1.5 and finds.all == 0,
-  "upkeep refuels the dry furnace from the refreshed stock totals with no entity query")
+  "upkeep refuels the dry furnace from the stock aggregates with no entity query")
+local flow_reads = 0
+local statistics = mock.flow_statistics({ output_counts = { ["steam-engine"] = 1 },
+  get_flow_count = function(query)
+    flow_reads = flow_reads + 1
+    assert(query.category == "output" and query.count == false, "power reads production rates")
+    return 600
+  end })
+pole.electric_network_statistics = statistics
+prototypes.entity["steam-engine"] = { type = "generator" }
+state_reads, content_reads = 0, 0
 local status = factory_status.factory_status({})
 local coal_row, gear_row
 for _, row in ipairs(status.stock) do
@@ -267,14 +293,61 @@ for _, row in ipairs(status.stock) do
 end
 check(finds.all == 0 and status.registry_ready == true and coal_row and coal_row.total == 30
   and gear_row and gear_row.holders[1].kind == "machine_output" and #status.power == 1
-  and status.power[1].network_id == 5 and status.power[1].capacity_w == 900000 and status.power[1].satisfaction < 1
+  and status.power[1].network_id == 5 and status.power[1].capacity_w == 900000 and status.power[1].satisfaction == 0.3
+  and status.power[1].production_w == 36000 and status.power[1].sources[1].kind == "steam"
+  and status.power[1].add_to_cover == nil and status.power[1].sustained_w == 900000
   and status.stock_power_ready and status.stock_power_tick == refreshed_at,
   "factory_status stock and power come from the registry with no entity query")
+check(content_reads == 0 and state_reads <= 1 and flow_reads == 1,
+  "a factory_status read walks no holder or electric entity: " .. content_reads .. " inventory reads, "
+    .. state_reads .. " state reads, " .. flow_reads .. " statistics read")
 check(status.patches_ready == false and #status.patches == 0, "patches say not ready before the cache is filled")
 local snapshot_factory = map_summary.registry_factory()
 check(finds.all == 0 and snapshot_factory.machine_count == 4 and snapshot_factory.belt_count == 3
   and snapshot_factory.power.network_count == 1 and snapshot_factory.registry_ready,
   "the recorder's factory counts come from the registry with no entity query")
+
+-- A build counts at once; a removal is taken back at once.
+local solar = entity({ name = "solar-panel", type = "solar-panel", position = { x = 98.5, y = 4.5 }, production = 1000,
+  electric_network_id = 5 })
+registry.on_built({ entity = solar })
+check(network.sources.solar.count == 1 and network.sources.solar.nameplate_w == 60000
+  and registry.aggregate(1)["solar-panel"].count == 1 and registry.aggregate(1)["solar-panel"].nameplate_w == 60000,
+  "a built solar panel joins its network's sources and the surface's type counts at once")
+registry.on_removed({ entity = solar })
+check(network.sources.solar.count == 0 and network.sources.solar.nameplate_w == 0
+  and registry.aggregate(1)["solar-panel"].count == 0, "a mined solar panel leaves them at once")
+registry.on_removed({ entity = coal_chest })
+check(registry.stock_totals({ "coal" }).coal == 0 and storage.registry.stock[1].coal == nil,
+  "a removed chest's stock leaves the totals at once")
+
+-- Network ids change when poles connect: the next pass moves every share.
+for _, member in ipairs({ pole, engine, assembler, inserter }) do live[member].electric_network_id = 6 end
+local start_tick = game.tick
+repeat
+  game.tick = game.tick + 1
+  map_summary.status_tick(game.tick)
+until storage.registry.pass_tick > refreshed_at and storage.registry.pass_tick > start_tick
+local merged = storage.registry.networks[6]
+check(storage.registry.networks[5] == nil and merged and merged.pole == pole and merged.sources.steam.count == 1
+  and merged.demand_w == 120000 and merged.members == 3,
+  "after poles change networks, one pass moves every share to the new id and forgets the empty one")
+
+-- 500 solar panels: the line sampler reads no more a tick, a read reads no
+-- more entities, and the panels are in the network aggregates.
+for i = 1, 500 do
+  registry.on_built({ entity = entity({ name = "solar-panel", type = "solar-panel", production = 1000,
+    position = { x = 100.5 + i % 100 * 2, y = 6.5 + math.floor(i / 100) * 2 }, electric_network_id = 6 }) })
+end
+local machine_reads_before = state_reads
+for tick = game.tick + 1, game.tick + 30 do game.tick = tick; autonomy.on_tick(tick) end
+local sampler_reads = state_reads - machine_reads_before
+state_reads, content_reads, flow_reads = 0, 0, 0
+local with_panels = factory_status.factory_status({ sections = { "power", "stock" } })
+check(merged.sources.solar.count == 500 and with_panels.power[1].sources[1].kind == "solar"
+  and with_panels.power[1].sources[1].count == 500 and sampler_reads <= 4 * 2
+  and state_reads <= 1 and content_reads == 0 and flow_reads == 1,
+  "with 500 solar panels the sampler reads " .. sampler_reads .. " states in 30 ticks and a read still walks no entity")
 
 -- Patch cache: seeded on the first tick, then two chunks a tick.
 local resource_reads = {}
@@ -346,6 +419,29 @@ patches = map_summary.patches()
 for _, patch in ipairs(patches) do by_name[patch.name] = patch end
 check(finds.resource - before == 4 and by_name["uranium-ore"].amount == 40,
   "while idle one cached resource chunk is read again every 120 ticks (" .. (finds.resource - before) .. " reads)")
+
+-- A 0.21.1 registry is upgraded in place: entries and readiness are kept,
+-- the cursor list and type counts come from the entries, machine types
+-- 0.22 added join the machine sets, and the aggregates fill on the first pass.
+local beacon = entity({ name = "beacon", type = "beacon", position = { x = 20.5, y = 20.5 }, electric = true,
+  electric_network_id = 6 })
+storage.registry = { version = state.REGISTRY_VERSION, ready = true, ready_tick = 4, force = "player",
+  entries = { [beacon.unit_number] = { entity = beacon, unit = beacon.unit_number, name = "beacon", type = "beacon",
+    position = { x = 20.5, y = 20.5 }, surface = 1 },
+    [dry.unit_number] = { entity = dry, unit = dry.unit_number, name = "stone-furnace", type = "furnace",
+      position = { x = 1.5, y = 1.5 }, surface = 1 } },
+  machines = { furnace = { [dry.unit_number] = true } }, holders = { [dry.unit_number] = true },
+  burners = { [dry.unit_number] = true }, electric = { [beacon.unit_number] = true }, poles = {},
+  belts = {}, belt_count = 0 }
+state.init()
+local upgraded = storage.registry
+check(upgraded.ready and #upgraded.order == 2 and upgraded.machines.beacon[beacon.unit_number]
+  and upgraded.types[1].beacon.count == 1 and upgraded.types[1].furnace.count == 1 and upgraded.pass_tick == nil
+  and registry.counts().machines == 1, "a 0.21.1 registry is upgraded in place; beacons are machines but not productive")
+for tick = 2000, 2010 do map_summary.status_tick(tick) end
+check(upgraded.pass_tick ~= nil and upgraded.networks[6] and upgraded.networks[6].demand_w == 60000
+  and upgraded.stock[1]["iron-plate"].total == 12,
+  "the first pass after the upgrade fills the network and stock aggregates")
 
 -- An upgraded save without a registry gets a fresh one, which bootstraps.
 storage.registry = nil

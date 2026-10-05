@@ -61,9 +61,16 @@ _G.game = { tick = 0, get_player = function(index) return players[index] end, co
 local inert = { start = function() end, tick = function() return { status = "done", detail = "done" } end }
 package.loaded["scripts.actions.craft"] = inert
 package.loaded["scripts.actions.build"] = { place = inert, rotate = inert, set_recipe = inert }
-package.loaded["scripts.actions.transfer"] = { insert = inert, extract = inert }
+package.loaded["scripts.actions.transfer"] = { insert = inert, extract = inert,
+  flush_action = { runner = inert, make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = inert
-package.loaded["scripts.inspect"] = { inspect = function() error("unexpected inspect") end }
+-- The inspect job stub reads through whatever inspect.inspect the test sets.
+local function inspect_job()
+  return { start = function(params) return { params = params } end,
+    step = function(state) return package.loaded["scripts.inspect"].inspect(state.params) end }
+end
+package.loaded["scripts.inspect"] = { MAX_TARGETS = 64, PER_TARGET = 40, job = inspect_job(),
+  inspect = function() error("unexpected inspect") end }
 
 local companion = require("scripts.companion")
 local walk = require("scripts.actions.walk")
@@ -656,7 +663,7 @@ do
   storage.rpc_outbox = { next_id = 1, by_id = {} }
   local function reader() return function() return {} end end
   package.loaded["scripts.state"] = { init = function() end }
-  package.loaded["scripts.inspect"] = { inspect = reader() }
+  package.loaded["scripts.inspect"] = { MAX_TARGETS = 64, PER_TARGET = 40, job = inspect_job(), inspect = reader() }
   package.loaded["scripts.research"] = { start_research = reader(), progression_status = reader() }
   local function job() return { start = function() return {} end, step = reader() } end
   package.loaded["scripts.spatial"] = { observe_job = job(), observe_compact = reader(), can_place = reader(),

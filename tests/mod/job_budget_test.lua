@@ -201,8 +201,12 @@ for _, detail in ipairs({ "compact", "full" }) do
   check(flat(small_lua, large_lua), string.format(
     "observe_local %s clusters and caps an ore field without a tick that grows with it (radius 5: %d, radius 30: %d instructions)",
     detail, small_lua, large_lua))
-  check(small and large and large.resource_patches[1].entity_count >= 61 * 61,
-    "observe_local " .. detail .. " reads the whole ore field at radius 30")
+  -- A full observation paints a grid, so it stops at radius 20 and says so.
+  local side = detail == "full" and 41 or 61
+  check(small and large and large.resource_patches[1].entity_count >= side * side
+    and large.radius == (detail == "full" and 20 or 30)
+    and large.requested_radius == (detail == "full" and 30 or nil),
+    "observe_local " .. detail .. " reads the whole ore field within radius " .. large.radius)
   check(small_worst <= BOUND and large_worst <= BOUND,
     string.format("observe_local %s stays within %d engine calls a tick (radius 5: %d, radius 30: %d)", detail, BOUND,
       small_worst, large_worst))

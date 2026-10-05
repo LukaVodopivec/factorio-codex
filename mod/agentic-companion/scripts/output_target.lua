@@ -195,7 +195,8 @@ function M.recipient_at(c, point, kind, producer_type)
   if dx * dx + dy * dy > 900 then return nil, nil, "out_of_range" end
   local area = M.endpoint_area(point, producer_type, kind)
   local matches = {}
-  for _, entity in ipairs(c.surface.find_entities_filtered({ area = area })) do
+  local found = c.surface.find_entities_filtered({ area = area })
+  for _, entity in ipairs(found) do
     if entity.valid then
       local dx, dy = entity.position.x - c.position.x, entity.position.y - c.position.y
       if entity.force == c.force and dx * dx + dy * dy <= 900
@@ -212,9 +213,10 @@ function M.recipient_at(c, point, kind, producer_type)
     if a.type ~= b.type then return a.type < b.type end
     return a.name < b.name
   end)
-  if #matches == 0 then return nil, nil, "none" end
-  if #matches > 1 then return nil, nil, "ambiguous" end
-  return matches[1], identity(matches[1]), "bound"
+  -- The fourth value is how many entities were read (a search charges them).
+  if #matches == 0 then return nil, nil, "none", #found end
+  if #matches > 1 then return nil, nil, "ambiguous", #found end
+  return matches[1], identity(matches[1]), "bound", #found
 end
 
 function M.geometry_matches(c, proto, position, direction, expected)

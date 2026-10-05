@@ -16,8 +16,10 @@
 -- layout written for an integer anchor (top-left tile corner) is exact. An
 -- entity's insert map is put in after it is placed (build_plan's starter
 -- items); build_block fuels its burner machines that way by default. An
--- entity's settings (a blueprint's filters, priorities, bar, mirror, an
--- underground belt's type) are set after it is placed.
+-- entity's settings (entity_settings: inserter filters, splitter priorities,
+-- chest limits) are set right after it is placed, while the body is in
+-- reach; mirror places it flipped; belt_to_ground_type picks an underground
+-- belt's end.
 -- Result: {anchor, placed:[{name,x,y,direction}], failed:[{index|connection,
 -- code, reason}], shortfall?}; indexes are 0-based into entities/connections.
 local companion = require("scripts.companion")
@@ -25,6 +27,7 @@ local placement_geometry = require("scripts.placement_geometry")
 local connect_entities = require("scripts.connect_entities")
 local build_plan = require("scripts.actions.build_plan")
 local blocks = require("scripts.blocks")
+local entity_settings = require("scripts.entity_settings")
 local jobs = require("scripts.jobs")
 
 local M = {}
@@ -46,6 +49,36 @@ local function point(value, a, b)
   return type(value) == "table" and type(value[a]) == "number" and type(value[b]) == "number"
 end
 
+-- The item that places an entity name (the item itself, or the entity's
+-- first placing item) and its entity prototype.
+local function placeable(name)
+  local item = prototypes.item[name]
+  if item and item.place_result then return name, item.place_result end
+  local entity = prototypes.entity[name]
+  local ok, items = pcall(function() return entity and entity.items_to_place_this end)
+  local first = ok and type(items) == "table" and items[1] or nil
+  local item_name = type(first) == "string" and first or type(first) == "table" and first.name or nil
+  item = item_name and prototypes.item[item_name]
+  if item and item.place_result then return item_name, item.place_result end
+  return nil
+end
+
+-- A layout entity written for 0.21.1 kept its underground end
+-- (settings.type), mirror and blueprint fields in settings: they move to
+-- belt_to_ground_type, mirror and the Settings its type takes (none when
+-- nothing applies). Settings naming a group, or none, are left as they are.
+local function upgrade_settings(e)
+  local s = e.settings
+  if type(s) ~= "table" or next(s) == nil or not entity_settings.legacy(s) then return end
+  if e.belt_to_ground_type == nil and (s.type == "input" or s.type == "output") then e.belt_to_ground_type = s.type end
+  if e.mirror == nil and type(s.mirror) == "boolean" then e.mirror = s.mirror end
+  local _, proto = placeable(e.name)
+  local fields = {}
+  for key, value in pairs(s) do fields[key] = value end
+  fields.name = proto and proto.name
+  e.settings = proto and entity_settings.from_blueprint(fields, proto.type, true) or nil
+end
+
 local function validate_layout(params, label)
   local entities = params.entities
   -- A route-only layout (no entities, connections from an anchor) joins
@@ -58,7 +91,7 @@ local function validate_layout(params, label)
   end
   for i, e in ipairs(entities) do
     if type(e) ~= "table" or type(e.name) ~= "string" or type(e.dx) ~= "number" or type(e.dy) ~= "number" then
-      error(string.format("%s entities[%d] must be {name, dx, dy, direction?, recipe?, insert?, settings?}", label, i - 1), 0)
+      error(string.format("%s entities[%d] must be {name, dx, dy, direction?, recipe?, insert?, mirror?, settings?}", label, i - 1), 0)
     end
     local d = e.direction
     if d ~= nil and (type(d) ~= "number" or d % 1 ~= 0 or d < 0 or d > 15) then
@@ -74,8 +107,13 @@ local function validate_layout(params, label)
       end
       if not ok then error(string.format('%s entities[%d].insert must map item names to counts, e.g. {"coal":5}', label, i - 1), 0) end
     end
-    if e.settings ~= nil and type(e.settings) ~= "table" then
-      error(string.format("%s entities[%d].settings must be an object of blueprint settings", label, i - 1), 0)
+    upgrade_settings(e)
+    if e.settings ~= nil then entity_settings.validate(e.settings, string.format("%s entities[%d].settings", label, i - 1)) end
+    if e.mirror ~= nil and type(e.mirror) ~= "boolean" then
+      error(string.format("%s entities[%d].mirror must be true or false", label, i - 1), 0)
+    end
+    if e.belt_to_ground_type ~= nil and e.belt_to_ground_type ~= "input" and e.belt_to_ground_type ~= "output" then
+      error(string.format('%s entities[%d].belt_to_ground_type must be "input" or "output"', label, i - 1), 0)
     end
   end
   local connections = params.connections
@@ -136,7 +174,7 @@ local function rotated(layout, quarters)
   for i, e in ipairs(layout.entities) do
     local dx, dy = turn(e.dx, e.dy)
     out.entities[i] = { name = e.name, dx = dx, dy = dy, recipe = e.recipe, insert = e.insert, settings = e.settings,
-      direction = ((e.direction or 0) + 4 * quarters) % 16 }
+      mirror = e.mirror, belt_to_ground_type = e.belt_to_ground_type, direction = ((e.direction or 0) + 4 * quarters) % 16 }
   end
   for j, route in ipairs(layout.connections or {}) do
     local fx, fy = turn(route.from.dx, route.from.dy)
@@ -147,18 +185,9 @@ local function rotated(layout, quarters)
   return out
 end
 
--- The item that places an entity name (the item itself, or the entity's
--- first placing item) and its entity prototype.
-local function placeable(name)
-  local item = prototypes.item[name]
-  if item and item.place_result then return name, item.place_result end
-  local entity = prototypes.entity[name]
-  local ok, items = pcall(function() return entity and entity.items_to_place_this end)
-  local first = ok and type(items) == "table" and items[1] or nil
-  local item_name = type(first) == "string" and first or type(first) == "table" and first.name or nil
-  item = item_name and prototypes.item[item_name]
-  if item and item.place_result then return item_name, item.place_result end
-  return nil
+-- An underground belt's end. A layout saved by 0.21.1 kept it as settings.type.
+local function belt_end(e)
+  return e.belt_to_ground_type or type(e.settings) == "table" and e.settings.type or nil
 end
 
 -- Name-level checks no site can fix. Returns the variant and its failures.
@@ -180,8 +209,13 @@ local function prepare(c, layout)
         end
         if why then failed[#failed + 1] = { index = i - 1, code = why[1], reason = why[2] } end
       end
+      -- Settings the entity cannot take fail here, before anything is built.
+      local code, message = nil, nil
+      if e.settings then code, message = entity_settings.check_prototype(proto, e.settings) end
+      if code then failed[#failed + 1] = { index = i - 1, code = code, reason = message } end
       variant.entities[#variant.entities + 1] = { index = i - 1, item = item, proto = proto, dx = e.dx, dy = e.dy,
-        direction = math.floor(e.direction or 0) % 16, recipe = e.recipe, insert = e.insert, settings = e.settings }
+        direction = math.floor(e.direction or 0) % 16, recipe = e.recipe, insert = e.insert, settings = e.settings,
+        mirror = e.mirror, belt_to_ground_type = proto.type == "underground-belt" and belt_end(e) or nil }
     end
   end
   for j, route in ipairs(layout.connections or {}) do
@@ -846,11 +880,10 @@ local function plan_steps(result)
   for _, p in ipairs(result.placements) do
     local e = p.entity
     local list = ranked[RANK[e.proto.type] or 1]
-    local settings = e.settings
-    local belt_type = settings and e.proto.type == "underground-belt"
-      and (settings.type == "input" or settings.type == "output") and settings.type or nil
     list[#list + 1] = { item = e.item, position = p.position, direction = e.direction, recipe = e.recipe,
-      insert = e.insert, settings = settings, belt_to_ground_type = belt_type, _source = { index = e.index } }
+      insert = e.insert, settings = e.settings, mirror = e.mirror,
+      belt_to_ground_type = e.proto.type == "underground-belt" and belt_end(e) or nil,
+      _source = { index = e.index } }
   end
   for _, r in ipairs(result.routes) do
     local list = r.route.kind == "power" and ranked[3] or ranked[1]

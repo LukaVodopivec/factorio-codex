@@ -72,10 +72,16 @@ hints, never a build or technology order: measured state wins.
   for green). 3 cable assemblers per 2 circuit assemblers.
 - **Power.** 1 boiler (1.8 MW) runs 2 steam engines (0.9 MW each). A shortage
   slows every machine, so add a boiler and two engines whenever `power`
-  satisfaction is below 100% or production sits at capacity.
+  satisfaction is below 100% or production sits at capacity. Once researched,
+  solar panels with accumulators are an option that needs no fuel;
+  `add_to_cover` sizes either.
 - **Mall.** Right after red and green science run, automate belts, inserters,
-  drills, poles, and pipes into capped chests and build from those chests.
-  Unlock construction robots as early as research allows.
+  drills, poles, and pipes into chests whose slot limit is set at build time,
+  and build from those chests. Filter inserters and filtered splitters sort
+  mixed belts, such as Fulgora's scrap. Unlock construction robots as early as
+  research allows.
+- **Water.** Landfill joins a site across water; Aquilo's ocean takes ice
+  platform.
 - **Research hint.** Automation, Logistics, Electronics, Fast inserter,
   Logistic science, Steel, Automation 2, Advanced material processing, Engine,
   Fluid handling, Oil, Plastics, Advanced circuits, Sulfur, Chemical science,

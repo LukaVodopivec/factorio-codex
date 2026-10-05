@@ -71,6 +71,16 @@ describe("five-minute run telemetry", () => {
     expect(() => parseRunSnapshot({ ...snapshot(100, 0), lines: { ...lines, line_count: -1 } })).toThrow();
   });
 
+  it("accepts the hand-crafted counter, empty as a Lua table, and samples recorded before it", () => {
+    const counted: any = snapshot(100, 0);
+    counted.statistics.hand_crafted = { since_tick: 50, items: [{ name: "iron-gear-wheel", count: 4 }] };
+    expect(parseRunSnapshot(counted).statistics.hand_crafted).toEqual({ since_tick: 50, items: [{ name: "iron-gear-wheel", count: 4 }] });
+    const empty: any = snapshot(100, 0);
+    empty.statistics.hand_crafted = { since_tick: 50, items: {} };
+    expect(parseRunSnapshot(empty).statistics.hand_crafted?.items).toEqual([]);
+    expect(parseRunSnapshot(snapshot(100, 0)).statistics.hand_crafted).toBeUndefined();
+  });
+
   it("resolves a role rollout from the pointer file and falls back to the flag only when it is absent", () => {
     const dir = root(), pointer = path.join(dir, "rollouts.json");
     const luna = rolloutResolver(pointer, "luna", "/first/pilot.jsonl");

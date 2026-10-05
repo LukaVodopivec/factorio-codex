@@ -116,7 +116,7 @@ local surface = {
       if e.name == name and math.abs(e.position.x - position.x) < 0.5 and math.abs(e.position.y - position.y) < 0.5 then return e end
     end
   end,
-  create_entity = function(args) return spawn(args.name, args.position, args.direction) end,
+  create_entity = function(args) return spawn(args.name, args.position, args.direction, { mirroring = args.mirror == true }) end,
 }
 local body = {
   valid = true, name = "character", position = { x = 0.5, y = 0.5 }, force = own, surface = surface,
@@ -197,6 +197,13 @@ check(turned.status == "done" and new_arm.direction == 8 and new_arm.use_filters
   and turned.outcome.restored.settings == true, "an inserter moves with its filters and faces the given direction")
 local kept = run({ from = { x = 32.5, y = 30.5 }, to = { x = 34.5, y = 30.5 } })
 check(kept.status == "done" and find("inserter").direction == 8, "without a direction the entity keeps its own")
+
+-- A mirrored machine is placed mirrored.
+local flipped = spawn("assembling-machine-1", { x = 70.5, y = 70.5 }, 0, { mirroring = true })
+local flipped_move = run({ from = { x = 70.5, y = 70.5 }, to = { x = 76.5, y = 70.5 } })
+local landed = surface.find_entity("assembling-machine-1", { x = 76.5, y = 70.5 })
+check(flipped_move.status == "done" and not flipped.valid and landed and landed.mirroring == true,
+  "a mirrored machine stays mirrored")
 
 -- A furnace's fuel goes back, and only what it held.
 local furnace = spawn("stone-furnace", { x = 40, y = 40 }, 0)

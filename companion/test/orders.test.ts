@@ -158,6 +158,32 @@ describe("package auto-queue", () => {
     }
   });
 
+  it("checks only the steps before a landfill against the map, and holds a successor of a landfill package", async () => {
+    const dir = runDir();
+    const across = { ...furnaces("across-lake"), steps: [
+      { action: "place_entity", x: -3.5, y: 0.5, name: "wooden-chest" },
+      { action: "place_tiles", item: "landfill", area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 6, y: 6 } } },
+      { action: "place_entity", x: 2.5, y: 2.5, name: "stone-furnace" },
+      { action: "build_layout", anchor: { x: 3, y: 3 }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] }] };
+    writeLedger(dir, 1, [across]);
+    // The lake is still water: anything checked on it would fail.
+    const { call, bridge } = fakeBridge({
+      can_place: (params) => ({ results: params.placements.map((place: any) => place.position.x > 0
+        ? { can_place: false, reason: "touches water at (2.5, 2.5)" } : { can_place: true }) }),
+      build_layout: () => ({ placed: {}, failed: [{ index: 0, code: "BLOCKED", reason: "water" }] }),
+    });
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    expect(packageFailures(dir)).toEqual([]);
+    expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:across-lake"]);
+    expect(call).toHaveBeenCalledWith("can_place", { placements: [{ item: "wooden-chest", position: { x: -3.5, y: 0.5 }, direction: undefined }] });
+    expect(call.mock.calls.some(([method]) => method === "build_layout")).toBe(false);
+    // A successor is checked once the landfill package has ended, not while it runs.
+    writeLedger(dir, 2, [across, { ...furnaces("on-land", "across-lake"), steps: [{ action: "place_entity", x: 1.5, y: 2.5, name: "stone-furnace" }] }]);
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages["on-land"]).toBeUndefined();
+  });
+
   it("chains after_package_id onto a pending predecessor and fails after a failed one", async () => {
     const dir = runDir();
     writeLedger(dir, 1, [furnaces("first")]);

@@ -14,6 +14,11 @@ local build_layout = require("scripts.actions.build_layout")
 local explore = require("scripts.actions.explore")
 local move_entity = require("scripts.actions.move_entity")
 local area_ops = require("scripts.actions.area_ops")
+local configure = require("scripts.actions.configure")
+local tiles = require("scripts.actions.tiles")
+local equip = require("scripts.actions.equip")
+local requests = require("scripts.requests")
+local inventory_roles = require("scripts.inventory_roles")
 local set_walking = require("scripts.human_inputs").set_walking
 local placement_geometry = require("scripts.placement_geometry")
 local factory_activity = require("scripts.factory_activity")
@@ -24,6 +29,7 @@ local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 local PLAN_BUDGET_TICKS, STEP_BUDGET_TICKS = 570 * 60, 12 * 60
 local MAX_PLAN_STEPS = 200
 local ACTIVITY_LOG_SIZE = 64
+local INSPECT_PER_TICK = 16 -- positions an inspect_entities step reads a tick
 local runners = {
   walk_to = walk, mine = mine, pickup = pickup, place = build.place, rotate = build.rotate,
   set_recipe = build.set_recipe, craft = craft, insert = transfer.insert,
@@ -85,7 +91,8 @@ local function task_crafts(task)
   -- get_items and auto-supply may hand-craft inside any step.
   return current and (current.type == "craft" or current.type == "build_plan" or current.type == "get_items"
     or current.type == "build_layout" or current.type == "build_block" or current.type == "blueprint_place"
-    or current.type == "build_ghosts" or current.type == "upgrade_area" or current._supply ~= nil)
+    or current.type == "build_ghosts" or current.type == "upgrade_area" or current.type == "place_tiles"
+    or current.type == "equip" or current._supply ~= nil)
 end
 local function set_plan_status(plan, status)
   plan.status = status
@@ -197,6 +204,11 @@ M.register_action("build_ghosts", area_ops.ghosts_action)
 M.register_action("deconstruct_area", area_ops.deconstruct_action)
 M.register_action("upgrade_area", area_ops.upgrade_action)
 M.register_action("copy_settings", area_ops.copy_action)
+M.register_action("configure_entity", configure.action)
+M.register_action("flush_fluid", transfer.flush_action)
+M.register_action("place_tiles", tiles.action)
+M.register_action("equip", equip.action)
+M.register_action("set_requests", requests.action)
 
 local ACTIONS = {
   walk_to = "walk_to", mine = "mine", pickup_items = "pickup", place_entity = "place", craft_items = "craft",
@@ -224,7 +236,7 @@ local function make_step_task(step)
   if kind == "place" then
     task.item, task.position, task.direction = step.name, { x = step.x, y = step.y }, step.direction
     task.input_target, task.output_target = step.input_target, step.output_target
-    task.belt_to_ground_type = step.belt_to_ground_type
+    task.belt_to_ground_type, task.mirror = step.belt_to_ground_type, step.mirror
     task.auto_supply, task.auto_clear, task.insert = step.auto_supply, step.auto_clear, step.insert
   end
   if kind == "craft" then task.recipe, task.count, task.wait_for_completion = step.recipe, step.crafts, step.wait_for_completion end
@@ -232,8 +244,12 @@ local function make_step_task(step)
     -- Several targets each get the same items (per_target, or items).
     task.target = step.targets == nil and { x = step.x, y = step.y } or nil
     task.targets, task.items, task.auto_supply = step.targets, step.per_target or step.items, step.auto_supply
+    task.inventory = step.inventory
   end
-  if kind == "extract" then task.target, task.items, task.all = { x = step.x, y = step.y }, step.items, step.items == nil end
+  if kind == "extract" then
+    task.target, task.items, task.all = { x = step.x, y = step.y }, step.items, step.items == nil
+    task.inventory = step.inventory
+  end
   if kind == "set_recipe" then task.target, task.recipe = { x = step.x, y = step.y }, step.recipe end
   if kind == "rotate" then task.target, task.direction = { x = step.x, y = step.y }, step.direction end
   return task
@@ -282,9 +298,14 @@ function M.queue_plan(params)
     if step.action == "insert_items" and step.per_target ~= nil and step.items ~= nil then
       error("queue_plan insert_items step " .. i .. " takes per_target or items, not both")
     end
+    if (step.action == "insert_items" or step.action == "extract_items") and step.inventory ~= nil
+      and not inventory_roles.ROLES[step.inventory] then
+      error("queue_plan " .. step.action .. " step " .. i .. " inventory must be one of "
+        .. table.concat(inventory_roles.ORDER, ", "))
+    end
     if step.action == "inspect_entities" then
-      if type(step.positions) ~= "table" or #step.positions < 1 or #step.positions > 16 then
-        error("queue_plan inspect_entities step " .. i .. " requires 1-16 positions")
+      if type(step.positions) ~= "table" or #step.positions < 1 or #step.positions > inspect.MAX_TARGETS then
+        error("queue_plan inspect_entities step " .. i .. " requires 1-" .. inspect.MAX_TARGETS .. " positions")
       end
       for _, position in ipairs(step.positions) do
         if type(position) ~= "table" or type(position.x) ~= "number" or type(position.y) ~= "number" then
@@ -800,7 +821,13 @@ local function tick_plan(plan)
     plan.wait_started_tick, plan.next_check_tick = nil, nil
   elseif step.action == "inspect_entities" then
     ok, result = pcall(function()
-      local response = inspect.inspect({ targets = step.positions })
+      -- At most INSPECT_PER_TICK positions a tick; the read's state is kept
+      -- on the step's task (a step begun by 0.21.1 starts it here).
+      local task = plan.current_task
+      task._inspect = task._inspect or inspect.job.start({ targets = step.positions })
+      local response = inspect.job.step(task._inspect, { left = INSPECT_PER_TICK * inspect.PER_TARGET })
+      if not response then return nil end
+      task._inspect = nil
       local errors, remote = 0, 0
       for _, entity in ipairs(response.entities or {}) do
         if entity.error then errors = errors + 1 elseif entity.remote then remote = remote + 1 end

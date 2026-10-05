@@ -167,10 +167,19 @@ function hardRejection(entry: any): string | null {
   return null;
 }
 
-/** The mod's own placement check for one package; a reason when it fails. */
+/** Whether a package lays tiles: what follows them stands on ground the map
+ *  does not have yet. */
+const laysTiles = (entry: BuildPackage | undefined) => entry?.steps.some((step) => step.action === "place_tiles") === true;
+
+/** The mod's own placement check for one package; a reason when it fails.
+ *  Only steps before the first place_tiles are checked against the map: a
+ *  landfill makes the ground the later ones need, and the mod checks them when
+ *  they run. */
 export async function checkPackage(bridge: Bridge, entry: BuildPackage): Promise<string | null> {
   try {
-    const places = entry.steps.flatMap((step) => step.action === "place_entity" ? [step] : []);
+    const tiles = entry.steps.findIndex((step) => step.action === "place_tiles");
+    const checked = tiles < 0 ? entry.steps : entry.steps.slice(0, tiles);
+    const places = checked.flatMap((step) => step.action === "place_entity" ? [step] : []);
     for (let start = 0; start < places.length; start += 24) {
       const batch = places.slice(start, start + 24);
       const checked = await bridge.call<{ results?: unknown[] }>("can_place", toolPayloads.canPlace(batch));
@@ -181,7 +190,7 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage): Promise
       }
     }
     // Dry runs search over ticks until they have the site or a definite answer.
-    for (const step of entry.steps) {
+    for (const step of checked) {
       if (step.action === "blueprint_place") {
         const { action, ...params } = step;
         const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number } }>(action, { ...params, check_only: true });
@@ -318,8 +327,10 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
             continue;
           }
           if (status === "queued" || status === "running" || status === "waiting") {
-            // A capture records what the predecessor built, so it waits for its end.
-            if (captures.length > 0) continue;
+            // A capture records what the predecessor built, and a check needs
+            // the ground its landfill makes, so either waits for its end.
+            const predecessor = ledger.build_packages.find((other) => other.package_id === entry.after_package_id);
+            if (captures.length > 0 || laysTiles(predecessor)) continue;
             afterPlanId = before.plan_id;
           } else if (status !== undefined && status !== "completed") {
             record(id, { status: "failed", reason: `after_package_id ${entry.after_package_id} ended ${status}` });

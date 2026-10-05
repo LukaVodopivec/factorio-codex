@@ -9,7 +9,7 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 
 local RAW = { working = 1, no_fuel = 2, no_ingredients = 3, item_ingredient_shortage = 4,
   waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8, no_minable_resources = 9 }
-_G.defines = { entity_status = RAW, inventory = { furnace_source = 2, assembling_machine_input = 2, lab_input = 3 } }
+_G.defines = { entity_status = RAW, inventory = { crafter_input = 2, lab_input = 3 } }
 local PLATE = { name = "iron-plate", ingredients = { { name = "iron-ore", type = "item", amount = 1 } },
   products = { { name = "iron-plate", type = "item", amount = 1 } } }
 local GEAR = { name = "iron-gear-wheel", ingredients = { { name = "iron-plate", type = "item", amount = 2 } },
@@ -21,7 +21,7 @@ _G.script = { register_on_object_destroyed = function() return 1 end }
 
 local entities, queries, reads = {}, 0, 0
 local force = { name = "player", is_chunk_charted = function() return true end }
-local surface = { find_entities_filtered = function(filter)
+local surface = { index = 1, find_entities_filtered = function(filter)
   queries = queries + 1
   local wanted = {}
   for _, name in ipairs(filter.type or {}) do wanted[name] = true end
@@ -126,6 +126,18 @@ run(2500, smelt)
 for _, line in ipairs(autonomy.lines()) do if line.id == plate_line.id then plate_line = line end end
 check(plate_line.self_sustaining and not plate_line.hand_fed,
   "60 s running with no character transfer and no stall is self-sustaining")
+-- The recorder's machine groups name their recipe and the products the
+-- sampler last read, so tooling tells machine-made from hand-made output.
+local snapshot_groups = require("scripts.map_summary").registry_factory().groups
+local furnace_group, finished_total
+for _, group in ipairs(snapshot_groups) do if group.entity == "stone-furnace" then furnace_group = group end end
+finished_total = 0
+for _, f in ipairs({ f1, f2, f3, far }) do finished_total = finished_total + mock.state(f).products_finished end
+check(furnace_group and furnace_group.recipe == "iron-plate" and furnace_group.machine_count == 4
+  and finished_total > 50 and furnace_group.products_finished >= finished_total - 3
+  and furnace_group.products_finished <= finished_total,
+  "run_snapshot groups carry the recipe and products_finished (" .. tostring(furnace_group and furnace_group.products_finished)
+    .. " of " .. finished_total .. ")")
 
 -- A character transfer marks the line hand-fed for a minute.
 local since = game.tick
@@ -275,23 +287,43 @@ local kept = storage.autonomy
 state.init()
 check(storage.autonomy == kept, "a repeated init keeps line storage")
 
--- factory_status composes the sections; event_state stays cheap.
+-- factory_status composes the sections; event_state stays cheap. Power rows
+-- are map_summary.build_power's (map_summary tests cover them); stock is
+-- the registry's per-item aggregate with its largest holder.
+local power_reads = {}
 local summary_stub = {
-  status_sections = function() return {
-    stockpiles = { { item = "coal", total = 50, holders = { { entity = "wooden-chest", position = { x = 1, y = 1 }, count = 40, kind = "chest" },
-      { entity = "transport-belt", position = { x = 2, y = 1 }, count = 8, kind = "belt" },
-      { entity = "stone-furnace", position = { x = 3, y = 1 }, count = 2, kind = "machine_output" } } } },
-    power = { { id = 7, satisfaction = 0.5, production_w = 900000, capacity_w = 900000, demand_w = 1800000, engines_needed = 2 } },
-    updated_tick = 5, ready = true,
-  } end,
+  build_power = function(target, limit)
+    power_reads[#power_reads + 1] = { surface = target, limit = limit }
+    return { { network_id = 7, satisfaction = 0.5, production_w = 900000, capacity_w = 900000, demand_w = 1800000,
+      sustained_w = 900000, headroom_w = -900000, sources = { { kind = "steam", count = 1, nameplate_w = 900000, production_w = 900000 } },
+      night_s = 125, add_to_cover = { steam_engine = 1 } } }, 0
+  end,
   patches = function() return { { name = "iron-ore", amount = 5000, tiles = 20, centroid = { x = 30, y = 40 } } } end,
 }
 package.loaded["scripts.map_summary"] = summary_stub
-local research_scans = 0
-local research_stub = { progression_status = function()
-  research_scans = research_scans + 1
-  return { available = { { name = "logistics" } } }
-end }
+storage.registry.entries[9001] = { unit = 9001, name = "wooden-chest", type = "container", position = { x = 1, y = 1 }, surface = 1 }
+storage.registry.stock[1] = { coal = { total = 50, unit = 9001, count = 40 }, ["iron-plate"] = { total = 0, count = 0 } }
+storage.registry.pass_tick = 5
+-- Research: the available set is built once from the force's technologies
+-- and kept by research events (a finished research checks its successors).
+local technology_reads = 0
+local function technology(name, researched, prerequisites, enabled)
+  return setmetatable({ name = name, researched = researched, enabled = enabled ~= false, prerequisites = prerequisites or {},
+    successors = {}, force = { name = "player" } }, { __index = function(_, key) if key == "read" then technology_reads = technology_reads + 1 end end })
+end
+local automation = technology("automation", true)
+local logistics = technology("logistics", false, { automation = automation })
+local electronics = technology("electronics", false, { logistics = logistics })
+local disabled = technology("hidden-tech", false, {}, false)
+local triggered = technology("steam-power", false, {})
+logistics.successors = { electronics = electronics }
+local technology_walks = 0
+force.technologies = setmetatable({}, { __pairs = function()
+  technology_walks = technology_walks + 1
+  return next, { automation = automation, logistics = logistics, electronics = electronics, ["hidden-tech"] = disabled,
+    ["steam-power"] = triggered }, nil
+end })
+local research_stub = { research_trigger = function(tech) return tech == triggered and { type = "craft-item" } or nil end }
 package.loaded["scripts.research"] = research_stub
 force.current_research, force.research_progress, force.research_queue = { name = "automation" }, 0.25, { { name = "automation" } }
 local active_plan = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "walk_to" } }, source = "package:p1" }
@@ -304,21 +336,47 @@ storage.tasks.last_plan_ended = { plan_id = 3, status = "completed", tick = 10 }
 local factory_status = require("scripts.factory_status")
 game.tick = game.tick + 30
 local status = factory_status.factory_status({})
-check(status.tick == game.tick and type(status.lines) == "table" and status.power[1].engines_needed == 2
-  and status.stock[1].item == "coal" and #status.stock[1].holders == 1 and status.stock[1].holders[1].kind == "chest"
-  and status.stock_power_tick == 5 and status.stock_power_ready == true
+check(status.tick == game.tick and type(status.lines) == "table" and status.power[1].add_to_cover.steam_engine == 1
+  and power_reads[1].surface == surface and power_reads[1].limit == 1 and status.omitted_power == nil
+  and status.stock[1].item == "coal" and status.stock[1].total == 50 and #status.stock == 1
+  and #status.stock[1].holders == 1 and status.stock[1].holders[1].kind == "chest" and status.stock[1].holders[1].count == 40
+  and status.stock_power_tick == 5 and status.stock_power_ready == true and status.logistics == nil
   and status.research.progress == 0.25 and status.research.queue[1] == "automation"
   and status.research.current == "automation" and status.research.available[1] == "logistics"
   and status.body.queue_depth == 1 and status.body.active_step.source == "package:p1"
   and status.body.inventory_summary["iron-plate"] == 9 and status.body.human_control == false
   and status.patches[1].name == "iron-ore" and status.patches[1].distance == 50,
   "factory_status composes lines, problems, power, stock, research, body and patches")
+check(#status.research.available == 1 and technology_walks == 1,
+  "available research is enabled, unresearched, with every prerequisite done and no trigger")
+defines.events = defines.events or {}
+defines.events.on_research_finished, defines.events.on_research_started = 77, 78
+defines.events.on_research_reversed = 79
 factory_status.factory_status({ sections = { "research" } })
-local scans_cached = research_scans
-factory_status.on_research_changed()
-factory_status.factory_status({ sections = { "research" } })
-check(scans_cached == 1 and research_scans == 2,
-  "research is scanned once and again only after a research event, never per read")
+factory_status.on_research_changed({ name = 78, tick = 600, research = logistics })
+check(technology_walks == 1, "research reads reuse the kept set; starting a research changes nothing")
+logistics.researched = true
+factory_status.on_research_changed({ name = 77, tick = 601, research = logistics })
+local after_finish = factory_status.factory_status({ sections = { "research" } }).research.available
+check(technology_walks == 1 and #after_finish == 1 and after_finish[1] == "electronics",
+  "a finished research leaves the set and adds the successors it unlocked, without a walk")
+factory_status.on_research_changed({ name = 79, tick = 602, research = logistics })
+logistics.researched = false
+local reversed = factory_status.factory_status({ sections = { "research" } }).research.available
+check(technology_walks == 2 and reversed[1] == "logistics",
+  "a reversed research rebuilds the set once on the next read")
+-- A levelled (infinite) technology finishing a level stays unresearched and
+-- researchable: it stays in the kept set, as a rebuild would list it.
+factory_status.on_research_changed({ name = 77, tick = 603, research = logistics })
+local levelled = factory_status.factory_status({ sections = { "research" } }).research.available
+check(technology_walks == 2 and #levelled == 1 and levelled[1] == "logistics",
+  "a finished level of an infinite technology keeps it available without a walk")
+storage.last_research_finished = nil
+force.logistic_networks = { nauvis = {} }
+surface.name = "nauvis"
+local robots = factory_status.factory_status({ sections = { "logistics" } })
+check(robots.logistics and #robots.logistics.networks == 0 and robots.lines == nil and robots.body == nil,
+  "logistics is read only when named in sections")
 local only = factory_status.factory_status({ sections = { "body" }, since_tick = game.tick })
 check(only.body and only.lines == nil and only.stock == nil, "sections limits what factory_status reads")
 check(not pcall(factory_status.factory_status, { sections = { "orders" } })
@@ -342,8 +400,6 @@ check(factory_status.event_state().fifo_empty == true,
 body.crafting_queue_size = 0
 storage.tasks.active, storage.tasks.queue = active_plan, { {} }
 -- next_event's research_finished: the last research the body's force finished.
-defines.events = defines.events or {}
-defines.events.on_research_finished, defines.events.on_research_started = 77, 78
 factory_status.on_research_changed({ name = 78, tick = 500, research = { name = "logistics", force = { name = force.name } } })
 local not_finished = factory_status.event_state().last_research_finished
 factory_status.on_research_changed({ name = 77, tick = 501, research = { name = "logistics", force = { name = "enemy" } } })
@@ -364,16 +420,71 @@ storage.registry.ready = true
 entities, next_unit = {}, 1000
 for i = 1, 200 do furnace((i % 20) * 8, math.floor(i / 20) * 8) end
 game.tick = 100000
-autonomy.on_tick(game.tick)
+-- The refresh identifies 32 machines a tick and swaps the lines in on its
+-- last tick; until then the previous (here: no) lines stay.
+local recipe_reads, most_identified, refresh_ticks = 0, 0, 0
+for _, entity in ipairs(entities) do
+  local get_recipe = entity.get_recipe
+  entity.get_recipe = function() recipe_reads = recipe_reads + 1; return get_recipe() end
+end
+repeat
+  local before = recipe_reads
+  autonomy.on_tick(game.tick)
+  most_identified = math.max(most_identified, recipe_reads - before)
+  refresh_ticks = refresh_ticks + 1
+  local pending = storage.autonomy.refresh_job ~= nil
+  if pending then
+    check(#autonomy.lines() == 0, "while a refresh runs the previous lines stay")
+    game.tick = game.tick + 1
+  end
+until not pending or refresh_ticks > 20
+check(refresh_ticks == 7 and most_identified <= 32 and #autonomy.lines() > 0,
+  "200 machines are identified over " .. refresh_ticks .. " ticks, at most " .. most_identified .. " a tick")
 queries, reads = 0, 0
 for _ = 1, 60 do game.tick = game.tick + 1; autonomy.on_tick(game.tick) end
 check(queries == 0 and reads <= 200 * 2 * 2, "200 machines cost no entity query per tick and about 7 machine samples a tick (" .. reads .. " reads in 60 ticks)")
+-- 200 single-furnace lines starving at once: at most 16 causes are worked
+-- out per evaluate, the rest keep theirs and go first next time.
+local cause_reads = 0
+for _, entity in ipairs(entities) do
+  local get_inventory = entity.get_inventory
+  entity.get_inventory = function(id) cause_reads = cause_reads + 1; return get_inventory(id) end
+  mock.state(entity).status = RAW.no_ingredients
+end
+-- (They count as running until 600 ticks after their last progress.)
+local most_causes, evaluates, stalled_evaluates = 0, 0, 0
+local with_cause = 0
+repeat
+  game.tick = game.tick + 1
+  local before = cause_reads
+  autonomy.on_tick(game.tick)
+  if game.tick % 30 == 29 then
+    evaluates = evaluates + 1
+    most_causes = math.max(most_causes, cause_reads - before)
+    with_cause = 0
+    for _, row in ipairs(autonomy.lines()) do if row.cause == "iron-ore" then with_cause = with_cause + 1 end end
+    if with_cause > 0 then stalled_evaluates = stalled_evaluates + 1 end
+  end
+until with_cause == 200 or evaluates > 60
+check(with_cause == 200 and most_causes <= 16 and stalled_evaluates == 13,
+  "200 lines stalling together get their causes " .. most_causes .. " an evaluate, all within " .. stalled_evaluates .. " evaluates")
+local phases = {}
+for _, id in ipairs(storage.autonomy.line_order) do phases[storage.autonomy.lines[id].cause_tick % 600] = true end
+local phase_count = 0
+for _ in pairs(phases) do phase_count = phase_count + 1 end
+check(phase_count > 1, "their causes age from " .. phase_count .. " phases, not one")
+for _, entity in ipairs(entities) do mock.state(entity).status = RAW.working end
+for _ = 1, 30 do game.tick = game.tick + 1; autonomy.on_tick(game.tick) end
 storage.tasks = { queue = {}, records = {} }
 local json_size = 0
+-- JSON length estimate: objects count each quoted key, colon and comma;
+-- arrays (helpers.table_to_json writes sequences as arrays) only commas.
 local function size(value)
   if type(value) == "table" then
-    local n = 2
-    for key, item in pairs(value) do n = n + #tostring(key) + 4 + size(item) end
+    local n, count = 2, 0
+    for _ in pairs(value) do count = count + 1 end
+    local array = count > 0 and count == #value
+    for key, item in pairs(value) do n = n + (array and 1 or #tostring(key) + 4) + size(item) end
     return n
   end
   return #tostring(value) + 2
@@ -395,27 +506,34 @@ for _ = 1, 700 do
 end
 -- 28 characters: the longest vanilla Space Age names (electromagnetic-science-pack).
 local long = function(i) return string.format("electromagnetic-science-%03d", i) end
-summary_stub.status_sections = function()
-  local stockpiles, power = {}, {}
-  for i = 1, 40 do
-    local holders = {}
-    for j = 1, 3 do holders[j] = { entity = "steel-chest", position = { x = -1000.5 - j, y = 1000.5 + i }, count = 4800, kind = "chest" } end
-    stockpiles[i] = { item = long(i), total = 14400, holders = holders }
+storage.registry.stock[1], storage.registry.pass_tick = {}, game.tick
+for i = 1, 40 do
+  storage.registry.entries[20000 + i] = { unit = 20000 + i, name = "steel-chest", type = "container",
+    position = { x = -1000.5 - i, y = 1000.5 + i }, surface = 1 }
+  storage.registry.stock[1][long(i)] = { total = 14400 + i, unit = 20000 + i, count = 4800 }
+end
+-- The widest power row (steam, turbines and solar on one network) up to the
+-- cap, with 6 more networks left out.
+summary_stub.build_power = function(_, limit)
+  local rows = {}
+  for i = 1, limit do rows[i] = { network_id = 1000 + i, satisfaction = 0.123, production_w = 123456789,
+    capacity_w = 987654321 - i, demand_w = 1234567890, sustained_w = 987654321, headroom_w = -246913569,
+    night_s = 124.9, sources = {}, accumulators = { count = 9999, stored_j = 49995000000, capacity_j = 49995000000, charge = 0.999 },
+    add_to_cover = { solar_panel = 99999, accumulator = 99999 } }
+    for _, kind in ipairs({ "nuclear", "solar", "steam" }) do
+      rows[i].sources[#rows[i].sources + 1] = { kind = kind, count = 9999, nameplate_w = 987654321, production_w = 123456789 }
+    end
   end
-  for i = 1, 8 do power[i] = { id = i, satisfaction = 0.123, production_w = 123456789, capacity_w = 987654321 - i,
-    demand_w = 123456789, engines_needed = 99 } end
-  return { stockpiles = stockpiles, power = power, updated_tick = game.tick, ready = true }
+  return rows, 6
 end
 summary_stub.patches = function()
   local rows = {}
   for i = 1, 20 do rows[i] = { name = long(i), amount = 123456789, tiles = 9999, centroid = { x = -1234.5, y = 1234.5 } } end
   return rows, true
 end
-research_stub.progression_status = function()
-  local available = {}
-  for i = 1, 40 do available[i] = { name = long(i) } end
-  return { available = available }
-end
+local many_technologies = {}
+for i = 1, 40 do many_technologies[long(i)] = technology(long(i), false) end
+force.technologies = many_technologies
 factory_status.on_research_changed()
 force.research_queue = { { name = long(1) }, { name = long(2) }, { name = long(3) }, { name = long(4) }, { name = long(5) } }
 body.get_main_inventory = function() return { get_contents = function()
@@ -437,6 +555,47 @@ check(full.omitted_lines and full.omitted_lines > 0 and full.omitted_problems an
 check(starved_line and starved_line.id == max_id and full.lines[#full.lines].state ~= "running" or false,
   "lines needing attention come first, so a starved line with the highest id survives the cap")
 check(json_size < 6144, "a worst-case factory_status at 200 machines stays under 6 KB (" .. json_size .. " bytes)")
+
+-- A machine mined while a refresh is still identifying the snapshot is left
+-- out; the refresh completes and the removal's dirty mark is kept.
+_G.storage = {}
+state.init()
+storage.registry.ready = true
+entities = {}
+for i = 1, 40 do furnace((i % 8) * 8, math.floor(i / 8) * 8) end
+local mined = entities[#entities]
+local mined_unit = mined.unit_number
+game.tick = game.tick + 1
+autonomy.on_tick(game.tick)
+local job_running = storage.autonomy.refresh_job ~= nil
+game.tick = game.tick + 1
+autonomy.on_entity_changed({ entity = mined })
+local removal_tick = storage.autonomy.dirty_tick
+registry.remove(mined_unit)
+mined.valid = false
+mock.unreadable(mined, "type")
+autonomy.on_tick(game.tick)
+local identified = 0
+for _ in pairs(storage.autonomy.machines) do identified = identified + 1 end
+check(job_running and storage.autonomy.refresh_job == nil and storage.autonomy.refresh_error == nil
+  and storage.autonomy.machines[mined_unit] == nil and identified == 39 and #autonomy.lines() > 0,
+  "a machine mined during a refresh is left out and the refresh completes")
+check(removal_tick == game.tick and storage.autonomy.dirty_tick == removal_tick,
+  "the removal's dirty mark survives the refresh that was running")
+-- A refresh that fails mid-job keeps a dirty mark set while it ran, so the
+-- next refresh is 300 ticks away, not the safety refresh's minute.
+local broken = furnace(200, 200)
+mock.unreadable(broken, "type")
+storage.autonomy.dirty_tick = game.tick - 300
+game.tick = game.tick + 1
+autonomy.on_tick(game.tick)
+game.tick = game.tick + 1
+autonomy.mark_dirty()
+local mark = storage.autonomy.dirty_tick
+autonomy.on_tick(game.tick)
+check(storage.autonomy.refresh_error ~= nil and storage.autonomy.refresh_job == nil and mark == game.tick
+  and storage.autonomy.dirty_tick == mark, "a refresh failing mid-job keeps the dirty mark set while it ran")
+mock.unreadable(broken, "type", false)
 
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

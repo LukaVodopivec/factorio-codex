@@ -34,6 +34,8 @@ local entities = {
 local items = {}
 for name, p in pairs(entities) do items[name] = { name = name, place_result = p } end
 items.blueprint = { name = "blueprint" }
+items["iron-plate"], items.coal = { name = "iron-plate" }, { name = "coal" }
+entities.inserter.filter_count = 5
 local construction_robotics = { name = "construction-robotics" }
 _G.prototypes = { item = items, entity = entities, shortcut = {
   ["give-blueprint"] = mock.shortcut_prototype({ item_to_spawn = { name = "blueprint" }, technology_to_unlock = construction_robotics }),
@@ -108,6 +110,9 @@ for _, row in ipairs(smelter.cost) do cost[row.item] = row.count end
 check(cost["stone-furnace"] == 2 and cost.inserter == 1, "capture reports the cost to build")
 check(smelter.tool_unlock.technology == "construction-robotics" and smelter.tool_unlock.researched == false,
   "the blueprint tool's unlock is read from its shortcut and the force, never assumed")
+check(smelter.tool_unlock.usable == true and smelter.tool_unlock.note:match("^usable now")
+  and smelter.tool_unlock.note:match("construction%-robotics is not needed"),
+  "a blueprint is usable before construction-robotics, and the result says so")
 check(logged[1] and logged[1].kind == "blueprint" and logged[1].action == "capture" and logged[1].name == "smelter"
   and logged[1].entities == 3, "a capture is a row in activity_log")
 local scratch = storage.blueprints.inventory[state.BLUEPRINT_SLOTS]
@@ -152,6 +157,28 @@ check(fails(function() blueprints.create({ name = "x", entities = { { name = "in
   "takes no recipe"), "a recipe on something that takes none is refused")
 check(fails(function() blueprints.create({ name = "x", entities = { { name = "nothing", dx = 0, dy = 0 } } }) end, "no entity called"),
   "an unknown entity is refused")
+-- Settings and the mirror become the blueprint's own fields.
+blueprints.create({ name = "sorter", entities = {
+  { name = "inserter", dx = 0.5, dy = 0.5, settings = { inserter = { filters = { "iron-plate", "coal" }, mode = "blacklist",
+    stack_size = 1, spoil_priority = "spoiled_first" } } },
+  { name = "splitter", dx = 2, dy = 0.5, settings = { splitter = { input_priority = "right", filter = "coal" } } },
+  { name = "assembling-machine-1", dx = 5.5, dy = 1.5, mirror = true } } })
+local sorter = bp.state(storage.blueprints.inventory[storage.blueprints.by_name.sorter.slot]).entities
+check(sorter[1].use_filters == true and sorter[1].filters[1].index == 1 and sorter[1].filters[2].name == "coal"
+  and sorter[1].filter_mode == "blacklist" and sorter[1].override_stack_size == 1 and sorter[1].spoil_priority == "spoiled-first",
+  "an inserter's settings are its blueprint filters, mode, stack size and spoil priority")
+check(sorter[2].input_priority == "right" and sorter[2].output_priority == "left" and sorter[2].filter.name == "coal"
+  and sorter[3].mirror == true, "a splitter filter gets an output side; a mirrored machine is mirrored")
+local sorted_layout = blueprints.layout("sorter")
+check(sorted_layout.entities[1].settings.inserter.filters[2] == "coal" and sorted_layout.entities[1].settings.inserter.mode == "blacklist"
+  and sorted_layout.entities[2].settings.splitter.filter == "coal" and sorted_layout.entities[3].mirror == true,
+  "the blueprint reads back as the same settings for a hand-built layout")
+check(fails(function() blueprints.create({ name = "x", entities = { { name = "stone-furnace", dx = 0, dy = 0,
+  settings = { inserter = { filters = { "coal" } } } } } }) end, "CONFIG_NOT_APPLICABLE"),
+  "settings an entity cannot take are refused")
+check(fails(function() blueprints.create({ name = "x", entities = { { name = "inserter", dx = 0, dy = 0,
+  settings = { inserter = { filters = { "unobtainium" } } } } } }) end, "UNKNOWN_ITEM"), "an unknown filter item is refused")
+blueprints.delete({ name = "sorter" })
 
 local listed = blueprints.list()
 check(#listed.blueprints == 2 and listed.blueprints[1].name == "gears" and listed.blueprints[2].name == "smelter"
@@ -166,7 +193,7 @@ gears.entities[1].items = { { id = { name = "speed-module" }, items = { in_inven
 local described = describe("gears")
 local machine, arm = described.entities[1], described.entities[2]
 check(described.entity_count == 2 and machine.dx == 0.5 and machine.recipe == "iron-gear-wheel" and machine.insert["speed-module"] == 2
-  and arm.direction == 4 and arm.settings.use_filters and arm.settings.filters[1].name == "iron-plate",
+  and arm.direction == 4 and arm.settings.inserter.filters[1] == "iron-plate",
   "describe lists relative positions, recipes, settings and the items a blueprint requests")
 check(fails(function() describe("missing") end, "no blueprint called 'missing'.*stored: gears, smelter"),
   "describing an unknown blueprint names the stored ones")

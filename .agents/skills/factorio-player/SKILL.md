@@ -81,9 +81,14 @@ retried after the hold.
 **Reads (both roles).**
 
 - `factory_status` is the single routine read. Line `state` is `running`,
-  `starved`, `output_full`, `no_fuel`, `no_power`, or `idle`; rows past a cap
-  are counted in `omitted_*`. A false `*_ready` flag means that part still
-  fills after a load: read again, never conclude from it.
+  `starved`, `output_full`, `no_fuel`, `no_power`, `no_heat`, `disabled`, or
+  `idle`, with its cause (a fluid, no recipe, spent fuel full); rows past a
+  cap are counted in `omitted_*`. The power row (the largest network;
+  `map_summary` with `include: ['power']` lists all) splits production by
+  source and gives `sustained_w` (solar at this planet's day average); when
+  short, `add_to_cover` says how many steam engines, solar panels, or
+  accumulators would cover demand. `sections: ['logistics']` shows robot networks. A false
+  `*_ready` flag means that part still fills after a load: read again.
 - `next_event` returns `plan_ended`, `research_finished`, `queue_empty`,
   `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`,
   `human_hold_ended`, or `timeout`. Pass the last `tick` you saw as
@@ -117,6 +122,22 @@ an action at that target or after a `walk_to`.
   notes, never imported.
 - `move_entity` picks up one of your buildings with its contents and places
   it elsewhere with its recipe, direction, settings, fuel, and modules.
+- `configure_entity` sets what a building's window sets: inserter filters and
+  stack size, splitter priority and filter, a chest's slot limit. It walks
+  there, changes only what you name, and returns the settings as they now are.
+  Give `build_layout` entities `settings` (and `mirror`, and
+  `belt_to_ground_type: input|output` for an underground belt) instead to
+  build a sorter or a mall already configured.
+- `place_tiles` lays landfill, stone path, concrete, foundation, or ice
+  platform from your inventory, nearest tiles first, walking along. It skips
+  tiles that have it and names the item for tiles it cannot cover;
+  `check_only` counts the items an area needs.
+- `set_requests` sets what a requester or buffer chest asks robots for. Only
+  robots deliver; `network: null` means no roboport covers the chest.
+- `extract_items` and `insert_items` take an `inventory` (`output`, `input`,
+  `fuel`, `modules`, `trash`, ...); a wrong one lists the building's. Plan
+  steps only: `equip` wears armor and fits equipment you carry;
+  `flush_fluid` empties a pipe or tank system (the fluid is lost).
 - To find a resource or land, use `explore`: it walks, charts, and stops when
   a patch is in view. Never scout with chains of walks.
 - `connect_entities` lays one belt, pipe, or pole route of up to 200 pieces
@@ -127,9 +148,8 @@ an action at that target or after a `walk_to`.
 
 **Plans.** `queue_plan` takes 1-200 steps and returns at once; `run_plan`
 blocks until the plan ends. Plans are not transactional: finished steps stay.
-Use `after_plan_id` only when a plan needs the earlier plan's effects. Keep the
-current plan plus one grounded queued successor and avoid micro-packet idle
-gaps.
+Keep the current plan plus one grounded queued successor and avoid micro-packet
+idle gaps.
 
 **Other facts.** Crafting runs in the background: `craft_items` returns at
 once, the body keeps working, and a later step that needs the item waits for

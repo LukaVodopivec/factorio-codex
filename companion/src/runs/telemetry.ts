@@ -21,6 +21,8 @@ export const runSnapshotSchema = z.object({
     items: z.object({ produced: z.array(countRow), consumed: z.array(countRow), unavailable: z.boolean().optional() }).strict(),
     fluids: z.object({ produced: z.array(countRow), consumed: z.array(countRow), unavailable: z.boolean().optional() }).strict(),
     raw_resources: z.array(resourceName),
+    /** Items the Codex player hand-crafted since since_tick, cumulative (mod 0.22.0 on). */
+    hand_crafted: z.object({ since_tick: z.number().int().nonnegative(), items: z.array(countRow) }).strict().optional(),
     semantics: z.object({ produced: z.literal("force_surface_input_counts"), consumed: z.literal("force_surface_output_counts") }).strict(),
   }).strict(),
 }).strict();
@@ -38,6 +40,7 @@ export function parseRunSnapshot(value: any): RunSnapshot {
       }
     }
     value.statistics.raw_resources = luaArray(value.statistics.raw_resources);
+    if (value.statistics.hand_crafted) value.statistics.hand_crafted.items = luaArray(value.statistics.hand_crafted.items);
   }
   // Lua omits a nil standing_on; a sample always states it.
   if (value?.character && typeof value.character === "object" && value.character.standing_on === undefined) value.character.standing_on = null;

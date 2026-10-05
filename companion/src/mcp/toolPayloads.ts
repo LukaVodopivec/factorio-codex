@@ -5,12 +5,14 @@ export const toolPayloads = {
   mine: ({ x, y, count, target_kind, allow_fluid_loss, expected_name, observed_tick }: { x: number; y: number; count?: number; target_kind?: "natural" | "owned"; allow_fluid_loss?: boolean; expected_name?: string; observed_tick?: number }) => ({ target: { x, y }, count, ...(target_kind ? { target_kind } : {}), ...(allow_fluid_loss ? { allow_fluid_loss: true } : {}), ...(expected_name ? { expected_name } : {}), ...(observed_tick === undefined ? {} : { observed_tick }) }),
   pickup: ({ x, y, item, count }: { x: number; y: number; item: string; count: number }) => ({ target: { x, y }, item, count }),
   craft: ({ recipe, crafts, wait_for_completion }: { recipe: string; crafts: number; wait_for_completion?: boolean }) => ({ recipe, count: crafts, ...(wait_for_completion === undefined ? {} : { wait_for_completion }) }),
-  place: ({ x, y, name, direction, input_target, output_target, belt_to_ground_type, insert, auto_supply }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; belt_to_ground_type?: "input" | "output"; insert?: Record<string, number>; auto_supply?: boolean }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}), ...(belt_to_ground_type ? { belt_to_ground_type } : {}), ...(insert ? { insert } : {}), ...(auto_supply === undefined ? {} : { auto_supply }) }),
+  place: ({ x, y, name, direction, input_target, output_target, belt_to_ground_type, mirror, insert, auto_supply }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; belt_to_ground_type?: "input" | "output"; mirror?: boolean; insert?: Record<string, number>; auto_supply?: boolean }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}), ...(belt_to_ground_type ? { belt_to_ground_type } : {}), ...(mirror === undefined ? {} : { mirror }), ...(insert ? { insert } : {}), ...(auto_supply === undefined ? {} : { auto_supply }) }),
   // One position, or several targets that each get the same items.
-  insert: ({ x, y, targets, items: values, per_target, auto_supply }: { x?: number; y?: number; targets?: unknown; items?: Record<string, number>; per_target?: Record<string, number>; auto_supply?: boolean }) => ({
+  insert: ({ x, y, targets, items: values, per_target, inventory, auto_supply }: { x?: number; y?: number; targets?: unknown; items?: Record<string, number>; per_target?: Record<string, number>; inventory?: string; auto_supply?: boolean }) => ({
     ...(targets === undefined ? { target: { x, y } } : { targets }), items: per_target ?? values,
-    ...(auto_supply === undefined ? {} : { auto_supply }) }),
-  extract: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y }, all: true }) : ({ target: { x, y }, items: values }),
+    ...(inventory === undefined ? {} : { inventory }), ...(auto_supply === undefined ? {} : { auto_supply }) }),
+  // Without inventory: the output (or a chest's contents), as before.
+  extract: ({ x, y, items: values, inventory }: { x: number; y: number; items?: Record<string, number>; inventory?: string }) => ({
+    target: { x, y }, ...(values === undefined ? { all: true } : { items: values }), ...(inventory === undefined ? {} : { inventory }) }),
   recipe: ({ x, y, recipe }: { x: number; y: number; recipe: string }) => ({ target: { x, y }, recipe }),
   rotate: ({ x, y, direction }: { x: number; y: number; direction?: number }) => ({ target: { x, y }, direction }),
   inspect: (positions: Array<{ x: number; y: number }>) => ({ targets: positions }),
@@ -117,7 +119,7 @@ export function normalizeMapSummary(value: any): any {
     row && typeof row === "object" ? { ...row, holders: luaArray(row.holders) } : row);
   // A status-count record; Lua serializes an empty one as [].
   if (Array.isArray(value.problems_by_status) && value.problems_by_status.length === 0) sections.problems_by_status = {};
-  if (value.power && typeof value.power === "object") sections.power = { ...value.power, networks: luaArray(value.power.networks) };
+  if (value.power && typeof value.power === "object") sections.power = { ...value.power, networks: powerRows(value.power.networks) };
   const capacitySummary = drill ? `; sample ${drill.entity}: theoretical_items_per_minute=${drill.theoretical_items_per_minute ?? "unavailable"} (${drill.capacity_state})` : "";
   return {
     ...value,
@@ -145,10 +147,23 @@ export function normalizeMapSummary(value: any): any {
 // A Lua record serialized empty may arrive as [].
 const record = (value: unknown) => Array.isArray(value) && value.length === 0 ? {} : value;
 
+/** Power rows (factory_status power, map_summary include power); accumulators
+ *  is null on a network without any. */
+function powerRows(value: unknown): unknown {
+  const rows = luaArray(value);
+  return Array.isArray(rows) ? rows.map((row: any) => row && typeof row === "object" ? { ...row,
+    sources: luaArray(row.sources ?? []), accumulators: row.accumulators ?? null,
+    ...(row.add_to_cover === undefined ? {} : { add_to_cover: record(row.add_to_cover) }) } : row) : rows;
+}
+
 export function normalizeFactoryStatus(value: any): any {
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = { ...value };
-  for (const key of ["lines", "problems", "power", "patches"]) if (value[key] !== undefined) out[key] = luaArray(value[key]);
+  for (const key of ["lines", "problems", "patches"]) if (value[key] !== undefined) out[key] = luaArray(value[key]);
+  if (value.power !== undefined) out.power = powerRows(value.power);
+  if (value.logistics && typeof value.logistics === "object") out.logistics = { ...value.logistics,
+    networks: luaArray(value.logistics.networks ?? []).map((network: any) => network && typeof network === "object"
+      ? { ...network, coverage: luaArray(network.coverage ?? []), contents: luaArray(network.contents ?? []) } : network) };
   if (value.stock !== undefined) out.stock = luaArray(value.stock).map((row: any) =>
     row && typeof row === "object" ? { ...row, holders: luaArray(row.holders) } : row);
   if (value.research && typeof value.research === "object") out.research = { ...value.research,
@@ -188,6 +203,11 @@ export function normalizeInspection(value: any): any {
   return { ...value, entities: value.entities.map((entity: any) => {
     if (!entity || entity.error) return entity;
     if (entity.drop_target === false) entity = { ...entity, drop_target: null };
+    // Contents by inventory role; an empty one is a Lua empty table.
+    if (entity.inventories && typeof entity.inventories === "object") entity = { ...entity,
+      inventories: Object.fromEntries(Object.entries(entity.inventories).map(([role, contents]) => [role, record(contents)])) };
+    if (entity.settings?.inserter?.filters !== undefined) entity = { ...entity, settings: { ...entity.settings,
+      inserter: { ...entity.settings.inserter, filters: luaArray(entity.settings.inserter.filters) } } };
     if (entity.fluid_connections !== undefined) entity = { ...entity,
       fluid_connections: luaArray(entity.fluid_connections).map((connection: any) => connection?.connected_target === false
         ? { ...connection, connected_target: null } : connection) };

@@ -2,8 +2,13 @@
 -- (entity → companion). Both approach within reach_distance first and report
 -- per-item results including shortfalls. insert takes one target or several
 -- (targets: positions, or every own entity of a name around a point), each
--- receiving the same items.
+-- receiving the same items. Both take an inventory role (inventory_roles:
+-- main, input, output, fuel, burnt_result, modules, trash, robots,
+-- material); without one, insert routes like shift-click and extract takes
+-- the output (or a chest's contents). flush_fluid empties a pipe system or
+-- tank; the fluid is lost.
 local companion = require("scripts.companion")
+local inventory_roles = require("scripts.inventory_roles")
 local approach = require("scripts.actions.approach")
 local supply = require("scripts.actions.supply")
 local craft = require("scripts.actions.craft")
@@ -61,6 +66,42 @@ local function target_identity(e)
   return identity
 end
 
+local function validate_role(role, action)
+  if role ~= nil and not inventory_roles.ROLES[role] then
+    error(action .. " inventory must be one of " .. table.concat(inventory_roles.ORDER, ", "))
+  end
+end
+
+-- The inventories of the named role, or the failed result naming the roles
+-- the entity has.
+local function role_inventories(e, role)
+  local inventories = inventory_roles.get(e, role)
+  if #inventories > 0 then return inventories end
+  local present = inventory_roles.present(e)
+  return nil, { status = "failed",
+    detail = string.format("INVENTORY_NOT_PRESENT: the %s has no %s inventory (it has: %s)", e.name, role,
+      #present > 0 and table.concat(present, ", ") or "none"),
+    outcome = { code = "INVENTORY_NOT_PRESENT", inventory = role, present = present, target = target_identity(e) } }
+end
+
+-- Normal-quality items of `name` the body carries: the quality an insert
+-- names and remove_item takes.
+local function carried_normal(c, name) return c.get_item_count({ name = name, quality = "normal" }) end
+
+-- Hands up to n normal-quality `name` from the body to `into` (an entity, or
+-- an inventory when is_inventory) and returns how many moved: what the body
+-- really gave, with any surplus the target took taken back.
+local function hand_over(c, into, is_inventory, name, n)
+  local inserted = into.insert({ name = name, count = n, quality = "normal" })
+  if inserted <= 0 then return 0 end
+  local removed = c.remove_item({ name = name, count = inserted, quality = "normal" })
+  if removed < inserted then
+    local back = { name = name, count = inserted - removed, quality = "normal" }
+    if is_inventory then into.remove(back) else into.remove_item(back) end
+  end
+  return removed
+end
+
 -- Moves each listed {name, count} from the companion into the entity,
 -- removing exactly what was accepted. Returns problem strings (empty when
 -- everything went in), the total inserted and per-item transfer rows.
@@ -70,15 +111,9 @@ function M.insert_list(c, e, list)
     if not prototypes.item[it.name] then
       problems[#problems + 1] = "no item called '" .. it.name .. "'"
     else
-      local have = c.get_item_count(it.name)
+      local have = carried_normal(c, it.name)
       local n = math.min(it.count, have)
-      local inserted = 0
-      if n > 0 then
-        inserted = e.insert({ name = it.name, count = n })
-        if inserted > 0 then
-          c.remove_item({ name = it.name, count = inserted })
-        end
-      end
+      local inserted = n > 0 and hand_over(c, e, false, it.name, n) or 0
       total = total + inserted
       transfers[#transfers + 1] = { item = it.name, requested = it.count,
         available = have, inserted = inserted, remainder = it.count - inserted }
@@ -164,6 +199,7 @@ function M.insert.start(task)
     validate_target(task, "insert")
   end
   task._items = validate_items(task.items, "insert")
+  validate_role(task.inventory, "insert")
 end
 
 M.insert.resume = supply.resume
@@ -185,18 +221,19 @@ local function insert_one(task, c)
   if type(entity_reached) == "table" then return entity_reached end
   if entity_reached ~= "ok" then return nil end
   if M.awaits_crafting(c, task._items) then return nil end
+  -- A named inventory takes the items itself; otherwise the game routes them.
+  local into = e
+  if task.inventory then
+    local inventories, missing = role_inventories(e, task.inventory)
+    if missing then return missing end
+    into = inventories[1]
+  end
 
   local moved, problems, total, transfers = {}, {}, 0, {}
   for _, it in ipairs(task._items) do
-    local have = c.get_item_count(it.name)
+    local have = carried_normal(c, it.name)
     local n = math.min(it.count, have)
-    local inserted = 0
-    if n > 0 then
-      inserted = e.insert({ name = it.name, count = n })
-      if inserted > 0 then
-        c.remove_item({ name = it.name, count = inserted })
-      end
-    end
+    local inserted = n > 0 and hand_over(c, into, into ~= e, it.name, n) or 0
     total = total + inserted
     local reason
     if inserted >= it.count then
@@ -227,7 +264,8 @@ local function insert_one(task, c)
       status = "failed",
       detail = string.format("couldn't insert anything into the %s — %s%s",
         e.name, table.concat(problems, "; "), shortfall_note(task)),
-      outcome = { code = "ZERO_PROGRESS", total_inserted = 0, transfers = transfers, target = target_identity(e) },
+      outcome = { code = "ZERO_PROGRESS", total_inserted = 0, transfers = transfers, target = target_identity(e),
+        inventory = task.inventory },
     }
   end
   if #problems > 0 then
@@ -235,7 +273,8 @@ local function insert_one(task, c)
       status = "partial",
       detail = string.format("partial insert into the %s — %s%s", e.name, table.concat(problems, "; "),
         shortfall_note(task)),
-      outcome = { code = "PARTIAL_INSERT", total_inserted = total, transfers = transfers, target = target_identity(e) },
+      outcome = { code = "PARTIAL_INSERT", total_inserted = total, transfers = transfers, target = target_identity(e),
+        inventory = task.inventory },
     }
   end
   -- Automation nudge: hand-feeding smelters is a treadmill.
@@ -246,7 +285,7 @@ local function insert_one(task, c)
   return {
     status = "done",
     detail = string.format("inserted %s into the %s%s", table.concat(moved, ", "), e.name, tip),
-    outcome = { total_inserted = total, transfers = transfers, target = target_identity(e) },
+    outcome = { total_inserted = total, transfers = transfers, target = target_identity(e), inventory = task.inventory },
   }
 end
 
@@ -322,6 +361,7 @@ M.extract = {}
 function M.extract.start(task)
   companion.require_companion()
   validate_target(task, "extract")
+  validate_role(task.inventory, "extract")
   if task.all then
     task._all = true
   else
@@ -361,68 +401,85 @@ local function pull(c, source, is_inventory, name, count)
   return kept, removed, full
 end
 
-local function extract_all(task, c, e)
+-- The inventories an extract takes from: the named role's, else the output
+-- (or a chest's contents).
+local function sources(task, e)
+  if task.inventory then return role_inventories(e, task.inventory) end
   local inv = e.get_output_inventory() or e.get_inventory(defines.inventory.chest)
   if not inv then
-    return {
-      status = "failed",
-      detail = "the " .. e.name .. " has no output inventory I can empty",
-    }
+    return nil, { status = "failed", detail = "the " .. e.name .. " has no output inventory I can empty" }
   end
-  local sums = {}
-  for _, s in ipairs(inv.get_contents()) do
-    sums[s.name] = (sums[s.name] or 0) + s.count
-  end
-  if next(sums) == nil then
-    return { status = "failed", detail = "the " .. e.name .. " is empty — nothing to take" }
-  end
+  return { inv }
+end
 
-  local names = {}
-  for name in pairs(sums) do names[#names + 1] = name end
+local function extract_all(task, c, e, inventories)
+  local seen, names, held = {}, {}, {}
+  for i, inv in ipairs(inventories) do
+    held[i] = {}
+    for _, s in ipairs(inv.get_contents()) do
+      if not seen[s.name] then seen[s.name], names[#names + 1] = true, s.name end
+      held[i][s.name] = (held[i][s.name] or 0) + s.count
+    end
+  end
+  if #names == 0 then
+    return { status = "failed", detail = string.format("the %s%s is empty — nothing to take", e.name,
+      task.inventory and ("'s " .. task.inventory .. " inventory") or "") }
+  end
   table.sort(names)
 
   local moved = {}
   local function restore_moved()
     for i = #moved, 1, -1 do
       local stack = moved[i]
-      local removed = c.remove_item(stack)
-      local restored = removed > 0 and inv.insert({ name = stack.name, count = removed }) or 0
+      local removed = c.remove_item({ name = stack.name, count = stack.count })
+      local restored = removed > 0 and stack.inventory.insert({ name = stack.name, count = removed }) or 0
       if removed ~= stack.count or restored ~= removed then
         error("full extraction could not restore the source inventory")
       end
     end
   end
 
-  local taken, transfers = {}, {}
+  local taken, transfers, total = {}, {}, 0
   for _, name in ipairs(names) do
-    local count = sums[name]
-    local kept = pull(c, inv, true, name, count)
-    if kept > 0 then
-      moved[#moved + 1] = { name = name, count = kept }
-      taken[#taken + 1] = string.format("%d %s", kept, name)
-      transfers[#transfers + 1] = { item = name, extracted = kept }
+    local got = 0
+    for i, inv in ipairs(inventories) do
+      local count = held[i][name] or 0
+      if count > 0 then
+        local kept = pull(c, inv, true, name, count)
+        if kept > 0 then moved[#moved + 1] = { name = name, count = kept, inventory = inv } end
+        got = got + kept
+        if kept < count then
+          restore_moved()
+          return {
+            status = "failed",
+            detail = "couldn't empty the " .. e.name .. " — my inventory lacks room for every output; nothing was taken",
+          }
+        end
+      end
     end
-    if kept < count then
-      restore_moved()
-      return {
-        status = "failed",
-        detail = "couldn't empty the " .. e.name .. " — my inventory lacks room for every output; nothing was taken",
-      }
-    end
+    taken[#taken + 1] = string.format("%d %s", got, name)
+    transfers[#transfers + 1] = { item = name, extracted = got }
+    total = total + got
   end
   return {
     status = "done",
     detail = string.format("took %s from the %s", table.concat(taken, ", "), e.name),
-    outcome = { total_extracted = #moved > 0 and (function()
-      local total = 0; for _, row in ipairs(transfers) do total = total + row.extracted end; return total
-    end)() or 0, transfers = transfers, target = target_identity(e) },
+    outcome = { total_extracted = total, transfers = transfers, target = target_identity(e), inventory = task.inventory },
   }
 end
 
-local function extract_items(task, c, e)
+-- From the named inventories, or (no role) from wherever the entity holds
+-- the items, as before roles.
+local function extract_items(task, c, e, inventories)
+  local from_entity = inventories == nil
   local taken, problems, total, transfers = {}, {}, 0, {}
   for _, it in ipairs(task._items) do
-    local kept, removed, full = pull(c, e, false, it.name, it.count)
+    local kept, removed, full = 0, 0, false
+    for _, source in ipairs(inventories or { e }) do
+      if kept >= it.count or full then break end
+      local k, r, f = pull(c, source, not from_entity, it.name, it.count - kept)
+      kept, removed, full = kept + k, removed + r, f
+    end
     total = total + kept
     transfers[#transfers + 1] = { item = it.name, requested = it.count, extracted = kept,
       remainder = it.count - kept }
@@ -447,7 +504,7 @@ local function extract_items(task, c, e)
   return {
     status = "done",
     detail = string.format("took %s from the %s%s", table.concat(taken, ", "), e.name, extra),
-    outcome = { total_extracted = total, transfers = transfers, target = target_identity(e) },
+    outcome = { total_extracted = total, transfers = transfers, target = target_identity(e), inventory = task.inventory },
   }
 end
 
@@ -466,11 +523,74 @@ function M.extract.tick(task)
   if type(entity_reached) == "table" then return entity_reached end
   if entity_reached ~= "ok" then return nil end
 
+  if not task._all and not task.inventory then return extract_items(task, c, e, nil) end
+  local inventories, missing = sources(task, e)
+  if not inventories then return missing end
   if task._all then
-    return extract_all(task, c, e)
+    return extract_all(task, c, e, inventories)
   end
-  return extract_items(task, c, e)
+  return extract_items(task, c, e, inventories)
 end
+
+-- ------------------------------------------------------------- flush_fluid
+
+-- flush_fluid {x, y, fluid?}: the pipe or tank window's flush button. Each
+-- fluidbox's whole connected system is emptied (only the named fluid, if
+-- given); the fluid is destroyed. Result {entity:{name, position},
+-- flushed:{[fluid]: amount}}.
+local FLUSHABLE = { pipe = true, ["pipe-to-ground"] = true, ["storage-tank"] = true, pump = true }
+
+M.flush = {}
+
+function M.flush.start(task)
+  companion.require_companion()
+  validate_target(task, "flush_fluid")
+  if task.fluid ~= nil and (type(task.fluid) ~= "string" or not prototypes.fluid[task.fluid]) then
+    error("flush_fluid: no fluid called '" .. tostring(task.fluid) .. "'")
+  end
+end
+
+function M.flush.tick(task)
+  local c = companion.get()
+  if not c then return gone() end
+  local reached = approach.ensure(task, c, task.target, c.reach_distance)
+  if type(reached) == "table" then return reached end
+  if reached ~= "ok" then return nil end
+  local e = approach.find_entity_near(c, task.target)
+  if not (e and e.force == c.force) then return no_entity(task, "flush") end
+  local entity_reached = approach.ensure_entity(task, c, e)
+  if type(entity_reached) == "table" then return entity_reached end
+  if entity_reached ~= "ok" then return nil end
+  if not FLUSHABLE[e.type] then
+    return { status = "failed",
+      detail = string.format("NOT_FLUSHABLE: only pipes, underground pipes, storage tanks and pumps are flushed; %s",
+        (e.type == "assembling-machine" or e.type == "furnace") and ("set the " .. e.name .. "'s recipe away and back to clear it")
+        or ("mine the " .. e.name .. " and place it again")),
+      outcome = { code = "NOT_FLUSHABLE", target = target_identity(e) } }
+  end
+  local flushed, fluidbox = {}, e.fluidbox
+  for index = 1, #fluidbox do
+    for name, amount in pairs(fluidbox.flush(index, task.fluid) or {}) do flushed[name] = (flushed[name] or 0) + amount end
+  end
+  local parts = {}
+  for name, amount in pairs(flushed) do parts[#parts + 1] = string.format("%.0f %s", amount, name) end
+  table.sort(parts)
+  return { status = "done",
+    detail = #parts > 0 and string.format("flushed %s from the %s's system", table.concat(parts, ", "), e.name)
+      or string.format("the %s held no %s", e.name, task.fluid or "fluid"),
+    outcome = { code = "FLUSHED", entity = { name = e.name, position = { x = e.position.x, y = e.position.y } },
+      flushed = flushed } }
+end
+
+M.flush_action = {
+  runner = M.flush,
+  make_task = function(step) return { target = { x = step.x, y = step.y }, fluid = step.fluid } end,
+  validate = function(step, index)
+    local label = "queue_plan flush_fluid step " .. index
+    if type(step.x) ~= "number" or type(step.y) ~= "number" then error(label .. " needs x and y", 0) end
+    if step.fluid ~= nil and type(step.fluid) ~= "string" then error(label .. " fluid must be a fluid name", 0) end
+  end,
+}
 
 -- Auto-supply takes from chests and machine outputs through extract and
 -- loads furnaces through insert.

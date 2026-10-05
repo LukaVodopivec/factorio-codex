@@ -230,13 +230,13 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
           const input = { ...base, ...target, ...(directions ? { directions } : {}) };
           const output = await client.callTool({ name: "find_placement", arguments: input });
           expect(output.isError).not.toBe(true);
-          expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, ...target, radius: 10, limit: 8, directions: directions ?? [0, 4, 8, 12] });
+          expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, ...target, radius: 10, limit: 8, directions: directions ?? [0, 4, 8, 12] }, expect.anything());
         }
       }
       const directions = Array.from({ length: 16 }, (_, direction) => direction);
       expect(schema.safeParse({ ...base, directions }).success).toBe(true);
       expect((await client.callTool({ name: "find_placement", arguments: { ...base, directions } })).isError).not.toBe(true);
-      expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, radius: 10, limit: 8, directions });
+      expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, radius: 10, limit: 8, directions }, expect.anything());
     } finally {
       await client.close();
       await server.close();
@@ -306,7 +306,7 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 26, mod_version: "0.22.0", factorio_version: "2.0.0", tick: 1 }
       : method === "observe_local" ? { entities: [], resource_patches: [], ground_items: [] }
       : method === "queue_plan" ? { plan_id: 3 }
       : method === "plan_status" ? { plan_id: 3, status: "completed", outcomes: [] } : { ok: method });
@@ -409,13 +409,13 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     await handlers.get_items({ item: "iron-plate", count: 20 });
     const queued = call.mock.calls.filter(([method]) => method === "queue_plan").map(([, params]) => (params as any).steps);
     expect(queued).toEqual([[{ action: "build_layout", ...layout }], [{ action: "get_items", item: "iron-plate", count: 20 }]]);
-    expect(Object.keys(handlers)).toHaveLength(44);
+    expect(Object.keys(handlers)).toHaveLength(47);
   });
 });
 
 describe("read-only FIFO state", () => {
   const fifoValue = (fifo: Record<string, unknown>) => ({ status: "completed", companion_exists: true, companion_ever_created: true,
-    protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.0", tick: 1,
+    protocol_version: 26, mod_version: "0.22.0", factorio_version: "2.0.0", tick: 1,
     entities: [], resource_patches: [], ground_items: [], results: [], candidates: [], outcomes: [], steps: [], fifo });
   const args: Record<string, unknown> = {
     connect_status: {}, map_summary: {}, progression_status: {}, production_requirements: { targets: { "iron-plate": 1 } },
@@ -427,6 +427,7 @@ describe("read-only FIFO state", () => {
     connect_entities: { kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 3, y: 0 } },
     blueprint_list: {}, blueprint_describe: { name: "smelter" }, blueprint_export: { name: "smelter" },
     blueprint_place: { name: "smelter", position: { x: 0, y: 0 } },
+    place_tiles: { item: "landfill", positions: [{ x: 0, y: 0 }] },
   };
   // next_event reports the body in its own block from the cheap event probe.
   const fifoTools = READ_ONLY_TOOLS.filter((name) => name !== "next_event");
@@ -545,8 +546,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 25, mod_version: "0.21.1", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 25, mod_version: "0.21.1", tick: 2 })
+        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 26, mod_version: "0.22.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 26, mod_version: "0.22.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -555,8 +556,8 @@ describe("connect_status body lifecycle", () => {
   });
 
   it("rejects a stale mod before reporting connected", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 25, mod_version: "0.6.0" });
-    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.21.1");
+    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 26, mod_version: "0.6.0" });
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.22.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
@@ -564,8 +565,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.0", tick: 2 })
+        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 26, mod_version: "0.22.0", factorio_version: "2.0.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 26, mod_version: "0.22.0", factorio_version: "2.0.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -575,7 +576,7 @@ describe("connect_status body lifecycle", () => {
 
   it("surfaces the bind-only no-player error without retrying or creating", async () => {
     const call = vi.fn()
-      .mockResolvedValueOnce({ protocol_version: 25, mod_version: "0.21.1", companion_exists: false, companion_ever_created: false, companion_dead: false })
+      .mockResolvedValueOnce({ protocol_version: 26, mod_version: "0.22.0", companion_exists: false, companion_ever_created: false, companion_dead: false })
       .mockRejectedValueOnce(new Error("native player 'Codex' is not connected with a living character"));
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("native player 'Codex' is not connected");
     expect(call.mock.calls).toEqual([["ping"], ["spawn_companion", {}]]);

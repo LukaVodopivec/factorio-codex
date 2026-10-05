@@ -76,6 +76,16 @@ function M.entity_prototype(values) return wrap("LuaEntityPrototype", values) en
 function M.item_stack(values) return wrap("LuaItemStack", values) end
 function M.shortcut_prototype(values) return wrap("LuaShortcutPrototype", values) end
 function M.logistic_network(values) return wrap("LuaLogisticNetwork", values) end
+-- Documented 2.0.77 members of the 0.22.0 stage A classes (not probed natively).
+function M.item_prototype(values) return wrap("LuaItemPrototype", values) end
+function M.tile(values) return wrap("LuaTile", values) end
+function M.tile_prototype(values) return wrap("LuaTilePrototype", values) end
+function M.equipment_grid(values) return wrap("LuaEquipmentGrid", values) end
+function M.equipment(values) return wrap("LuaEquipment", values) end
+function M.equipment_prototype(values) return wrap("LuaEquipmentPrototype", values) end
+function M.logistic_sections(values) return wrap("LuaLogisticSections", values) end
+function M.logistic_section(values) return wrap("LuaLogisticSection", values) end
+function M.logistic_cell(values) return wrap("LuaLogisticCell", values) end
 function M.state(object)
   assert(objects[object], "simulation state requires a strict mock")
   return objects[object].simulation

@@ -1,6 +1,7 @@
 -- Read-only summary of the force's already charted world. No chart or generation calls.
 -- map_summary is a job (summary_job, below) spread over ticks by a work budget;
--- factory_status and the run recorder read caches kept here (status, patches).
+-- factory_status and the run recorder read the patch cache kept here and the
+-- power rows built here from the registry's aggregates (build_power).
 local companion = require("scripts.companion")
 local factory_activity = require("scripts.factory_activity")
 local autonomy = require("scripts.autonomy")
@@ -45,7 +46,7 @@ local STATUS_BUCKETS = {
   no_ingredients = "insufficient_input", item_ingredient_shortage = "insufficient_input",
   fluid_ingredient_shortage = "insufficient_input", waiting_for_source_items = "insufficient_input",
   full_output = "full_output", waiting_for_space_in_destination = "full_output",
-  no_resources = "no_resources", no_minable_resources = "no_resources", disabled = "disabled",
+  no_minable_resources = "no_resources", disabled = "disabled",
   disabled_by_control_behavior = "disabled",
   disabled_by_script = "disabled", marked_for_deconstruction = "disabled",
   turned_off_during_daytime = "disabled",
@@ -54,7 +55,7 @@ local STATUS_BUCKETS = {
 -- A status is one sample. Only these raw statuses describe the build itself;
 -- every other nonproductive status is a transient wait judged by throughput.
 local STRUCTURAL_RAW_STATUSES = {
-  no_resources = true, no_minable_resources = true, disabled = true,
+  no_minable_resources = true, disabled = true,
   disabled_by_control_behavior = true, disabled_by_script = true,
   not_plugged_in_electric_network = true, marked_for_deconstruction = true,
 }
@@ -1515,8 +1516,6 @@ for _, types in ipairs({ CHEST_TYPES, OUTPUT_TYPES, BELT_TYPES }) do
   for name in pairs(types) do STOCK_TYPE_NAMES[#STOCK_TYPE_NAMES + 1] = name end
 end
 table.sort(STOCK_TYPE_NAMES)
-local POWER_PRODUCER_TYPES = { generator = true, ["burner-generator"] = true, ["solar-panel"] = true,
-  ["fusion-generator"] = true }
 local PROBLEM_STATUSES = {
   no_power = true, low_power = true, not_plugged_in_electric_network = true, no_fuel = true,
   full_output = true, no_minable_resources = true, no_ingredients = true,
@@ -1599,44 +1598,207 @@ local function add_patch_resource(cells, entity)
   cell.top, cell.bottom = math.min(cell.top, y), math.max(cell.bottom, y)
 end
 
--- Per electric network, as the electric-network view shows it.
---   production_w / consumption_w: the five-second average of the network's
---     native electric_network_statistics (read from one of its charted poles),
---     summed over every producer (output) and consumer (input) row. Electric
---     flow statistics count joules per tick, so the sum is multiplied by 60.
---   capacity_w: nameplate, the sum of each producer prototype's
---     get_max_energy_production (joules per tick) times 60; fuel, steam and
---     daylight are not considered.
---   satisfaction: 1 while no consumer on the network samples low_power or
---     no_power. Otherwise min(1, production_w / demand), where demand is the
---     nominal get_max_energy_usage (times 60) of the consumers that are trying
---     to run (working, low_power or no_power).
---   accumulator_j / accumulator_capacity_j: summed energy and
---     electric_buffer_size of the network's accumulators.
---   demand_w: that nominal demand; engines_needed: steam engines whose
---     nameplate covers it (how many the network needs for 100%).
+-- ------------------------------------------------------------ power rows
+-- One row per electric network on a surface (factory_status power and
+-- map_summary include power), from the registry's network aggregates (no
+-- entity walk), with one statistics read for each network the limit keeps:
+--   production_w   the five-second average of the network's native
+--                  electric_network_statistics output rows (joules a tick,
+--                  times 60), accumulator discharge included
+--   demand_w       nominal usage of the consumers trying to run (working,
+--                  low_power or no_power), as the registry's cursor last read
+--   satisfaction   1 while no consumer reads low_power or no_power, else
+--                  min(1, production_w / demand_w)
+--   capacity_w     available now: non-solar nameplate plus solar nameplate x
+--                  the surface's solar factor x light now
+--   sustained_w    the day average: solar at its average light (planets)
+--   headroom_w     sustained_w - demand_w
+--   sources        per kind (steam, nuclear, solar, burner, other): count,
+--                  nameplate_w and the production_w the statistics name
+--   accumulators   count, stored_j, capacity_j, charge (or nil)
+--   night_s        dark seconds a day on this surface (planets)
+--   add_to_cover   only while sustained_w < demand_w: steam engines for a
+--                  steam network, else solar panels for the average and the
+--                  accumulators that carry the night deficit of those panels
+-- The solar factor is the surface's "solar-power" property / 100 times its
+-- solar_power_multiplier. Light (daytime 0 is noon) is full outside
+-- dusk..dawn, falls linearly from dusk to evening, is zero to morning and
+-- rises to dawn; always_day is full light. On a platform surface solar
+-- capacity is its measured production and there is no day average.
 local STEAM_ENGINE_WATTS = 900000
-local function engine_watts()
-  local ok, watts = pcall(function() return prototypes.entity["steam-engine"].get_max_energy_production() * 60 end)
-  return ok and type(watts) == "number" and watts > 0 and watts or STEAM_ENGINE_WATTS
-end
-local function nominal_watts(entity, method)
-  local ok, value = pcall(function()
-    local ok_quality, quality = pcall(function() return entity.quality end)
-    return entity.prototype[method](ok_quality and quality or nil)
-  end)
-  return ok and type(value) == "number" and value * 60 or 0
+local ACCUMULATOR_JOULES = 5000000
+local LIGHT_SAMPLES = 100
+
+local function prototype_watts(name, fallback)
+  local ok, watts = pcall(function() return prototypes.entity[name].get_max_energy_production("normal") * 60 end)
+  return ok and type(watts) == "number" and watts > 0 and watts or fallback
 end
 
--- The sections map_summary's include and factory_status's stock and power
--- read, accumulated a record at a time as the scan (or the status refresh)
--- reads each own entity, so building them never walks every entity in one
--- tick. Records are plain (no entity reads): chests and crafting outputs
+local function prototype_buffer(name)
+  local ok, joules = pcall(function() return prototypes.entity[name].electric_energy_source_prototype.buffer_capacity end)
+  return ok and type(joules) == "number" and joules > 0 and joules or ACCUMULATOR_JOULES
+end
+
+local function light_at(day, t)
+  if day.always_day then return 1 end
+  if t <= day.dusk or t >= day.dawn then return 1 end
+  if t < day.evening then return 1 - (t - day.dusk) / (day.evening - day.dusk) end
+  if t <= day.morning then return 0 end
+  return (t - day.morning) / (day.dawn - day.morning)
+end
+
+-- The light of LIGHT_SAMPLES evenly spaced daytimes, cached per surface for
+-- its daytime parameters (pure arithmetic, so a cache rebuilt after a load
+-- is the same).
+local light_tables = {}
+local function light_table(index, day)
+  local key = table.concat({ day.dusk, day.evening, day.morning, day.dawn, tostring(day.always_day) }, ",")
+  local cached = light_tables[index]
+  if cached and cached.key == key then return cached.values end
+  local values = {}
+  for i = 1, LIGHT_SAMPLES do values[i] = light_at(day, (i - 0.5) / LIGHT_SAMPLES) end
+  light_tables[index] = { key = key, values = values }
+  return values
+end
+
+-- What the rows need of the surface, in a few attribute reads.
+local function power_environment(surface)
+  local env = { index = number_property(surface, "index") or 0 }
+  local ok_platform, platform = pcall(function() return surface.platform end)
+  env.platform = ok_platform and platform ~= nil
+  local ok_property, value = pcall(function() return surface.get_property("solar-power") end)
+  local property = ok_property and type(value) == "number" and value or 100
+  env.factor = property / 100 * (number_property(surface, "solar_power_multiplier") or 1)
+  if env.platform then return env end
+  local ok, day = pcall(function()
+    local parameters = surface.daytime_parameters
+    return { dusk = parameters.dusk, evening = parameters.evening, morning = parameters.morning,
+      dawn = parameters.dawn, always_day = surface.always_day == true }
+  end)
+  if not ok then day = { dusk = 0.25, evening = 0.45, morning = 0.55, dawn = 0.75, always_day = false } end
+  env.ticks_per_day = number_property(surface, "ticks_per_day") or 25000
+  env.light_now = light_at(day, number_property(surface, "daytime") or 0)
+  if day.always_day then
+    env.average, env.night_s = 1, 0
+  else
+    env.average = 1 - (day.evening - day.dusk) / 2 - (day.morning - day.evening) - (day.dawn - day.morning) / 2
+    env.night_s = ((day.morning - day.evening) + ((day.evening - day.dusk) + (day.dawn - day.morning)) / 2)
+      * env.ticks_per_day / 60
+  end
+  env.light = light_table(env.index, day)
+  return env
+end
+
+-- Production watts per power kind from the network's statistics (read
+-- through its pole), or nil when no live pole of the network is known.
+local function production_by_kind(net)
+  local pole = net.pole
+  local ok, by_kind = pcall(function()
+    if not (pole and pole.valid and pole.electric_network_id == net.id) then return nil end
+    local statistics = pole.electric_network_statistics
+    local precision = defines.flow_precision_index.five_seconds
+    local out = {}
+    for name in pairs(statistics.output_counts) do
+      local kind = registry.power_kind(name)
+      out[kind] = (out[kind] or 0) + statistics.get_flow_count({ name = name, category = "output",
+        precision_index = precision, count = false }) * 60
+    end
+    return out
+  end)
+  return ok and by_kind or nil
+end
+
+local function watts(value) return math.floor(value + 0.5) end
+
+local function cover(row, net, env, solar_w, other_w)
+  local deficit = row.demand_w - row.sustained_w
+  local solar = net.sources.solar
+  if (solar and solar.count > 0) or other_w == 0 then
+    local panel_w = solar and solar.count > 0 and solar.nameplate_w / solar.count or prototype_watts("solar-panel", 60000)
+    local per_panel = panel_w * env.factor * env.average
+    if per_panel <= 0 then return nil end
+    local panels = math.ceil(deficit / per_panel)
+    -- The night: energy the panels (with the added ones) cannot give,
+    -- integrated over the day's light samples.
+    local peak = (solar_w + panels * panel_w) * env.factor
+    local seconds = env.ticks_per_day / 60 / LIGHT_SAMPLES
+    local short_j = 0
+    for _, light in ipairs(env.light) do
+      short_j = short_j + math.max(0, row.demand_w - other_w - peak * light) * seconds
+    end
+    local stored = net.accumulators
+    local buffer = stored.count > 0 and stored.capacity_j / stored.count or prototype_buffer("accumulator")
+    local accumulators = math.ceil(short_j / buffer) - stored.count
+    return { solar_panel = panels, accumulator = accumulators > 0 and accumulators or nil }
+  end
+  return { steam_engine = math.ceil(deficit / prototype_watts("steam-engine", STEAM_ENGINE_WATTS)) }
+end
+
+-- Rows for a surface's networks, most capacity first, at most `limit`, and
+-- how many the limit left out.
+function M.build_power(surface, limit)
+  local env = power_environment(surface)
+  local rows = {}
+  for _, net in ipairs(registry.networks(env.index)) do
+    local solar_w, other_w = 0, 0
+    for kind, source in pairs(net.sources) do
+      if kind == "solar" then solar_w = solar_w + source.nameplate_w else other_w = other_w + source.nameplate_w end
+    end
+    local capacity = env.platform and other_w or other_w + solar_w * env.factor * env.light_now
+    rows[#rows + 1] = { network_id = net.id, capacity_w = watts(capacity), demand_w = watts(net.demand_w),
+      _net = net, _solar_w = solar_w, _other_w = other_w }
+  end
+  table.sort(rows, function(a, b)
+    if a.capacity_w ~= b.capacity_w then return a.capacity_w > b.capacity_w end
+    return a.network_id < b.network_id
+  end)
+  local omitted = cap_rows(rows, limit)
+  for _, row in ipairs(rows) do
+    local net, solar_w, other_w = row._net, row._solar_w, row._other_w
+    row._net, row._solar_w, row._other_w = nil, nil, nil
+    local by_kind = production_by_kind(net)
+    if by_kind then
+      local total = 0
+      for _, value in pairs(by_kind) do total = total + value end
+      row.production_w = watts(total)
+      if env.platform then row.capacity_w = watts(other_w + (by_kind.solar or 0)) end
+    end
+    if net.starved == 0 then row.satisfaction = 1
+    elseif row.production_w and net.demand_w > 0 then
+      row.satisfaction = math.floor(math.min(1, row.production_w / net.demand_w) * 1000 + 0.5) / 1000
+    else row.satisfaction = 0 end
+    local sources = {}
+    for kind, source in pairs(net.sources) do
+      if source.count > 0 then
+        sources[#sources + 1] = { kind = kind, count = source.count, nameplate_w = watts(source.nameplate_w),
+          production_w = by_kind and watts(by_kind[kind] or 0) or nil }
+      end
+    end
+    table.sort(sources, function(a, b) return a.kind < b.kind end)
+    row.sources = sources
+    local stored = net.accumulators
+    if stored.count > 0 then
+      row.accumulators = { count = stored.count, stored_j = watts(stored.stored_j), capacity_j = watts(stored.capacity_j),
+        charge = stored.capacity_j > 0 and math.floor(stored.stored_j / stored.capacity_j * 1000 + 0.5) / 1000 or 0 }
+    end
+    if not env.platform then
+      row.sustained_w = watts(other_w + solar_w * env.factor * env.average)
+      row.headroom_w = row.sustained_w - row.demand_w
+      row.night_s = math.floor(env.night_s * 10 + 0.5) / 10
+      if row.sustained_w < row.demand_w then row.add_to_cover = cover(row, net, env, solar_w, other_w) end
+    end
+  end
+  return rows, omitted
+end
+
+-- The sections map_summary's include reads, accumulated a record at a time
+-- as the scan reads each own entity, so building them never walks every
+-- entity in one tick (power rows come from the registry: build_power). Records are plain (no entity reads): chests and crafting outputs
 -- carry record.contents; belts carry record.belt = {outputs = unit numbers
 -- it feeds, pair = its underground partner's unit, bucket = what its lines
 -- hold}.
 local function sections_new(want)
-  return { want = want, items = {}, belts = {}, sites = {}, networks = {}, problems = {}, problems_total = 0,
+  return { want = want, items = {}, belts = {}, sites = {}, problems = {}, problems_total = 0,
     problems_by_status = {} }
 end
 
@@ -1684,26 +1846,6 @@ local function sections_add(A, record)
     A.sites[key] = site
     site.machines[entity.name] = (site.machines[entity.name] or 0) + 1
     site._count, site._x, site._y = site._count + 1, site._x + entity.position.x, site._y + entity.position.y
-  end
-  local id = record.network_id
-  if want.power and id and kind ~= "electric-pole" then
-    local network = A.networks[id] or { id = id, capacity_w = 0, accumulator_j = 0, accumulator_capacity_j = 0,
-      producers = {}, consumers = {}, _starved = 0, _demand = 0 }
-    A.networks[id] = network
-    if kind == "accumulator" then
-      network.accumulator_j = network.accumulator_j + (number_property(entity, "energy") or 0)
-      network.accumulator_capacity_j = network.accumulator_capacity_j + (number_property(entity, "electric_buffer_size") or 0)
-    elseif POWER_PRODUCER_TYPES[kind] then
-      network.producers[entity.name] = (network.producers[entity.name] or 0) + 1
-      network.capacity_w = network.capacity_w + (record.capacity_w or nominal_watts(entity, "get_max_energy_production"))
-    else
-      network.consumers[entity.name] = (network.consumers[entity.name] or 0) + 1
-      local status = normalize_status(record.status)
-      if status == "low_power" or status == "no_power" then network._starved = network._starved + 1 end
-      if status == "working" or status == "low_power" or status == "no_power" then
-        network._demand = network._demand + (record.usage_w or nominal_watts(entity, "get_max_energy_usage"))
-      end
-    end
   end
   if want.problems and PROBLEM_STATUSES[record.status] then
     A.problems_total = A.problems_total + 1
@@ -1777,20 +1919,18 @@ local function sections_belts(A, budget)
 end
 
 -- The stock rows (most held first, each with its first holders) and how
--- many the cap left out; every item's uncapped total in totals.
+-- many the cap left out.
 local function sections_stockpiles(A)
-  local totals = {}
   local rows = sorted_rows(A.items, function(a, b)
     if a.total ~= b.total then return a.total > b.total end
     return a.item < b.item
   end)
   for _, row in ipairs(rows) do
-    totals[row.item] = row.total
     table.sort(row.holders, holder_order)
     row.holders_omitted = row.holder_count - #row.holders
     row.holder_count = nil
   end
-  return rows, cap_rows(rows, MAX_STOCK_ITEMS), totals
+  return rows, cap_rows(rows, MAX_STOCK_ITEMS)
 end
 
 -- One row per charted chunk holding own machines. This is independent of the
@@ -1806,44 +1946,6 @@ local function sections_sites(A)
     site._count, site._x, site._y = nil, nil, nil
   end
   return rows, cap_rows(rows, MAX_SITES)
-end
-
--- One electric-network statistics read per network.
-local function sections_power(A, network_poles)
-  local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index.five_seconds
-  local rows = sorted_rows(A.networks, function(a, b) return a.id < b.id end)
-  for _, network in ipairs(rows) do
-    local ok, statistics = pcall(function() return network_poles[network.id].electric_network_statistics end)
-    local function watts(counts, category)
-      local ok_sum, sum = pcall(function()
-        local total = 0
-        for name in pairs(statistics[counts]) do
-          total = total + statistics.get_flow_count({ name = name, category = category,
-            precision_index = precision_index, count = false })
-        end
-        return total * 60
-      end)
-      if ok_sum and type(sum) == "number" then return sum end
-      return nil
-    end
-    network.statistics_available = ok and statistics ~= nil and precision_index ~= nil
-    if network.statistics_available then
-      network.production_w, network.consumption_w = watts("output_counts", "output"), watts("input_counts", "input")
-      network.statistics_available = network.production_w ~= nil and network.consumption_w ~= nil
-    end
-    if network._starved == 0 then
-      network.satisfaction = 1
-    elseif network.production_w and network._demand > 0 then
-      network.satisfaction = math.floor(math.min(1, network.production_w / network._demand) * 1000 + 0.5) / 1000
-    else
-      network.satisfaction = 0
-    end
-    network.starved_consumers = network._starved
-    network.demand_w = network._demand
-    network.engines_needed = math.ceil(network._demand / engine_watts())
-    network._starved, network._demand = nil, nil
-  end
-  return rows, cap_rows(rows, MAX_POWER_NETWORKS)
 end
 
 -- The first problem rows, the total and the per-status counts (which
@@ -1911,9 +2013,9 @@ end
 local function unit_of(entity) return number_property(entity, "unit_number") end
 
 -- A plain record of an own entity for the requested sections.
-local function own_record(S, entity, raw_status, network_id)
+local function own_record(S, entity, raw_status)
   local record = { entity = { name = entity.name, type = entity.type, unit_number = unit_of(entity),
-    position = xy(entity.position) }, status = raw_status, network_id = network_id }
+    position = xy(entity.position) }, status = raw_status }
   local kind = entity.type
   if S.want.stockpiles then
     if CHEST_TYPES[kind] or OUTPUT_TYPES[kind] then
@@ -1930,16 +2032,6 @@ local function own_record(S, entity, raw_status, network_id)
       end
       for _, line in ipairs(belt_lines(entity)) do add_contents(belt.bucket, line) end
       record.belt = belt
-    end
-  end
-  if S.want.power and network_id and kind ~= "electric-pole" then
-    if kind == "accumulator" then
-      record.entity.energy = number_property(entity, "energy")
-      record.entity.electric_buffer_size = number_property(entity, "electric_buffer_size")
-    elseif POWER_PRODUCER_TYPES[kind] then
-      record.capacity_w = nominal_watts(entity, "get_max_energy_production")
-    else
-      record.usage_w = nominal_watts(entity, "get_max_energy_usage")
     end
   end
   return record
@@ -1961,16 +2053,8 @@ local function scan_entity(S, entity, c, budget)
   local recipe = recipe_fact(entity)
   local role = FLOW_NODE_ROLES[entity.type]
   local network_id = number_property(entity, "electric_network_id")
-  if network_id then
-    S.electric_networks[network_id] = true
-    if entity.type == "electric-pole" then
-      local previous = S.network_poles[network_id]
-      if not previous or not previous.valid or (unit_of(entity) or 0) < (unit_of(previous) or 0) then
-        S.network_poles[network_id] = entity
-      end
-    end
-  end
-  if S.sections then sections_add(S.sections, own_record(S, entity, raw_status, network_id)) end
+  if network_id then S.electric_networks[network_id] = true end
+  if S.sections then sections_add(S.sections, own_record(S, entity, raw_status)) end
   if role then
     local node = {
       _key = key, _entity = entity, _unit = unit_of(entity), name = entity.name, type = entity.type,
@@ -2281,7 +2365,8 @@ local function finish(S, c)
     scope = "force_charted", collected_at_tick = game.tick, started_tick = S.started_tick,
     consistency = "spread_over_ticks",
     charted_chunks = S.chunk_total, currently_visible_charted_chunks = S.visible_chunks,
-    machine_count = machine_count, groups = groups, force_flows = flows,
+    machine_count = machine_count, registry_machine_count = registry.counts().machines,
+    groups = groups, force_flows = flows,
     power = { network_count = network_count, status_counts = power_status_counts },
     material_flow = material_flow, character_transfers = activity,
     evidence = {
@@ -2314,7 +2399,7 @@ local function finish(S, c)
   if want.sites then sections.sites, sections.sites_omitted = sections_sites(S.sections) end
   if want.patches then sections.patches, sections.patches_complete, sections.patches_omitted = M.patches() end
   if want.power then
-    local networks, networks_omitted = sections_power(S.sections, S.network_poles)
+    local networks, networks_omitted = M.build_power(c.surface, MAX_POWER_NETWORKS)
     sections.power = { networks = networks, networks_omitted = networks_omitted }
   end
   if want.problems then
@@ -2368,8 +2453,8 @@ local function summary_start(params)
     activity_since_tick = params.activity_since_tick,
     explicit_flows = params.flow_items ~= nil or params.flow_fluids ~= nil, flow_candidates = {},
     -- Requested sections accumulate as own entities are read.
-    sections = (want.stockpiles or want.sites or want.power or want.problems) and sections_new(want) or nil,
-    seen_landmark = {}, groups_by_key = {}, electric_networks = {}, network_poles = {}, visible_chunks = 0,
+    sections = (want.stockpiles or want.sites or want.problems) and sections_new(want) or nil,
+    seen_landmark = {}, groups_by_key = {}, electric_networks = {}, visible_chunks = 0,
     omissions = { capped_groups = 0, capped_flows = 0, unsupported_entities = 0,
       invalid_entities = 0, unsupported_flow_statistics = 0, capped_flow_nodes = 0,
       capped_flow_edges = 0, capped_edge_diagnostics = 0 },
@@ -2419,150 +2504,51 @@ end
 -- activity_since_tick?}: the job definition (jobs.lua registers it).
 M.summary_job = { start = summary_start, step = summary_step }
 
--- The stockpiles and power sections for factory_status, from a cache in
--- storage.status_cache that status_tick refreshes from the event-maintained
--- registry (no entity query): electric entities for power, chests and
--- crafting-machine outputs for stock. Belts are counted by the registry,
--- never listed, so belt contents are not stock here. A refresh starts at most
--- every STATUS_REFRESH_TICKS: its first tick takes the registry sets' unit
--- numbers (no sort, no entity read), each later tick reads at most
--- STATUS_ENTITIES_PER_TICK of them (validity, surface and chart, then status,
--- network, inventory contents, nominal power) into the sections as they
--- arrive, and the tick after the last read finishes the capped rows with
--- one flow-statistics read per network. The refresh also keeps every item's
--- uncapped stock total (registry.stock_totals). A read never scans.
-local STATUS_ENTITIES_PER_TICK = 48
-local STATUS_REFRESH_TICKS = 300
-M.STATUS_ENTITIES_PER_TICK = STATUS_ENTITIES_PER_TICK
-
-local function status_record(entry, set, network_poles)
-  local entity = entry.entity
-  local network_id = set == "electric" and number_property(entity, "electric_network_id") or nil
-  if network_id and entry.type == "electric-pole" then
-    local previous = network_poles[network_id]
-    if not previous or not previous.valid or entry.unit < (number_property(previous, "unit_number") or 0) then
-      network_poles[network_id] = entity
-    end
-  end
-  local powered = network_id and entry.type ~= "electric-pole" and not POWER_PRODUCER_TYPES[entry.type]
-    and entry.type ~= "accumulator"
-  -- A plain snapshot, so building the sections reads no entity.
-  local snapshot = { name = entry.name, type = entry.type, unit_number = entry.unit,
-    position = { x = entry.position.x, y = entry.position.y } }
-  local record = { entity = snapshot, network_id = network_id, status = powered and status_name(entity) or nil }
-  if entry.type == "accumulator" then
-    snapshot.energy, snapshot.electric_buffer_size = number_property(entity, "energy"), number_property(entity, "electric_buffer_size")
-  elseif network_id and POWER_PRODUCER_TYPES[entry.type] then
-    record.capacity_w = nominal_watts(entity, "get_max_energy_production")
-  elseif powered then
-    record.usage_w = nominal_watts(entity, "get_max_energy_usage")
-  end
-  if CHEST_TYPES[entry.type] or OUTPUT_TYPES[entry.type] then
-    local inventory = stock_inventory(entity)
-    record.contents = {}
-    if inventory then add_contents(record.contents, inventory) end
-  end
-  return record
-end
-
--- The registry entry, when it is live, on the body's surface and charted.
-local function status_entry(job, c, unit)
-  local entries = storage.registry and storage.registry.entries
-  local entry = entries and entries[unit]
-  if not (entry and entry.entity and entry.entity.valid) then return nil end
-  if entry.surface ~= nil and entry.surface ~= c.surface.index then return nil end
-  local cx, cy = math.floor(entry.position.x / 32), math.floor(entry.position.y / 32)
-  local key = cx .. "," .. cy
-  if job.charted[key] == nil then
-    local ok, value = pcall(c.force.is_chunk_charted, c.surface, { x = cx, y = cy })
-    job.charted[key] = ok and value == true
-  end
-  return job.charted[key] and entry or nil
-end
-
-local function status_step(cache, tick)
-  local job = cache.job
-  if not job then
-    if cache.updated_tick and tick - cache.updated_tick < STATUS_REFRESH_TICKS then return end
-    local r = storage.registry
-    local units, seen = {}, {}
-    for _, set in ipairs({ "electric", "holders" }) do
-      for unit in pairs(r and r[set] or {}) do
-        if not seen[unit] then seen[unit] = true; units[#units + 1] = { unit = unit, set = set } end
-      end
-    end
-    cache.job = { units = units, cursor = 1, sections = sections_new({ stockpiles = true, power = true }),
-      network_poles = {}, charted = {} }
-    return
-  end
-  if job.cursor > #job.units then
-    local stockpiles, _, totals = sections_stockpiles(job.sections)
-    cache.stockpiles, cache.totals = stockpiles, totals
-    cache.power = sections_power(job.sections, job.network_poles)
-    cache.updated_tick, cache.job = tick, nil
-    return
-  end
-  local c = companion.get()
-  if not (c and c.valid) then return end
-  local last = math.min(#job.units, job.cursor + STATUS_ENTITIES_PER_TICK - 1)
-  for index = job.cursor, last do
-    local item = job.units[index]
-    local entry = status_entry(job, c, item.unit)
-    if entry then sections_add(job.sections, status_record(entry, item.set, job.network_poles)) end
-  end
-  job.cursor = last + 1
-end
-
--- A failing step never stops the game; its error is kept on the cache and
--- the next refresh starts over.
-function M.status_tick(tick)
-  local cache = storage.status_cache
-  if not (cache and registry.ready()) then return end
-  local ok, err = pcall(status_step, cache, tick)
-  if not ok then cache.error, cache.job = tostring(err), nil else cache.error = nil end
-end
-
--- The cached sections: {stockpiles, power, updated_tick, ready}; ready is
--- false until the first refresh after a load or upgrade has finished.
-function M.status_sections()
-  local cache = storage.status_cache or {}
-  return { stockpiles = cache.stockpiles or {}, power = cache.power or {}, updated_tick = cache.updated_tick,
-    ready = cache.updated_tick ~= nil, error = cache.error }
-end
+-- factory_status stock and power are the registry's aggregates, kept
+-- current by its maintenance cursor a budget of work items a tick (control
+-- calls this every tick once the registry is ready). A read never scans.
+function M.status_tick(tick) registry.maintain(tick) end
 
 -- The factory aggregate the run recorder samples, from what the mod already
 -- maintains, with no chunk walk and no entity read: the machine count and
 -- belts from the event-maintained registry, machine groups by entity and
 -- product with their last sampled status from the line sampler
--- (autonomy.lua, every 30 ticks), and electric networks from the stock and
--- power cache (status_tick).
+-- (autonomy.lua, every 30 ticks), and electric networks from the registry's
+-- network aggregates.
 function M.registry_factory()
   local a = storage.autonomy
   local groups_by_key, power_status_counts = {}, {}
   for _, rec in pairs(a and a.machines or {}) do
-    local key = rec.name .. "\0" .. (rec.product or "")
-    local group = groups_by_key[key]
-    if not group then
-      group = { entity = rec.name, type = rec.type, product = rec.product, machine_count = 0, status_counts = {} }
-      groups_by_key[key] = group
-    end
-    group.machine_count = group.machine_count + 1
-    local bucket = normalize_status(rec.raw)
-    group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
-    if bucket == "no_power" or bucket == "low_power" then
-      power_status_counts[bucket] = (power_status_counts[bucket] or 0) + 1
+    if registry.PRODUCTIVE_TYPES[rec.type] then
+      local key = rec.name .. "\0" .. (rec.recipe or rec.product or "")
+      local group = groups_by_key[key]
+      if not group then
+        group = { entity = rec.name, type = rec.type, product = rec.product, recipe = rec.recipe, machine_count = 0,
+          status_counts = {} }
+        groups_by_key[key] = group
+      end
+      group.machine_count = group.machine_count + 1
+      -- Crafting machines: lifetime products_finished as last sampled.
+      if rec.finished then group.products_finished = (group.products_finished or 0) + rec.finished end
+      local bucket = normalize_status(rec.raw)
+      group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
+      if bucket == "no_power" or bucket == "low_power" then
+        power_status_counts[bucket] = (power_status_counts[bucket] or 0) + 1
+      end
     end
   end
   local groups = sorted_rows(groups_by_key, function(a_row, b_row)
     if a_row.entity ~= b_row.entity then return a_row.entity < b_row.entity end
-    return (a_row.product or "") < (b_row.product or "")
+    return (a_row.recipe or a_row.product or "") < (b_row.recipe or b_row.product or "")
   end)
   local counts = registry.counts()
-  local power = storage.status_cache and storage.status_cache.power
+  local c = companion.get()
+  local ok, surface = pcall(function() return c.surface.index end)
+  local maintenance = registry.maintenance()
   return { scope = "maintained", collected_at_tick = game.tick, registry_ready = counts.registry_ready,
-    lines_refreshed_tick = a and a.last_refresh_tick, power_refreshed_tick = storage.status_cache and storage.status_cache.updated_tick,
+    lines_refreshed_tick = a and a.last_refresh_tick, power_refreshed_tick = maintenance.pass_tick,
     machine_count = counts.machines, groups = groups, belt_count = counts.belts,
-    power = { network_count = power and #power or 0, status_counts = power_status_counts },
+    power = { network_count = ok and #registry.networks(surface) or 0, status_counts = power_status_counts },
     character_transfers = factory_activity.snapshot(), omissions = { capped_groups = 0 } }
 end
 

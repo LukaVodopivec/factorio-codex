@@ -29,7 +29,7 @@ character = {
     ["uncertain-machine"] = { name = "uncertain-machine", enabled = true,
       products = { { type = "item", name = "uncertain-machine", amount = 3, probability = 0.5 } } },
   } },
-  get_item_count = function(name) return inventory[name] or 0 end,
+  get_item_count = function(name) return inventory[type(name) == "table" and name.name or name] or 0 end,
   get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
   begin_crafting = function(args)
     crafted[args.recipe] = (crafted[args.recipe] or 0) + args.count
@@ -46,7 +46,7 @@ character = {
       return { valid = true, name = args.name, type = "transport-belt" }
     end,
   },
-  remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count end,
+  remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count; return args.count end,
   can_reach_entity = function()
     followup_reach_checks = followup_reach_checks + 1
     return followup_reachable
@@ -171,7 +171,7 @@ character.surface = {
   can_place_entity = function(args) placed_name = args.name return true end,
   create_entity = function(args) return { valid = true, name = args.name, type = "transport-belt" } end,
 }
-character.remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count end
+character.remove_item = function(args) inventory[args.name] = inventory[args.name] - args.count; return args.count end
 local retained_contract = { auto_craft = false, steps = {
   { item = "transport-belt", entity = "forbidden-blueprint-override", position = { x = 4, y = 5 } },
 } }

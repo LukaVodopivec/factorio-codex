@@ -37,9 +37,10 @@ local inert = { start = function() end, tick = function() return { status = "don
 package.loaded["scripts.actions.mine"] = inert
 package.loaded["scripts.actions.craft"] = inert
 package.loaded["scripts.actions.build"] = { place = inert, rotate = inert, set_recipe = inert }
-package.loaded["scripts.actions.transfer"] = { insert = inert, extract = inert }
+package.loaded["scripts.actions.transfer"] = { insert = inert, extract = inert,
+  flush_action = { runner = inert, make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = inert
-package.loaded["scripts.inspect"] = { inspect = function() error("unexpected inspect") end }
+package.loaded["scripts.inspect"] = { MAX_TARGETS = 64, inspect = function() error("unexpected inspect") end }
 
 local walk = require("scripts.actions.walk")
 local tasks = require("scripts.tasks")

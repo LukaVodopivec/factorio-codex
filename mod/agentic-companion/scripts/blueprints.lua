@@ -5,8 +5,9 @@
 --
 --   capture  {name, area | center+radius}: own entities in a charted area
 --            (LuaItemStack.create_blueprint); the world is only read.
---   create   {name, entities:[{name, dx, dy, direction?, recipe?}]}: a
---            layout spec set as the blueprint's entities, nothing in the world.
+--   create   {name, entities:[{name, dx, dy, direction?, recipe?, mirror?,
+--            settings?}]}: a layout spec set as the blueprint's entities
+--            (settings as BlueprintEntity fields), nothing in the world.
 --   list, describe {name}, delete {name}, export {name}.
 --
 -- A blueprint holds at most MAX_ENTITIES entities, so the character can build
@@ -16,6 +17,7 @@
 -- are rows in activity_log.
 local companion = require("scripts.companion")
 local state = require("scripts.state")
+local entity_settings = require("scripts.entity_settings")
 
 local M = {}
 
@@ -164,7 +166,8 @@ end
 
 -- The technology a tool's shortcut names (prototypes.shortcut; base 2.0
 -- names construction-robotics for the blueprint, deconstruction and upgrade
--- planners). Script blueprints work without it; reported, never assumed.
+-- planners). Script blueprints work without it; reported, never assumed,
+-- and the result says the tool is usable meanwhile.
 local tool_technology
 function M.tool_unlock(c, tool)
   if not tool_technology then
@@ -181,7 +184,10 @@ function M.tool_unlock(c, tool)
   local technology = tool_technology[tool]
   if not technology then return { tool = tool } end
   local ok, researched = pcall(function() return c.force.technologies[technology].researched end)
-  return { tool = tool, technology = technology, researched = ok and researched == true or false }
+  researched = ok and researched == true or false
+  return { tool = tool, technology = technology, researched = researched, usable = true,
+    note = not researched and ("usable now: the mod works this tool by script, so " .. technology
+      .. " is not needed; only construction robots, which build ghosts and carry out orders, wait for it") or nil }
 end
 
 -- Construction robots of the networks whose construction area covers the
@@ -206,20 +212,12 @@ local function cost_of(stack)
   return rows
 end
 
-local SETTING_FIELDS = { "mirror", "use_filters", "filter_mode", "input_priority", "output_priority", "bar", "type" }
-
 -- A blueprint entity as a build_layout entity: {name, dx, dy, direction,
--- recipe?, insert? (its item requests: modules), settings?}.
+-- recipe?, insert? (its item requests: modules), mirror?, settings?,
+-- belt_to_ground_type?}.
 local function layout_entity(bp)
-  local settings, any = {}, false
-  for _, field in ipairs(SETTING_FIELDS) do
-    if bp[field] ~= nil then settings[field], any = bp[field], true end
-  end
-  if type(bp.filters) == "table" and #bp.filters > 0 then
-    settings.filters, any = {}, true
-    for i, f in ipairs(bp.filters) do settings.filters[i] = { index = f.index, name = f.name } end
-  end
-  if type(bp.filter) == "table" and bp.filter.name then settings.filter, any = { name = bp.filter.name }, true end
+  local proto = prototypes.entity[bp.name]
+  local kind = proto and proto.type
   local insert
   for _, plan in ipairs(bp.items or {}) do
     local name = plan.id and plan.id.name
@@ -232,7 +230,8 @@ local function layout_entity(bp)
     end
   end
   return { name = bp.name, dx = bp.position.x, dy = bp.position.y, direction = bp.direction or 0,
-    recipe = bp.recipe, insert = insert, settings = any and settings or nil }
+    recipe = bp.recipe, insert = insert, mirror = bp.mirror or nil, settings = entity_settings.from_blueprint(bp, kind),
+    belt_to_ground_type = kind == "underground-belt" and bp.type or nil }
 end
 
 local function wire_count(entities)
@@ -336,8 +335,9 @@ function M.create(params)
   for i, e in ipairs(list) do
     local label = string.format("blueprint_create entities[%d]", i - 1)
     if type(e) ~= "table" or type(e.name) ~= "string" or type(e.dx) ~= "number" or type(e.dy) ~= "number" then
-      error(label .. " must be {name, dx, dy, direction?, recipe?}", 0)
+      error(label .. " must be {name, dx, dy, direction?, recipe?, mirror?, settings?}", 0)
     end
+    if e.mirror ~= nil and type(e.mirror) ~= "boolean" then error(label .. ".mirror must be true or false", 0) end
     local d = e.direction
     if d ~= nil and (type(d) ~= "number" or d % 1 ~= 0 or d < 0 or d > 15) then error(label .. ".direction must be an integer 0-15", 0) end
     local name, proto = entity_name(e.name)
@@ -348,6 +348,13 @@ function M.create(params)
       if type(e.recipe) ~= "string" or not c.force.recipes[e.recipe] then error(label .. ": unknown recipe " .. tostring(e.recipe), 0) end
       if proto.type ~= "assembling-machine" then error(label .. ": a " .. name .. " takes no recipe", 0) end
       row.recipe = e.recipe
+    end
+    if e.mirror then row.mirror = true end
+    if e.settings ~= nil then
+      entity_settings.validate(e.settings, label .. ".settings")
+      local _, refused = entity_settings.check_prototype(proto, e.settings)
+      if refused then error(label .. ": " .. refused, 0) end
+      entity_settings.to_blueprint(e.settings, row, proto.type)
     end
     entities[i] = row
   end

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 25;
+export const PROTOCOL_VERSION = 26;
 
 /** Executable manifest shared by runtime validation and conformance tests. */
 export const RPC_METHODS = [
@@ -38,6 +38,7 @@ export const RPC_METHODS = [
   "blueprint_delete",
   "blueprint_export",
   "blueprint_place",
+  "place_tiles",
 ] as const;
 
 export type RpcMethod = (typeof RPC_METHODS)[number];
@@ -46,8 +47,8 @@ export type RpcMethod = (typeof RPC_METHODS)[number];
  *  result when it fits the tick, else {job_id, job_status: "pending"}, and
  *  get_job returns the result once it is done. */
 export const JOB_METHODS = [
-  "observe_local", "map_summary", "connect_entities", "build_layout", "build_block",
-  "blueprint_capture", "blueprint_describe", "blueprint_place",
+  "observe_local", "inspect", "find_placement", "map_summary", "connect_entities", "build_layout", "build_block",
+  "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles",
 ] as const satisfies readonly RpcMethod[];
 
 export function assertProtocolCompatibility(value: { protocol_version?: number }): void {

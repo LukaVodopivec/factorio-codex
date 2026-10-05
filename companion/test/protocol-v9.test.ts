@@ -7,17 +7,17 @@ import { packageStepSchema } from "../src/mcp/runPlan.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v25 DTO and tool registry", () => {
-  it("declares v25 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(25);
-    expect(MCP_SERVER_VERSION).toBe("0.21.1");
-    expect(RPC_METHODS).toHaveLength(34);
+describe("protocol v26 DTO and tool registry", () => {
+  it("declares v26 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(26);
+    expect(MCP_SERVER_VERSION).toBe("0.22.0");
+    expect(RPC_METHODS).toHaveLength(35);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
       "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now", "get_job",
-      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place"]));
+      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles"]));
   });
 
-  it("registers exactly 44 tools and forwards exact v25 payloads", async () => {
+  it("registers exactly 47 tools and forwards exact v26 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -26,13 +26,13 @@ describe("protocol v25 DTO and tool registry", () => {
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(44);
+    expect(Object.keys(handlers)).toHaveLength(47);
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
     await handlers.find_placement(find);
-    expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8 });
+    expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8 }, undefined);
     await handlers.find_placement({ ...find, output_target: { x: 3, y: 4 } });
-    expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8, output_target: { x: 3, y: 4 } });
+    expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 1, y: 2 }, radius: 10, directions: [0, 4, 8, 12], limit: 8, output_target: { x: 3, y: 4 } }, undefined);
     expect(schemas.find_placement.safeParse({ ...find, input_target: { x: 0, y: 1 } }).success).toBe(true);
     expect(schemas.find_placement.safeParse({ ...find, output_target: { x: 3, y: 4 }, output_recipient_item: "wooden-chest" }).success).toBe(false);
     const place = schemas.place_entity.parse({ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
@@ -149,6 +149,105 @@ describe("protocol v25 DTO and tool registry", () => {
     expect(schemas.craft_items.parse({ recipe: "iron-gear-wheel", crafts: 2 })).not.toHaveProperty("wait_for_completion");
   });
 
+  it("forwards the 0.22.0 actions: settings, tiles, requests, equipment, fluids and inventory roles", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const call = vi.fn(async (method: string, params?: any) => method === "queue_plan" ? { plan_id: 9 }
+      : method === "plan_status" ? { plan_id: 9, status: "completed", outcomes: [] } : { method, params });
+    const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
+      async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
+    const queued = () => call.mock.calls.filter(([method]) => method === "queue_plan").at(-1)?.[1];
+
+    // null clears a setting; the mod receives false (a Lua table holds no null).
+    await handlers.configure_entity(schemas.configure_entity.parse({ x: 1.5, y: 2.5,
+      inserter: { filters: ["iron-plate", "copper-plate"], stack_size: 1 }, chest: { slots: null, storage_filter: null } }));
+    expect(queued()).toMatchObject({ steps: [{ action: "configure_entity", x: 1.5, y: 2.5,
+      inserter: { filters: ["iron-plate", "copper-plate"], stack_size: 1 }, chest: { slots: false, storage_filter: false } }] });
+    for (const bad of [{ x: 0, y: 0 }, { x: 0, y: 0, inserter: {} }, { x: 0, y: 0, inserter: { filters: Array(6).fill("coal") } },
+      { x: 0, y: 0, splitter: { input_priority: "middle" } }, { x: 0, y: 0, chest: { slots: -1 } }, { x: 0, y: 0, circuit: {} }])
+      expect(schemas.configure_entity.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+
+    const requests = { target: { x: 4.5, y: 4.5 }, requests: [{ item: "iron-plate", min: 50, max: 100 }], request_from_buffers: true };
+    await handlers.set_requests(schemas.set_requests.parse(requests));
+    expect(queued()).toMatchObject({ steps: [{ action: "set_requests", ...requests }] });
+    expect(schemas.set_requests.safeParse({ ...requests, section: "mall" }).success).toBe(true);
+    expect(schemas.set_requests.safeParse({ target: { x: 0, y: 0 }, mode: "set" }).success).toBe(true);
+    for (const bad of [{ target: { x: 0, y: 0 } }, { ...requests, requests: [{ item: "coal", min: 5, max: 4 }] },
+      { ...requests, requests: [{ item: "coal", min: 1 }, { item: "coal", min: 2 }] },
+      { ...requests, requests: [{ item: "coal", min: 1, import_from: "nauvis" }] }, { ...requests, section: 0 }])
+      expect(schemas.set_requests.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+
+    const tiles = { item: "landfill", area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 6, y: 6 } } };
+    await handlers.place_tiles(schemas.place_tiles.parse(tiles));
+    expect(queued()).toMatchObject({ steps: [{ action: "place_tiles", ...tiles }] });
+    await handlers.place_tiles(schemas.place_tiles.parse({ ...tiles, check_only: true }));
+    expect(call).toHaveBeenLastCalledWith("place_tiles", { ...tiles, check_only: true }, undefined);
+    expect(schemas.place_tiles.safeParse({ ...tiles, positions: [{ x: 0, y: 0 }] }).success).toBe(false);
+    expect(schemas.place_tiles.safeParse({ item: "landfill" }).success).toBe(false);
+    expect(schemas.place_tiles.safeParse({ item: "landfill", positions: Array(1025).fill({ x: 0, y: 0 }) }).success).toBe(false);
+
+    await handlers.extract_items({ x: 1, y: 2, inventory: "fuel" });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "extract", target: { x: 1, y: 2 }, all: true, inventory: "fuel" },
+      { tool: "extract_items", role: "unknown" });
+    await handlers.insert_items(schemas.insert_items.parse({ x: 1, y: 2, items: { "speed-module": 2 }, inventory: "modules" }));
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "insert", target: { x: 1, y: 2 }, items: { "speed-module": 2 }, inventory: "modules" },
+      { tool: "insert_items", role: "unknown" });
+    expect(schemas.extract_items.safeParse({ x: 1, y: 2, inventory: "rocket" }).success).toBe(false);
+    await handlers.place_entity({ x: 3, y: 4, name: "oil-refinery", mirror: true });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "oil-refinery", position: { x: 3, y: 4 }, direction: undefined, mirror: true },
+      { tool: "place_entity", role: "unknown" });
+    const sorter = { name: "fast-inserter", x: 1.5, y: 0.5, settings: { inserter: { filters: ["coal"], mode: "blacklist" } } };
+    await handlers.build_plan(schemas.build_plan.parse({ steps: [sorter] }));
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
+      steps: [{ item: "fast-inserter", position: { x: 1.5, y: 0.5 }, settings: sorter.settings }] }, { tool: "build_plan", role: "unknown" });
+    const created = { name: "sorter", entities: [{ name: "splitter", dx: 0, dy: 0, settings: { splitter: { filter: "coal", output_priority: "right" } } },
+      { name: "chemical-plant", dx: 3, dy: 0, mirror: true }] };
+    await handlers.blueprint_create(schemas.blueprint_create.parse(created));
+    expect(call).toHaveBeenLastCalledWith("blueprint_create", created, undefined);
+
+    // Layout entities take typed settings, mirror and an underground end.
+    const layout = { anchor: { x: 0, y: 0 }, entities: [{ name: "inserter", dx: 0, dy: 0, settings: { inserter: { filters: ["coal"] } } },
+      { name: "underground-belt", dx: 1, dy: 0, direction: 4, belt_to_ground_type: "input" }, { name: "oil-refinery", dx: 6, dy: 0, mirror: true }] };
+    await handlers.build_layout(schemas.build_layout.parse(layout));
+    expect(queued()).toMatchObject({ steps: [{ action: "build_layout", ...layout }] });
+    for (const settings of [{}, { inserter: { filters: ["coal"] }, bar: 3 }])
+      expect(schemas.build_layout.safeParse({ ...layout, entities: [{ name: "inserter", dx: 0, dy: 0, settings }] }).success, JSON.stringify(settings)).toBe(false);
+    // A 0.21.1 layout entity (free-form blueprint settings) is upgraded, not refused.
+    const old = schemas.build_layout.safeParse({ ...layout, entities: [
+      { name: "underground-belt", dx: 0, dy: 0, direction: 4, settings: { type: "input" } },
+      { name: "chest", dx: 1, dy: 0, settings: { bar: 3, mirror: false } }] });
+    expect(old.success && old.data.entities).toEqual([
+      { name: "underground-belt", dx: 0, dy: 0, direction: 4, belt_to_ground_type: "input" },
+      { name: "chest", dx: 1, dy: 0, mirror: false, settings: { chest: { slots: 2 } } }]);
+
+    // Plan steps only: equip and flush_fluid; inspection reads up to 64 positions.
+    const plan = { steps: [{ action: "equip", armor: "modular-armor", put: [{ name: "exoskeleton-equipment" }, { name: "battery-equipment", x: 2, y: 0 }],
+      take: [{ name: "solar-panel-equipment" }, { x: 0, y: 0 }] },
+      { action: "flush_fluid", x: 1.5, y: 1.5, fluid: "crude-oil" }, { action: "equip", armor: false },
+      { action: "inspect_entities", positions: Array.from({ length: 64 }, (_, x) => ({ x, y: 0 })) }] };
+    expect(schemas.queue_plan.safeParse(plan).success).toBe(true);
+    expect(schemas.equip).toBeUndefined();
+    expect(schemas.flush_fluid).toBeUndefined();
+    for (const bad of [{ action: "equip" }, { action: "equip", put: [{ name: "battery-equipment", x: 1 }] },
+      { action: "flush_fluid", x: 1 }, { action: "inspect_entities", positions: Array(65).fill({ x: 0, y: 0 }) }])
+      expect(schemas.queue_plan.safeParse({ steps: [bad] }).success, JSON.stringify(bad)).toBe(false);
+    expect(packageStepSchema.safeParse({ action: "configure_entity", x: 0, y: 0, splitter: { filter: null } }).data)
+      .toEqual({ action: "configure_entity", x: 0, y: 0, splitter: { filter: false } });
+  });
+
+  it("normalizes 0.22 power rows, robot networks and inspected inventories", () => {
+    const row = { network_id: 4, satisfaction: 1, demand_w: 900000, capacity_w: 1200000, sources: {}, night_s: 0 };
+    expect(normalizeFactoryStatus({ power: [row], logistics: { networks: [{ network_id: 2, coverage: {}, contents: {} }] } })).toEqual({
+      power: [{ ...row, sources: [], accumulators: null }], logistics: { networks: [{ network_id: 2, coverage: [], contents: [] }] } });
+    const short = { ...row, sources: [{ kind: "solar", count: 10, nameplate_w: 600000 }],
+      accumulators: { count: 2, stored_j: 1, capacity_j: 10000000, charge: 0 }, add_to_cover: { solar_panel: 3, accumulator: 4 } };
+    expect(normalizeMapSummary({ power: { networks: [short], networks_omitted: 0 } }).power.networks).toEqual([short]);
+    expect(normalizeInspection({ entities: [{ name: "assembling-machine-2", inventories: { input: [], output: { "iron-gear-wheel": 3 } },
+      settings: { inserter: { filters: {} } } }] }).entities[0]).toEqual({ name: "assembling-machine-2",
+      inventories: { input: {}, output: { "iron-gear-wheel": 3 } }, settings: { inserter: { filters: [] } } });
+  });
+
   it("summarizes activity_log rows that are not plan outcomes: cancels with who asked, and blueprint changes", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     let entries: unknown[] = [];
@@ -182,7 +281,7 @@ describe("protocol v25 DTO and tool registry", () => {
     for (const belt_to_ground_type of ["input", "output"]) {
       const request = schemas.find_placement.parse({ ...base, belt_to_ground_type });
       const output = await handlers.find_placement(request);
-      expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, radius: 10, limit: 8, belt_to_ground_type });
+      expect(call).toHaveBeenLastCalledWith("find_placement", { ...base, radius: 10, limit: 8, belt_to_ground_type }, undefined);
       const candidate = output.structuredContent.candidates[0];
       expect(candidate.build_steps).toEqual([{ name: base.item, x: 2.5, y: 3.5, direction: 4, belt_to_ground_type }]);
       expect(candidate.plan_steps).toEqual([{ action: "place_entity", ...candidate.build_steps[0] }]);

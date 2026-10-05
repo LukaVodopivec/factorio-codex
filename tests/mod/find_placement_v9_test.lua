@@ -108,14 +108,17 @@ prototypes.item["underground-belt"] = { place_result = {
   collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } },
 } }
 local finder = require("scripts.find_placement")
+local jobs = require("scripts.jobs")
+-- find_placement is a job: tests run the whole search in one call.
+local function find(params) return jobs.run_now(finder.job, params) end
 local underground_request = { item = "underground-belt", preferred = { x = 4.5, y = 4.5 },
   radius = 2, directions = { 12, 4 }, limit = 8 }
-local omitted = finder.find_placement(underground_request)
+local omitted = find(underground_request)
 check(#omitted.candidates > 0 and omitted.candidates[1].build_steps[1].belt_to_ground_type == nil,
   "omitted underground end retains existing steps")
 for _, end_type in ipairs({ "input", "output" }) do
   underground_request.belt_to_ground_type = end_type
-  local result = finder.find_placement(underground_request)
+  local result = find(underground_request)
   check(#result.candidates == #omitted.candidates, end_type .. " end preserves candidate count")
   for i, candidate in ipairs(result.candidates) do
     local step = candidate.build_steps[1]
@@ -127,28 +130,28 @@ end
 for _, invalid in ipairs({ "sideways", "", false, 0 }) do
   underground_request.belt_to_ground_type = invalid
   local before_charted, before_placement = charted_calls, placement_calls
-  local ok, err = pcall(finder.find_placement, underground_request)
+  local ok, err = pcall(find, underground_request)
   check(not ok and tostring(err):find('belt_to_ground_type must be', 1, true), "invalid end rejected")
   check(charted_calls == before_charted and placement_calls == before_placement, "invalid end rejected before candidate evaluation")
 end
 for _, end_type in ipairs({ "input", "output" }) do
   local before_charted, before_placement = charted_calls, placement_calls
-  local ok, err = pcall(finder.find_placement, { item = "pipe", preferred = { x = 4.5, y = 4.5 },
+  local ok, err = pcall(find, { item = "pipe", preferred = { x = 4.5, y = 4.5 },
     belt_to_ground_type = end_type })
   check(not ok and tostring(err):find('applies only to underground belts', 1, true), "non-underground end rejected")
   check(charted_calls == before_charted and placement_calls == before_placement, "misuse rejected before candidate evaluation")
 end
 
-local first = finder.find_placement({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 3, directions = { 12, 0, 4 }, limit = 8 })
-local second = finder.find_placement({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 3, directions = { 4, 12, 0 }, limit = 8 })
+local first = find({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 3, directions = { 12, 0, 4 }, limit = 8 })
+local second = find({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 3, directions = { 4, 12, 0 }, limit = 8 })
 check(canonical(first) == canonical(second), "placement search is stable across direction input order")
 check(first.candidates[1].position.x == 1.5 and first.candidates[1].position.y == 1.5 and first.candidates[1].direction == 0,
   "nearest tuple uses distance then y x direction")
 local saw_shoreline = false; for _, candidate in ipairs(first.candidates) do if candidate.terrain == "shoreline" then saw_shoreline = true end end
 check(saw_shoreline, "placement search classifies shoreline candidates")
-local offshore = finder.find_placement({ item = "offshore-pump", preferred = { x = 2.5, y = 1.5 }, radius = 1, directions = { 0 }, limit = 1 })
+local offshore = find({ item = "offshore-pump", preferred = { x = 2.5, y = 1.5 }, radius = 1, directions = { 0 }, limit = 1 })
 check(offshore.candidates[1] and offshore.candidates[1].terrain == "offshore", "offshore pumps retain their shoreline-specific identity")
-local edge = finder.find_placement({ item = "pipe", preferred = { x = 31.5, y = 1.5 }, radius = 1, directions = { 0 }, limit = 24 })
+local edge = find({ item = "pipe", preferred = { x = 31.5, y = 1.5 }, radius = 1, directions = { 0 }, limit = 24 })
 local leaked = false; for _, candidate in ipairs(edge.candidates) do if candidate.position.x >= 32 then leaked = true end end
 check(not leaked and charted_calls > 0, "uncharted candidate footprints are never passed through as placements")
 check(placement_calls > 0, "charted candidates use Factorio can_place_entity")
@@ -159,7 +162,7 @@ surface.can_place_entity = function(args)
   end
   return engine_check(args)
 end
-local occupied_search = finder.find_placement({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 1, directions = { 0 }, limit = 1 })
+local occupied_search = find({ item = "pipe", preferred = { x = 1.5, y = 1.5 }, radius = 1, directions = { 0 }, limit = 1 })
 check(occupied_search.candidates[1] and (occupied_search.candidates[1].position.x ~= 1.5
   or occupied_search.candidates[1].position.y ~= 1.5),
   "placement search excludes replacement-only occupancy and keeps the clear neighbor")
@@ -171,7 +174,7 @@ prototypes.item.pipe.place_result.fluidbox_prototypes = {
   } } } },
 }
 only_position = { x = 4.5, y = 4.5 }
-local fluid_candidate = finder.find_placement({ item = "pipe", preferred = { x = 4.5, y = 4.5 },
+local fluid_candidate = find({ item = "pipe", preferred = { x = 4.5, y = 4.5 },
   radius = 1, directions = { 4 }, limit = 1 }).candidates[1]
 check(fluid_candidate and fluid_candidate.fluid_connections[1]
   and fluid_candidate.fluid_connections[1].position.x == 5.5
@@ -179,7 +182,7 @@ check(fluid_candidate and fluid_candidate.fluid_connections[1]
   and fluid_candidate.fluid_connections[1].production_type == "input-output",
   "placement candidates expose direction-indexed world-space prototype fluid endpoints")
 only_position = nil
-local inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
+local inserter = find({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
   directions = { 4, 0 }, limit = 2 })
 check(inserter.candidates[1].pickup_position.x == 1.5 and inserter.candidates[1].pickup_position.y == 0.5
   and inserter.candidates[1].drop_position.x == 1.5 and inserter.candidates[1].drop_position.y == 2.5,
@@ -188,40 +191,40 @@ check(inserter.candidates[2].direction == 4
   and inserter.candidates[2].pickup_position.x == 2.5 and inserter.candidates[2].pickup_position.y == 1.5
   and inserter.candidates[2].drop_position.x == 0.5 and inserter.candidates[2].drop_position.y == 1.5,
   "inserter endpoint evidence rotates with candidate direction")
-local bound_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
+local bound_inserter = find({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
   directions = { 0 }, limit = 1, output_target = { x = 1.5, y = 2.5 } })
 check(bound_inserter.output_target.name == "iron-chest" and bound_inserter.output_target.type == "container"
   and #bound_inserter.candidates == 1,
   "inserter search uses its drop offset when vector_to_place_result is absent and binds the exact recipient")
-local supplied_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
+local supplied_inserter = find({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
   directions = { 0 }, limit = 1, input_target = { x = 1.5, y = 0.5 }, output_target = { x = 1.5, y = 2.5 } })
 check(supplied_inserter.input_target.name == "wooden-chest"
   and supplied_inserter.candidates[1].input_target.name == "wooden-chest"
   and supplied_inserter.candidates[1].geometry == "provisional"
   and supplied_inserter.candidates[1].build_steps[1].input_target.x == 1.5,
   "inserter search constrains both exact provisional endpoints and emits a canonical producer step")
-local exclusive, exclusive_error = pcall(finder.find_placement, { item = "burner-inserter",
+local exclusive, exclusive_error = pcall(find, { item = "burner-inserter",
   preferred = { x = 1.5, y = 1.5 }, output_target = { x = 1.5, y = 2.5 },
   output_recipient_item = "wooden-chest" })
 check(not exclusive and tostring(exclusive_error):match("not both"),
   "find_placement rejects mutually exclusive existing and planned output recipients")
-local diagonal_inserter = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
+local diagonal_inserter = find({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 }, radius = 1,
   directions = { 2 }, limit = 1 })
 check(#diagonal_inserter.candidates == 0,
   "output-capable non-cardinal placements are not returned without exact endpoint evidence")
-local diagonal_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 4, y = 4 }, radius = 1,
+local diagonal_drill = find({ item = "burner-mining-drill", preferred = { x = 4, y = 4 }, radius = 1,
   directions = { 2 }, limit = 1 })
 check(#diagonal_drill.candidates == 0,
   "mining-drill candidates never omit output endpoint and recipient evidence")
-local missing_vector_drill = finder.find_placement({ item = "broken-mining-drill", preferred = { x = 4, y = 4 }, radius = 1,
+local missing_vector_drill = find({ item = "broken-mining-drill", preferred = { x = 4, y = 4 }, radius = 1,
   directions = { 0 }, limit = 1 })
 check(#missing_vector_drill.candidates == 0,
   "mining drills with missing output-vector metadata are rejected rather than returned with omitted evidence")
-local aligned = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 }, radius = 2,
+local aligned = find({ item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 }, radius = 2,
   directions = { 12, 8, 4, 0 }, limit = 8, output_target = { x = 5.5, y = 1.5 } })
 check(aligned.output_target.name == "stone-furnace" and #aligned.candidates > 0,
   "output target resolves one exact player-owned recipient")
-local selection_only_target, selection_only_error = pcall(finder.find_placement, {
+local selection_only_target, selection_only_error = pcall(find, {
   item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 }, radius = 1,
   directions = { 0 }, limit = 1, output_target = { x = 5.25, y = 1.5 },
 })
@@ -252,10 +255,10 @@ target_matches, resources = { real_recipient }, {
 }
 only_position = { x = 19, y = 22 }
 output_tile_override = {}
-local false_north = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
+local false_north = find({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
   radius = 1, directions = { 0 }, limit = 1, output_target = { x = 20, y = 20 } })
 only_position = { x = 17, y = 21 }
-local false_east = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 17, y = 21 },
+local false_east = find({ item = "burner-mining-drill", preferred = { x = 17, y = 21 },
   radius = 1, directions = { 4 }, limit = 1, output_target = { x = 20, y = 20 } })
 check(#false_north.candidates == 0 and #false_east.candidates == 0,
   "drill targeting rejects both live-failure orientations whose endpoints only touch the furnace selection box")
@@ -265,13 +268,13 @@ local tile_overlap_recipient = { valid = true, name = "stone-furnace", type = "f
   bounding_box = { left_top = { x = 18.8, y = 20.2 }, right_bottom = { x = 20.7, y = 20.7 } } }
 target_matches, output_tile_override = { tile_overlap_recipient }, { tile_overlap_recipient }
 only_position = { x = 19, y = 22 }
-local tile_overlap = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
+local tile_overlap = find({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
   radius = 1, directions = { 0 }, limit = 1, output_target = { x = 20, y = 20 } })
 check(#tile_overlap.candidates == 0,
   "output preflight never binds a whole endpoint tile when the exact point misses the recipient collision box")
 only_position = { x = 19, y = 22 }
 output_tile_override = {}
-local ground_output = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
+local ground_output = find({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(ground_output.candidates[1]
   and ground_output.candidates[1].output_position.x == 18.5
@@ -286,7 +289,7 @@ target_matches = { overlapping_recipient, { valid = true, name = "iron-chest", t
   position = overlapping_recipient.position, selection_box = overlapping_recipient.selection_box,
   bounding_box = overlapping_recipient.bounding_box } }
 output_tile_override = target_matches
-local ambiguous_output = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
+local ambiguous_output = find({ item = "burner-mining-drill", preferred = { x = 19, y = 22 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(#ambiguous_output.candidates == 0,
   "multiple eligible output recipients are rejected rather than mislabeled as unbound ground output")
@@ -296,7 +299,7 @@ target_matches, resources, output_tile_override = { recipient }, ore, false
 target_matches = {}
 -- Real drill vectors put the output inside a tile, never on a tile boundary.
 prototypes.item["burner-mining-drill"].place_result.vector_to_place_result = { x = 1.5, y = -0.5 }
-local coupled = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
+local coupled = find({ item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0, 4, 8, 12 }, limit = 1, output_recipient_item = "wooden-chest" })
 check(coupled.output_recipient_item == "wooden-chest" and coupled.geometry == "provisional"
   and coupled.candidates[1] and coupled.candidates[1].output_recipient_placement.item == "wooden-chest"
@@ -321,14 +324,14 @@ resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 600,
     prototype = { resource_category = "basic-solid" } },
 }
-local coverage_ranked = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+local coverage_ranked = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(coverage_ranked.candidates[1]
   and coverage_ranked.candidates[1].position.x == 9
   and coverage_ranked.candidates[1].resource_coverage[1].total_amount == 1200,
   "drill placement ranks greater compatible resource coverage before proximity")
 only_position = { x = 8, y = 8 }
-local mixed_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+local mixed_drill = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(mixed_drill.candidates[1]
   and #mixed_drill.candidates[1].resource_coverage == 1
@@ -342,37 +345,37 @@ resources = {
   { valid = true, name = "copper-ore", type = "resource", amount = 400, position = { x = 8, y = 8 },
     prototype = { resource_category = "basic-solid" } },
 }
-local lexical_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+local lexical_drill = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(lexical_drill.candidates[1].resource_coverage[1].name == "copper-ore"
   and lexical_drill.candidates[1].resource_coverage[2].name == "iron-ore",
   "compatible resource coverage keeps lexical presentation order")
 resources = {}
-local empty_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+local empty_drill = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(#empty_drill.candidates == 0 and empty_drill.rejected_no_compatible_resource == 5,
   "fully charted empty coverage rejects candidates with a deterministic count")
 resources = { { valid = true, name = "crude-oil", type = "resource", amount = 100000, position = { x = 8, y = 8 },
   prototype = { resource_category = "basic-fluid" } } }
-local incompatible_drill = finder.find_placement({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+local incompatible_drill = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
 check(#incompatible_drill.candidates == 0 and incompatible_drill.rejected_no_compatible_resource == 5,
   "fully charted incompatible-only coverage rejects candidates with a deterministic count")
 resources = ore
 local resource_calls_before_edge = resource_calls
-local chart_edge_drill = finder.find_placement({ item = "electric-mining-drill", preferred = { x = 30.5, y = 1.5 },
+local chart_edge_drill = find({ item = "electric-mining-drill", preferred = { x = 30.5, y = 1.5 },
   radius = 1, directions = { 8 }, limit = 1 })
 check(chart_edge_drill.candidates[1] and chart_edge_drill.candidates[1].resource_coverage == nil
   and chart_edge_drill.rejected_no_compatible_resource == 0
   and resource_calls == resource_calls_before_edge,
   "drill candidates with uncharted coverage omit the field without a resource query")
 target_matches = { pole }
-local invalid, invalid_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
+local invalid, invalid_error = pcall(find, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })
 check(not invalid and tostring(invalid_error):match("drop recipient") ~= nil,
   "output target rejects an invalid pole recipient")
 target_matches = { recipient, pole }
-local ambiguous, ambiguous_error = pcall(finder.find_placement, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
+local ambiguous, ambiguous_error = pcall(find, { item = "burner-mining-drill", preferred = { x = 4.5, y = 1.5 },
   radius = 2, directions = { 0 }, limit = 1, output_target = { x = 5.5, y = 1.5 } })
 check(not ambiguous and tostring(ambiguous_error):match("ambiguous") ~= nil,
   "output target rejects every multiple match")
@@ -386,14 +389,14 @@ for _, spec in ipairs({
 }) do
   sink.name, sink.type = spec.name, spec.type
   target_matches = {}
-  local existing = finder.find_placement({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 },
+  local existing = find({ item = "burner-inserter", preferred = { x = 1.5, y = 1.5 },
     radius = 1, directions = { 0 }, limit = 1, input_target = source.position, output_target = sink.position })
   check(existing.geometry == "provisional" and existing.output_target.type == spec.type
     and existing.candidates[1] and existing.candidates[1].output_target.name == spec.name
     and existing.candidates[1].input_target.name == original_source_name,
     spec.name .. " is a provisional inserter drop recipient with an independent chest pickup source")
   source.name, source.type = spec.name, spec.type
-  local ok, result = pcall(finder.find_placement, { item = "burner-inserter", preferred = { x = 1.5, y = 1.5 },
+  local ok, result = pcall(find, { item = "burner-inserter", preferred = { x = 1.5, y = 1.5 },
     radius = 1, directions = { 0 }, limit = 1, input_target = source.position })
   check((spec.type == "lab" and ok and result.candidates[1] and result.candidates[1].input_target.type == "lab")
     or (spec.type ~= "lab" and not ok and tostring(result):match("pickup source")),
@@ -403,7 +406,7 @@ for _, spec in ipairs({
     prototypes.item[spec.name] = { place_result = { name = spec.name, type = spec.type, tile_width = 1, tile_height = 1,
       collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } }
   end
-  local planned = finder.find_placement({ item = "burner-inserter", preferred = { x = 5.5, y = 5.5 },
+  local planned = find({ item = "burner-inserter", preferred = { x = 5.5, y = 5.5 },
     radius = 1, directions = { 0 }, limit = 1, output_recipient_item = spec.name })
   local candidate = planned.candidates[1]
   check(planned.geometry == "provisional" and candidate and candidate.output_recipient_placement.item == spec.name
@@ -413,4 +416,25 @@ for _, spec in ipairs({
     spec.name .. " planned drop recipient emits provisional recipient-first build steps")
 end
 sink.name, sink.type = original_sink_name, original_sink_type
+
+-- A drill over a dense ore field is charged per resource it reads: a tick's
+-- 600 work items no longer admit dozens of 169-resource coverage queries.
+local dense = {}
+for i = 1, 169 do
+  dense[i] = { valid = true, name = "iron-ore", type = "resource", amount = 1000,
+    position = { x = 10.5 + (i % 13), y = 10.5 + math.floor(i / 13) }, prototype = { resource_category = "basic-solid" } }
+end
+resources, target_matches = dense, {}
+local state = finder.job.start({ item = "electric-mining-drill", preferred = { x = 16.5, y = 16.5 }, radius = 6, limit = 8 })
+local most_queries, ticks, done_search = 0, 0, nil
+repeat
+  ticks = ticks + 1
+  local before = resource_calls
+  done_search = finder.job.step(state, { left = 600 })
+  most_queries = math.max(most_queries, resource_calls - before)
+until done_search or ticks > 400
+check(done_search and #done_search.candidates > 0 and done_search.candidates[1].resource_coverage[1].entity_count > 0
+  and most_queries <= 1 and ticks >= 4,
+  "a dense-ore drill search reads at most " .. most_queries .. " coverage query a tick over " .. ticks .. " ticks")
+resources = ore
 os.exit(failures == 0 and 0 or 1)

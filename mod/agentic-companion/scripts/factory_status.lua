@@ -1,33 +1,44 @@
 -- factory_status: one compact read of the whole factory for both roles.
 -- event_state: the cheap probe the bridge's next_event wait polls.
--- Both never query entities: lines and problems come from autonomy.lua's
--- samples, stock and power from map_summary's status cache (refreshed from
--- the event-maintained registry a few entities a tick; stock_power_tick says
--- when), patches from map_summary's per-chunk cache, research from a cache
--- that every research event drops (live current/progress/queue). The only
--- scan is refilling that research cache once after a research event.
+-- Both never query or walk entities: lines and problems come from
+-- autonomy.lua's samples (causes worked out by the sampler), stock and power
+-- from the registry's aggregates (kept by build events and its maintenance
+-- cursor; stock_power_tick is when its last full pass ended) with one
+-- statistics read per power row shown, patches from map_summary's per-chunk
+-- cache, research from a set of available technologies kept by the research
+-- events (live current/progress/queue). The only scan is rebuilding that set
+-- once after a load, an upgrade or a reversed research.
 -- registry_ready, stock_power_ready and patches_ready are false while an
--- upgraded save's bootstrap or first refresh still runs. The default read
+-- upgraded save's bootstrap or first pass still runs. The default read
 -- stays under about 6 KB: one RCON chunk pair, not a multi-part answer.
+-- logistics (robot networks) is opt-in through sections.
 local companion = require("scripts.companion")
 local autonomy = require("scripts.autonomy")
 local map_summary = require("scripts.map_summary")
 local research = require("scripts.research")
 local registry = require("scripts.registry")
 local tasks = require("scripts.tasks")
+local logistics = require("scripts.logistics")
 
 local M = {}
 
 local SECTIONS = { lines = true, problems = true, power = true, stock = true, research = true,
-  body = true, patches = true }
-local MAX_LINES, MAX_PROBLEMS, MAX_POWER, MAX_STOCK_ITEMS, MAX_HOLDERS = 10, 6, 2, 6, 1
+  body = true, patches = true, logistics = true }
+-- Sections only named in `sections` add.
+local OPT_IN = { logistics = true }
+-- One power row: the network with the most capacity (a 0.22 row carries its
+-- sources, accumulators and cover; omitted_power counts the other networks
+-- and map_summary include power lists them all).
+local MAX_LINES, MAX_PROBLEMS, MAX_POWER, MAX_STOCK_ITEMS = 10, 6, 1, 6
 local MAX_PATCHES, MAX_AVAILABLE, MAX_INVENTORY = 4, 6, 8
 -- Lines that need attention survive the cap first: a starved line with a
 -- high id is never hidden behind running ones.
-local LINE_RANK = { no_power = 1, no_fuel = 2, starved = 3, output_full = 4, idle = 5, running = 6 }
+local LINE_RANK = { no_power = 1, no_heat = 2, no_fuel = 3, starved = 4, output_full = 5, disabled = 6, idle = 7,
+  running = 8 }
 -- Dead machines first, then blocked output.
 local PROBLEM_RANK = { no_power = 1, not_plugged_in_electric_network = 1, no_fuel = 1,
-  no_minable_resources = 2, full_output = 3, waiting_for_space_in_destination = 3 }
+  no_minable_resources = 2, low_temperature = 2, pipeline_overextended = 2, no_modules_to_transmit = 2,
+  full_output = 3, waiting_for_space_in_destination = 3 }
 
 local function cap(rows, limit)
   local omitted = math.max(0, #rows - limit)
@@ -44,7 +55,7 @@ local function parse(params)
   end
   local want = {}
   if params.sections == nil then
-    for name in pairs(SECTIONS) do want[name] = true end
+    for name in pairs(SECTIONS) do want[name] = not OPT_IN[name] or nil end
   else
     if type(params.sections) ~= "table" then error("sections must be an array of section names") end
     for _, name in ipairs(params.sections) do
@@ -89,35 +100,70 @@ local function patches_section(c)
   return rows, cap(rows, MAX_PATCHES), ready
 end
 
--- Available technologies change only on research events, which drop the
--- cache; current research, progress and queue are cheap live reads.
-local function research_section(c)
-  local cache = storage.research_cache
-  if not cache then
-    local available = {}
-    for _, technology in ipairs(research.progression_status({}).available or {}) do available[#available + 1] = technology.name end
-    cache = { available = available }
-    storage.research_cache = cache
+-- Research a lab can start now: enabled, not researched, every
+-- prerequisite researched, and no trigger (triggers are not lab research).
+local function researchable(technology)
+  if technology.researched or not technology.enabled then return false end
+  for _, prerequisite in pairs(technology.prerequisites) do
+    if not prerequisite.researched then return false end
   end
+  return research.research_trigger(technology) == nil
+end
+
+-- The available set ({[name] = true}) of the force, from every technology:
+-- a few reads each, once after a load, an upgrade or a reversed research.
+local function rebuild_available(force)
+  local available = {}
+  for name, technology in pairs(force.technologies) do
+    if researchable(technology) then available[name] = true end
+  end
+  storage.research_cache = { force = force.name, available = available }
+  return storage.research_cache
+end
+
+-- Current research, progress and queue are cheap live reads; available is
+-- the kept set, sorted.
+local function research_section(c)
   local force = c.force
+  local cache = storage.research_cache
+  if not (cache and cache.force == force.name) then cache = rebuild_available(force) end
   local queue = {}
   for _, technology in ipairs(force.research_queue or {}) do queue[#queue + 1] = technology.name end
-  local available = { table.unpack(cache.available) }
+  local available = {}
+  for name in pairs(cache.available) do available[#available + 1] = name end
+  table.sort(available)
   return { current = force.current_research and force.current_research.name or nil,
     progress = force.research_progress or 0, queue = queue, available = available,
     omitted_available = cap(available, MAX_AVAILABLE) }
 end
 
--- Every research event drops the cache; a finished research of the body's
--- force is also kept for next_event's research_finished.
+-- A finished research leaves the available set and adds those of its
+-- successors it made researchable (a few reads); a reversed research or an
+-- effects reset drops the set for a rebuild; starting, queueing, moving or
+-- cancelling research changes nothing in it. A finished research of the
+-- body's force is also kept for next_event's research_finished.
 function M.on_research_changed(event)
-  storage.research_cache = nil
-  local finished = defines and defines.events and defines.events.on_research_finished
-  if not (event and finished and event.name == finished) then return end
-  local ok, name, force = pcall(function() return event.research.name, event.research.force.name end)
+  local events = defines and defines.events or {}
+  local name = event and event.name
+  if name == nil or name == events.on_research_reversed or name == events.on_technology_effects_reset then
+    storage.research_cache = nil
+  end
+  if name == nil or name ~= events.on_research_finished then return end
+  local ok, technology_name, force = pcall(function() return event.research.name, event.research.force.name end)
   local c = companion.get()
   local own = c and c.valid and c.force.name or force
-  if ok and force == own then storage.last_research_finished = { technology = name, tick = event.tick } end
+  if not (ok and force == own) then return end
+  storage.last_research_finished = { technology = technology_name, tick = event.tick }
+  local cache = storage.research_cache
+  if not (cache and cache.force == force) then return end
+  local updated = pcall(function()
+    -- A levelled (infinite) technology stays researchable after a level.
+    if not researchable(event.research) then cache.available[technology_name] = nil end
+    for successor_name, successor in pairs(event.research.successors) do
+      if researchable(successor) then cache.available[successor_name] = true end
+    end
+  end)
+  if not updated then storage.research_cache = nil end
 end
 M.RESEARCH_EVENTS = { "on_research_started", "on_research_finished", "on_research_cancelled", "on_research_reversed",
   "on_research_queued", "on_research_moved", "on_technology_effects_reset" }
@@ -129,7 +175,7 @@ function M.factory_status(params)
   if want.lines then
     result.lines = autonomy.lines(since)
     table.sort(result.lines, function(x, y)
-      local rx, ry = LINE_RANK[x.state] or 5, LINE_RANK[y.state] or 5
+      local rx, ry = LINE_RANK[x.state] or 7, LINE_RANK[y.state] or 7
       if rx ~= ry then return rx < ry end
       return x.id < y.id
     end)
@@ -147,37 +193,21 @@ function M.factory_status(params)
     result.problems, result.omitted_problems = rows, cap(rows, MAX_PROBLEMS)
   end
   if want.power or want.stock then
-    local own = map_summary.status_sections()
-    result.stock_power_tick, result.stock_power_ready = own.updated_tick, own.ready
+    local maintenance = registry.maintenance()
+    result.stock_power_tick, result.stock_power_ready = maintenance.pass_tick, maintenance.ready
     if want.power then
-      local rows = {}
-      for _, network in ipairs(own.power) do
-        rows[#rows + 1] = { network_id = network.id, satisfaction = network.satisfaction,
-          production_w = network.production_w, capacity_w = network.capacity_w, demand_w = network.demand_w,
-          engines_needed = network.engines_needed }
-      end
-      table.sort(rows, function(x, y)
-        if x.capacity_w ~= y.capacity_w then return x.capacity_w > y.capacity_w end
-        return x.network_id < y.network_id
-      end)
-      result.power, result.omitted_power = rows, cap(rows, MAX_POWER)
+      local rows, omitted = map_summary.build_power(c.surface, MAX_POWER)
+      result.power, result.omitted_power = rows, omitted > 0 and omitted or nil
     end
     if want.stock then
-      local rows = {}
-      for _, item in ipairs(own.stockpiles) do
-        local holders = {}
-        for index = 1, math.min(MAX_HOLDERS, #item.holders) do
-          local holder = item.holders[index]
-          holders[index] = { position = holder.position, kind = holder.kind, count = holder.count }
-        end
-        rows[#rows + 1] = { item = item.item, total = item.total, holders = holders }
-      end
-      result.stock, result.omitted_stock = rows, cap(rows, MAX_STOCK_ITEMS)
+      local rows, omitted = registry.stock_rows(c.surface.index, MAX_STOCK_ITEMS)
+      result.stock, result.omitted_stock = rows, omitted > 0 and omitted or nil
     end
   end
   if want.research then result.research = research_section(c) end
   if want.body then result.body = body_section(c) end
   if want.patches then result.patches, result.omitted_patches, result.patches_ready = patches_section(c) end
+  if want.logistics then result.logistics = logistics.section(c) end
   return result
 end
 

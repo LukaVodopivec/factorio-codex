@@ -22,6 +22,8 @@ _G.prototypes = { item = {
     place_result = { name = "underground-belt", type = "underground-belt", collision_box = half } },
   ["stone-furnace"] = { name = "stone-furnace", stack_size = 50,
     place_result = { name = "stone-furnace", type = "furnace", collision_box = whole } },
+  ["chemical-plant"] = { name = "chemical-plant", stack_size = 10,
+    place_result = { name = "chemical-plant", type = "assembling-machine", collision_box = whole } },
   coal = { name = "coal", stack_size = 50 },
 } }
 
@@ -39,7 +41,7 @@ local body
 body = {
   valid = true, position = { x = 0, y = 0 }, force = own, build_distance = 10, reach_distance = 10,
   crafting_queue = {}, crafting_queue_size = 0,
-  get_item_count = function(name) return inventory[name] or 0 end,
+  get_item_count = function(name) return inventory[type(name) == "table" and name.name or name] or 0 end,
   remove_item = function(stack) inventory[stack.name] = inventory[stack.name] - stack.count; return stack.count end,
   get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
   surface = {
@@ -105,6 +107,25 @@ check(build.existing(body, prototypes.item["underground-belt"].place_result, { x
   and build.existing(body, prototypes.item["underground-belt"].place_result, { x = 6.5, y = 0.5 }, 4, "input") ~= nil,
   "an underground belt is the same placement only as the same end")
 
+-- A mirrored step over an unmirrored plant of the same name flips it within
+-- reach, so its fluid boxes face the layout's pipes; mirror=nil leaves it.
+local plant = spawn("chemical-plant", "assembling-machine", { x = 40.5, y = 40.5 }, 0, { mirroring = false })
+inventory["chemical-plant"] = 1
+local reached_before = reached
+local kept = place({ item = "chemical-plant", position = { x = 40.5, y = 40.5 } })
+check(kept and kept.outcome.code == "ALREADY_PLACED" and plant.mirroring == false and reached == reached_before,
+  "a step without mirror adopts the plant as it stands")
+local flipped = place({ item = "chemical-plant", position = { x = 40.5, y = 40.5 }, mirror = true })
+check(flipped and flipped.status == "done" and flipped.outcome.code == "MIRRORED_EXISTING" and plant.mirroring == true
+  and reached == reached_before + 1 and #created == 0 and inventory["chemical-plant"] == 1
+  and flipped.detail:match("mirrored it"),
+  "a mirror=true step mirrors the unmirrored plant already standing there")
+local stuck = spawn("chemical-plant", "assembling-machine", { x = 44.5, y = 40.5 }, 0)
+setmetatable(stuck, { __newindex = function(t, k, v) if k == "mirroring" then error("read-only") end rawset(t, k, v) end })
+local refused = place({ item = "chemical-plant", position = { x = 44.5, y = 40.5 }, mirror = true })
+check(refused and refused.status == "failed" and refused.detail:match("can't be mirrored"),
+  "a plant that won't take the mirror fails the step instead of reporting it done")
+
 -- Starter items: the insert map goes into what was placed.
 inventory["stone-furnace"], inventory.coal = 1, 5
 local fuelled = place({ item = "stone-furnace", position = { x = 10, y = 10 }, insert = { coal = 5 } })
@@ -150,5 +171,15 @@ for _ = 1, 20 do built = build_plan.tick(plan); if built then break end end
 check(built and built.status == "done" and plan._placed == 3 and #created == 1 and run_belt.direction == 4
   and inventory["transport-belt"] == 0 and plan._results[1].detail:match("turned it") and plan._results[2].detail:match("nothing to place"),
   "a build plan re-run over its own belts turns the wrong one, skips the right one and builds the missing one")
+
+local layout_plant = spawn("chemical-plant", "assembling-machine", { x = 50.5, y = 40.5 }, 4, { mirroring = false })
+local mirrored_plan = { id = 6, auto_supply = false, steps = {
+  { item = "chemical-plant", position = { x = 50.5, y = 40.5 }, direction = 4, mirror = true } } }
+build_plan.start(mirrored_plan)
+local mirrored_built
+for _ = 1, 20 do mirrored_built = build_plan.tick(mirrored_plan); if mirrored_built then break end end
+check(mirrored_built and mirrored_built.status == "done" and layout_plant.mirroring == true
+  and mirrored_plan._results[1].detail:match("mirrored it"),
+  "a build plan re-run mirrors an adopted plant for a mirrored step")
 
 os.exit(failures == 0 and 0 or 1)

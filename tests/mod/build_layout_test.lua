@@ -58,7 +58,7 @@ local inventory = {}
 -- Power comes from the event-maintained registry (registry.lua), never an
 -- entity query: a steam engine is registered or not.
 storage.registry = { entries = {}, machines = {}, electric = {}, holders = {}, burners = {}, poles = {},
-  belts = {}, belt_count = 0, ready = true }
+  belts = {}, belt_count = 0, ready = true, order = {}, networks = {}, stock = {}, types = {} }
 local function set_powered(on)
   local r = storage.registry
   if on then
@@ -169,7 +169,7 @@ character = {
   bounding_box = { left_top = { x = 500.3, y = 500.3 }, right_bottom = { x = 500.7, y = 500.7 } },
   force = { recipes = recipes, is_chunk_charted = function() return true end },
   surface = surface, build_distance = 10, crafting_queue_size = 0,
-  get_item_count = function(name) return inventory[name] or 0 end,
+  get_item_count = function(name) return inventory[type(name) == "table" and name.name or name] or 0 end,
   get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
   remove_item = function(args) inventory[args.name] = (inventory[args.name] or 0) - args.count; return args.count end,
   begin_crafting = function() crafted = crafted + 1; return 0 end,
@@ -381,6 +381,48 @@ local locked = dry({ anchor = { x = 10, y = 10 }, entities = {
   { name = "stone-furnace", dx = 5, dy = 1, recipe = "iron-gear-wheel" } } })
 check(not locked.ok and locked.failed[1].code == "RECIPE_LOCKED" and locked.failed[2].code == "RECIPE_NOT_SETTABLE",
   "locked recipes and recipes on furnaces are named before anything is built")
+-- Settings and mirror: checked by prototype before anything is built, then
+-- carried to each placement with the underground end.
+local misfit = dry({ anchor = { x = 10, y = 10 }, entities = {
+  { name = "stone-furnace", dx = 1, dy = 1, settings = { inserter = { stack_size = 1 } } },
+  { name = "inserter", dx = 3.5, dy = 0.5, settings = { inserter = { stack_size = 1 } } } } })
+check(not misfit.ok and #misfit.failed == 1 and misfit.failed[1].code == "CONFIG_NOT_APPLICABLE" and misfit.failed[1].index == 0,
+  "settings an entity cannot take are CONFIG_NOT_APPLICABLE before anything is built")
+local bad_settings = pcall(layout.layout_action.validate, { anchor = { x = 0, y = 0 },
+  entities = { { name = "inserter", dx = 0, dy = 0, settings = { inserter = { filters = { "nope" } } } } } }, 1)
+local bad_mirror = pcall(layout.layout_action.validate, { anchor = { x = 0, y = 0 },
+  entities = { { name = "pipe", dx = 0, dy = 0, mirror = "yes" } } }, 1)
+check(not bad_settings and not bad_mirror, "queue_plan validation checks entity settings and mirror")
+local turned_layout = layout._rotated({ entities = { { name = "assembling-machine-1", dx = 1, dy = 0, mirror = true,
+  settings = { inserter = { stack_size = 2 } }, belt_to_ground_type = "output" } } }, 1)
+local turned_entity = turned_layout.entities[1]
+check(turned_entity.mirror == true and turned_entity.settings.inserter.stack_size == 2 and turned_entity.belt_to_ground_type == "output"
+  and turned_entity.direction == 4, "a turned layout keeps mirror, settings and the underground end")
+local carried_steps = layout._plan_steps({ routes = {}, placements = { { position = { x = 1.5, y = 1.5 },
+  entity = { index = 0, item = "assembling-machine-1", proto = entities["assembling-machine-1"], direction = 0, mirror = true,
+    settings = { chest = { slots = 1 } } } } } })
+check(carried_steps[1].mirror == true and carried_steps[1].settings.chest.slots == 1,
+  "each placement step carries its mirror and settings")
+local saved_steps = layout._plan_steps({ routes = {}, placements = { { position = { x = 0.5, y = 0.5 },
+  entity = { index = 0, item = "underground-belt", proto = { type = "underground-belt" }, direction = 0,
+    settings = { type = "output" } } } } })
+check(saved_steps[1].belt_to_ground_type == "output", "a layout search saved by 0.21.1 keeps its underground end")
+-- A layout written for 0.21.1 (free-form blueprint settings) is upgraded when
+-- validated: its end, mirror and blueprint fields become typed fields.
+local old_layout = { anchor = { x = 0, y = 0 }, entities = {
+  { name = "iron-chest", dx = 0.5, dy = 0.5, settings = { bar = 5 } },
+  { name = "inserter", dx = 1.5, dy = 0.5, settings = { use_filters = true, filter_mode = "blacklist",
+    filters = { { index = 2, name = "wooden-chest" }, { index = 1, name = "iron-plate" } } } },
+  { name = "burner-inserter", dx = 2.5, dy = 0.5, settings = { mirror = true, type = "output" } },
+  { name = "inserter", dx = 3.5, dy = 0.5, settings = { filters = { { index = 1, name = "coal" } } } } } }
+local upgraded_ok, upgraded_err = pcall(layout.layout_action.validate, old_layout, 1)
+local up = old_layout.entities
+check(upgraded_ok and up[1].settings.chest.slots == 4 and up[2].settings.inserter.filters[1] == "iron-plate"
+  and up[2].settings.inserter.filters[2] == "wooden-chest" and up[2].settings.inserter.mode == "blacklist"
+  and up[3].mirror == true and up[3].belt_to_ground_type == "output" and up[3].settings == nil and up[4].settings == nil,
+  "a 0.21.1 layout's blueprint settings are upgraded to typed settings when validated (" .. tostring(upgraded_err) .. ")")
+check(not pcall(layout.layout_action.validate, { anchor = { x = 0, y = 0 },
+  entities = { { name = "inserter", dx = 0, dy = 0, settings = {} } } }, 1), "empty settings are still refused")
 local wet = dry({ anchor = { x = -5, y = 0 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
 check(not wet.ok and wet.failed[1].code == "BLOCKED", "a placement on water is BLOCKED")
 blockers = { { valid = true, name = "tree-01", type = "tree", position = { x = 20.5, y = 20.5 } } }

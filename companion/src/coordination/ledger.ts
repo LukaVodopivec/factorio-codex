@@ -162,7 +162,9 @@ function reusedPackageIds(file: string, existing: unknown, packages: Array<{ pac
     if (!value || typeof value.packages !== "object" || Array.isArray(value.packages)) return [];
     records = value.packages;
   } catch { return []; }
-  const listed = (existing as { build_packages?: unknown })?.build_packages;
+  // Compared as the schema reads them (a 0.21.1 layout entity is upgraded).
+  const parsed = operationsLedgerSchema.safeParse(existing);
+  const listed = parsed.success ? parsed.data.build_packages : (existing as { build_packages?: unknown })?.build_packages;
   const previous = Array.isArray(listed) ? listed as Array<{ package_id?: unknown }> : [];
   return packages.flatMap((entry, index) => {
     const record = records[entry.package_id];

@@ -2,7 +2,7 @@
 -- first (build_distance for place, reach_distance otherwise). place is
 -- idempotent: the same own entity already standing there is done (turned
 -- when it faces another way); `insert` puts starter items (fuel) into what
--- was placed.
+-- was placed; `mirror` places it flipped (refineries, chemical plants).
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
@@ -169,103 +169,46 @@ function M.existing(c, proto, position, direction, belt_to_ground_type)
 end
 
 -- Takes an existing entity as the placement: "same" when it already faces
--- the requested way (or has no direction), "rotated" once the body turned
--- it within reach, "gone" when it vanished, nil while walking, or a failed
--- result.
-function M.adopt(task, c, e, direction)
+-- the requested way (or has no direction) and is mirrored as requested,
+-- "rotated" or "mirrored" once the body turned or flipped it within reach,
+-- "gone" when it vanished, nil while walking, or a failed result. A nil
+-- mirror leaves the entity's mirroring alone.
+function M.adopt(task, c, e, direction, mirror)
   if not e.valid then return "gone" end
-  if not e.supports_direction or e.direction == direction then return "same" end
+  local turn = e.supports_direction and e.direction ~= direction
+  local ok_read, mirrored = pcall(function() return e.mirroring == true end)
+  local flip = mirror ~= nil and (not ok_read or mirrored ~= (mirror == true))
+  if not turn and not flip then return "same" end
   local reached = approach.ensure_entity(task, c, e)
   if type(reached) == "table" then return reached end
   if reached ~= "ok" then return nil end
-  local ok = pcall(function() e.direction = direction end)
-  if not ok or e.direction ~= direction then
-    return { status = "failed", detail = string.format("the %s already at (%.1f, %.1f) can't face %s",
-      e.name, e.position.x, e.position.y, dir_name(direction)) }
+  if turn then
+    local ok = pcall(function() e.direction = direction end)
+    if not ok or e.direction ~= direction then
+      return { status = "failed", detail = string.format("the %s already at (%.1f, %.1f) can't face %s",
+        e.name, e.position.x, e.position.y, dir_name(direction)) }
+    end
+  end
+  if flip then
+    local ok = pcall(function() e.mirroring = mirror == true end)
+    local ok_back, now = pcall(function() return e.mirroring == true end)
+    if not (ok and ok_back and now == (mirror == true)) then
+      return { status = "failed", detail = string.format("the %s already at (%.1f, %.1f) can't be %s",
+        e.name, e.position.x, e.position.y, mirror and "mirrored" or "unmirrored") }
+    end
+    return "mirrored"
   end
   return "rotated"
 end
 
 function M.adopted_note(e, how)
+  if how == "mirrored" then
+    return string.format("%s already stands at (%.1f, %.1f) — %s it%s", e.name, e.position.x, e.position.y,
+      e.mirroring and "mirrored" or "unmirrored",
+      e.supports_direction and (", facing " .. dir_name(e.direction)) or "")
+  end
   return string.format("%s already stands at (%.1f, %.1f)%s", e.name, e.position.x, e.position.y,
     how == "rotated" and (" — turned it to face " .. dir_name(e.direction)) or "; nothing to place")
-end
-
--- ------------------------------------------------------------- settings
-
--- What a blueprint keeps of an entity besides its recipe, in BlueprintEntity
--- field names: mirror, an inserter's use_filters, filter_mode and filters
--- [{index, name}], a splitter's input_priority, output_priority and filter
--- {name}, a chest's bar. Quality is always normal here.
-local function filter_name(filter)
-  if type(filter) == "string" then return filter end
-  if type(filter) ~= "table" then return nil end
-  local name = filter.name
-  if type(name) == "table" then name = name.name end
-  return type(name) == "string" and name or nil
-end
-
-local function chest_inventory(e)
-  local ok, inventory = pcall(e.get_inventory, defines.inventory.chest)
-  return ok and inventory or nil
-end
-
--- The settings an own entity has now, or nil when it has none of these.
-function M.read_settings(e)
-  local s, any = {}, false
-  local function read(fn)
-    local ok, value = pcall(fn)
-    if ok then return value end
-  end
-  if read(function() return e.mirroring end) == true then s.mirror, any = true, true end
-  if e.type == "inserter" and (read(function() return e.filter_slot_count end) or 0) > 0 then
-    if read(function() return e.use_filters end) == true then s.use_filters, any = true, true end
-    local mode = read(function() return e.inserter_filter_mode end)
-    if mode == "blacklist" then s.filter_mode, any = mode, true end
-    local filters = {}
-    for index = 1, e.filter_slot_count do
-      local name = filter_name(read(function() return e.get_filter(index) end))
-      if name then filters[#filters + 1] = { index = index, name = name } end
-    end
-    if #filters > 0 then s.filters, any = filters, true end
-  elseif e.type == "splitter" then
-    for _, side in ipairs({ "input_priority", "output_priority" }) do
-      local value = read(function() return e["splitter_" .. side] end)
-      if value == "left" or value == "right" then s[side], any = value, true end
-    end
-    local name = filter_name(read(function() return e.splitter_filter end))
-    if name then s.filter, any = { name = name }, true end
-  elseif e.type == "container" or e.type == "logistic-container" then
-    local inventory = chest_inventory(e)
-    local bar = inventory and read(function() return inventory.supports_bar() and inventory.get_bar() end)
-    if type(bar) == "number" and bar <= #inventory then s.bar, any = bar, true end
-  end
-  return any and s or nil
-end
-
--- Puts settings on an entity. Returns what could not be set (strings).
-function M.apply_settings(e, s)
-  local issues = {}
-  local function set(label, fn)
-    if not pcall(fn) then issues[#issues + 1] = string.format("couldn't set %s on the %s", label, e.name) end
-  end
-  if type(s) ~= "table" or not e.valid then return issues end
-  if s.mirror ~= nil then set("mirror", function() e.mirroring = s.mirror == true end) end
-  if e.type == "inserter" then
-    if s.use_filters ~= nil then set("use_filters", function() e.use_filters = s.use_filters == true end) end
-    if s.filter_mode ~= nil then set("filter_mode", function() e.inserter_filter_mode = s.filter_mode end) end
-    for _, f in ipairs(type(s.filters) == "table" and s.filters or {}) do
-      set("filter " .. tostring(f.name), function() e.set_filter(f.index, f.name) end)
-    end
-  elseif e.type == "splitter" then
-    if s.input_priority ~= nil then set("input_priority", function() e.splitter_input_priority = s.input_priority end) end
-    if s.output_priority ~= nil then set("output_priority", function() e.splitter_output_priority = s.output_priority end) end
-    if s.filter ~= nil then set("filter", function() e.splitter_filter = { name = filter_name(s.filter) } end) end
-  elseif s.bar ~= nil then
-    local inventory = chest_inventory(e)
-    set("bar", function() inventory.set_bar(s.bar) end)
-  end
-  return issues
 end
 
 M.place = {}
@@ -342,6 +285,7 @@ function M.place.start(task)
     error(task.item .. " is not a placeable item")
   end
   task._insert = insert_list(task.insert)
+  if task.mirror ~= nil and type(task.mirror) ~= "boolean" then error("place mirror must be true or false") end
   task.direction = math.floor(tonumber(task.direction) or 0) % 16
   task._entity_name = result.name
   local belt_error = M.belt_to_ground_error(task.item, result, task.belt_to_ground_type)
@@ -431,13 +375,14 @@ function M.place.tick(task)
   end
   if task._existing then
     local e = task._existing
-    local how = M.adopt(task, c, e, task.direction)
+    local how = M.adopt(task, c, e, task.direction, task.mirror)
     if how == nil then return nil end
     if type(how) == "table" then return how end
     task._existing = false
     if how ~= "gone" then
       return placed(task, c, e, { status = "done", detail = M.adopted_note(e, how),
-        outcome = { code = how == "rotated" and "ROTATED_EXISTING" or "ALREADY_PLACED" } })
+        outcome = { code = how == "rotated" and "ROTATED_EXISTING" or how == "mirrored" and "MIRRORED_EXISTING"
+          or "ALREADY_PLACED" } })
     end
   end
 
@@ -522,6 +467,7 @@ function M.place.tick(task)
     name = task._entity_name,
     position = task.position,
     direction = task.direction,
+    mirror = task.mirror or nil,
     type = task.belt_to_ground_type,
     force = c.force,
     raise_built = true,

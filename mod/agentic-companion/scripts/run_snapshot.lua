@@ -1,5 +1,6 @@
 local autonomy = require("scripts.autonomy")
 local companion = require("scripts.companion")
+local factory_activity = require("scripts.factory_activity")
 local map_summary = require("scripts.map_summary")
 local research = require("scripts.research")
 local spatial = require("scripts.spatial")
@@ -23,7 +24,11 @@ local function sorted_counts(counts)
   return rows
 end
 
+-- Prototypes never change at runtime: the rows are read once per load (the
+-- same on every peer) and reused by every snapshot.
+local raw_rows
 local function raw_resource_products()
+  if raw_rows then return raw_rows end
   local found = {}
   for _, prototype in pairs(prototypes and prototypes.entity or {}) do
     if NATURAL_SOURCE_TYPES[prototype.type] then
@@ -40,6 +45,7 @@ local function raw_resource_products()
   local rows = {}
   for _, row in pairs(found) do rows[#rows + 1] = row end
   table.sort(rows, function(a, b) return a.type == b.type and a.name < b.name or a.type < b.type end)
+  raw_rows = rows
   return rows
 end
 
@@ -69,6 +75,8 @@ function M.capture()
       items = statistics(body.force, body.surface, "get_item_production_statistics"),
       fluids = statistics(body.force, body.surface, "get_fluid_production_statistics"),
       raw_resources = raw_resource_products(),
+      -- Items the Codex player crafted by hand since since_tick (cumulative).
+      hand_crafted = factory_activity.hand_crafted(),
       semantics = { produced = "force_surface_input_counts", consumed = "force_surface_output_counts" },
     },
   }

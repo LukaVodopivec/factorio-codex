@@ -15,14 +15,14 @@ describe("strategist read-only MCP surface", () => {
     expect([...READ_ONLY_TOOLS].sort()).toEqual(["activity_log", "blueprint_describe", "blueprint_export", "blueprint_list",
       "blueprint_place", "build_block", "build_layout", "can_place", "connect_entities", "connect_status",
       "describe_prototype", "factory_status", "find_placement", "inspect_entity", "map_summary", "next_event", "observe_local",
-      "plan_status", "production_requirements", "progression_status"]);
+      "place_tiles", "plan_status", "production_requirements", "progression_status"]);
   });
 
   it("does not create a body and read calls never enter the physical FIFO lane", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => {
-      if (method === "ping") return { protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.77",
+      if (method === "ping") return { protocol_version: 26, mod_version: "0.22.0", factorio_version: "2.0.77",
         tick: 12, companion_exists: false, companion_ever_created: false, companion_dead: false };
       if (method === "observe_local") return { tick: 12, entities: [], resource_patches: [], ground_items: [] };
       if (method === "inspect") return { tick: 12, entities: [{ name: "iron-chest", position: { x: 400.5, y: 0.5 }, remote: true }] };
@@ -37,6 +37,7 @@ describe("strategist read-only MCP surface", () => {
       if (method === "connect_entities") return { kind: "belt", steps: [{ name: "transport-belt", x: 1.5, y: 0.5 }] };
       if (method === "blueprint_place") return { check_only: true, ok: true, collisions: {} };
       if (method === "blueprint_list") return { blueprints: {}, capacity: 31 };
+      if (method === "place_tiles") return { check_only: true, would_place: 4, items_needed: 4, ineligible: {} };
       if (method === "find_placement") return { candidates: [{ position: { x: 1, y: 1 }, direction: 0,
         build_steps: [{ name: "stone-furnace", x: 1, y: 1, direction: 0, fuel_inlet: true }] }] };
       return {};
@@ -94,6 +95,11 @@ describe("strategist read-only MCP surface", () => {
     expect(schemas.blueprint_place.safeParse({ ...place, check_only: false }).success).toBe(false);
     await handlers.blueprint_place(schemas.blueprint_place.parse(place));
     expect(call).toHaveBeenLastCalledWith("blueprint_place", { ...place, check_only: true }, undefined);
+    // Tiles: how many items an area needs, nothing laid.
+    const tiles = { item: "landfill", area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 2, y: 2 } } };
+    expect(schemas.place_tiles.safeParse({ ...tiles, check_only: false }).success).toBe(false);
+    await handlers.place_tiles(schemas.place_tiles.parse(tiles));
+    expect(call).toHaveBeenLastCalledWith("place_tiles", { ...tiles, check_only: true }, undefined);
     await handlers.blueprint_list({});
     await handlers.blueprint_describe({ name: "smelter" });
     await handlers.blueprint_export({ name: "smelter" });

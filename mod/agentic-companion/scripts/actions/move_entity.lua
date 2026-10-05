@@ -17,6 +17,7 @@ local build = require("scripts.actions.build")
 local entity_settings = require("scripts.entity_settings")
 local supply = require("scripts.actions.supply")
 
+local robot_move = require("scripts.actions.robot_move")
 local M = {}
 
 -- The nested place runs through supply's nested runner table.
@@ -40,14 +41,16 @@ end
 local function validate(step, label)
   if not point(step.from) then error(label .. " needs from = {x, y}", 0) end
   if not point(step.to) then error(label .. " needs to = {x, y}", 0) end
+  if step.mode ~= nil and step.mode ~= "body" and step.mode ~= "robots" then error(label .. " mode must be body or robots", 0) end
   local d = step.direction
   if d ~= nil and (type(d) ~= "number" or d % 1 ~= 0 or d < 0 or d > 15) then
     error(label .. " direction must be an integer 0-15", 0)
   end
 end
 
-local function own_entity_at(c, position)
-  local ok, found = pcall(c.surface.find_entities_filtered, { position = position, force = c.force })
+local function own_entity_at(c, position, robot_mode)
+  local ok, found = pcall(c.surface.find_entities_filtered, { position = position, force = c.force, limit = robot_mode and 17 or nil })
+  if robot_mode and ok and #found > 16 then error("MOVE_ROBOT_UNSUPPORTED: source selection exceeds 16 entities", 0) end
   for _, e in ipairs(ok and found or {}) do
     if e.valid and not NEVER[e.type] then return e end
   end
@@ -109,7 +112,7 @@ end
 function M.start(task)
   local c = companion.require_companion()
   validate(task, "move_entity")
-  local e = own_entity_at(c, task.from)
+  local e = own_entity_at(c, task.from, task.mode == "robots")
   if not e then error(string.format("move_entity: no own entity stands at (%.1f, %.1f)", task.from.x, task.from.y), 0) end
   local proto = e.prototype
   local ok_items, items = pcall(function() return proto.items_to_place_this end)
@@ -122,6 +125,10 @@ function M.start(task)
   local to = { x = snapped(task.to.x, w), y = snapped(task.to.y, h) }
   if to.x == e.position.x and to.y == e.position.y and direction == e.direction then
     error(string.format("move_entity: the %s already stands at (%.1f, %.1f) facing that way", e.name, to.x, to.y), 0)
+  end
+  if task.mode == "robots" then
+    task._proto, task._item, task._to, task._direction = proto, item, to, direction
+    return robot_move.start(task, c, e)
   end
   local why = blocked(c, e, proto, to, direction)
   if why then error(string.format("move_entity: the %s can't go to (%.1f, %.1f): %s", e.name, to.x, to.y, why), 0) end
@@ -196,6 +203,11 @@ local function restore(task, c, e)
 end
 
 function M.tick(task)
+  if task.mode == "robots" then
+    local c = companion.get()
+    if not c then return { status = "failed", detail = "BODY_MISSING", outcome = robot_move.cancelled(task) } end
+    return robot_move.tick(task, c)
+  end
   local c = companion.get()
   if not c then return { status = "failed", detail = "the companion character is gone" } end
   local snap = task._snapshot
@@ -258,11 +270,18 @@ function M.tick(task)
   return restore(task, c, e)
 end
 
+function M.observe(task) if task.mode == "robots" then robot_move.observe(task) end end
+function M.waiting(task) return task.mode == "robots" and robot_move.waiting(task) end
+function M.cancelled(task) if task.mode == "robots" then return robot_move.cancelled(task) end end
+function M.diagnostics(task) if task.mode == "robots" then return robot_move.diagnostics(task) end end
+for _, name in ipairs({ "on_robot_pre_mined", "on_robot_mined_entity", "on_robot_built_entity" }) do
+  M[name] = function(task, event) if task.mode == "robots" then robot_move[name](task, event) end end
+end
 -- The plan action for tasks.register_action.
 M.action = {
   runner = M,
   make_task = function(step)
-    return { from = step.from, to = step.to, direction = step.direction, allow_fluid_loss = step.allow_fluid_loss }
+    return { from = step.from, to = step.to, direction = step.direction, allow_fluid_loss = step.allow_fluid_loss, mode = step.mode }
   end,
   validate = function(step, index) validate(step, "queue_plan move_entity step " .. index) end,
   budget_steps = function() return 3 end,

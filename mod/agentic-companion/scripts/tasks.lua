@@ -459,6 +459,7 @@ local function plan_payload(plan)
   if plan.current_task then
     diagnostics = { action = plan.steps[plan.current_step] and plan.steps[plan.current_step].action,
       next_check_tick = plan.next_check_tick }
+    diagnostics.robot_relocation = move_entity.diagnostics(plan.current_task)
     local walker = plan.current_task._walk
       or (plan.current_task._approach and plan.current_task._approach.walk)
       or plan.current_task.walker
@@ -871,8 +872,8 @@ local function tick_plan(plan)
   if game.tick - plan.started_tick >= budget then
     local detail = string.format("plan exceeded its %d-second active budget", budget / 60)
     if plan.current_task then
-      step_cancelled(plan)
-      finish_step(plan, { status = "failed", detail = detail })
+      local note = step_cancelled(plan)
+      finish_step(plan, { status = "failed", detail = detail, outcome = note })
     else finish(plan, "failed", detail) end
     return
   end
@@ -1193,8 +1194,9 @@ local function cancel_off_surface(plan, tag, here, queued)
   local step = plan.steps[index] or {}
   local detail = string.format("SURFACE_LEFT: the body is on %s; step %d (%s) acts on %s", here, index,
     tostring(step.action), tag)
+  local note = step_cancelled(plan)
   plan.outcomes[#plan.outcomes + 1] = { step = index, action = step.action, status = "cancelled", error = detail,
-    result = { code = "SURFACE_LEFT", expected = tag, actual = here } }
+    result = { code = "SURFACE_LEFT", expected = tag, actual = here, relocation = note } }
   plan.current_task, plan._recovery = nil, nil
   if not queued then storage.path_request, plan._path_result = nil, nil end
   finish(plan, "cancelled", detail, queued, nil, true)
@@ -1241,9 +1243,22 @@ local function leave_death(tasks)
   if tasks.active then release_plan(tasks.active, paused) end
   resume_active(tasks)
 end
+for _, name in ipairs({ "on_robot_pre_mined", "on_robot_mined_entity", "on_robot_built_entity" }) do
+  M[name] = function(event)
+    local plan = storage.tasks and storage.tasks.active
+    local task = plan and plan.current_task
+    local runner = task and runners[task.type]
+    if runner and runner[name] then runner[name](task, event) end
+  end
+end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end
   local tasks = storage.tasks
+  local current = tasks.active and tasks.active.current_task
+  local runner = current and runners[current.type]
+  -- Pure bounded cargo observation continues through holds; native robots
+  -- keep working while the body is parked. This never orders any action.
+  if runner and runner.observe then runner.observe(current) end
   pcall(companion.poll_human_activity, tasks.human_hold ~= nil)
   if human_control() then
     if not tasks.human_hold then enter_hold(tasks) end

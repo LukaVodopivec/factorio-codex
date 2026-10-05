@@ -16,7 +16,7 @@ import { areaFields, areaIssue, blockFields, blockIssue, blueprintName, blueprin
 import { normalizeActivityLog, normalizeCanPlace, normalizeConfigured, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, normalizeRequests, normalizeRoute, luaArray, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.22.4";
+export const MCP_SERVER_VERSION = "0.22.5";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();
@@ -518,7 +518,7 @@ export function registerMcpTools(
   tools.registerTool("rotate_entity", { description: "Rotate the entity at a position once, or set its direction 0-15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate_entity", "rotate", toolPayloads.rotate(p), extra?.signal));
   tools.registerTool("build_plan", { description: "Place up to 25 items in order; each may set a recipe, settings and insert items, or be mirrored. Stops at the first failure by default; earlier placements stay.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional(), mirror: z.boolean().optional(), settings: entitySettings.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), auto_supply: z.boolean().optional(), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", "build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
   const moveInput = z.object(moveEntityFields).strict();
-  tools.registerTool("move_entity", { description: "Move one of your buildings: the body picks it up with its contents, places it at to, and restores its recipe, direction (unless given), settings, fuel, modules and ingredients. A failed placement leaves it in the inventory.", inputSchema: moveInput }, async (p, extra) =>
+  tools.registerTool("move_entity", { description: "Move one of your buildings: the body picks it up with its contents, places it at to, and restores its recipe, direction (unless given), settings, fuel, modules and ingredients. A failed placement leaves it in the inventory. Explicit mode robots instead orders native robot deconstruction and blueprint rebuild within a shared covered network; the body must reach the source. Supports empty buildings with modules and native blueprint settings, refuses fluid/content or external-wire loss, waits for verified paid recovery and construction, and reports pending or partial failure. Cancellation retains paid builds; outstanding native requests may continue. Default mode body is unchanged.", inputSchema: moveInput }, async (p, extra) =>
     step("move_entity")(moveInput.parse(p), extra?.signal));
   const exploreInput = z.object(exploreFields).strict();
   tools.registerTool("explore", { description: "Scout on foot toward uncharted land (or a direction 0-15, 0 = north, 4 = east), charting as it goes, until a patch of resource is in view or max_distance tiles are walked.", inputSchema: exploreInput }, async (p, extra) =>

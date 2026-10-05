@@ -13,7 +13,7 @@ _G.defines = { events = {
   on_research_queued = 30, on_research_moved = 31, on_technology_effects_reset = 32, on_player_crafted_item = 33,
   on_rocket_launch_ordered = 34, on_space_platform_changed_state = 35, on_cargo_pod_finished_descending = 36,
   on_player_changed_surface = 37, on_player_controller_changed = 38, on_cargo_pod_finished_ascending = 39,
-  on_surface_deleted = 40,
+  on_surface_deleted = 40, on_robot_pre_mined = 41,
 }, controllers = { character = 1, spectator = 4 }, direction = { north = 0, northeast = 2, east = 4, southeast = 6, south = 8, southwest = 10, west = 12, northwest = 14 } }
 local registered
 local events, nth = {}, {}

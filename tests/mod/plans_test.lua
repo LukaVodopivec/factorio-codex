@@ -566,4 +566,43 @@ local later = tasks.activity_log({ since_plan_id = newest }).entries
 check(rows[#rows].kind == "blueprint" and rows[#rows].after_plan_id == newest and later[#later].kind ~= "blueprint",
   "a blueprint row in activity_log carries the newest plan ID for since_plan_id")
 tasks.cancel({ all = true, origin = "stop/supervisor" })
+-- A native robot move keeps the sole FIFO while waiting; native events route
+-- only to that step, and cancellation/budget/surface boundaries release it.
+local robot_cancelled, robot_events = 0, 0
+local robot_runner = {
+ start = function(task) task._deadline_tick = game.tick + 7200 end,
+ tick = function() return nil end,
+ waiting = function() return true end,
+ cancelled = function() robot_cancelled = robot_cancelled + 1; return { code = "MOVE_ROBOT_CANCELLED", source_removed = true } end,
+ on_robot_mined_entity = function() robot_events = robot_events + 1 end,
+}
+tasks.register_action("move_entity", { runner = robot_runner, make_task = function(step) return { mode = step.mode } end })
+anchor_ref = "nauvis"
+game.tick = 1000
+local moving = tasks.queue_plan({ steps = {{ action="move_entity", mode="robots", from={x=1,y=1},to={x=5,y=1} }} })
+tasks.on_tick()
+local following = tasks.queue_plan({ steps = {{ action="mine",x=5,y=5,count=1 }} })
+for tick=1001,4700 do game.tick=tick;tasks.on_tick()end
+check(tasks.plan_status({plan_id=moving.plan_id}).status=="running" and tasks.plan_status({plan_id=following.plan_id}).status=="queued",
+ "a pending robot move retains one active FIFO entry and outlives the ordinary step stall timeout")
+tasks.on_robot_mined_entity({})
+check(robot_events==1,"native robot evidence reaches only the current FIFO owner")
+tasks.cancel({all=true,origin="stop/supervisor"})
+local cancelled = tasks.plan_status({plan_id=moving.plan_id})
+check(robot_cancelled==1 and cancelled.outcomes[1].result.source_removed,
+ "FIFO cancellation preserves the robot owner's paid partial state")
+tasks.on_robot_mined_entity({})
+check(robot_events==1,"late robot events cannot mutate a cancelled plan")
+game.tick=5000
+local budgeted=tasks.queue_plan({steps={{action="move_entity",mode="robots",from={x=1,y=1},to={x=5,y=1}}}})
+tasks.on_tick();game.tick=5000+570*60;tasks.on_tick()
+local exhausted=tasks.plan_status({plan_id=budgeted.plan_id})
+check(exhausted.status=="failed" and exhausted.outcomes[1].result.source_removed and robot_cancelled==2,
+ "plan budget cancellation includes paid native partial state")
+game.tick=40000
+local offsurface=tasks.queue_plan({steps={{action="move_entity",mode="robots",from={x=1,y=1},to={x=5,y=1}}}})
+tasks.on_tick();anchor_ref="vulcanus";tasks.on_body_surface_changed({});game.tick=40001;tasks.on_tick()
+local left=tasks.plan_status({plan_id=offsurface.plan_id}).outcomes[1].result
+check(left.code=="SURFACE_LEFT" and left.relocation.source_removed and robot_cancelled==3,
+ "leaving the planet cancels native pending ownership and retains partial state")
 os.exit(failures == 0 and 0 or 1)

@@ -802,4 +802,24 @@ do
     "a disconnected player reports human_control false with no idle ticks")
 end
 
+-- Native bots may progress during the human hold. The FIFO observes only
+-- their bounded cargo evidence and does not start/tick the action meanwhile.
+reset()
+local move_ticks, observations = 0, 0
+tasks.register_action("move_entity", {runner={
+ start=function(task)task._deadline_tick=game.tick+7200 end,
+ tick=function()move_ticks=move_ticks+1;return nil end,
+ observe=function()observations=observations+1 end,
+ waiting=function()return true end,
+},make_task=function(step)return {mode=step.mode}end})
+local moving=tasks.queue_plan({steps={{action="move_entity",mode="robots",from={x=1,y=1},to={x=5,y=1}}}})
+tick();local task=storage.tasks.active.current_task;local deadline=task._deadline_tick
+press();tick();local before=move_ticks;local observed=observations
+for i=1,298 do tick()end
+check(move_ticks==before and observations>observed,
+ "a robot wait observes bounded native evidence during a hold without ticking or ordering body work")
+tick()
+check(task._deadline_tick==deadline+299 and tasks.plan_status({plan_id=moving.plan_id}).status=="running",
+ "the native relocation deadline excludes the human hold and retains FIFO ownership")
+tasks.cancel({all=true,origin="test/robots"})
 os.exit(failures == 0 and 0 or 1)

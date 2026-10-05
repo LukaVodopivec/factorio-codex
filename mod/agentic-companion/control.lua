@@ -263,12 +263,14 @@ local function player_available(event)
 end
 script.on_event(defines.events.on_player_created, player_available)
 script.on_event(defines.events.on_player_joined_game, player_available)
+script.on_event(defines.events.on_robot_pre_mined, tasks.on_robot_pre_mined)
 -- Own entities built, cloned, mined or destroyed by anyone keep the registry
 -- current; machines among them refresh the factory lines.
 for _, name in ipairs({ "on_built_entity", "on_robot_built_entity", "on_space_platform_built_entity",
   "script_raised_built", "script_raised_revive", "on_entity_cloned" }) do
   if defines.events[name] then
     script.on_event(defines.events[name], function(event)
+      if event.name == defines.events.on_robot_built_entity then tasks.on_robot_built_entity(event) end
       registry.on_built(event)
       autonomy.on_entity_changed(event.entity and event or { entity = event.destination })
     end)
@@ -278,6 +280,7 @@ for _, name in ipairs({ "on_player_mined_entity", "on_robot_mined_entity", "on_s
   "on_entity_died", "script_raised_destroy" }) do
   if defines.events[name] then
     script.on_event(defines.events[name], function(event)
+      if event.name == defines.events.on_robot_mined_entity then tasks.on_robot_mined_entity(event) end
       registry.on_removed(event)
       autonomy.on_entity_changed(event)
     end)

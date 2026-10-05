@@ -10,7 +10,7 @@ const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", r
 describe("protocol v28 DTO and tool registry", () => {
   it("declares v28 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(28);
-    expect(MCP_SERVER_VERSION).toBe("0.22.4");
+    expect(MCP_SERVER_VERSION).toBe("0.22.5");
     expect(RPC_METHODS).toHaveLength(42);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
       "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now", "get_job",
@@ -91,6 +91,8 @@ describe("protocol v28 DTO and tool registry", () => {
     const queued = () => call.mock.calls.filter(([method]) => method === "queue_plan").at(-1)?.[1];
     const plans: Array<[string, Record<string, unknown>]> = [
       ["move_entity", { from: { x: 1.5, y: 1.5 }, to: { x: 5.5, y: 1.5 } }],
+      ["move_entity", { from: { x: 1.5, y: 1.5 }, to: { x: 5.5, y: 1.5 }, mode: "body" }],
+      ["move_entity", { from: { x: 1.5, y: 1.5 }, to: { x: 5.5, y: 1.5 }, mode: "robots" }],
       ["explore", { resource: "crude-oil", max_distance: 500 }],
       ["blueprint_place", { name: "smelter", position: { x: 10, y: 10 }, direction: 4, mode: "hand" }],
       ["build_ghosts", { center: { x: 0, y: 0 }, radius: 8 }],
@@ -104,6 +106,11 @@ describe("protocol v28 DTO and tool registry", () => {
       await handlers[tool]!(parsed);
       expect(queued(), tool).toMatchObject({ steps: [{ action: tool, ...args }] });
     }
+    const moveArgs = { from: { x: 1.5, y: 1.5 }, to: { x: 5.5, y: 1.5 } };
+    expect(schemas.move_entity.parse(moveArgs)).not.toHaveProperty("mode");
+    expect(schemas.move_entity.safeParse({ ...moveArgs, mode: "teleport" }).success).toBe(false);
+    expect(packageStepSchema.parse({ action: "move_entity", ...moveArgs, mode: "robots" })).toMatchObject({ mode: "robots" });
+    expect(packageStepSchema.safeParse({ action: "move_entity", ...moveArgs, mode: "teleport" }).success).toBe(false);
     await handlers.blueprint_place(schemas.blueprint_place.parse({ name: "smelter", position: { x: 10, y: 10 }, check_only: true }));
     expect(call).toHaveBeenLastCalledWith("blueprint_place", { name: "smelter", position: { x: 10, y: 10 }, check_only: true }, undefined);
     for (const [tool, args] of [["blueprint_capture", { name: "smelter", center: { x: 0, y: 0 }, radius: 6 }],
@@ -517,7 +524,7 @@ describe("protocol v28 DTO and tool registry", () => {
     const aboard = { state: "aboard_platform", surface_ref: "platform:3", platform_name: "Orbit" };
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { protocol_version: 28, mod_version: "0.22.4", factorio_version: "2.0.77", tick: 5, companion_exists: true,
+      ? { protocol_version: 28, mod_version: "0.22.5", factorio_version: "2.0.77", tick: 5, companion_exists: true,
         companion_ever_created: true, companion_dead: false, body: aboard }
       : { tick: 5, lines: [], fifo: { active_plan_id: 12, queue_depth: 1, idle_seconds: 0, body: aboard } });
     registerMcpTools({ registerTool(name: string, _config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; } },
@@ -531,7 +538,7 @@ describe("protocol v28 DTO and tool registry", () => {
     // Riding up, the pod is still over the planet it left; the trip's destination is bound_for.
     const riding = { state: "in_transit", surface_ref: "nauvis", bound_for: "platform:3" };
     call.mockImplementation(async (method: string) => method === "ping"
-      ? { protocol_version: 28, mod_version: "0.22.4", factorio_version: "2.0.77", tick: 6, companion_exists: true,
+      ? { protocol_version: 28, mod_version: "0.22.5", factorio_version: "2.0.77", tick: 6, companion_exists: true,
         companion_ever_created: true, companion_dead: false, body: riding } : {});
     expect((await handlers.connect_status({})).content[0].text)
       .toBe("Connected; the body is in a cargo pod (now over nauvis), bound for platform:3");

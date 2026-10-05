@@ -135,7 +135,7 @@ export const areaFields = {
   center: point.optional(),
   radius: z.number().positive().max(32).optional(),
 };
-export const moveEntityFields = { from: point, to: point, direction: direction.optional(), allow_fluid_loss: z.boolean().optional() };
+export const moveEntityFields = { from: point, to: point, direction: direction.optional(), allow_fluid_loss: z.boolean().optional(), mode: z.enum(["body", "robots"]).optional() };
 export const exploreFields = { resource: z.string().min(1).optional(), direction: direction.optional(),
   max_distance: z.number().int().min(32).max(3000) };
 /** With platform (ghosts only) position is relative to the platform's hub. */

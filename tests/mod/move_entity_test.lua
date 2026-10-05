@@ -286,5 +286,16 @@ check(not pcall(move.action.validate, { from = { x = 0, y = 0 } }, 1)
   and not pcall(move.action.validate, { from = { x = 0, y = 0 }, to = { x = 1, y = 1 }, direction = 3.5 }, 1),
   "a move_entity step needs from, to and an integer direction")
 
+check(move.action.make_task({ from={x=0,y=0}, to={x=4,y=0}, mode="robots" }).mode=="robots"
+  and not pcall(move.action.validate,{from={x=0,y=0},to={x=4,y=0},mode="teleport"},1),
+  "robot mode is explicit and unsupported move modes are refused")
+local old_find=surface.find_entities_filtered
+surface.find_entities_filtered=function(filter)
+  check(filter.limit==17,"robot source selection has a fixed native result cap")
+  local rows={};for i=1,17 do rows[i]={valid=true}end;return rows
+end
+local ok,why=pcall(move.start,move.action.make_task({from={x=0,y=0},to={x=4,y=0},mode="robots"}))
+check(not ok and tostring(why):match("source selection exceeds 16"),"a crowded source fails before unbounded selection or robot ordering")
+surface.find_entities_filtered=old_find
 print(failures == 0 and "\nALL MOVE_ENTITY TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

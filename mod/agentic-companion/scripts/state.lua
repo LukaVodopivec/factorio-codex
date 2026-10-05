@@ -5,6 +5,9 @@ M.PATCH_CACHE_VERSION = 1
 -- Machine types the registry gained in 0.22 (a 0.21 registry holds these
 -- entities in its other sets, not yet as machines).
 M.MACHINE_TYPES_0_22 = { reactor = true, beacon = true, roboport = true }
+-- Stores the registry gained in 0.22.2: an older registry never kept them,
+-- so it rescans the charted chunks for them once.
+M.STORE_TYPES_0_22_2 = { "cargo-landing-pad" }
 -- Blueprint slots (blueprints.lua): 32 named blueprints and a scratch slot.
 M.BLUEPRINT_SLOTS = 33
 
@@ -133,6 +136,13 @@ function M.init()
     end
     table.sort(r.order)
   end
+  if not r.store_types then
+    r.store_types = 2
+    -- A registry that read no chunk yet finds the stores in its bootstrap.
+    if r.ready or r.bootstrap and r.bootstrap.chunks then
+      r.rescan = { types = { table.unpack(M.STORE_TYPES_0_22_2) }, cursor = 1 }
+    end
+  end
   -- Resource patches per charted chunk (map_summary.patches): chunk key ->
   -- {cx, cy, cells = {[resource] = cell}} for chunks holding resources;
   -- known: every chunk read once. Pending chunks are (re)read a few per tick
@@ -169,6 +179,16 @@ function M.init()
     patch_cache.charted, patch_cache.charted_set = list, {}
     for _, chunk in ipairs(list) do patch_cache.charted_set[chunk.x .. "," .. chunk.y] = true end
   end
+  -- Space platforms (platforms.lua): the planet of each platform
+  -- create_platform made while it waits for its starter pack, and the ring
+  -- of the last space events (launches, platform states, landed cargo,
+  -- ready rockets) with the tick of the newest.
+  storage.space = storage.space or {}
+  storage.space.created = storage.space.created or {}
+  storage.space.events = storage.space.events or {}
+  -- World policy write failures per surface (companion.lua), shown by ping.
+  storage.world_policy = storage.world_policy or {}
+  storage.world_policy.errors = storage.world_policy.errors or {}
   -- Heavy reads in progress and unread results (jobs.lua). Jobs are plain
   -- data and survive save, load and a mod upgrade: a kind this version no
   -- longer knows fails with its reason when it is next worked on.

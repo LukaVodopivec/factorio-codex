@@ -24,23 +24,25 @@ export const settingsGroups = {
     .strict().refine((group) => Object.keys(group).length > 0, named).optional(),
   chest: z.object({ slots: orNone(z.number().int().min(0)).optional(), storage_filter: orNone(itemName).optional() })
     .strict().refine((group) => Object.keys(group).length > 0, named).optional(),
+  /** An asteroid collector's chunk filters; [] clears them. */
+  collector: z.object({ filters: z.array(itemName).optional() })
+    .strict().refine((group) => Object.keys(group).length > 0, named).optional(),
+  /** A rocket silo's automatic requests (the game's transitional requests). */
+  silo: z.object({ auto_requests: z.boolean().optional() })
+    .strict().refine((group) => Object.keys(group).length > 0, named).optional(),
 };
-export const settingsIssue = (value: { inserter?: unknown; splitter?: unknown; chest?: unknown }) =>
-  value.inserter === undefined && value.splitter === undefined && value.chest === undefined
-    ? "settings name at least one of inserter, splitter or chest" : null;
+const SETTINGS_MESSAGE = "settings name at least one of inserter, splitter, chest, collector or silo";
+export const settingsIssue = (value: Partial<Record<keyof typeof settingsGroups, unknown>>) =>
+  Object.keys(settingsGroups).every((group) => value[group as keyof typeof settingsGroups] === undefined) ? SETTINGS_MESSAGE : null;
 export const entitySettings = z.object(settingsGroups).strict()
-  .refine((value) => settingsIssue(value) === null, { message: "settings name at least one of inserter, splitter or chest" });
-/** An entity's inventories by role (extract_items, insert_items). */
-export const inventoryRole = z.enum(["main", "input", "output", "fuel", "burnt_result", "modules", "trash", "robots", "material"]);
+  .refine((value) => settingsIssue(value) === null, { message: SETTINGS_MESSAGE });
+/** An entity's inventories by role (extract_items, insert_items); rocket is a silo's rocket cargo. */
+export const inventoryRole = z.enum(["main", "input", "output", "fuel", "burnt_result", "modules", "trash", "robots", "material", "rocket"]);
+/** A space platform by name or index (the mod's one resolver). */
+export const platformSelector = z.union([z.string().min(1).max(60), z.number().int().min(1)]);
 /** A stored blueprint's name (the mod's rule). */
 export const blueprintName = z.string().min(1).max(64)
   .regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/, "blueprint names are letters, digits, spaces, dots, dashes or underscores");
-/** Relative layout the mod sites, checks, supplies, clears and builds (build_layout). */
-/** A layout has entities, or only connections from an anchor (a route that
- *  joins what already stands); the mod checks the same rule. */
-export const layoutEntitiesRule = (layout: { anchor?: unknown; entities: unknown[]; connections?: unknown[] }) =>
-  layout.entities.length > 0 || (layout.anchor !== undefined && (layout.connections?.length ?? 0) > 0);
-export const layoutEntitiesMessage = { message: "a layout needs entities, or connections from an anchor" };
 type Fields = Record<string, unknown>;
 const isFields = (value: unknown): value is Fields => !!value && typeof value === "object" && !Array.isArray(value);
 const SPOIL_FROM_BLUEPRINT: Record<string, string> = { "fresh-first": "fresh_first", "spoiled-first": "spoiled_first" };
@@ -83,15 +85,26 @@ export function upgradeLayoutEntity(value: unknown): unknown {
   if (!isFields(value) || !isFields(value.settings)) return value;
   const old = value.settings;
   const keys = Object.keys(old);
-  if (keys.length === 0 || keys.some((key) => key === "inserter" || key === "splitter" || key === "chest")) return value;
+  if (keys.length === 0 || keys.some((key) => key in settingsGroups)) return value;
   const { settings: _legacy, ...entity } = value;
   if (entity.belt_to_ground_type === undefined && (old.type === "input" || old.type === "output")) entity.belt_to_ground_type = old.type;
   if (entity.mirror === undefined && typeof old.mirror === "boolean") entity.mirror = old.mirror;
   const typed = legacySettings(old);
   return typed ? { ...entity, settings: typed } : entity;
 }
+const tileOffset = z.object({ dx: z.number().int(), dy: z.number().int() }).strict();
+/** Platform foundation a layout adds (the mod's caps). */
+export const MAX_LAYOUT_TILE_ENTRIES = 400;
+export const MAX_LAYOUT_TILES = 1_000;
+/** Relative layout the mod sites, checks, supplies, clears and builds
+ *  (build_layout); mode ghosts or a platform places it as ghosts, and a
+ *  platform layout may add foundation tiles. */
 export const layoutFields = {
   anchor: point.optional(),
+  mode: z.enum(["hand", "ghosts"]).optional(),
+  platform: platformSelector.optional(),
+  tiles: z.array(z.object({ name: itemName, dx: z.number().int(), dy: z.number().int() }).strict()).max(MAX_LAYOUT_TILE_ENTRIES).optional(),
+  tile_rects: z.array(z.object({ name: itemName, from: tileOffset, to: tileOffset }).strict()).optional(),
   site: z.object({ near: point, on_resource: z.string().min(1).optional(), near_water: z.boolean().optional() }).strict().optional(),
   entities: z.array(z.preprocess(upgradeLayoutEntity, z.object({ name: z.string().min(1), dx: z.number(), dy: z.number(),
     direction: direction.optional(), recipe: z.string().min(1).optional(), insert: items.optional(),
@@ -119,11 +132,13 @@ export const areaFields = {
 export const moveEntityFields = { from: point, to: point, direction: direction.optional(), allow_fluid_loss: z.boolean().optional() };
 export const exploreFields = { resource: z.string().min(1).optional(), direction: direction.optional(),
   max_distance: z.number().int().min(32).max(3000) };
+/** With platform (ghosts only) position is relative to the platform's hub. */
 export const blueprintPlaceFields = { name: blueprintName, position: point,
   direction: z.number().int().min(0).max(12).multipleOf(4).optional(), flip: z.enum(["horizontal", "vertical"]).optional(),
-  mode: z.enum(["hand", "ghosts"]).optional() };
+  mode: z.enum(["hand", "ghosts"]).optional(), platform: platformSelector.optional() };
+/** With platform (robots or cancel only) the area is on that platform. */
 export const deconstructFields = { ...areaFields, mode: z.enum(["hand", "robots", "cancel"]).optional(),
-  filter: z.array(z.string().min(1)).min(1).max(32).optional() };
+  filter: z.array(z.string().min(1)).min(1).max(32).optional(), platform: platformSelector.optional() };
 export const upgradeFields = { ...areaFields, from: z.string().min(1), to: z.string().min(1), mode: z.enum(["hand", "robots"]).optional() };
 export const copySettingsFields = { from: point, to: z.array(point).min(1).max(32) };
 /** insert_items: one position with items, or several targets that each get
@@ -137,15 +152,24 @@ export const insertFields = {
 /** Positions one inspection reads; the mod reports the rest as omitted. */
 export const INSPECT_LIMIT = 64;
 const autoSupply = { auto_supply: z.boolean().optional() };
-export const configureFields = { ...position, ...settingsGroups };
+export const configureFields = { ...position, platform: platformSelector.optional(), ...settingsGroups };
 /** place_tiles: exactly one of area or positions, at most 1,024 tiles. */
 export const tilesFields = { item: itemName, area: z.object({ left_top: point, right_bottom: point }).strict().optional(),
   positions: z.array(point).min(1).max(1024).optional(), ...autoSupply };
-export const requestsFields = { target: point, section: z.union([z.number().int().min(1), z.string().min(1)]).optional(),
+/** A chest or landing pad at {x, y}, or a platform's hub ({platform}). */
+export const requestsTarget = z.union([point, z.object({ platform: platformSelector }).strict()]);
+export const requestsFields = { target: requestsTarget, section: z.union([z.number().int().min(1), z.string().min(1)]).optional(),
   mode: z.enum(["merge", "set"]).optional(),
   requests: z.array(z.object({ item: itemName, min: z.number().int().min(0), max: z.number().int().min(0).optional(),
-    quality: z.literal("normal").optional() }).strict()).max(60).optional(),
+    quality: z.literal("normal").optional(), import_from: itemName.optional(),
+    minimum_delivery_count: z.number().int().min(1).optional() }).strict()).max(60).optional(),
   remove: z.array(itemName).min(1).max(60).optional(), request_from_buffers: z.boolean().optional() };
+export const createPlatformFields = { name: z.string().min(1).max(60), quality: z.literal("normal").optional() };
+/** cargo: items and counts, or "requests" (what the platform hub's requests still lack). */
+export const launchRocketFields = { silo: point, platform: platformSelector,
+  cargo: z.union([z.literal("requests"), z.record(itemName, z.number().int().positive())
+    .refine((cargo) => Object.keys(cargo).length >= 1 && Object.keys(cargo).length <= 20, "cargo names 1-20 items")]).optional(),
+  partial: z.boolean().optional() };
 export const equipFields = { armor: z.union([itemName, z.literal(false)]).optional(),
   put: z.array(z.object({ name: itemName, x: z.number().int().min(0).optional(), y: z.number().int().min(0).optional() }).strict()).min(1).max(20).optional(),
   take: z.array(z.union([z.object({ name: itemName }).strict(), z.object({ x: z.number().int().min(0), y: z.number().int().min(0) }).strict()])).min(1).max(20).optional(),
@@ -160,7 +184,7 @@ const planSteps = [
   z.object({ action: z.literal("craft_items"), recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("insert_items"), ...insertFields, ...autoSupply }).strict(),
   z.object({ action: z.literal("extract_items"), ...position, items: items.optional(), inventory: inventoryRole.optional() }).strict(),
-  z.object({ action: z.literal("set_recipe"), ...position, recipe: z.string() }).strict(),
+  z.object({ action: z.literal("set_recipe"), ...position, recipe: z.string(), platform: platformSelector.optional() }).strict(),
   z.object({ action: z.literal("rotate_entity"), ...position, direction: direction.optional() }).strict(),
   z.object({ action: z.literal("inspect_entities"), positions: z.array(point).min(1).max(INSPECT_LIMIT) }).strict(),
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
@@ -180,6 +204,8 @@ const planSteps = [
   z.object({ action: z.literal("place_tiles"), ...tilesFields }).strict(),
   z.object({ action: z.literal("set_requests"), ...requestsFields }).strict(),
   z.object({ action: z.literal("equip"), ...equipFields }).strict(),
+  z.object({ action: z.literal("create_platform"), ...createPlatformFields }).strict(),
+  z.object({ action: z.literal("launch_rocket"), ...launchRocketFields }).strict(),
 ] as const;
 export const planStepSchema = z.discriminatedUnion("action", [...planSteps]);
 /** A build package may also start with blueprint captures, which the bridge
@@ -214,11 +240,45 @@ export function tilesIssue(value: { area?: unknown; positions?: unknown }): stri
   return (value.area === undefined) === (value.positions === undefined)
     ? "give exactly one of area {left_top, right_bottom} or positions" : null;
 }
-export function requestsIssue(value: { mode?: string; requests?: Array<{ item: string; min: number; max?: number }>; remove?: unknown;
+/** A layout gives exactly one of anchor or site; it has entities, or only
+ *  connections (or, on a platform, foundation tiles) from an anchor. A
+ *  platform layout is ghosts from an anchor relative to the hub; tiles are
+ *  platform foundation only. The mod checks the same rules. */
+export function layoutIssue(value: { anchor?: unknown; site?: unknown; mode?: string; platform?: unknown; entities: Array<{ insert?: unknown }>;
+  connections?: unknown[]; tiles?: unknown[]; tile_rects?: Array<{ from: { dx: number; dy: number }; to: { dx: number; dy: number } }> }): string | null {
+  if ((value.anchor === undefined) === (value.site === undefined)) return "give exactly one of anchor or site";
+  const tiles = (value.tiles?.length ?? 0) + (value.tile_rects ?? []).reduce((total, rect) =>
+    total + (Math.abs(rect.to.dx - rect.from.dx) + 1) * (Math.abs(rect.to.dy - rect.from.dy) + 1), 0);
+  if (value.platform === undefined) {
+    if (value.tiles !== undefined || value.tile_rects !== undefined) return "tiles and tile_rects are platform foundation (with platform); on a planet use place_tiles";
+  } else {
+    if (value.mode === "hand") return "a platform is built from ghosts (mode ghosts): the body is not there";
+    if (value.site !== undefined) return "a platform layout takes an anchor relative to the hub, not a site";
+    if (tiles > MAX_LAYOUT_TILES) return `tiles and tile_rects name more than ${MAX_LAYOUT_TILES} tiles`;
+  }
+  if (value.entities.length === 0 && !(value.anchor !== undefined && ((value.connections?.length ?? 0) > 0 || tiles > 0)))
+    return "a layout needs entities, or connections (or platform tiles) from an anchor";
+  if ((value.mode === "ghosts" || value.platform !== undefined) && value.entities.some((entity) => entity.insert !== undefined))
+    return "insert is for hand builds: ghosts take no starting items";
+  return null;
+}
+export function blueprintPlaceIssue(value: { mode?: string; platform?: unknown }): string | null {
+  return value.platform !== undefined && value.mode === "hand" ? "a platform is built from ghosts (mode ghosts): the body is not there" : null;
+}
+export function deconstructIssue(value: { area?: unknown; center?: unknown; radius?: unknown; mode?: string; platform?: unknown }): string | null {
+  if (value.platform !== undefined && value.mode === "hand") return "on a platform the hub deconstructs (mode robots or cancel): the body is not there";
+  return areaIssue(value);
+}
+export function requestsIssue(value: { target: { platform?: unknown } | { x: number; y: number }; mode?: string;
+  requests?: Array<{ item: string; min: number; max?: number; import_from?: string; minimum_delivery_count?: number }>; remove?: unknown;
   request_from_buffers?: unknown }): string | null {
   const requests = value.requests ?? [];
   if (requests.length === 0 && value.remove === undefined && value.request_from_buffers === undefined && value.mode !== "set")
     return "give requests, remove, request_from_buffers or mode set";
+  const hub = "platform" in value.target;
+  if (!hub && requests.some((request) => request.import_from !== undefined || request.minimum_delivery_count !== undefined))
+    return "import_from and minimum_delivery_count are for a platform hub ({platform})";
+  if (hub && value.request_from_buffers !== undefined) return "request_from_buffers is for a requester chest";
   const bad = requests.find((request) => request.max !== undefined && request.max < request.min);
   if (bad) return `${bad.item}: max must be at least min`;
   const names = requests.map((request) => request.item);
@@ -233,10 +293,12 @@ export function stepIssue(step: PackageStep): string | null {
   switch (step.action) {
     case "walk_to": return step.arrival_mode === "exact" && step.arrival_radius !== 1
       ? "exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius" : null;
-    case "build_layout": return (step.anchor === undefined) === (step.site === undefined) ? "build_layout takes exactly one of anchor or site" : null;
+    case "build_layout": return layoutIssue(step);
     case "build_block": return blockIssue(step);
     case "insert_items": return insertIssue(step);
-    case "build_ghosts": case "deconstruct_area": case "upgrade_area": case "blueprint_capture": return areaIssue(step);
+    case "build_ghosts": case "upgrade_area": case "blueprint_capture": return areaIssue(step);
+    case "deconstruct_area": return deconstructIssue(step);
+    case "blueprint_place": return blueprintPlaceIssue(step);
     case "configure_entity": return settingsIssue(step);
     case "place_tiles": return tilesIssue(step);
     case "set_requests": return requestsIssue(step);

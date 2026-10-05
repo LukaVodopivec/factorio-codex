@@ -136,6 +136,11 @@ check(progression.force == "codex-force" and progression.current_research == "au
   and progression.trigger_unlocks[5].trigger.trigger_description[4] == 1
   and progression.enabled_recipes[1] == "alpha" and progression.enabled_recipes[2] == "zeta",
   "progression_status separates deterministic queueable and trigger unlock records")
+check(progression.trigger_unlocks[1].trigger.hint == "craft 12 of it"
+  and progression.trigger_unlocks[2].trigger.hint == "build that entity (on a platform: as a ghost the hub builds)"
+  and progression.trigger_unlocks[3].trigger.hint == "create_platform, then launch_rocket the starter pack"
+  and progression.trigger_unlocks[4].trigger.hint == nil and progression.trigger_unlocks[5].trigger.hint == nil,
+  "trigger records carry the tool hint for their type, and none for types without one")
 
 technology.prototype.effects = {}
 local empty_progression = research.progression_status()

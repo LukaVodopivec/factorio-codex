@@ -13,7 +13,8 @@ local walk_arrival
 local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_output_target = task.output_target end; if kind == "walk_to" then walk_arrival = { mode = task.arrival_mode, radius = task.arrival_radius } end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; if kind == "mine" and not fails then inventory_count = 5 end; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
 local walk, mine, craft = runner("walk_to"), runner("mine"), runner("craft")
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = walk, mine, runner("pickup"), craft
-package.loaded["scripts.actions.build"] = { place = runner("place"), rotate = runner("rotate"), set_recipe = runner("set_recipe") }
+package.loaded["scripts.actions.build"] = { place = runner("place"), rotate = runner("rotate"),
+  set_recipe_action = { runner = runner("set_recipe"), make_task = function() return {} end } }
 package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract"),
   flush_action = { runner = runner("flush_fluid"), make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = runner("build_plan")
@@ -39,7 +40,7 @@ check(not removed_ok and tostring(removed_error):match("unknown plan action") ~=
 local role_ok, role_error = pcall(tasks.queue_plan, { steps = { { action = "extract_items", x = 1, y = 1,
   inventory = "furnace_source" } } })
 check(not role_ok and tostring(role_error):match("inventory must be one of main, input, output") ~= nil
-  and not pcall(tasks.queue_plan, { steps = { { action = "insert_items", x = 1, y = 1, items = { coal = 1 }, inventory = "rocket" } } }),
+  and not pcall(tasks.queue_plan, { steps = { { action = "insert_items", x = 1, y = 1, items = { coal = 1 }, inventory = "cargo" } } }),
   "insert and extract inventory roles are checked at queue time")
 check(not pcall(tasks.queue_plan, { steps = { { action = "configure_entity", x = 1, y = 1 } } })
   and not pcall(tasks.queue_plan, { steps = { { action = "place_tiles", item = "landfill" } } })
@@ -409,6 +410,24 @@ for tick = 415, 417 do game.tick = tick; tasks.on_tick() end
 check(tasks.plan_status({ plan_id = home.plan_id }).status == "completed" and surface_starts == 3,
   "back on its surface the plan starts its step over and completes")
 walk.start, walk.tick = walk_start_fn, walk_tick
+
+-- A plan of remote steps only (a platform's window: no body) binds to no
+-- surface and runs wherever the body stands; one physical step binds it.
+local remote_plan = tasks.queue_plan({ steps = { { action = "create_platform", name = "alpha" } } })
+local mixed_plan = tasks.queue_plan({ steps = { { action = "create_platform", name = "beta" }, { action = "walk_to", x = 1, y = 1 } } })
+local tags = {}
+for _, plan in ipairs(storage.tasks.queue) do tags[plan.id] = plan.surface or "none" end
+check(tags[remote_plan.plan_id] == "none" and tags[mixed_plan.plan_id] == "nauvis",
+  "a remote-only plan carries no surface tag; a plan with a physical step does")
+body.surface.name = "platform-1"
+for _ = 1, 3 do game.tick = 417; tasks.on_tick() end
+local remote_status = tasks.plan_status({ plan_id = remote_plan.plan_id })
+check(remote_status.status ~= "waiting" and remote_status.status ~= "queued" and remote_status.outcomes[1].action == "create_platform"
+  and tasks.plan_status({ plan_id = mixed_plan.plan_id }).status == "queued"
+  and #tasks.plan_status({ plan_id = mixed_plan.plan_id }).outcomes == 0,
+  "off the body's planet the remote plan still runs; the tagged plan waits in the queue")
+tasks.cancel({ plan_id = mixed_plan.plan_id, origin = "test/plans" })
+body.surface.name = "nauvis"
 
 -- A successor whose predecessor failed is cancelled once, even while it is
 -- parked off its surface: it leaves the queue and is logged once.

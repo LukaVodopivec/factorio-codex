@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.22.1**.
+Current release: **0.22.2**.
 
 Factorio Codex shows how Codex bots think about and architect a Factorio
 factory. Two reasoning sessions plan and direct one physical character named
@@ -15,9 +15,12 @@ and a dedicated save. The fixed `/silent-command remote.call` bridge means
 Factorio disables achievements for that save. The interface never exposes Lua,
 arbitrary console commands, images, uncharted terrain, teleportation of the
 Codex body or free resources. Connected spectator cameras follow Codex without
-affecting its movement. Every supported save is permanently peaceful with
-enemy bases disabled. Play is Nauvis-first: there are no rocket,
-space-platform, or planet-travel tools yet.
+affecting its movement. Every supported save is permanently peaceful: planets
+generate no Nauvis enemy bases (Gleba's own stay, its eggs feed agricultural
+science), and space platforms get no world-policy write. Play reaches orbit: the body launches rockets from
+a silo on Nauvis, and space platforms are built remotely from ghosts their
+hub fulfils, as the game's remote view allows; everything on a planet keeps
+physical reach. There are no planet-travel tools yet.
 
 ## Install and use
 
@@ -176,7 +179,7 @@ replacement.
 
 ## MCP tools
 
-The full surface has 47 tools; the read-only surface used by Astra has 21.
+The full surface has 50 tools; the read-only surface used by Astra has 22.
 Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
 `idle_seconds`, `human_control`). Heavy reads (`map_summary`, a full
 `observe_local`, route and site searches, dry runs, blueprint capture and
@@ -186,15 +189,16 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | Tool | Surface | Purpose |
 | --- | --- | --- |
 | `connect_status` | both | config, RCON, mod and protocol check; binds the `Codex` player |
-| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover`, stock, research, body, patches; `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
-| `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change), `research_finished`, `queue_empty`, `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, or `timeout` |
+| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover`, stock, research, body, patches, one line per space platform; `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
+| `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change), `research_finished`, `queue_empty`, `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, `rocket_ready`, `rocket_launched`, `cargo_delivered`, `platform_state_changed`, or `timeout` |
 | `activity_log` | both | recent plan outcomes with `source` (`pilot`, `upkeep`, `package:<id>`), cancels with their `origin`, blueprint changes, and package statuses |
-| `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections |
+| `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections; `mode: ghosts` for robots; `platform` marks ghosts and foundation tiles on a space platform for its hub to build |
 | `build_block` | both (read-only: dry run) | `mining`, `smelting`, `assembly`, `power` or `labs` blocks, `count` copies, or a stored `blueprint` |
 | `connect_entities` | both (read-only: dry run) | belt, pipe or power route of up to 200 pieces between entities or free tiles, underground past obstacles |
 | `blueprint_list`, `blueprint_describe`, `blueprint_export` | both | this run's stored blueprints; export is a string for notes, never imported |
-| `blueprint_place` | both (read-only: dry run) | build a stored blueprint by hand or as ghosts |
+| `blueprint_place` | both (read-only: dry run) | build a stored blueprint by hand or as ghosts, or as ghosts on a space platform |
 | `place_tiles` | both (read-only: dry run) | lay landfill, stone path, concrete, foundation or ice platform over an area or up to 1,024 positions, nearest first; a dry run counts the items |
+| `platform_status` | both | space platforms: state, location, hub slots and requests; `detail: full` for one platform adds foundation, hub contents, entities and `ghosts.missing` |
 | `map_summary` | both | full flow graph of the charted factory; `include` adds `stockpiles`, `sites`, `patches`, `power`, `problems`, `flows_all` |
 | `observe_local`, `inspect_entity` | both | nearby entities and exact entity state with settings, up to 64 positions (own entities anywhere charted) |
 | `can_place`, `find_placement` | both | placement checks anywhere charted |
@@ -204,8 +208,10 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | `queue_plan`, `run_plan` | full | 1-200 plan steps; `queue_plan` returns at once |
 | `walk_to`, `mine`, `pickup_items`, `place_entity`, `craft_items`, `insert_items`, `extract_items`, `set_recipe`, `rotate_entity`, `build_plan`, `start_research` | full | single physical actions |
 | `move_entity`, `explore`, `build_ghosts`, `deconstruct_area`, `upgrade_area`, `copy_settings` | full | one-step plans: move a building with its contents, scout and chart, build ghosts by hand, clear or upgrade an area, copy settings |
-| `configure_entity` | full | inserter filters, mode and stack size, splitter priorities and filter, chest slot limit or storage filter; walks there, changes only what is named, reads back |
-| `set_requests` | full | requests of a requester or buffer chest (`merge`, `set`, `remove`); only robots deliver, `network: null` when no roboport covers it |
+| `configure_entity` | full | inserter filters, mode and stack size, splitter priorities and filter, chest slot limit or storage filter, asteroid collector filters, silo `auto_requests`; walks there (with `platform`: at once, no body), changes only what is named, reads back |
+| `set_requests` | full | requests of a requester or buffer chest or a landing pad (`merge`, `set`, `remove`), or of a platform hub (`target: {platform}`, at once, with `import_from`); only robots and platforms deliver, `network: null` when no roboport covers a chest |
+| `create_platform` | full | register a space platform over the body's planet, at once; it waits for its starter pack |
+| `launch_rocket` | full | load a ready rocket with cargo (items, or `"requests"`: what the hub still lacks) and launch it to a platform; a waiting one needs its starter pack in cargo |
 | `blueprint_capture`, `blueprint_create`, `blueprint_delete` | full | store a blueprint from own buildings or a layout; delete one |
 | `stop` | full | supervisor-only emergency cancellation |
 
@@ -214,12 +220,19 @@ Plan steps are `walk_to`, `mine`, `pickup_items`, `place_entity`,
 `inspect_entities`, `wait_for_item`, `wait_for_research`, `get_items`,
 `build_layout`, `build_block`, `explore`, `move_entity`, `blueprint_place`,
 `build_ghosts`, `deconstruct_area`, `upgrade_area`, `copy_settings`,
-`configure_entity`, `place_tiles`, `set_requests`, `equip` and `flush_fluid`;
+`configure_entity`, `place_tiles`, `set_requests`, `create_platform`,
+`launch_rocket`, `equip` and `flush_fluid`;
 `equip` (wear armor, fit or remove equipment from the inventory) and
 `flush_fluid` (empty a pipe, pump or tank system; the fluid is destroyed) are
 plan steps only. `extract_items` and `insert_items` take an optional
 `inventory` (`output`, `input`, `fuel`, `burnt_result`, `modules`, `trash`,
-`main`, `robots`, `material`); without it they behave as before. A build
+`main`, `robots`, `material`, `rocket`); without it they behave as before. Steps
+with `platform` (`set_recipe`, `configure_entity`, `build_layout`,
+`blueprint_place`, `deconstruct_area`, and `set_requests` on a hub) and
+`create_platform` act on a space platform without the body, when the FIFO
+reaches them, without walking; the direct `set_recipe`, `configure_entity` and
+`set_requests` tools with a platform, and `create_platform`, answer at once
+over one RPC. A build
 package may also start with `blueprint_capture` steps, which the bridge makes
 before it queues the rest (after its `after_package_id` plan has ended).
 `craft_items` does not hold the body unless `wait_for_completion` is true; a

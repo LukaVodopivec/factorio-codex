@@ -299,16 +299,29 @@ describe("build packages the bridge queues", () => {
       { action: "extract_items", x: 1.5, y: 1.5, inventory: "burnt_result" }];
     expect(reduceLedger(ledger(), withPackages([{ ...drillPair(), steps }])).result).toMatchObject({ status: "applied", revision: 1 });
     const cases: Array<[unknown[], string]> = [
-      [[{ action: "configure_entity", x: 0, y: 0 }], "at least one of inserter, splitter or chest"],
+      [[{ action: "configure_entity", x: 0, y: 0 }], "at least one of inserter, splitter, chest, collector or silo"],
       [[{ action: "place_tiles", item: "landfill" }], "exactly one of area"],
       [[{ action: "set_requests", target: { x: 0, y: 0 } }], "requests, remove, request_from_buffers or mode set"],
       [[{ action: "equip" }], "armor, put or take"],
+      [[{ action: "build_layout", anchor: { x: 0, y: 0 }, platform: "Orbit", mode: "hand", entities: [{ name: "crusher", dx: 0, dy: 0 }] }],
+        "built from ghosts"],
+      [[{ action: "set_requests", target: { x: 0, y: 0 }, requests: [{ item: "coal", min: 1, import_from: "nauvis" }] }], "for a platform hub"],
     ];
     for (const [bad, text] of cases) {
       const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), steps: bad }])).result;
       expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
       expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(text)), text).toBe(true);
     }
+  });
+
+  it("carries the 0.22.2 platform work in packages: remote steps and launches", () => {
+    const steps = [
+      { action: "build_layout", anchor: { x: 0, y: -8 }, platform: "Orbit", entities: [{ name: "crusher", dx: 0, dy: 0, recipe: "metallic-asteroid-crushing" }],
+        tile_rects: [{ name: "space-platform-foundation", from: { dx: -2, dy: -2 }, to: { dx: 2, dy: 2 } }] },
+      { action: "configure_entity", x: 0.5, y: -6.5, platform: 3, collector: { filters: ["metallic-asteroid-chunk"] } },
+      { action: "set_requests", target: { platform: "Orbit" }, requests: [{ item: "iron-plate", min: 400, import_from: "nauvis" }] },
+      { action: "launch_rocket", silo: { x: 20.5, y: 20.5 }, platform: "Orbit", cargo: "requests" }];
+    expect(reduceLedger(ledger(), withPackages([{ ...drillPair(), steps }])).result).toMatchObject({ status: "applied", revision: 1 });
   });
 
   it("rejects packages it could not execute as written, with the offending path", () => {

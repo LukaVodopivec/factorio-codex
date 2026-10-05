@@ -179,4 +179,14 @@ check(partial_insert_result and partial_insert_result.status == "partial"
   and partial_insert_result.outcome.transfers[1].remainder == 1,
   "partial insert is an explicit bounded partial with requested, moved, and remainder counts")
 
+-- A ready rocket and its cargo pod sit at their silo's centre: an action
+-- aimed there operates the silo, which owns the rocket's inventory.
+local silo = { valid = true, type = "rocket-silo", position = { x = 20.5, y = 30.5 } }
+local rocket_body = { surface = { find_entities_filtered = function()
+  return { { valid = true, type = "rocket-silo-rocket", position = { x = 20.5, y = 30.5 } },
+    { valid = true, type = "cargo-pod", position = { x = 20.5, y = 30.5 } }, silo }
+end } }
+check(real_approach.find_entity_near(rocket_body, { x = 20.5, y = 30.5 }) == silo,
+  "the silo, not its rocket or cargo pod, is the target at a silo's centre")
+
 os.exit(failures == 0 and 0 or 1)

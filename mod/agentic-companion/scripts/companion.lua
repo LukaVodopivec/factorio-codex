@@ -313,29 +313,57 @@ end
 -- name it only binds the native player and can never create a character.
 M.spawn = M.connect
 
--- Fresh and existing surfaces remain peaceful and generate no enemy bases.
--- Shared wiring calls this on init/configuration and surface creation. A
--- surface whose settings cannot be written (a space platform) is skipped,
--- never an error in the event that created it.
-local ENEMY_CONTROLS = { "enemy-base", "gleba_enemy_base" }
-function M.enforce_peaceful_world()
+-- World policy: planets stay peaceful and generate no Nauvis enemy bases.
+-- Init and configuration change visit every surface; on_surface_created
+-- (event.surface_index) only the new one. A space platform's surface (or any
+-- surface without a planet) gets no write at all (asteroids are its only resource), and Gleba's own enemy
+-- bases (gleba_enemy_base) stay: their eggs are needed for agricultural
+-- science. Every write is its own pcall, never an error in the event that
+-- created the surface; failures are kept in storage.world_policy.errors (the
+-- last few), which ping shows.
+local MAX_POLICY_ERRORS = 8
+local function policy_error(surface, what, err)
+  storage.world_policy = storage.world_policy or { errors = {} }
+  local errors = storage.world_policy.errors
+  local ok, name = pcall(function() return surface.name end)
+  errors[#errors + 1] = { tick = game.tick, surface = ok and name or nil, write = what,
+    error = tostring(err):gsub("^.-:%d+:%s*", "") }
+  while #errors > MAX_POLICY_ERRORS do table.remove(errors, 1) end
+end
+
+local function policy_write(surface, what, fn)
+  local ok, err = pcall(fn)
+  if not ok then policy_error(surface, what, err) end
+end
+
+-- Only a planet's surface is written: not a platform's (whose platform may
+-- not be attached yet when on_surface_created fires), nor any other.
+local function surface_policy(surface)
+  local ok, planet = pcall(function() return surface.platform == nil and surface.planet ~= nil end)
+  if not (ok and planet) then return end
+  policy_write(surface, "peaceful_mode", function() surface.peaceful_mode = true end)
+  policy_write(surface, "map_gen_settings", function()
+    local settings = surface.map_gen_settings
+    settings.autoplace_controls = settings.autoplace_controls or {}
+    settings.autoplace_controls["enemy-base"] = { frequency = 0, size = 0, richness = 0 }
+    surface.map_gen_settings = settings
+  end)
+end
+
+function M.enforce_peaceful_world(event)
   pcall(function() game.map_settings.enemy_expansion.enabled = false end)
-  local controls = { "enemy-base" }
-  for _, control in ipairs(ENEMY_CONTROLS) do
-    local ok, exists = pcall(function() return prototypes.autoplace_control[control] ~= nil end)
-    if control ~= "enemy-base" and ok and exists then controls[#controls + 1] = control end
+  if type(event) == "table" and event.surface_index then
+    local surface = game.surfaces[event.surface_index]
+    if surface then surface_policy(surface) end
+    return
   end
-  for _, surface in pairs(game.surfaces) do
-    pcall(function() surface.peaceful_mode = true end)
-    pcall(function()
-      local settings = surface.map_gen_settings
-      settings.autoplace_controls = settings.autoplace_controls or {}
-      for _, control in ipairs(controls) do
-        settings.autoplace_controls[control] = { frequency = 0, size = 0, richness = 0 }
-      end
-      surface.map_gen_settings = settings
-    end)
-  end
+  for _, surface in pairs(game.surfaces) do surface_policy(surface) end
+end
+
+-- The last world-policy write failures, for ping (nil when there are none).
+function M.world_policy_errors()
+  local errors = storage.world_policy and storage.world_policy.errors
+  return errors and #errors > 0 and errors or nil
 end
 
 return M

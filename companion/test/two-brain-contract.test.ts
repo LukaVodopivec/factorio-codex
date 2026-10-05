@@ -21,7 +21,7 @@ const registered = new Set([...read("companion/src/mcp/server.ts").matchAll(/reg
 describe("persistent two-brain coordination contract", () => {
   it("keeps the instructions short, with shared rules only in SKILL.md", () => {
     const size = [skill, pilot, strategist, knowledge].reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
-    expect(size).toBeLessThan(28_000);
+    expect(size).toBeLessThan(30_100);
     expect(skill).not.toMatch(/## Engineering reuse/);
     for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
   });
@@ -249,6 +249,26 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(knowledge)).toMatch(/solar panels with accumulators are an option that needs no fuel/);
     expect(flat(knowledge)).toMatch(/Filter inserters and filtered splitters sort mixed belts, such as Fulgora's scrap/);
     expect(flat(knowledge)).toMatch(/Landfill joins a site across water; Aquilo's ocean takes ice platform/);
+  });
+
+  it("teaches the 0.22.2 rocket and platform tools and the remote rule in plain words", () => {
+    const flatSkill = flat(skill);
+    expect(flatSkill).toMatch(/\*\*To space\.\*\*/);
+    expect(flatSkill).toMatch(/A rocket silo needs power and stacks 50 rocket parts \(each a processing unit, low density structure, and rocket fuel\)/);
+    expect(flatSkill).toMatch(/`create_platform` registers a platform over the body's planet at once\. It waits until a rocket brings its starter pack: launching the pack creates the platform/);
+    expect(flatSkill).toMatch(/`launch_rocket` loads a ready rocket with the cargo you name[\s\S]*with no rocket ready it fails at once with the part count/);
+    expect(flatSkill).toMatch(/`platform_status` is your platform screen[\s\S]*`ghosts\.missing`: what must still go up/);
+    expect(flatSkill).toMatch(/Platforms are built only from ghosts the hub fulfils from its own items/);
+    expect(flatSkill).toMatch(/With `target: \{platform\}`, `set_requests` sets what the hub keeps stocked[\s\S]*`get_items` takes from a landing pad/);
+    expect(flatSkill).toMatch(/Space platforms are the one exception[\s\S]*everything on a planet keeps reach/);
+    expect(flatSkill).toMatch(/Remote: `create_platform` and every step with `platform`/);
+    for (const event of ["rocket_ready", "rocket_launched", "cargo_delivered", "platform_state_changed"]) expect(skill).toContain(`\`${event}\``);
+    for (const tool of ["platform_status", "create_platform", "launch_rocket", "set_requests"]) expect(registered).toContain(tool);
+    expect(READ_ONLY_TOOLS).toContain("platform_status");
+    expect(flat(strategist)).toMatch(/A platform package holds `create_platform` and the starter-pack `launch_rocket`; its `build_layout` or `blueprint_place` package with `platform` comes once `platform_status` shows a hub/);
+    expect(flatSkill).toMatch(/marks entities and foundation tiles touching existing foundation, after `cargo_delivered`/);
+    expect(flatSkill).toMatch(/as direct tools `set_recipe`, `configure_entity` and `set_requests` answer at once, the rest queue in the FIFO/);
+    expect(agents).toMatch(/Space platforms are the exception: `create_platform` and steps that name a `platform` act on that platform without the body, as the game's remote view does; everything on a planet keeps physical reach/);
   });
 
   it("allows this run's positions, forbids anything from another run, and reads remotely while acting needs reach", () => {

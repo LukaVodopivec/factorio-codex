@@ -129,8 +129,9 @@ local function size_of(entities)
 end
 
 -- {left_top, right_bottom} from area | center+radius, at most MAX_SIDE a side,
--- every chunk under it charted by the body's force.
-function M.area(c, params, label)
+-- every chunk under it charted by the body's force. On a platform's surface
+-- (the force's own, always readable) nothing is checked for charting.
+function M.area(c, params, label, platform_surface)
   local area
   if params.area ~= nil then
     local a = params.area
@@ -153,6 +154,7 @@ function M.area(c, params, label)
   if w > M.MAX_SIDE or h > M.MAX_SIDE then
     error(string.format("%s area is %.0f x %.0f tiles; at most %d x %d", label, w, h, M.MAX_SIDE, M.MAX_SIDE), 0)
   end
+  if platform_surface then return area end
   for cy = math.floor(area.left_top.y / 32), math.floor((area.right_bottom.y - 0.001) / 32) do
     for cx = math.floor(area.left_top.x / 32), math.floor((area.right_bottom.x - 0.001) / 32) do
       local ok, charted = pcall(c.force.is_chunk_charted, c.surface, { x = cx, y = cy })
@@ -492,6 +494,10 @@ function M.build_stack(name, flip, label)
   if #tiles > 0 then copy.set_blueprint_tiles(tiles) end
   return copy
 end
+
+-- A clean blueprint in the scratch slot, for a blueprint built and placed in
+-- the same tick (build_layout ghosts); clear_scratch empties it again.
+M.scratch = scratch
 
 function M.clear_scratch()
   pcall(function() inventory()[scratch_slot()].clear() end)

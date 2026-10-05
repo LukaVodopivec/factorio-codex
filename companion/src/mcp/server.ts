@@ -9,14 +9,14 @@ import { createOrdersTracker, createPackageQueue, packageFailures, readPackageQu
 import { currentRunDir } from "../server/server.js";
 import { eventSummary, nextEventSchema, waitForEvent, type FailureDelivery } from "./events.js";
 import { normalizeObservation } from "./observation.js";
-import { areaFields, areaIssue, blockFields, blockIssue, blueprintName, blueprintPlaceFields, captureFields, configureFields, copySettingsFields, deconstructFields,
-  entitySettings, executeRunPlan, exploreFields, INSPECT_LIMIT, insertFields, insertIssue, inventoryRole, layoutEntitiesMessage, layoutEntitiesRule, layoutFields, moveEntityFields,
-  planStatusSchema, queuePlanSchema, requestsFields, requestsIssue, runPlanSchema, settingsIssue, tilesFields, tilesIssue,
-  upgradeFields, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
-import { normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
+import { areaFields, areaIssue, blockFields, blockIssue, blueprintName, blueprintPlaceFields, blueprintPlaceIssue, captureFields, configureFields, copySettingsFields,
+  createPlatformFields, deconstructFields, deconstructIssue, entitySettings, executeRunPlan, exploreFields, INSPECT_LIMIT, insertFields, insertIssue, inventoryRole,
+  launchRocketFields, layoutFields, layoutIssue, moveEntityFields, planStatusSchema, platformSelector, queuePlanSchema, requestsFields, requestsIssue, runPlanSchema,
+  settingsIssue, tilesFields, tilesIssue, upgradeFields, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
+import { normalizeActivityLog, normalizeCanPlace, normalizeConfigured, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, normalizeRequests, luaArray, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.22.1";
+export const MCP_SERVER_VERSION = "0.22.2";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();
@@ -57,8 +57,8 @@ function failure(error: unknown, prefix = "Error") {
 /** Optional map_summary sections; each adds a top-level key of the same name
  *  (flows_all adds force_flows_all), scoped to charted chunks. */
 export const MAP_SUMMARY_SECTIONS = ["stockpiles", "sites", "patches", "power", "problems", "flows_all"] as const;
-/** logistics is read only when named. */
-export const FACTORY_STATUS_SECTIONS = ["lines", "problems", "power", "stock", "research", "body", "patches", "logistics"] as const;
+/** logistics is read only when named; platforms is absent until a platform exists. */
+export const FACTORY_STATUS_SECTIONS = ["lines", "problems", "power", "stock", "research", "body", "patches", "logistics", "platforms"] as const;
 
 export type McpSurface = "full" | "read-only";
 /** Who runs this MCP process, named in the origin of every cancel it makes:
@@ -69,7 +69,7 @@ export const READ_ONLY_TOOLS = [
   "connect_status", "map_summary", "progression_status", "production_requirements",
   "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement",
   "factory_status", "activity_log", "next_event", "build_layout", "build_block", "connect_entities",
-  "blueprint_list", "blueprint_describe", "blueprint_export", "blueprint_place", "place_tiles",
+  "blueprint_list", "blueprint_describe", "blueprint_export", "blueprint_place", "place_tiles", "platform_status",
 ] as const;
 
 export async function connectStatus(
@@ -88,7 +88,7 @@ export async function connectStatus(
         status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version,
         mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick,
         companion_exists: false, companion_ever_created: ping.companion_ever_created,
-        companion_dead: ping.companion_dead, read_only: true, ...(ping.fifo ? { fifo: ping.fifo } : {}),
+        companion_dead: ping.companion_dead, read_only: true, ...(ping.fifo ? { fifo: ping.fifo } : {}), ...policyErrors(ping),
         summary: "Connected read-only; no living Codex character is currently available",
       });
     }
@@ -101,8 +101,15 @@ export async function connectStatus(
     status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version,
     mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick,
     companion_exists: ping.companion_exists, companion_ever_created: ping.companion_ever_created,
-    companion_dead: ping.companion_dead, ...(ping.fifo ? { fifo: ping.fifo } : {}),
+    companion_dead: ping.companion_dead, ...(ping.fifo ? { fifo: ping.fifo } : {}), ...policyErrors(ping),
   });
+}
+
+/** World-policy writes that failed on some surface (peaceful mode, enemy
+ *  bases), as ping reports them; absent when there are none. */
+function policyErrors(ping: any): { world_policy_errors?: unknown[] } {
+  const errors = luaArray(ping?.world_policy_errors ?? []);
+  return errors.length > 0 ? { world_policy_errors: errors } : {};
 }
 
 type ToolRegistrar = {
@@ -117,6 +124,21 @@ function factoryStatusSummary(value: any): string {
   if (Array.isArray(value?.problems)) parts.push(`${value.problems.length} problems`);
   if (value?.body) parts.push(`queue ${value.body.queue_depth ?? 0}${value.body.human_control ? ", human hold" : ""}`);
   return `tick ${value?.tick}: ${parts.join("; ")}`;
+}
+
+function platformStatusSummary(value: any): string {
+  if (value?.platform) {
+    const p = value.platform;
+    const where = p.location ? ` at ${p.location}` : "";
+    if (!value.hub) return `tick ${value.tick}: platform ${p.name} ${p.state}${where}; no hub yet`;
+    const missing: any[] = Array.isArray(value.ghosts?.missing) ? value.ghosts.missing : [];
+    return `tick ${value.tick}: platform ${p.name} ${p.state}${where}; ${value.foundation?.tiles ?? 0} foundation tiles, `
+      + `${(value.entities?.length ?? 0) + (value.omitted_entities ?? 0)} entities, ghosts miss ${missing.length} item kinds`;
+  }
+  const rows: any[] = Array.isArray(value?.platforms) ? value.platforms : [];
+  const count = rows.length + (value?.omitted_platforms ?? 0);
+  return `tick ${value?.tick}: ${count} platform${count === 1 ? "" : "s"}${rows.length
+    ? `: ${rows.map((row) => `${row.name} ${row.state}${row.location ? ` at ${row.location}` : ""}`).join("; ")}` : ""}`;
 }
 
 /** Register the complete public surface against an injectable bridge provider.
@@ -139,6 +161,14 @@ export function registerMcpTools(
   const rpc = async (method: any, params: unknown = {}, signal?: AbortSignal) => {
     try { return result(await (await bridge()).call(method, params, signal)); }
     catch (error) { return failure(error); }
+  };
+  // A remote action on a space platform (its window, no body): one RPC that
+  // acts at once and answers with the step's outcome.
+  const remote = async (method: any, params: unknown, summary: (value: any) => string, normalize = (value: any) => value) => {
+    try {
+      const value: any = normalize(await (await bridge()).call(method, params));
+      return result({ ...value, status: "completed", terminal: true, summary: summary(value), next_action: null });
+    } catch (error) { return failure(error); }
   };
   // A TUI turn interruption aborts the MCP request; the bridge then cancels
   // the owned game task, naming the tool and this process's role in the
@@ -182,12 +212,9 @@ export function registerMcpTools(
     const message = check(value);
     if (message) context.addIssue({ code: "custom", message });
   };
-  const layoutSite = (layout: { anchor?: unknown; site?: unknown }) => (layout.anchor === undefined) !== (layout.site === undefined);
-  const siteMessage = { message: "give exactly one of anchor or site" };
-  const layoutSchema = z.object({ ...layoutFields, check_only: checkOnly }).strict().refine(layoutSite, siteMessage)
-    .refine(layoutEntitiesRule, layoutEntitiesMessage);
+  const layoutSchema = z.object({ ...layoutFields, check_only: checkOnly }).strict().superRefine(issue(layoutIssue));
   const blockSchema = z.object({ ...blockFields, check_only: checkOnly }).strict().superRefine(issue(blockIssue));
-  const placeBlueprintSchema = z.object({ ...blueprintPlaceFields, check_only: checkOnly }).strict();
+  const placeBlueprintSchema = z.object({ ...blueprintPlaceFields, check_only: checkOnly }).strict().superRefine(issue(blueprintPlaceIssue));
   const tilesSchema = z.object({ ...tilesFields, check_only: checkOnly }).strict().superRefine(issue(tilesIssue));
   const routeSchema = z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string().min(1), from: position, to: position,
     max_length: z.number().int().min(1).max(200).default(200), fluid: z.string().min(1).optional(),
@@ -268,12 +295,12 @@ export function registerMcpTools(
     try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }, extra?.signal))); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("inspect_entity", { description: `Inspect up to ${INSPECT_LIMIT} exact positions: contents by inventory, settings, status. Beyond 30 tiles only own entities in charted chunks are read, marked remote: true. Input: {"positions":[{"x":1.5,"y":2.5}]}.`, inputSchema: z.object({ positions: z.array(position).min(1).max(INSPECT_LIMIT) }) }, async ({ positions }) => {
+  tools.registerTool("inspect_entity", { description: `Inspect up to ${INSPECT_LIMIT} exact positions: contents by inventory, settings, status; a rocket silo's rocket (parts, cargo, weight, auto requests), a landing pad's stock and requests. Beyond 30 tiles only own entities in charted chunks are read, marked remote: true. Input: {"positions":[{"x":1.5,"y":2.5}]}.`, inputSchema: z.object({ positions: z.array(position).min(1).max(INSPECT_LIMIT) }) }, async ({ positions }) => {
     try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions)))); }
     catch (error) { return failure(error); }
   });
   tools.registerTool("describe_prototype", { description: "Describe up to 10 item, entity or recipe prototypes; auto tries entity, then item, then recipe.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
-  tools.registerTool("progression_status", { description: "Researched technologies, what can be researched now, and what each unlocks.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
+  tools.registerTool("progression_status", { description: "Researched technologies, what can be researched now, and what each unlocks; a trigger technology names its trigger and a hint at the tool that completes it.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
   tools.registerTool("can_place", { description: "Check up to 24 placements without building. Each result keeps the request and gives can_place, the reason, overlaps_batch (indexes of overlapping placements in the batch), and what an inserter would pick up from and drop onto.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24) }) }, async ({ placements }) => {
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements)), placements)); }
     catch (error) { return failure(error); }
@@ -322,7 +349,7 @@ export function registerMcpTools(
     since_tick: z.number().int().nonnegative().optional(),
     sections: z.array(z.enum(FACTORY_STATUS_SECTIONS)).min(1).max(FACTORY_STATUS_SECTIONS.length).optional(),
   }).strict();
-  tools.registerTool("factory_status", { description: "One compact read of the whole factory: production lines with state (running, starved, output_full, no_fuel, no_power, no_heat, disabled, idle), rate, cause and position (hand_transfers: served by hand twice or more in ten minutes, so it needs a connection); problem machines; power by source with sustained_w and, when short, add_to_cover; stock; research; the body; nearby resource patches. since_tick returns only lines and problems changed since then; sections picks parts; logistics (robot networks) is read only when named, e.g. sections ['lines','power','logistics'].", inputSchema: factoryStatusSchema }, async (p) => {
+  tools.registerTool("factory_status", { description: "One compact read of the whole factory: production lines with state (running, starved, output_full, no_fuel, no_power, no_heat, disabled, idle), rate, cause and position (hand_transfers: served by hand twice or more in ten minutes, so it needs a connection); problem machines; power by source with sustained_w and, when short, add_to_cover; stock; research; the body; nearby resource patches; one line per space platform once there is one. since_tick returns only lines and problems changed since then; sections picks parts; logistics (robot networks) is read only when named, e.g. sections ['lines','power','logistics'].", inputSchema: factoryStatusSchema }, async (p) => {
     try {
       const value = normalizeFactoryStatus(await (await bridge()).call("factory_status", factoryStatusSchema.parse(p)));
       return result({ ...value, summary: factoryStatusSummary(value) });
@@ -344,7 +371,7 @@ export function registerMcpTools(
         summary: `${entries.length} row${entries.length === 1 ? "" : "s"}${last ? `; last: ${lastText.trim()}` : ""}` });
     } catch (error) { return failure(error); }
   });
-  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended (with the plan's step outcomes and inventory change), research_finished, queue_empty, new_problem, package_failed, orders_changed, human_hold_started, human_hold_ended, or timeout. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, research, problem or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
+  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended (with the plan's step outcomes and inventory change), research_finished, queue_empty, new_problem, package_failed, orders_changed, human_hold_started, human_hold_ended, rocket_ready, rocket_launched, cargo_delivered, platform_state_changed, or timeout. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, research, problem, rocket or platform event or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
     try {
       const value = await waitForEvent(await bridge(), nextEventSchema.parse(input), {
         ordersChanged: orders.changed,
@@ -354,7 +381,7 @@ export function registerMcpTools(
       return result({ ...value, status: "completed", terminal: true, summary: eventSummary(value), next_action: null });
     } catch (error) { return failure(error); }
   });
-  tools.registerTool("build_layout", { description: `Build a layout given as offsets (dx, dy) from an anchor, or from a site the mod finds (near a point, on a resource, near water): entities with direction, recipe, starting items (insert), mirror, belt_to_ground_type (input|output) for underground belts and settings (inserter filters, splitter priorities, chest limits, set as each is built), plus belt, pipe and power connections. The mod checks every placement, fetches or crafts the materials, clears trees and rocks, walks and builds.${dryRun}`, inputSchema: layoutSchema }, async (p, extra) => {
+  tools.registerTool("build_layout", { description: `Build a layout given as offsets (dx, dy) from an anchor, or from a site the mod finds (near a point, on a resource, near water): entities with direction, recipe, starting items (insert), mirror, belt_to_ground_type (input|output) for underground belts and settings (inserter filters, splitter priorities, chest limits, set as each is built), plus belt, pipe and power connections. The mod checks every placement, fetches or crafts the materials, clears trees and rocks, walks and builds. mode ghosts places ghosts for robots instead. With platform it marks ghosts on that space platform from an anchor relative to its hub, plus foundation tiles (tiles, tile_rects; each touches foundation), and the hub builds them from its own items; the body stays put.${dryRun}`, inputSchema: layoutSchema }, async (p, extra) => {
     try { return await step("build_layout")(layoutSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
@@ -369,13 +396,21 @@ export function registerMcpTools(
   tools.registerTool("blueprint_list", { description: "The blueprints stored for this run, with size and entity count.", inputSchema: z.object({}).strict() }, async () => rpc("blueprint_list"));
   tools.registerTool("blueprint_describe", { description: "One stored blueprint: its entities with offsets, size and item cost.", inputSchema: named }, async (p, extra) => rpc("blueprint_describe", named.parse(p), extra?.signal));
   tools.registerTool("blueprint_export", { description: "A stored blueprint as a string for the notebook. It is never imported back.", inputSchema: named }, async (p) => rpc("blueprint_export", named.parse(p)));
-  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots.${dryRun} A dry run lists collisions, missing items and the nearest free position.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
+  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items and the nearest free position.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
     try { return await step("blueprint_place")(placeBlueprintSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
   tools.registerTool("place_tiles", { description: `Lay landfill, stone path, concrete, foundation or ice platform from the inventory over an area or a list of positions (at most 1,024 tiles), nearest first, walking along. Tiles that already have it are skipped; tiles the item cannot cover are named with the item to use.${dryRun} A dry run says how many items it needs.`, inputSchema: tilesSchema }, async (p, extra) => {
     try { return await step("place_tiles")(tilesSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
+  });
+  const platformStatusSchema = z.object({ platform: platformSelector.optional(), detail: z.enum(["compact", "full"]).default("compact") }).strict()
+    .refine((p) => p.detail === "compact" || p.platform !== undefined, { message: "detail full reads one platform: name it", path: ["platform"] });
+  tools.registerTool("platform_status", { description: "Your space platforms: state, location, hub free slots and requests. detail full (one platform) adds its foundation rows, hub contents and requests, entities with recipes and filters, and ghosts.missing: what its ghosts still need that the hub lacks, to send up by rocket.", inputSchema: platformStatusSchema }, async (p, extra) => {
+    try {
+      const value = normalizePlatformStatus(await (await bridge()).call("platform_status", platformStatusSchema.parse(p), extra?.signal));
+      return result({ ...value, summary: platformStatusSummary(value) });
+    } catch (error) { return failure(error); }
   });
   if (surface === "read-only") return;
   tools.registerTool("get_items", { description: "Get count of an item into the inventory: from the nearest own chest, belt or machine output, else by smelting ore in an own furnace or crafting it with its intermediates, else by hand-gathering a raw resource no drill produces. The result names any shortfall and when more is expected.", inputSchema: z.object({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) =>
@@ -393,16 +428,47 @@ export function registerMcpTools(
   });
   tools.registerTool("extract_items", { description: "Take the named items, or everything when items is omitted, out of the entity at a position. inventory picks one of its inventories (output by default, a chest's contents); the result lists the ones it has.", inputSchema: position.extend({ items: items.optional(), inventory: inventoryRole.optional() }) }, async (p, extra) => task("extract_items", "extract", toolPayloads.extract(p), extra?.signal));
   const configureInput = z.object(configureFields).strict().superRefine(issue(settingsIssue));
-  tools.registerTool("configure_entity", { description: "Set what you would set in a building's window: inserter filters, mode and stack size, splitter priorities and filter, a chest's slot limit or storage filter (null clears). The body walks there, changes only what you name and returns the settings as they now are; repeating it changes nothing.", inputSchema: configureInput }, async (p, extra) => {
-    try { return await step("configure_entity")(configureInput.parse(p), extra?.signal); }
-    catch (error) { return failure(error); }
+  tools.registerTool("configure_entity", { description: "Set what you would set in a building's window: inserter filters, mode and stack size, splitter priorities and filter, a chest's slot limit or storage filter (null clears), an asteroid collector's chunk filters, a rocket silo's auto_requests. The body walks there; with platform it sets that platform's entity without the body. It changes only what you name and returns the settings as they now are; repeating it changes nothing.", inputSchema: configureInput }, async (p, extra) => {
+    try {
+      const parsed = configureInput.parse(p);
+      // A platform entity is its platform's window: one RPC, no body, no FIFO.
+      if (parsed.platform !== undefined) return await remote("configure_entity", parsed, (value) =>
+        `configured the ${value?.entity?.name} on platform ${parsed.platform}: ${value.changed.join(", ") || "nothing changed"}`,
+      normalizeConfigured);
+      return await step("configure_entity")(parsed, extra?.signal);
+    } catch (error) { return failure(error); }
   });
   const requestsInput = z.object(requestsFields).strict().superRefine(issue(requestsIssue));
-  tools.registerTool("set_requests", { description: "Set what a requester or buffer chest asks logistic robots for: merge (default) updates the named items, set replaces the section, remove clears items. The body walks there; only robots deliver, and network: null says no roboport covers the chest.", inputSchema: requestsInput }, async (p, extra) => {
-    try { return await step("set_requests")(requestsInput.parse(p), extra?.signal); }
+  tools.registerTool("set_requests", { description: "Set what a requester or buffer chest asks robots for, what a landing pad asks platforms in orbit to drop, or (target {platform}) what a platform hub keeps stocked, with import_from naming the supplying planet. merge (default) updates the named items, set replaces the section, remove clears items. A chest or pad needs the body there; a hub is set at once. Only robots and platforms deliver; network: null says no roboport covers the chest.", inputSchema: requestsInput }, async (p, extra) => {
+    try {
+      const parsed = requestsInput.parse(p);
+      // A hub is its platform's window: one RPC, no body, no FIFO.
+      if ("platform" in parsed.target) return await remote("set_requests", parsed, (value) =>
+        `platform ${value?.target?.platform_name}'s hub requests set (${value?.sections?.length ?? 0} sections)`, normalizeRequests);
+      return await step("set_requests")(parsed, extra?.signal);
+    } catch (error) { return failure(error); }
+  });
+  const recipeInput = position.extend({ recipe: z.string(), platform: platformSelector.optional() }).strict();
+  tools.registerTool("set_recipe", { description: "Set the recipe of your assembler (or crusher) at a position; with platform, on that space platform without the body, its old contents going to the hub. Furnaces choose their own recipe from their input.", inputSchema: recipeInput }, async (p, extra) => {
+    try {
+      const parsed = recipeInput.parse(p);
+      if (parsed.platform !== undefined) return await remote("set_recipe", parsed, (value) =>
+        `set the ${value?.entity?.name}'s recipe to ${parsed.recipe} on platform ${parsed.platform}`);
+      return await step("set_recipe")(parsed, extra?.signal);
+    } catch (error) { return failure(error); }
+  });
+  const createPlatformInput = z.object(createPlatformFields).strict();
+  tools.registerTool("create_platform", { description: "Register a new space platform over the body's planet, at once. It waits for its starter pack: craft one and send it with launch_rocket. Nothing is built or consumed.", inputSchema: createPlatformInput }, async (p) => {
+    try {
+      return await remote("create_platform", createPlatformInput.parse(p), (value) =>
+        `created platform ${value?.platform?.name} (${value?.platform?.index}) over ${value?.platform?.planet}; it waits for its starter pack`);
+    } catch (error) { return failure(error); }
+  });
+  const launchInput = z.object(launchRocketFields).strict();
+  tools.registerTool("launch_rocket", { description: "Load a ready rocket at the silo with cargo (items and counts, or \"requests\": what the platform hub still requests) and launch it to that platform; a platform still waiting for its starter pack needs cargo naming it, e.g. {\"space-platform-starter-pack\": 1}. The body fetches the cargo, walks to the silo and presses launch. It fails at once with the part count when no rocket is ready; partial: true loads what it can get.", inputSchema: launchInput }, async (p, extra) => {
+    try { return await step("launch_rocket")(launchInput.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("set_recipe", { description: "Set the recipe of your assembler at a position. Furnaces choose their own recipe from their input.", inputSchema: position.extend({ recipe: z.string() }) }, async (p, extra) => task("set_recipe", "set_recipe", toolPayloads.recipe(p), extra?.signal));
   tools.registerTool("rotate_entity", { description: "Rotate the entity at a position once, or set its direction 0-15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate_entity", "rotate", toolPayloads.rotate(p), extra?.signal));
   tools.registerTool("build_plan", { description: "Place up to 25 items in order; each may set a recipe, settings and insert items, or be mirrored. Stops at the first failure by default; earlier placements stay.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional(), mirror: z.boolean().optional(), settings: entitySettings.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), auto_supply: z.boolean().optional(), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", "build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
   const moveInput = z.object(moveEntityFields).strict();
@@ -426,8 +492,8 @@ export function registerMcpTools(
     try { return await step("build_ghosts")(ghostsInput.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  const deconstructInput = areaSchema(deconstructFields);
-  tools.registerTool("deconstruct_area", { description: "Clear an area. mode hand (default): the body mines each of your buildings and the trees and rocks there; robots: mark them for construction robots; cancel: unmark. filter limits it to those names.", inputSchema: deconstructInput }, async (p, extra) => {
+  const deconstructInput = z.object(deconstructFields).strict().superRefine(issue(deconstructIssue));
+  tools.registerTool("deconstruct_area", { description: "Clear an area. mode hand (default): the body mines each of your buildings and the trees and rocks there; robots: mark them for construction robots; cancel: unmark. With platform (robots or cancel) the area is on that space platform and its hub takes the items back. filter limits it to those names.", inputSchema: deconstructInput }, async (p, extra) => {
     try { return await step("deconstruct_area")(deconstructInput.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
@@ -439,7 +505,7 @@ export function registerMcpTools(
   const copyInput = z.object(copySettingsFields).strict();
   tools.registerTool("copy_settings", { description: "Copy the recipe, filters and limits of one building onto up to 32 others of the same kind; the body walks within reach of each.", inputSchema: copyInput }, async (p, extra) =>
     step("copy_settings")(copyInput.parse(p), extra?.signal));
-  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, build_block, blueprint_place. equip and flush_fluid are plan steps only. after_plan_id runs it only after that plan completes. Wait with next_event.", inputSchema: queuePlanSchema }, async (input) => {
+  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, build_block, blueprint_place. equip and flush_fluid are plan steps only. Steps on a space platform (platform set) need no body. after_plan_id runs it only after that plan completes. Wait with next_event.", inputSchema: queuePlanSchema }, async (input) => {
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
       return result({ ...queued, status: "queued", terminal: false, summary: queuedPlanSummary(queued),

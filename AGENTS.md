@@ -33,7 +33,10 @@
   observable and covered by tests.
 - Never expose images, raw Lua, arbitrary console commands, credentials, or
   uncharted terrain through MCP. Everything the force has charted may be read;
-  acting still needs physical reach.
+  acting still needs physical reach. Space platforms are the exception:
+  `create_platform` and steps that name a `platform` act on that platform
+  without the body, as the game's remote view does; everything on a planet
+  keeps physical reach.
 - No RPC or on_tick work may take more than about 8 ms of Lua time in one tick,
   and nothing scans the whole surface: the server holds 60 UPS. Lua has no
   clock, so every handler budgets a fixed count of work items per tick and
@@ -232,7 +235,8 @@ notebook, stop), `PLAYER-KNOWLEDGE-v1.md` is a short Factorio intro with
 overridable hints, and the two goal files hold each role's duties. Researched
 principles, ratios, and a research-order hint written in this repository's own
 words are allowed there; imported blueprint strings and copied layouts stay out.
-The supported save is permanently peaceful with enemy bases disabled. Debug
+The supported save is permanently peaceful: planets generate no Nauvis enemy
+bases; Gleba's own bases stay (peaceful mode). Debug
 runs continue past `GO+20m` to their assigned milestone; Candidate B and
 fresh-baseline freeze rules are historical unless the owner explicitly starts a
 benchmark.

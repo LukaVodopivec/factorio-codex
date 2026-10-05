@@ -120,9 +120,10 @@ body.surface = { find_entities_filtered = function(args)
 end }
 
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
--- The registry (registry_test) lists own chests and machine outputs in
--- charted chunks, and own drills; belts are never listed.
-local HOLDER_TYPES = { container = true, furnace = true, ["assembling-machine"] = true }
+-- The registry (registry_test) lists own chests, landing pads and machine
+-- outputs in charted chunks, and own drills; belts are never listed.
+local HOLDER_TYPES = { container = true, ["cargo-landing-pad"] = true, furnace = true, ["assembling-machine"] = true }
+local STORES = { container = true, ["cargo-landing-pad"] = true }
 local function own_entries(keep)
   local rows = {}
   for _, e in ipairs(world) do
@@ -156,6 +157,10 @@ package.loaded["scripts.registry"] = {
     assert(#types == 1 and (types[1] == "mining-drill" or types[1] == "furnace"), "supply reads drills or furnaces")
     registry_reads = registry_reads + 1
     return own_entries(function(e) return e.type == types[1] end)
+  end,
+  holder_inventory = function(e) return STORES[e.type] and e.get_inventory() or e.get_output_inventory() end,
+  holder_kind = function(e)
+    return e.type == "cargo-landing-pad" and "landing_pad" or e.type == "container" and "chest" or "machine_output"
   end,
   stock_totals = function(names)
     local totals = {}
@@ -288,6 +293,17 @@ reset()
 chest({ x = 2.5, y = 0.5 }, { ["transport-belt"] = 150 })
 local bulk = run({ items = { { name = "transport-belt", count = 1 } }, bulk = true })
 check(bulk.status == "done" and inventory["transport-belt"] == 100, "bulk auto-supply takes up to a stack of a placeable item")
+
+-- Space science dropped onto the landing pad is a store like a chest: taken
+-- from the pad's main inventory.
+reset()
+local pad = add({ type = "cargo-landing-pad", name = "cargo-landing-pad", position = { x = 6, y = 6 },
+  items = { ["iron-plate"] = 40 } })
+pad.get_inventory = function() return holder(pad.items) end
+local from_pad = run({ items = { { name = "iron-plate", count = 30 } } })
+check(from_pad.status == "done" and calls[1].kind == "extract" and calls[1].task.target.x == 6
+  and calls[1].task.inventory == "main" and pad.items["iron-plate"] == 10 and inventory["iron-plate"] == 30,
+  "get_items takes from a cargo landing pad's main inventory")
 
 -- Crafting supplies its ingredients the same way (intermediates follow).
 reset()

@@ -4,7 +4,9 @@
 --   { inserter?: {filters?: [item] (at most 5; [] clears), mode?: whitelist|blacklist,
 --                 stack_size?: int >= 0 (0 = the game's default), spoil_priority?: fresh_first|spoiled_first|none},
 --     splitter?: {input_priority?, output_priority?: left|none|right, filter?: item | false},
---     chest?:    {slots?: int >= 0 | false (usable slots; false removes the limit), storage_filter?: item | false} }
+--     chest?:    {slots?: int >= 0 | false (usable slots; false removes the limit), storage_filter?: item | false},
+--     collector?: {filters?: [asteroid chunk] ([] clears)},
+--     silo?:     {auto_requests?: boolean} }
 -- false is "none" (a Lua table cannot hold JSON null). validate checks the
 -- shape and item names; check says whether an entity takes them, before
 -- any write; apply writes only what differs and reads it back; read is
@@ -12,9 +14,12 @@
 -- cursor, a GUI or a player.
 local M = {}
 
-local GROUP_ORDER = { "inserter", "splitter", "chest" }
+local GROUP_ORDER = { "inserter", "splitter", "chest", "collector", "silo" }
 local FIELDS = { inserter = { "filters", "mode", "stack_size", "spoil_priority" },
-  splitter = { "input_priority", "output_priority", "filter" }, chest = { "slots", "storage_filter" } }
+  splitter = { "input_priority", "output_priority", "filter" }, chest = { "slots", "storage_filter" },
+  collector = { "filters" }, silo = { "auto_requests" } }
+-- The entity type each group (other than splitter and chest) belongs to.
+local GROUP_TYPE = { inserter = "inserter", collector = "asteroid-collector", silo = "rocket-silo" }
 local MODES = { whitelist = true, blacklist = true }
 local SPOIL = { fresh_first = true, spoiled_first = true, none = true }
 local SIDES = { left = true, none = true, right = true }
@@ -33,6 +38,7 @@ end
 -- An item name from an ItemFilter, an ItemIDAndQualityIDPair or a string.
 local function filter_name(filter)
   if type(filter) == "string" then return filter end
+  if type(filter) == "userdata" then return read(function() return filter.name end) end
   if type(filter) ~= "table" then return nil end
   local name = filter.name
   if type(name) == "table" then name = name.name end
@@ -76,12 +82,13 @@ end
 -- Raises CONFIG_INVALID or UNKNOWN_ITEM on a malformed Settings object.
 function M.validate(settings, label)
   if type(settings) ~= "table" or next(settings) == nil then
-    fail("CONFIG_INVALID", label .. " needs at least one of inserter, splitter or chest")
+    fail("CONFIG_INVALID", label .. " needs at least one of inserter, splitter, chest, collector or silo")
   end
   for group, value in pairs(settings) do
     local fields = FIELDS[group]
     if not fields then
-      fail("CONFIG_INVALID", string.format("%s has no setting group '%s' (inserter, splitter, chest)", label, tostring(group)))
+      fail("CONFIG_INVALID", string.format("%s has no setting group '%s' (%s)", label, tostring(group),
+        table.concat(GROUP_ORDER, ", ")))
     end
     if type(value) ~= "table" or next(value) == nil then
       fail("CONFIG_INVALID", string.format("%s.%s must name at least one of %s", label, group, table.concat(fields, ", ")))
@@ -123,18 +130,42 @@ function M.validate(settings, label)
     if c.slots ~= nil and c.slots ~= false then count_field(label .. ".chest.slots", c.slots) end
     if c.storage_filter ~= nil and c.storage_filter ~= false then item_name(label .. ".chest.storage_filter", c.storage_filter) end
   end
+  local a = settings.collector
+  if a and a.filters ~= nil then
+    if not is_list(a.filters) then fail("CONFIG_INVALID", label .. ".collector.filters must list asteroid chunk names ([] clears them)") end
+    local seen = {}
+    for k, name in ipairs(a.filters) do
+      local at = string.format("%s.collector.filters[%d]", label, k - 1)
+      if type(name) ~= "string" or name == "" then fail("CONFIG_INVALID", at .. " must be an asteroid chunk name") end
+      if not read(function() return prototypes.asteroid_chunk[name] end) then
+        fail("UNKNOWN_CHUNK", at .. ": no asteroid chunk called '" .. name .. "'")
+      end
+      if seen[name] then fail("CONFIG_INVALID", at .. " repeats " .. name) end
+      seen[name] = true
+    end
+  end
+  local r = settings.silo
+  if r and r.auto_requests ~= nil and type(r.auto_requests) ~= "boolean" then
+    fail("CONFIG_INVALID", label .. ".silo.auto_requests must be true or false")
+  end
 end
 
 -- ---------------------------------------------------------- applicability
 
--- What a {type, filter_count, logistic_mode} cannot take, or nil.
+-- What a {type, filter_count, logistic_mode} cannot take, or nil. A
+-- collector's filter count is known only on the standing entity.
 local function refusal(facts, settings)
+  for _, group in ipairs(GROUP_ORDER) do
+    local kind = GROUP_TYPE[group]
+    if kind and settings[group] and facts.type ~= kind then return group .. " settings" end
+  end
   local i = settings.inserter
-  if i then
-    if facts.type ~= "inserter" then return "inserter settings" end
-    if (i.filters ~= nil or i.mode ~= nil) and (tonumber(facts.filter_count) or 0) == 0 then
-      return "inserter filters (it has no filter slots)"
-    end
+  if i and (i.filters ~= nil or i.mode ~= nil) and (tonumber(facts.filter_count) or 0) == 0 then
+    return "inserter filters (it has no filter slots)"
+  end
+  local a = settings.collector
+  if a and a.filters and facts.filter_slots and #a.filters > facts.filter_slots then
+    return string.format("%d chunk filters (it has %d filter slots)", #a.filters, facts.filter_slots)
   end
   if settings.splitter and not SPLITTERS[facts.type] then return "splitter settings" end
   local c = settings.chest
@@ -157,7 +188,8 @@ end
 
 -- For a standing entity, before any write: code, message or nil.
 function M.check(e, settings)
-  local what = refusal({ type = e.type, filter_count = read(function() return e.filter_slot_count end),
+  local slots_count = read(function() return e.filter_slot_count end)
+  local what = refusal({ type = e.type, filter_count = slots_count, filter_slots = slots_count,
     logistic_mode = read(function() return e.prototype.logistic_mode end) }, settings)
   if what then return not_applicable(e.name, e.type, what) end
   local slots = settings.chest and settings.chest.slots
@@ -208,12 +240,21 @@ function M.current(e)
       chest.storage_filter = filter_name(read(function() return e.storage_filter end)) or false
     end
     if next(chest) then out.chest = chest end
+  elseif e.type == "asteroid-collector" then
+    local names = {}
+    for index = 1, read(function() return e.filter_slot_count end) or 0 do
+      local name = filter_name(read(function() return e.get_filter(index) end))
+      if name then names[#names + 1] = name end
+    end
+    out.collector = { filters = names }
+  elseif e.type == "rocket-silo" then
+    out.silo = { auto_requests = read(function() return e.use_transitional_requests end) == true }
   end
   return out
 end
 
 local DEFAULTS = { mode = "whitelist", stack_size = 0, spoil_priority = "none", input_priority = "none",
-  output_priority = "none", filter = false, slots = false, storage_filter = false }
+  output_priority = "none", filter = false, slots = false, storage_filter = false, auto_requests = false }
 
 -- The settings an entity has (non-default values only), or nil.
 function M.read(e)
@@ -267,12 +308,23 @@ local WRITERS = {
     end,
     storage_filter = function(e, name) e.storage_filter = name and { name = name, quality = "normal" } or nil end,
   },
+  collector = {
+    filters = function(e, names)
+      for index = 1, e.filter_slot_count do e.set_filter(index, names[index]) end
+    end,
+  },
+  silo = {
+    auto_requests = function(e, value) e.use_transitional_requests = value end,
+  },
 }
 
 -- 0.21.1 kept blueprint fields as settings (build_layout entities,
 -- build_plan steps, move_entity snapshots); a plan saved then still holds them.
 local function legacy(s)
-  return s.inserter == nil and s.splitter == nil and s.chest == nil
+  for _, group in ipairs(GROUP_ORDER) do
+    if s[group] ~= nil then return false end
+  end
+  return true
 end
 M.legacy = legacy
 
@@ -357,6 +409,14 @@ function M.to_blueprint(settings, row, kind)
     if c.slots then row.bar = c.slots end
     if c.storage_filter then row.filters = { { index = 1, name = c.storage_filter, quality = "normal", comparator = "=" } } end
   end
+  local a = settings.collector
+  if a and a.filters and kind == "asteroid-collector" then
+    local filters = {}
+    for index, name in ipairs(a.filters) do filters[index] = { index = index, name = name } end
+    row["chunk-filter"] = #filters > 0 and filters or nil
+  end
+  local r = settings.silo
+  if r and r.auto_requests ~= nil and kind == "rocket-silo" then row.use_transitional_requests = r.auto_requests end
   return row
 end
 
@@ -395,6 +455,15 @@ function M.from_blueprint(bp, kind, old_bar)
     local proto = type(bp.name) == "string" and prototypes.entity[bp.name]
     if names[1] and proto and read(function() return proto.logistic_mode end) == "storage" then c.storage_filter = names[1] end
     if next(c) then out.chest = c end
+  elseif kind == "asteroid-collector" then
+    local chunks = {}
+    for _, f in ipairs(type(bp["chunk-filter"]) == "table" and bp["chunk-filter"] or {}) do chunks[#chunks + 1] = f end
+    table.sort(chunks, function(a, b) return (tonumber(a.index) or 0) < (tonumber(b.index) or 0) end)
+    local list = {}
+    for _, f in ipairs(chunks) do if type(f.name) == "string" then list[#list + 1] = f.name end end
+    if #list > 0 then out.collector = { filters = list } end
+  elseif kind == "rocket-silo" then
+    if bp.use_transitional_requests == true then out.silo = { auto_requests = true } end
   end
   return next(out) and out or nil
 end

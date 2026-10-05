@@ -6,7 +6,7 @@
 -- Kept per entity (by unit_number, own force only):
 --   machines  by type (the line sampler's machine types, plus beacons and
 --             roboports, which it samples for problems only)
---   holders   chests and crafting-machine outputs (stock)
+--   holders   chests, cargo landing pads and crafting-machine outputs (stock)
 --   burners   entities with a burner (fuel)
 --   electric  poles, producers, accumulators and electric consumers (power)
 --   belts     counted, never listed: no read walks belts
@@ -35,6 +35,7 @@ local M = {}
 M.BOOTSTRAP_CHUNKS_PER_TICK = 4
 M.BOOTSTRAP_ENTITIES_PER_TICK = 400
 M.MAINTAIN_WORK_PER_TICK = 64
+M.RESCAN_CHUNKS_PER_TICK = 4
 
 -- Productive machines make something and form factory lines.
 local PRODUCTIVE_TYPES = {
@@ -49,6 +50,11 @@ for kind in pairs(PRODUCTIVE_TYPES) do MACHINE_TYPES[kind] = true end
 for kind in pairs(PROBLEM_ONLY_TYPES) do MACHINE_TYPES[kind] = true end
 M.MACHINE_TYPES, M.PRODUCTIVE_TYPES, M.PROBLEM_ONLY_TYPES = MACHINE_TYPES, PRODUCTIVE_TYPES, PROBLEM_ONLY_TYPES
 local CHEST_TYPES = { container = true, ["logistic-container"] = true }
+-- Stores whose items the body takes: their inventory by type (a crafting
+-- machine's is its output).
+local STORE_INVENTORY = { container = "chest", ["logistic-container"] = "chest",
+  ["cargo-landing-pad"] = "cargo_landing_pad_main" }
+M.STORE_INVENTORY = STORE_INVENTORY
 local OUTPUT_TYPES = { furnace = true, ["assembling-machine"] = true, ["rocket-silo"] = true }
 local BELT_TYPES = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
   loader = true, ["loader-1x1"] = true, ["linked-belt"] = true }
@@ -266,16 +272,21 @@ local function chunk_charted(entry)
   return ok and value == true
 end
 
--- What a holder offers: a chest's contents or a crafting machine's output.
+-- What a holder offers: a chest's or landing pad's contents or a crafting
+-- machine's output.
 function M.holder_inventory(entity)
   local ok, inventory = pcall(function()
-    if CHEST_TYPES[entity.type] then return entity.get_inventory(defines.inventory.chest) end
+    local id = STORE_INVENTORY[entity.type]
+    if id then return entity.get_inventory(defines.inventory[id]) end
     return entity.get_output_inventory()
   end)
   return ok and inventory or nil
 end
 
-function M.holder_kind(entry) return CHEST_TYPES[entry.type] and "chest" or "machine_output" end
+function M.holder_kind(entry)
+  if entry.type == "cargo-landing-pad" then return "landing_pad" end
+  return CHEST_TYPES[entry.type] and "chest" or "machine_output"
+end
 
 -- Re-reads one entry's changing state into the aggregates. Returns the work
 -- items it cost (about one per engine call).
@@ -330,7 +341,7 @@ function M.add(entity)
   else
     local ok_burner, burner = pcall(function() return entity.burner end)
     local flags = {
-      holders = CHEST_TYPES[kind] or OUTPUT_TYPES[kind] or nil,
+      holders = STORE_INVENTORY[kind] and true or OUTPUT_TYPES[kind] or nil,
       burners = ok_burner and burner ~= nil or nil,
       electric = electric(entity) or nil,
       poles = kind == "electric-pole" or nil,
@@ -437,14 +448,35 @@ local function bootstrap_step(r, c, tick)
   end
 end
 
+-- Types a registry from an older version skipped (r.rescan.types, set by
+-- state.init on the upgrade) are found once the bootstrap is done: one typed
+-- query of one charted chunk each, RESCAN_CHUNKS_PER_TICK chunks a tick, over
+-- the chunk list map_summary keeps. That list is seeded after the bootstrap
+-- (an upgrade mid-bootstrap leaves it empty until then): the rescan waits.
+local function rescan_step(r, c)
+  local job = r.rescan
+  if not (storage.patch_cache and storage.patch_cache.seeded) then return end
+  local chunks = storage.patch_cache.charted or {}
+  local read = 0
+  while job.cursor <= #chunks and read < M.RESCAN_CHUNKS_PER_TICK do
+    local chunk = chunks[job.cursor]
+    job.cursor, read = job.cursor + 1, read + 1
+    local x0, y0 = chunk.x * 32, chunk.y * 32
+    local ok, found = pcall(c.surface.find_entities_filtered,
+      { area = { { x0, y0 }, { x0 + 32, y0 + 32 } }, force = c.force, type = job.types })
+    for _, entity in ipairs(ok and found or {}) do pcall(M.add, entity) end
+  end
+  if job.cursor > #chunks then r.rescan = nil end
+end
+
 -- A failing step never stops the game: it is retried next tick and its
 -- error is kept for counts().
 function M.on_tick(tick)
   local r = data()
-  if not r or r.ready then return end
+  if not r or r.ready and not r.rescan then return end
   local c = companion.get()
   if not (c and c.valid) then return end
-  local ok, err = pcall(bootstrap_step, r, c, tick)
+  local ok, err = pcall(r.ready and rescan_step or bootstrap_step, r, c, tick)
   r.error = not ok and tostring(err) or nil
 end
 

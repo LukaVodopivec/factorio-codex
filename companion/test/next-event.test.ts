@@ -65,6 +65,50 @@ describe("next_event research beside a plan end", () => {
   });
 });
 
+describe("next_event rocket and platform events", () => {
+  const launched = { tick: 210, kind: "rocket_launched" as const, silo: { x: 10.5, y: 10.5 }, platform: { index: 3, name: "Orbit" } };
+  const landed = { tick: 230, kind: "cargo_delivered" as const, platform: { index: 3, name: "Orbit" } };
+  const ready = { tick: 120, kind: "rocket_ready" as const, silo: { x: 10.5, y: 10.5 } };
+
+  it("fires on a new space event during the wait, never on one from before the call", async () => {
+    const before = { ...busy, last_space_event_tick: 120, space_events: [ready] };
+    const after = { ...before, tick: 220, last_space_event_tick: 210, space_events: [ready, launched] };
+    const event = await waitForEvent(game([before, before, after]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(event).toMatchObject({ event: "rocket_launched", event_tick: 210, silo: { x: 10.5, y: 10.5 }, platform: { index: 3, name: "Orbit" }, tick: 220 });
+    expect(event).not.toHaveProperty("space_events");
+    expect(eventSummary(event)).toBe("a rocket was launched from (10.5, 10.5) to platform Orbit");
+    const clock = fakeClock();
+    expect(await waitForEvent(game([before]).bridge, { timeout_seconds: 2 }, quiet(), undefined, clock)).toMatchObject({ event: "timeout" });
+  });
+
+  it("returns an event after since_tick at once, oldest first, with the later ones alongside", async () => {
+    const state = { ...busy, tick: 240, last_space_event_tick: 230, space_events: [ready, launched, landed] };
+    const event = await waitForEvent(game([state]).bridge, input({ since_tick: 200 }), quiet(), undefined, fakeClock());
+    expect(event).toMatchObject({ event: "rocket_launched", event_tick: 210, space_events: [launched, landed] });
+    const last = await waitForEvent(game([state]).bridge, input({ since_tick: 215 }), quiet(), undefined, fakeClock());
+    expect(last).toMatchObject({ event: "cargo_delivered", platform: { name: "Orbit" } });
+    expect(eventSummary(last)).toBe("a cargo pod landed on platform Orbit");
+    const changed = { tick: 250, kind: "platform_state_changed" as const, platform: { index: 3, name: "Orbit" },
+      old: "starter_pack_on_the_way", new: "waiting_at_station" };
+    expect(eventSummary(await waitForEvent(game([{ ...state, space_events: [changed] }]).bridge, input({ since_tick: 245 }), quiet(),
+      undefined, fakeClock()))).toBe("platform Orbit: starter_pack_on_the_way -> waiting_at_station");
+    expect(eventSummary({ event: "cargo_delivered", surface: "nauvis" })).toBe("a cargo pod landed on nauvis");
+    expect(eventSummary({ event: "rocket_ready", silo: { x: 1.5, y: 2.5 } })).toBe("a rocket is ready in the silo at (1.5, 2.5)");
+  });
+
+  it("carries space events that arrive with a plan end, which the next since_tick call would miss", async () => {
+    const ended = { ...idle, tick: 240, last_plan_ended: { plan_id: 5, status: "completed", tick: 235 },
+      last_space_event_tick: 230, space_events: [launched, landed] };
+    const event = await waitForEvent(game([busy, ended]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(event).toMatchObject({ event: "plan_ended", plan_id: 5, space_events: [launched, landed] });
+    expect(eventSummary(event)).toBe(`plan 5 ended completed; 2 rocket/platform events in space_events; ${IDLE_NOW}`);
+    // An empty Lua ring arrives as {} and is no event.
+    const empty = { ...busy, last_space_event_tick: 120, space_events: {} as never };
+    expect(await waitForEvent(game([empty]).bridge, { timeout_seconds: 1, since_tick: 100 }, quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
+  });
+});
+
 describe("next_event", () => {
   it("returns queue_empty at once for an idle body, but waits when since_tick says it was already idle", async () => {
     expect(await waitForEvent(game([idle]).bridge, input(), quiet(), undefined, fakeClock()))

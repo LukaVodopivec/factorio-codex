@@ -86,6 +86,10 @@ function M.equipment_prototype(values) return wrap("LuaEquipmentPrototype", valu
 function M.logistic_sections(values) return wrap("LuaLogisticSections", values) end
 function M.logistic_section(values) return wrap("LuaLogisticSection", values) end
 function M.logistic_cell(values) return wrap("LuaLogisticCell", values) end
+-- Documented 2.0.77 members of the 0.22.2 stage B classes (not probed natively).
+function M.space_platform(values) return wrap("LuaSpacePlatform", values) end
+function M.planet(values) return wrap("LuaPlanet", values) end
+function M.space_location_prototype(values) return wrap("LuaSpaceLocationPrototype", values) end
 function M.state(object)
   assert(objects[object], "simulation state requires a strict mock")
   return objects[object].simulation

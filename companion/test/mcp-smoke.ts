@@ -5,12 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const surface = process.env.MCP_SURFACE ?? "full";
-const readOnly = ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles"];
+const readOnly = ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"];
 const expected = (surface === "read-only"
   ? readOnly
   : [...readOnly, "get_items","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","run_plan","start_research","stop",
     "move_entity","explore","blueprint_capture","blueprint_create","blueprint_delete","build_ghosts","deconstruct_area","upgrade_area","copy_settings",
-    "configure_entity","set_requests"]).sort();
+    "configure_entity","set_requests","create_platform","launch_rocket"]).sort();
 const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = process.env.MCP_ENTRY ?? "src/cli.ts";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-mcp-home-"));
@@ -38,7 +38,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.22.1") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.22.2") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -53,13 +53,15 @@ try {
     const forbidden = ["get_items", "walk_to", "mine", "pickup_items", "place_entity", "craft_items", "insert_items", "extract_items",
       "set_recipe", "rotate_entity", "build_plan", "queue_plan", "run_plan", "start_research", "stop", "move_entity", "explore",
       "blueprint_capture", "blueprint_create", "blueprint_delete", "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings",
-      "configure_entity", "set_requests"];
+      "configure_entity", "set_requests", "create_platform", "launch_rocket"];
     if (forbidden.some((name) => names.includes(name))) throw new Error(`read-only surface exposed mutation: ${names}`);
     for (const name of ["build_layout", "build_block", "connect_entities", "blueprint_place", "place_tiles"]) {
       const checkOnly = tools.find((tool: any) => tool.name === name)?.inputSchema?.properties?.check_only;
       if (checkOnly?.const !== true && JSON.stringify(checkOnly?.enum) !== "[true]") throw new Error(`read-only ${name} must be a dry run only: ${JSON.stringify(checkOnly)}`);
     }
-    console.log("PASS initialize, exact 21 read-only tools, dry-run-only layouts, routes, blueprint placements and tiles, no physical mutation surface");
+    const platformSchema = tools.find((tool: any) => tool.name === "platform_status")?.inputSchema?.properties ?? {};
+    if (JSON.stringify(platformSchema.detail?.enum) !== JSON.stringify(["compact", "full"]) || !platformSchema.platform) throw new Error("read-only platform_status must take platform and detail compact|full");
+    console.log("PASS initialize, exact 22 read-only tools, dry-run-only layouts, routes, blueprint placements and tiles, platform reads, no physical mutation surface");
   } else {
   const placementTool = tools.find((tool: any) => tool.name === "find_placement");
   if (!/input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12/.test(placementTool?.description ?? "")) throw new Error("find_placement must disclose the targeted cardinal constraint");
@@ -98,7 +100,7 @@ try {
   if (runPlanSchema.properties?.final_observation_radius?.default !== 15 || runPlanSchema.properties?.observation_radius) throw new Error("run_plan must expose only final_observation_radius");
   const serializedSteps = JSON.stringify(runPlanSchema.properties?.steps);
   for (const action of ["wait_for_research", "get_items", "build_layout", "build_block", "explore", "move_entity", "blueprint_place",
-    "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings", "configure_entity", "flush_fluid", "place_tiles", "set_requests", "equip"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
+    "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings", "configure_entity", "flush_fluid", "place_tiles", "set_requests", "equip", "create_platform", "launch_rocket"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
   if (serializedSteps.includes('"const":"blueprint_capture"')) throw new Error("blueprint_capture is a package step, never a plan step");
   const craftSchema = tools.find((tool: any) => tool.name === "craft_items")?.inputSchema?.properties ?? {};
   if (craftSchema.wait_for_completion?.default !== undefined) throw new Error("craft_items must not wait for completion by default");
@@ -121,10 +123,19 @@ try {
   const inspectSchema = tools.find((tool: any) => tool.name === "inspect_entity")?.inputSchema?.properties ?? {};
   if (inspectSchema.positions?.maxItems !== 64 || !serializedSteps.includes('"maxItems":64')) throw new Error("inspect_entity and inspect_entities must read up to 64 positions");
   const roles = JSON.stringify(tools.find((tool: any) => tool.name === "extract_items")?.inputSchema?.properties?.inventory?.enum);
-  if (roles !== JSON.stringify(["main", "input", "output", "fuel", "burnt_result", "modules", "trash", "robots", "material"])) throw new Error(`extract_items must expose the inventory roles: ${roles}`);
+  if (roles !== JSON.stringify(["main", "input", "output", "fuel", "burnt_result", "modules", "trash", "robots", "material", "rocket"])) throw new Error(`extract_items must expose the inventory roles: ${roles}`);
   const sections = tools.find((tool: any) => tool.name === "factory_status")?.inputSchema?.properties?.sections?.items?.enum ?? [];
-  if (!sections.includes("logistics")) throw new Error("factory_status must offer the logistics section");
-  console.log("PASS initialize, exact 47 tools, Lua-parity schemas, forbidden-schema scan, actionable offline status");
+  if (!sections.includes("logistics") || !sections.includes("platforms")) throw new Error("factory_status must offer the logistics and platforms sections");
+  // Remote platform work: platform selectors on the steps that act without the body.
+  for (const name of ["set_recipe", "configure_entity", "build_layout", "blueprint_place", "deconstruct_area"]) {
+    if (!tools.find((tool: any) => tool.name === name)?.inputSchema?.properties?.platform) throw new Error(`${name} must take platform`);
+  }
+  if (tools.find((tool: any) => tool.name === "upgrade_area")?.inputSchema?.properties?.platform) throw new Error("upgrade_area takes no platform");
+  const target = JSON.stringify(tools.find((tool: any) => tool.name === "set_requests")?.inputSchema?.properties?.target ?? {});
+  if (!target.includes('"platform"')) throw new Error("set_requests must take a platform hub target");
+  const cargo = JSON.stringify(tools.find((tool: any) => tool.name === "launch_rocket")?.inputSchema?.properties?.cargo ?? {});
+  if (!cargo.includes('"const":"requests"')) throw new Error('launch_rocket cargo must accept "requests"');
+  console.log("PASS initialize, exact 50 tools, Lua-parity schemas, platform parameters, forbidden-schema scan, actionable offline status");
   }
 } finally {
   child.kill();

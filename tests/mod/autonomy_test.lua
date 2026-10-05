@@ -8,8 +8,10 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
 local RAW = { working = 1, no_fuel = 2, no_ingredients = 3, item_ingredient_shortage = 4,
-  waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8, no_minable_resources = 9 }
-_G.defines = { entity_status = RAW, inventory = { crafter_input = 2, lab_input = 3 } }
+  waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8, no_minable_resources = 9,
+  waiting_to_launch_rocket = 10 }
+_G.defines = { entity_status = RAW, inventory = { crafter_input = 2, lab_input = 3 },
+  rocket_silo_status = { building_rocket = 1, rocket_ready = 10 } }
 local PLATE = { name = "iron-plate", ingredients = { { name = "iron-ore", type = "item", amount = 1 } },
   products = { { name = "iron-plate", type = "item", amount = 1 } } }
 local GEAR = { name = "iron-gear-wheel", ingredients = { { name = "iron-plate", type = "item", amount = 2 } },
@@ -379,12 +381,26 @@ check(robots.logistics and #robots.logistics.networks == 0 and robots.lines == n
   "logistics is read only when named in sections")
 local only = factory_status.factory_status({ sections = { "body" }, since_tick = game.tick })
 check(only.body and only.lines == nil and only.stock == nil, "sections limits what factory_status reads")
+check(status.platforms == nil, "platforms is absent until the force has a platform")
+defines.space_platform_state = { waiting_for_starter_pack = 0 }
+force.platforms = { [1] = mock.space_platform({ valid = true, index = 1, name = "alpha", scheduled_for_deletion = 0,
+  state = defines.space_platform_state.waiting_for_starter_pack, speed = 0 }) }
+local with_platform = factory_status.factory_status({ sections = { "platforms" } })
+check(#with_platform.platforms == 1 and with_platform.platforms[1].name == "alpha"
+  and with_platform.platforms[1].state == "waiting_for_starter_pack" and with_platform.lines == nil,
+  "factory_status lists the force's platforms, one compact line each")
+force.platforms = nil
 check(not pcall(factory_status.factory_status, { sections = { "orders" } })
   and not pcall(factory_status.factory_status, { since_tick = -1 }), "factory_status validates its parameters")
 local events = factory_status.event_state()
 check(events.last_plan_ended.plan_id == 3 and events.active_plan_id == 4 and events.queue_depth == 1
   and events.fifo_empty == false and type(events.problem_count) == "number" and events.human_hold == false,
   "event_state reports the last ended plan, queue, problems and hold")
+check(events.last_space_event_tick == nil and events.space_events == nil, "no space event yet: none reported")
+require("scripts.platforms").record("rocket_launched", { silo = { x = 1, y = 2 } })
+local spaced = factory_status.event_state()
+check(spaced.last_space_event_tick == game.tick and spaced.space_events[1].kind == "rocket_launched",
+  "event_state reports the newest space event's tick and the last entries")
 local upkeep_plan = { id = 6, type = "plan", status = "running", current_step = 1, steps = { {} }, source = "upkeep" }
 storage.tasks.active, storage.tasks.queue = upkeep_plan, {}
 local during_upkeep = factory_status.event_state()
@@ -596,6 +612,38 @@ autonomy.on_tick(game.tick)
 check(storage.autonomy.refresh_error ~= nil and storage.autonomy.refresh_job == nil and mark == game.tick
   and storage.autonomy.dirty_tick == mark, "a refresh failing mid-job keeps the dirty mark set while it ran")
 mock.unreadable(broken, "type", false)
+
+-- A silo's rocket becoming ready is recorded in the space event ring by the
+-- sampler's own reads: once per transition, never for a silo first seen
+-- ready. A ready silo's idle line says why.
+local silo = machine("rocket-silo", "rocket-silo", 300, 300, { products_finished = 0,
+  get_recipe = function() return nil end, get_inventory = function() return inventory({}) end })
+mock.state(silo).rocket_status = defines.rocket_silo_status.rocket_ready
+mock.read(silo, "rocket_silo_status", function() return mock.state(silo).rocket_status end)
+autonomy.refresh()
+local function sample_silo(times)
+  for _ = 1, times * 30 do game.tick = game.tick + 1; autonomy.on_tick(game.tick) end
+end
+local function ready_events()
+  local n = 0
+  for _, row in ipairs(storage.space.events) do if row.kind == "rocket_ready" then n = n + 1 end end
+  return n
+end
+sample_silo(2)
+check(ready_events() == 0, "a silo first sampled with a ready rocket is not news")
+mock.state(silo).rocket_status = defines.rocket_silo_status.building_rocket
+sample_silo(1)
+mock.state(silo).rocket_status = defines.rocket_silo_status.rocket_ready
+mock.state(silo).status = RAW.waiting_to_launch_rocket
+sample_silo(3)
+local event = storage.space.events[#storage.space.events]
+check(ready_events() == 1 and event.silo.x == 300 and storage.space.last_event_tick == event.tick,
+  "the rocket becoming ready is one rocket_ready event naming the silo")
+sample_silo(30)
+local silo_line
+for _, line in ipairs(autonomy.lines()) do if line.entity == "rocket-silo" then silo_line = line end end
+check(silo_line and silo_line.state == "idle" and silo_line.cause == "rocket_ready",
+  "a silo waiting to launch is idle with cause rocket_ready")
 
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

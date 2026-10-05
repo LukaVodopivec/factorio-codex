@@ -48,7 +48,8 @@ local physical_runner = {
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.craft"] = physical_runner, runner(), runner()
 package.loaded["scripts.actions.pickup"] = runner()
 local place_runner = runner("place")
-package.loaded["scripts.actions.build"] = { place = place_runner, rotate = runner(), set_recipe = runner() }
+package.loaded["scripts.actions.build"] = { place = place_runner, rotate = runner(),
+  set_recipe_action = { runner = runner(), make_task = function() return {} end } }
 package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract"),
   flush_action = { runner = runner("flush_fluid"), make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = runner()

@@ -1,23 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge } from "../src/bridge.js";
 import { MCP_SERVER_VERSION, registerMcpTools } from "../src/mcp/server.js";
-import { normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
+import { normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
 import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
 import { packageStepSchema } from "../src/mcp/runPlan.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v26 DTO and tool registry", () => {
-  it("declares v26 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(26);
-    expect(MCP_SERVER_VERSION).toBe("0.22.1");
-    expect(RPC_METHODS).toHaveLength(35);
+describe("protocol v27 DTO and tool registry", () => {
+  it("declares v27 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(27);
+    expect(MCP_SERVER_VERSION).toBe("0.22.2");
+    expect(RPC_METHODS).toHaveLength(40);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
       "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now", "get_job",
-      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles"]));
+      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe"]));
   });
 
-  it("registers exactly 47 tools and forwards exact v26 payloads", async () => {
+  it("registers exactly 50 tools and forwards exact v27 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -26,7 +26,7 @@ describe("protocol v26 DTO and tool registry", () => {
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(47);
+    expect(Object.keys(handlers)).toHaveLength(50);
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
     await handlers.find_placement(find);
@@ -193,7 +193,7 @@ describe("protocol v26 DTO and tool registry", () => {
     await handlers.insert_items(schemas.insert_items.parse({ x: 1, y: 2, items: { "speed-module": 2 }, inventory: "modules" }));
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "insert", target: { x: 1, y: 2 }, items: { "speed-module": 2 }, inventory: "modules" },
       { tool: "insert_items", role: "unknown" });
-    expect(schemas.extract_items.safeParse({ x: 1, y: 2, inventory: "rocket" }).success).toBe(false);
+    expect(schemas.extract_items.safeParse({ x: 1, y: 2, inventory: "cargo" }).success).toBe(false);
     await handlers.place_entity({ x: 3, y: 4, name: "oil-refinery", mirror: true });
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "oil-refinery", position: { x: 3, y: 4 }, direction: undefined, mirror: true },
       { tool: "place_entity", role: "unknown" });
@@ -234,6 +234,139 @@ describe("protocol v26 DTO and tool registry", () => {
       expect(schemas.queue_plan.safeParse({ steps: [bad] }).success, JSON.stringify(bad)).toBe(false);
     expect(packageStepSchema.safeParse({ action: "configure_entity", x: 0, y: 0, splitter: { filter: null } }).data)
       .toEqual({ action: "configure_entity", x: 0, y: 0, splitter: { filter: false } });
+  });
+
+  it("forwards the 0.22.2 rocket and platform actions: remote ones without the body", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const call = vi.fn(async (method: string, params?: any) => method === "queue_plan" ? { plan_id: 10 }
+      : method === "plan_status" ? { plan_id: 10, status: "completed", outcomes: [] }
+      : method === "create_platform" ? { code: "PLATFORM_CREATED", platform: { index: 3, name: "Orbit", state: "waiting_for_starter_pack", planet: "nauvis" } }
+      : method === "set_requests" ? { code: "REQUESTS_SET", target: { kind: "space-platform-hub", platform_name: "Orbit" },
+        sections: [{ index: 1, group: "", type: "manual", active: true, items: {} }] }
+      : method === "set_recipe" ? { code: "RECIPE_SET", recipe: params.recipe, entity: { name: "crusher", position: { x: 2.5, y: -3.5 }, surface: "platform:3" } }
+      : method === "configure_entity" ? { code: "CONFIGURED", entity: { name: "asteroid-collector", position: { x: 0.5, y: -6.5 }, surface: "platform:3" },
+        settings: { collector: { filters: {} } }, changed: {} }
+      : { method, params });
+    const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
+      async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
+    const queued = () => call.mock.calls.filter(([method]) => method === "queue_plan").at(-1)?.[1];
+
+    // create_platform and a hub's requests are one RPC each; they answer at once.
+    const created = await handlers.create_platform(schemas.create_platform.parse({ name: "Orbit" }));
+    expect(call).toHaveBeenLastCalledWith("create_platform", { name: "Orbit" });
+    expect(created.content[0].text).toBe("created platform Orbit (3) over nauvis; it waits for its starter pack");
+    expect(schemas.create_platform.safeParse({ name: "" }).success).toBe(false);
+    expect(schemas.create_platform.safeParse({ name: "x".repeat(61) }).success).toBe(false);
+    // launch_rocket only ever sends a normal starter pack.
+    expect(schemas.create_platform.safeParse({ name: "Orbit", quality: "normal" }).success).toBe(true);
+    expect(schemas.create_platform.safeParse({ name: "Orbit", quality: "uncommon" }).success).toBe(false);
+    const hub = { target: { platform: "Orbit" }, requests: [{ item: "iron-plate", min: 400, import_from: "nauvis", minimum_delivery_count: 100 }] };
+    const set = await handlers.set_requests(schemas.set_requests.parse(hub));
+    expect(call).toHaveBeenLastCalledWith("set_requests", hub);
+    expect(set.structuredContent.sections).toEqual([{ index: 1, group: "", type: "manual", active: true, items: [] }]);
+    expect(call.mock.calls.some(([method]) => method === "queue_plan")).toBe(false);
+    // A landing pad is a positional target: the body walks there (a plan step).
+    const pad = { target: { x: 4.5, y: 4.5 }, requests: [{ item: "space-science-pack", min: 0 }] };
+    await handlers.set_requests(schemas.set_requests.parse(pad));
+    expect(queued()).toMatchObject({ steps: [{ action: "set_requests", ...pad }] });
+    for (const bad of [{ target: { x: 0, y: 0 }, requests: [{ item: "coal", min: 1, minimum_delivery_count: 5 }] },
+      { target: { platform: 3 }, request_from_buffers: true }, { target: { platform: 0 }, mode: "set" },
+      { target: { platform: "Orbit", x: 1 }, mode: "set" }])
+      expect(schemas.set_requests.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+
+    // launch_rocket needs the body (loading and the button): a one-step plan.
+    const launch = { silo: { x: 10.5, y: 10.5 }, platform: 3, cargo: "requests" };
+    await handlers.launch_rocket(schemas.launch_rocket.parse(launch));
+    expect(queued()).toMatchObject({ steps: [{ action: "launch_rocket", ...launch }] });
+    const pack = { silo: { x: 10.5, y: 10.5 }, platform: "Orbit", cargo: { "space-platform-starter-pack": 1 }, partial: false };
+    await handlers.launch_rocket(schemas.launch_rocket.parse(pack));
+    expect(queued()).toMatchObject({ steps: [{ action: "launch_rocket", ...pack }] });
+    for (const bad of [{ silo: { x: 0, y: 0 } }, { ...launch, cargo: {} }, { ...launch, cargo: "everything" },
+      { ...launch, cargo: Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`item-${i}`, 1])) }, { ...launch, cargo: { coal: 0 } }])
+      expect(schemas.launch_rocket.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+
+    // Remote settings and recipes on a platform are one RPC each, at once (no
+    // FIFO); on a planet the body walks (a plan step). Collector filters and
+    // silo requests are settings.
+    const plans = () => call.mock.calls.filter(([method]) => method === "queue_plan").length;
+    const before = plans();
+    const crusher = { x: 2.5, y: -3.5, recipe: "metallic-asteroid-crushing", platform: "Orbit" };
+    const recipe = await handlers.set_recipe(schemas.set_recipe.parse(crusher));
+    expect(call).toHaveBeenLastCalledWith("set_recipe", crusher);
+    expect(recipe.content[0].text).toBe("set the crusher's recipe to metallic-asteroid-crushing on platform Orbit");
+    const collector = { x: 0.5, y: -6.5, platform: 3, collector: { filters: ["metallic-asteroid-chunk", "carbonic-asteroid-chunk"] } };
+    const configured = await handlers.configure_entity(schemas.configure_entity.parse(collector));
+    expect(call).toHaveBeenLastCalledWith("configure_entity", collector);
+    expect(configured.structuredContent).toMatchObject({ changed: [], settings: { collector: { filters: [] } }, status: "completed" });
+    expect(configured.content[0].text).toBe("configured the asteroid-collector on platform 3: nothing changed");
+    expect(plans()).toBe(before);
+    await handlers.set_recipe(schemas.set_recipe.parse({ x: 1.5, y: 1.5, recipe: "iron-gear-wheel" }));
+    expect(queued()).toMatchObject({ steps: [{ action: "set_recipe", x: 1.5, y: 1.5, recipe: "iron-gear-wheel" }] });
+    await handlers.configure_entity(schemas.configure_entity.parse({ x: 1.5, y: 1.5, chest: { slots: 4 } }));
+    expect(queued()).toMatchObject({ steps: [{ action: "configure_entity", x: 1.5, y: 1.5, chest: { slots: 4 } }] });
+    expect(schemas.configure_entity.safeParse({ x: 1, y: 1, silo: { auto_requests: true } }).success).toBe(true);
+    expect(schemas.configure_entity.safeParse({ x: 1, y: 1, collector: {} }).success).toBe(false);
+    expect(schemas.configure_entity.safeParse({ x: 1, y: 1, silo: { auto_orbit: true } }).success).toBe(false);
+
+    // Platform layouts: ghosts from an anchor relative to the hub, with foundation tiles.
+    const layout = { anchor: { x: 0, y: -8 }, platform: "Orbit",
+      entities: [{ name: "asteroid-collector", dx: 0, dy: 0, settings: { collector: { filters: ["metallic-asteroid-chunk"] } } },
+        { name: "crusher", dx: 3, dy: 2, recipe: "metallic-asteroid-crushing" }],
+      tiles: [{ name: "space-platform-foundation", dx: 5, dy: 0 }],
+      tile_rects: [{ name: "space-platform-foundation", from: { dx: -2, dy: -2 }, to: { dx: 2, dy: 2 } }] };
+    await handlers.build_layout(schemas.build_layout.parse(layout));
+    expect(queued()).toMatchObject({ steps: [{ action: "build_layout", ...layout }] });
+    await handlers.build_layout(schemas.build_layout.parse({ ...layout, check_only: true }));
+    expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true }, undefined);
+    const foundationOnly = { anchor: { x: 0, y: 0 }, platform: 3, entities: [], tile_rects: layout.tile_rects };
+    expect(schemas.build_layout.safeParse(foundationOnly).success).toBe(true);
+    expect(schemas.build_layout.safeParse({ anchor: { x: 0, y: 0 }, mode: "ghosts", entities: [{ name: "lab", dx: 0, dy: 0 }] }).success).toBe(true);
+    for (const bad of [{ ...layout, mode: "hand" }, { ...layout, anchor: undefined, site: { near: { x: 0, y: 0 } } },
+      { ...layout, platform: undefined }, { ...foundationOnly, tile_rects: undefined },
+      { ...layout, entities: [{ name: "lab", dx: 0, dy: 0, insert: { "automation-science-pack": 1 } }] },
+      { ...layout, tiles: [{ name: "space-platform-foundation", dx: 0.5, dy: 0 }] },
+      { ...foundationOnly, tile_rects: [{ name: "space-platform-foundation", from: { dx: 0, dy: 0 }, to: { dx: 31, dy: 31 } }] }])
+      expect(schemas.build_layout.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+
+    // Blueprints and deconstruction on a platform: ghosts and robot orders only.
+    const stamp = { name: "crusher-pair", position: { x: 4, y: 0 }, platform: "Orbit", mode: "ghosts" };
+    await handlers.blueprint_place(schemas.blueprint_place.parse(stamp));
+    expect(queued()).toMatchObject({ steps: [{ action: "blueprint_place", ...stamp }] });
+    expect(schemas.blueprint_place.safeParse({ ...stamp, mode: "hand" }).success).toBe(false);
+    const clear = { center: { x: 4, y: 0 }, radius: 3, platform: 3, mode: "robots" };
+    await handlers.deconstruct_area(schemas.deconstruct_area.parse(clear));
+    expect(queued()).toMatchObject({ steps: [{ action: "deconstruct_area", ...clear }] });
+    expect(schemas.deconstruct_area.safeParse({ ...clear, mode: "hand" }).success).toBe(false);
+    expect(schemas.deconstruct_area.safeParse({ platform: 3, mode: "robots" }).success).toBe(false);
+    expect(schemas.upgrade_area.safeParse({ center: { x: 0, y: 0 }, radius: 2, from: "a", to: "b", platform: 3 }).success).toBe(false);
+
+    // Every remote step is a plan and package step too, so Astra's packages carry them.
+    const steps = [{ action: "create_platform", name: "Second" }, { action: "set_requests", ...hub }, { action: "launch_rocket", ...launch },
+      { action: "set_recipe", ...crusher }, { action: "configure_entity", ...collector }, { action: "build_layout", ...layout },
+      { action: "blueprint_place", ...stamp }, { action: "deconstruct_area", ...clear }, { action: "extract_items", x: 1, y: 2, inventory: "rocket" }];
+    expect(schemas.queue_plan.safeParse({ steps }).success).toBe(true);
+    for (const step of steps) expect(packageStepSchema.safeParse(step).success, step.action).toBe(true);
+    expect(enqueueAndWaitResult).not.toHaveBeenCalled();
+  });
+
+  it("normalizes platform screens and factory_status platform rows", () => {
+    expect(normalizeFactoryStatus({ platforms: {} })).toEqual({ platforms: [] });
+    expect(normalizePlatformStatus({ tick: 5, platforms: {} })).toEqual({ tick: 5, platforms: [] });
+    const full = { tick: 9, platform: { index: 3, name: "Orbit", state: "waiting_at_station", location: "nauvis" },
+      foundation: { tiles: 100, bbox: {}, rows: {} }, hub: { position: { x: 0, y: 0 }, inventory: {}, trash: {}, free_slots: 39 },
+      requests: [{ index: 1, items: {} }], entities: [{ name: "asteroid-collector", position: { x: 0, y: -6 }, filters: {} }],
+      ghosts: { entities: 0, tiles: 0, missing: {} }, damage: { damaged_tiles: 0, total: 0 } };
+    expect(normalizePlatformStatus(full)).toEqual({ ...full, foundation: { ...full.foundation, rows: [] },
+      hub: { ...full.hub, inventory: [], trash: [] }, requests: [{ index: 1, items: [] }],
+      entities: [{ ...full.entities[0], filters: [] }], ghosts: { ...full.ghosts, missing: [] } });
+    expect(normalizeInspection({ entities: [{ name: "asteroid-collector", settings: { collector: { filters: {} } } }] }).entities[0])
+      .toEqual({ name: "asteroid-collector", settings: { collector: { filters: [] } } });
+    const silo = { status: "building_rocket", parts: 12, parts_required: 50, cargo: {}, auto_requests: false };
+    expect(normalizeInspection({ entities: [{ name: "rocket-silo", silo }] }).entities[0]).toEqual({ name: "rocket-silo", silo: { ...silo, cargo: [] } });
+    expect(normalizeInspection({ entities: [{ name: "cargo-landing-pad", landing_pad: { inventory: {}, requests: [{ index: 1, items: {} }] } }] }).entities[0])
+      .toEqual({ name: "cargo-landing-pad", landing_pad: { inventory: [], requests: [{ index: 1, items: [] }] } });
   });
 
   it("normalizes 0.22 power rows, robot networks and inspected inventories", () => {

@@ -125,8 +125,10 @@ end
 
 -- Nearest operable entity around a target position (for insert/extract/
 -- rotate/set_recipe). Skips the companion itself and things those actions
--- never apply to.
-local SKIP_TYPES = { character = true, resource = true, tree = true, ["item-entity"] = true }
+-- never apply to (a ready rocket and its cargo pod sit at the centre of
+-- their silo, which owns the rocket's inventory).
+local SKIP_TYPES = { character = true, resource = true, tree = true, ["item-entity"] = true,
+  ["rocket-silo-rocket"] = true, ["rocket-silo-rocket-shadow"] = true, ["cargo-pod"] = true }
 
 function M.find_entity_near(c, pos, radius)
   local candidates = c.surface.find_entities_filtered({ position = pos, radius = radius or 1.5 })

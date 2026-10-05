@@ -1,6 +1,6 @@
 -- get_items and auto-supply: the body fetches what a step needs the way a
 -- player would. For each wanted item, in order: take it from the nearest own
--- chest or machine output (then belt), walking there; else hand-craft it,
+-- chest, cargo landing pad or machine output (then belt), walking there; else hand-craft it,
 -- supplying the recipe's ingredients the same way first (so intermediates
 -- follow); else smelt it in an own furnace (ore and fuel in, wait, products
 -- out); else hand-gather it, only when no own mining drill produces it.
@@ -37,7 +37,6 @@ local GATHER_LIMIT = 100     -- natural entities read per query
 -- searched (an area query of bounded size and count, never the whole force).
 local BELT_SEARCH_RADIUS = 48
 local BELT_SEARCH_LIMIT = 64
-local CHEST_TYPES = { container = true, ["logistic-container"] = true }
 local NATURAL_TYPES = { "simple-entity", "tree", "plant", "resource" }
 -- Smelting through an own furnace: one source stack per round, a poll every
 -- half second, a furnace that makes no progress for ten seconds is done.
@@ -117,15 +116,14 @@ local function held(entity, item)
     if entity.type == "transport-belt" then
       return entity.get_transport_line(1).get_item_count(item) + entity.get_transport_line(2).get_item_count(item)
     end
-    local inventory = CHEST_TYPES[entity.type] and entity.get_inventory(defines.inventory.chest)
-      or entity.get_output_inventory()
+    local inventory = registry.holder_inventory(entity)
     return inventory and inventory.get_item_count(item) or 0
   end)
   return ok and tonumber(count) or 0
 end
 
--- Nearest own chest or machine output holding the item (the registry's
--- holders); a belt near the body only when no chest or machine holds any.
+-- Nearest own chest, landing pad or machine output holding the item (the
+-- registry's holders); a belt near the body only when none holds any.
 local function nearest_of(c, task, item, tried, entities, charted_only)
   local best
   for _, entity in ipairs(entities) do
@@ -138,7 +136,7 @@ local function nearest_of(c, task, item, tried, entities, charted_only)
         local d = count > 0 and dist_sq(c.position, position)
         if d and (not best or d < best.distance) then
           best = { key = key, position = { x = position.x, y = position.y }, count = count, distance = d,
-            kind = entity.type == "transport-belt" and "belt" or CHEST_TYPES[entity.type] and "chest" or "machine_output" }
+            kind = entity.type == "transport-belt" and "belt" or registry.holder_kind(entity) }
         end
       end
     end
@@ -449,7 +447,9 @@ local function advance(task, c, frame)
         if source.kind == "belt" then
           sub = { type = "pickup", target = source.position, item = frame.name, count = math.max(1, math.min(need, room)) }
         else
-          sub = { type = "extract", target = source.position, items = { [frame.name] = want } }
+          -- A landing pad's items are its main inventory (it has others).
+          sub = { type = "extract", target = source.position, items = { [frame.name] = want },
+            inventory = source.kind == "landing_pad" and "main" or nil }
         end
         frame.source_kind, frame.before = source.kind, have(c, frame.name)
         local ok, err = pcall(M.begin, task, "_sub", sub)
@@ -596,7 +596,7 @@ local function advance(task, c, frame)
     reason = string.format("%d own mining drill(s) produce it but none is stored where Codex can take it", frame.drills)
   else
     local parts = {}
-    if frame.takes == 0 then parts[#parts + 1] = "no own chest, machine output or belt holds it" end
+    if frame.takes == 0 then parts[#parts + 1] = "no own chest, landing pad, machine output or belt holds it" end
     if frame.craft_error then parts[#parts + 1] = "not hand-craftable: " .. frame.craft_error end
     if frame.smelt_error then parts[#parts + 1] = "not smelted: " .. frame.smelt_error end
     if frame.gather_error then parts[#parts + 1] = frame.gather_error end

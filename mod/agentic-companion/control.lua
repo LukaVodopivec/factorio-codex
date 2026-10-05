@@ -23,6 +23,10 @@ local blueprints = require("scripts.blueprints")
 local area_ops = require("scripts.actions.area_ops")
 local tiles = require("scripts.actions.tiles")
 local factory_activity = require("scripts.factory_activity")
+local platforms = require("scripts.platforms")
+local requests = require("scripts.requests")
+local configure = require("scripts.actions.configure")
+local build = require("scripts.actions.build")
 local timing = require("scripts.profiler")
 
 -- Every read-only RPC result carries the body's FIFO state from the same Lua
@@ -62,13 +66,15 @@ end
 
 rpc.register("ping", read(function()
   return {
-    protocol_version = 26,
+    protocol_version = 27,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
     companion_exists = companion.get() ~= nil,
     companion_ever_created = companion.record() ~= nil,
     companion_dead = companion.record() ~= nil and companion.get() == nil,
+    -- The last world-policy writes that failed (per surface), if any.
+    world_policy_errors = companion.world_policy_errors(),
   }
 end))
 rpc.register("spawn_companion", companion.connect)
@@ -91,8 +97,11 @@ jobs.register("blueprint_place", area_ops.place_check_job)
 jobs.register("place_tiles", tiles.check_job)
 -- inspect reads about 15 entities a tick.
 jobs.register("inspect", inspect.job)
+-- platform_status compact is attribute reads; full reads one platform's
+-- foundation and entities over ticks.
+jobs.register("platform_status", platforms.status_job)
 for _, kind in ipairs({ "observe_local", "inspect", "map_summary", "connect_entities", "build_layout", "build_block",
-  "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles" }) do
+  "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status" }) do
   rpc.register(kind, read(jobs.rpc(kind)))
 end
 rpc.register("blueprint_create", blueprints.create)
@@ -102,6 +111,13 @@ rpc.register("blueprint_export", read(blueprints.export))
 blueprints.set_logger(tasks.log_event)
 rpc.register("get_job", read(jobs.get))
 rpc.register("start_research", research.start_research)
+-- Remote actions on space platforms run at once, like start_research: the
+-- platform window needs no body (each refuses a planet target, which needs
+-- the body: a plan step). launch_rocket needs the body (a plan step).
+rpc.register("create_platform", platforms.create_platform)
+rpc.register("set_requests", requests.rpc)
+rpc.register("configure_entity", configure.rpc)
+rpc.register("set_recipe", build.set_recipe_rpc)
 rpc.register("can_place", read(spatial.can_place))
 rpc.register("find_placement", read(find_placement.find_placement))
 rpc.register("production_requirements", read(production_requirements.production_requirements))
@@ -227,6 +243,13 @@ for _, control in ipairs(human_inputs.controls) do
 end
 script.on_event(defines.events.on_gui_opened, companion.on_human_input)
 script.on_event(defines.events.on_surface_created, companion.enforce_peaceful_world)
+-- The space event ring (platforms.lua); a game without Space Age has none of
+-- these events.
+for name, handler in pairs({ on_rocket_launch_ordered = platforms.on_rocket_launch_ordered,
+  on_space_platform_changed_state = platforms.on_platform_state_changed,
+  on_cargo_pod_finished_descending = platforms.on_cargo_pod_finished_descending }) do
+  if defines.events[name] then script.on_event(defines.events[name], handler) end
+end
 if defines.events.on_player_removed then
   script.on_event(defines.events.on_player_removed, companion.on_player_removed)
 end

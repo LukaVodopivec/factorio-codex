@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.22.1**. Prior live evidence remains historical
-until the 0.22.1 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.22.2**. Prior live evidence remains historical
+until the 0.22.2 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -24,9 +24,9 @@ not provide a Linux visual client launcher.
    version mismatch before `GO`; `server stop <run-dir>` saves over RCON and
    shuts the server down at the run boundary instead of leaving it idle. Both
    server and couch client run the identical Space Age mod set.
-   Console-backed RCON disables achievements for the save. Play is
-   Nauvis-first: the MCP has no rocket, space-platform, or planet-travel tools
-   yet.
+   Console-backed RCON disables achievements for the save. Play reaches
+   orbit: rockets and remotely built space platforms, with no planet-travel
+   tools yet.
 4. From the couch PC, run
    `scripts/launch-native-client.ps1 -Address <server:port>` to connect the
    isolated native client (highest graphics quality at 3840x2160) as the real
@@ -88,6 +88,31 @@ not provide a Linux visual client launcher.
    teleporting. A debug supervisor may use those surfaces only for recorded
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
+
+For the 0.22.2 release (rocket and space platform), record these observable
+checks (offline fixtures cover them; none is live evidence yet):
+
+- `platform_status` lists every platform at no cost; `detail: "full"` for one
+  platform returns its foundation rows, hub contents and requests, entities
+  and `ghosts.missing`, and works on Astra's read-only surface too.
+- `create_platform` answers at once with a platform `waiting_for_starter_pack`
+  over the body's planet; a second platform of the same name is `NAME_TAKEN`.
+- `launch_rocket` with no ready rocket fails at once with `ROCKET_NOT_READY`
+  and the part count, before the body moves; with a ready rocket it fetches the
+  cargo, walks to the silo and launches, and `next_event` then reports
+  `rocket_launched`, `platform_state_changed` and `cargo_delivered`.
+- `set_requests {target: {platform}}`, `set_recipe`, `configure_entity` and
+  `build_layout` with `platform` leave the body where it stands; the direct
+  `set_requests`, `set_recipe` and `configure_entity` tools with a platform
+  answer at once (also during a human hold), and plan steps with `platform`
+  complete when the FIFO reaches them.
+- `get_items` takes items from a cargo landing pad; `inspect_entity` on a
+  silo shows its rocket's parts, cargo and weight, and on a landing pad its
+  stock and requests.
+- `ping` shows no `world_policy_errors` after a platform is created, and the
+  platform surface keeps its asteroids (no world-policy write reaches it).
+- `progression_status` trigger technologies carry a `hint` (for
+  `space-platform`: create_platform, then launch_rocket the starter pack).
 
 For the 0.22.1 release, record these observable checks (offline fixtures
 cover them; none is live evidence yet):
@@ -356,7 +381,7 @@ session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low
 session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
-  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
 `--role` names the session in the `origin` of every cancel its MCP process
@@ -374,7 +399,7 @@ The launch flags express requested settings. `--fast on` requests
 normal service. Neither a launch flag nor a successful update is role-profile
 confirmation. Follow the native readback procedure below before `GO`.
 Start each with its checked-in role goal; the pilot takes no physical action
-before `GO`. Confirm Astra lists exactly the twenty-one configured read-only tools
+before `GO`. Confirm Astra lists exactly the twenty-two configured read-only tools
 (`build_layout`, `build_block`, `connect_entities`, `blueprint_place` and `place_tiles` there are dry runs only) and cannot list any
 movement, transfer, crafting, placement, research mutation, plan
 enqueue/run/cancel, or stop tool before `GO`, and that the pilot has the full
@@ -445,8 +470,8 @@ To continue a run's factory with a new release instead of a fresh map:
    its directory. Astra initialises the new run's ledger from fresh reads
    (packages from the old ledger are not queued again); the copied notebook
    continues, because a resumed save of the same factory continues its run.
-5. Spawn the role sessions with this release's settings (for 0.22.1:
-   `-c model_reasoning_summary=detailed` and the twenty-one read-only tools
+5. Spawn the role sessions with this release's settings (for 0.22.2:
+   `-c model_reasoning_summary=detailed` and the twenty-two read-only tools
    above) and their updated goal files, redo the role-profile readback, start
    the recorder with `--pilot-rollout` and `--strategist-rollout` (a later
    replacement writes its rollout path to `<run_dir>/rollouts.json` as
@@ -1055,7 +1080,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.22.1 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.22.2 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -1086,14 +1111,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.22.1. They
+The successful observations below were collected before release 0.22.2. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.22.1. Complete the fresh run above after installing 0.22.1 before recording a
+0.22.2. Complete the fresh run above after installing 0.22.2 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.22.1 run must instead report protocol v26 and mod/app 0.22.1.
+  0.8.0. A 0.22.2 run must instead report protocol v27 and mod/app 0.22.2.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

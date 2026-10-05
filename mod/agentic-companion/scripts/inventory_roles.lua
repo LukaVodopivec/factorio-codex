@@ -1,6 +1,6 @@
 -- Inventories by role, as extract_items, insert_items and inspect_entity name
 -- them: main, input, output, fuel, burnt_result, modules, trash, robots,
--- material. Each role comes from a typed getter or, where none exists, the
+-- material, rocket (a silo's rocket cargo). Each role comes from a typed getter or, where none exists, the
 -- inventory define of the entity's type (never by probing aliases: several
 -- defines share an index across types, and the furnace_*, assembling_machine_*
 -- and rocket_silo_* input/output/trash defines are deprecated).
@@ -15,10 +15,11 @@ local MAIN = { container = { "chest" }, ["logistic-container"] = { "chest" }, ["
   ["cargo-wagon"] = { "cargo_wagon" }, car = { "car_trunk" }, ["spider-vehicle"] = { "spider_trunk" },
   ["character-corpse"] = { "character_corpse" }, ["cargo-landing-pad"] = { "cargo_landing_pad_main" } }
 local ROBOPORT = { robots = { "roboport_robot" }, material = { "roboport_material" } }
+local ROCKET = { ["rocket-silo"] = { "rocket_silo_rocket" } }
 local GETTERS = { output = "get_output_inventory", fuel = "get_fuel_inventory", burnt_result = "get_burnt_result_inventory",
   modules = "get_module_inventory" }
 
-M.ORDER = { "main", "input", "output", "fuel", "burnt_result", "modules", "trash", "robots", "material" }
+M.ORDER = { "main", "input", "output", "fuel", "burnt_result", "modules", "trash", "robots", "material", "rocket" }
 M.ROLES = {}
 for _, role in ipairs(M.ORDER) do M.ROLES[role] = true end
 
@@ -31,6 +32,7 @@ function M.get(entity, role)
   elseif role == "input" then defines_of = INPUT[kind] and { INPUT[kind] }
   elseif role == "trash" then defines_of = TRASH[kind]
   elseif kind == "roboport" and ROBOPORT[role] then defines_of = ROBOPORT[role]
+  elseif role == "rocket" then defines_of = ROCKET[kind]
   elseif GETTERS[role] and not (role == "output" and (MAIN[kind] or kind == "roboport")) then
     local ok, inventory = pcall(function() return entity[GETTERS[role]]() end)
     return ok and inventory and { inventory } or {}

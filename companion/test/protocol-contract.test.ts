@@ -3,12 +3,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { JOB_METHODS, PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
+import { planStepSchema } from "../src/mcp/runPlan.js";
 
-describe("bridge protocol v26", () => {
+describe("bridge protocol v27", () => {
   it("has the expected version and retained methods", () => {
-    expect(PROTOCOL_VERSION).toBe(26);
+    expect(PROTOCOL_VERSION).toBe(27);
     expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk", "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now",
-      "get_job", "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles"]);
+      "get_job", "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles",
+      "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe"]);
   });
   it("matches the exact Lua registrations", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -24,6 +26,18 @@ describe("bridge protocol v26", () => {
     const jobs = [...sources.matchAll(/jobs\.register\("([^"]+)"/g)].map((match) => match[1]!);
     expect(jobs.sort()).toEqual([...JOB_METHODS].sort());
     expect([...registered, ...looped].sort()).toEqual([...RPC_METHODS].sort());
+  });
+  it("dispatches every plan step action the bridge accepts", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const tasks = fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/tasks.lua"), "utf8");
+    const registered = [...tasks.matchAll(/M\.register_action\("([^"]+)"/g)].map((match) => match[1]!);
+    const table = /local ACTIONS = \{([^}]*)\}/.exec(tasks)?.[1] ?? "";
+    const builtIn = [...table.matchAll(/([a-z_]+) = "/g)].map((match) => match[1]!);
+    // The steps queue_plan itself runs (waits and batched inspection).
+    const inline = ["wait_for_item", "wait_for_research", "inspect_entities"].filter((action) => tasks.includes(`"${action}"`));
+    const actions = planStepSchema.options.map((option) => option.shape.action.value as string);
+    expect(new Set(actions).size).toBe(actions.length);
+    expect([...actions].sort()).toEqual([...registered, ...builtIn, ...inline].sort());
   });
   it("keeps replaced callable paths absent from retained Lua sources", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");

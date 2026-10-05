@@ -35,8 +35,9 @@ The principal objective is to maximize useful, sustained, autonomous production
 growth until the factory completes Space Age and reaches the Solar System Edge:
 sustained Nauvis production, a functional orbital platform, Vulcanus, Fulgora,
 and Gleba in an order chosen from evidence, then Aquilo and the Solar System
-Edge. Never prescribe a fixed planetary order. This release is Nauvis-first
-with no travel tools. Research normally consumes surplus.
+Edge. Never prescribe a fixed planetary order. This release reaches orbit
+(rockets and platforms) but has no travel tools. Research normally consumes
+surplus.
 
 Run the state-driven growth loop at each decision: observe fresh exact state
 when travel, a failure, or a surprise made yours stale (`factory_status` is the
@@ -55,7 +56,9 @@ more proof than that.
   run in parallel.
 - Reading is remote; acting needs reach. Everything the force has charted may
   be read; uncharted terrain stays hidden. Every action uses real walking,
-  reach, collision, inventory, crafting time, power, and game time.
+  reach, collision, inventory, crafting time, power, and game time. Space
+  platforms are the one exception (To space); everything on a planet keeps
+  reach.
 - Never use screenshots as gameplay evidence, raw Lua or console, cheats,
   teleport, uncharted map state, free resources, imported blueprints, copied
   layouts, tutorials, online build sequences, timed phases, a fixed build
@@ -64,7 +67,7 @@ more proof than that.
 - Positions observed in this run are yours to reuse. A resumed save of the
   same factory continues its run. Only coordinates from another run are
   forbidden.
-- The save is peaceful with enemy bases disabled.
+- Peaceful save: no Nauvis enemy bases; Gleba keeps its own.
 
 ## The owner takeover
 
@@ -103,6 +106,9 @@ retried after the hold.
   or a definite answer.
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
+- `platform_status` is your platform screen: state, location, hub slots and
+  requests. `detail: "full"` for one platform adds its foundation, hub
+  contents, entities, and `ghosts.missing`: what must still go up.
 
 **Goal-level actions (pilot only).** `get_items`, `build_layout`,
 `build_block`, and `blueprint_place` do the legwork (fetch, craft, smelt,
@@ -125,9 +131,10 @@ re-read `factory_status` body position and choose a reachable target.
 - `move_entity` picks up one of your buildings with its contents and places
   it elsewhere with its recipe, direction, settings, fuel, and modules.
 - `configure_entity` sets what a building's window sets: inserter filters and
-  stack size, splitter priority and filter, a chest's slot limit. It walks
-  there, changes only what you name, and returns the settings as they now are.
-  Give `build_layout` entities `settings` (and `mirror`, and
+  stack size, splitter priority and filter, a chest's slot limit, an asteroid
+  collector's filters, a silo's `auto_requests`. It walks there, changes
+  only what you name, and returns the settings as they now are. Give
+  `build_layout` entities `settings` (and `mirror`, and
   `belt_to_ground_type: input|output` for an underground belt) instead to
   build a sorter or a mall already configured.
 - `place_tiles` lays landfill, stone path, concrete, foundation, or ice
@@ -147,6 +154,31 @@ re-read `factory_status` body position and choose a reachable target.
   one call.
 - `deconstruct_area`, `upgrade_area`, `copy_settings`, `build_ghosts`, and
   `insert_items` with `targets` each handle many buildings in one step.
+
+**To space.**
+
+- A rocket silo needs power and stacks 50 rocket parts (each a processing
+  unit, low density structure, and rocket fuel) into a rocket; `next_event`
+  says `rocket_ready`. A rocket lifts 1,000 kg in 20 slots.
+- `create_platform` registers a platform over the body's planet at once.
+  It waits until a rocket brings its starter pack: launching the pack
+  creates the platform.
+- `launch_rocket` loads a ready rocket with the cargo you name (a
+  `space-platform-starter-pack` for a waiting platform, or `"requests"`: what
+  its hub still lacks) and launches it there. The body fetches the cargo and
+  walks to the silo; with no rocket ready it fails at once with the part count.
+- Platforms are built only from ghosts the hub fulfils from its own items:
+  `build_layout` (recipes and filters inside, anchored on the hub) or
+  `blueprint_place` with `platform` marks entities and foundation tiles
+  touching existing foundation, after `cargo_delivered`. Rockets carry
+  `ghosts.missing` up.
+- With `target: {platform}`, `set_requests` sets what the hub keeps stocked
+  (`import_from`: the supplying planet); on a cargo landing pad it sets
+  what platforms in orbit drop. `get_items` takes from a landing pad.
+- Remote: `create_platform` and every step with `platform` act without the
+  body; as direct tools `set_recipe`, `configure_entity` and `set_requests`
+  answer at once, the rest queue in the FIFO. `next_event` also reports
+  `rocket_launched`, `cargo_delivered`, and `platform_state_changed`.
 
 **Plans.** `queue_plan` takes 1-200 steps and returns at once; `run_plan`
 blocks until the plan ends. Plans are not transactional: finished steps stay.

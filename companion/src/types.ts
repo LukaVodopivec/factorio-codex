@@ -134,5 +134,5 @@ export type Task =
   | { type: "walk_to"; target: { x: number; y: number } }
   | { type: "mine"; target: { x: number; y: number }; count?: number; target_kind?: "natural" | "owned"; allow_fluid_loss?: boolean }
   | { type: "pickup"; target: Position; item: string; count: number }
-  | { type: "place" | "rotate" | "set_recipe" | "insert" | "extract" | "craft"; [key: string]: unknown }
+  | { type: "place" | "rotate" | "insert" | "extract" | "craft"; [key: string]: unknown }
   | { type: "build_plan"; steps: unknown[]; auto_craft?: boolean; stop_on_error?: boolean };

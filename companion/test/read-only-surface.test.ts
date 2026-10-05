@@ -15,14 +15,14 @@ describe("strategist read-only MCP surface", () => {
     expect([...READ_ONLY_TOOLS].sort()).toEqual(["activity_log", "blueprint_describe", "blueprint_export", "blueprint_list",
       "blueprint_place", "build_block", "build_layout", "can_place", "connect_entities", "connect_status",
       "describe_prototype", "factory_status", "find_placement", "inspect_entity", "map_summary", "next_event", "observe_local",
-      "place_tiles", "plan_status", "production_requirements", "progression_status"]);
+      "place_tiles", "plan_status", "platform_status", "production_requirements", "progression_status"]);
   });
 
   it("does not create a body and read calls never enter the physical FIFO lane", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => {
-      if (method === "ping") return { protocol_version: 26, mod_version: "0.22.1", factorio_version: "2.0.77",
+      if (method === "ping") return { protocol_version: 27, mod_version: "0.22.2", factorio_version: "2.0.77",
         tick: 12, companion_exists: false, companion_ever_created: false, companion_dead: false };
       if (method === "observe_local") return { tick: 12, entities: [], resource_patches: [], ground_items: [] };
       if (method === "inspect") return { tick: 12, entities: [{ name: "iron-chest", position: { x: 400.5, y: 0.5 }, remote: true }] };
@@ -38,6 +38,7 @@ describe("strategist read-only MCP surface", () => {
       if (method === "blueprint_place") return { check_only: true, ok: true, collisions: {} };
       if (method === "blueprint_list") return { blueprints: {}, capacity: 31 };
       if (method === "place_tiles") return { check_only: true, would_place: 4, items_needed: 4, ineligible: {} };
+      if (method === "platform_status") return { tick: 12, platforms: {} };
       if (method === "find_placement") return { candidates: [{ position: { x: 1, y: 1 }, direction: 0,
         build_steps: [{ name: "stone-furnace", x: 1, y: 1, direction: 0, fuel_inlet: true }] }] };
       return {};
@@ -100,6 +101,17 @@ describe("strategist read-only MCP surface", () => {
     expect(schemas.place_tiles.safeParse({ ...tiles, check_only: false }).success).toBe(false);
     await handlers.place_tiles(schemas.place_tiles.parse(tiles));
     expect(call).toHaveBeenLastCalledWith("place_tiles", { ...tiles, check_only: true }, undefined);
+    // Platforms are read from any surface; a full read names one platform.
+    const platforms = await handlers.platform_status(schemas.platform_status.parse({}));
+    expect(call).toHaveBeenLastCalledWith("platform_status", { detail: "compact" }, undefined);
+    expect(platforms.structuredContent).toMatchObject({ platforms: [], summary: "tick 12: 0 platforms" });
+    expect(schemas.platform_status.safeParse({ detail: "full" }).success).toBe(false);
+    // A platform layout's check is a dry run here too.
+    const ghosts = { anchor: { x: 2, y: 0 }, platform: "Orbit", entities: [{ name: "crusher", dx: 0, dy: 0, recipe: "metallic-asteroid-crushing" }],
+      tile_rects: [{ name: "space-platform-foundation", from: { dx: -1, dy: -1 }, to: { dx: 1, dy: 1 } }] };
+    expect(schemas.build_layout.safeParse({ ...ghosts, check_only: false }).success).toBe(false);
+    await handlers.build_layout(schemas.build_layout.parse(ghosts));
+    expect(call).toHaveBeenLastCalledWith("build_layout", { ...ghosts, check_only: true }, undefined);
     await handlers.blueprint_list({});
     await handlers.blueprint_describe({ name: "smelter" });
     await handlers.blueprint_export({ name: "smelter" });
@@ -109,6 +121,7 @@ describe("strategist read-only MCP surface", () => {
     const methods = call.mock.calls.map(([method]) => method);
     expect(methods).not.toEqual(expect.arrayContaining([
       "spawn_companion", "start_research", "enqueue", "queue_plan", "cancel", "blueprint_capture", "blueprint_create", "blueprint_delete",
+      "create_platform", "set_requests",
     ]));
   });
 });

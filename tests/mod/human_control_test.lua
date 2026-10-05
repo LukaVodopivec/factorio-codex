@@ -60,7 +60,8 @@ _G.game = { tick = 0, get_player = function(index) return players[index] end, co
 
 local inert = { start = function() end, tick = function() return { status = "done", detail = "done" } end }
 package.loaded["scripts.actions.craft"] = inert
-package.loaded["scripts.actions.build"] = { place = inert, rotate = inert, set_recipe = inert }
+package.loaded["scripts.actions.build"] = { place = inert, rotate = inert,
+  set_recipe_action = { runner = inert, make_task = function() return {} end } }
 package.loaded["scripts.actions.transfer"] = { insert = inert, extract = inert,
   flush_action = { runner = inert, make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = inert

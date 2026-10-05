@@ -8,7 +8,9 @@
 -- no event; it reads the event-maintained registry (registry.lua), never an
 -- entity query, and waits until the registry's bootstrap is ready. A refresh
 -- identifies REFRESH_PER_TICK machines a tick and regroups on its last tick;
--- the previous lines stay in use until then. A bucketed
+-- the previous lines stay in use until then. A silo's rocket becoming ready
+-- is recorded in the space event ring (platforms.lua) by the same samples,
+-- with no read of its own. A bucketed
 -- sampler reads each machine (never belts) every SAMPLE_PERIOD ticks through
 -- its stored entity reference, so about machines/30 entities are read a tick.
 --
@@ -19,7 +21,8 @@
 --                   are not progressing)
 --   cause           why the worst machine stalls: the item or fluid a starved
 --                   one lacks, no_recipe / recipe_not_researched for an idle
---                   one, burnt_result for spent fuel that has nowhere to go;
+--                   one (rocket_ready for a silo whose rocket waits for its
+--                   launch), burnt_result for spent fuel that has nowhere to go;
 --                   worked out when the cause machine or its status changes
 --                   (and every 10 s while it lasts), never by a read
 --   temperature     (power lines with a reactor or heat exchanger) the lowest
@@ -33,6 +36,7 @@
 --                   by hand again needs a connection (belt, inserter, chest)
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
+local platforms = require("scripts.platforms")
 
 local M = {}
 
@@ -363,6 +367,13 @@ local function sample(a, rec, tick)
     if rec.finished and finished > rec.finished then progressed, produced = true, finished - rec.finished end
     rec.finished = finished
   end
+  if rec.type == "rocket-silo" then
+    -- Only a transition counts: a silo first sampled with a ready rocket is
+    -- not news.
+    local ready = entity.rocket_silo_status == defines.rocket_silo_status.rocket_ready
+    if ready and rec.rocket_ready == false then platforms.on_rocket_ready(entity) end
+    rec.rocket_ready = ready
+  end
   if progressed then
     rec.productive_tick = tick
     -- A furnace's first smelt fixes its recipe: regroup it.
@@ -444,6 +455,8 @@ local function cause_of(rec, state)
     return missing_input(rec)
   elseif state == "idle" and (raw == "no_recipe" or raw == "recipe_not_researched") then
     return raw
+  elseif state == "idle" and raw == "waiting_to_launch_rocket" then
+    return "rocket_ready"
   elseif state == "output_full" and raw == "full_burnt_result_output" then
     return "burnt_result"
   end

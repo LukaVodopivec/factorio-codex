@@ -18,6 +18,8 @@ local configure = require("scripts.actions.configure")
 local tiles = require("scripts.actions.tiles")
 local equip = require("scripts.actions.equip")
 local requests = require("scripts.requests")
+local platforms = require("scripts.platforms")
+local rocket = require("scripts.actions.rocket")
 local inventory_roles = require("scripts.inventory_roles")
 local set_walking = require("scripts.human_inputs").set_walking
 local placement_geometry = require("scripts.placement_geometry")
@@ -36,7 +38,7 @@ local INSPECT_PER_TICK = 16 -- positions an inspect_entities step reads a tick
 local STALL_TICKS, STALL_SAMPLE_TICKS, STALL_MOVE_SQ = 60 * 60, 60, 1
 local runners = {
   walk_to = walk, mine = mine, pickup = pickup, place = build.place, rotate = build.rotate,
-  set_recipe = build.set_recipe, craft = craft, insert = transfer.insert,
+  craft = craft, insert = transfer.insert,
   extract = transfer.extract, build_plan = build_plan,
 }
 local observer
@@ -45,7 +47,9 @@ function M.set_observer(fn) observer = fn end
 -- { runner = {start, tick, resume?}, make_task = function(step) -> task,
 -- validate = function(step, index) (optional, raises on a bad step),
 -- budget_steps = function(step) -> n (optional: the step's share of the
--- plan's active budget, counted in ordinary steps) }.
+-- plan's active budget, counted in ordinary steps), remote = function(step)
+-- -> boolean (optional: the step acts on a space platform without the body,
+-- so it binds the plan to no surface) }.
 local extensions = {}
 function M.register_action(action, spec)
   assert(type(action) == "string" and type(spec) == "table" and type(spec.runner) == "table"
@@ -96,7 +100,7 @@ local function task_crafts(task)
   return current and (current.type == "craft" or current.type == "build_plan" or current.type == "get_items"
     or current.type == "build_layout" or current.type == "build_block" or current.type == "blueprint_place"
     or current.type == "build_ghosts" or current.type == "upgrade_area" or current.type == "place_tiles"
-    or current.type == "equip" or current._supply ~= nil)
+    or current.type == "equip" or current.type == "launch_rocket" or current._supply ~= nil)
 end
 local function set_plan_status(plan, status)
   plan.status = status
@@ -198,6 +202,7 @@ function M.enqueue(params)
   return { task_id = assign(task) }
 end
 
+M.register_action("set_recipe", build.set_recipe_action)
 M.register_action("get_items", supply.action)
 M.register_action("build_layout", build_layout.layout_action)
 M.register_action("build_block", build_layout.block_action)
@@ -213,10 +218,12 @@ M.register_action("flush_fluid", transfer.flush_action)
 M.register_action("place_tiles", tiles.action)
 M.register_action("equip", equip.action)
 M.register_action("set_requests", requests.action)
+M.register_action("create_platform", platforms.create_action)
+M.register_action("launch_rocket", rocket.action)
 
 local ACTIONS = {
   walk_to = "walk_to", mine = "mine", pickup_items = "pickup", place_entity = "place", craft_items = "craft",
-  insert_items = "insert", extract_items = "extract", set_recipe = "set_recipe", rotate_entity = "rotate",
+  insert_items = "insert", extract_items = "extract", rotate_entity = "rotate",
 }
 local function make_step_task(step)
   local extension = extensions[step.action]
@@ -254,7 +261,6 @@ local function make_step_task(step)
     task.target, task.items, task.all = { x = step.x, y = step.y }, step.items, step.items == nil
     task.inventory = step.inventory
   end
-  if kind == "set_recipe" then task.target, task.recipe = { x = step.x, y = step.y }, step.recipe end
   if kind == "rotate" then task.target, task.direction = { x = step.x, y = step.y }, step.direction end
   return task
 end
@@ -345,13 +351,19 @@ function M.queue_plan(params)
         .. " (pruned, a single task, or never queued); omit it or use a current plan ID")
     end
   end
+  -- A plan of remote steps only (platform windows) binds to no surface.
+  local remote = true
+  for _, step in ipairs(params.steps) do
+    local extension = extensions[step.action]
+    if not (extension and extension.remote and extension.remote(step)) then remote = false end
+  end
   local plan = {
     type = "plan", steps = params.steps, current_step = 0, completed_steps = 0, outcomes = {},
     final_observation_radius = tonumber(params.final_observation_radius) or 15,
     observation_detail = params.observation_detail == "compact" and "compact" or "none",
     after_plan_id = predecessor, source = source, budget_steps = budget_steps,
     -- Positions in the steps belong to the surface the body stands on now.
-    surface = body_surface(),
+    surface = not remote and body_surface() or nil,
   }
   -- Ticks the FIFO sat empty before this plan: the body's idle time while the
   -- caller reasoned, so a short plan's cost is visible in the next result.

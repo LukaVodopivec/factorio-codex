@@ -3,15 +3,20 @@
 -- construction robots, which never give free items. Each tick does at most
 -- one physical act, or at most ORDERS_PER_TICK robot orders.
 --
---   blueprint_place {name, position, direction?, flip?, mode: hand | ghosts}
+--   blueprint_place {name, position, direction?, flip?, mode: hand | ghosts,
+--     platform?}
 --     hand:   the stored blueprint as a build_layout at position (auto-supply,
 --             auto-clear, recipes, settings, starter items, poles wire up);
---     ghosts: LuaItemStack.build_blueprint places ghosts for robots.
+--     ghosts: LuaItemStack.build_blueprint places ghosts for robots;
+--     platform (ghosts only, remote: no body): position is relative to the
+--             platform's hub, and the hub builds the ghosts.
 --     As an RPC it is the check_only dry run (place_check_job).
 --   build_ghosts {area | center+radius}: the character builds own ghosts by
 --     hand from its inventory, reviving each so its settings apply.
 --   deconstruct_area {area | center+radius, mode: hand | robots | cancel,
---     filter?}: hand mines each own entity (and trees and rocks).
+--     filter?, platform?}: hand mines each own entity (and trees and rocks);
+--     on a platform (robots or cancel only, remote: no body) the area is on
+--     its surface and the hub carries the orders out, its items back to it.
 --   upgrade_area {area | center+radius, from, to, mode: hand | robots}: hand
 --     fast-replaces same-footprint entities in place (direction and recipe
 --     kept); anything else is reported, to be mined and placed instead.
@@ -25,6 +30,7 @@ local build = require("scripts.actions.build")
 local build_layout = require("scripts.actions.build_layout")
 local supply = require("scripts.actions.supply")
 local craft = require("scripts.actions.craft")
+local platforms = require("scripts.platforms")
 
 local M = {}
 
@@ -36,7 +42,17 @@ local MAX_TARGETS = 32
 local NATURAL_TYPES = { "tree", "simple-entity", "plant" } -- natural entities the body may clear
 -- Own-force entities that are never mined by an area action.
 local NEVER = { character = true, ["entity-ghost"] = true, ["tile-ghost"] = true, ["item-request-proxy"] = true,
-  ["item-entity"] = true, ["deconstructible-tile-proxy"] = true, ["character-corpse"] = true }
+  ["item-entity"] = true, ["deconstructible-tile-proxy"] = true, ["character-corpse"] = true,
+  ["space-platform-hub"] = true, ["cargo-pod"] = true }
+
+-- A platform step names its platform; the body never goes there.
+local function check_platform(step, label, modes, named)
+  if step.platform == nil then return end
+  platforms.check_selector(step.platform, label .. " platform")
+  if step.mode ~= nil and not modes[step.mode] then
+    error(string.format("NO_BODY_ON_SURFACE: %s on a platform takes mode %s: the body is not there", label, named), 0)
+  end
+end
 
 local function plain(err) return (tostring(err):gsub("^.-:%d+:%s*", "")) end
 
@@ -128,6 +144,7 @@ local function validate_place(step, label)
   if step.mode ~= nil and step.mode ~= "hand" and step.mode ~= "ghosts" then
     error(label .. ' mode must be "hand" or "ghosts"', 0)
   end
+  check_platform(step, label, { ghosts = true }, "ghosts")
 end
 
 local function anchor_of(position)
@@ -142,10 +159,25 @@ end
 
 local Place = {}
 
+-- A platform placement: its hub and the absolute anchor (position is
+-- relative to the hub).
+local function platform_anchor(c, task)
+  local space = build_layout.platform_space(c, task.platform)
+  local hub = space.hub_position
+  return space, anchor_of({ x = hub.x + task.position.x, y = hub.y + task.position.y })
+end
+
 function Place.start(task)
   local c = companion.require_companion()
   local label = "blueprint_place " .. tostring(task.name)
   validate_place(task, label)
+  if task.platform ~= nil then
+    local space
+    space, task._anchor = platform_anchor(c, task)
+    task.mode, task._platform = "ghosts", { index = space.platform, name = space.name }
+    blueprints.layout(task.name, task.flip, label)
+    return
+  end
   task.mode = task.mode or "hand"
   task._anchor = anchor_of(task.position)
   if task.mode == "hand" then
@@ -167,10 +199,17 @@ end
 
 local function place_ghosts(task, c)
   local label = "blueprint_place " .. task.name
+  -- On a platform: its surface, all or nothing, its own (always visible) map.
+  local surface, platform = c.surface, nil
+  if task._platform then
+    local p, code, why = platforms.resolve(c.force, task._platform.index)
+    if not p then return { status = "failed", detail = code .. ": " .. why, outcome = { code = code } } end
+    surface, platform = p.surface, p
+  end
   local stack = blueprints.build_stack(task.name, task.flip, label)
-  local ok, ghosts = pcall(stack.build_blueprint, { surface = c.surface, force = c.force, position = task._anchor,
-    direction = task.direction or 0, build_mode = defines.build_mode.forced, skip_fog_of_war = true,
-    raise_built = true })
+  local ok, ghosts = pcall(stack.build_blueprint, { surface = surface, force = c.force, position = task._anchor,
+    direction = task.direction or 0, build_mode = platform and defines.build_mode.normal or defines.build_mode.forced,
+    skip_fog_of_war = not platform, raise_built = true })
   if task.flip then blueprints.clear_scratch() end
   if not ok then return { status = "failed", detail = "GHOSTS_NOT_PLACED: " .. plain(ghosts),
     outcome = { code = "GHOSTS_NOT_PLACED" } } end
@@ -184,6 +223,19 @@ local function place_ghosts(task, c)
     end
   end
   local count = #(ghosts or {})
+  if platform then
+    local outcome = { code = count > 0 and "GHOSTS_PLACED" or "GHOSTS_NOT_PLACED", blueprint = task.name,
+      anchor = task._anchor, surface = platforms.surface_ref(platform), platform = task._platform, ghosts = count,
+      placed = rows }
+    if count == 0 then
+      return { status = "failed", outcome = outcome, detail = string.format(
+        "GHOSTS_NOT_PLACED: %s placed no ghosts at (%d, %d) on platform %s — something stands in its way or it needs foundation",
+        task.name, task._anchor.x, task._anchor.y, platform.name) }
+    end
+    return { status = "done", outcome = outcome, detail = string.format(
+      "blueprint_place %s: %d ghosts at (%d, %d) on platform %s; its hub builds them from its own inventory",
+      task.name, count, task._anchor.x, task._anchor.y, platform.name) }
+  end
   local robots = blueprints.construction_robots(c, task._anchor)
   local outcome = { code = count > 0 and "GHOSTS_PLACED" or "GHOSTS_NOT_PLACED", blueprint = task.name,
     anchor = task._anchor, ghosts = count, placed = rows, construction_robots = robots,
@@ -216,15 +268,17 @@ end
 M.place_action = {
   runner = Place,
   make_task = function(step)
-    return { name = step.name, position = step.position, direction = step.direction, flip = step.flip, mode = step.mode }
+    return { name = step.name, position = step.position, direction = step.direction, flip = step.flip, mode = step.mode,
+      platform = step.platform }
   end,
   validate = function(step, index)
     local label = "queue_plan blueprint_place step " .. index
     validate_place(step, label)
     if step.check_only then error(label .. ": check_only is the blueprint_place dry run, not a plan step", 0) end
   end,
+  remote = function(step) return step.platform ~= nil end,
   budget_steps = function(step)
-    return step.mode == "ghosts" and 1 or (blueprints.entity_count(step.name) or 1)
+    return (step.mode == "ghosts" or step.platform ~= nil) and 1 or (blueprints.entity_count(step.name) or 1)
   end,
 }
 
@@ -241,6 +295,13 @@ M.place_check_job = {
     validate_place(params, label)
     local c = companion.require_companion()
     local layout = placed_layout(params, label)
+    if params.platform ~= nil then
+      -- Ghost checks on the platform's surface; no other spot is searched.
+      local space, anchor = platform_anchor(c, params)
+      return { name = params.name, mode = "ghosts", anchor = anchor, layout = layout, phase = "at",
+        platform = { index = space.platform, name = space.name }, hub = space.hub_position,
+        search = build_layout.search_start(c, { anchor = anchor, layouts = { layout }, ghosts = true, space = space }) }
+    end
     local anchor = anchor_of(params.position)
     return { name = params.name, mode = params.mode or "hand", anchor = anchor, layout = layout, phase = "at",
       search = build_layout.search_start(c, { anchor = anchor, layouts = { layout } }) }
@@ -252,6 +313,15 @@ M.place_check_job = {
     local result = build_layout.search_step(c, s, math.max(1, budget.left))
     budget.left = budget.left - (s.ctx.calls - before)
     if not result then return nil end
+    if job.platform then
+      local report = build_layout.check_report(c, result, nil, s)
+      local collisions = {}
+      for i = 1, math.min(MAX_ROWS, #report.failed) do collisions[i] = report.failed[i] end
+      return { check_only = true, blueprint = job.name, mode = "ghosts", platform = job.platform, hub = job.hub,
+        surface = "platform:" .. job.platform.index, position = job.anchor, ok = report.ok, collisions = collisions,
+        already = report.already, needs_planned_tiles = report.needs_planned_tiles, materials = report.materials,
+        missing = report.missing or {} }
+    end
     local report = build_layout.check_report(c, result)
     if job.phase == "at" and not report.ok then
       -- Blocked here: look for the first free position near it.
@@ -419,16 +489,26 @@ Deconstruct.resume = supply.resume
 
 function Deconstruct.start(task)
   local c = companion.require_companion()
-  task.mode = task.mode or "hand"
   local label = "deconstruct_area"
-  local area = blueprints.area(c, task, label)
+  local surface = c.surface
+  if task.platform ~= nil then
+    -- Remote: the platform's own entities, ordered for its hub.
+    local p, code, why = platforms.resolve(c.force, task.platform)
+    if not p then error(code .. ": " .. why, 0) end
+    surface, code, why = platforms.surface_of(p)
+    if not surface then error(code .. ": " .. why, 0) end
+    task._platform = { index = p.index, name = p.name }
+    task.mode = task.mode or "robots"
+  end
+  task.mode = task.mode or "hand"
+  local area = blueprints.area(c, task, label, task._platform and surface)
   task._centre = centre_of(area)
   -- Only candidates are read, own first, each query with its own limit: an
   -- unfiltered query on an ore field fills its limit with resources.
   local limit = MAX_AREA_ENTITIES + 1
-  local own_found = c.surface.find_entities_filtered({ area = area, force = c.force, name = task.filter, limit = limit })
-  local natural_found = c.surface.find_entities_filtered({ area = area, type = NATURAL_TYPES, name = task.filter,
-    limit = limit })
+  local own_found = surface.find_entities_filtered({ area = area, force = c.force, name = task.filter, limit = limit })
+  local natural_found = task._platform and {} or surface.find_entities_filtered({ area = area, type = NATURAL_TYPES,
+    name = task.filter, limit = limit })
   task._list, task._done = {}, 0
   task._truncated = #own_found > MAX_AREA_ENTITIES or #natural_found > MAX_AREA_ENTITIES
   task._by_name = {}
@@ -455,11 +535,15 @@ local function deconstruct_result(task, c)
   local verb = task.mode == "cancel" and "cancelled deconstruction of" or hand and "mined" or "ordered deconstruction of"
   local extra = { done = task._done, total = task._total, by_name = task._by_name, truncated = task._truncated or nil,
     stopped = task._stopped }
-  if not hand then
+  if task._platform then
+    extra.platform, extra.surface = task._platform, "platform:" .. task._platform.index
+    extra.note = task.mode == "robots" and "the hub deconstructs them; their items go to the hub" or nil
+  elseif not hand then
     extra.construction_robots = blueprints.construction_robots(c, task._centre)
     extra.tool_unlock = blueprints.tool_unlock(c, "deconstruction-planner")
   end
-  return finish(task, status, code, string.format("deconstruct_area: %s %d/%d entities%s", verb, task._done, task._total,
+  return finish(task, status, code, string.format("deconstruct_area: %s %d/%d entities%s%s", verb, task._done, task._total,
+    task._platform and (" on platform " .. task._platform.name) or "",
     task._truncated and " (the area holds more: run it again)" or ""), extra)
 end
 
@@ -535,7 +619,7 @@ M.deconstruct_action = {
   runner = Deconstruct,
   make_task = function(step)
     local task = area_params(step)
-    task.mode, task.filter = step.mode, step.filter
+    task.mode, task.filter, task.platform = step.mode, step.filter, step.platform
     return task
   end,
   validate = function(step, index)
@@ -544,9 +628,11 @@ M.deconstruct_action = {
     if step.mode ~= nil and step.mode ~= "hand" and step.mode ~= "robots" and step.mode ~= "cancel" then
       error(label .. ' mode must be "hand", "robots" or "cancel"', 0)
     end
+    check_platform(step, label, { robots = true, cancel = true }, "robots or cancel")
     validate_names(step.filter, label .. " filter")
   end,
-  budget_steps = function(step) return (step.mode == nil or step.mode == "hand") and 60 or 1 end,
+  remote = function(step) return step.platform ~= nil end,
+  budget_steps = function(step) return (step.platform == nil and (step.mode == nil or step.mode == "hand")) and 60 or 1 end,
 }
 
 -- ------------------------------------------------------------ upgrade_area

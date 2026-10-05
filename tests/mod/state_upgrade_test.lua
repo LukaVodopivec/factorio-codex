@@ -65,6 +65,14 @@ map_summary.on_chunk_charted({ position = { x = 0, y = 0 }, force = { name = "pl
 check(#cache.charted == 5 and cache.charted[5].x == 7 and cache.charted_set["7,7"],
   "a chunk charted later is appended once; a known one is not listed again")
 
+check(type(storage.space) == "table" and next(storage.space.created) == nil and #storage.space.events == 0,
+  "the space platform store and event ring are created")
+check(type(storage.world_policy) == "table" and #storage.world_policy.errors == 0,
+  "the world policy's error list is created")
+storage.space.created[3] = "nauvis"
+storage.space.events[1] = { tick = 1, kind = "rocket_ready" }
+storage.world_policy.errors[1] = { tick = 2, surface = "nauvis", write = "peaceful_mode", error = "x" }
+
 -- Calling init again (a later configuration change) leaves the list alone.
 storage.blueprints.by_name.smelter = { slot = 1 }
 storage.jobs.next_id = 9
@@ -73,6 +81,9 @@ check(#storage.patch_cache.charted == 5, "state.init keeps an existing charted l
 check(#created_inventories == 1 and storage.blueprints.inventory == blueprint_inventory
   and storage.blueprints.by_name.smelter ~= nil and storage.jobs.next_id == 9,
   "a later configuration change keeps the blueprints and never reuses a job id")
+check(storage.space.created[3] == "nauvis" and #storage.space.events == 1,
+  "a later configuration change keeps the platforms' planets and the event ring")
+check(#storage.world_policy.errors == 1, "a later configuration change keeps the world policy's errors")
 
 print(failures == 0 and "\nALL STATE UPGRADE TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

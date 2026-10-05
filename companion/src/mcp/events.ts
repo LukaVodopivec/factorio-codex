@@ -11,6 +11,14 @@ export const nextEventSchema = z.object({
 }).strict();
 export type NextEventInput = z.infer<typeof nextEventSchema>;
 
+/** Rocket and platform events: the kinds of the mod's space event ring. */
+export const SPACE_EVENTS = ["rocket_ready", "rocket_launched", "cargo_delivered", "platform_state_changed"] as const;
+/** One entry of the ring: a silo's position, a platform {index, name}, a
+ *  state change's old and new state, or the planet a cargo pod landed on. */
+export interface SpaceEvent {
+  tick: number; kind: typeof SPACE_EVENTS[number]; silo?: { x: number; y: number };
+  platform?: { index: number; name: string }; old?: string; new?: string; surface?: string;
+}
 /** The mod's cheap event_state probe. */
 export interface EventState {
   tick: number; queue_depth: number; fifo_empty: boolean; human_hold: boolean;
@@ -18,6 +26,8 @@ export interface EventState {
   last_plan_ended?: { plan_id: number; status: string; tick: number };
   last_research_finished?: { technology: string; tick: number };
   last_cancel_all_tick?: number;
+  /** The newest space event's tick and the last few entries, oldest first. */
+  last_space_event_tick?: number; space_events?: SpaceEvent[];
 }
 export interface PackageFailure { package_id: string; reason?: string; tick?: number; at?: string }
 /** Package failures one session already received, kept across its calls:
@@ -46,11 +56,25 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   const read = () => bridge.call<EventState>("event_state");
   const started = clock.now();
   let previous = await read();
-  const done = (event: string, state: EventState, details: Record<string, unknown> = {}) => ({
-    event, ...details, tick: state.tick,
-    body: { active_plan_id: state.active_plan_id ?? null, queue_depth: state.queue_depth,
-      fifo_empty: state.fifo_empty, human_hold: state.human_hold },
-  });
+  const since = input.since_tick;
+  // Space events after since_tick, or (without it) after the call started.
+  const spaceSeen = since ?? previous.last_space_event_tick ?? -1;
+  const newSpace = (state: EventState) => (luaArray(state.space_events ?? []) as SpaceEvent[]).filter((row) => row.tick > spaceSeen);
+  // Space events never get lost behind another event: they ride along, since
+  // the caller's next since_tick is the returned tick.
+  const done = (event: string, state: EventState, details: Record<string, unknown> = {}) => {
+    const space = (SPACE_EVENTS as readonly string[]).includes(event) ? [] : newSpace(state);
+    return { event, ...details, ...(space.length > 0 ? { space_events: space } : {}), tick: state.tick,
+      body: { active_plan_id: state.active_plan_id ?? null, queue_depth: state.queue_depth,
+        fifo_empty: state.fifo_empty, human_hold: state.human_hold } };
+  };
+  // The oldest new space event; later ones in the same read come along.
+  const spaceEvent = (state: EventState) => {
+    const rows = newSpace(state);
+    if (rows.length === 0) return null;
+    const { tick, kind, ...fields } = rows[0]!;
+    return done(kind, state, { ...fields, event_tick: tick, ...(rows.length > 1 ? { space_events: rows } : {}) });
+  };
   // A research that finished in the same poll rides along: its tick is
   // older than the returned one, so a later since_tick call would miss it.
   const ended = async (state: EventState, plan: { plan_id: number; status: string }, research?: EventState["last_research_finished"]) => {
@@ -70,7 +94,6 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
       return done("new_problem", state, { problems: luaArray(status?.problems ?? []) });
     } catch { return done("new_problem", state); }
   };
-  const since = input.since_tick;
   // A package failure is delivered once per session, by its record, never by
   // comparing ticks: the bridge may record it after this session already saw
   // a later tick.
@@ -94,6 +117,8 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if (last && last.tick > since) return ended(previous, last, research);
     if ((previous.last_research_finished?.tick ?? -1) > since) return researched(previous);
     if ((previous.last_problem_tick ?? -1) > since) return problems(since, previous);
+    const space = spaceEvent(previous);
+    if (space) return space;
   }
   const failedEarlier = undelivered(previous);
   if (failedEarlier) return failedEarlier;
@@ -114,6 +139,8 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if (newResearch) return researched(state);
     if (state.human_hold !== previous.human_hold) return done(state.human_hold ? "human_hold_started" : "human_hold_ended", state);
     if ((state.last_problem_tick ?? -1) > (previous.last_problem_tick ?? -1)) return problems(previous.tick, state);
+    const space = spaceEvent(state);
+    if (space) return space;
     const failed = undelivered(state);
     if (failed) return failed;
     if (sources.ordersChanged()) return done("orders_changed", state);
@@ -124,6 +151,9 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
 }
 
 export const IDLE_NOW = "the FIFO is empty and the body is idle: queue work now";
+
+const at = (point: unknown) => { const p = point as { x?: number; y?: number } | undefined; return `(${p?.x}, ${p?.y})`; };
+const platformName = (value: Record<string, unknown>) => (value.platform as { name?: string } | undefined)?.name;
 
 function eventText(value: Record<string, unknown>): string {
   switch (value.event) {
@@ -138,6 +168,10 @@ function eventText(value: Record<string, unknown>): string {
     case "orders_changed": return "Astra's orders changed";
     case "human_hold_started": return "a human took the body; plans stay queued";
     case "human_hold_ended": return "the human hold ended; queued plans resume";
+    case "rocket_ready": return `a rocket is ready in the silo at ${at(value.silo)}`;
+    case "rocket_launched": return `a rocket was launched from ${at(value.silo)}${platformName(value) ? ` to platform ${platformName(value)}` : ""}`;
+    case "cargo_delivered": return `a cargo pod landed ${platformName(value) ? `on platform ${platformName(value)}` : `on ${value.surface}`}`;
+    case "platform_state_changed": return `platform ${platformName(value)}: ${value.old} -> ${value.new}`;
     case "timeout": return `nothing happened in ${value.waited_seconds} s`;
     default: return String(value.event);
   }
@@ -147,7 +181,9 @@ function eventText(value: Record<string, unknown>): string {
  *  never fires queue_empty again, so any event that finds the body idle (and
  *  not held by a human) says so: the last plan ending is the pilot's cue. */
 export function eventSummary(value: Record<string, unknown>): string {
-  const text = eventText(value);
+  const space = Array.isArray(value.space_events) ? value.space_events.length : 0;
+  const along = space > 0 && !(SPACE_EVENTS as readonly string[]).includes(String(value.event));
+  const text = `${eventText(value)}${along ? `; ${space} rocket/platform event${space === 1 ? "" : "s"} in space_events` : ""}`;
   const body = value.body as { fifo_empty?: boolean; human_hold?: boolean } | undefined;
   const idle = body?.fifo_empty === true && body.human_hold !== true;
   return idle && !["queue_empty", "cancelled", "human_hold_started"].includes(String(value.event)) ? `${text}; ${IDLE_NOW}` : text;

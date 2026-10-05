@@ -20,7 +20,8 @@ local body
 }
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 local runner = { start = function() end, tick = function() return nil end }
-runner.place, runner.rotate, runner.set_recipe = runner, runner, runner
+runner.place, runner.rotate = runner, runner
+runner.set_recipe_action = { runner = runner, make_task = function() return {} end }
 runner.insert, runner.extract = runner, runner
 runner.flush_action = { runner = runner, make_task = function() return {} end }
 for _, name in ipairs({ "walk", "mine", "pickup", "build", "transfer" }) do package.loaded["scripts.actions." .. name] = runner end

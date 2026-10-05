@@ -13,7 +13,6 @@ export const toolPayloads = {
   // Without inventory: the output (or a chest's contents), as before.
   extract: ({ x, y, items: values, inventory }: { x: number; y: number; items?: Record<string, number>; inventory?: string }) => ({
     target: { x, y }, ...(values === undefined ? { all: true } : { items: values }), ...(inventory === undefined ? {} : { inventory }) }),
-  recipe: ({ x, y, recipe }: { x: number; y: number; recipe: string }) => ({ target: { x, y }, recipe }),
   rotate: ({ x, y, direction }: { x: number; y: number; direction?: number }) => ({ target: { x, y }, direction }),
   inspect: (positions: Array<{ x: number; y: number }>) => ({ targets: positions }),
   placement: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
@@ -170,6 +169,43 @@ export function normalizeFactoryStatus(value: any): any {
     available: luaArray(value.research.available),
     ...(value.research.queue === undefined ? {} : { queue: luaArray(value.research.queue) }) };
   if (value.body && typeof value.body === "object") out.body = { ...value.body, inventory_summary: record(value.body.inventory_summary) };
+  if (value.platforms !== undefined) out.platforms = luaArray(value.platforms);
+  return out;
+}
+
+/** Logistic sections read back (set_requests, a platform hub's requests). */
+function requestSections(value: unknown): unknown {
+  const sections = luaArray(value ?? []);
+  return Array.isArray(sections) ? sections.map((section: any) => section && typeof section === "object"
+    ? { ...section, items: luaArray(section.items ?? []) } : section) : sections;
+}
+
+/** configure_entity's outcome: changed fields, notes and filter lists. */
+export function normalizeConfigured(value: any): any {
+  if (!value || typeof value !== "object") return value;
+  const settings = value.settings && typeof value.settings === "object" ? { ...value.settings } : value.settings;
+  for (const group of ["inserter", "collector"]) if (settings?.[group]?.filters !== undefined)
+    settings[group] = { ...settings[group], filters: luaArray(settings[group].filters) };
+  return { ...value, settings, changed: luaArray(value.changed ?? []),
+    ...(value.notes === undefined ? {} : { notes: luaArray(value.notes) }) };
+}
+
+export function normalizeRequests(value: any): any {
+  return value && typeof value === "object" ? { ...value, sections: requestSections(value.sections) } : value;
+}
+
+/** platform_status: compact rows, or one platform's full screen. */
+export function normalizePlatformStatus(value: any): any {
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = { ...value };
+  if (value.platforms !== undefined) out.platforms = luaArray(value.platforms);
+  if (value.foundation && typeof value.foundation === "object") out.foundation = { ...value.foundation, rows: luaArray(value.foundation.rows ?? []) };
+  if (value.hub && typeof value.hub === "object") out.hub = { ...value.hub,
+    inventory: luaArray(value.hub.inventory ?? []), trash: luaArray(value.hub.trash ?? []) };
+  if (value.requests !== undefined) out.requests = requestSections(value.requests);
+  if (value.entities !== undefined) out.entities = luaArray(value.entities).map((entity: any) =>
+    entity?.filters !== undefined ? { ...entity, filters: luaArray(entity.filters) } : entity);
+  if (value.ghosts && typeof value.ghosts === "object") out.ghosts = { ...value.ghosts, missing: luaArray(value.ghosts.missing ?? []) };
   return out;
 }
 
@@ -206,11 +242,15 @@ export function normalizeInspection(value: any): any {
     // Contents by inventory role; an empty one is a Lua empty table.
     if (entity.inventories && typeof entity.inventories === "object") entity = { ...entity,
       inventories: Object.fromEntries(Object.entries(entity.inventories).map(([role, contents]) => [role, record(contents)])) };
-    if (entity.settings?.inserter?.filters !== undefined) entity = { ...entity, settings: { ...entity.settings,
-      inserter: { ...entity.settings.inserter, filters: luaArray(entity.settings.inserter.filters) } } };
+    for (const group of ["inserter", "collector"]) if (entity.settings?.[group]?.filters !== undefined) entity = { ...entity, settings: { ...entity.settings,
+      [group]: { ...entity.settings[group], filters: luaArray(entity.settings[group].filters) } } };
     if (entity.fluid_connections !== undefined) entity = { ...entity,
       fluid_connections: luaArray(entity.fluid_connections).map((connection: any) => connection?.connected_target === false
         ? { ...connection, connected_target: null } : connection) };
+    // A silo's rocket cargo and a landing pad's stock and requests (lists).
+    if (entity.silo && typeof entity.silo === "object") entity = { ...entity, silo: { ...entity.silo, cargo: luaArray(entity.silo.cargo ?? []) } };
+    if (entity.landing_pad && typeof entity.landing_pad === "object") entity = { ...entity, landing_pad: { ...entity.landing_pad,
+      inventory: luaArray(entity.landing_pad.inventory ?? []), requests: requestSections(entity.landing_pad.requests) } };
     const hasElectricalMarker = entity.electrical !== undefined || entity.electric_network_id !== undefined
       || entity.electric_buffer_capacity !== undefined || entity.electric_demand !== undefined
       || entity.electric_satisfaction !== undefined || entity.connected_poles !== undefined;

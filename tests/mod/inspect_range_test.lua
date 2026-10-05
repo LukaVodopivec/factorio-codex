@@ -321,5 +321,32 @@ check(result and #result.entities == 64 and result.omitted == 6 and #per_tick >=
 local exact = inspect.inspect({ targets = { too_many[1] } })
 check(exact.omitted == nil, "a call within the limit omits nothing")
 
+-- A cargo landing pad shows its stock and its requests (its window).
+defines.inventory.cargo_landing_pad_main = 1
+defines.logistic_section_type = { manual = 0 }
+local pad_main = mock.inventory({})
+pad_main.get_contents = function()
+  return { { name = "space-science-pack", quality = "normal", count = 40 }, { name = "calcite", quality = "normal", count = 5 } }
+end
+pad_main.get_item_count = function(item) return (type(item) == "table" and item.name or item) == "space-science-pack" and 40 or 0 end
+local pad_section = mock.logistic_section({ index = 1, type = 0, is_manual = true, active = true, group = "", filters_count = 1 })
+pad_section.get_slot = function() return { value = { type = "item", name = "space-science-pack", quality = "normal" }, min = 100 } end
+local pad = mock.entity({ valid = true, name = "cargo-landing-pad", type = "cargo-landing-pad", direction = 0,
+  position = { x = 2.5, y = 2.5 }, surface = surface })
+pad.get_inventory = function(id) assert(id == defines.inventory.cargo_landing_pad_main); return pad_main end
+pad.get_logistic_sections = function()
+  local sections = mock.logistic_sections({})
+  mock.read(sections, "sections", function() return { pad_section } end)
+  return sections
+end
+found_entity = pad
+local pad_read = inspect.inspect({ targets = { { x = 2.5, y = 2.5 } } }).entities[1]
+local landing = pad_read.landing_pad
+check(landing and #landing.inventory == 2 and landing.inventory[1].item == "calcite"
+  and landing.inventory[2].item == "space-science-pack" and landing.inventory[2].count == 40
+  and landing.requests[1].items[1].item == "space-science-pack" and landing.requests[1].items[1].min == 100
+  and landing.requests[1].items[1].have == 40 and pad_read.silo == nil,
+  "a landing pad's inspection shows its stock and its requests with what it has")
+
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

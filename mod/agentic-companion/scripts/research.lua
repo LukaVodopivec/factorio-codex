@@ -30,6 +30,14 @@ local function serializable_localised_string(value, depth, seen)
   return copy
 end
 
+-- What completes a trigger technology, in the tools' words (progression_status).
+local TRIGGER_HINTS = {
+  ["create-space-platform"] = "create_platform, then launch_rocket the starter pack",
+  ["build-entity"] = "build that entity (on a platform: as a ghost the hub builds)",
+  ["mine-entity"] = "one mine step on that entity",
+  ["craft-item"] = "craft it once",
+}
+
 local function research_trigger(technology)
   local ok, trigger = pcall(function() return technology.prototype.research_trigger end)
   if not ok or type(trigger) ~= "table" or type(trigger.type) ~= "string" then return nil end
@@ -51,6 +59,10 @@ local function research_trigger(technology)
     record.entity, record.entity_filter = id_filter(trigger.entity)
   elseif trigger.type == "scripted" then
     record.trigger_description = serializable_localised_string(trigger.trigger_description, 0, {})
+  end
+  record.hint = TRIGGER_HINTS[trigger.type]
+  if trigger.type == "craft-item" and (record.count or 1) > 1 then
+    record.hint = string.format("craft %d of it", record.count)
   end
   return record
 end

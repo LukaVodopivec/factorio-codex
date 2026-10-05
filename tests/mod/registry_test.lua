@@ -10,7 +10,7 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
 local RAW = { working = 1, no_fuel = 2, normal = 3, no_power = 4, no_ingredients = 5 }
-_G.defines = { entity_status = RAW, inventory = { chest = 1, fuel = 2, furnace_source = 3 },
+_G.defines = { entity_status = RAW, inventory = { chest = 1, fuel = 2, furnace_source = 3, cargo_landing_pad_main = 4 },
   target_type = { entity = 7, gui_element = 9 }, flow_precision_index = { five_seconds = 0 } }
 _G.prototypes = { item = { coal = { stack_size = 50 }, wood = { stack_size = 100 } }, recipe = {}, entity = {} }
 _G.game = { tick = 0 }
@@ -28,7 +28,7 @@ local ALL_CHUNKS = {}
 for x = 0, 9 do ALL_CHUNKS[#ALL_CHUNKS + 1] = { x = x, y = 0 } end
 ALL_CHUNKS[#ALL_CHUNKS + 1] = { x = 20, y = 20 }
 
-local world, finds = {}, { all = 0, resource = 0, own = 0 }
+local world, finds, finds_log = {}, { all = 0, resource = 0, own = 0 }, {}
 local chunk_lists = 0
 local surface
 local force = mock.force({ name = "player",
@@ -45,6 +45,7 @@ surface = mock.surface({ index = 1, name = "nauvis",
   end,
   find_entities_filtered = function(filter)
     finds.all = finds.all + 1
+    finds_log[#finds_log + 1] = filter
     assert(filter.area and filter.area[2][1] - filter.area[1][1] == 32 and filter.area[2][2] - filter.area[1][2] == 32,
       "every entity query names one chunk, never the whole surface")
     if filter.type == "resource" then finds.resource = finds.resource + 1 else finds.own = finds.own + 1 end
@@ -52,7 +53,8 @@ surface = mock.surface({ index = 1, name = "nauvis",
     for _, entity in ipairs(world) do
       if entity.valid and in_area(entity.position, filter.area)
         and (filter.force == nil or entity.force == filter.force)
-        and (filter.type == nil or entity.type == filter.type) then
+        and (filter.type == nil or entity.type == filter.type
+          or type(filter.type) == "table" and filter.type[1] == entity.type) then
         found[#found + 1] = entity
       end
     end
@@ -443,10 +445,61 @@ check(upgraded.pass_tick ~= nil and upgraded.networks[6] and upgraded.networks[6
   and upgraded.stock[1]["iron-plate"].total == 12,
   "the first pass after the upgrade fills the network and stock aggregates")
 
+-- 0.22.2: a registry from before never kept cargo landing pads. The upgrade
+-- rescans the charted chunks for them once: typed queries of one chunk,
+-- four chunks a tick. A pad is a store: its main inventory is stock.
+local pad = entity({ name = "cargo-landing-pad", type = "cargo-landing-pad", position = { x = 40.5, y = 8.5 },
+  get_inventory = function(id)
+    assert(id == defines.inventory.cargo_landing_pad_main)
+    return inventory({ ["space-science-pack"] = 5 })
+  end })
+check(upgraded.rescan and upgraded.rescan.types[1] == "cargo-landing-pad" and upgraded.entries[pad.unit_number] == nil,
+  "the upgrade schedules the rescan for landing pads")
+local rescan_ticks, typed = 0, true
+local first_query = #finds_log
+while upgraded.rescan and rescan_ticks < 20 do
+  rescan_ticks = rescan_ticks + 1
+  local before = finds.own
+  registry.on_tick(3000 + rescan_ticks)
+  if finds.own - before > registry.RESCAN_CHUNKS_PER_TICK then typed = false end
+end
+for i = first_query + 1, #finds_log do
+  if type(finds_log[i].type) ~= "table" or finds_log[i].type[1] ~= "cargo-landing-pad" then typed = false end
+end
+local pad_entry = upgraded.entries[pad.unit_number]
+check(upgraded.rescan == nil and typed and rescan_ticks == math.ceil(#storage.patch_cache.charted / registry.RESCAN_CHUNKS_PER_TICK)
+  and pad_entry and upgraded.holders[pad.unit_number] and registry.holder_kind(pad_entry) == "landing_pad",
+  "the rescan finds the pad with typed chunk queries, a few chunks a tick, and keeps it as a store")
+for tick = 3100, 3110 do map_summary.status_tick(tick) end
+local pads = registry.holders_with("space-science-pack", { x = 0, y = 0 }, 4)
+check(upgraded.stock[1]["space-science-pack"].total == 5 and #pads == 1 and pads[1].entity == pad,
+  "a landing pad's contents are stock that get_items can take")
+state.init()
+check(upgraded.rescan == nil, "a later configuration change does not rescan again")
+
+-- Upgraded mid-bootstrap: the chunk list is seeded only after the bootstrap
+-- ends, so the rescan waits for it instead of finishing over an empty list.
+local seeded_cache = storage.patch_cache
+storage.registry = { version = state.REGISTRY_VERSION, ready = false, force = "player", entries = {},
+  machines = {}, holders = {}, burners = {}, electric = {}, poles = {}, belts = {}, belt_count = 0,
+  bootstrap = { chunks = {}, cursor = 1 } }
+storage.patch_cache = { version = state.PATCH_CACHE_VERSION, seeded = false, filled = false, chunks = {}, known = {},
+  pending = {}, head = 1, queued = {}, refresh = {}, dirty = true, charted = {}, charted_set = {} }
+state.init()
+local mid = storage.registry
+check(mid.rescan ~= nil, "an upgrade mid-bootstrap schedules the rescan")
+mid.ready, mid.bootstrap = true, nil
+registry.on_tick(4000)
+check(mid.rescan ~= nil and mid.entries[pad.unit_number] == nil, "the rescan waits while the chunk list is not seeded")
+storage.patch_cache = seeded_cache
+for tick = 4001, 4020 do if mid.rescan then registry.on_tick(tick) end end
+check(mid.rescan == nil and mid.entries[pad.unit_number] ~= nil, "once seeded, the rescan finds the pad")
+
 -- An upgraded save without a registry gets a fresh one, which bootstraps.
 storage.registry = nil
 state.init()
-check(storage.registry.ready == false and storage.registry.bootstrap.chunks == nil, "an upgrade starts a new bootstrap")
+check(storage.registry.ready == false and storage.registry.bootstrap.chunks == nil and storage.registry.rescan == nil,
+  "an upgrade starts a new bootstrap (which finds landing pads itself)")
 local kept = storage.registry
 state.init()
 check(storage.registry == kept, "a repeated init keeps the registry")

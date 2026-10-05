@@ -6,6 +6,8 @@ local fluid_connections = require("scripts.fluid_connections")
 local inventory_roles = require("scripts.inventory_roles")
 local entity_settings = require("scripts.entity_settings")
 local jobs = require("scripts.jobs")
+local rocket = require("scripts.actions.rocket")
+local requests = require("scripts.requests")
 
 local M = {}
 
@@ -305,6 +307,22 @@ local function inspect_one(position, c)
   if ok_settings and settings then out.settings = settings end
   local ok_mirror, mirroring = pcall(function() return e.mirroring end)
   if ok_mirror and mirroring == true then out.mirror = true end
+
+  -- A silo's rocket (parts, cargo, weight, automatic requests) and a landing
+  -- pad's stock and requests: their windows. A platform's hub, collectors and
+  -- thrusters are read with platform_status.
+  if e.type == "rocket-silo" then
+    local ok_silo, silo = pcall(rocket.silo_block, e)
+    if ok_silo then out.silo = silo end
+  elseif e.type == "cargo-landing-pad" then
+    local ok_pad, main = pcall(function() return e.get_inventory(defines.inventory.cargo_landing_pad_main) end)
+    local stock = {}
+    for _, item in ipairs(ok_pad and main and main.get_contents() or {}) do
+      stock[#stock + 1] = { item = item.name, count = item.count }
+    end
+    table.sort(stock, function(a, b) return a.item < b.item end)
+    out.landing_pad = { inventory = stock, requests = requests.read(e) }
+  end
 
   local belt = collect_belt_contents(e)
   if belt then out.belt_contents = belt end

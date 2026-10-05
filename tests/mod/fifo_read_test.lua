@@ -49,7 +49,7 @@ stub("scripts.companion", { get = function() return body end, record = function(
   connect = reader("spawn_companion"), enforce_peaceful_world = function() end, enforce_normal_speed = function() end,
   update_map_tag = function() end, follow_spectators = function() end, on_player_available = function() end,
   on_player_left = function() end, on_player_died = function() end, on_player_respawned = function() end,
-  on_player_removed = function() end })
+  on_player_removed = function() end, world_policy_errors = function() end })
 assert(loadfile(here .. "/../../mod/agentic-companion/control.lua"))()
 
 local function call(method)

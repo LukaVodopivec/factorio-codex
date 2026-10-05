@@ -12,6 +12,7 @@ local force = { add_chart_tag = function(_, args)
   return { valid = true, position = args.position, destroy = function() end }
 end }
 local surface = {
+  planet = { name = "nauvis" },
   peaceful_mode = false,
   map_gen_settings = { autoplace_controls = { coal = { frequency = 1 } } },
 }
@@ -132,20 +133,44 @@ check(surface.peaceful_mode and game.map_settings.enemy_expansion.enabled == fal
 check(enemy_bases.frequency == 0 and enemy_bases.size == 0 and enemy_bases.richness == 0,
   "enemy-base generation remains disabled on every surface")
 
--- A surface whose generation settings cannot be written (a space platform)
--- never makes on_surface_created fail; Gleba's enemy control is zeroed where
--- it exists.
+-- World policy per surface (B0): a space platform's surface gets no write,
+-- Gleba's own enemy bases stay, on_surface_created touches only the new
+-- surface, and a failed write never raises: it is kept for ping.
 _G.prototypes = { autoplace_control = { gleba_enemy_base = {} } }
-local platform = setmetatable({}, { __index = function(_, key)
-  if key == "map_gen_settings" then error("platform surfaces have no map generation") end
-end, __newindex = function(_, key)
-  if key == "map_gen_settings" then error("platform surfaces have no map generation") end
+_G.game.tick = 77
+local platform_writes = {}
+local platform = setmetatable({ platform = { index = 1 } }, { __index = function(_, key)
+  platform_writes[#platform_writes + 1] = "read " .. key
+end, __newindex = function(_, key) platform_writes[#platform_writes + 1] = key end })
+local gleba = { name = "gleba", planet = { name = "gleba" }, peaceful_mode = false,
+  map_gen_settings = { autoplace_controls = { gleba_enemy_base = { frequency = 1, size = 1, richness = 1 } } } }
+local broken = setmetatable({ name = "broken", planet = { name = "fulgora" } }, { __index = function(_, key)
+  if key == "map_gen_settings" then error("map generation unreadable") end
 end })
-local gleba = { peaceful_mode = false, map_gen_settings = { autoplace_controls = {} } }
-game.surfaces = { platform, gleba, surface }
-check(pcall(companion.enforce_peaceful_world, { surface_index = 2 }), "an unwritable surface never raises")
-check(gleba.peaceful_mode and gleba.map_gen_settings.autoplace_controls.gleba_enemy_base.frequency == 0
-  and gleba.map_gen_settings.autoplace_controls["enemy-base"].frequency == 0,
-  "the other surfaces stay peaceful, Gleba enemies included")
+-- A platform's surface before its platform is attached, and a mod's
+-- surface: neither has a planet.
+local bare = { name = "bare", peaceful_mode = false, map_gen_settings = { autoplace_controls = {} } }
+game.surfaces = { platform, gleba, surface, broken, bare }
+check(pcall(companion.enforce_peaceful_world, { surface_index = 1 }) and #platform_writes == 0,
+  "on_surface_created for a platform surface writes nothing there")
+companion.enforce_peaceful_world({ surface_index = 5 })
+check(bare.peaceful_mode == false and next(bare.map_gen_settings.autoplace_controls) == nil,
+  "a surface without a planet (a platform not attached yet) gets no write")
+check(gleba.peaceful_mode == false and companion.world_policy_errors() == nil,
+  "on_surface_created touches only the new surface")
+check(pcall(companion.enforce_peaceful_world, { surface_index = 2 }), "a planet surface's policy never raises")
+local gleba_controls = gleba.map_gen_settings.autoplace_controls
+check(gleba.peaceful_mode and gleba_controls["enemy-base"].frequency == 0
+  and gleba_controls.gleba_enemy_base.frequency == 1 and gleba_controls.gleba_enemy_base.size == 1,
+  "Gleba stays peaceful with no Nauvis bases, and its own enemy bases are untouched")
+platform_writes = {}
+check(pcall(companion.enforce_peaceful_world), "init visits every surface without raising")
+check(#platform_writes == 0, "init writes nothing on a platform surface")
+local errors = companion.world_policy_errors()
+check(errors and #errors == 1 and errors[1].surface == "broken" and errors[1].write == "map_gen_settings"
+  and errors[1].tick == 77 and errors[1].error:match("map generation unreadable") ~= nil,
+  "a failed write is kept for ping with its surface, write and tick")
+for _ = 1, 10 do companion.enforce_peaceful_world({ surface_index = 4 }) end
+check(#companion.world_policy_errors() == 8, "the error list keeps the last eight")
 
 os.exit(failures == 0 and 0 or 1)

@@ -11,7 +11,8 @@
 -- registry_ready, stock_power_ready and patches_ready are false while an
 -- upgraded save's bootstrap or first pass still runs. The default read
 -- stays under about 6 KB: one RCON chunk pair, not a multi-part answer.
--- logistics (robot networks) is opt-in through sections.
+-- logistics (robot networks) is opt-in through sections. platforms lists the
+-- force's space platforms, one attribute-read line each (platforms.lua).
 local companion = require("scripts.companion")
 local autonomy = require("scripts.autonomy")
 local map_summary = require("scripts.map_summary")
@@ -19,11 +20,13 @@ local research = require("scripts.research")
 local registry = require("scripts.registry")
 local tasks = require("scripts.tasks")
 local logistics = require("scripts.logistics")
+local platforms = require("scripts.platforms")
+local jobs = require("scripts.jobs")
 
 local M = {}
 
 local SECTIONS = { lines = true, problems = true, power = true, stock = true, research = true,
-  body = true, patches = true, logistics = true }
+  body = true, patches = true, logistics = true, platforms = true }
 -- Sections only named in `sections` add.
 local OPT_IN = { logistics = true }
 -- One power row: the network with the most capacity (a 0.22 row carries its
@@ -208,6 +211,12 @@ function M.factory_status(params)
   if want.body then result.body = body_section(c) end
   if want.patches then result.patches, result.omitted_patches, result.patches_ready = patches_section(c) end
   if want.logistics then result.logistics = logistics.section(c) end
+  if want.platforms then
+    local rows, omitted, work = platforms.compact(c.force)
+    jobs.charge(work)
+    -- Absent until the force has a platform.
+    if #rows > 0 then result.platforms, result.omitted_platforms = rows, omitted > 0 and omitted or nil end
+  end
   return result
 end
 
@@ -224,6 +233,7 @@ function M.event_state()
   local ok, held = pcall(companion.human_control)
   local queued = 0
   for _, task in ipairs(t.queue) do if pilot_work(task) then queued = queued + 1 end end
+  local space_tick, space_events = platforms.event_state()
   return {
     tick = game.tick, last_plan_ended = t.last_plan_ended,
     active_plan_id = pilot_work(t.active) and t.active.type == "plan" and t.active.id or nil,
@@ -236,6 +246,10 @@ function M.event_state()
     -- {technology, tick} of the last research the force finished.
     last_research_finished = storage.last_research_finished,
     last_cancel_all_tick = t.last_cancel_all_tick,
+    -- The space event ring (platforms.lua): the newest entry's tick and the
+    -- last few (rocket_launched, platform_state_changed, cargo_delivered,
+    -- rocket_ready).
+    last_space_event_tick = space_tick, space_events = space_events,
   }
 end
 

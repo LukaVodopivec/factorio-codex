@@ -11,6 +11,7 @@ local placement_geometry = require("scripts.placement_geometry")
 local supply = require("scripts.actions.supply")
 local transfer = require("scripts.actions.transfer")
 local craft = require("scripts.actions.craft")
+local platforms = require("scripts.platforms")
 
 local M = {}
 
@@ -542,15 +543,89 @@ function M.rotate.tick(task)
 end
 
 -- ------------------------------------------------------------- set_recipe
+-- set_recipe {x, y, recipe, platform?}: on a planet the body walks within
+-- reach and takes back what the old recipe held. With platform it is remote
+-- (the platform's window, no body): the machine at {x, y} on that platform is
+-- set in the tick the step runs and what it held goes to the hub. The recipe
+-- must be unlocked and of a category the machine crafts (crushers: crushing).
+
+local function validate_recipe_step(task, label)
+  validate_position(task.target, label)
+  if type(task.recipe) ~= "string" then error(label .. " requires recipe = <recipe name>", 0) end
+  if task.platform ~= nil then platforms.check_selector(task.platform, label .. " platform") end
+end
+
+-- Why this machine takes no such recipe: {status = failed, ...} or nil.
+local function recipe_refusal(e, recipe)
+  if e.type ~= "assembling-machine" then
+    if e.type == "furnace" then
+      return {
+        status = "failed",
+        detail = "the " .. e.name .. " is a furnace — it picks its recipe automatically from what you insert",
+        outcome = { code = "WRONG_MACHINE_TYPE", expected = "crafting_machine", actual = "furnace",
+          corrective_hint = "Insert the smeltable input; do not call set_recipe for furnaces." },
+      }
+    end
+    return { status = "failed", detail = "the " .. e.name .. " can't have a recipe set — only crafting machines can",
+      outcome = { code = "WRONG_MACHINE_TYPE", expected = "crafting_machine", actual = e.type } }
+  end
+  local ok, categories = pcall(function() return e.prototype.crafting_categories end)
+  if ok and type(categories) == "table" and not categories[recipe.category] then
+    local names = {}
+    for name in pairs(categories) do names[#names + 1] = name end
+    table.sort(names)
+    return { status = "failed",
+      detail = string.format("the %s crafts %s recipes; %s is %s", e.name, table.concat(names, ", "), recipe.name,
+        recipe.category),
+      outcome = { code = "RECIPE_NOT_SETTABLE", category = recipe.category, crafts = names } }
+  end
+end
+
+-- Puts items back somewhere real: into `into`'s inventory, the rest spilled
+-- at `at` on `surface`. Returns the count taken in.
+local function take_back(removed, into, surface, at, force)
+  local taken = 0
+  for _, stack in ipairs(type(removed) == "table" and removed or {}) do
+    if stack.name and (stack.count or 0) > 0 then
+      local item = { name = stack.name, count = stack.count, quality = stack.quality }
+      local inserted = into and into.insert(item) or 0
+      taken = taken + inserted
+      if inserted < stack.count then
+        item.count = stack.count - inserted
+        pcall(surface.spill_item_stack, { position = at, stack = item, force = force })
+      end
+    end
+  end
+  return taken
+end
+
+-- Sets the recipe on a reached machine; `into` takes what it held.
+local function apply_recipe(task, e, recipe, into, surface, at, force, where)
+  if not recipe then return { status = "failed", detail = "unknown recipe: '" .. task.recipe .. "'" } end
+  local refused = recipe_refusal(e, recipe)
+  if refused then return refused end
+  local ok, removed = pcall(e.set_recipe, task.recipe)
+  local taken = ok and take_back(removed, into, surface, at, force) or 0
+  local read_ok, assigned = pcall(e.get_recipe)
+  if not ok or not read_ok or not assigned or assigned.name ~= task.recipe then
+    return {
+      status = "failed",
+      detail = string.format("couldn't set %s on the %s — that machine probably can't craft it",
+        task.recipe, e.name),
+    }
+  end
+  return {
+    status = "done",
+    detail = string.format("set %s's recipe to %s%s", e.name, task.recipe,
+      taken > 0 and string.format(" (took %d leftover items into %s)", taken, where) or ""),
+  }
+end
 
 M.set_recipe = {}
 
 function M.set_recipe.start(task)
   local c = companion.require_companion()
-  validate_position(task.target, "set_recipe")
-  if type(task.recipe) ~= "string" then
-    error("set_recipe requires recipe = <recipe name>")
-  end
+  validate_recipe_step(task, "set_recipe")
   local r = c.force.recipes[task.recipe]
   if not r then
     error("unknown recipe: '" .. task.recipe .. "'")
@@ -560,9 +635,30 @@ function M.set_recipe.start(task)
   end
 end
 
+-- A platform machine: remote, in this tick; what it held goes to the hub.
+local function set_recipe_remote(task, c)
+  local p, code, why = platforms.resolve(c.force, task.platform)
+  if not p then return { status = "failed", detail = code .. ": " .. why, outcome = { code = code } } end
+  local e, no_surface, why_not = platforms.entity_at(p, c.force, task.target)
+  if no_surface then return { status = "failed", detail = no_surface .. ": " .. why_not, outcome = { code = no_surface } } end
+  if not e then
+    return { status = "failed", outcome = { code = "NO_ENTITY" },
+      detail = string.format("NO_ENTITY: nothing at (%.1f, %.1f) on platform %s to set a recipe on",
+        task.target.x, task.target.y, p.name) }
+  end
+  local hub = p.hub
+  local into = hub and hub.valid and hub.get_inventory(defines.inventory.hub_main) or nil
+  local result = apply_recipe(task, e, c.force.recipes[task.recipe], into, p.surface, e.position, c.force, "the hub")
+  result.outcome = result.outcome or { code = result.status == "done" and "RECIPE_SET" or "RECIPE_NOT_SET" }
+  result.outcome.entity = { name = e.name, position = { x = e.position.x, y = e.position.y },
+    surface = platforms.surface_ref(p) }
+  return result
+end
+
 function M.set_recipe.tick(task)
   local c = companion.get()
   if not c then return gone() end
+  if task.platform ~= nil then return set_recipe_remote(task, c) end
 
   local reached = approach.ensure(task, c, task.target, c.reach_distance)
   if type(reached) == "table" then return reached end
@@ -578,58 +674,41 @@ function M.set_recipe.tick(task)
   local entity_reached = approach.ensure_entity(task, c, e)
   if type(entity_reached) == "table" then return entity_reached end
   if entity_reached ~= "ok" then return nil end
-  if e.type ~= "assembling-machine" then
-    if e.type == "furnace" then
-      return {
-        status = "failed",
-        detail = "the " .. e.name .. " is a furnace — it picks its recipe automatically from what you insert",
-        outcome = { code = "WRONG_MACHINE_TYPE", expected = "crafting_machine", actual = "furnace",
-          corrective_hint = "Insert the smeltable input; do not call set_recipe for furnaces." },
-      }
-    end
-    return { status = "failed", detail = "the " .. e.name .. " can't have a recipe set — only crafting machines can",
-      outcome = { code = "WRONG_MACHINE_TYPE", expected = "crafting_machine", actual = e.type } }
-  end
-
-  local ok, removed = pcall(e.set_recipe, task.recipe)
-  if not ok then
-    return {
-      status = "failed",
-      detail = string.format("couldn't set %s on the %s — that machine probably can't craft it",
-        task.recipe, e.name),
-    }
-  end
-
   -- Ingredients of the previous recipe come back to us; overflow spills.
-  local taken = 0
-  if type(removed) == "table" then
-    for _, stack in ipairs(removed) do
-      if stack.name and (stack.count or 0) > 0 then
-        local inserted = c.insert({ name = stack.name, count = stack.count })
-        taken = taken + inserted
-        if inserted < stack.count then
-          pcall(c.surface.spill_item_stack, {
-            position = c.position,
-            stack = { name = stack.name, count = stack.count - inserted },
-            force = c.force,
-          })
-        end
-      end
-    end
+  return apply_recipe(task, e, c.force.recipes[task.recipe], c, c.surface, c.position, c.force, "my inventory")
+end
+
+local function recipe_task(step)
+  return { target = { x = step.x, y = step.y }, recipe = step.recipe, platform = step.platform }
+end
+
+-- The plan action for tasks.register_action. A platform machine is remote:
+-- no body, no reach, done in the tick the FIFO reaches it.
+M.set_recipe_action = {
+  runner = M.set_recipe,
+  make_task = recipe_task,
+  validate = function(step, index) validate_recipe_step(recipe_task(step), "queue_plan set_recipe step " .. index) end,
+  remote = function(step) return step.platform ~= nil end,
+}
+
+-- set_recipe over RPC: a platform machine's recipe, at once (its platform's
+-- window needs no body). A planet machine needs the body: a plan step.
+function M.set_recipe_rpc(params)
+  local c = companion.require_companion()
+  if type(params) ~= "table" or params.platform == nil then
+    error("set_recipe over RPC sets a platform machine ({platform, x, y, recipe}); a planet machine needs the body:"
+      .. " queue it as a plan step", 0)
   end
-  local read_ok, assigned = pcall(e.get_recipe)
-  if not read_ok or not assigned or assigned.name ~= task.recipe then
-    return {
-      status = "failed",
-      detail = string.format("couldn't set %s on the %s — that machine probably can't craft it",
-        task.recipe, e.name),
-    }
+  local task = recipe_task(params)
+  M.set_recipe.start(task)
+  local result = set_recipe_remote(task, c)
+  if result.status ~= "done" then
+    local code = result.outcome and result.outcome.code
+    local detail = tostring(result.detail)
+    error((code and detail:sub(1, #code) ~= code) and (code .. ": " .. detail) or detail, 0)
   end
-  return {
-    status = "done",
-    detail = string.format("set %s's recipe to %s%s", e.name, task.recipe,
-      taken > 0 and string.format(" (took %d leftover items into my inventory)", taken) or ""),
-  }
+  result.outcome.recipe, result.outcome.detail = task.recipe, result.detail
+  return result.outcome
 end
 
 return M

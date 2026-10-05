@@ -11,6 +11,7 @@ local function check(cond, what)
 end
 
 local inventory, created, neighbour = {}, {}, nil
+local coerced, last_entity = false, nil
 local character = {
   valid = true, position = { x = 20, y = 20 }, build_distance = 10, crafting_queue_size = 0,
   force = { recipes = {} },
@@ -24,9 +25,11 @@ character.surface = {
   create_entity = function(args)
     created[#created + 1] = args
     local belt = args.name == "underground-belt"
-    local entity = { valid = true, name = args.name, position = args.position,
+    local entity = { valid = true, name = args.name, position = args.position, direction = args.direction,
       type = belt and "underground-belt" or "transport-belt", belt_to_ground_type = belt and (args.type or "input") or nil }
+    last_entity = entity
     if belt then
+      if coerced then entity.direction, entity.belt_to_ground_type = 8, "input" end
       entity.neighbours = neighbour
     else
       setmetatable(entity, { __index = function(_, key)
@@ -118,6 +121,75 @@ result = build_plan.tick(plan)
 check(created[#created].type == "output" and result and result.status == "done"
   and result.detail:match("step 2: placed underground%-belt as output end paired with underground%-belt at %(0%.5, 0%.5%)") ~= nil,
   "build_plan: the output end reaches create_entity and its pairing is reported")
+
+-- The native engine can reverse a newly created output to pair with an old
+-- output pointing the other way. Construction stays paid; no setter is used
+-- to rotate either entity into a requested success.
+inventory["underground-belt"] = 3
+neighbour = { valid = true, name = "underground-belt", direction = 8,
+  belt_to_ground_type = "output", position = { x = 0.5, y = -1.5 } }
+coerced = true
+task = { item = "underground-belt", position = { x = 0.5, y = -3.5 }, direction = 0,
+  belt_to_ground_type = "output", auto_supply = false }
+build.place.start(task)
+result = build.place.tick(task)
+check(result.status == "failed" and result.outcome.code == "UNDERGROUND_CONFIGURATION_MISMATCH"
+  and result.outcome.placed == 1 and result.outcome.underground.direction == 8
+  and result.outcome.underground.belt_to_ground_type == "input"
+  and result.outcome.underground.neighbour.direction == 8
+  and inventory["underground-belt"] == 2 and last_entity.valid
+  and last_entity.direction == 8 and neighbour.direction == 8,
+  "place: native reversed end fails honestly, retaining paid entity and existing partner")
+plan = { stop_on_error = false, auto_craft = false, auto_supply = false, steps = {
+  { item = "underground-belt", position = { x = 0.5, y = -3.5 }, direction = 0, belt_to_ground_type = "output" },
+} }
+build_plan.start(plan)
+result = build_plan.tick(plan)
+check(result.status == "failed" and result.outcome.code == "BUILD_PLAN_STEP_FAILED"
+  and result.outcome.placed == 1 and not plan._results[1].ok
+  and inventory["underground-belt"] == 1 and plan.steps[1]._placed_entity == last_entity
+  and last_entity.direction == 8 and neighbour.direction == 8,
+  "build_plan: native mismatch never becomes a completed requested step")
+local cached = last_entity
+cached.supports_direction, cached.mirroring = true, false
+local cached_before = inventory["underground-belt"]
+local adopt = build.adopt({}, character, cached, 0, true, "output")
+check(type(adopt) == "table" and adopt.status == "failed"
+  and adopt.outcome.code == "UNDERGROUND_CONFIGURATION_MISMATCH" and cached.direction == 8
+  and cached.belt_to_ground_type == "input" and neighbour.direction == 8
+  and inventory["underground-belt"] == cached_before,
+  "adoption: a cached underground end changed during a hold never rotates its partner")
+inventory["transport-belt"] = 1
+plan = { stop_on_error = false, auto_craft = false, auto_supply = false, steps = {
+  { item = "transport-belt", position = { x = 4.5, y = 4.5 } },
+  { item = "underground-belt", position = { x = 0.5, y = -3.5 }, direction = 0, belt_to_ground_type = "output" },
+} }
+build_plan.start(plan)
+build_plan.tick(plan)
+-- A step cached before a hold can be changed by native pairing during it.
+plan._existing_index, plan._existing = 2, cached
+result = build_plan.tick(plan)
+check(result.status == "failed" and result.outcome.code == "BUILD_PLAN_STEP_FAILED"
+  and result.outcome.placed == 1 and not plan._results[2].ok and cached.direction == 8
+  and inventory["underground-belt"] == cached_before,
+  "build_plan: cached adoption mismatch after earlier construction cannot finish done")
+coerced, neighbour = false, nil
+inventory["underground-belt"] = 2
+plan = { stop_on_error = false, auto_craft = false, auto_supply = false, steps = {
+  { item = "underground-belt", position = { x = 0.5, y = 0.5 }, direction = 0, belt_to_ground_type = "input" },
+  { item = "underground-belt", position = { x = 0.5, y = -3.5 }, direction = 0, belt_to_ground_type = "output" },
+} }
+build_plan.start(plan)
+build_plan.tick(plan)
+-- Simulate a subsequent native auto-pair changing an earlier completed end.
+plan.steps[1]._placed_entity.direction = 8
+plan.steps[1]._placed_entity.belt_to_ground_type = "output"
+result = build_plan.tick(plan)
+check(result.status == "failed" and not plan._results[1].ok and plan._results[2].ok
+  and result.outcome.placed == 2 and inventory["underground-belt"] == 0,
+  "build_plan: final readback catches a previously completed end changing direction")
+
+inventory["transport-belt"] = 4
 
 -- mirror: place and build_plan pass it to create_entity; settings are
 -- checked before anything is built.

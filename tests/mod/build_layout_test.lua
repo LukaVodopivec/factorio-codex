@@ -67,6 +67,7 @@ end
 
 -- The world: a resource patch, a lake west of x = 0, and a body far away.
 local created, crafted = {}, 0
+local reverse_underground = false
 local inventory = {}
 -- Power comes from the event-maintained registry (registry.lua), never an
 -- entity query: a steam engine is registered or not.
@@ -167,7 +168,12 @@ local surface = {
   end,
   create_entity = function(args)
     created[#created + 1] = args
-    local e = { valid = true, name = args.name, type = entities[args.name].type, position = args.position, inserted = {} }
+    local e = { valid = true, name = args.name, type = entities[args.name].type, position = args.position,
+      direction = args.direction, inserted = {} }
+    if e.type == "underground-belt" then
+      e.belt_to_ground_type = args.type or "input"
+      if reverse_underground then e.direction, e.belt_to_ground_type = 8, "input" end
+    end
     e.insert = function(stack) e.inserted[stack.name] = (e.inserted[stack.name] or 0) + stack.count; return stack.count end
     args.entity = e
     return e
@@ -610,6 +616,29 @@ check(walled_off.ok and detour_unders == 0 and detour_belts >= 100,
 entities["transport-belt"].related_underground_belt = nil
 
 -- ------------------------------------------------------------------ build
+
+-- Physical results must read native underground orientation, even when the
+-- entity was paid for but failed its requested configuration.
+inventory = { ["underground-belt"] = 1 }
+reverse_underground = true
+local reversed = { id = 6, anchor = { x = 190, y = 200 }, entities = {
+  { name = "underground-belt", dx = 0.5, dy = 0.5, direction = 0, belt_to_ground_type = "output" } } }
+layout.layout_action.runner.start(reversed)
+local reversed_result
+for _ = 1, 20 do
+  reversed_result = layout.layout_action.runner.tick(reversed)
+  if reversed_result then break end
+end
+check(reversed_result and reversed_result.status == "partial" and reversed_result.outcome.code == "LAYOUT_PARTIAL"
+  and #reversed_result.outcome.failed == 1 and #reversed_result.outcome.placed == 1
+  and reversed_result.outcome.placed[1].direction == 8
+  and reversed_result.outcome.placed[1].belt_to_ground_type == "input"
+  and reversed_result.outcome.placed[1].underground.direction == 8
+  and reversed_result.outcome.failed[1].reason:match("UNDERGROUND_CONFIGURATION_MISMATCH")
+  and inventory["underground-belt"] == 0 and created[#created].entity.valid,
+  "a coerced underground end reports actual paid construction and an honest partial layout")
+reverse_underground = false
+created = {}
 
 inventory = { ["wooden-chest"] = 1, ["burner-inserter"] = 1, ["stone-furnace"] = 1 }
 local task = { id = 7, anchor = { x = 200, y = 200 }, entities = {

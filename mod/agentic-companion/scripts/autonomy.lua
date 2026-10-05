@@ -416,9 +416,11 @@ local function sample(a, rec, tick)
     -- The same problem returning inside the recovery window is the old
     -- episode: it keeps its start and is not announced again.
     rec.clear_since = nil
-    if rec.problem ~= raw then rec.problem, rec.problem_since, rec.problem_counted = raw, tick, nil end
+    if rec.problem ~= raw then
+      rec.problem, rec.problem_since, rec.problem_counted, rec.problem_announced_tick = raw, tick, nil, nil
+    end
     if not rec.problem_counted and tick - rec.problem_since >= PROBLEM_TICKS[raw] then
-      rec.problem_counted = true
+      rec.problem_counted, rec.problem_announced_tick = true, tick
       a.last_problem_tick = tick
     end
   elseif rec.problem then
@@ -426,7 +428,7 @@ local function sample(a, rec, tick)
     -- so backpressure that flaps with short working bursts is one problem.
     rec.clear_since = rec.clear_since or tick
     if tick - rec.clear_since >= PRODUCTIVE_TICKS then
-      rec.problem, rec.problem_since, rec.problem_counted, rec.clear_since = nil, nil, nil, nil
+      rec.problem, rec.problem_since, rec.problem_counted, rec.clear_since, rec.problem_announced_tick = nil, nil, nil, nil, nil
     end
   end
 end
@@ -730,7 +732,7 @@ function M.problems(since_tick, surface)
   if not a then return rows end
   local function add(id, unit)
     local rec = a.machines[unit]
-    if rec and rec.problem_counted and (not since_tick or rec.problem_since >= since_tick)
+    if rec and rec.problem_counted and (not since_tick or (rec.problem_announced_tick or rec.problem_since) >= since_tick)
       and (surface == nil or surface == "all" or rec_surface(rec) == surface) then
       add_problem(rows, by_key, id, rec)
     end

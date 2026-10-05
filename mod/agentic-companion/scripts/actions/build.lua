@@ -78,10 +78,10 @@ end
 -- Runtime pairing of a placed underground belt, or nil for any other entity.
 function M.underground_pairing(built)
   if not (built and built.valid and built.type == "underground-belt") then return nil end
-  local pairing = { belt_to_ground_type = built.belt_to_ground_type }
+  local pairing = { direction = built.direction, belt_to_ground_type = built.belt_to_ground_type }
   local ok, neighbour = pcall(function() return built.neighbours end)
   if ok and neighbour and neighbour.valid then
-    pairing.neighbour = { name = neighbour.name, belt_to_ground_type = neighbour.belt_to_ground_type,
+    pairing.neighbour = { name = neighbour.name, direction = neighbour.direction, belt_to_ground_type = neighbour.belt_to_ground_type,
       position = { x = neighbour.position.x, y = neighbour.position.y } }
   end
   return pairing
@@ -94,6 +94,18 @@ local function pairing_note(pairing)
     pairing.neighbour.name, pairing.neighbour.position.x, pairing.neighbour.position.y)
 end
 M.pairing_note = pairing_note
+
+-- Native underground auto-pairing may reverse the new end. Never rotate it:
+-- Factorio would also rotate its existing partner. Keep the paid entity and
+-- report its actual state instead of claiming the requested configuration.
+function M.underground_error(built, direction, end_type)
+  local pairing = M.underground_pairing(built)
+  if not pairing then return nil end
+  if pairing.direction == direction and (end_type == nil or pairing.belt_to_ground_type == end_type) then return nil end
+  return string.format("UNDERGROUND_CONFIGURATION_MISMATCH: placed %s at (%.1f, %.1f), requested direction %d%s; native direction %d%s; paid entity retained",
+    built.name, built.position.x, built.position.y, direction,
+    end_type and (" as " .. end_type .. " end") or "", pairing.direction, pairing_note(pairing))
+end
 
 -- ------------------------------------------------- footprint housekeeping
 
@@ -181,8 +193,13 @@ end
 -- "rotated" or "mirrored" once the body turned or flipped it within reach,
 -- "gone" when it vanished, nil while walking, or a failed result. A nil
 -- mirror leaves the entity's mirroring alone.
-function M.adopt(task, c, e, direction, mirror)
+function M.adopt(task, c, e, direction, mirror, end_type)
   if not e.valid then return "gone" end
+  local mismatch = M.underground_error(e, direction, end_type)
+  if mismatch then
+    return { status = "failed", detail = mismatch, outcome = { code = "UNDERGROUND_CONFIGURATION_MISMATCH",
+      underground = M.underground_pairing(e) } }
+  end
   local turn = e.supports_direction and e.direction ~= direction
   local ok_read, mirrored = pcall(function() return e.mirroring == true end)
   local flip = mirror ~= nil and (not ok_read or mirrored ~= (mirror == true))
@@ -241,6 +258,11 @@ end
 -- After the entity stands: put the starter items in (within reach, once
 -- queued crafts of them are done), then report the placement.
 local function placed(task, c, built, result)
+  local mismatch = M.underground_error(built, task.direction, task.belt_to_ground_type)
+  if mismatch then
+    return { status = "failed", detail = mismatch, outcome = { code = "UNDERGROUND_CONFIGURATION_MISMATCH",
+      placed = 1, underground = M.underground_pairing(built) } }
+  end
   if not task._insert then return result end
   task._inserting = { entity = built, result = result }
   return nil
@@ -386,7 +408,7 @@ function M.place.tick(task)
   end
   if task._existing then
     local e = task._existing
-    local how = M.adopt(task, c, e, task.direction, task.mirror)
+    local how = M.adopt(task, c, e, task.direction, task.mirror, task.belt_to_ground_type)
     if how == nil then return nil end
     if type(how) == "table" then return how end
     task._existing = false
@@ -501,7 +523,7 @@ function M.place.tick(task)
   local pairing = M.underground_pairing(built)
   local detail = string.format("placed %s at (%.1f, %.1f)%s%s",
     task.item, built.position.x, built.position.y,
-    task.direction ~= 0 and (" facing " .. dir_name(task.direction)) or "", pairing_note(pairing))
+    built.direction ~= 0 and (" facing " .. dir_name(built.direction)) or "", pairing_note(pairing))
   return placed(task, c, built, { status = "done", detail = detail,
     outcome = pairing and { detail = detail, underground = pairing } or nil })
 end

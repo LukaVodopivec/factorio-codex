@@ -41,6 +41,7 @@ local companion = require("scripts.companion")
 local placement_geometry = require("scripts.placement_geometry")
 local connect_entities = require("scripts.connect_entities")
 local build_plan = require("scripts.actions.build_plan")
+local build = require("scripts.actions.build")
 local blocks = require("scripts.blocks")
 local entity_settings = require("scripts.entity_settings")
 local jobs = require("scripts.jobs")
@@ -1206,7 +1207,14 @@ local function plan_steps(result)
 end
 
 local function placed_row(step)
-  return { name = step.item, x = step.position.x, y = step.position.y, direction = step.direction }
+  local built = step._placed_entity
+  local row = { name = step.item, x = step.position.x, y = step.position.y, direction = step.direction }
+  if built and built.valid then
+    row.x, row.y, row.direction = built.position.x, built.position.y, built.direction
+    row.underground = build.underground_pairing(built)
+    if row.underground then row.belt_to_ground_type = row.underground.belt_to_ground_type end
+  end
+  return row
 end
 
 local function materials(c, steps)
@@ -1675,9 +1683,10 @@ function Runner.tick(task)
   local placed, failed = {}, {}
   for i, step in ipairs(plan.steps) do
     local r = plan._results[i]
-    if r and r.ok then
+    if (r and r.ok) or (step._placed_entity and step._placed_entity.valid) then
       placed[#placed + 1] = placed_row(step)
-    else
+    end
+    if not (r and r.ok) then
       failed[#failed + 1] = { index = step._source.index, connection = step._source.connection,
         code = "PLACE_FAILED", reason = r and r.why or done.detail }
     end

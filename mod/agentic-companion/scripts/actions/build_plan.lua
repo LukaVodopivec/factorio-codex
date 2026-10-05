@@ -350,7 +350,18 @@ local function failure(task, detail)
 end
 
 local function finished(task)
-  if task._placed == 0 then
+  -- A later native pairing may also change a previously completed end.
+  for i, step in ipairs(task.steps) do
+    local result = task._results[i]
+    local mismatch = result and result.ok and build.underground_error(step._placed_entity,
+      step.direction, step.belt_to_ground_type)
+    if mismatch then
+      task._underground_mismatch = true
+      task._results[i] = { ok = false, why = mismatch }
+      task._failures[#task._failures + 1] = { index = i, why = mismatch }
+    end
+  end
+  if task._placed == 0 or task._underground_mismatch then
     return failure(task, summary(task))
   end
   return { status = "done", detail = summary(task) }
@@ -382,6 +393,11 @@ end
 -- uses build_distance; recipe/inventory mutations use Factorio's authoritative
 -- entity-reach check through the shared physical approach state machine.
 local function finish_placed_step(task, c, step, built)
+  local mismatch = build.underground_error(built, step.direction, step.belt_to_ground_type)
+  if mismatch then
+    task._underground_mismatch = true
+    return advance(task, false, mismatch)
+  end
   local input_binding, output_binding = "matched", "matched"
   if task._expected_input then
     input_binding = output_targets.binding_status(built, task._expected_input,
@@ -555,10 +571,15 @@ function M.tick(task)
   end
   if task._existing then
     local e = task._existing
-    local how = build.adopt(task, c, e, step.direction, step.mirror)
+    local how = build.adopt(task, c, e, step.direction, step.mirror, step.belt_to_ground_type)
     if how == nil then return nil end
     task._existing = nil
-    if type(how) == "table" then return advance(task, false, how.detail) end
+    if type(how) == "table" then
+      if how.outcome and how.outcome.code == "UNDERGROUND_CONFIGURATION_MISMATCH" then
+        task._underground_mismatch = true
+      end
+      return advance(task, false, how.detail)
+    end
     if how ~= "gone" then
       step._placed_entity = e
       task._placed = task._placed + 1

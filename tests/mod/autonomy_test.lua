@@ -195,7 +195,22 @@ run(630)
 -- A dry drill is a problem after a second and the line says no_fuel.
 mock.state(d1).status, mock.state(d2).status = RAW.no_fuel, RAW.no_fuel
 local before_problem = storage.autonomy.last_problem_tick
-run(660)
+run(30)
+local problem_cursor = game.tick
+local immature = autonomy.problems(problem_cursor)
+local immature_fuel = false
+for _, row in ipairs(immature) do if row.status == "no_fuel" then immature_fuel = true end end
+check(not immature_fuel, "a new raw problem remains hidden before its debounce completes")
+run(630)
+local matured_fuel = false
+for _, row in ipairs(autonomy.problems(problem_cursor)) do
+  if row.status == "no_fuel" then matured_fuel = row.count == 2 end
+end
+check(matured_fuel, "a problem maturing after the cursor is returned even when it began before the cursor")
+local after_announcement = autonomy.problems(storage.autonomy.last_problem_tick + 1)
+local repeated_fuel = false
+for _, row in ipairs(after_announcement) do if row.status == "no_fuel" then repeated_fuel = true end end
+check(not repeated_fuel, "a cursor after announcement does not repeat the same problem episode")
 local problems = autonomy.problems()
 local fuel_row
 for _, row in ipairs(problems) do if row.status == "no_fuel" then fuel_row = row end end

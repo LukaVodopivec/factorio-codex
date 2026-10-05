@@ -479,25 +479,31 @@ local function resolve_frontiers(state, c)
   local recommended = frontiers[1]
   local occupancy = state.goal_occupancy
     or (state.arrival_mode == "exact" and goal_occupancy(c, state.requested_goal) or nil)
-  if (not occupancy or occupancy.state ~= "occupied")
-    and (state.frontier_segments or 0) < MAX_FRONTIER_SEGMENTS then
+  local progress_index
+  if not occupancy or occupancy.state ~= "occupied" then
     local current_distance = dist_sq(c.position, state.target)
     for index, candidate in ipairs(frontiers) do
       local key = point_key(candidate.position)
       if not state.visited_frontiers[key]
         and dist_sq(candidate.position, state.target) + MIN_FRONTIER_PROGRESS_SQ < current_distance then
-        state.frontier_segments = (state.frontier_segments or 0) + 1
-        state.visited_frontiers[key] = true
-        state.recovery_history[#state.recovery_history + 1] = {
-          from = { x = c.position.x, y = c.position.y }, to = candidate.position,
-          reduction = candidate.reduction,
-        }
-        state.path, state.waypoint, state.phase = state.frontier_paths[index].path, 1, "frontier_following"
-        state.frontier_start_distance = current_distance
-        stop(c)
-        return nil
+        progress_index = index
+        break
       end
     end
+  end
+  local capped_with_progress = progress_index ~= nil and (state.frontier_segments or 0) >= MAX_FRONTIER_SEGMENTS
+  if progress_index and not capped_with_progress then
+    local candidate = frontiers[progress_index]
+    state.frontier_segments = (state.frontier_segments or 0) + 1
+    state.visited_frontiers[point_key(candidate.position)] = true
+    state.recovery_history[#state.recovery_history + 1] = {
+      from = { x = c.position.x, y = c.position.y }, to = candidate.position,
+      reduction = candidate.reduction,
+    }
+    state.path, state.waypoint, state.phase = state.frontier_paths[progress_index].path, 1, "frontier_following"
+    state.frontier_start_distance = dist_sq(c.position, state.target)
+    stop(c)
+    return nil
   end
   local evidence = blocker_evidence(state, c, state.target)
   local collision_candidates, collision_tiles, evidence_error = nearby_collision_evidence(c)
@@ -546,15 +552,19 @@ local function resolve_frontiers(state, c)
     blocker_evidence = evidence,
     goal_occupancy = occupancy,
     recovery = { segments_completed = state.frontier_segments or 0,
-      limit = MAX_FRONTIER_SEGMENTS, history = state.recovery_history },
+      limit = MAX_FRONTIER_SEGMENTS, history = state.recovery_history,
+      termination_reason = capped_with_progress and "segment_limit_with_progress" or nil },
     owned_collision_candidates = collision_candidates, collision_tiles = collision_tiles,
     cage_evidence_error = evidence_error,
     frontier_probes = state.frontier_probes,
     failure_class = code == "BODY_ENCLOSED" and "PATH_NOT_FOUND" or nil,
     suggested_recovery = suggested }
-  return fail(c, code, string.format(
-    "Factorio found no character path to resolved goal (%.1f, %.1f) after %d bounded monotonic frontier segment(s); %s; reachable_frontier=%s%s",
-    state.target.x, state.target.y, state.frontier_segments or 0, evidence,
+  local reason = capped_with_progress and string.format(
+    "bounded frontier recovery stopped at its %d-segment limit with admissible native progress remaining; full goal reachability is unproven; resolved goal (%.1f, %.1f)",
+    MAX_FRONTIER_SEGMENTS, state.target.x, state.target.y) or string.format(
+    "Factorio found no character path to resolved goal (%.1f, %.1f) after %d bounded monotonic frontier segment(s)",
+    state.target.x, state.target.y, state.frontier_segments or 0)
+  return fail(c, code, string.format("%s; %s; reachable_frontier=%s%s", reason, evidence,
     recommended and string.format("(%.1f,%.1f)", recommended.position.x, recommended.position.y) or "none",
     suggested and string.format("; enclosed by owned entities: mine owned %s at (%.1f,%.1f) to open a route",
       suggested.expected_name, suggested.x, suggested.y) or ""),

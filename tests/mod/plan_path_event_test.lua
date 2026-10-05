@@ -121,4 +121,33 @@ walk.on_path_finished({ id = stale_request, path = { { position = { x = 10, y = 
 check(storage.tasks.active == nil and body.walking_state.walking == false,
   "late native path event cannot revive a cancelled plan")
 
+-- The additive cap reason survives the plan's public failure outcome.
+reset()
+body.force.is_chunk_charted = function() return true end
+body.surface.find_non_colliding_position = function(_, requested) return requested end
+local requested = {}
+body.surface.request_path = function(options)
+  next_path_id = next_path_id + 1
+  requested[next_path_id] = options.goal
+  return next_path_id
+end
+plan_id = queue_walk()
+game.tick = 1; tasks.on_tick()
+storage.tasks.active.current_task._walk.frontier_segments = 3
+walk.on_path_finished({ id = storage.path_request.id })
+game.tick = 2; tasks.on_tick()
+for _ = 1, 8 do
+  local id = storage.path_request.id
+  walk.on_path_finished({ id = id, path = { { position = requested[id] } } })
+  game.tick = game.tick + 1; tasks.on_tick()
+end
+local capped = tasks.plan_status({ plan_id = plan_id })
+local cap_result = capped.outcomes[1].result
+check(capped.status == "failed" and capped.completed_steps == 0
+  and cap_result.code == "PATH_NOT_FOUND"
+  and cap_result.diagnostics.path.recovery.termination_reason == "segment_limit_with_progress"
+  and capped.outcomes[1].error:match("reachability is unproven")
+  and next_path_id == 9 and body.walking_state.walking == false,
+  "plan failure exposes the cap reason without another segment or successful step")
+
 os.exit(failures == 0 and 0 or 1)

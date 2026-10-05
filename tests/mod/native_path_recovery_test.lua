@@ -127,10 +127,12 @@ found_blockers = {
 }
 
 task = reset()
+task._walk.frontier_segments = 3
 walk.step(task._walk, body, task.id); deliver(nil, false)
 local result = walk.step(task._walk, body, task.id)
 check(result and result.failed:match("^GOAL_OCCUPIED:"),
   "no-path result diagnoses a charted occupied exact goal separately")
+check(result.outcome.diagnostics.path.recovery.termination_reason == nil, "occupied goals retain their existing classification")
 check(result.failed:match("collision segment") and result.failed:match("stone%-furnace:furnace@%(1%.0,0%.0%)")
   and result.failed:match("water") and result.failed:match("inferred visible collision evidence")
   and result.failed:match("not authoritative blockers"),
@@ -203,6 +205,51 @@ check(bounded_failure and bounded_failure.failed:match("^PATH_NOT_FOUND:")
   and bounded_failure.outcome.diagnostics.path.recovery.segments_completed == 3
   and #bounded_failure.outcome.diagnostics.path.recovery.history == 3,
   "monotonic recovery stops after exactly three physical frontier segments")
+check(bounded_failure.outcome.diagnostics.path.recovery.termination_reason == "segment_limit_with_progress"
+  and bounded_failure.failed:match("admissible native progress")
+  and bounded_failure.failed:match("reachability is unproven")
+  and task._walk.frontier_segments == 3 and body.walking_state.walking == false,
+  "the cap with admissible progress reports its termination reason without another movement")
+
+-- A reached cap alone is insufficient: a found path may lead to a visited
+-- point or make no progress. Neither promises an unused recovery segment.
+for _, case in ipairs({ { x = 4, visited = true }, { x = -4, visited = false } }) do
+  task = reset({ x = 30, y = 0 })
+  task._walk.frontier_segments = 3
+  if case.visited then task._walk.visited_frontiers["4.00:0.00"] = true end
+  body.surface.find_non_colliding_position = function(_, requested)
+    if requested.x == case.x and requested.y == 0 then return requested end
+  end
+  walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+  local denied
+  while storage.path_request do
+    local candidate = requested_goals[storage.path_request.id]
+    deliver({ candidate }, false)
+    denied = walk.step(task._walk, body, task.id)
+  end
+  check(denied and denied.outcome.code == "PATH_NOT_FOUND"
+    and denied.outcome.diagnostics.path.recovery.termination_reason == nil
+    and not denied.failed:match("admissible native progress"),
+    case.visited and "a visited frontier at the cap does not claim admissible progress"
+      or "a non-progress frontier at the cap does not claim admissible progress")
+end
+body.surface.find_non_colliding_position = function(_, requested) return requested end
+
+-- Embedded physical actions preserve the additive diagnosis and failed code.
+task = reset({ x = 30, y = 0 })
+approach.ensure(task, body, task.target, 2)
+task._approach.walk.frontier_segments = 3
+deliver(nil, false); approach.ensure(task, body, task.target, 2)
+local embedded_cap
+for _ = 1, 8 do
+  local candidate = requested_goals[storage.path_request.id]
+  deliver({ candidate }, false)
+  embedded_cap = approach.ensure(task, body, task.target, 2)
+end
+check(embedded_cap and embedded_cap.status == "failed" and embedded_cap.outcome.code == "PATH_NOT_FOUND"
+  and embedded_cap.outcome.diagnostics.path.recovery.termination_reason == "segment_limit_with_progress"
+  and embedded_cap.detail:match("couldn't get in range: PATH_NOT_FOUND:"),
+  "embedded reach failure retains the cap classification without successful approach")
 
 -- Only A->B and B->A are exposed by this fixture. The remembered starting
 -- point and strict goal progress rule prevent the second leg from being used.
@@ -586,12 +633,15 @@ local function exhaust()
   end
   return result, result and result.outcome and result.outcome.diagnostics.path
 end
+task._walk.frontier_segments = 3
 local unproven, unproven_path = exhaust()
 check(unproven and unproven.failed:match("^PATH_NOT_FOUND:") and unproven_path.suggested_recovery == nil
   and #unproven_path.frontier_probes == 16 and unproven_path.frontier_probes[1].reason == "transient",
   "an empty frontier list with an inconclusive probe stays PATH_NOT_FOUND and names no blocker to mine")
+check(unproven_path.recovery.termination_reason == nil, "inconclusive probes at the cap do not claim native progress")
 task = reset({ x = 10, y = 0 })
 walk.step(task._walk, body, task.id); deliver(nil, false); walk.step(task._walk, body, task.id)
+task._walk.frontier_segments = 3
 local enclosed, enclosed_path = exhaust()
 local ring_two, ring_two_at_8 = 0, 0
 for _, probe in ipairs(enclosed_path and enclosed_path.frontier_probes or {}) do
@@ -606,6 +656,7 @@ check(enclosed and enclosed.failed:match("^BODY_ENCLOSED:") and enclosed_path.fa
   and enclosed_path.suggested_recovery.tool == "mine" and enclosed_path.suggested_recovery.target_kind == "owned"
   and enclosed_path.suggested_recovery.expected_name == "wooden-chest" and enclosed_path.suggested_recovery.x == 1,
   "refused probes in both rings prove an enclosure that names the owned blocker toward the target, not a nearer one behind")
+check(enclosed_path.recovery.termination_reason == nil, "a proven enclosure at the cap keeps its enclosure meaning")
 -- A dense build sorts more than the 16 reported colliders ahead of the one on
 -- the line; the suggestion still comes from every collider found.
 for index = 1, 16 do

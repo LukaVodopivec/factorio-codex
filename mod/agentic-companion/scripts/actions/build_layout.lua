@@ -27,9 +27,9 @@
 -- Result: {anchor, placed:[{name,x,y,direction}], failed:[{index|connection,
 -- code, reason}], shortfall?}; indexes are 0-based into entities/connections.
 --
--- mode "ghosts" places the layout as ghosts instead (one transient blueprint
--- built through LuaItemCommon.build_blueprint, so recipes and settings ride
--- along): robots build them on a planet. `platform` (implies ghosts) builds
+-- mode "ghosts" places the layout as ghosts instead: a transient blueprint
+-- on a planet, checked native ghosts on a platform. Recipes and settings ride
+-- along; robots build them on a planet. `platform` (implies ghosts) builds
 -- on a space platform remotely, with no body: the anchor is relative to the
 -- hub, `tiles`/`tile_rects` add foundation tile ghosts (each must touch
 -- existing or planned foundation), and the hub builds everything from its
@@ -444,7 +444,8 @@ local function ghost_ground(ctx, proto, pos, direction)
     end)
     if bare then return false, "part of the footprint has no foundation or planned foundation" end
   else
-    local ok, placeable = pcall(surface.can_place_entity, { name = "entity-ghost", inner_name = proto.name,
+    ctx.calls = ctx.calls + 1
+    local ok, placeable = pcall(surface.can_place_entity, { name = proto.name,
       position = pos, direction = direction, force = force, build_check_type = defines.build_check_type.manual_ghost,
       forced = not ctx.space or nil })
     if ok and placeable then return true end
@@ -1309,8 +1310,9 @@ local function platform_row(ctx)
 end
 
 -- Ghosts one tick places: each is built, raises its built event and is read
--- back (GHOST_WORK work items), so a batch stays within a tick's allowance.
-local GHOST_BATCH, GHOST_WORK = 250, 2
+-- back (GHOST_WORK work items). Platform entity rechecks cost up to two
+-- more calls, so its smaller batch stays within a tick's allowance.
+local GHOST_BATCH, PLATFORM_GHOST_BATCH, GHOST_WORK = 200, 120, 3
 
 -- Starts placing the decided layout's ghosts: the plan, what they take and
 -- the outcome so far; place_batch places them over ticks. Plain data plus
@@ -1332,14 +1334,17 @@ local function remove_placed(g)
 end
 
 -- Places the next batch (foundation tiles first, in the order the check
--- connected them, then entities): one transient blueprint aligned to the
+-- connected them, then entities). On a platform create the checked ghosts
+-- directly: build_blueprint rejects entities over pending foundation even
+-- when that blueprint includes the tiles. The hub still builds each ghost
+-- from its own stock; no foundation or machine is supplied here.
+-- On a planet one transient blueprint is aligned to the
 -- world grid (absolute snapping, 1x1) and built at its box's corner (a
 -- snapped blueprint is aligned by its box, so positions are relative to the
--- batch's top-left tile), normal mode on a platform (all or nothing; the
--- checks passed), forced on a planet (trees and rocks are marked for
+-- batch's top-left tile), forced on a planet (trees and rocks are marked for
 -- deconstruction). Every ghost is read back: one off its spot means the
 -- blueprint landed elsewhere, so all of them, earlier batches' too, are
--- removed again and the step fails; so does a batch that places nothing.
+-- removed again and the step fails; so does an incomplete batch.
 -- Returns the step result once the last batch is placed (or one failed),
 -- else nil, and the ghosts this call handled.
 local function place_batch(c, g, label)
@@ -1350,35 +1355,60 @@ local function place_batch(c, g, label)
     outcome.code = "LAYOUT_ALREADY_PLACED"
     return { status = "done", detail = label .. ": everything in the layout stands or is ghosted already", outcome = outcome }, 0
   end
-  local from, to = g.next, math.min(g.next + GHOST_BATCH - 1, total)
-  local left, top = math.huge, math.huge
-  for k = from, to do
-    local corner = k <= n_tiles and plan.tiles[k].position or plan.corners[k - n_tiles]
-    left, top = math.min(left, corner.x), math.min(top, corner.y)
-  end
-  local origin = { x = math.floor(left + 0.01), y = math.floor(top + 0.01) }
-  local entities, tiles = {}, {}
-  for k = from, to do
-    local source = k <= n_tiles and plan.tiles[k] or plan.entities[k - n_tiles]
-    local row = {}
-    for key, value in pairs(source) do row[key] = value end
-    row.position = { x = source.position.x - origin.x, y = source.position.y - origin.y }
-    if k <= n_tiles then tiles[#tiles + 1] = row else
-      row.entity_number = #entities + 1
-      entities[#entities + 1] = row
-    end
-  end
+  local batch = ctx.space and PLATFORM_GHOST_BATCH or GHOST_BATCH
+  local from, to = g.next, math.min(g.next + batch - 1, total)
   g.next = to + 1
-  local stack = blueprints.scratch()
-  if #entities > 0 then stack.set_blueprint_entities(entities) end
-  if #tiles > 0 then stack.set_blueprint_tiles(tiles) end
-  stack.blueprint_snap_to_grid = { x = 1, y = 1 }
-  stack.blueprint_absolute_snapping = true
-  stack.blueprint_position_relative_to_grid = { x = 0, y = 0 }
-  local ok, ghosts = pcall(stack.build_blueprint, { surface = surface, force = force, position = origin,
-    build_mode = ctx.space and defines.build_mode.normal or defines.build_mode.forced,
-    skip_fog_of_war = not ctx.space, raise_built = true })
-  blueprints.clear_scratch()
+  local ghosts, ok = {}, true
+  if ctx.space then
+    for k = from, to do
+      local tile = k <= n_tiles
+      local source = tile and plan.tiles[k] or plan.entities[k - n_tiles]
+      local args = {}
+      for key, value in pairs(source) do args[key] = value end
+      args.name, args.inner_name = tile and "tile-ghost" or "entity-ghost", source.name
+      args.position = { x = source.position.x + (tile and 0.5 or 0), y = source.position.y + (tile and 0.5 or 0) }
+      args.force, args.raise_built = force, true
+      local allowed, why, note = true, nil, nil
+      if not tile then
+        allowed, why, note = ghost_ground(ctx, prototypes.entity[source.name], source.position, source.direction or 0)
+        if note == "ALREADY" then allowed, why = false, "the entity appeared after the layout check" end
+      end
+      local created, ghost = false, nil
+      if allowed then created, ghost = pcall(surface.create_entity, args) end
+      if created and ghost and ghost.valid then ghosts[#ghosts + 1] = ghost else
+        outcome.failed[#outcome.failed + 1] = { name = source.name, position = source.position,
+          code = "GHOST_NOT_PLACED", reason = why or (created and "the game returned no ghost" or plain(ghost)) }
+        break
+      end
+    end
+  else
+    local left, top = math.huge, math.huge
+    for k = from, to do
+      local corner = k <= n_tiles and plan.tiles[k].position or plan.corners[k - n_tiles]
+      left, top = math.min(left, corner.x), math.min(top, corner.y)
+    end
+    local origin = { x = math.floor(left + 0.01), y = math.floor(top + 0.01) }
+    local entities, tiles = {}, {}
+    for k = from, to do
+      local source = k <= n_tiles and plan.tiles[k] or plan.entities[k - n_tiles]
+      local row = {}
+      for key, value in pairs(source) do row[key] = value end
+      row.position = { x = source.position.x - origin.x, y = source.position.y - origin.y }
+      if k <= n_tiles then tiles[#tiles + 1] = row else
+        row.entity_number = #entities + 1
+        entities[#entities + 1] = row
+      end
+    end
+    local stack = blueprints.scratch()
+    if #entities > 0 then stack.set_blueprint_entities(entities) end
+    if #tiles > 0 then stack.set_blueprint_tiles(tiles) end
+    stack.blueprint_snap_to_grid = { x = 1, y = 1 }
+    stack.blueprint_absolute_snapping = true
+    stack.blueprint_position_relative_to_grid = { x = 0, y = 0 }
+    ok, ghosts = pcall(stack.build_blueprint, { surface = surface, force = force, position = origin,
+      build_mode = defines.build_mode.forced, skip_fog_of_war = true, raise_built = true })
+    blueprints.clear_scratch()
+  end
   local misplaced, placed = nil, 0
   for _, ghost in ipairs(ok and ghosts or {}) do
     if ghost.valid then
@@ -1400,12 +1430,12 @@ local function place_batch(c, g, label)
       detail = string.format("GHOSTS_MISPLACED: %s: the game put a %s ghost at (%.1f, %.1f), off the layout; all removed again",
         label, name, at.x, at.y) }, handled
   end
-  if placed == 0 then
+  if placed ~= handled then
     remove_placed(g)
     outcome.code = "GHOSTS_NOT_PLACED"
     return { status = "failed", outcome = outcome,
-      detail = string.format("GHOSTS_NOT_PLACED: %s: the game placed none%s", label,
-        ok and " (something changed since the check)" or (": " .. plain(ghosts))) }, handled
+      detail = string.format("GHOSTS_NOT_PLACED: %s: the game placed %d/%d requested ghosts; all removed again%s", label,
+        placed, handled, ok and (#outcome.failed > 0 and (": " .. outcome.failed[1].reason) or "") or (": " .. plain(ghosts))) }, handled
   end
   if g.next <= total then return nil, handled end
   outcome.code = "GHOSTS_PLACED"
@@ -1633,8 +1663,9 @@ function Runner.tick(task)
         platform = task.platform } }
   end
   if task._ghosts then
+    local before = task._ghosts.ctx.calls
     local result, handled = place_batch(actor(task.platform), task._ghosts, label)
-    jobs.charge(handled * GHOST_WORK)
+    jobs.charge(handled * GHOST_WORK + task._ghosts.ctx.calls - before)
     if result then task._ghosts = nil end
     return result
   end

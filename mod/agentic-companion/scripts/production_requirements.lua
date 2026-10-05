@@ -73,7 +73,7 @@ end
 
 local function each_key(map)
   local keys = {}
-  for key in pairs(type(map) == "table" and map or {}) do keys[#keys + 1] = key end
+  for key in pairs(map or {}) do keys[#keys + 1] = key end
   table.sort(keys)
   return keys
 end

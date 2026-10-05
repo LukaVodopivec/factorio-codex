@@ -9,6 +9,17 @@ package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
+-- Prototype dictionaries are LuaCustomTable userdata in the native engine,
+-- with pairs/indexing support. Borrow a file's userdata solely to model that
+-- interface; restore its metatable and close it at the end of the test.
+local native_maps = {}
+local function native_map(values)
+  local handle = assert(io.tmpfile())
+  native_maps[#native_maps + 1] = { handle = handle, metatable = debug.getmetatable(handle) }
+  debug.setmetatable(handle, { __index = values, __pairs = function() return next, values, nil end })
+  return handle
+end
+
 local function mined(products) return { minable = true, products = products } end
 local function item(name, amount) return { type = "item", name = name, amount = amount or 1 } end
 local entities = {
@@ -83,6 +94,8 @@ for _, name in ipairs({ "tungsten-plate", "tungsten-ore", "iron-ore", "iron-plat
   prototypes.item[name] = {}
 end
 for _, name in ipairs({ "lava", "water", "sulfuric-acid" }) do prototypes.fluid[name] = {} end
+prototypes.space_location = native_map(prototypes.space_location)
+prototypes.space_connection = native_map(prototypes.space_connection)
 
 -- Recipes: the force's LuaRecipe tables, each with its strict prototype.
 local function recipe(name, ingredients, products, conditions)
@@ -96,6 +109,9 @@ local force = { recipes = {
   ["iron-plate"] = recipe("iron-plate", { item("iron-ore") }, { item("iron-plate") }),
   ["sulfuric-acid"] = recipe("sulfuric-acid", { item("sulfur", 5) }, { { type = "fluid", name = "sulfuric-acid", amount = 50 } }),
 } }
+force.recipes["metallic-asteroid-crushing"] = recipe("metallic-asteroid-crushing",
+  { item("metallic-asteroid-chunk") }, { item("iron-ore", 20) })
+force.recipes["metallic-asteroid-crushing"].enabled = false
 -- The body stands on Nauvis.
 local body = { valid = true, force = force, position = { x = 0, y = 0 },
   surface = { name = "nauvis", index = 1, planet = { name = "nauvis" } },
@@ -185,4 +201,8 @@ local aboard = ask({ targets = { ["sulfuric-acid"] = 10 } })
 check(aboard.planet == "vulcanus" and aboard.raw["sulfuric-acid"] == 10, "aboard, the plan is for the platform's location")
 
 mock.assert_clean()
+for _, row in ipairs(native_maps) do
+  debug.setmetatable(row.handle, row.metatable)
+  row.handle:close()
+end
 os.exit(failures == 0 and 0 or 1)

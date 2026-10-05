@@ -349,5 +349,35 @@ check(landing and #landing.inventory == 2 and landing.inventory[1].item == "calc
   and landing.requests[1].items[1].have == 40 and pad_read.silo == nil,
   "a landing pad's inspection shows its stock and its requests with what it has")
 
+-- Underground diagnosis must describe the native pair, without inferring a
+-- pairing from nearby geometry or exposing a neighbour in an uncharted chunk.
+local pair_charted = true
+body.force = body.force or {}
+body.force.is_chunk_charted = function() return pair_charted end
+local other_end = mock.entity({ valid = true, name = "underground-belt", type = "underground-belt",
+  position = { x = 34.5, y = 0.5 }, force = body.force })
+local underground = mock.entity({ valid = true, name = "underground-belt", type = "underground-belt",
+  position = { x = 29.5, y = 0.5 }, force = body.force, direction = 4, belt_to_ground_type = "input", neighbours = other_end })
+found_entity = underground
+local paired = inspect.inspect({ targets = { underground.position } }).entities[1]
+check(paired.belt_to_ground_type == "input" and paired.underground_neighbour.name == "underground-belt"
+  and paired.underground_neighbour.position.x == 34.5, "underground inspection reports native input/output and its actual paired endpoint")
+underground.belt_to_ground_type, underground.neighbours = "output", nil
+local unpaired = inspect.inspect({ targets = { underground.position } }).entities[1]
+check(unpaired.belt_to_ground_type == "output" and unpaired.underground_neighbour == false,
+  "an unpaired underground end is explicit, without guessing a nearby partner")
+underground.neighbours = other_end
+pair_charted = false
+local hidden_pair = inspect.inspect({ targets = { underground.position } }).entities[1]
+check(hidden_pair.underground_neighbour == nil, "an underground neighbour in an uncharted chunk is omitted")
+pair_charted = true
+other_end.force = {}
+check(inspect.inspect({ targets = { underground.position } }).entities[1].underground_neighbour == nil,
+  "an underground neighbour belonging to another force is omitted")
+mock.unreadable(underground, "neighbours")
+local unreadable_pair = inspect.inspect({ targets = { underground.position } }).entities[1]
+check(unreadable_pair.belt_to_ground_type == "output" and unreadable_pair.underground_neighbour == nil,
+  "an unreadable pairing does not invent an unpaired result or erase the readable end type")
+
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

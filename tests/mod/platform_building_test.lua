@@ -2,8 +2,8 @@
 -- build_layout {platform} checks foundation tiles (already laid, touching
 -- foundation or a planned tile) and entity ghosts (the engine's manual-ghost
 -- check; over planned tiles they wait for them) before anything is placed,
--- as a check_only job in bounded work per tick, then places one transient
--- blueprint (recipes and collector filters ride along) on the platform's
+-- as a check_only job in bounded work per tick, then creates native ghosts
+-- (recipes and collector filters ride along) on the platform's
 -- surface with every ghost read back; blueprint_place and deconstruct_area
 -- with platform; configure_entity (collector filters, silo requests) and
 -- set_recipe on a platform entity without walking. Strict 2.0.77 mocks for
@@ -101,8 +101,8 @@ local platform_surface = mock.surface({ valid = true, name = "platform-1", index
   end,
   can_place_entity = function(args)
     reads.can_place[#reads.can_place + 1] = args
-    assert(args.name == "entity-ghost" and args.build_check_type == defines.build_check_type.manual_ghost)
-    local area = geometry.footprint(entities[args.inner_name], args.position, args.direction)
+    assert(entities[args.name] and args.build_check_type == defines.build_check_type.manual_ghost)
+    local area = geometry.footprint(entities[args.name], args.position, args.direction)
     for y = math.floor(area.left_top.y), math.ceil(area.right_bottom.y) - 1 do
       for x = math.floor(area.left_top.x), math.ceil(area.right_bottom.x) - 1 do
         if not foundation[x * 2097152 + y] then return false end
@@ -157,7 +157,17 @@ local jobs = require("scripts.jobs")
 -- absolutely snapped 1x1 blueprint's box (the top-left tile of its entities'
 -- footprints and its tiles, not its (0, 0)) to the cell under position (or
 -- `shift` tiles off, to prove the read-back) and returns its ghosts.
-local built, destroyed, shift = {}, 0, 0
+local built, created, destroyed, shift = {}, {}, 0, 0
+local fail_create
+platform_surface.create_entity = function(args)
+  created[#created + 1] = args
+  assert(args.name == "entity-ghost" or args.name == "tile-ghost", "only ghosts, never free machines or foundation")
+  assert(args.force == own and args.raise_built and args.player == nil, "ghosts do not affect the player or undo queue")
+  if fail_create and #created == fail_create then return nil end
+  return mock.entity({ valid = true, type = args.name, name = args.name, ghost_name = args.inner_name,
+    position = { x = args.position.x + shift, y = args.position.y }, direction = args.direction or 0,
+    destroy = function() destroyed = destroyed + 1; return true end })
+end
 local scratch_state = {}
 local scratch
 scratch = mock.item_stack({
@@ -252,7 +262,7 @@ check(dry.tiles.already == 1 and dry.platform.name == "Forge" and dry.surface ==
 local ok_dry = jobs.run_now(layout.layout_check_job, check_params())
 local ghost_checks = 0
 for _, args in ipairs(reads.can_place) do
-  if args.inner_name == "crusher" and args.force == own and args.position.x == 8 and args.position.y == 2.5 then
+  if args.name == "crusher" and args.force == own and args.position.x == 8 and args.position.y == 2.5 then
     ghost_checks = ghost_checks + 1
   end
 end
@@ -292,44 +302,46 @@ check(bridge.ok and bridge.tiles.would_place == 7, "the same island joined by a 
 -- ------------------------------------------------------------------- build
 
 local result, task, ticks = run(L, ghost_step)
-local last = built[#built]
 check(result and result.status == "done" and result.outcome.code == "GHOSTS_PLACED" and ticks == 2
   and result.outcome.ghosts_placed == 2 and result.outcome.tiles_placed == 4,
-  "the platform layout is placed as 2 ghosts and 4 foundation tiles on the tick after its checks finish")
-check(last.args.surface == platform_surface and last.args.build_mode == defines.build_mode.normal
-  and last.args.skip_fog_of_war == false and last.args.force == own and last.args.raise_built,
-  "one blueprint built on the platform's surface, all or nothing")
+  "the platform layout places 2 entity ghosts and 4 foundation ghosts on the tick after checking")
+check(#built == 0 and #created == 6, "platform placement uses native ghosts; a blueprint cannot place entities over pending floor")
 local rows = {}
-for _, e in ipairs(last.entities) do rows[e.name] = e end
-local at = last.args.position
-check(rows.crusher.recipe == "metallic-asteroid-crushing" and at.x + rows.crusher.position.x == 8
-  and at.y + rows.crusher.position.y == 2.5 and rows["asteroid-collector"]["chunk-filter"][1].name == "metallic-asteroid-chunk",
-  "the crusher's recipe and the collector's chunk filter ride along in the blueprint, relative to its corner")
-check(last.tiles[1].name == "space-platform-foundation" and at.x + last.tiles[1].position.x == 0
-  and at.y + last.tiles[1].position.y == 10, "foundation tiles are named by the tile the item lays")
-local corner_x, corner_y = math.huge, math.huge
-for _, e in ipairs(last.entities) do
-  local area = geometry.footprint(entities[e.name], e.position, e.direction or 0)
-  corner_x, corner_y = math.min(corner_x, area.left_top.x), math.min(corner_y, area.left_top.y)
-end
-for _, t in ipairs(last.tiles) do corner_x, corner_y = math.min(corner_x, t.position.x), math.min(corner_y, t.position.y) end
-check(math.floor(corner_x + 0.01) == 0 and math.floor(corner_y + 0.01) == 0 and at.x == math.floor(at.x),
-  "the blueprint's box starts at (0, 0), built at the layout's top-left tile")
+for _, args in ipairs(created) do rows[args.inner_name] = args end
+check(rows.crusher.recipe == "metallic-asteroid-crushing" and rows.crusher.position.x == 8
+  and rows.crusher.position.y == 2.5 and rows["asteroid-collector"]["chunk-filter"][1].name == "metallic-asteroid-chunk",
+  "world coordinates, crusher recipe and collector filters ride along in native ghost creation")
+check(created[1].inner_name == "space-platform-foundation" and created[1].position.x == 0.5
+  and created[1].position.y == 10.5 and created[4].name == "tile-ghost" and created[5].name == "entity-ghost",
+  "foundation ghosts use tile centers and are created before entity ghosts")
 check(walked == 0 and body.position.x == 500.5 and hub_stock["space-platform-foundation"] == 4,
   "no body, no walking, no items moved")
 
 local wrong = run(L, { action = "build_layout", platform = 1, anchor = { x = 0, y = 0 },
   entities = { { name = "crusher", dx = 4, dy = 0.5, recipe = "iron-gear-wheel" } } })
 check(wrong.status == "failed" and wrong.outcome.code == "LAYOUT_CHECK_FAILED" and wrong.outcome.failed[1].code == "RECIPE_NOT_SETTABLE"
-  and #built == 1, "a recipe the crusher cannot craft fails before anything is placed")
+  and #created == 6 and #built == 0, "a recipe the crusher cannot craft fails before anything is placed")
 
 shift = 1
-local count_before = #built
+local count_before = #created
 local misplaced = run(L, { action = "build_layout", platform = 1, anchor = { x = 0, y = 0 },
   entities = { { name = "inserter", dx = -7.5, dy = -7.5 } } })
 check(misplaced.status == "failed" and misplaced.outcome.code == "GHOSTS_MISPLACED" and destroyed == 1
-  and #built == count_before + 1, "a ghost off its spot removes every ghost again and fails")
+  and #created == count_before + 1, "a ghost off its spot removes every ghost again and fails")
 shift = 0
+
+-- Native creation can refuse one entry after creating others. It must fail
+-- honestly with a useful position/reason and remove only its own new ghosts.
+local removed_before = destroyed
+fail_create = #created + 2
+local incomplete = run(L, { action = "build_layout", platform = 1, anchor = { x = 0, y = 0 },
+  entities = { { name = "inserter", dx = -7.5, dy = -6.5 }, { name = "inserter", dx = 6.5, dy = -7.5 } } })
+check(incomplete.status == "failed" and incomplete.outcome.code == "GHOSTS_NOT_PLACED"
+  and incomplete.outcome.ghosts_placed == 0 and destroyed == removed_before + 1
+  and incomplete.outcome.failed[1].code == "GHOST_NOT_PLACED" and incomplete.outcome.failed[1].position
+  and incomplete.outcome.failed[1].reason:match("returned no ghost"),
+  "an incomplete batch reports its failed entry and rolls back the other new ghosts")
+fail_create = nil
 
 -- A layout around its anchor (negative offsets) lands where it was checked:
 -- the snapped blueprint is aligned by its box, not by the anchor.
@@ -363,23 +375,23 @@ local big_task = L.make_task(big_step)
 big_task.id = 12
 L.runner.start(big_task)
 local built_at_search_end, big_result, big_ticks = nil, nil, 0
-local first_build = #built + 1
+local first_build = #created + 1
+local batches = {}
 repeat
   game.tick = game.tick + 1
   big_ticks = big_ticks + 1
   local searching = big_task._search ~= nil
-  local before = #built
+  local before = #created
   big_result = L.runner.tick(big_task)
-  if searching and not big_task._search then built_at_search_end = #built - before end
+  if #created > before then batches[#batches + 1] = #created - before end
+  if searching and not big_task._search then built_at_search_end = #created - before end
 until big_result or big_ticks > 100
 local batches_ok, tiles_first = true, true
-for i = first_build, #built do
-  batches_ok = batches_ok and #built[i].entities + #built[i].tiles <= 250
-  if i < #built then tiles_first = tiles_first and #built[i].entities == 0 end
-end
-check(big_result and big_result.status == "done" and big_result.outcome.tiles_placed == 992 and big_result.outcome.ghosts_placed == 1
-  and built_at_search_end == 0 and #built - first_build + 1 == 4 and batches_ok and tiles_first,
-  "992 tiles and an entity are placed in 4 batches of at most 250, foundation first, from the tick after the check")
+for _, count in ipairs(batches) do batches_ok = batches_ok and count <= 120 end
+for i = first_build, #created - 1 do tiles_first = tiles_first and created[i].name == "tile-ghost" end
+check(big_result and big_result.status == "done" and big_result.outcome.tiles_placed == 992
+  and big_result.outcome.ghosts_placed == 1 and built_at_search_end == 0 and #batches == 9 and batches_ok and tiles_first,
+  "992 tiles and an entity are placed in 9 batches of at most 120, foundation first, from the tick after checking")
 
 -- ---------------------------------------------------------- blueprint_place
 

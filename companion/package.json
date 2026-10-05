@@ -1,6 +1,6 @@
 {
   "name": "factorio-codex",
-  "version": "0.22.3",
+  "version": "0.22.4",
   "description": "Text-only Factorio companion controlled by Codex through MCP",
   "private": true,
   "type": "module",

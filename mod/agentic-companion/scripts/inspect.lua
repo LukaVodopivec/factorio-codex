@@ -339,6 +339,18 @@ local function inspect_one(position, c)
 
   local belt = collect_belt_contents(e)
   if belt then out.belt_contents = belt end
+  if e.type == "underground-belt" then
+    local ok_end, end_type = pcall(function() return e.belt_to_ground_type end)
+    if ok_end then out.belt_to_ground_type = end_type end
+    local ok_pair, pair = pcall(function() return e.neighbours end)
+    if ok_pair and pair == nil then out.underground_neighbour = false elseif ok_pair then
+      local ok_visible, visible = pcall(function()
+        return pair.valid and pair.force == c.force
+          and surfaces.charted(c.force, c.surface, math.floor(pair.position.x / 32), math.floor(pair.position.y / 32))
+      end)
+      if ok_visible and visible then out.underground_neighbour = entity_identity(pair) end
+    end
+  end
 
   collect_fluids(e, out)
   local connections = fluid_connections.live(e)

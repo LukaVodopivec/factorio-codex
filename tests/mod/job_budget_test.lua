@@ -77,6 +77,7 @@ local body = object({ valid = true, name = "character", type = "character", forc
   get_inventory = function() return object({ get_contents = function() return {} end }) end })
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end,
   human_control = function() return false end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 package.loaded["scripts.tasks"] = { active_summary = function() return nil end, queue_length = function() return 0 end }
 
 local function own(values)
@@ -123,14 +124,14 @@ local function factory(n)
       get_max_transport_line_index = function() return 2 end,
       get_transport_line = function() return object({ get_contents = function() return {} end }) end })
   end
-  -- The patch cache lists every charted chunk (state.init/map_summary keep it).
+  -- The surface's patch cache lists every charted chunk (map_summary keeps it).
   local charted, set = {}, {}
   for cy = -2, 6 do for cx = -2, 6 do
     charted[#charted + 1] = { x = cx, y = cy }
     set[cx .. "," .. cy] = true
   end end
-  storage.patch_cache = { seeded = true, charted = charted, charted_set = set, chunks = {}, known = {}, queued = {},
-    pending = {}, head = 1, refresh = {}, dirty = true }
+  storage.patch_caches = { [1] = { version = 1, surface_index = 1, seeded = true, charted = charted, charted_set = set,
+    chunks = {}, known = {}, queued = {}, pending = {}, head = 1, refresh = {}, dirty = true } }
 end
 
 local jobs = require("scripts.jobs")

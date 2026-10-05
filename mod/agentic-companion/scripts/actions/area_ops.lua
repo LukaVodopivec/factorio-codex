@@ -167,8 +167,15 @@ local function platform_anchor(c, task)
   return space, anchor_of({ x = hub.x + task.position.x, y = hub.y + task.position.y })
 end
 
+-- A platform step needs only a connected body (aboard or in transit too):
+-- its window reads the force; a planet step needs the character.
+local function actor(platform)
+  if platform ~= nil then return companion.require_present() end
+  return companion.require_companion()
+end
+
 function Place.start(task)
-  local c = companion.require_companion()
+  local c = actor(task.platform)
   local label = "blueprint_place " .. tostring(task.name)
   validate_place(task, label)
   if task.platform ~= nil then
@@ -255,6 +262,7 @@ local function place_ghosts(task, c)
 end
 
 function Place.tick(task)
+  if task._platform then return place_ghosts(task, companion.require_present()) end
   local c = companion.get()
   if not c then return { status = "failed", detail = "the companion character is gone" } end
   if task.mode == "ghosts" then return place_ghosts(task, c) end
@@ -293,7 +301,7 @@ M.place_check_job = {
       error("blueprint_place over RPC is a dry run: pass check_only = true, and queue it as a plan step to place", 0)
     end
     validate_place(params, label)
-    local c = companion.require_companion()
+    local c = actor(params.platform)
     local layout = placed_layout(params, label)
     if params.platform ~= nil then
       -- Ghost checks on the platform's surface; no other spot is searched.
@@ -307,7 +315,7 @@ M.place_check_job = {
       search = build_layout.search_start(c, { anchor = anchor, layouts = { layout } }) }
   end,
   step = function(job, budget)
-    local c = companion.require_companion()
+    local c = actor(job.platform)
     local s = job.search
     local before = s.ctx.calls
     local result = build_layout.search_step(c, s, math.max(1, budget.left))
@@ -488,7 +496,7 @@ local Deconstruct = {}
 Deconstruct.resume = supply.resume
 
 function Deconstruct.start(task)
-  local c = companion.require_companion()
+  local c = actor(task.platform)
   local label = "deconstruct_area"
   local surface = c.surface
   if task.platform ~= nil then
@@ -550,7 +558,7 @@ end
 local function count_name(task, name) task._by_name[name] = (task._by_name[name] or 0) + 1 end
 
 function Deconstruct.tick(task)
-  local c = companion.get()
+  local c = task._platform and companion.require_present() or companion.get()
   if not c then return { status = "failed", detail = "the companion character is gone" } end
   if task.mode ~= "hand" then
     -- Orders: a bounded batch per tick, in area order.

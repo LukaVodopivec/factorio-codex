@@ -156,6 +156,7 @@ local function lay_ore(cx, cy, r)
 end
 local body = { position = { x = 60, y = -30 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 local finder = require("scripts.find_placement")
 local jobs = require("scripts.jobs")
 -- find_placement is a job: tests run the whole search in one call.

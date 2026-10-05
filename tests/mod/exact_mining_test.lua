@@ -413,4 +413,37 @@ check(in_place_result and in_place_result.status == "done" and not stump.valid,
 approach_stub.ensure_entity = approach_entity
 check(require("scripts.actions.walk").start_clearer == mine, "mine is the walker's start clearer")
 
+-- The body's own corpse (contract C12) is mined like an own entity with
+-- contents: target_kind owned, one native cycle, after a fit check; another
+-- player's corpse never is.
+package.loaded["scripts.companion"].record = function() return { player_index = 1 } end
+local corpse_items = { ["iron-ore"] = 1 }
+local function corpse(x, player_index)
+  local e = minable("character-corpse", "character-corpse", x, nil)
+  e.force, e.character_corpse_player_index = {}, player_index
+  e.get_inventory = function(id)
+    if id ~= defines.inventory.character_corpse then return nil end
+    return { is_empty = function() return next(corpse_items) == nil end, get_contents = function()
+      local rows = {}
+      for name, count in pairs(corpse_items) do rows[#rows + 1] = { name = name, count = count, quality = "normal" } end
+      return rows
+    end }
+  end
+  e.get_fluid_contents = function() return {} end
+  return e
+end
+defines.inventory.character_corpse = 3
+prototypes.item["character-corpse"] = { stack_size = 1 }
+local own_corpse, other_corpse = corpse(60, 1), corpse(62, 2)
+woods = { own_corpse, other_corpse }; candidates = woods
+configure_capacity(6)
+local reclaim = { target = { x = 60, y = 0 }, count = 1, target_kind = "owned" }; mine.start(reclaim)
+check(reclaim._initial_failure == nil and reclaim._entity == own_corpse, "the body's own corpse is an own entity to mine")
+local reclaimed = run(reclaim, 10)
+check(reclaimed and reclaimed.status == "done" and not own_corpse.valid and scripted_mine_calls == 0,
+  "the own corpse is mined natively, its contents with it")
+local foreign = { target = { x = 62, y = 0 }, count = 1, target_kind = "owned" }; mine.start(foreign)
+check(foreign._initial_failure and foreign._initial_failure.outcome.code == "TARGET_NOT_FOUND_AT_START" and other_corpse.valid,
+  "another player's corpse is never the body's to mine")
+
 os.exit(failures == 0 and 0 or 1)

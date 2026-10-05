@@ -25,7 +25,7 @@ function writeLedger(dir: string, revision: number, packages: unknown[], objecti
   fs.writeFileSync(path.join(dir, "operations.json"), JSON.stringify({
     schema_version: 2, run: { id: "run-1", release_sha: "a".repeat(40), baseline_save_sha256: "b".repeat(64),
       save_identity: "s", created_at: "2026-10-04T00:00:00Z",
-      roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6-astra", reasoning: "medium", fast: false } } },
+      roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6.1-sol", reasoning: "medium", fast: false } } },
     revision, source_tick: 10, phase: "start", bottleneck: "iron", latest_measured_capacity: [],
     task_list: { NOW: priority(objective), NEXT: priority("copper"), LATER: priority("science") },
     assumptions: [], build_packages: packages,
@@ -39,7 +39,7 @@ function fakeBridge(overrides: Record<string, (params: any) => unknown> = {}) {
   const sources = new Map<number, string>();
   const answer = async (method: string, params: any): Promise<any> => {
     if (overrides[method]) return overrides[method]!(params);
-    if (method === "ping") return { companion_exists: true, tick: 900, fifo: { queue_depth: 0 } };
+    if (method === "ping") return { companion_exists: true, tick: 900, body: { state: "on_surface", surface_ref: "nauvis" }, fifo: { queue_depth: 0 } };
     if (method === "event_state") return { tick: 900, queue_depth: 0, fifo_empty: true, human_hold: false };
     if (method === "can_place") return { results: params.placements.map(() => ({ can_place: true })) };
     if (method === "build_block" || method === "build_layout") return { placed: {}, failed: {} };
@@ -96,7 +96,7 @@ describe("package auto-queue", () => {
     const plans = queuedPlans(call);
     expect(plans.map((plan: any) => plan.source)).toEqual(["package:iron-a", "package:iron-b"]);
     expect(plans[0]).toMatchObject({ steps: furnaces("iron-a").steps, final_observation_radius: 15, observation_detail: "none" });
-    expect(call).toHaveBeenCalledWith("can_place", { placements: [{ item: "stone-furnace", position: { x: 1.5, y: 2.5 }, direction: undefined }] });
+    expect(call).toHaveBeenCalledWith("can_place", { placements: [{ item: "stone-furnace", position: { x: 1.5, y: 2.5 }, direction: undefined }], surface: "nauvis" });
     expect(call).toHaveBeenCalledWith("build_block", { block: "smelting", count: 4, near: { x: 0, y: 0 }, check_only: true });
     expect(readPackageQueue(dir)?.packages).toMatchObject({ "iron-a": { status: "queued", plan_id: 41, revision: 3, tick: 900 },
       "iron-b": { status: "queued", plan_id: 42 } });
@@ -176,12 +176,29 @@ describe("package auto-queue", () => {
     await queue.tick();
     expect(packageFailures(dir)).toEqual([]);
     expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:across-lake"]);
-    expect(call).toHaveBeenCalledWith("can_place", { placements: [{ item: "wooden-chest", position: { x: -3.5, y: 0.5 }, direction: undefined }] });
+    expect(call).toHaveBeenCalledWith("can_place", { placements: [{ item: "wooden-chest", position: { x: -3.5, y: 0.5 }, direction: undefined }], surface: "nauvis" });
     expect(call.mock.calls.some(([method]) => method === "build_layout")).toBe(false);
     // A successor is checked once the landfill package has ended, not while it runs.
     writeLedger(dir, 2, [across, { ...furnaces("on-land", "across-lake"), steps: [{ action: "place_entity", x: 1.5, y: 2.5, name: "stone-furnace" }] }]);
     await queue.tick();
     expect(readPackageQueue(dir)?.packages["on-land"]).toBeUndefined();
+  });
+
+  it("rejects a package over lava or an ocean, or one whose building the planet's conditions forbid", async () => {
+    for (const [result, text] of [
+      [{ can_place: false, reason: "the footprint touches lava — pick dry land or cover it with place_tiles first" }, "touches lava"],
+      [{ can_place: false, reason: "the footprint touches heavy-oil ocean — pick dry land or cover it with place_tiles first" }, "heavy-oil ocean"],
+      [{ can_place: false, code: "SURFACE_CONDITION", reason: "SURFACE_CONDITION: big-mining-drill needs pressure = 4000; this surface has 1000" },
+        "SURFACE_CONDITION"],
+    ] as const) {
+      const dir = runDir();
+      writeLedger(dir, 1, [furnaces("wet")]);
+      const { call, bridge } = fakeBridge({ can_place: (params) => ({ results: params.placements.map(() => result) }) });
+      await createPackageQueue(() => dir, bridge).tick();
+      expect(readPackageQueue(dir)?.packages.wet).toMatchObject({ status: "failed" });
+      expect(readPackageQueue(dir)?.packages.wet?.reason).toContain(text);
+      expect(queuedPlans(call)).toEqual([]);
+    }
   });
 
   it("chains after_package_id onto a pending predecessor and fails after a failed one", async () => {
@@ -215,6 +232,63 @@ describe("package auto-queue", () => {
     fs.writeFileSync(path.join(dir, "package-queue.lock"), "999999999\n");
     await createPackageQueue(() => dir, present.bridge).tick();
     expect(queuedPlans(present.call)).toHaveLength(1);
+  });
+
+  it("queues a package only while the body is on its surface; elsewhere it waits, never fails", async () => {
+    const dir = runDir();
+    // A package stored without a surface (before protocol 28) is for nauvis.
+    writeLedger(dir, 1, [{ ...furnaces("foundry"), surface: "vulcanus" }, furnaces("iron-a", "foundry")]);
+    let body: unknown = { state: "aboard_platform", surface_ref: "platform:3", platform_name: "Orbit" };
+    const { call, bridge } = fakeBridge({ ping: () => ({ companion_exists: true, tick: 900, body }) });
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    expect(queuedPlans(call)).toEqual([]);
+    expect(call.mock.calls.some(([method]) => method === "can_place")).toBe(false);
+    expect(readPackageQueue(dir)?.packages).toMatchObject({
+      foundry: { status: "waiting_surface", reason: "the body is on platform:3; the package is for vulcanus" },
+      "iron-a": { status: "waiting_surface", reason: "the body is on platform:3; the package is for nauvis" } });
+    expect(packageFailures(dir)).toEqual([]);
+    expect(createOrdersTracker(() => dir).attach(result({ summary: "ok" })).structuredContent.orders.packages)
+      .toEqual([{ id: "foundry", status: "waiting_surface", reason: "the body is on platform:3; the package is for vulcanus" },
+        { id: "iron-a", status: "waiting_surface", reason: "the body is on platform:3; the package is for nauvis" }]);
+    // An unchanged wait is not rewritten every tick.
+    const written = fs.statSync(path.join(dir, "package-queue.json")).mtimeMs;
+    await queue.tick();
+    expect(fs.statSync(path.join(dir, "package-queue.json")).mtimeMs).toBe(written);
+    // Landed on Vulcanus: its package is checked on that surface and queued
+    // there; its nauvis successor keeps waiting.
+    body = { state: "on_surface", surface_ref: "vulcanus" };
+    await queue.tick();
+    expect(queuedPlans(call)).toEqual([expect.objectContaining({ source: "package:foundry", surface: "vulcanus" })]);
+    expect(call).toHaveBeenCalledWith("can_place", { placements: [{ item: "stone-furnace", position: { x: 1.5, y: 2.5 }, direction: undefined }], surface: "vulcanus" });
+    expect(readPackageQueue(dir)?.packages).toMatchObject({ foundry: { status: "queued" }, "iron-a": { status: "waiting_surface" } });
+    body = { state: "on_surface", surface_ref: "nauvis" };
+    await queue.tick();
+    expect(queuedPlans(call).map((plan: any) => [plan.source, plan.surface, plan.after_plan_id])).toEqual([["package:foundry", "vulcanus", undefined],
+      ["package:iron-a", "nauvis", 41]]);
+  });
+
+  it("holds a package for the departure planet while the body rides a pod or a trip is pending", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [furnaces("iron-a")]);
+    // A travel to platform:3 is queued; the body still stands on nauvis.
+    let body: unknown = { state: "on_surface", surface_ref: "nauvis", bound_for: "platform:3" };
+    const { call, bridge } = fakeBridge({ ping: () => ({ companion_exists: true, tick: 900, body }) });
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    expect(queuedPlans(call)).toEqual([]);
+    expect(readPackageQueue(dir)?.packages["iron-a"])
+      .toMatchObject({ status: "waiting_surface", reason: "the body is bound for platform:3; the package is for nauvis" });
+    // Riding up: the pod is still over nauvis.
+    body = { state: "in_transit", surface_ref: "nauvis" };
+    await queue.tick();
+    expect(queuedPlans(call)).toEqual([]);
+    expect(readPackageQueue(dir)?.packages["iron-a"])
+      .toMatchObject({ status: "waiting_surface", reason: "the body is in a cargo pod; the package is for nauvis" });
+    // Back, settled on nauvis with nothing pending: queued.
+    body = { state: "on_surface", surface_ref: "nauvis" };
+    await queue.tick();
+    expect(queuedPlans(call)).toEqual([expect.objectContaining({ source: "package:iron-a", surface: "nauvis" })]);
   });
 
   it("holds packages written before an emergency stop until Astra rewrites the ledger, and waits out a human hold", async () => {
@@ -284,7 +358,7 @@ describe("package auto-queue", () => {
     writeLedger(dir, 2, [furnaces("p3"), furnaces("p4", "p3")]);
     fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify({ packages: {
       p3: { status: "queued", plan_id: 57, revision: 1, at: "2026-10-04T00:00:00Z", tick: 1000 } } }));
-    const { call, bridge } = fakeBridge({ ping: () => ({ companion_exists: true, tick: 400 }) });
+    const { call, bridge } = fakeBridge({ ping: () => ({ companion_exists: true, tick: 400, body: { state: "on_surface", surface_ref: "nauvis" } }) });
     await createPackageQueue(() => dir, bridge).tick();
     expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:p3", "package:p4"]);
     expect(queuedPlans(call)[1]).toMatchObject({ after_plan_id: 41 });
@@ -390,7 +464,7 @@ describe("package auto-queue", () => {
     const methods = call.mock.calls.map(([method]) => method);
     expect(methods.indexOf("blueprint_capture")).toBeLessThan(methods.lastIndexOf("blueprint_place"));
     expect(call).toHaveBeenCalledWith("blueprint_capture", { name: "smelter", center: { x: 0, y: 0 }, radius: 6 });
-    expect(queuedPlans(call).at(-1)).toEqual({ steps: [reuse], final_observation_radius: 15, observation_detail: "none", source: "package:copy" });
+    expect(queuedPlans(call).at(-1)).toEqual({ steps: [reuse], final_observation_radius: 15, observation_detail: "none", surface: "nauvis", source: "package:copy" });
     expect(readPackageQueue(dir)?.packages.copy).toMatchObject({ status: "queued", plan_id: 42, captured: ["smelter"] });
     // A package of captures only has no plan; one that follows it is not held.
     writeLedger(dir, 2, [{ ...furnaces("snap"), steps: [capture] }, furnaces("after", "snap")]);

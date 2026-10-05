@@ -44,7 +44,9 @@ local SMELT_POLL_TICKS = 30
 local SMELT_STALL_TICKS = 600
 local MAX_SMELT_ROUNDS = 4
 local SMELT_FUEL = 5
+-- The body's fuels, in the order it uses them (upkeep refuelling too).
 local FUELS = { "coal", "wood", "solid-fuel" }
+M.FUELS = FUELS
 
 -- Nested physical actions. transfer.lua registers extract and insert here
 -- itself (it requires this module for insert's auto-supply).

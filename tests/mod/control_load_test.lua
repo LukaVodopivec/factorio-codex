@@ -12,6 +12,8 @@ _G.defines = { events = {
   on_research_started = 26, on_research_finished = 27, on_research_cancelled = 28, on_research_reversed = 29,
   on_research_queued = 30, on_research_moved = 31, on_technology_effects_reset = 32, on_player_crafted_item = 33,
   on_rocket_launch_ordered = 34, on_space_platform_changed_state = 35, on_cargo_pod_finished_descending = 36,
+  on_player_changed_surface = 37, on_player_controller_changed = 38, on_cargo_pod_finished_ascending = 39,
+  on_surface_deleted = 40,
 }, controllers = { character = 1, spectator = 4 }, direction = { north = 0, northeast = 2, east = 4, southeast = 6, south = 8, southwest = 10, west = 12, northwest = 14 } }
 local registered
 local events, nth = {}, {}
@@ -32,7 +34,8 @@ assert(type(nth[300]) == "function" and type(nth[3600]) == "function", "chores r
 local handlers = require("scripts.rpc").handlers
 for _, name in ipairs({ "factory_status", "activity_log", "event_state", "say", "say_now", "queue_plan", "plan_status",
   "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export",
-  "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe" }) do
+  "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe",
+  "set_platform_route", "travel" }) do
   assert(type(handlers[name]) == "function", "RPC " .. name .. " is registered")
 end
 -- Every custom input the data stage defines has a runtime listener and links

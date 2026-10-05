@@ -8,6 +8,11 @@ M.MACHINE_TYPES_0_22 = { reactor = true, beacon = true, roboport = true }
 -- Stores the registry gained in 0.22.2: an older registry never kept them,
 -- so it rescans the charted chunks for them once.
 M.STORE_TYPES_0_22_2 = { "cargo-landing-pad" }
+-- Planet machine types the registry gained in 0.22.3. Every one of them is
+-- electric (or a reactor), so an older registry already holds them in its
+-- electric set: they only join the machine sets.
+M.MACHINE_TYPES_0_22_3 = { ["fusion-reactor"] = true, ["fusion-generator"] = true, ["lightning-attractor"] = true,
+  ["agricultural-tower"] = true, ["asteroid-collector"] = true }
 -- Blueprint slots (blueprints.lua): 32 named blueprints and a scratch slot.
 M.BLUEPRINT_SLOTS = 33
 
@@ -31,11 +36,17 @@ function M.init()
     -- A human hold in progress (tasks.enter_hold): {since}. Kept across a
     -- load so its ticks are still credited when it ends.
     human_hold = tasks.human_hold,
+    -- The tick the body died while work was queued (tasks.on_tick pauses
+    -- the dispatcher until it respawns), absent otherwise.
+    dead_since = tasks.dead_since,
     -- The last pilot or package plan to reach a terminal status:
     -- {plan_id, status, tick}; upkeep plans are not kept here.
     last_plan_ended = tasks.last_plan_ended,
     -- The tick of the last cancel-all (emergency stop), absent before one.
     last_cancel_all_tick = tasks.last_cancel_all_tick,
+    -- The body changed surface and the dispatcher has not applied the
+    -- surface cancel rule yet (tasks.on_body_surface_changed): the change.
+    surface_changed = tasks.surface_changed,
   }
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}
@@ -57,7 +68,8 @@ function M.init()
     activity.hand_crafted, activity.hand_crafted_since_tick = {}, game and game.tick or 0
   end
   -- Upkeep (chores.lua): unit_number -> tick of the last refuel attempt,
-  -- and of the last science-pack delivery to a lab.
+  -- and "<unit>:<pack>" -> tick of the last delivery of that pack to a lab
+  -- (0.22.2 keyed labs by unit alone; those keys expire like the others).
   storage.chores = storage.chores or {}
   storage.chores.refueled = storage.chores.refueled or {}
   storage.chores.fed_labs = storage.chores.fed_labs or {}
@@ -86,8 +98,9 @@ function M.init()
   end
   storage.autonomy.patches = nil -- replaced by storage.patch_cache
   -- Units of the machines sampled for problems only (beacons, roboports),
-  -- and per chore status (no_fuel, missing_science_packs) the units in it,
-  -- so upkeep reads those machines without walking every one (0.22).
+  -- and per chore status (no_fuel, missing_science_packs) and surface the
+  -- units in it, so upkeep reads those machines without walking every one
+  -- (0.22).
   -- A 0.21 line store gains them on its next refresh, due at once.
   if not storage.autonomy.waiting then
     storage.autonomy.problem_only, storage.autonomy.waiting = {}, {}
@@ -143,10 +156,21 @@ function M.init()
       r.rescan = { types = { table.unpack(M.STORE_TYPES_0_22_2) }, cursor = 1 }
     end
   end
-  -- Resource patches per charted chunk (map_summary.patches): chunk key ->
-  -- {cx, cy, cells = {[resource] = cell}} for chunks holding resources;
-  -- known: every chunk read once. Pending chunks are (re)read a few per tick
-  -- from head, seeded with every charted chunk on the first tick.
+  -- 0.22.3: the planet machine types join the machine sets (a pure Lua pass
+  -- over the entries, once), and the lines are regrouped by surface at once;
+  -- the chore status sets become per surface (waiting[raw][surface][unit]),
+  -- filled again by that refresh.
+  if not r.planet_machines then
+    storage.autonomy.waiting = {}
+    r.planet_machines = true
+    for unit, entry in pairs(r.entries) do
+      if M.MACHINE_TYPES_0_22_3[entry.type] then
+        r.machines[entry.type] = r.machines[entry.type] or {}
+        r.machines[entry.type][unit] = true
+      end
+    end
+    storage.autonomy.dirty_tick = storage.autonomy.dirty_tick or (game and game.tick or 0)
+  end
   -- 0.21 kept factory_status stock and power in a refresh cache; the
   -- registry's aggregates replace it.
   storage.status_cache = nil
@@ -154,30 +178,41 @@ function M.init()
   -- next read after a load or upgrade and kept by the research events
   -- (factory_status.on_research_changed).
   storage.research_cache = nil
+  -- Resource patches per planet surface (map_summary.patches):
+  -- storage.patch_caches[surface index] = {chunks: chunk key -> {cx, cy,
+  -- cells = {[resource] = cell}} for chunks holding resources; known: every
+  -- chunk read once; pending chunks (re)read a few per tick from head;
   -- charted: every charted chunk once, in the order it became known, and
-  -- charted_set its keys (map_summary's chunk list, read without a query).
-  local patch_cache = storage.patch_cache
-  if not patch_cache or patch_cache.version ~= M.PATCH_CACHE_VERSION then
-    storage.patch_cache = {
-      version = M.PATCH_CACHE_VERSION, seeded = false, filled = false,
-      chunks = {}, known = {}, pending = {}, head = 1, queued = {}, refresh = {}, dirty = true, rows = nil, updated_tick = nil,
-      charted = {}, charted_set = {},
-      -- The patch rows being rebuilt over ticks (map_summary.patch_tick), or nil.
-      build = nil,
-    }
-  elseif not patch_cache.charted then
-    -- A 0.21.0 cache: its known and queued chunks are the charted ones.
-    local keys = {}
-    for key in pairs(patch_cache.known) do keys[key] = true end
-    for key in pairs(patch_cache.queued) do keys[key] = true end
-    local list = {}
-    for key in pairs(keys) do
-      local x, y = key:match("^(-?%d+),(-?%d+)$")
-      if x then list[#list + 1] = { x = tonumber(x), y = tonumber(y) } end
+  -- charted_set its keys (map_summary's chunk list, read without a query)}.
+  -- map_summary makes a surface's cache when the body first stands there or
+  -- the force charts a chunk of it. Up to 0.22.2 the one cache
+  -- (storage.patch_cache) was Nauvis's: it is kept as Nauvis's.
+  storage.patch_caches = storage.patch_caches or {}
+  local legacy = storage.patch_cache
+  if legacy then
+    if legacy.version == M.PATCH_CACHE_VERSION then
+      if not legacy.charted then
+        -- A 0.21.0 cache: its known and queued chunks are the charted ones.
+        local keys = {}
+        for key in pairs(legacy.known) do keys[key] = true end
+        for key in pairs(legacy.queued) do keys[key] = true end
+        local list = {}
+        for key in pairs(keys) do
+          local x, y = key:match("^(-?%d+),(-?%d+)$")
+          if x then list[#list + 1] = { x = tonumber(x), y = tonumber(y) } end
+        end
+        table.sort(list, function(a, b) return a.y == b.y and a.x < b.x or a.y < b.y end)
+        legacy.charted, legacy.charted_set = list, {}
+        for _, chunk in ipairs(list) do legacy.charted_set[chunk.x .. "," .. chunk.y] = true end
+      end
+      local ok, nauvis = pcall(function() return game.surfaces["nauvis"].index end)
+      legacy.surface_index = ok and nauvis or 1
+      storage.patch_caches[legacy.surface_index] = storage.patch_caches[legacy.surface_index] or legacy
     end
-    table.sort(list, function(a, b) return a.y == b.y and a.x < b.x or a.y < b.y end)
-    patch_cache.charted, patch_cache.charted_set = list, {}
-    for _, chunk in ipairs(list) do patch_cache.charted_set[chunk.x .. "," .. chunk.y] = true end
+    storage.patch_cache = nil
+  end
+  for index, cache in pairs(storage.patch_caches) do
+    if cache.version ~= M.PATCH_CACHE_VERSION then storage.patch_caches[index] = nil end
   end
   -- Space platforms (platforms.lua): the planet of each platform
   -- create_platform made while it waits for its starter pack, and the ring
@@ -186,6 +221,13 @@ function M.init()
   storage.space = storage.space or {}
   storage.space.created = storage.space.created or {}
   storage.space.events = storage.space.events or {}
+  -- Travel (actions/travel.lua): the launch or landing a travel step started
+  -- ({to, since_tick, cancelled?}; companion.lua counts the cutscene as
+  -- transit meanwhile), and per platform index the last arrival at a station
+  -- ({location, tick}, written by the platform state event). The body's last
+  -- seen surface is storage.companion.surface_ref (companion.lua).
+  storage.travel = storage.travel or {}
+  storage.travel.arrivals = storage.travel.arrivals or {}
   -- World policy write failures per surface (companion.lua), shown by ping.
   storage.world_policy = storage.world_policy or {}
   storage.world_policy.errors = storage.world_policy.errors or {}

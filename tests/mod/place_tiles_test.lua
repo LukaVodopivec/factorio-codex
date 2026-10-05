@@ -27,7 +27,7 @@ local landfill_tile = tile_proto("landfill", "ground_tile", { items_to_place_thi
 local tiles = {
   grass = tile_proto("grass-1", "ground_tile"),
   landfill = landfill_tile,
-  water = tile_proto("water", "water_tile", { default_cover_tile = landfill_tile }),
+  water = tile_proto("water", "water_tile", { default_cover_tile = landfill_tile, fluid = { name = "water" } }),
   ["stone-path"] = tile_proto("stone-path", "ground_tile", { mineable_properties = { minable = true, mining_time = 0.1,
     products = { { type = "item", name = "stone-brick", amount = 1 } } } }),
   concrete = tile_proto("concrete", "ground_tile"),
@@ -149,10 +149,11 @@ world["40,10"] = "water"
 carried.concrete = 5
 local wet = run({ action = "place_tiles", item = "concrete", positions = { { x = 40.4, y = 10.7 } } })
 check(wet.status == "failed" and wet.outcome.ineligible[1].code == "TILE_INELIGIBLE" and wet.outcome.ineligible[1].current == "water"
-  and wet.outcome.ineligible[1].hint == "use landfill" and carried.concrete == 5,
-  "concrete on water is TILE_INELIGIBLE, names landfill and consumes nothing")
+  and wet.outcome.ineligible[1].liquid == "water" and wet.outcome.ineligible[1].hint == "use landfill" and carried.concrete == 5,
+  "concrete on water is TILE_INELIGIBLE, names the liquid and landfill, and consumes nothing")
 local covered = run({ action = "place_tiles", item = "concrete", positions = { { x = 0, y = 0 } } })
-check(covered.outcome.ineligible[1].code == "TILE_INELIGIBLE" and covered.outcome.ineligible[1].current == "space-platform-foundation",
+check(covered.outcome.ineligible[1].code == "TILE_INELIGIBLE" and covered.outcome.ineligible[1].current == "space-platform-foundation"
+  and covered.outcome.ineligible[1].liquid == nil,
   "a tile that cannot be covered is refused")
 local far = run({ action = "place_tiles", item = "concrete", positions = { { x = 200, y = 0 } } })
 check(far.outcome.ineligible[1].code == "TILE_UNCHARTED", "uncharted land is refused")

@@ -65,6 +65,7 @@ local body = { valid = true, reach_distance = 10, force = "own" }
 local target
 local reached = 0
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end,
   ensure_entity = function() reached = reached + 1; return "ok" end, find_entity_near = function() return target end }
 local requests = require("scripts.requests")
@@ -230,6 +231,58 @@ target = mock.entity({ valid = true, name = "rocket-silo", type = "rocket-silo",
 local silo = run({ requests = { { item = "coal", min = 1 } } })
 check(silo.status == "failed" and silo.outcome.code == "NOT_MANUAL_SECTION" and silo.detail:match("auto_requests"),
   "a rocket silo's requests are the game's: NOT_MANUAL_SECTION")
+
+-- The body's own requests (target "character"): no reach, once logistic
+-- robotics is researched; trash entries are requests of at most 0; the
+-- point's auto-trash is its trash_unrequested.
+walks, reached = 0, 0
+local own_list = {}
+local point = mock.logistic_point({ enabled = true, trash_not_requested = false, logistic_network = covered })
+mock.read(point, "sections", function() local out = {}; for i, s in ipairs(own_list) do out[i] = s end; return out end)
+mock.read(point, "sections_count", function() return #own_list end)
+point.get_section = function(i) return own_list[i] end
+point.add_section = function(group)
+  local s = section(#own_list + 1, defines.logistic_section_type.manual, group or "")
+  own_list[#own_list + 1] = s
+  return s
+end
+body.name = "character"
+body.get_requester_point = function() return point end
+own.character_logistic_requests, own.character_trash_slot_count = false, 0
+local character_step = { target = "character", requests = { { item = "iron-plate", min = 100, max = 200 } }, trash = { "coal" } }
+check(requests.action.remote(character_step), "the body's own requests carry no surface tag")
+check(run(character_step).outcome.code == "LOGISTICS_NOT_RESEARCHED" and #own_list == 0,
+  "personal requests before logistic robotics are refused and nothing is written")
+own.character_logistic_requests = true
+check(run(character_step).outcome.code == "LOGISTICS_NOT_RESEARCHED" and #own_list == 0, "trash needs trash slots")
+own.character_trash_slot_count = 10
+local mine = run({ target = "character", requests = { { item = "iron-plate", min = 100, max = 200 } }, trash = { "coal" },
+  trash_unrequested = true })
+local own_items = {}
+for _, item in ipairs(mine.outcome.sections[1].items) do own_items[item.item] = item end
+check(mine.status == "done" and walks == 0 and reached == 0 and own_items["iron-plate"].min == 100 and own_items["iron-plate"].max == 200
+  and own_items.coal.min == 0 and own_items.coal.max == 0 and point.trash_not_requested == true
+  and mine.outcome.target.kind == "character" and mine.outcome.network.id == 7,
+  "the body's own requests and trash are written without walking, auto-trash set")
+local over_rpc = requests.rpc({ target = "character", remove = { "coal" } })
+check(over_rpc.code == "REQUESTS_SET" and #over_rpc.sections[1].items == 1, "over RPC the body's own requests change at once")
+check(refused({ target = "character", requests = { { item = "coal", min = 1 } }, trash = { "coal" } }, "not both")
+  and refused({ target = { x = 1, y = 1 }, trash = { "coal" } }, "character")
+  and refused({ target = "character", request_from_buffers = true }, "requester chest")
+  and refused({ target = "body", requests = { { item = "coal", min = 1 } } }, "character"),
+  "character steps are validated at queue time")
+
+-- Aboard a platform: the hub is still its window; a chest needs the body.
+local stub = package.loaded["scripts.companion"]
+local saved = { get = stub.get, require_companion = stub.require_companion }
+stub.get = function() return nil end
+stub.require_companion = function() error("BODY_ABOARD: the body is aboard platform alpha (platform:1)", 0) end
+local hub_aboard = run({ target = { platform = "alpha" }, requests = { { item = "copper-plate", min = 5 } } })
+local direct_aboard = requests.rpc({ target = { platform = "alpha" }, requests = { { item = "iron-gear-wheel", min = 5 } } })
+check(hub_aboard.status == "done" and direct_aboard.code == "REQUESTS_SET", "aboard, a hub's requests are set as a step and over RPC")
+local ok_chest, chest_error = pcall(run, { requests = { { item = "coal", min = 1 } } })
+check(not ok_chest and tostring(chest_error):match("^BODY_ABOARD"), "aboard, a chest's requests fail BODY_ABOARD")
+stub.get, stub.require_companion = saved.get, saved.require_companion
 
 mock.assert_clean()
 print(failures == 0 and "\nALL SET REQUESTS TESTS PASSED" or ("\n" .. failures .. " FAILURES"))

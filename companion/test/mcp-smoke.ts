@@ -10,7 +10,7 @@ const expected = (surface === "read-only"
   ? readOnly
   : [...readOnly, "get_items","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","run_plan","start_research","stop",
     "move_entity","explore","blueprint_capture","blueprint_create","blueprint_delete","build_ghosts","deconstruct_area","upgrade_area","copy_settings",
-    "configure_entity","set_requests","create_platform","launch_rocket"]).sort();
+    "configure_entity","set_requests","create_platform","launch_rocket","set_platform_route","travel"]).sort();
 const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = process.env.MCP_ENTRY ?? "src/cli.ts";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-mcp-home-"));
@@ -38,7 +38,7 @@ const request = (method: string, params?: unknown) => new Promise<any>((resolve,
 
 try {
   const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "offline-smoke", version: "1" } });
-  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.22.2") throw new Error(`wrong server metadata; stderr=${stderr}`);
+  if (init.result?.serverInfo?.name !== "factorio-codex" || init.result?.serverInfo?.version !== "0.22.3") throw new Error(`wrong server metadata; stderr=${stderr}`);
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const tools = (await request("tools/list")).result.tools;
   const names = tools.map((tool: any) => tool.name).sort();
@@ -53,7 +53,7 @@ try {
     const forbidden = ["get_items", "walk_to", "mine", "pickup_items", "place_entity", "craft_items", "insert_items", "extract_items",
       "set_recipe", "rotate_entity", "build_plan", "queue_plan", "run_plan", "start_research", "stop", "move_entity", "explore",
       "blueprint_capture", "blueprint_create", "blueprint_delete", "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings",
-      "configure_entity", "set_requests", "create_platform", "launch_rocket"];
+      "configure_entity", "set_requests", "create_platform", "launch_rocket", "set_platform_route", "travel"];
     if (forbidden.some((name) => names.includes(name))) throw new Error(`read-only surface exposed mutation: ${names}`);
     for (const name of ["build_layout", "build_block", "connect_entities", "blueprint_place", "place_tiles"]) {
       const checkOnly = tools.find((tool: any) => tool.name === name)?.inputSchema?.properties?.check_only;
@@ -61,7 +61,11 @@ try {
     }
     const platformSchema = tools.find((tool: any) => tool.name === "platform_status")?.inputSchema?.properties ?? {};
     if (JSON.stringify(platformSchema.detail?.enum) !== JSON.stringify(["compact", "full"]) || !platformSchema.platform) throw new Error("read-only platform_status must take platform and detail compact|full");
-    console.log("PASS initialize, exact 22 read-only tools, dry-run-only layouts, routes, blueprint placements and tiles, platform reads, no physical mutation surface");
+    for (const name of ["factory_status", "map_summary", "inspect_entity", "can_place", "find_placement"]) {
+      if (!tools.find((tool: any) => tool.name === name)?.inputSchema?.properties?.surface) throw new Error(`read-only ${name} must read another surface`);
+    }
+    if (!tools.find((tool: any) => tool.name === "production_requirements")?.inputSchema?.properties?.planet) throw new Error("production_requirements must plan per planet");
+    console.log("PASS initialize, exact 22 read-only tools, dry-run-only layouts, routes, blueprint placements and tiles, platform reads, reads of every surface, no physical mutation surface");
   } else {
   const placementTool = tools.find((tool: any) => tool.name === "find_placement");
   if (!/input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12/.test(placementTool?.description ?? "")) throw new Error("find_placement must disclose the targeted cardinal constraint");
@@ -100,7 +104,7 @@ try {
   if (runPlanSchema.properties?.final_observation_radius?.default !== 15 || runPlanSchema.properties?.observation_radius) throw new Error("run_plan must expose only final_observation_radius");
   const serializedSteps = JSON.stringify(runPlanSchema.properties?.steps);
   for (const action of ["wait_for_research", "get_items", "build_layout", "build_block", "explore", "move_entity", "blueprint_place",
-    "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings", "configure_entity", "flush_fluid", "place_tiles", "set_requests", "equip", "create_platform", "launch_rocket"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
+    "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings", "configure_entity", "flush_fluid", "place_tiles", "set_requests", "equip", "create_platform", "launch_rocket", "set_platform_route", "travel"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
   if (serializedSteps.includes('"const":"blueprint_capture"')) throw new Error("blueprint_capture is a package step, never a plan step");
   const craftSchema = tools.find((tool: any) => tool.name === "craft_items")?.inputSchema?.properties ?? {};
   if (craftSchema.wait_for_completion?.default !== undefined) throw new Error("craft_items must not wait for completion by default");
@@ -135,7 +139,13 @@ try {
   if (!target.includes('"platform"')) throw new Error("set_requests must take a platform hub target");
   const cargo = JSON.stringify(tools.find((tool: any) => tool.name === "launch_rocket")?.inputSchema?.properties?.cargo ?? {});
   if (!cargo.includes('"const":"requests"')) throw new Error('launch_rocket cargo must accept "requests"');
-  console.log("PASS initialize, exact 50 tools, Lua-parity schemas, platform parameters, forbidden-schema scan, actionable offline status");
+  // Trips: travel takes a surface; a route's waits are the game's own wait condition types.
+  const travelSchema = tools.find((tool: any) => tool.name === "travel")?.inputSchema ?? {};
+  if (!(travelSchema.required ?? []).includes("to") || travelSchema.properties?.max_wait_minutes?.maximum !== 240) throw new Error("travel must take to and max_wait_minutes up to 240");
+  const route = JSON.stringify(tools.find((tool: any) => tool.name === "set_platform_route")?.inputSchema ?? {});
+  if (!route.includes('"all_requests_satisfied"') || !route.includes('"go_to"') || !route.includes('"paused"')) throw new Error("set_platform_route must take stops with wait conditions, go_to and paused");
+  if (!tools.find((tool: any) => tool.name === "queue_plan")?.inputSchema?.properties?.surface) throw new Error("queue_plan must take surface");
+  console.log("PASS initialize, exact 52 tools, Lua-parity schemas, platform parameters, trips and routes, forbidden-schema scan, actionable offline status");
   }
 } finally {
   child.kill();

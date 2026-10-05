@@ -17,7 +17,7 @@ a sentence or two what you see and what you intend, then act.
 
 The mod does the chores: it tracks every production line, fetches and crafts
 materials, clears trees and rocks, walks, recovers from small mishaps,
-refuels dry burner machines, and brings science packs to waiting labs. You decide what to build, where, and why. Do not
+refuels dry burner machines, and brings science packs to labs that take them. You decide what to build, where, and why. Do not
 monitor, prove, or keep books.
 
 ## Roles
@@ -25,7 +25,7 @@ monitor, prove, or keep books.
 Two persistent reasoning sessions share one body: the [Luna
 pilot](GOAL-PILOT-v1.md) (`gpt-6-luna`, `low` reasoning, fast mode enabled),
 the foreman and sole gameplay writer, and the [Astra
-strategist](GOAL-STRATEGIST-v1.md) (`gpt-6-astra`, `medium` reasoning, normal
+strategist](GOAL-STRATEGIST-v1.md) (`gpt-6.1-sol`, `medium` reasoning, normal
 speed), who owns the long-horizon priorities and architecture on the read-only
 surface. The supervisor's rescue powers (`AGENTS.md`) never pass to a role.
 
@@ -35,9 +35,12 @@ The principal objective is to maximize useful, sustained, autonomous production
 growth until the factory completes Space Age and reaches the Solar System Edge:
 sustained Nauvis production, a functional orbital platform, Vulcanus, Fulgora,
 and Gleba in an order chosen from evidence, then Aquilo and the Solar System
-Edge. Never prescribe a fixed planetary order. This release reaches orbit
-(rockets and platforms) but has no travel tools. Research normally consumes
-surplus.
+Edge. Never prescribe a fixed planetary order. Research normally consumes
+surplus. The game is won when any of our platforms reaches the solar system
+edge; the body need not be aboard. The edge unlocks with the
+`promethium-science-pack` technology (all ten science packs, the fusion
+reactor, and capturing a biter spawner, which this save lacks: The owner decides
+that step once captivity is researched).
 
 Run the state-driven growth loop at each decision: observe fresh exact state
 when travel, a failure, or a surprise made yours stale (`factory_status` is the
@@ -67,7 +70,8 @@ more proof than that.
 - Positions observed in this run are yours to reuse. A resumed save of the
   same factory continues its run. Only coordinates from another run are
   forbidden.
-- Peaceful save: no Nauvis enemy bases; Gleba keeps its own.
+- Peaceful save: no Nauvis enemy bases and no Vulcanus demolishers; Gleba
+  keeps its pentapod spawners (peaceful until attacked).
 
 ## The owner takeover
 
@@ -84,9 +88,14 @@ retried after the hold.
 **Reads (both roles).**
 
 - `factory_status` is the single routine read. Line `state` is `running`,
-  `starved`, `output_full`, `no_fuel`, `no_power`, `no_heat`, `disabled`, or
-  `idle`, with its cause (a fluid, no recipe, spent fuel full); rows past a
-  cap are counted in `omitted_*`. The power row (the largest network;
+  `starved`, `output_full`, `no_fuel`, `no_power`, `no_heat`, `frozen`,
+  `disabled`, or `idle`, with its cause (a fluid, no recipe, spent fuel full);
+  rows past a cap are counted in `omitted_*`. A `research_idle` problem means
+  no research runs: start some. It details the body's surface; `elsewhere`
+  has one line per other planet or platform with buildings, and `surface:
+  "nauvis"` (also on `map_summary`, `inspect_entity`, `can_place`,
+  `find_placement`) reads another one from anywhere; `body.state` shows only
+  off a planet (aboard, in transit, dead). The power row (the largest network;
   `map_summary` with `include: ['power']` lists all) splits production by
   source and gives `sustained_w` (solar at this planet's day average); when
   short, `add_to_cover` says how many steam engines, solar panels, or
@@ -103,7 +112,7 @@ retried after the hold.
   `package:<id>`) and who cancelled what; `plan_status` reads one exact
   `plan_id`; `build_layout`, `build_block`, `connect_entities`, and
   `blueprint_place` with `check_only: true` are dry runs that return the site
-  or a definite answer.
+  or a definite answer (layout and block dry runs take `surface`).
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
 - `platform_status` is your platform screen: state, location, hub slots and
@@ -143,6 +152,7 @@ re-read `factory_status` body position and choose a reachable target.
   `check_only` counts the items an area needs.
 - `set_requests` sets what a requester or buffer chest asks robots for. Only
   robots deliver; `network: null` means no roboport covers the chest.
+  `target: "character"` sets your own requests and `trash` at once.
 - `extract_items` and `insert_items` take an `inventory` (`output`, `input`,
   `fuel`, `modules`, `trash`, ...); a wrong one lists the building's. Plan
   steps only: `equip` wears armor and fits equipment you carry;
@@ -180,6 +190,47 @@ re-read `factory_status` body position and choose a reachable target.
   answer at once, the rest queue in the FIFO. `next_event` also reports
   `rocket_launched`, `cargo_delivered`, and `platform_state_changed`.
 
+**Other planets.**
+
+- Each planet adds a science pack and one constraint. Vulcanus (foundries
+  make molten metal from lava; tungsten needs the big mining drill) has no
+  water: steam comes from sulfuric acid and calcite, or build solar. Fulgora
+  has only scrap to recycle, on islands in a walkable, unbuildable oil ocean;
+  power comes from lightning or heavy oil. Gleba grows fruit
+  that spoils, as do nutrients and eggs (`spoils_in_s` in stock); spoiled
+  eggs hatch enemies, and the first pentapod eggs come from a destroyed
+  Gleba spawner's loot. Aquilo freezes unheated machines (`frozen`): heat
+  pipes from heating towers first.
+- `set_platform_route` sets a platform's stops (unlocked locations, each with
+  the game's wait conditions) at once, without the body. `go_to` sends it to
+  one stop, `paused` holds it, and `platform_status` shows the trip.
+- `travel {to: "platform:<n>"}` rides the next ready rocket up to that
+  platform; `travel {to: "<planet>"}` waits aboard until the platform
+  reaches the planet, then lands you by pod. Route a platform with
+  thrusters, fuel, and turrets first; the trip takes minutes and keeps the
+  FIFO.
+- Queue the destination's work in the same plan after the `travel` step: its
+  positions are on the destination. While aboard, use the direct remote
+  tools. `BODY_ABOARD` and `BODY_IN_TRANSIT` are not failures; wait for
+  `body_surface_changed` (also `travel_phase`, `platform_arrived`). Leaving a surface cancels its unfinished plans with
+  `SURFACE_LEFT`.
+- Nauvis keeps running and stays readable while you are away, but upkeep
+  works only where the body is: give it permanent fuel and science feeds
+  first. Stock is per surface; `get_items` reaches only the body's planet.
+- Bring in your inventory what the first power, mining, and smelting there
+  need, a cargo landing pad (its requests pull items from platforms in
+  orbit), and a silo's parts: leaving a planet takes a rocket from a silo
+  there. After a death, `mine` your corpse (`target_kind: "owned"`).
+- `production_requirements` gives each raw material its `roots` (planet and
+  how it is gathered) and the `unobtainable`; with `planet` it names recipes
+  that planet forbids (`surface_limited`).
+- Offshore pumps pump their tile's liquid (water, lava, heavy oil, ammoniacal
+  solution); `find_placement` takes `fluid`, a layout site `near_liquid`.
+  `build_block` `power` builds steam only where there is water, and `mining`
+  picks a drill that can mine the resource (`NEED_DRILL` otherwise).
+  `SURFACE_CONDITION`: that building or recipe needs another planet's
+  pressure, gravity, or magnetic field.
+
 **Plans.** `queue_plan` takes 1-200 steps and returns at once; `run_plan`
 blocks until the plan ends. Plans are not transactional: finished steps stay.
 Keep the current plan plus one grounded queued successor and avoid micro-packet
@@ -200,8 +251,11 @@ blocks only its branch: name the missing field and continue.
 Astra writes `operations.json` through `ledger-apply` and is its sole writer:
 NOW, NEXT, and LATER (coordinate-free) and at most two build packages, none
 before `GO`. The pilot's bridge queues each new package into the FIFO itself,
-in ledger order, after the mod's placement check, with no pilot turn. Tool
-results carry `orders` once per ledger change. A failed package appears as
+in ledger order, after the mod's placement check, with no pilot turn. Each
+package names its `surface` (a planet) and queues only while the body is
+there; until then `orders` shows it `waiting_surface`, which is not a failure. Only the
+pilot travels: a package never holds `travel`.
+Results carry `orders` once per ledger change. A failed package appears as
 `package_failed` and in `activity_log`; Astra alone redesigns it. There are no
 reports: the ledger is Astra's only channel to the pilot, and `activity_log`
 shows Astra what the body did.

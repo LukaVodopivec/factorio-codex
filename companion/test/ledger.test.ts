@@ -21,7 +21,7 @@ function ledger() {
     run: { id: "run-1", release_sha: "a".repeat(40), baseline_save_sha256: "b".repeat(64),
       save_identity: "fresh-space-age", created_at: "2026-09-03T20:00:00Z",
       roles: { pilot: { model: "gpt-6-luna" as const, reasoning: "low" as const, fast: true as const },
-        strategist: { model: "gpt-6-astra" as const, reasoning: "medium" as const, fast: false as const } } },
+        strategist: { model: "gpt-6.1-sol" as "gpt-6.1-sol" | "gpt-6-astra", reasoning: "medium" as const, fast: false as const } } },
     revision: 0, source_tick: null,
     phase: "bootstrap", bottleneck: "sustained power",
     latest_measured_capacity: [],
@@ -125,6 +125,15 @@ describe("compact strategist operations ledger", () => {
     expect(fs.statSync(file).mode & 0o7777).toBe(mode);
   });
 
+  it("creates a new run with the gpt-6.1-sol strategist and keeps a ledger written for gpt-6-astra", () => {
+    const astra = { ...ledger().run, roles: { ...ledger().run.roles, strategist: { model: "gpt-6-astra" as const, reasoning: "medium" as const, fast: false as const } } };
+    const file = ledgerFile();
+    expect(applyLedgerFile(file, { ...initialization(), run: astra })).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(fs.existsSync(file)).toBe(false);
+    // The run live at the 2026-10-05 decision recorded gpt-6-astra: its ledger still takes updates.
+    expect(reduceLedger({ ...ledger(), run: astra }, envelope(101)).result).toMatchObject({ status: "applied", revision: 1 });
+  });
+
   it("does not initialize for an ordinary update against a missing file", () => {
     const file = ledgerFile();
     expect(applyLedgerFile(file, envelope())).toEqual({ status: "discarded", reason: "MISSING_LEDGER" });
@@ -214,7 +223,7 @@ describe("compact strategist operations ledger", () => {
 describe("build packages the bridge queues", () => {
   const drillPair = (id = "coal-drill-furnace", tick = 100) => ({
     package_id: id, serves: "NOW" as const, intent: "burner drill feeding a stone furnace on the nearest iron patch",
-    after_package_id: null, source_tick: tick, anchor: { x: 40, y: -30 },
+    after_package_id: null, source_tick: tick, surface: "nauvis", anchor: { x: 40, y: -30 },
     required_items: { "burner-mining-drill": 1, "stone-furnace": 1, coal: 10 },
     steps: [
       { action: "place_entity", x: 45, y: -30, name: "stone-furnace", direction: 0 },
@@ -301,11 +310,14 @@ describe("build packages the bridge queues", () => {
     const cases: Array<[unknown[], string]> = [
       [[{ action: "configure_entity", x: 0, y: 0 }], "at least one of inserter, splitter, chest, collector or silo"],
       [[{ action: "place_tiles", item: "landfill" }], "exactly one of area"],
-      [[{ action: "set_requests", target: { x: 0, y: 0 } }], "requests, remove, request_from_buffers or mode set"],
+      [[{ action: "set_requests", target: { x: 0, y: 0 } }], "requests, remove, request_from_buffers, trash, trash_unrequested or mode set"],
       [[{ action: "equip" }], "armor, put or take"],
       [[{ action: "build_layout", anchor: { x: 0, y: 0 }, platform: "Orbit", mode: "hand", entities: [{ name: "crusher", dx: 0, dy: 0 }] }],
         "built from ghosts"],
       [[{ action: "set_requests", target: { x: 0, y: 0 }, requests: [{ item: "coal", min: 1, import_from: "nauvis" }] }], "for a platform hub"],
+      [[{ action: "set_requests", target: "character",
+        requests: Array.from({ length: 40 }, (_, i) => ({ item: `item-${i}`, min: 1 })),
+        trash: Array.from({ length: 30 }, (_, i) => `junk-${i}`) }], "at most 60 items together"],
     ];
     for (const [bad, text] of cases) {
       const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), steps: bad }])).result;
@@ -360,7 +372,9 @@ describe("build packages the bridge queues", () => {
       { name: "filter-inserter", dx: 5, dy: 0, settings: { use_filters: true, filters: [{ index: 1, name: "coal" }] } },
       { name: "chemical-plant", dx: 8, dy: 0, settings: { mirror: true } },
       { name: "iron-chest", dx: 6, dy: 0, settings: { bar: 4 } }] }] };
-    const old = { ...ledger(), revision: 7, source_tick: 90, build_packages: [legacy] };
+    // Stored before protocol 28: no surface.
+    const { surface: _surface, ...unnamed } = legacy;
+    const old = { ...ledger(), revision: 7, source_tick: 90, build_packages: [unnamed] };
     const parsed = operationsLedgerSchema.parse(old);
     expect((parsed.build_packages[0].steps[0] as any).entities).toEqual([
       { name: "underground-belt", dx: 0, dy: 0, direction: 4, belt_to_ground_type: "input" },
@@ -376,8 +390,34 @@ describe("build packages the bridge queues", () => {
     fs.writeFileSync(path.join(path.dirname(file), "package-queue.json"), JSON.stringify({ packages: {
       "belt-hop": { status: "queued", revision: 7, at: "2026-10-04T00:00:00Z" } } }));
     expect(applyLedgerFile(file, withPackages([], 101))).toMatchObject({ status: "applied", revision: 8 });
+    // A package stored before protocol 28 was for nauvis; a write names it.
+    expect(parsed.build_packages[0].surface).toBe("nauvis");
     fs.writeFileSync(file, JSON.stringify(old), { mode: 0o600 });
+    const result = applyLedgerFile(file, withPackages([unnamed], 102));
+    expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("build_packages.0.surface"))).toBe(true);
     expect(applyLedgerFile(file, withPackages([legacy], 102))).toMatchObject({ status: "applied", revision: 8 });
+  });
+
+  it("names each package's surface, never lets a package travel, and carries platform routes", () => {
+    const route = { action: "set_platform_route", platform: "Orbit",
+      stops: [{ location: "nauvis", wait: [{ type: "all_requests_satisfied" }] }, { location: "vulcanus", wait: [{ type: "time", ticks: 3600 }] }], go_to: 1 };
+    const reduced = reduceLedger(ledger(), withPackages([{ ...drillPair("foundry"), surface: "vulcanus" }, { ...drillPair("route"), steps: [route] }]));
+    expect(reduced.result).toMatchObject({ status: "applied", revision: 1 });
+    expect(reduced.ledger?.build_packages.map((entry) => entry.surface)).toEqual(["vulcanus", "nauvis"]);
+    const cases: Array<[unknown, string]> = [
+      [{ ...drillPair(), steps: [{ action: "travel", to: "vulcanus" }] }, "travel is the pilot's"],
+      [{ ...drillPair(), surface: "Nauvis" }, "build_packages.0.surface"],
+      [{ ...drillPair(), surface: "platform:0" }, "build_packages.0.surface"],
+      [{ ...drillPair(), surface: { platform: "Orbit" } }, "build_packages.0.surface"],
+      [{ ...drillPair(), steps: [{ ...route, stops: undefined, go_to: undefined }] }, "stops, go_to or paused"],
+      [{ ...drillPair(), steps: [{ ...route, go_to: 3 }] }, "one of the stops"],
+    ];
+    for (const [entry, text] of cases) {
+      const result = reduceLedger(ledger(), withPackages([entry])).result;
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(text)), text).toBe(true);
+    }
+    expect(reduceLedger(ledger(), withPackages([{ ...drillPair(), surface: "platform:3" }])).result).toMatchObject({ status: "applied" });
   });
 
   it("rejects a package id the bridge already queued or failed unless it is repeated unchanged", () => {

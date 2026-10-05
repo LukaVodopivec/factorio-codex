@@ -41,6 +41,12 @@ local function blocked_reason(c, pos)
       return string.format("%s is in the way — pick a clear spot or remove it first", e.name)
     end
   end
+  -- A liquid other than water names itself (lava, an oil or ammoniacal ocean).
+  local liquid = placement_geometry.liquid_at(c.surface, math.floor(pos.x), math.floor(pos.y))
+  if liquid and liquid.fluid and liquid.fluid ~= "water" then
+    return string.format("the ground there is %s — cover it with place_tiles (foundation or ice platform) first",
+      liquid.fluid == "lava" and "lava" or (liquid.fluid .. " ocean"))
+  end
   local water = false
   pcall(function()
     water = c.surface.get_tile(math.floor(pos.x), math.floor(pos.y)).collides_with("player")
@@ -54,6 +60,7 @@ local function blocked_reason(c, pos)
   end
   return "the spot is blocked — try a nearby position"
 end
+M.blocked_reason = blocked_reason
 
 -- Underground belts take an explicit input/output end; every other item rejects the field.
 function M.belt_to_ground_error(item, place_result, value)
@@ -291,6 +298,9 @@ function M.place.start(task)
   task._entity_name = result.name
   local belt_error = M.belt_to_ground_error(task.item, result, task.belt_to_ground_type)
   if belt_error then error(belt_error) end
+  -- The planet's (or platform's) conditions: no spot on this surface helps.
+  local refused = placement_geometry.condition_refusal(c.surface, "entity", result.name)
+  if refused then error(refused.reason, 0) end
   -- The same entity already standing there is the placement.
   task._existing = M.existing(c, result, task.position, task.direction, task.belt_to_ground_type) or false
   if not task._existing and c.get_item_count(task.item) == 0 and task.auto_supply == false
@@ -557,6 +567,10 @@ end
 
 -- Why this machine takes no such recipe: {status = failed, ...} or nil.
 local function recipe_refusal(e, recipe)
+  local refused = placement_geometry.condition_refusal(e.surface, "recipe", recipe.name)
+  if refused then
+    return { status = "failed", detail = refused.reason, outcome = { code = refused.code, condition = refused.condition } }
+  end
   if e.type ~= "assembling-machine" then
     if e.type == "furnace" then
       return {
@@ -624,7 +638,9 @@ end
 M.set_recipe = {}
 
 function M.set_recipe.start(task)
-  local c = companion.require_companion()
+  -- A platform machine needs only a connected body (aboard or in transit
+  -- too); a planet machine needs the character.
+  local c = task.platform ~= nil and companion.require_present() or companion.require_companion()
   validate_recipe_step(task, "set_recipe")
   local r = c.force.recipes[task.recipe]
   if not r then
@@ -656,9 +672,9 @@ local function set_recipe_remote(task, c)
 end
 
 function M.set_recipe.tick(task)
+  if task.platform ~= nil then return set_recipe_remote(task, companion.require_present()) end
   local c = companion.get()
   if not c then return gone() end
-  if task.platform ~= nil then return set_recipe_remote(task, c) end
 
   local reached = approach.ensure(task, c, task.target, c.reach_distance)
   if type(reached) == "table" then return reached end
@@ -694,14 +710,14 @@ M.set_recipe_action = {
 -- set_recipe over RPC: a platform machine's recipe, at once (its platform's
 -- window needs no body). A planet machine needs the body: a plan step.
 function M.set_recipe_rpc(params)
-  local c = companion.require_companion()
+  local body = companion.require_present()
   if type(params) ~= "table" or params.platform == nil then
     error("set_recipe over RPC sets a platform machine ({platform, x, y, recipe}); a planet machine needs the body:"
       .. " queue it as a plan step", 0)
   end
   local task = recipe_task(params)
   M.set_recipe.start(task)
-  local result = set_recipe_remote(task, c)
+  local result = set_recipe_remote(task, body)
   if result.status ~= "done" then
     local code = result.outcome and result.outcome.code
     local detail = tostring(result.detail)

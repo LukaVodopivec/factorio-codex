@@ -151,6 +151,7 @@ local body = {
 }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end,
   record = function() return { player_index = 1 } end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 local reached = {}
 package.loaded["scripts.actions.approach"] = {
   ensure = function(_, _, target) reached[#reached + 1] = { x = target.x, y = target.y }; return "ok" end,

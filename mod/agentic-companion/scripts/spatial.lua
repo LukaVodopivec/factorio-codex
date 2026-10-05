@@ -4,6 +4,9 @@
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
 local companion = require("scripts.companion")
+local surfaces = require("scripts.surfaces")
+local items = require("scripts.items")
+local production_requirements = require("scripts.production_requirements")
 local tasks = require("scripts.tasks")
 local placement_geometry = require("scripts.placement_geometry")
 local output_targets = require("scripts.output_target")
@@ -31,38 +34,6 @@ local function require_position(pos, message)
   return { x = tonumber(pos.x), y = tonumber(pos.y) }
 end
 
--- Water test for one tile. 2.0 names the collision layer "water_tile"; we
--- probe once per session (falling back to the hyphenated spelling, then to
--- reading the prototype collision mask directly) so a rename never breaks us.
-local water_layer -- nil = not probed yet, false = probing failed, string = layer id
-
-local function tile_is_water(tile)
-  if water_layer then
-    local ok, res = pcall(function() return tile.collides_with(water_layer) end)
-    if ok then return res == true end
-  end
-  if water_layer == nil then
-    for _, layer in ipairs({ "water_tile", "water-tile" }) do
-      local ok, res = pcall(function() return tile.collides_with(layer) end)
-      if ok then
-        water_layer = layer
-        return res == true
-      end
-    end
-    water_layer = false
-  end
-  local ok, mask = pcall(function() return tile.prototype.collision_mask end)
-  if ok and type(mask) == "table" and type(mask.layers) == "table" then
-    return mask.layers["water_tile"] == true or mask.layers["water-tile"] == true
-  end
-  return false
-end
-
-local function is_water_at(surface, x, y)
-  local ok, tile = pcall(surface.get_tile, x, y)
-  if not ok or not tile then return false end
-  return tile_is_water(tile)
-end
 
 -- Normalize a Factorio Vector ({x=,y=} or {1,2}) to a plain {x, y} table.
 local function vec_xy(v)
@@ -195,8 +166,39 @@ local function letter_for(S, name, assigned, alphabet)
   return "?"
 end
 
+-- What an observation reads with: the body's anchor (its physical surface
+-- and position, the hub aboard, the pod in transit), its force, and the
+-- character when it has one. A body that changed surface mid-observation
+-- ends it.
+local function observe_context(S)
+  local body = companion.require_present()
+  if S and S.surface_index and body.surface and body.surface.index ~= S.surface_index then
+    error("SURFACE_CHANGED: the body changed surface during the observation; observe again", 0)
+  end
+  if not (body.surface and body.position) then
+    error("BODY_UNAVAILABLE: the body has no surface to observe (state " .. tostring(body.state) .. ")", 0)
+  end
+  return { surface = body.surface, force = body.force, position = body.position, character = body.character,
+    body = body }
+end
+
+-- What "~" means on a surface: water on a planet whose map has no other
+-- liquid (from prototype data), else any liquid.
+local function liquid_legend(surface)
+  local ok, planet = pcall(function() return surface.planet.name end)
+  local other = not (ok and planet)
+  for _, fluid in ipairs({ "lava", "heavy-oil", "ammoniacal-solution" }) do
+    if not other then
+      local read_ok, has = pcall(production_requirements.has_liquid, planet, fluid)
+      other = not read_ok or has == true
+    end
+  end
+  if not other then return "water" end
+  return "liquid (water, lava or an ocean; only oil ocean and shallow water are walkable)"
+end
+
 local function observe_start(params)
-  local c = companion.require_companion()
+  local c = observe_context()
   local radius = math.floor(tonumber(params.radius) or SCAN_DEFAULT_RADIUS)
   radius = math.max(SCAN_MIN_RADIUS, math.min(radius, SCAN_MAX_RADIUS))
   local compact = params.detail ~= "full"
@@ -207,6 +209,7 @@ local function observe_start(params)
   local size = radius * 2 + 1
   local margin = max_footprint_extent()
   local S = { radius = radius, requested_radius = requested_radius, compact = compact, center = center,
+    surface_index = c.surface.index, surface = c.body.surface_ref,
     ox = ox, oy = oy, size = size, margin = margin,
     entity_limit = compact and 12 or 256, ground_limit = compact and 12 or 256, patch_limit = compact and 8 or 256,
     stage = compact and "query" or "terrain", row = 1, band = 0, visible = {},
@@ -214,7 +217,7 @@ local function observe_start(params)
     -- never collide with them (T/R/P and lowercase c are reserved).
     legend = {
       ["."] = "buildable land",
-      ["~"] = "water",
+      ["~"] = liquid_legend(c.surface),
       ["c"] = "cliff",
       ["T"] = "tree",
       ["R"] = "rock",
@@ -230,7 +233,7 @@ local function observe_start(params)
   return S
 end
 
--- Terrain pass: land / water, one row of tiles at a time.
+-- Terrain pass: land / liquid, one row of tiles at a time.
 local function observe_terrain(S, budget, c)
   local surface = c.surface
   while S.row <= S.size do
@@ -239,7 +242,7 @@ local function observe_terrain(S, budget, c)
     local crow, prow, krow = {}, {}, {}
     S.chars[row], S.prio[row], S.paint_key[row] = crow, prow, krow
     for col = 1, S.size do
-      if is_water_at(surface, S.ox + col - 1, S.oy + row - 1) then
+      if placement_geometry.is_liquid(surface, S.ox + col - 1, S.oy + row - 1) then
         crow[col], prow[col], krow[col] = "~", PRIORITY.water, "water"
       else
         crow[col], prow[col], krow[col] = ".", PRIORITY.land, "land"
@@ -303,7 +306,7 @@ local function observe_names(S, budget, c)
     if e.valid and e.type == "resource" and not S.seen_resource[e.name] then
       S.seen_resource[e.name] = true; S.resource_names[#S.resource_names + 1] = e.name
     elseif e.valid and e.type == "item-entity" then
-    elseif e.valid and e.force == c.force and e ~= c and e.type ~= "character" and not S.seen_building[e.name] then
+    elseif e.valid and e.force == c.force and e ~= c.character and e.type ~= "character" and not S.seen_building[e.name] then
       S.seen_building[e.name] = true; S.building_names[#S.building_names + 1] = e.name
     end
   end
@@ -344,7 +347,7 @@ local function observe_paint_one(S, entry, c, budget)
   if not e.valid then return end
   local center = S.center
   local ch, p
-  if e == c then
+  if e == c.character then
     ch, p = "@", PRIORITY.companion
   elseif e.type == "character" then
     ch, p = "P", PRIORITY.player
@@ -540,12 +543,14 @@ local function observe_cluster(S, budget)
 end
 
 -- The character's state, which every observation carries.
-local function character_state(c)
+function M.character_state(c)
+  -- By item key: a non-normal quality is "name@quality".
   local function inventory_contents(source)
     local contents = {}
     if not source then return contents end
     for _, item in ipairs(source.get_contents()) do
-      contents[item.name] = (contents[item.name] or 0) + item.count
+      local key = items.key(item.name, item.quality)
+      contents[key] = (contents[key] or 0) + item.count
     end
     return contents
   end
@@ -575,6 +580,23 @@ local function character_state(c)
       position = { x = conveyor.position.x, y = conveyor.position.y } } or nil }
 end
 
+-- The body's state for an observation: the character's, with where the body
+-- is (state, surface); without a character (in a cargo pod) where it is and
+-- its work only.
+local function body_state(c)
+  local body = c.body
+  local ok, state = false, nil
+  if c.character and c.character.valid then ok, state = pcall(M.character_state, c.character) end
+  if not ok then
+    local held_ok, held = pcall(companion.human_control)
+    state = { position = body.position and { x = body.position.x, y = body.position.y } or nil,
+      active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
+      human_control = held_ok and held == true }
+  end
+  state.state, state.surface = body.state, body.surface_ref
+  return state
+end
+
 local function observe_finish(S, c)
   -- Every list was kept to its cap as it was collected.
   local details, ground_items, patches = S.details, S.ground_items, S.patches
@@ -590,7 +612,7 @@ local function observe_finish(S, c)
   for _, patch in ipairs(patches) do patch._members = nil end
   local result = {
     tick = game.tick, radius = S.radius, requested_radius = S.requested_radius, detail = S.compact and "compact" or "full",
-    character = character_state(c),
+    surface = S.surface, character = body_state(c),
     entities = details, resource_patches = patches, ground_items = ground_items,
     omitted_entities = S.detail_total - #details, omitted_ground_items = S.ground_total - #ground_items,
     omitted_resource_patches = S.patch_total - #patches,
@@ -607,8 +629,8 @@ end
 -- What an observation stopped by its work ceiling (observe_compact) says:
 -- the character's state only.
 local function observe_truncated(S)
-  local c = companion.require_companion()
-  return { tick = game.tick, radius = S.radius, detail = "compact", character = character_state(c),
+  local c = observe_context(S)
+  return { tick = game.tick, radius = S.radius, detail = "compact", surface = S.surface, character = body_state(c),
     entities = {}, resource_patches = {}, ground_items = {},
     truncated = "the area holds more than one tick may read: call observe_local for its entities and patches" }
 end
@@ -616,7 +638,7 @@ end
 local OBSERVE_NEXT = { terrain = "query", query = "names", names = "paint", paint = "cluster", cluster = "finish" }
 
 local function observe_step(S, budget)
-  local c = companion.require_companion()
+  local c = observe_context(S)
   while budget.left > 0 do
     local stage, done = S.stage, nil
     if stage == "terrain" then done = observe_terrain(S, budget, c)
@@ -647,15 +669,23 @@ end
 
 -- --------------------------------------------------------------- can_place
 
-local function footprint_touches_water(surface, area)
+-- The first liquid under a footprint ({fluid, walkable}), or nil.
+local function footprint_liquid(surface, area)
   local x1, y1 = area.left_top.x, area.left_top.y
   local x2, y2 = area.right_bottom.x, area.right_bottom.y
   for ty = math.floor(y1), math.max(math.ceil(y2) - 1, math.floor(y1)) do
     for tx = math.floor(x1), math.max(math.ceil(x2) - 1, math.floor(x1)) do
-      if is_water_at(surface, tx, ty) then return true end
+      local liquid = placement_geometry.liquid_at(surface, tx, ty)
+      if liquid then return liquid end
     end
   end
-  return false
+  return nil
+end
+
+local function liquid_name(liquid)
+  if liquid.fluid == "water" or liquid.fluid == nil then return "water" end
+  if liquid.fluid == "lava" then return "lava" end
+  return liquid.fluid .. " ocean"
 end
 
 local function can_place_one(c, surface, item, position, direction)
@@ -664,7 +694,7 @@ local function can_place_one(c, surface, item, position, direction)
   end
   local pos = require_position(position, "can_place requires position = {x, y}")
   -- Anywhere the force has charted; building there still needs the body.
-  if not c.force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) }) then
+  if not surfaces.charted(c.force, surface, math.floor(pos.x / 32), math.floor(pos.y / 32)) then
     error("can_place positions must be in charted terrain")
   end
   direction = math.floor(tonumber(direction) or 0) % 16
@@ -678,13 +708,24 @@ local function can_place_one(c, surface, item, position, direction)
     error(item .. " is not a placeable item — it doesn't turn into a building")
   end
 
-  local ok, placement_reason = placement_geometry.can_place(c, entity_proto, pos, direction)
   local identity = {
     item = item,
     entity = entity_proto.name,
     position = { x = pos.x, y = pos.y },
     direction = direction,
   }
+  -- The planet's (or platform's) conditions come first: no spot there helps.
+  local broken = placement_geometry.surface_condition(surface, entity_proto.surface_conditions)
+  if broken then
+    identity.can_place, identity.code, identity.condition = false, "SURFACE_CONDITION", broken
+    identity.reason = placement_geometry.condition_text(entity_proto.name, broken)
+    return identity
+  end
+  -- What an offshore pump pumps there.
+  if entity_proto.type == "offshore-pump" then
+    identity.fluid = placement_geometry.pumped_fluid(surface, entity_proto, pos, direction)
+  end
+  local ok, placement_reason = placement_geometry.can_place(c, entity_proto, pos, direction)
   if ok then
     identity.can_place = true
     identity.reason = "placeable"
@@ -712,18 +753,21 @@ local function can_place_one(c, surface, item, position, direction)
   end
 
   local reason
+  local liquid = footprint_liquid(surface, area)
   if blocker then
     reason = string.format("blocked by %s at (%.1f, %.1f)",
       blocker.name, blocker.position.x, blocker.position.y)
-    if only_natural and not footprint_touches_water(surface, area) then
+    if only_natural and not liquid then
       reason = reason .. " — only trees or rocks: placing mines them first"
       identity.clears_natural = true
     end
     if companion_in_way then
       reason = reason .. " — and I'm standing in the footprint too, I'll need to step aside"
     end
-  elseif footprint_touches_water(surface, area) then
-    reason = "the footprint touches water — pick dry land or place landfill first"
+  elseif liquid then
+    -- Landfill covers water; lava and the oceans take foundation or ice platform.
+    reason = "the footprint touches " .. liquid_name(liquid) .. " — pick dry land or "
+      .. (liquid_name(liquid) == "water" and "place landfill first" or "cover it with place_tiles first")
     if companion_in_way then
       reason = reason .. " (I'm also standing there)"
     end
@@ -740,10 +784,16 @@ end
 local MAX_PLACEMENTS = 24
 
 -- placements = [{item, position = {x,y}, direction?}, ...] checks up to
--- MAX_PLACEMENTS spots in one call.
+-- MAX_PLACEMENTS spots in one call, on the body's surface or the `surface`
+-- named (reading is not reach: another surface has no body to step aside).
 function M.can_place(params)
-  local c = companion.require_companion()
-  local surface = c.surface
+  if type(params) ~= "table" then error("placements must be a non-empty array") end
+  local target = surfaces.target(params.surface)
+  local first = type(params.placements) == "table" and params.placements[1]
+  local c = surfaces.viewpoint(target, type(first) == "table" and type(first.position) == "table"
+    and tonumber(first.position.x) and tonumber(first.position.y)
+    and { x = tonumber(first.position.x), y = tonumber(first.position.y) } or nil)
+  local surface = target.surface
 
   if type(params) ~= "table" or type(params.placements) ~= "table" or #params.placements == 0 then
     error("placements must be a non-empty array")
@@ -773,6 +823,7 @@ function M.can_place(params)
   -- Relations inside the batch and to existing entities, so a multi-entity
   -- design can be checked before anything is built (indexes are 0-based).
   local planned = {}
+  local platform = surfaces.is_platform(surface)
   for i, p in ipairs(params.placements) do
     local item = prototypes.item[p.item]
     local proto = item and item.place_result
@@ -787,7 +838,7 @@ function M.can_place(params)
     for j = 1, #params.placements do
       local other = planned[j]
       if j ~= self_index and other
-        and c.force.is_chunk_charted(c.surface, { x = math.floor(other.position.x / 32), y = math.floor(other.position.y / 32) })
+        and surfaces.charted(c.force, surface, math.floor(other.position.x / 32), math.floor(other.position.y / 32), platform)
         and output_targets.can_target_type(other.proto.type, kind)
         and output_targets.recipient_contains(other.area, point, producer_type, kind) then
         match, count = { batch_index = j - 1, name = other.proto.name }, count + 1
@@ -985,7 +1036,7 @@ function M.describe_prototype(params)
     error("describe_prototype kind must be auto, entity, recipe, or item")
   end
 
-  local force = companion.require_companion().force
+  local force = companion.require_present().force
 
   local out = {}
   for _, name in ipairs(names) do

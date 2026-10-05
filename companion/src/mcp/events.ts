@@ -11,19 +11,24 @@ export const nextEventSchema = z.object({
 }).strict();
 export type NextEventInput = z.infer<typeof nextEventSchema>;
 
-/** Rocket and platform events: the kinds of the mod's space event ring. */
-export const SPACE_EVENTS = ["rocket_ready", "rocket_launched", "cargo_delivered", "platform_state_changed"] as const;
+/** Rocket, platform and travel events: the kinds of the mod's space event ring. */
+export const SPACE_EVENTS = ["rocket_ready", "rocket_launched", "cargo_delivered", "platform_state_changed",
+  "platform_arrived", "travel_phase", "body_surface_changed"] as const;
 /** One entry of the ring: a silo's position, a platform {index, name}, a
- *  state change's old and new state, or the planet a cargo pod landed on. */
+ *  state change's old and new state, the planet a cargo pod landed on, the
+ *  location a platform arrived at, a travel step's phase, or the body's move
+ *  from one surface to another (and its state there). */
 export interface SpaceEvent {
   tick: number; kind: typeof SPACE_EVENTS[number]; silo?: { x: number; y: number };
   platform?: { index: number; name: string }; old?: string; new?: string; surface?: string;
+  location?: string; phase?: string; from?: string; to?: string; state?: string;
 }
 /** The mod's cheap event_state probe. */
 export interface EventState {
   tick: number; queue_depth: number; fifo_empty: boolean; human_hold: boolean;
   active_plan_id?: number; problem_count?: number; last_problem_tick?: number;
-  last_plan_ended?: { plan_id: number; status: string; tick: number };
+  /** surface: the surface the plan's positions were on (mod 0.22.3 on). */
+  last_plan_ended?: { plan_id: number; status: string; tick: number; surface?: string };
   last_research_finished?: { technology: string; tick: number };
   last_cancel_all_tick?: number;
   /** The newest space event's tick and the last few entries, oldest first. */
@@ -77,21 +82,28 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   };
   // A research that finished in the same poll rides along: its tick is
   // older than the returned one, so a later since_tick call would miss it.
-  const ended = async (state: EventState, plan: { plan_id: number; status: string }, research?: EventState["last_research_finished"]) => {
+  const ended = async (state: EventState, plan: { plan_id: number; status: string; surface?: string }, research?: EventState["last_research_finished"]) => {
     const finished = research ? { research_finished: { technology: research.technology, research_tick: research.tick } } : {};
+    const surface = plan.surface === undefined ? {} : { surface: plan.surface };
     try {
       const status = await bridge.call<{ outcomes?: unknown; inventory_delta?: unknown; source?: string }>("plan_status", { plan_id: plan.plan_id });
-      return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status,
+      return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...surface,
         ...(status?.source === undefined ? {} : { source: status.source }),
         outcomes: luaArray(status?.outcomes ?? []), inventory_delta: record(status?.inventory_delta), ...finished });
-    } catch { return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...finished }); }
+    } catch { return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...surface, ...finished }); }
   };
   const researched = (state: EventState) => done("research_finished", state, { technology: state.last_research_finished!.technology,
     research_tick: state.last_research_finished!.tick });
+  // The problem tick counts machines on every surface: the body's surface's
+  // new problems, then the worst ones of every other surface with any, each
+  // naming its surface (the Nauvis factory stays visible from orbit).
   const problems = async (since: number, state: EventState) => {
     try {
-      const status = await bridge.call<{ problems?: unknown }>("factory_status", { sections: ["problems"], since_tick: since });
-      return done("new_problem", state, { problems: luaArray(status?.problems ?? []) });
+      const status = await bridge.call<{ problems?: unknown; elsewhere?: unknown }>("factory_status",
+        { sections: ["problems", "elsewhere"], since_tick: since });
+      const away = luaArray(status?.elsewhere ?? []).flatMap((row: any) => row && typeof row === "object" && row.problems > 0
+        ? luaArray(row.top_problems ?? []).map((problem: any) => ({ ...problem, surface: row.surface })) : []);
+      return done("new_problem", state, { problems: [...luaArray(status?.problems ?? []), ...away] });
     } catch { return done("new_problem", state); }
   };
   // A package failure is delivered once per session, by its record, never by
@@ -172,6 +184,9 @@ function eventText(value: Record<string, unknown>): string {
     case "rocket_launched": return `a rocket was launched from ${at(value.silo)}${platformName(value) ? ` to platform ${platformName(value)}` : ""}`;
     case "cargo_delivered": return `a cargo pod landed ${platformName(value) ? `on platform ${platformName(value)}` : `on ${value.surface}`}`;
     case "platform_state_changed": return `platform ${platformName(value)}: ${value.old} -> ${value.new}`;
+    case "platform_arrived": return `platform ${platformName(value)} arrived at ${value.location}`;
+    case "travel_phase": return `travel to ${value.to}: ${value.phase}`;
+    case "body_surface_changed": return `the body moved from ${value.from} to ${value.to} (${value.state})`;
     case "timeout": return `nothing happened in ${value.waited_seconds} s`;
     default: return String(value.event);
   }
@@ -183,7 +198,7 @@ function eventText(value: Record<string, unknown>): string {
 export function eventSummary(value: Record<string, unknown>): string {
   const space = Array.isArray(value.space_events) ? value.space_events.length : 0;
   const along = space > 0 && !(SPACE_EVENTS as readonly string[]).includes(String(value.event));
-  const text = `${eventText(value)}${along ? `; ${space} rocket/platform event${space === 1 ? "" : "s"} in space_events` : ""}`;
+  const text = `${eventText(value)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`;
   const body = value.body as { fifo_empty?: boolean; human_hold?: boolean } | undefined;
   const idle = body?.fifo_empty === true && body.human_hold !== true;
   return idle && !["queue_empty", "cancelled", "human_hold_started"].includes(String(value.event)) ? `${text}; ${IDLE_NOW}` : text;

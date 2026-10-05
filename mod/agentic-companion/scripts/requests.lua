@@ -13,6 +13,10 @@
 -- step runs, or at once over RPC. import_from (an unlocked planet) and
 -- minimum_delivery_count are hub-only. No items move: robots and platforms
 -- deliver, and a chest's result says whether any network covers it.
+-- target "character" sets the body's own personal logistic requests (no
+-- reach, wherever the body stands, once logistic robotics is researched),
+-- with trash?:[item] (requests of at most 0, which robots carry away; needs
+-- trash slots) and trash_unrequested? (the point's auto-trash).
 -- Result: {target:{kind, name, position, surface, platform_name?}, sections:[{index, group, type,
 -- active, items:[{item, quality, min, max?, import_from?, have?}]}], network?:{id,
 -- in_logistic_range, logistic_robots_available}, notes?}.
@@ -39,12 +43,14 @@ local function hub_target(target)
   return type(target) == "table" and target.platform ~= nil
 end
 
+local function character_target(target) return target == "character" end
+
 local function validate(step, label)
-  local hub = hub_target(step.target)
+  local hub, character = hub_target(step.target), character_target(step.target)
   if hub then
     platforms.check_selector(step.target.platform, label .. " target.platform")
-  elseif not point(step.target) then
-    error(label .. " needs target = {x, y} (a chest or landing pad) or {platform} (its hub)", 0)
+  elseif not (character or point(step.target)) then
+    error(label .. ' needs target = {x, y} (a chest or landing pad), {platform} (its hub) or "character" (your own requests)', 0)
   end
   local section = step.section
   if section ~= nil and not (type(section) == "string" and section ~= "" or count_field(section) and section >= 1) then
@@ -83,11 +89,29 @@ local function validate(step, label)
       if type(name) ~= "string" then error(string.format("%s remove[%d] must be an item name", label, i - 1), 0) end
     end
   end
-  if step.request_from_buffers ~= nil and (hub or type(step.request_from_buffers) ~= "boolean") then
+  if step.request_from_buffers ~= nil and (hub or character or type(step.request_from_buffers) ~= "boolean") then
     error(label .. " request_from_buffers must be true or false, and only for a requester chest", 0)
   end
-  if #requests == 0 and step.remove == nil and step.request_from_buffers == nil and step.mode ~= "set" then
-    error(label .. " needs requests, remove, request_from_buffers or mode set", 0)
+  if (step.trash ~= nil or step.trash_unrequested ~= nil) and not character then
+    error(label .. ' trash and trash_unrequested are for target "character"', 0)
+  end
+  if step.trash ~= nil then
+    if type(step.trash) ~= "table" or #step.trash < 1 or #step.trash + #requests > MAX_REQUESTS then
+      error(string.format("%s trash must list 1-%d item names (with the requests)", label, MAX_REQUESTS), 0)
+    end
+    for i, name in ipairs(step.trash) do
+      local at = string.format("%s trash[%d]", label, i - 1)
+      if type(name) ~= "string" or not prototypes.item[name] then error(string.format("UNKNOWN_ITEM: %s: no item called '%s'", at, tostring(name)), 0) end
+      if seen[name] then error(at .. " repeats " .. name .. " (an item is requested or trashed, not both)", 0) end
+      seen[name] = true
+    end
+  end
+  if step.trash_unrequested ~= nil and type(step.trash_unrequested) ~= "boolean" then
+    error(label .. " trash_unrequested must be true or false", 0)
+  end
+  if #requests == 0 and step.remove == nil and step.request_from_buffers == nil and step.mode ~= "set"
+    and step.trash == nil and step.trash_unrequested == nil then
+    error(label .. " needs requests, remove, request_from_buffers, trash, trash_unrequested or mode set", 0)
   end
 end
 
@@ -293,14 +317,12 @@ local function write(task, e, target)
       notes = notes } }
 end
 
--- import_from must name a planet the force has unlocked (the method lists
--- no return value: anything but true counts as locked).
+-- import_from must name a planet the force has unlocked
+-- (platforms.location_unlocked: the engine's answer when it gives a
+-- boolean, else the researched discovery technologies).
 local function locked_import(force, task)
   for _, r in ipairs(task.requests) do
-    if r.import_from ~= nil then
-      local ok, unlocked = pcall(force.is_space_location_unlocked, r.import_from)
-      if not (ok and unlocked == true) then return r.import_from end
-    end
+    if r.import_from ~= nil and not platforms.location_unlocked(force, r.import_from) then return r.import_from end
   end
 end
 
@@ -319,17 +341,64 @@ local function write_hub(task, force)
   return write(task, hub, target)
 end
 
+local function read(fn)
+  local ok, value = pcall(fn)
+  if ok then return value end
+end
+
+-- The body's own requester point: no reach. Trash entries are requests of
+-- at most 0. Personal requests need the force's logistic robotics research
+-- (set_slot does nothing without it), trash its trash slots.
+local function write_character(task, c)
+  local force = c.force
+  if read(function() return force.character_logistic_requests end) ~= true then
+    return failed("LOGISTICS_NOT_RESEARCHED", "personal logistic requests need logistic robotics researched first")
+  end
+  if task.trash and (tonumber(read(function() return force.character_trash_slot_count end)) or 0) <= 0 then
+    return failed("LOGISTICS_NOT_RESEARCHED", "trash needs trash slots (logistic robotics research) first")
+  end
+  local requester = read(function() return c.get_requester_point() end)
+  if not requester then return failed("NO_REQUESTER_POINT", "the body has no personal logistic point") end
+  local section, code, why = pick_section(requester, task.section)
+  if not section then return failed(code, why) end
+  local rows = {}
+  for _, r in ipairs(task.requests) do rows[#rows + 1] = r end
+  for _, name in ipairs(task.trash or {}) do rows[#rows + 1] = { item = name, min = 0, max = 0 } end
+  apply({ mode = task.mode, remove = task.remove, requests = rows }, section)
+  if task.trash_unrequested ~= nil then requester.trash_not_requested = task.trash_unrequested end
+  local sections = {}
+  for _, s in ipairs(requester.sections) do sections[#sections + 1] = (section_row(s)) end
+  local network = requester.logistic_network
+  local count = 0
+  for _, row in ipairs(sections) do if row.index == section.index then count = #row.items end end
+  local notes = not network and { "no roboport network covers the body; nothing is delivered until one does" } or nil
+  return { status = "done",
+    detail = string.format("set_requests: your own section %d now holds %d requests%s", section.index, count,
+      notes and (" — " .. notes[1]) or ""),
+    outcome = { code = "REQUESTS_SET", target = { kind = "character", name = c.name, surface = companion.surface_ref(c.surface) },
+      sections = sections, trash_unrequested = requester.trash_not_requested, enabled = requester.enabled,
+      network = network and { id = network.network_id, logistic_robots_available = network.available_logistic_robots } or nil,
+      notes = notes } }
+end
+
 local Runner = {}
 
+-- A hub target needs only a connected body (aboard or in transit too); a
+-- chest, a landing pad and the body's own requests need the character.
 function Runner.start(task)
-  companion.require_companion()
+  if hub_target(task.target) then companion.require_present() else companion.require_companion() end
   validate(task, "set_requests")
 end
 
 function Runner.tick(task)
+  if hub_target(task.target) then return write_hub(task, companion.require_present().force) end
+  if character_target(task.target) then
+    local c = companion.get()
+    if not c then return { status = "failed", detail = "the companion character is gone" } end
+    return write_character(task, c)
+  end
   local c = companion.get()
   if not c then return { status = "failed", detail = "the companion character is gone" } end
-  if hub_target(task.target) then return write_hub(task, c.force) end
   local reached = approach.ensure(task, c, task.target, c.reach_distance)
   if type(reached) == "table" then return reached end
   if reached ~= "ok" then return nil end
@@ -360,28 +429,35 @@ function Runner.tick(task)
 end
 
 -- The plan action for tasks.register_action. A hub target is remote: no
--- body, no reach, done in the tick the FIFO reaches it.
+-- body, no reach, done in the tick the FIFO reaches it. The body's own
+-- requests need no reach either; neither carries a surface tag.
 local function make_task(step)
   return { target = step.target, section = step.section, mode = step.mode or "merge", requests = step.requests or {},
-    remove = step.remove, request_from_buffers = step.request_from_buffers }
+    remove = step.remove, request_from_buffers = step.request_from_buffers, trash = step.trash,
+    trash_unrequested = step.trash_unrequested }
 end
 M.action = {
   runner = Runner,
   make_task = make_task,
   validate = function(step, index) validate(step, "queue_plan set_requests step " .. index) end,
-  remote = function(step) return hub_target(step.target) end,
+  remote = function(step) return hub_target(step.target) or character_target(step.target) end,
 }
 
--- set_requests over RPC: a hub's requests, at once (its platform's window
--- needs no body). A chest or landing pad needs the body: a plan step.
+-- set_requests over RPC: a hub's requests, or the body's own, at once (no
+-- reach). A chest or landing pad needs the body: a plan step.
 function M.rpc(params)
-  local c = companion.require_companion()
-  if not hub_target(params.target) then
-    error("set_requests over RPC writes a platform hub's requests ({platform}); a chest or landing pad needs the body:"
-      .. " queue it as a plan step", 0)
+  local body = companion.require_present()
+  if type(params) ~= "table" or not (hub_target(params.target) or character_target(params.target)) then
+    error("set_requests over RPC writes a platform hub's requests ({platform}) or your own (\"character\"); a chest or"
+      .. " landing pad needs the body: queue it as a plan step", 0)
   end
   validate(params, "set_requests")
-  local result = write_hub(make_task(params), c.force)
+  if character_target(params.target) then
+    local result = write_character(make_task(params), companion.require_companion())
+    if result.status ~= "done" then error(result.detail, 0) end
+    return result.outcome
+  end
+  local result = write_hub(make_task(params), body.force)
   if result.status ~= "done" then error(result.detail, 0) end
   return result.outcome
 end

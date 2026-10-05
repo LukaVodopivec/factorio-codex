@@ -14,6 +14,8 @@ package.loaded["scripts.companion"] = {
     return body
   end,
 }
+-- Research needs a connected body in any state (body_stub: a valid one).
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 
 local queued
 local add_research_calls = 0

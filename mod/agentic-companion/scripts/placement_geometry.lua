@@ -103,6 +103,99 @@ function M.can_place(c, proto, position, direction)
   return ok, ok and "placeable" or "blocked", area, checks
 end
 
+-- ---------------------------------------------------------------- liquids
+-- One liquid check for every placement and walking test: a tile is liquid
+-- when it collides with the water_tile layer (water, deep water, lava, oil
+-- ocean, ammoniacal ocean, wetlands); its fluid is the tile prototype's
+-- (water, lava, heavy-oil, ammoniacal-solution) and it is walkable when it
+-- does not collide with the player layer (oil ocean, shallow water and
+-- wetlands are; lava, deep water and the ammoniacal ocean are not).
+local function read(fn)
+  local ok, value = pcall(fn)
+  if ok then return value end
+end
+
+-- Whether the tile is liquid: two engine reads (get_tile, collides_with).
+function M.is_liquid(surface, x, y)
+  local tile = read(function() return surface.get_tile(x, y) end)
+  return tile ~= nil and read(function() return tile.collides_with("water_tile") end) == true
+end
+
+-- {fluid, walkable} of a liquid tile, else nil.
+function M.tile_liquid(tile)
+  if not tile or read(function() return tile.collides_with("water_tile") end) ~= true then return nil end
+  return { fluid = read(function() return tile.prototype.fluid.name end),
+    walkable = read(function() return tile.collides_with("player") end) == false }
+end
+
+-- {fluid, walkable} of the tile at (x, y), else nil (land, or unreadable).
+function M.liquid_at(surface, x, y)
+  return M.tile_liquid(read(function() return surface.get_tile(x, y) end))
+end
+
+-- The fluid an offshore pump at this spot and direction pumps: the liquid
+-- under position + its prototype's fluid_source_offset turned to direction;
+-- nil for another entity or no liquid there.
+function M.pumped_fluid(surface, proto, position, direction)
+  local offset = read(function() return proto.fluid_source_offset end)
+  local x, y = offset and (tonumber(offset.x) or tonumber(offset[1])), offset and (tonumber(offset.y) or tonumber(offset[2]))
+  if not (x and y) then return nil end
+  local angle = (math.floor(tonumber(direction) or 0) % 16) * math.pi / 8
+  local cosine, sine = math.floor(math.cos(angle) * 1e6 + 0.5) / 1e6, math.floor(math.sin(angle) * 1e6 + 0.5) / 1e6
+  local tx, ty = position.x + x * cosine - y * sine, position.y + x * sine + y * cosine
+  local liquid = M.liquid_at(surface, math.floor(tx), math.floor(ty))
+  return liquid and liquid.fluid
+end
+
+-- --------------------------------------------------------- surface conditions
+-- The first of a prototype's surface_conditions the surface breaks:
+-- {property, value, min?, max?}, else nil. A property the surface does not
+-- set reads as its prototype default (LuaSurface.get_property).
+function M.surface_condition(surface, conditions)
+  for _, condition in ipairs(conditions or {}) do
+    local value = read(function() return surface.get_property(condition.property) end)
+    if type(value) == "number" and ((condition.min and value < condition.min) or (condition.max and value > condition.max)) then
+      return { property = condition.property, value = value, min = condition.min, max = condition.max }
+    end
+  end
+  return nil
+end
+
+-- The SURFACE_CONDITION text of a broken condition.
+function M.condition_text(name, broken)
+  local range = broken.min and broken.max and broken.min == broken.max and ("= " .. broken.min)
+    or broken.min and broken.max and (broken.min .. "-" .. broken.max)
+    or broken.min and (">= " .. broken.min) or ("<= " .. tostring(broken.max))
+  return string.format("SURFACE_CONDITION: %s needs %s %s; this surface has %s", name, broken.property, range,
+    tostring(broken.value))
+end
+
+-- Surface conditions of an entity or recipe prototype by name, read once per
+-- load (prototypes change only with a configuration change); false when it
+-- has none.
+local conditions_cache = { entity = {}, recipe = {} }
+local function conditions_of(kind, name)
+  if type(name) ~= "string" then return nil end
+  local known = conditions_cache[kind][name]
+  if known == nil then
+    local conditions = read(function() return prototypes[kind][name].surface_conditions end)
+    known = type(conditions) == "table" and #conditions > 0 and conditions or false
+    conditions_cache[kind][name] = known
+  end
+  return known or nil
+end
+
+-- The SURFACE_CONDITION refusal of building an entity, setting a recipe or
+-- hand-crafting it (kind "entity" or "recipe") on a surface:
+-- {code, reason, condition} when the surface breaks one of its conditions,
+-- else nil. Only a prototype with conditions reads the surface.
+function M.condition_refusal(surface, kind, name)
+  local conditions = conditions_of(kind, name)
+  local broken = conditions and surface and M.surface_condition(surface, conditions)
+  if not broken then return nil end
+  return { code = "SURFACE_CONDITION", reason = M.condition_text(name, broken), condition = broken }
+end
+
 -- Factorio 2.0 CollisionMask semantics. Selection boxes never prove collision.
 local function mask_overlap(a, b, tile)
   if not a or not b or type(a.layers) ~= "table" or type(b.layers) ~= "table" then return nil end

@@ -50,8 +50,9 @@ local function body_writes()
   return (writes.walking_state or 0) + (writes.mining_state or 0) + (writes.picking_state or 0)
 end
 
-local player = { index = 1, valid = true, connected = true, name = "Codex", character = body,
-  controller_type = defines.controllers.character, afk_time = 100000,
+-- In map or remote view the physical controller stays the character.
+local player = { index = 1, valid = true, connected = true, name = "Codex", character = body, force = state.force,
+  controller_type = defines.controllers.character, physical_controller_type = defines.controllers.character, afk_time = 100000,
   opened_gui_type = defines.gui_type.none, cursor_stack = { valid_for_read = false } }
 local viewer = { index = 2, valid = true, connected = true, name = "The owner",
   controller_type = defines.controllers.spectator, afk_time = 0, opened_gui_type = defines.gui_type.none }
@@ -377,6 +378,75 @@ check(tasks.plan_status({ plan_id = kept_first.plan_id }).status == "completed"
   and tasks.plan_status({ plan_id = kept_third.plan_id }).status == "completed",
   "every plan held while the body was missing completes afterwards")
 
+-- A dead body pauses the dispatcher until it respawns: nothing fails during
+-- the respawn wait (however long), it is no hold, and its ticks are charged
+-- to no budget; the interrupted step re-plans from the respawned body.
+reset()
+local before_death, after_death = queue_walk(10), queue_walk(20)
+tick()
+answer_path(10)
+tick()
+companion.on_player_died({ player_index = 1 })
+player.character, player.ticks_to_respawn = nil, 600
+local requests_at_death = #path_requests
+tick()
+game.tick = game.tick + 700 * 60
+tasks.on_tick()
+check(tasks.plan_status({ plan_id = before_death.plan_id }).status == "running"
+  and tasks.plan_status({ plan_id = after_death.plan_id }).status == "queued"
+  and #path_requests == requests_at_death and storage.tasks.human_hold == nil and companion.human_control() == false
+  and storage.tasks.dead_since ~= nil,
+  "a dead body leaves its plans queued and running while it waits to respawn, with no hold")
+player.character, player.ticks_to_respawn = body, nil
+state.position = { x = -5, y = 0 }
+companion.on_player_respawned({ player_index = 1 })
+tick()
+check(storage.tasks.dead_since == nil and tasks.plan_status({ plan_id = before_death.plan_id }).status == "running"
+  and #path_requests == requests_at_death + 1 and path_requests[#path_requests].x == -5,
+  "after the respawn the walk re-plans from the respawned body, its budget not charged for the wait")
+for _ = 1, 40 do
+  local active = storage.tasks.active
+  if active and storage.path_request then answer_path(active.steps[1].x) end
+  if active and state.walking_state.walking then state.position = { x = active.steps[1].x, y = 0 } end
+  tick()
+end
+check(tasks.plan_status({ plan_id = before_death.plan_id }).status == "completed"
+  and tasks.plan_status({ plan_id = after_death.plan_id }).status == "completed",
+  "both plans complete after the respawn")
+
+-- A running step's own deadline (a travel phase's _deadline_tick) is moved
+-- on by a hold's ticks; a step the plan budget ends lets go through its
+-- runner's cancelled hook.
+local probe_cancels = 0
+tasks.register_action("deadline_probe", {
+  make_task = function() return {} end,
+  runner = {
+    start = function(task) task._deadline_tick = game.tick + 600 end,
+    tick = function(task)
+      if game.tick >= task._deadline_tick then return { status = "failed", detail = "DEADLINE" } end
+    end,
+    waiting = function() return true end,
+    cancelled = function() probe_cancels = probe_cancels + 1; return { code = "CANCELLED" } end,
+  },
+})
+reset()
+local probe = tasks.queue_plan({ steps = { { action = "deadline_probe" } } })
+tick()
+local deadline = storage.tasks.active.current_task._deadline_tick
+press()
+tick()
+game.tick = game.tick + 5000
+tasks.on_tick()
+game.tick = game.tick + 300
+tasks.on_tick()
+check(storage.tasks.human_hold == nil and tasks.plan_status({ plan_id = probe.plan_id }).status == "running"
+  and storage.tasks.active.current_task._deadline_tick == deadline + 5000,
+  "a hold moves the running step's own deadline on by its ticks")
+game.tick = game.tick + 600 * 60
+tasks.on_tick()
+check(tasks.plan_status({ plan_id = probe.plan_id }).status == "failed" and probe_cancels == 1,
+  "a step the plan budget ends gets its runner's cancelled hook")
+
 -- The remaining signals, each starting or keeping a hold on its own.
 do
   local function walking_bot()
@@ -673,7 +743,7 @@ do
   package.loaded["scripts.map_summary"] = { summary_job = job() }
   package.loaded["scripts.production_requirements"] = { production_requirements = reader() }
   package.loaded["scripts.connect_entities"] = { job = job() }
-  package.loaded["scripts.run_snapshot"] = { capture = reader() }
+  package.loaded["scripts.run_snapshot"] = { job = job() }
   assert(loadfile(here .. "/../../mod/agentic-companion/control.lua"))()
   local function fifo(method)
     responded = nil

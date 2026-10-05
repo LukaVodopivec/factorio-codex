@@ -19,6 +19,10 @@
 --            through next_event, never waited for here.
 -- Without cargo it launches what inserters or robots loaded. The mod never
 -- writes rocket_parts and never applies a starter pack itself.
+-- Boarding (the travel step's board phase, task.character): the same engine
+-- launches the body itself to a platform's hub (a station destination: the
+-- space_platform destination only takes starter packs), from a silo whose
+-- prototype launches to platforms.
 -- Result: {launched, silo, destination:{kind, platform}, loaded:[{item, count}],
 -- cargo_weight_kg, max_weight_kg, shortfall?, rocket:{status, parts, parts_required}, launch_tick}.
 local companion = require("scripts.companion")
@@ -84,6 +88,12 @@ local function find_silo(c, at)
   local found = c.surface.find_entities_filtered({ position = at, type = "rocket-silo", force = c.force, limit = 1 })
   local silo = found[1]
   if silo and silo.valid then return silo end
+end
+M.find_silo = find_silo
+
+-- Whether a silo's rockets can carry the body to a platform.
+function M.carries_to_platforms(silo)
+  return read(function() return silo.prototype.launch_to_space_platforms end) == true
 end
 
 local function rocket_inventory(silo)
@@ -204,6 +214,14 @@ local function resolve(task, c)
   local planet = read(function() return silo.surface.planet.name end)
   local kind, hub, detail, fields = destination_of(p, planet)
   if not kind then return failed(hub, detail, fields) end
+  if task.character then
+    if kind ~= "hub" then
+      return failed("PLATFORM_NOT_IN_ORBIT", "platform " .. p.name .. " waits for its starter pack: the body boards only a platform with a hub")
+    end
+    if not M.carries_to_platforms(silo) then
+      return failed("SILO_NOT_FOR_PLATFORMS", "this silo's rockets do not launch to space platforms")
+    end
+  end
   local cargo = task.cargo
   if kind == "starter_pack" then
     local pack = starter_pack_of(p)
@@ -276,15 +294,20 @@ local function launch(task, c, silo)
     local left = room(inventory)
     task._weight, task._max = left.weight, left.max
   end
-  if not silo.launch_rocket(destination) then
+  -- launch_rocket(destination?, character?): positional.
+  local launched
+  if task.character then launched = silo.launch_rocket(destination, c) else launched = silo.launch_rocket(destination) end
+  if not launched then
     return failed("LAUNCH_REFUSED", "the silo refused the launch to platform " .. p.name, outcome_of(task, silo, false))
   end
   local loaded = {}
   for _, row in ipairs(task._loaded or {}) do loaded[#loaded + 1] = string.format("%d %s", row.count, row.item) end
+  local outcome = outcome_of(task, silo, true)
+  outcome.boarded = task.character == true or nil
   return { status = "done",
-    detail = string.format("launched the rocket to platform %s (%s)%s", p.name, task._kind,
-      #loaded > 0 and (" with " .. table.concat(loaded, ", ")) or ""),
-    outcome = outcome_of(task, silo, true) }
+    detail = string.format("launched the rocket to platform %s (%s)%s%s", p.name, task._kind,
+      task.character and " with the body aboard" or "", #loaded > 0 and (" with " .. table.concat(loaded, ", ")) or ""),
+    outcome = outcome }
 end
 
 function Runner.tick(task)
@@ -369,6 +392,9 @@ function M.silo_block(silo)
   block.request_target = target and read(function() return { index = target.index, name = target.name } end) or nil
   return block
 end
+
+-- The runner itself, for the travel step's board phase.
+M.runner = Runner
 
 -- The plan action for tasks.register_action.
 M.action = {

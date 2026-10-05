@@ -40,6 +40,9 @@ export const entitySettings = z.object(settingsGroups).strict()
 export const inventoryRole = z.enum(["main", "input", "output", "fuel", "burnt_result", "modules", "trash", "robots", "material", "rocket"]);
 /** A space platform by name or index (the mod's one resolver). */
 export const platformSelector = z.union([z.string().min(1).max(60), z.number().int().min(1)]);
+/** A surface: a planet name ("nauvis", "vulcanus", ...), "platform:<index>",
+ *  or {platform: name or index}. */
+export const surfaceRef = z.union([z.string().min(1).max(80), z.object({ platform: platformSelector }).strict()]);
 /** A stored blueprint's name (the mod's rule). */
 export const blueprintName = z.string().min(1).max(64)
   .regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/, "blueprint names are letters, digits, spaces, dots, dashes or underscores");
@@ -94,6 +97,8 @@ export function upgradeLayoutEntity(value: unknown): unknown {
 }
 const tileOffset = z.object({ dx: z.number().int(), dy: z.number().int() }).strict();
 /** Platform foundation a layout adds (the mod's caps). */
+/** The liquids a build_layout site may be near (an offshore pump pumps them). */
+export const LIQUIDS = ["water", "lava", "heavy-oil", "ammoniacal-solution"] as const;
 export const MAX_LAYOUT_TILE_ENTRIES = 400;
 export const MAX_LAYOUT_TILES = 1_000;
 /** Relative layout the mod sites, checks, supplies, clears and builds
@@ -105,7 +110,8 @@ export const layoutFields = {
   platform: platformSelector.optional(),
   tiles: z.array(z.object({ name: itemName, dx: z.number().int(), dy: z.number().int() }).strict()).max(MAX_LAYOUT_TILE_ENTRIES).optional(),
   tile_rects: z.array(z.object({ name: itemName, from: tileOffset, to: tileOffset }).strict()).optional(),
-  site: z.object({ near: point, on_resource: z.string().min(1).optional(), near_water: z.boolean().optional() }).strict().optional(),
+  site: z.object({ near: point, on_resource: z.string().min(1).optional(), near_water: z.boolean().optional(),
+    near_liquid: z.enum(LIQUIDS).optional() }).strict().optional(),
   entities: z.array(z.preprocess(upgradeLayoutEntity, z.object({ name: z.string().min(1), dx: z.number(), dy: z.number(),
     direction: direction.optional(), recipe: z.string().min(1).optional(), insert: items.optional(),
     mirror: z.boolean().optional(), belt_to_ground_type: z.enum(["input", "output"]).optional(),
@@ -157,19 +163,44 @@ export const configureFields = { ...position, platform: platformSelector.optiona
 export const tilesFields = { item: itemName, area: z.object({ left_top: point, right_bottom: point }).strict().optional(),
   positions: z.array(point).min(1).max(1024).optional(), ...autoSupply };
 /** A chest or landing pad at {x, y}, or a platform's hub ({platform}). */
-export const requestsTarget = z.union([point, z.object({ platform: platformSelector }).strict()]);
+/** A chest or landing pad at {x, y}, a platform's hub, or the body's own
+ *  personal requests ("character"). */
+export const requestsTarget = z.union([point, z.object({ platform: platformSelector }).strict(), z.literal("character")]);
 export const requestsFields = { target: requestsTarget, section: z.union([z.number().int().min(1), z.string().min(1)]).optional(),
   mode: z.enum(["merge", "set"]).optional(),
   requests: z.array(z.object({ item: itemName, min: z.number().int().min(0), max: z.number().int().min(0).optional(),
     quality: z.literal("normal").optional(), import_from: itemName.optional(),
     minimum_delivery_count: z.number().int().min(1).optional() }).strict()).max(60).optional(),
-  remove: z.array(itemName).min(1).max(60).optional(), request_from_buffers: z.boolean().optional() };
-export const createPlatformFields = { name: z.string().min(1).max(60), quality: z.literal("normal").optional() };
+  remove: z.array(itemName).min(1).max(60).optional(), request_from_buffers: z.boolean().optional(),
+  /** The body's own requests only: items robots take away, and auto-trash. */
+  trash: z.array(itemName).min(1).max(60).optional(), trash_unrequested: z.boolean().optional() };
+/** planet: over that unlocked planet instead of the body's. */
+export const createPlatformFields = { name: z.string().min(1).max(60), quality: z.literal("normal").optional(),
+  planet: itemName.optional() };
 /** cargo: items and counts, or "requests" (what the platform hub's requests still lack). */
 export const launchRocketFields = { silo: point, platform: platformSelector,
   cargo: z.union([z.literal("requests"), z.record(itemName, z.number().int().positive())
     .refine((cargo) => Object.keys(cargo).length >= 1 && Object.keys(cargo).length <= 20, "cargo names 1-20 items")]).optional(),
   partial: z.boolean().optional() };
+/** The game's WaitConditionType literals (2.0.77). */
+export const WAIT_CONDITION_TYPES = ["time", "full", "empty", "not_empty", "item_count", "circuit", "inactivity", "robots_inactive",
+  "fluid_count", "passenger_present", "passenger_not_present", "fuel_item_count_all", "fuel_item_count_any", "fuel_full",
+  "destination_full_or_no_path", "request_satisfied", "request_not_satisfied", "all_requests_satisfied",
+  "any_request_not_satisfied", "any_request_zero", "any_planet_import_zero", "specific_destination_full",
+  "specific_destination_not_full", "at_station", "not_at_station", "damage_taken"] as const;
+/** A wait condition as the game's own WaitCondition literal; the mod checks
+ *  what the game keeps by reading the schedule back. */
+const waitCondition = z.object({ type: z.enum(WAIT_CONDITION_TYPES), compare_type: z.enum(["and", "or"]).optional(),
+  ticks: z.number().int().min(0).optional(), condition: z.record(z.string(), z.unknown()).optional(),
+  planet: itemName.optional(), station: itemName.optional(), damage: z.number().int().min(0).optional() }).strict();
+/** A platform's route: its stops (replacing the old ones), the stop to head
+ *  for (1-based) and whether it holds still. */
+export const platformRouteFields = { platform: platformSelector,
+  stops: z.array(z.object({ location: itemName, wait: z.array(waitCondition).max(10).optional(),
+    unloading: z.boolean().optional() }).strict()).min(1).max(10).optional(),
+  go_to: z.number().int().min(1).optional(), paused: z.boolean().optional() };
+/** The body goes to another surface: up by rocket to a platform, or down to a planet. */
+export const travelFields = { to: surfaceRef, via_silo: point.optional(), max_wait_minutes: z.number().int().min(1).max(240).optional() };
 export const equipFields = { armor: z.union([itemName, z.literal(false)]).optional(),
   put: z.array(z.object({ name: itemName, x: z.number().int().min(0).optional(), y: z.number().int().min(0).optional() }).strict()).min(1).max(20).optional(),
   take: z.array(z.union([z.object({ name: itemName }).strict(), z.object({ x: z.number().int().min(0), y: z.number().int().min(0) }).strict()])).min(1).max(20).optional(),
@@ -206,6 +237,8 @@ const planSteps = [
   z.object({ action: z.literal("equip"), ...equipFields }).strict(),
   z.object({ action: z.literal("create_platform"), ...createPlatformFields }).strict(),
   z.object({ action: z.literal("launch_rocket"), ...launchRocketFields }).strict(),
+  z.object({ action: z.literal("set_platform_route"), ...platformRouteFields }).strict(),
+  z.object({ action: z.literal("travel"), ...travelFields }).strict(),
 ] as const;
 export const planStepSchema = z.discriminatedUnion("action", [...planSteps]);
 /** A build package may also start with blueprint captures, which the bridge
@@ -269,25 +302,35 @@ export function deconstructIssue(value: { area?: unknown; center?: unknown; radi
   if (value.platform !== undefined && value.mode === "hand") return "on a platform the hub deconstructs (mode robots or cancel): the body is not there";
   return areaIssue(value);
 }
-export function requestsIssue(value: { target: { platform?: unknown } | { x: number; y: number }; mode?: string;
+export function requestsIssue(value: { target: { platform?: unknown } | { x: number; y: number } | "character"; mode?: string;
   requests?: Array<{ item: string; min: number; max?: number; import_from?: string; minimum_delivery_count?: number }>; remove?: unknown;
-  request_from_buffers?: unknown }): string | null {
+  request_from_buffers?: unknown; trash?: string[]; trash_unrequested?: boolean }): string | null {
   const requests = value.requests ?? [];
-  if (requests.length === 0 && value.remove === undefined && value.request_from_buffers === undefined && value.mode !== "set")
-    return "give requests, remove, request_from_buffers or mode set";
-  const hub = "platform" in value.target;
+  if (requests.length === 0 && value.remove === undefined && value.request_from_buffers === undefined && value.mode !== "set"
+    && value.trash === undefined && value.trash_unrequested === undefined)
+    return "give requests, remove, request_from_buffers, trash, trash_unrequested or mode set";
+  const character = value.target === "character";
+  const hub = !character && typeof value.target === "object" && "platform" in value.target;
   if (!hub && requests.some((request) => request.import_from !== undefined || request.minimum_delivery_count !== undefined))
     return "import_from and minimum_delivery_count are for a platform hub ({platform})";
-  if (hub && value.request_from_buffers !== undefined) return "request_from_buffers is for a requester chest";
+  if ((hub || character) && value.request_from_buffers !== undefined) return "request_from_buffers is for a requester chest";
+  if (!character && (value.trash !== undefined || value.trash_unrequested !== undefined))
+    return "trash and trash_unrequested are for target \"character\"";
   const bad = requests.find((request) => request.max !== undefined && request.max < request.min);
   if (bad) return `${bad.item}: max must be at least min`;
-  const names = requests.map((request) => request.item);
+  if (requests.length + (value.trash?.length ?? 0) > 60) return "requests and trash name at most 60 items together";
+  const names = [...requests.map((request) => request.item), ...(value.trash ?? [])];
   const repeated = names.find((name, index) => names.indexOf(name) !== index);
-  return repeated ? `${repeated} is requested twice` : null;
+  return repeated ? `${repeated} is requested or trashed twice` : null;
 }
 export function equipIssue(value: { armor?: unknown; put?: Array<{ x?: number; y?: number }>; take?: unknown }): string | null {
   if (value.armor === undefined && value.put === undefined && value.take === undefined) return "give armor, put or take";
   return value.put?.some((entry) => (entry.x === undefined) !== (entry.y === undefined)) ? "a put entry gives x and y together, or neither" : null;
+}
+export function routeIssue(value: { stops?: unknown[]; go_to?: number; paused?: boolean }): string | null {
+  if (value.stops === undefined && value.go_to === undefined && value.paused === undefined) return "give stops, go_to or paused";
+  return value.stops !== undefined && value.go_to !== undefined && value.go_to > value.stops.length
+    ? "go_to is the number of one of the stops" : null;
 }
 export function stepIssue(step: PackageStep): string | null {
   switch (step.action) {
@@ -303,6 +346,7 @@ export function stepIssue(step: PackageStep): string | null {
     case "place_tiles": return tilesIssue(step);
     case "set_requests": return requestsIssue(step);
     case "equip": return equipIssue(step);
+    case "set_platform_route": return routeIssue(step);
     default: return null;
   }
 }
@@ -312,6 +356,9 @@ export const queuePlanSchema = z.object({
   final_observation_radius: z.number().int().min(5, "final_observation_radius is an integer 5–30 (default 15)").max(30, "final_observation_radius is an integer 5–30 (default 15)").default(15),
   observation_detail: z.enum(["none", "compact"]).default("none"),
   after_plan_id: z.number().int().positive().optional(),
+  /** The surface the plan's positions are on; default the destination of a
+   *  pending travel, else the body's surface. */
+  surface: surfaceRef.optional(),
 }).strict().superRefine((plan, context) => {
   plan.steps.forEach((step, index) => {
     const issue = stepIssue(step);

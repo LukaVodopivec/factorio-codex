@@ -1,7 +1,9 @@
 -- Mine exactly the visible entity occupying the requested coordinate. count
 -- > 1 on a tree or rock mines it and then the nearest others of its kind. An
 -- own entity with contents is mined the way a player mines it: its contents
--- go into the inventory with it, after a check that they all fit.
+-- go into the inventory with it, after a check that they all fit. The body's
+-- own corpse (a character-corpse of the Codex player) is an own entity too:
+-- mining it (target_kind "owned") takes back what the body carried.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local walk = require("scripts.actions.walk")
@@ -245,8 +247,13 @@ function M.start(task)
   local candidates = exact and { exact }
     or c.surface.find_entities_filtered({ area = { { target.x, target.y }, { target.x + 0.001, target.y + 0.001 } } })
   local natural, owned
+  local rec_ok, rec = pcall(companion.record)
+  local codex_index = rec_ok and rec and rec.player_index or nil
   for _, e in ipairs(candidates) do
-    local is_owned = e.force == c.force and e.type ~= "character" and not NATURAL_MINABLE_TYPES[e.type]
+    local own_corpse = e.type == "character-corpse" and codex_index ~= nil
+      and e.character_corpse_player_index == codex_index
+    local is_owned = own_corpse
+      or e.force == c.force and e.type ~= "character" and e.type ~= "character-corpse" and not NATURAL_MINABLE_TYPES[e.type]
     local mineable = e.prototype and e.prototype.mineable_properties
     if e.valid and (NATURAL_MINABLE_TYPES[e.type] or is_owned)
       and mineable and mineable.minable and occupies(e, target) then

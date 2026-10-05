@@ -13,7 +13,19 @@
 -- stays under about 6 KB: one RCON chunk pair, not a multi-part answer.
 -- logistics (robot networks) is opt-in through sections. platforms lists the
 -- force's space platforms, one attribute-read line each (platforms.lua).
+--
+-- Surfaces (multi-surface rule 6): `surface` names the surface the detailed
+-- sections (lines, problems, power, stock, patches, logistics) describe, the
+-- body's anchor surface unless the read names one; stock is per surface
+-- (items on another planet are not in the body's reach). `elsewhere` sums up
+-- every other factory surface in one row each (its lines, problems, the
+-- three worst problems and its lowest power satisfaction), all from the same
+-- aggregates; the header lists the unlocked space locations. Labs with no
+-- research active are a problem row (no_research_in_progress, cause
+-- research_idle): research stands still.
 local companion = require("scripts.companion")
+local surfaces = require("scripts.surfaces")
+local items = require("scripts.items")
 local autonomy = require("scripts.autonomy")
 local map_summary = require("scripts.map_summary")
 local research = require("scripts.research")
@@ -26,7 +38,7 @@ local jobs = require("scripts.jobs")
 local M = {}
 
 local SECTIONS = { lines = true, problems = true, power = true, stock = true, research = true,
-  body = true, patches = true, logistics = true, platforms = true }
+  body = true, patches = true, logistics = true, platforms = true, elsewhere = true }
 -- Sections only named in `sections` add.
 local OPT_IN = { logistics = true }
 -- One power row: the network with the most capacity (a 0.22 row carries its
@@ -34,14 +46,16 @@ local OPT_IN = { logistics = true }
 -- and map_summary include power lists them all).
 local MAX_LINES, MAX_PROBLEMS, MAX_POWER, MAX_STOCK_ITEMS = 10, 6, 1, 6
 local MAX_PATCHES, MAX_AVAILABLE, MAX_INVENTORY = 4, 6, 8
+-- Other factory surfaces summed up, and the worst problems each names.
+local MAX_ELSEWHERE, MAX_ELSEWHERE_PROBLEMS = 8, 3
 -- Lines that need attention survive the cap first: a starved line with a
 -- high id is never hidden behind running ones.
-local LINE_RANK = { no_power = 1, no_heat = 2, no_fuel = 3, starved = 4, output_full = 5, disabled = 6, idle = 7,
-  running = 8 }
+local LINE_RANK = { no_power = 1, frozen = 2, no_heat = 3, no_fuel = 4, starved = 5, output_full = 6, disabled = 7,
+  idle = 8, running = 9 }
 -- Dead machines first, then blocked output.
-local PROBLEM_RANK = { no_power = 1, not_plugged_in_electric_network = 1, no_fuel = 1,
+local PROBLEM_RANK = { no_power = 1, not_plugged_in_electric_network = 1, no_fuel = 1, frozen = 1,
   no_minable_resources = 2, low_temperature = 2, pipeline_overextended = 2, no_modules_to_transmit = 2,
-  full_output = 3, waiting_for_space_in_destination = 3 }
+  no_research_in_progress = 2, full_output = 3, waiting_for_space_in_destination = 3 }
 
 local function cap(rows, limit)
   local omitted = math.max(0, #rows - limit)
@@ -52,6 +66,9 @@ end
 local function xy(position) return { x = position.x, y = position.y } end
 
 local function parse(params)
+  if params.surface ~= nil and type(params.surface) ~= "string" and type(params.surface) ~= "table" then
+    error("factory_status surface must be a planet name, \"platform:<index>\" or {platform = name or index}", 0)
+  end
   local since = params.since_tick
   if since ~= nil and (type(since) ~= "number" or since % 1 ~= 0 or since < 0) then
     error("since_tick must be a non-negative integer tick")
@@ -69,38 +86,145 @@ local function parse(params)
   return since, want
 end
 
-local function body_section(c)
-  local counts = {}
+-- The body: where it is (its state, absent while it stands on a surface;
+-- its surface when the read describes another; its health, absent while
+-- full), what it carries (by item key, spoilable items with when they
+-- spoil) and its work. Aboard or in transit the character's inventory still
+-- travels with it.
+local function body_section(body, read_surface)
+  local c = body.character
+  local out = { state = body.state ~= "on_surface" and body.state or nil,
+    surface = body.surface_ref ~= read_surface and body.surface_ref or nil,
+    position = body.position and xy(body.position) or nil,
+    queue_depth = tasks.queue_length(), active_step = tasks.active_summary() }
+  local ok, held = pcall(companion.human_control)
+  out.human_control = ok and held == true
+  if not (c and c.valid) then return out end
+  local ok_ratio, ratio = pcall(function() return c.get_health_ratio() end)
+  if ok_ratio and type(ratio) == "number" and ratio < 1 then out.health_ratio = math.floor(ratio * 1000 + 0.5) / 1000 end
   local inventory = c.get_main_inventory()
-  for _, item in ipairs(inventory and inventory.get_contents() or {}) do
-    counts[#counts + 1] = { name = item.name, count = item.count }
-  end
+  local counts = {}
+  for key, count in pairs(items.sum_contents(inventory)) do counts[#counts + 1] = { name = key, count = count } end
   table.sort(counts, function(a, b)
     if a.count ~= b.count then return a.count > b.count end
     return a.name < b.name
   end)
-  local omitted = cap(counts, MAX_INVENTORY)
-  local summary = {}
-  for _, row in ipairs(counts) do summary[row.name] = (summary[row.name] or 0) + row.count end
-  local ok, held = pcall(companion.human_control)
-  return { position = xy(c.position), inventory_summary = summary, inventory_omitted = omitted,
-    queue_depth = tasks.queue_length(), active_step = tasks.active_summary(),
-    crafting_queue_size = c.crafting_queue_size or 0, human_control = ok and held == true }
+  out.inventory_omitted = cap(counts, MAX_INVENTORY)
+  local summary, names = {}, {}
+  for _, row in ipairs(counts) do summary[row.name], names[#names + 1] = row.count, row.name end
+  out.inventory_summary = summary
+  local spoils = items.spoil(inventory, names)
+  if next(spoils) then out.inventory_spoils = spoils end
+  out.crafting_queue_size = c.crafting_queue_size or 0
+  return out
 end
 
-local function patches_section(c)
-  local cached, ready = map_summary.patches()
+-- Stock rows of a surface, spoilable ones with when their largest holder's
+-- stacks spoil (that holder only): one pass over each such holder's slots
+-- for all the rows it is the largest holder of.
+local function stock_section(index)
+  local rows, omitted = registry.stock_rows(index, MAX_STOCK_ITEMS)
+  local holders, order = {}, {}
+  for _, row in ipairs(rows) do
+    local entry = row.holders[1] and items.spoilable(row.item) and registry.largest_holder(index, row.item)
+    if entry then
+      local group = holders[entry.unit]
+      if not group then
+        group = { entry = entry, names = {}, rows = {} }
+        holders[entry.unit], order[#order + 1] = group, entry.unit
+      end
+      group.names[#group.names + 1], group.rows[#group.rows + 1] = row.item, row
+    end
+  end
+  local reads = 0
+  for _, unit in ipairs(order) do
+    local group = holders[unit]
+    local spoils, cost = items.spoil(registry.holder_inventory(group.entry.entity), group.names)
+    reads = reads + cost
+    for _, row in ipairs(group.rows) do
+      local spoil = spoils[row.item]
+      if spoil then row.spoils_in_s, row.spoil_percent_max = spoil.spoils_in_s, spoil.spoil_percent_max end
+    end
+  end
+  jobs.charge(reads)
+  return rows, omitted
+end
+
+local function patches_section(index, from)
+  local cached, ready = map_summary.patches(index)
   local rows = {}
   for _, patch in ipairs(cached) do
-    local dx, dy = patch.centroid.x - c.position.x, patch.centroid.y - c.position.y
-    rows[#rows + 1] = { name = patch.name, amount = patch.amount, tiles = patch.tiles,
-      position = patch.centroid, distance = math.floor(math.sqrt(dx * dx + dy * dy) + 0.5) }
+    local row = { name = patch.name, amount = patch.amount, tiles = patch.tiles, position = patch.centroid }
+    if from then
+      local dx, dy = patch.centroid.x - from.x, patch.centroid.y - from.y
+      row.distance = math.floor(math.sqrt(dx * dx + dy * dy) + 0.5)
+    end
+    rows[#rows + 1] = row
   end
-  table.sort(rows, function(x, y)
-    if x.distance ~= y.distance then return x.distance < y.distance end
-    return x.name < y.name
-  end)
+  -- Nearest the body first on its surface; elsewhere the largest first (the
+  -- cache's order).
+  if from then
+    table.sort(rows, function(x, y)
+      if x.distance ~= y.distance then return x.distance < y.distance end
+      return x.name < y.name
+    end)
+  end
   return rows, cap(rows, MAX_PATCHES), ready
+end
+
+local function problem_before(x, y)
+  local rx, ry = PROBLEM_RANK[x.status] or 4, PROBLEM_RANK[y.status] or 4
+  if rx ~= ry then return rx < ry end
+  if x.position.y ~= y.position.y then return x.position.y < y.position.y end
+  return x.position.x < y.position.x
+end
+
+-- One row per other factory surface (at most MAX_ELSEWHERE, by index): its
+-- line and problem counts, worst problems and lowest power satisfaction,
+-- from one pass over the line sampler's lines and one over the registry's
+-- networks (a statistics read for at most one network a surface, the
+-- neediest whose consumers are short of power).
+local function elsewhere_section(here_index)
+  local rows, others = {}, {}
+  for _, index in ipairs(registry.surfaces()) do
+    if index ~= here_index then others[#others + 1] = index end
+  end
+  if #others == 0 then return rows, 0 end
+  local overview, networks = autonomy.by_surface(), registry.networks_by_surface()
+  local reads = 0
+  for _, index in ipairs(others) do
+    if #rows >= MAX_ELSEWHERE then break end
+    local surface = surfaces.by_index(index)
+    if surface then
+      local summary = overview[index] or { line_count = 0, running_line_count = 0, problems = {} }
+      local problems = summary.problems
+      table.sort(problems, problem_before)
+      local top = {}
+      for i = 1, math.min(MAX_ELSEWHERE_PROBLEMS, #problems) do
+        local p = problems[i]
+        top[i] = { status = p.status, name = p.name, position = p.position, count = p.count }
+      end
+      local power, cost = map_summary.power_min_satisfaction(networks[index] or {})
+      reads = reads + cost
+      rows[#rows + 1] = { surface = surfaces.ref(surface), lines_total = summary.line_count,
+        lines_running = summary.running_line_count, problems = #problems, top_problems = top,
+        power_min_satisfaction = power }
+    end
+  end
+  jobs.charge(reads)
+  return rows, #others - #rows
+end
+
+-- The space locations the force has unlocked (a handful of reads); nil
+-- while that is at most the home planet.
+local function unlocked_locations(force)
+  local names = {}
+  for name in pairs(prototypes.space_location or {}) do
+    if platforms.location_unlocked(force, name) then names[#names + 1] = name end
+  end
+  if #names < 2 then return nil end
+  table.sort(names)
+  return names
 end
 
 -- Research a lab can start now: enabled, not researched, every
@@ -126,8 +250,7 @@ end
 
 -- Current research, progress and queue are cheap live reads; available is
 -- the kept set, sorted.
-local function research_section(c)
-  local force = c.force
+local function research_section(force)
   local cache = storage.research_cache
   if not (cache and cache.force == force.name) then cache = rebuild_available(force) end
   local queue = {}
@@ -153,8 +276,8 @@ function M.on_research_changed(event)
   end
   if name == nil or name ~= events.on_research_finished then return end
   local ok, technology_name, force = pcall(function() return event.research.name, event.research.force.name end)
-  local c = companion.get()
-  local own = c and c.valid and c.force.name or force
+  local anchor = companion.anchor()
+  local own = anchor and anchor.force and anchor.force.name or force
   if not (ok and force == own) then return end
   storage.last_research_finished = { technology = technology_name, tick = event.tick }
   local cache = storage.research_cache
@@ -173,12 +296,14 @@ M.RESEARCH_EVENTS = { "on_research_started", "on_research_finished", "on_researc
 
 function M.factory_status(params)
   local since, want = parse(params or {})
-  local c = companion.require_companion()
-  local result = { tick = game.tick, since_tick = since, registry_ready = registry.ready() }
+  local target = surfaces.target(params and params.surface)
+  local index, body = target.surface.index, target.body
+  local result = { tick = game.tick, since_tick = since, registry_ready = registry.ready(), surface = target.ref,
+    unlocked_locations = unlocked_locations(target.force) }
   if want.lines then
-    result.lines = autonomy.lines(since)
+    result.lines = autonomy.lines(since, index)
     table.sort(result.lines, function(x, y)
-      local rx, ry = LINE_RANK[x.state] or 7, LINE_RANK[y.state] or 7
+      local rx, ry = LINE_RANK[x.state] or 8, LINE_RANK[y.state] or 8
       if rx ~= ry then return rx < ry end
       return x.id < y.id
     end)
@@ -186,36 +311,42 @@ function M.factory_status(params)
     result.lines_error = storage.autonomy and storage.autonomy.refresh_error
   end
   if want.problems then
-    local rows = autonomy.problems(since)
-    table.sort(rows, function(x, y)
-      local rx, ry = PROBLEM_RANK[x.status] or 4, PROBLEM_RANK[y.status] or 4
-      if rx ~= ry then return rx < ry end
-      if x.position.y ~= y.position.y then return x.position.y < y.position.y end
-      return x.position.x < y.position.x
-    end)
+    local rows = autonomy.problems(since, index)
+    table.sort(rows, problem_before)
     result.problems, result.omitted_problems = rows, cap(rows, MAX_PROBLEMS)
   end
   if want.power or want.stock then
     local maintenance = registry.maintenance()
     result.stock_power_tick, result.stock_power_ready = maintenance.pass_tick, maintenance.ready
     if want.power then
-      local rows, omitted = map_summary.build_power(c.surface, MAX_POWER)
+      local rows, omitted = map_summary.build_power(target.surface, MAX_POWER)
       result.power, result.omitted_power = rows, omitted > 0 and omitted or nil
     end
     if want.stock then
-      local rows, omitted = registry.stock_rows(c.surface.index, MAX_STOCK_ITEMS)
+      local rows, omitted = stock_section(index)
       result.stock, result.omitted_stock = rows, omitted > 0 and omitted or nil
     end
   end
-  if want.research then result.research = research_section(c) end
-  if want.body then result.body = body_section(c) end
-  if want.patches then result.patches, result.omitted_patches, result.patches_ready = patches_section(c) end
-  if want.logistics then result.logistics = logistics.section(c) end
+  if want.research then result.research = research_section(target.force) end
+  if want.body then result.body = body_section(body, target.ref) end
+  if want.patches then
+    result.patches, result.omitted_patches, result.patches_ready =
+      patches_section(index, target.here and body.position or nil)
+  end
+  if want.logistics then
+    result.logistics = logistics.section({ surface = target.surface, force = target.force,
+      position = target.here and body.position or { x = 0, y = 0 } })
+  end
   if want.platforms then
-    local rows, omitted, work = platforms.compact(c.force)
+    local rows, omitted, work = platforms.compact(target.force)
     jobs.charge(work)
     -- Absent until the force has a platform.
     if #rows > 0 then result.platforms, result.omitted_platforms = rows, omitted > 0 and omitted or nil end
+  end
+  if want.elsewhere then
+    local rows, omitted = elsewhere_section(index)
+    -- Absent while the factory stands on one surface.
+    if #rows > 0 then result.elsewhere, result.omitted_elsewhere = rows, omitted > 0 and omitted or nil end
   end
   return result
 end

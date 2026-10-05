@@ -35,6 +35,7 @@ local surface = {
 }
 local body = { valid = true, position = { x = 40, y = -40 }, surface = surface, force = force, name = "character" }
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 package.loaded["scripts.tasks"] = { active_summary = function() return nil end }
 local spatial = require("scripts.spatial")
 

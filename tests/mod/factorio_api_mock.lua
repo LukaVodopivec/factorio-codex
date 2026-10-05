@@ -90,6 +90,12 @@ function M.logistic_cell(values) return wrap("LuaLogisticCell", values) end
 function M.space_platform(values) return wrap("LuaSpacePlatform", values) end
 function M.planet(values) return wrap("LuaPlanet", values) end
 function M.space_location_prototype(values) return wrap("LuaSpaceLocationPrototype", values) end
+-- Documented 2.0.77 members of the 0.22.3 stage C classes (not probed natively).
+function M.space_connection_prototype(values) return wrap("LuaSpaceConnectionPrototype", values) end
+function M.recipe_prototype(values) return wrap("LuaRecipePrototype", values) end
+function M.surface_property_prototype(values) return wrap("LuaSurfacePropertyPrototype", values) end
+function M.asteroid_chunk_prototype(values) return wrap("LuaAsteroidChunkPrototype", values) end
+function M.logistic_point(values) return wrap("LuaLogisticPoint", values) end
 function M.state(object)
   assert(objects[object], "simulation state requires a strict mock")
   return objects[object].simulation

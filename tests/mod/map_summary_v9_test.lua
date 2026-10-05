@@ -60,6 +60,7 @@ body.surface = surface
 package.loaded["scripts.companion"] = { require_companion = function() return body end,
   -- The real dependency-free burner reader, not a stub of it.
   burning_item = dofile(here .. "/../../mod/agentic-companion/scripts/companion.lua").burning_item }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 _G.prototypes = { tile = {
   land = { collision_mask = { layers = {} } },
   water = { collision_mask = { layers = { water_tile = true, player = true } } },

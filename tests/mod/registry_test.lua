@@ -12,7 +12,12 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 local RAW = { working = 1, no_fuel = 2, normal = 3, no_power = 4, no_ingredients = 5 }
 _G.defines = { entity_status = RAW, inventory = { chest = 1, fuel = 2, furnace_source = 3, cargo_landing_pad_main = 4 },
   target_type = { entity = 7, gui_element = 9 }, flow_precision_index = { five_seconds = 0 } }
-_G.prototypes = { item = { coal = { stack_size = 50 }, wood = { stack_size = 100 } }, recipe = {}, entity = {} }
+_G.prototypes = { item = { coal = { stack_size = 50 }, wood = { stack_size = 100 } }, recipe = {}, entity = {},
+  -- Upkeep finds fuels by category through the engine's item filter.
+  get_item_filtered = function(filters)
+    assert(filters[1].filter == "fuel-category" and filters[1]["fuel-category"] == "chemical")
+    return { coal = {}, wood = {} }
+  end }
 _G.game = { tick = 0 }
 _G.storage = {}
 local registered = {}
@@ -60,11 +65,14 @@ surface = mock.surface({ index = 1, name = "nauvis",
     end
     return found
   end })
-local body = { valid = true, position = { x = 0, y = 0 }, force = force, surface = surface, crafting_queue_size = 0,
+-- Surfaces by index (map_summary's patch caches and the registry's reads).
+game.get_surface = function(index) return index == 1 and surface or nil end
+local body = { valid = true, position = { x = 0, y = 0 }, force = force, surface = surface, surface_index = 1, crafting_queue_size = 0,
   get_item_count = function() return 0 end,
   get_main_inventory = function() return { get_contents = function() return {} end } end }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end,
   human_control = function() return false, 999 end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 
 local next_unit = 0
 local content_reads = 0
@@ -89,7 +97,7 @@ local function entity(values)
   next_unit = next_unit + 1
   values.valid, values.unit_number = true, values.unit_number or next_unit
   values.force = values.force or force
-  values.surface = surface
+  values.surface, values.surface_index = surface, 1
   values.status = values.status or RAW.working
   local production = values.production
   if values.electric or production then
@@ -112,7 +120,7 @@ local function entity(values)
 end
 local stone = {}
 local function furnace(x, y, contents, status)
-  return entity({ name = "stone-furnace", type = "furnace", position = { x = x, y = y }, burner = {},
+  return entity({ name = "stone-furnace", type = "furnace", position = { x = x, y = y }, burner = { fuel_categories = { chemical = true } },
     status = status, products_finished = 0, get_recipe = function() return nil end,
     get_output_inventory = function() return inventory(contents or {}) end,
     get_inventory = function() return inventory({}) end })
@@ -124,6 +132,7 @@ end
 local ore = {}
 local function resource(name, x, y, amount)
   local e = mock.entity({ valid = true, name = name, type = "resource", position = { x = x, y = y }, amount = amount,
+    surface_index = 1,
     prototype = mock.entity_prototype({ name = name }) })
   world[#world + 1] = e
   ore[#ore + 1] = e
@@ -161,8 +170,8 @@ local uranium = resource("uranium-ore", 650.5, 650.5, 70)
 local state = require("scripts.state")
 local registry = require("scripts.registry")
 state.init()
-check(storage.registry and storage.registry.ready == false and storage.patch_cache and storage.patch_cache.seeded == false,
-  "state.init creates the registry (not ready) and the patch cache")
+check(storage.registry and storage.registry.ready == false and storage.patch_caches and next(storage.patch_caches) == nil,
+  "state.init creates the registry (not ready) and an empty set of patch caches (one is made per planet surface)")
 
 -- Bootstrap: the first tick lists charted chunks only; then at most four
 -- chunks a tick, fewer once 400 entities were read.
@@ -273,6 +282,9 @@ local network = storage.registry.networks[5]
 check(network and network.pole == pole and network.sources.steam.count == 1 and network.sources.steam.nameplate_w == 900000
   and network.demand_w == 120000 and network.starved == 1 and network.members == 3,
   "a network keeps its pole, its sources by kind and the nominal demand of consumers trying to run")
+local by_surface = registry.networks_by_surface()
+check(registry.network_count() == 1 and #by_surface[1] == 1 and by_surface[1][1] == network,
+  "the networks are counted and grouped by surface in one pass")
 finds.all = 0
 chores.upkeep(game.tick)
 check(#queued == 1 and queued[1].steps[1].items.coal == 10 and queued[1].steps[1].x == 1.5 and finds.all == 0,
@@ -351,24 +363,27 @@ check(merged.sources.solar.count == 500 and with_panels.power[1].sources[1].kind
   and state_reads <= 1 and content_reads == 0 and flow_reads == 1,
   "with 500 solar panels the sampler reads " .. sampler_reads .. " states in 30 ticks and a read still walks no entity")
 
--- Patch cache: seeded on the first tick, then two chunks a tick.
+-- Patch cache: made by the force's first chart of a chunk on the surface,
+-- seeded on its first tick, then two chunks a tick.
+map_summary.on_chunk_charted({ force = force, surface_index = 1, position = { x = 0, y = 0 } })
+check(storage.patch_caches[1] and storage.patch_caches[1].seeded == false, "a charted chunk makes its surface's patch cache")
 local resource_reads = {}
 for tick = 1000, 1010 do
   game.tick = tick
   local before = finds.resource
   map_summary.patch_tick(tick)
   resource_reads[#resource_reads + 1] = finds.resource - before
-  if storage.patch_cache.filled then break end
+  if storage.patch_caches[1].filled then break end
 end
 check(resource_reads[1] == 0 and resource_reads[2] == 2 and resource_reads[6] == 2 and resource_reads[7] == 0
-  and storage.patch_cache.filled, "the patch cache reads the ten charted chunks two a tick (" .. table.concat(resource_reads, ",") .. ")")
+  and storage.patch_caches[1].filled, "the patch cache reads the ten charted chunks two a tick (" .. table.concat(resource_reads, ",") .. ")")
 check(chunk_lists == 1 and storage.registry.charted_seed == nil,
   "the patch cache is seeded from the bootstrap's chunk list without listing the surface again")
 -- Patch rows are rebuilt on later ticks with nothing to read, a few cells a
 -- tick, never by a read.
 local function settle_patches()
   local builds = 0
-  while storage.patch_cache.build or storage.patch_cache.dirty do
+  while storage.patch_caches[1].build or storage.patch_caches[1].dirty do
     map_summary.patch_tick(game.tick)
     builds = builds + 1
     assert(builds < 10, "the patch rows never settle")
@@ -400,7 +415,7 @@ check(finds.resource == before + 1 and by_name["iron-ore"].tiles == 5 and by_nam
 -- Charting: a newly charted chunk of the own force is read; another
 -- force's charting is ignored.
 map_summary.on_chunk_charted({ force = enemy, surface_index = 1, position = { x = 20, y = 20 } })
-check(#storage.patch_cache.pending - storage.patch_cache.head + 1 == 0, "another force's charted chunk is ignored")
+check(#storage.patch_caches[1].pending - storage.patch_caches[1].head + 1 == 0, "another force's charted chunk is ignored")
 CHARTED["20,20"] = true
 map_summary.on_chunk_charted({ force = force, surface_index = 1, position = { x = 20, y = 20 } })
 game.tick = 1102
@@ -411,7 +426,7 @@ by_name = {}
 for _, patch in ipairs(patches) do by_name[patch.name] = patch end
 check(by_name["uranium-ore"] and by_name["uranium-ore"].amount == 70, "a newly charted chunk's resources join the patches")
 for _ = 1, 3 do map_summary.on_chunk_charted({ force = force, surface_index = 1, position = { x = 20, y = 20 } }) end
-check(storage.patch_cache.head > #storage.patch_cache.pending, "a re-charted chunk is not read again")
+check(storage.patch_caches[1].head > #storage.patch_caches[1].pending, "a re-charted chunk is not read again")
 
 -- Idle refresh: one cached resource chunk every 120 ticks so mining shows.
 uranium.amount = 40
@@ -467,7 +482,7 @@ for i = first_query + 1, #finds_log do
   if type(finds_log[i].type) ~= "table" or finds_log[i].type[1] ~= "cargo-landing-pad" then typed = false end
 end
 local pad_entry = upgraded.entries[pad.unit_number]
-check(upgraded.rescan == nil and typed and rescan_ticks == math.ceil(#storage.patch_cache.charted / registry.RESCAN_CHUNKS_PER_TICK)
+check(upgraded.rescan == nil and typed and rescan_ticks == math.ceil(#storage.patch_caches[1].charted / registry.RESCAN_CHUNKS_PER_TICK)
   and pad_entry and upgraded.holders[pad.unit_number] and registry.holder_kind(pad_entry) == "landing_pad",
   "the rescan finds the pad with typed chunk queries, a few chunks a tick, and keeps it as a store")
 for tick = 3100, 3110 do map_summary.status_tick(tick) end
@@ -479,19 +494,18 @@ check(upgraded.rescan == nil, "a later configuration change does not rescan agai
 
 -- Upgraded mid-bootstrap: the chunk list is seeded only after the bootstrap
 -- ends, so the rescan waits for it instead of finishing over an empty list.
-local seeded_cache = storage.patch_cache
+local seeded_cache = storage.patch_caches[1]
 storage.registry = { version = state.REGISTRY_VERSION, ready = false, force = "player", entries = {},
   machines = {}, holders = {}, burners = {}, electric = {}, poles = {}, belts = {}, belt_count = 0,
   bootstrap = { chunks = {}, cursor = 1 } }
-storage.patch_cache = { version = state.PATCH_CACHE_VERSION, seeded = false, filled = false, chunks = {}, known = {},
-  pending = {}, head = 1, queued = {}, refresh = {}, dirty = true, charted = {}, charted_set = {} }
+storage.patch_caches[1] = map_summary.new_patch_cache(1)
 state.init()
 local mid = storage.registry
 check(mid.rescan ~= nil, "an upgrade mid-bootstrap schedules the rescan")
 mid.ready, mid.bootstrap = true, nil
 registry.on_tick(4000)
 check(mid.rescan ~= nil and mid.entries[pad.unit_number] == nil, "the rescan waits while the chunk list is not seeded")
-storage.patch_cache = seeded_cache
+storage.patch_caches[1] = seeded_cache
 for tick = 4001, 4020 do if mid.rescan then registry.on_tick(tick) end end
 check(mid.rescan == nil and mid.entries[pad.unit_number] ~= nil, "once seeded, the rescan finds the pad")
 

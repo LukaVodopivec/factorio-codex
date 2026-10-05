@@ -7,6 +7,7 @@
 -- (M.awaits). begin_crafting returns how many it actually started; the queue
 -- is polled via crafting_queue_size.
 local companion = require("scripts.companion")
+local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
 
@@ -91,6 +92,9 @@ function M.start(task)
   if not r.enabled then
     error("recipe " .. task.recipe .. " isn't unlocked yet — research it first")
   end
+  -- Hand-crafting keeps the recipe's surface conditions too.
+  local refused = placement_geometry.condition_refusal(c.surface, "recipe", task.recipe)
+  if refused then error(refused.reason, 0) end
   task._craft = nil
 end
 

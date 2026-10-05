@@ -14,8 +14,13 @@
 --    is 3x5 with ports at both ends; an offshore pump facing 0 takes water
 --    from the north and outputs south;
 --  * a small pole supplies 2.5 tiles around itself and wires 7.5 tiles.
+-- Planets: a mining block takes a drill that mines the resource's category
+-- (tungsten ore needs the big mining drill), else NEED_DRILL; a power block
+-- needs water on the body's planet, else NO_WATER_ON_SURFACE with that
+-- planet's usual power instead.
 local registry = require("scripts.registry")
 local blueprints = require("scripts.blueprints")
+local production_requirements = require("scripts.production_requirements")
 
 local M = {}
 
@@ -25,10 +30,11 @@ local BELT = { north = 0, east = 4, south = 8, west = 12 }
 M.BLOCKS = { mining = true, smelting = true, assembly = true, power = true, labs = true, blueprint = true }
 M.MAX_COUNT = { mining = 24, smelting = 16, assembly = 16, power = 20, labs = 24, blueprint = 1 }
 
--- An item the body carries or can craft now.
+-- An item the body carries or can craft now (a dry run's viewpoint on
+-- another surface carries nothing).
 local function available(c, item)
   if not prototypes.item[item] then return false end
-  if c.get_item_count(item) > 0 then return true end
+  if c.get_item_count and c.get_item_count(item) > 0 then return true end
   local recipe = c.force.recipes[item]
   return recipe ~= nil and recipe.enabled == true
 end
@@ -38,12 +44,16 @@ local function first(c, names)
   return nil
 end
 
--- The force already generates electricity: read from the event-maintained
+-- The force already generates electricity on the surface the block goes on
+-- (the body's, or a dry run's other surface): read from the event-maintained
 -- registry, never an entity query (with no area that would walk the whole
 -- surface). Until an upgraded save's registry is ready this says no, which
 -- picks the burner tier, as on a fresh map.
-local function powered()
-  local ok, any = pcall(registry.any, { "generator", "burner-generator", "solar-panel" })
+local function powered(c)
+  local ok, any = pcall(function()
+    return registry.any({ "generator", "burner-generator", "solar-panel", "fusion-generator", "lightning-attractor" },
+      c.surface.index)
+  end)
   return ok and any == true
 end
 
@@ -82,27 +92,62 @@ local function pole(c)
   return need(first(c, { "small-electric-pole", "medium-electric-pole" }), "no electric pole the body can carry or craft")
 end
 
+-- The drills (by the item that places them) that mine a resource category:
+-- with power the electric drill first, then the burner drill, then any other
+-- (by name); without power the burner drill first and no electric mining
+-- drill (another drill, such as the big mining drill for tungsten, still
+-- comes after it: power follows).
+local function drills_for(c, category)
+  local electric_ok = powered(c)
+  local order = electric_ok and { "electric-mining-drill", "burner-mining-drill" } or { "burner-mining-drill" }
+  local all = prototypes.get_entity_filtered({ { filter = "type", type = "mining-drill" } })
+  local listed, others = {}, {}
+  for _, name in ipairs(order) do listed[name] = true end
+  for name in pairs(all) do
+    if not listed[name] and not (name == "electric-mining-drill" and not electric_ok) then others[#others + 1] = name end
+  end
+  table.sort(others)
+  for _, name in ipairs(others) do order[#order + 1] = name end
+  local drills = {}
+  for _, name in ipairs(order) do
+    local proto = all[name]
+    local categories = proto and proto.resource_categories or {}
+    local placed_by = proto and proto.items_to_place_this
+    local item = placed_by and placed_by[1] and placed_by[1].name
+    if categories[category] and item then drills[#drills + 1] = item end
+  end
+  return drills
+end
+
 -- Drills in a row facing north onto a belt flowing west (3 or more drills)
 -- or one chest each. Electric drills come in pairs around a pole.
 local function mining(c, params, tiers)
   local resource = params.resource
   need(type(resource) == "string" and prototypes.entity[resource] and prototypes.entity[resource].type == "resource",
     "a mining block needs resource = a resource name such as iron-ore")
-  local drill = powered() and first(c, { "electric-mining-drill" }) or first(c, { "burner-mining-drill" })
-  drill = need(drill, "no mining drill the body can carry or craft")
+  local category = prototypes.entity[resource].resource_category
+  local candidates = drills_for(c, category)
+  local drill = first(c, candidates)
+  if not drill then
+    error(string.format("NEED_DRILL: no drill the body can carry or craft mines %s (category %s); drills that do: %s",
+      resource, tostring(category), #candidates > 0 and table.concat(candidates, ", ") or "none"), 0)
+  end
   local width = size(drill, 0)
   local belt = params.count >= 3
   local out = belt and need(first(c, { "transport-belt" }), "no transport belt the body can carry or craft")
     or need(first(c, { "iron-chest", "wooden-chest" }), "no chest the body can carry or craft")
   local l = layout()
-  local electric = drill == "electric-mining-drill"
+  -- Every drill but a burner drill runs on electricity: pairs around a pole
+  -- in the middle row, output above the middle column.
+  local electric = prototypes.item[drill].place_result.burner_prototype == nil
   local pole_name = electric and pole(c) or nil
+  local middle = math.floor(width / 2)
   local right = 0
   for k = 0, params.count - 1 do
-    local left = electric and (7 * math.floor(k / 2) + 4 * (k % 2)) or width * k
+    local left = electric and ((2 * width + 1) * math.floor(k / 2) + (width + 1) * (k % 2)) or width * k
     l.put(drill, left, 0, 0)
-    if electric and k % 2 == 0 then l.put(pole_name, left + 3, 1) end
-    if not belt then l.put(out, left + (electric and 1 or 0), -1) end
+    if electric and k % 2 == 0 then l.put(pole_name, left + width, middle) end
+    if not belt then l.put(out, left + (electric and middle or 0), -1) end
     right = left + width
   end
   if belt then l.row(out, 0, right - 1, -1, BELT.west) end
@@ -113,7 +158,7 @@ end
 -- Furnaces in a column between a south-flowing input belt (west) and
 -- output belt (east), one inserter on each side of every furnace.
 local function smelting(c, params, tiers)
-  local electric = powered()
+  local electric = powered(c)
   local furnace = electric and first(c, { "electric-furnace" }) or first(c, { "steel-furnace", "stone-furnace" })
   furnace = need(furnace, "no furnace the body can carry or craft")
   local inserter = need(electric and first(c, { "inserter" }) or first(c, { "burner-inserter", "inserter" }),
@@ -166,9 +211,26 @@ local function assembly(c, params, tiers)
   return l, {}
 end
 
+-- What a planet without water burns or catches instead (the bots build it
+-- with build_layout).
+local NO_WATER_HINTS = {
+  vulcanus = "make steam from sulfuric acid (a pumpjack on a sulfuric-acid geyser) and calcite (acid neutralisation)"
+    .. " for steam turbines, or build solar panels (the sun is strong there)",
+  fulgora = "build lightning rods or collectors with accumulators, or pump heavy oil from the ocean and make solid"
+    .. " fuel for boilers",
+  aquilo = "build heating towers with heat exchangers and steam turbines (later fusion)",
+}
+
 -- Offshore pump, then boilers in a row joined by pipes, two steam engines
--- above each boiler, poles in the gap columns.
+-- above each boiler, poles in the gap columns. Only where the body's planet
+-- has water (steam needs water, never lava or an oil ocean).
 local function power(c, params, tiers)
+  local ok, planet = pcall(function() return c.surface.planet.name end)
+  planet = ok and planet or nil
+  if not production_requirements.has_liquid(planet, "water") then
+    error(string.format("NO_WATER_ON_SURFACE: %s has no water for boilers; %s", tostring(planet or "this surface"),
+      NO_WATER_HINTS[planet] or "build solar panels"), 0)
+  end
   for _, name in ipairs({ "offshore-pump", "boiler", "steam-engine", "pipe" }) do
     need(available(c, name), "no " .. name .. " the body can carry or craft")
   end

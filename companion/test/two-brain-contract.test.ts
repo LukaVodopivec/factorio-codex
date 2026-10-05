@@ -21,7 +21,7 @@ const registered = new Set([...read("companion/src/mcp/server.ts").matchAll(/reg
 describe("persistent two-brain coordination contract", () => {
   it("keeps the instructions short, with shared rules only in SKILL.md", () => {
     const size = [skill, pilot, strategist, knowledge].reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
-    expect(size).toBeLessThan(30_100);
+    expect(size).toBeLessThan(34_500);
     expect(skill).not.toMatch(/## Engineering reuse/);
     for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
   });
@@ -36,8 +36,8 @@ describe("persistent two-brain coordination contract", () => {
 
   it("selects Luna-low-fast and Astra-medium-normal around one writer, body, and FIFO lane", () => {
     expect(active).toMatch(/gpt-6-luna[\s\S]*low[\s\S]*fast mode enabled/i);
-    expect(active).toMatch(/gpt-6-astra[\s\S]*medium[\s\S]*normal speed/i);
-    expect(active).not.toMatch(/gpt-6\.1-sol/);
+    expect(active).toMatch(/gpt-6\.1-sol[\s\S]*medium[\s\S]*normal speed/i);
+    expect(active).not.toMatch(/gpt-6-astra/);
     expect(active).toMatch(/pilot[\s\S]*sole gameplay writer/i);
     expect(normalized).toMatch(/one body, one physical fifo/);
     expect(normalized).toMatch(/exactly one physical mcp call may be in flight/);
@@ -166,7 +166,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/spawned with `-c model_reasoning_summary=detailed`/);
     expect(agents).toMatch(/game chat never controls the bot, and the panel never triggers a takeover hold/);
     expect(live).toMatch(/session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on \\? ?-c model_reasoning_summary=detailed/);
-    expect(live).toMatch(/session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off \\? ?-c model_reasoning_summary=detailed/);
+    expect(live).toMatch(/session-launcher --name factorio-strategist --model gpt-6\.1-sol --reasoning-effort medium --fast off \\? ?-c model_reasoning_summary=detailed/);
     expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"[^\]]*\][^}]*enabled_tools=/);
     expect(live).not.toMatch(/mcp_servers\.[a-z-]+\.enabled=/);
     for (const text of [readme, live]) expect(text).toMatch(/--pilot-rollout[\s\S]*--strategist-rollout/);
@@ -269,6 +269,35 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/marks entities and foundation tiles touching existing foundation, after `cargo_delivered`/);
     expect(flatSkill).toMatch(/as direct tools `set_recipe`, `configure_entity` and `set_requests` answer at once, the rest queue in the FIFO/);
     expect(agents).toMatch(/Space platforms are the exception: `create_platform` and steps that name a `platform` act on that platform without the body, as the game's remote view does; everything on a planet keeps physical reach/);
+  });
+
+  it("teaches the 0.22.3 planets, travel, surfaces and the win in plain words", () => {
+    const flatSkill = flat(skill);
+    expect(flatSkill).toMatch(/\*\*Other planets\.\*\*/);
+    for (const planet of ["Vulcanus", "Fulgora", "Gleba", "Aquilo"]) expect(flatSkill).toMatch(new RegExp(`- Each planet adds a science pack and one constraint\\.[\\s\\S]*${planet}`));
+    expect(flatSkill).toMatch(/`set_platform_route` sets a platform's stops \(unlocked locations, each with the game's wait conditions\) at once, without the body/);
+    expect(flatSkill).toMatch(/`travel \{to: "platform:<n>"\}` rides the next ready rocket[\s\S]*`travel \{to: "<planet>"\}` waits aboard until the platform reaches the planet, then lands you by pod/);
+    expect(flatSkill).toMatch(/Queue the destination's work in the same plan after the `travel` step/);
+    expect(flatSkill).toMatch(/Nauvis keeps running and stays readable while you are away, but upkeep works only where the body is/);
+    expect(flatSkill).toMatch(/Bring in your inventory[\s\S]*leaving a planet takes a rocket from a silo there/);
+    expect(flatSkill).toMatch(/The game is won when any of our platforms reaches the solar system edge; the body need not be aboard/);
+    expect(flatSkill).toMatch(/Each package names its `surface` \(a planet\) and queues only while the body is there[\s\S]*`waiting_surface`, which is not a failure\. Only the pilot travels: a package never holds `travel`/);
+    expect(flatSkill).toMatch(/A `research_idle` problem means no research runs/);
+    for (const word of ["frozen", "travel_phase", "platform_arrived", "body_surface_changed", "SURFACE_LEFT", "roots", "surface_limited"]) expect(skill).toContain(`\`${word}\``);
+    for (const tool of ["travel", "set_platform_route"]) {
+      expect(registered).toContain(tool);
+      expect(READ_ONLY_TOOLS).not.toContain(tool as never);
+    }
+    expect(flat(pilot)).toMatch(/\*\*Other planets\.\*\* Travel is yours alone/);
+    expect(flat(strategist)).toMatch(/plus `surface` \(its planet; a platform package's launch planet\)/);
+    expect(flat(strategist)).toMatch(/Only the pilot travels: a package never holds `travel`/);
+    expect(agents).toMatch(/The body reaches another planet only through `travel` \(rocket, platform, landing pod\), never by teleport/);
+    expect(agents).toMatch(/a package never holds `travel`, which is the pilot's alone/);
+    expect(agents).toMatch(/So is a `travel` step waiting for a rocket or for its platform to arrive; the body aboard a platform or in a cargo pod is neither a hold nor idle/);
+    expect(readme).toContain(`The full surface has ${registered.size} tools; the read-only surface used by Astra has ${READ_ONLY_TOOLS.length}`);
+    expect(readme).toMatch(/with no research active no lab is fed, and `factory_status` shows a `research_idle` problem/);
+    expect(readme).not.toMatch(/no planet-travel tools/);
+    expect(live).toMatch(/For the 0\.22\.3 release \(other planets\), record these observable checks/);
   });
 
   it("allows this run's positions, forbids anything from another run, and reads remotely while acting needs reach", () => {

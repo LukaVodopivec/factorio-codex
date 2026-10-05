@@ -36,7 +36,10 @@
   acting still needs physical reach. Space platforms are the exception:
   `create_platform` and steps that name a `platform` act on that platform
   without the body, as the game's remote view does; everything on a planet
-  keeps physical reach.
+  keeps physical reach. The body reaches another planet only through
+  `travel` (rocket, platform, landing pod), never by teleport. Physical plan
+  steps carry their surface; when the body leaves it, their plans end with
+  `SURFACE_LEFT` instead of parking.
 - No RPC or on_tick work may take more than about 8 ms of Lua time in one tick,
   and nothing scans the whole surface: the server holds 60 UPS. Lua has no
   clock, so every handler budgets a fixed count of work items per tick and
@@ -65,7 +68,7 @@ reasoning with fast mode enabled and is the foreman: the sole gameplay writer,
 physical controller, immediate-safety authority, and source of latest exact
 local state. It waits on `next_event` and handles failed packages, an empty
 queue, and local judgment with goal-level actions; it sends no reports. The
-persistent `gpt-6-astra` strategist uses `medium` reasoning at normal speed,
+persistent `gpt-6.1-sol` strategist uses `medium` reasoning at normal speed,
 owns coordinate-free NOW/NEXT/LATER priorities and the architecture, designs
 every coupled layout as a build package of whole blocks or this run's
 blueprints (dry-run with `check_only`), and may call only the mechanically
@@ -81,7 +84,10 @@ placement check, and records outcomes in `<run_dir>/package-queue.json`; a
 failed package surfaces through `next_event` and `activity_log`. It never
 waits for a pilot plan: it holds packages only during a human hold and while
 the ledger is older than the last `stop` (packages written before a stop stay
-held until Astra rewrites the ledger). A package may start with
+held until Astra rewrites the ledger). Each package names its `surface` and
+is queued only while the body is there (`waiting_surface` otherwise, not a
+failure); a package never holds `travel`, which is the pilot's alone. A
+package may start with
 `blueprint_capture` steps, which the bridge makes before queuing the rest.
 Astra writes no build package before `GO` (every pre-`GO` ledger write has
 `build_packages: []`). A reused package id is rejected by `ledger-apply`. Tool results
@@ -100,17 +106,19 @@ the bot, and the panel never triggers a takeover hold.
 
 **Upkeep.** While the FIFO is empty, no hold is active, and some plan has
 finished since the last emergency stop (a stop is never undone by upkeep), the
-mod refuels dry burner machines and brings science packs to waiting labs from
-own stock as a plan with source `upkeep`; any queued plan
-takes the body at the next step boundary. Upkeep is the mod's work, not pilot
-activity.
+mod refuels dry burner machines and brings the current research's science
+packs to labs that accept them, from own stock, as a plan with source
+`upkeep`, on the body's planet surface only; any queued plan takes the body
+at the next step boundary. Upkeep is the mod's work, not pilot activity.
 
 **Idleness.** The supervisor proves pilot idleness only while milestone goals
 remain open and a fresh, valid `observe_local.character` reports
 `active_task` absent or with source `upkeep`, `queue_depth == 0`, and
 `crafting.queue_size == 0`. Missing, malformed, stale, or failed observations
 never prove idleness. Package plans and parked or predecessor-blocked plans are
-pending work, even when the body is still; they count in `queue_depth`.
+pending work, even when the body is still; they count in `queue_depth`. So is
+a `travel` step waiting for a rocket or for its platform to arrive; the body
+aboard a platform or in a cargo pod is neither a hold nor idle.
 `plan_status` is only a per-plan read with an exact known `plan_id`, never a
 global work query.
 
@@ -176,7 +184,9 @@ pilot for low growth alone.
 
 `stop` is the supervisor's recorded emergency cancellation (the pilot never
 calls it), used only for an explicit the owner stop, retained-work reconciliation,
-or a replacement that cannot otherwise reach physical quiescence. For an
+or a replacement that cannot otherwise reach physical quiescence. It ends a
+`travel` wait (the body stays aboard), but a rocket launch or landing already
+under way finishes natively. For an
 explicit the owner stop the supervisor, recording each step: calls factorio `stop`;
 pauses both role goals natively (`/goal pause`, read back) and interrupts any
 active role turn (TUI stop control or app-server `turn/interrupt` for the exact
@@ -236,7 +246,8 @@ overridable hints, and the two goal files hold each role's duties. Researched
 principles, ratios, and a research-order hint written in this repository's own
 words are allowed there; imported blueprint strings and copied layouts stay out.
 The supported save is permanently peaceful: planets generate no Nauvis enemy
-bases; Gleba's own bases stay (peaceful mode). Debug
+bases and Vulcanus no demolishers; Gleba's own bases stay (peaceful mode),
+because their eggs feed agricultural science. Debug
 runs continue past `GO+20m` to their assigned milestone; Candidate B and
 fresh-baseline freeze rules are historical unless the owner explicitly starts a
 benchmark.

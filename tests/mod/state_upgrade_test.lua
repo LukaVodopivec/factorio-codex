@@ -1,6 +1,7 @@
 -- A 0.21.0 save upgraded in place: state.init adds the 0.21.1 storage
 -- (the patch cache's charted chunk list, the jobs table) and keeps what the
--- live run holds (plans, the patch cache's chunks).
+-- live run holds (plans, the patch cache's chunks); since 0.22.3 the one
+-- patch cache is Nauvis's in the per-surface caches.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
@@ -32,7 +33,9 @@ _G.storage = {
 local state = require("scripts.state")
 state.init()
 
-local cache = storage.patch_cache
+local cache = storage.patch_caches[1]
+check(storage.patch_cache == nil and cache and cache.surface_index == 1,
+  "the single patch cache becomes Nauvis's (surface 1) among the per-surface caches")
 local listed = {}
 for _, chunk in ipairs(cache.charted) do listed[#listed + 1] = chunk.x .. "," .. chunk.y end
 check(table.concat(listed, " ") == "-1,-2 0,0 1,0 3,4" and cache.charted_set["3,4"] and cache.charted_set["-1,-2"],
@@ -56,9 +59,14 @@ check(#created_inventories == 1 and blueprint_inventory == created_inventories[1
   "the blueprint inventory is created once, empty, with every slot")
 
 -- A newly charted chunk joins the list once.
+local nauvis = { index = 1, name = "nauvis" }
+game.get_surface = function(index) return index == 1 and nauvis or nil end
 package.loaded["scripts.companion"] = { get = function()
-  return { valid = true, force = { name = "player" }, surface = { index = 1 } }
+  return { valid = true, force = { name = "player" }, surface = nauvis }
 end }
+package.loaded["scripts.companion"].anchor = function()
+  return { force = { name = "player" }, surface = nauvis, position = { x = 0, y = 0 }, state = "on_surface" }
+end
 local map_summary = require("scripts.map_summary")
 map_summary.on_chunk_charted({ position = { x = 7, y = 7 }, force = { name = "player" }, surface_index = 1 })
 map_summary.on_chunk_charted({ position = { x = 0, y = 0 }, force = { name = "player" }, surface_index = 1 })
@@ -69,6 +77,9 @@ check(type(storage.space) == "table" and next(storage.space.created) == nil and 
   "the space platform store and event ring are created")
 check(type(storage.world_policy) == "table" and #storage.world_policy.errors == 0,
   "the world policy's error list is created")
+check(type(storage.travel) == "table" and next(storage.travel.arrivals) == nil and storage.travel.active == nil
+  and storage.tasks.surface_changed == nil and type(storage.patch_caches) == "table",
+  "an older save gains the travel store and per-surface patch caches; no trip or surface change is invented")
 storage.space.created[3] = "nauvis"
 storage.space.events[1] = { tick = 1, kind = "rocket_ready" }
 storage.world_policy.errors[1] = { tick = 2, surface = "nauvis", write = "peaceful_mode", error = "x" }
@@ -77,13 +88,37 @@ storage.world_policy.errors[1] = { tick = 2, surface = "nauvis", write = "peacef
 storage.blueprints.by_name.smelter = { slot = 1 }
 storage.jobs.next_id = 9
 state.init()
-check(#storage.patch_cache.charted == 5, "state.init keeps an existing charted list")
+check(storage.patch_caches[1] == cache and #cache.charted == 5, "state.init keeps an existing charted list")
 check(#created_inventories == 1 and storage.blueprints.inventory == blueprint_inventory
   and storage.blueprints.by_name.smelter ~= nil and storage.jobs.next_id == 9,
   "a later configuration change keeps the blueprints and never reuses a job id")
 check(storage.space.created[3] == "nauvis" and #storage.space.events == 1,
   "a later configuration change keeps the platforms' planets and the event ring")
 check(#storage.world_policy.errors == 1, "a later configuration change keeps the world policy's errors")
+storage.travel.active = { task_id = 7, to = "vulcanus", since_tick = 1 }
+storage.travel.arrivals[3] = { location = "vulcanus", tick = 2 }
+storage.tasks.surface_changed = { from = "nauvis", to = "platform:3" }
+state.init()
+check(storage.travel.active.task_id == 7 and storage.travel.arrivals[3].location == "vulcanus"
+  and storage.tasks.surface_changed.to == "platform:3",
+  "a configuration change mid-trip keeps the trip, the arrivals and a pending surface change")
+
+-- A 0.22.2 registry: a planet machine already held as an electric entry
+-- joins the machine sets once, and the lines are regrouped by surface.
+storage.registry = { version = state.REGISTRY_VERSION, ready = true, force = "player",
+  entries = { [41] = { unit = 41, name = "asteroid-collector", type = "asteroid-collector", position = { x = 0, y = 0 },
+    surface = 2 }, [42] = { unit = 42, name = "stone-furnace", type = "furnace", position = { x = 1, y = 1 }, surface = 1 } },
+  machines = { furnace = { [42] = true } }, holders = {}, burners = {}, electric = { [41] = true }, poles = {},
+  belts = {}, belt_count = 0, order = { 41, 42 }, cursor = 1, write = 1, networks = {}, stock = {}, types = {},
+  store_types = 2 }
+storage.autonomy.dirty_tick = nil
+state.init()
+check(storage.registry.machines["asteroid-collector"][41] and storage.registry.machines.furnace[42]
+  and storage.registry.planet_machines and storage.autonomy.dirty_tick == game.tick,
+  "a 0.22.2 registry's planet machines join the machine sets and the lines regroup by surface")
+storage.registry.machines["asteroid-collector"] = nil
+state.init()
+check(storage.registry.machines["asteroid-collector"] == nil, "the planet machine pass runs once")
 
 print(failures == 0 and "\nALL STATE UPGRADE TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

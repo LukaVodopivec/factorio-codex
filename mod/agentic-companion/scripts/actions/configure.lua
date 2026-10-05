@@ -34,8 +34,15 @@ end
 
 local Runner = {}
 
+-- A platform target needs only a connected body (aboard or in transit too);
+-- a planet entity needs the character.
+local function require_body(task)
+  if task.platform ~= nil then return companion.require_present() end
+  return companion.require_companion()
+end
+
 function Runner.start(task)
-  companion.require_companion()
+  require_body(task)
   validate(task, "configure_entity")
 end
 
@@ -73,9 +80,9 @@ local function configure_remote(task, force)
 end
 
 function Runner.tick(task)
+  if task.platform ~= nil then return configure_remote(task, companion.require_present().force) end
   local c = companion.get()
   if not c then return { status = "failed", detail = "the companion character is gone" } end
-  if task.platform ~= nil then return configure_remote(task, c.force) end
   local reached = approach.ensure(task, c, task.target, c.reach_distance)
   if type(reached) == "table" then return reached end
   if reached ~= "ok" then return nil end
@@ -109,14 +116,14 @@ M.action = {
 -- platform's window needs no body). A planet entity needs the body: a plan
 -- step.
 function M.rpc(params)
-  local c = companion.require_companion()
+  local body = companion.require_present()
   if type(params) ~= "table" or params.platform == nil then
     error("configure_entity over RPC sets a platform entity ({platform, x, y, ...}); a planet entity needs the body:"
       .. " queue it as a plan step", 0)
   end
   local task = make_task(params)
   validate(task, "configure_entity")
-  local result = configure_remote(task, c.force)
+  local result = configure_remote(task, body.force)
   if result.status ~= "done" then error(result.detail, 0) end
   return result.outcome
 end

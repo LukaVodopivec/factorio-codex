@@ -36,6 +36,7 @@ end }
 local body = { valid = true, position = { x = 0, y = 0 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end,
   human_control = function() return false, 999 end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 
 local next_unit = 100
 local state = require("scripts.state")
@@ -49,7 +50,7 @@ local ore = mock.entity({ valid = true, name = "iron-ore", type = "resource", po
 local function machine(kind, name, x, y, extra)
   next_unit = next_unit + 1
   local values = { valid = true, name = name, type = kind, position = { x = x, y = y }, unit_number = next_unit,
-    force = force, status = RAW.working }
+    force = force, surface = surface, status = RAW.working }
   for key, value in pairs(extra or {}) do values[key] = value end
   local initial = { status = values.status, products_finished = values.products_finished,
     mining_progress = values.mining_progress }
@@ -256,14 +257,14 @@ check(counts.line_count == #autonomy.lines() and counts.self_sustaining_line_cou
   and counts.running_line_count < counts.line_count, "line counts summarise every line")
 
 -- A refresh that fails keeps the previous lines and names the error.
-local good_machines = registry.machines
-registry.machines = function() error("registry read failed") end
+local good_units = registry.machine_units
+registry.machine_units = function() error("registry read failed") end
 local lines_before = #autonomy.lines()
 storage.autonomy.dirty_tick = game.tick - 300
 run(1)
 check(#autonomy.lines() == lines_before and storage.autonomy.refresh_error:match("registry read failed"),
   "a failed refresh keeps the previous lines and reports its error")
-registry.machines = good_machines
+registry.machine_units = good_units
 
 -- Until the registry's bootstrap is ready, lines wait instead of refreshing
 -- from a partial registry.

@@ -65,8 +65,9 @@ local codex_body = {
   character_running_speed_modifier = 0.7,
 }
 local codex = {
-  index = 1, valid = true, connected = true, name = "Codex", character = codex_body,
-  controller_type = defines.controllers.character,
+  index = 1, valid = true, connected = true, name = "Codex", character = codex_body, force = force,
+  controller_type = defines.controllers.character, physical_controller_type = defines.controllers.character,
+  physical_surface = surface, physical_position = { x = 4, y = -2 },
 }
 players[1] = codex
 game.connected_players = { codex, viewer }

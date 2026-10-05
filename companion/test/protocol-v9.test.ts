@@ -7,17 +7,17 @@ import { packageStepSchema } from "../src/mcp/runPlan.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v27 DTO and tool registry", () => {
-  it("declares v27 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(27);
-    expect(MCP_SERVER_VERSION).toBe("0.22.2");
-    expect(RPC_METHODS).toHaveLength(40);
+describe("protocol v28 DTO and tool registry", () => {
+  it("declares v28 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(28);
+    expect(MCP_SERVER_VERSION).toBe("0.22.3");
+    expect(RPC_METHODS).toHaveLength(42);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
       "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now", "get_job",
-      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe"]));
+      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel"]));
   });
 
-  it("registers exactly 50 tools and forwards exact v27 payloads", async () => {
+  it("registers exactly 52 tools and forwards exact v28 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -26,7 +26,7 @@ describe("protocol v27 DTO and tool registry", () => {
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(50);
+    expect(Object.keys(handlers)).toHaveLength(52);
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
     await handlers.find_placement(find);
@@ -354,6 +354,14 @@ describe("protocol v27 DTO and tool registry", () => {
   it("normalizes platform screens and factory_status platform rows", () => {
     expect(normalizeFactoryStatus({ platforms: {} })).toEqual({ platforms: [] });
     expect(normalizePlatformStatus({ tick: 5, platforms: {} })).toEqual({ tick: 5, platforms: [] });
+    // Routes: compact rows count each stop's waits; one platform's screen lists them.
+    const row = { index: 3, name: "Orbit", state: "on_the_path", travel: { from: "nauvis", to: "vulcanus", distance_fraction: 0.25, length_km: 15000 },
+      schedule: { current: 2, records: {} } };
+    expect(normalizePlatformStatus({ platforms: [row] }).platforms).toEqual([{ ...row, schedule: { current: 2, records: [] } }]);
+    expect(normalizeFactoryStatus({ platforms: [row] }).platforms).toEqual([{ ...row, schedule: { current: 2, records: [] } }]);
+    const screen = normalizePlatformStatus({ platform: row, schedule: { current: 1, records: [{ station: "nauvis", wait_conditions: {} }] } });
+    expect(screen.schedule).toEqual({ current: 1, records: [{ station: "nauvis", wait_conditions: [] }] });
+    expect(screen.platform.schedule).toEqual({ current: 2, records: [] });
     const full = { tick: 9, platform: { index: 3, name: "Orbit", state: "waiting_at_station", location: "nauvis" },
       foundation: { tiles: 100, bbox: {}, rows: {} }, hub: { position: { x: 0, y: 0 }, inventory: {}, trash: {}, free_slots: 39 },
       requests: [{ index: 1, items: {} }], entities: [{ name: "asteroid-collector", position: { x: 0, y: -6 }, filters: {} }],
@@ -367,6 +375,166 @@ describe("protocol v27 DTO and tool registry", () => {
     expect(normalizeInspection({ entities: [{ name: "rocket-silo", silo }] }).entities[0]).toEqual({ name: "rocket-silo", silo: { ...silo, cargo: [] } });
     expect(normalizeInspection({ entities: [{ name: "cargo-landing-pad", landing_pad: { inventory: {}, requests: [{ index: 1, items: {} }] } }] }).entities[0])
       .toEqual({ name: "cargo-landing-pad", landing_pad: { inventory: [], requests: [{ index: 1, items: [] }] } });
+  });
+
+  it("forwards the 0.22.3 trips: travel queues a pilot plan, a platform route is set at once, plans name their surface", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const call = vi.fn(async (method: string, params?: any) => method === "travel" ? { plan_id: 12, queue_depth: 1, to: "vulcanus" }
+      : method === "set_platform_route" ? { code: "ROUTE_SET", platform: { index: 3, name: "Orbit" }, state: "on_the_path", paused: false,
+        schedule: { current: 1, records: [{ station: "nauvis", wait_conditions: {}, allows_unloading: true }] }, changed: ["stops", "go_to"] }
+      : method === "queue_plan" ? { plan_id: 13 } : { method, params });
+    const enqueueAndWaitResult = vi.fn();
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
+      async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
+
+    // travel is one RPC that queues the trip as a plan and answers at once.
+    const trip = await handlers.travel(schemas.travel.parse({ to: "vulcanus", max_wait_minutes: 90 }));
+    expect(call).toHaveBeenLastCalledWith("travel", { to: "vulcanus", max_wait_minutes: 90 });
+    expect(trip.structuredContent).toMatchObject({ status: "queued", terminal: false, plan_id: 12, next_action: { tool: "next_event" } });
+    expect(trip.content[0].text).toBe("queued plan 12; travel to vulcanus");
+    await handlers.travel(schemas.travel.parse({ to: { platform: "Orbit" }, via_silo: { x: 10.5, y: 10.5 } }));
+    expect(call).toHaveBeenLastCalledWith("travel", { to: { platform: "Orbit" }, via_silo: { x: 10.5, y: 10.5 } });
+    for (const bad of [{}, { to: "" }, { to: "vulcanus", max_wait_minutes: 0 }, { to: "vulcanus", max_wait_minutes: 241 }, { to: { platform: 0 } }])
+      expect(schemas.travel.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    expect(enqueueAndWaitResult).not.toHaveBeenCalled();
+
+    // A platform's route is its window: one RPC, no body, no FIFO; the wait
+    // conditions go to the mod as the game's own literals.
+    const route = { platform: "Orbit", stops: [{ location: "nauvis", wait: [{ type: "all_requests_satisfied" },
+      { type: "time", compare_type: "or", ticks: 18000 }] }, { location: "vulcanus", unloading: false }], go_to: 1 };
+    const set = await handlers.set_platform_route(schemas.set_platform_route.parse(route));
+    expect(call).toHaveBeenLastCalledWith("set_platform_route", route);
+    expect(set.structuredContent).toMatchObject({ status: "completed", changed: ["stops", "go_to"],
+      schedule: { current: 1, records: [{ station: "nauvis", wait_conditions: [] }] } });
+    expect(set.content[0].text).toBe("platform Orbit's route: stops, go_to set");
+    expect(schemas.set_platform_route.safeParse({ platform: 3, paused: true }).success).toBe(true);
+    for (const bad of [{ platform: "Orbit" }, { ...route, go_to: 3 }, { ...route, stops: [] },
+      { ...route, stops: Array(11).fill({ location: "nauvis" }) }, { platform: "Orbit", stops: [{ location: "nauvis", wait: [{ type: "forever" }] }] },
+      { platform: "Orbit", stops: [{ location: "nauvis", wait: [{ type: "time", ticks: -1 }] }] },
+      { platform: "Orbit", stops: [{ location: "nauvis", wait: [{ type: "time", hours: 1 }] }] }])
+      expect(schemas.set_platform_route.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    expect(call.mock.calls.some(([method]) => method === "queue_plan")).toBe(false);
+
+    // Plans: the trip and the route are plan steps too; surface names the
+    // surface a plan's positions are on.
+    const plan = { surface: "vulcanus", steps: [{ action: "travel", to: "vulcanus" }, { action: "walk_to", x: 1, y: 2 },
+      { action: "set_platform_route", platform: 3, paused: false }] };
+    expect(schemas.queue_plan.safeParse(plan).success).toBe(true);
+    expect(schemas.queue_plan.safeParse({ ...plan, surface: { platform: "Orbit" } }).success).toBe(true);
+    expect(schemas.queue_plan.safeParse({ ...plan, steps: [{ action: "set_platform_route", platform: 3 }] }).success).toBe(false);
+    await handlers.queue_plan(plan);
+    expect(call).toHaveBeenLastCalledWith("queue_plan", expect.objectContaining({ surface: "vulcanus",
+      steps: [plan.steps[0], { action: "walk_to", x: 1, y: 2, arrival_mode: "exact", arrival_radius: 1 }, plan.steps[2]] }));
+  });
+
+  it("reads another surface: factory_status, map_summary, inspect, placements and per-planet requirements", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const call = vi.fn(async (method: string) => method === "factory_status"
+      ? { tick: 7, surface: "vulcanus", unlocked_locations: {}, lines: {}, elsewhere: [{ surface: "nauvis", lines_running: 40, lines_total: 44,
+        problems: 2, top_problems: {}, power_min_satisfaction: 1 }] }
+      : method === "production_requirements" ? { nodes: {}, roots: { "tungsten-ore": [{ planet: "vulcanus", via: "big_drill" }], calcite: {} },
+        unobtainable: {}, surface_limited: [{ recipe: "big-mining-drill", condition: "pressure", planets: {} }] }
+      : method === "can_place" ? { results: [{ can_place: true }] }
+      : method === "find_placement" ? { candidates: {} }
+      : method === "inspect" ? { tick: 7, entities: [] } : {});
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
+      async () => ({ call } as unknown as Bridge), validConfig, "read-only");
+
+    const status = await handlers.factory_status(schemas.factory_status.parse({ surface: "vulcanus", sections: ["lines", "elsewhere"] }));
+    expect(call).toHaveBeenLastCalledWith("factory_status", { surface: "vulcanus", sections: ["lines", "elsewhere"] });
+    expect(status.structuredContent).toMatchObject({ unlocked_locations: [], lines: [], elsewhere: [{ surface: "nauvis", top_problems: [] }] });
+    expect(status.content[0].text).toBe("tick 7 on vulcanus: 0 lines; 1 other surface in elsewhere");
+    await handlers.map_summary(schemas.map_summary.parse({ surface: "all" }));
+    expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute", surface: "all" }, undefined);
+    await handlers.inspect_entity(schemas.inspect_entity.parse({ positions: [{ x: 1, y: 2 }], surface: { platform: "Orbit" } }));
+    expect(call).toHaveBeenLastCalledWith("inspect", { targets: [{ x: 1, y: 2 }], surface: { platform: "Orbit" } });
+    await handlers.can_place(schemas.can_place.parse({ placements: [{ name: "foundry", x: 3.5, y: 3.5 }], surface: "vulcanus" }));
+    expect(call).toHaveBeenLastCalledWith("can_place", { placements: [{ item: "foundry", position: { x: 3.5, y: 3.5 }, direction: undefined }], surface: "vulcanus" });
+    await handlers.find_placement(schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 0, y: 0 }, fluid: "lava", surface: "vulcanus" }));
+    expect(call).toHaveBeenLastCalledWith("find_placement", { item: "offshore-pump", preferred: { x: 0, y: 0 }, radius: 10, directions: [0, 4, 8, 12],
+      limit: 8, fluid: "lava", surface: "vulcanus" }, undefined);
+    const roots = await handlers.production_requirements(schemas.production_requirements.parse({ targets: { "tungsten-plate": 10 }, planet: "vulcanus" }));
+    expect(call).toHaveBeenLastCalledWith("production_requirements", { targets: { "tungsten-plate": 10 }, flow_precision: "one_minute", planet: "vulcanus" });
+    expect(roots.structuredContent).toMatchObject({ roots: { "tungsten-ore": [{ planet: "vulcanus", via: "big_drill" }], calcite: [] },
+      unobtainable: [], surface_limited: [{ recipe: "big-mining-drill", planets: [] }] });
+    // Read-only sessions read every surface but never travel or route a platform.
+    expect(handlers.travel).toBeUndefined();
+    expect(handlers.set_platform_route).toBeUndefined();
+  });
+
+  it("sets the body's own requests at once, checks another planet's ground in dry runs, and sites near any liquid", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const call = vi.fn(async (method: string) => method === "set_requests"
+      ? { code: "REQUESTS_SET", target: { kind: "character", name: "character" }, sections: [{ index: 1, items: {} }] }
+      : method === "build_layout" ? { check_only: true, ok: true, placed: {}, failed: {} } : {});
+    const enqueueAndWaitResult = vi.fn();
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
+      async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig);
+
+    // Personal requests need no reach: one RPC, no FIFO; trash is theirs alone.
+    const own = { target: "character", requests: [{ item: "iron-plate", min: 200 }], trash: ["wood"], trash_unrequested: false };
+    const set = await handlers.set_requests(schemas.set_requests.parse(own));
+    expect(call).toHaveBeenLastCalledWith("set_requests", own);
+    expect(set.structuredContent).toMatchObject({ status: "completed", sections: [{ index: 1, items: [] }] });
+    expect(set.content[0].text).toBe("your own requests set (1 sections)");
+    expect(enqueueAndWaitResult).not.toHaveBeenCalled();
+    for (const bad of [{ target: { x: 1, y: 1 }, trash: ["wood"] }, { target: "character", trash: ["wood"], requests: [{ item: "wood", min: 1 }] },
+      { target: "character", request_from_buffers: true }, { target: "character" }, { target: "body", trash_unrequested: true }])
+      expect(schemas.set_requests.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    expect(schemas.set_requests.safeParse({ target: "character", trash_unrequested: true }).success).toBe(true);
+
+    // A layout dry run may name another surface; a build may not (its plan's surface decides).
+    const layout = { site: { near: { x: 0, y: 0 }, near_liquid: "lava" }, entities: [{ name: "offshore-pump", dx: 0, dy: 0 }] };
+    await handlers.build_layout(schemas.build_layout.parse({ ...layout, check_only: true, surface: "vulcanus" }));
+    expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true, surface: "vulcanus" }, undefined);
+    expect(schemas.build_layout.safeParse({ ...layout, surface: "vulcanus" }).success).toBe(false);
+    expect(schemas.build_block.safeParse({ block: "power", count: 1, check_only: true, surface: "nauvis" }).success).toBe(true);
+    expect(schemas.build_block.safeParse({ block: "power", count: 1, surface: "nauvis" }).success).toBe(false);
+    expect(schemas.build_layout.safeParse({ ...layout, site: { near: { x: 0, y: 0 }, near_liquid: "mud" } }).success).toBe(false);
+    expect(schemas.queue_plan.safeParse({ steps: [{ action: "build_layout", ...layout }] }).success).toBe(true);
+    expect(schemas.queue_plan.safeParse({ steps: [{ action: "create_platform", name: "Ferry", planet: "vulcanus" }] }).success).toBe(true);
+    expect(schemas.create_platform.safeParse({ name: "Ferry", planet: "vulcanus" }).success).toBe(true);
+  });
+
+  it("names the protocol 28 states, parameters and fields in the tool descriptions", () => {
+    const described: Record<string, string> = {};
+    registerMcpTools({ registerTool(name: string, config: any) { described[name] = config.description; } },
+      async () => ({ call: vi.fn() } as unknown as Bridge), validConfig);
+    expect(described.factory_status).toMatch(/no_power, frozen, no_heat/);
+    expect(described.factory_status).toMatch(/research_idle/);
+    expect(described.create_platform).toMatch(/unlocked planet named in planet/);
+    expect(described.travel).toMatch(/max_wait_minutes, default 60; NO_ROUTE/);
+    expect(described.platform_status).toMatch(/trip \(from, to, how far along\), speed, paused, schedule/);
+    expect(described.platform_status).toMatch(/thrusters/);
+    expect(described.build_layout).toMatch(/near_liquid picks water, lava, heavy-oil or ammoniacal-solution; a dry run may name surface/);
+    expect(described.build_block).toMatch(/A dry run may name surface/);
+  });
+
+  it("reports where the body is: ping, the FIFO and connect_status", async () => {
+    const aboard = { state: "aboard_platform", surface_ref: "platform:3", platform_name: "Orbit" };
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const call = vi.fn(async (method: string) => method === "ping"
+      ? { protocol_version: 28, mod_version: "0.22.3", factorio_version: "2.0.77", tick: 5, companion_exists: true,
+        companion_ever_created: true, companion_dead: false, body: aboard }
+      : { tick: 5, lines: [], fifo: { active_plan_id: 12, queue_depth: 1, idle_seconds: 0, body: aboard } });
+    registerMcpTools({ registerTool(name: string, _config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig);
+    const connected = await handlers.connect_status({});
+    expect(connected.structuredContent).toMatchObject({ status: "connected", companion_exists: true, body: aboard });
+    expect(connected.content[0].text).toBe("Connected; the body is aboard platform Orbit: physical actions fail with BODY_ABOARD until it lands; remote platform tools work");
+    expect(call).not.toHaveBeenCalledWith("spawn_companion", expect.anything());
+    const status = await handlers.factory_status({});
+    expect(status.structuredContent.fifo).toMatchObject({ queue_depth: 1, body: aboard });
+    // Riding up, the pod is still over the planet it left; the trip's destination is bound_for.
+    const riding = { state: "in_transit", surface_ref: "nauvis", bound_for: "platform:3" };
+    call.mockImplementation(async (method: string) => method === "ping"
+      ? { protocol_version: 28, mod_version: "0.22.3", factorio_version: "2.0.77", tick: 6, companion_exists: true,
+        companion_ever_created: true, companion_dead: false, body: riding } : {});
+    expect((await handlers.connect_status({})).content[0].text)
+      .toBe("Connected; the body is in a cargo pod (now over nauvis), bound for platform:3");
   });
 
   it("normalizes 0.22 power rows, robot networks and inspected inventories", () => {
@@ -534,6 +702,14 @@ describe("protocol v27 DTO and tool registry", () => {
       stock: [{ item: "coal", holders: [] }], research: { available: [], queue: [] }, body: { inventory_summary: {} } });
     expect(normalizeActivityLog({ tick: 5, entries: {}, omitted: 0 })).toEqual({ tick: 5, entries: [], omitted: 0 });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);
+    // Technology and location modes carry the roots inside deterministic_requirements.
+    const closure = normalizeProductionRequirements({ technology: "automation", deterministic_requirements: { nodes: {},
+      roots: { "iron-ore": [{ planet: "nauvis", via: "drill" }], "wood": {} }, unobtainable: {},
+      surface_limited: [{ recipe: "tungsten-plate", planets: {} }] } });
+    expect(closure.deterministic_requirements).toMatchObject({ unobtainable: [], roots: { "iron-ore": [{ planet: "nauvis", via: "drill" }], wood: [] },
+      surface_limited: [{ recipe: "tungsten-plate", planets: [] }] });
+    expect(normalizeProductionRequirements({ technology: "automation", deterministic_requirements: { surface_limited: {} } })
+      .deterministic_requirements.surface_limited).toEqual([]);
     expect(normalizePhysicalRoute({ steps: {} }).steps).toEqual([]);
   });
 });

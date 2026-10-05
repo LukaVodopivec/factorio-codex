@@ -1,5 +1,12 @@
--- Deterministic, side-effect-free placement search over already charted terrain.
+-- Deterministic, side-effect-free placement search over already charted terrain,
+-- on the body's surface or the `surface` named (reading is not reach: on
+-- another surface no body stands in the way). An entity whose surface
+-- conditions the surface breaks fails SURFACE_CONDITION before any search;
+-- an offshore pump's candidates say which fluid it pumps there, and `fluid`
+-- keeps only spots on that liquid (water, lava, heavy-oil,
+-- ammoniacal-solution).
 local companion = require("scripts.companion")
+local surfaces = require("scripts.surfaces")
 local build = require("scripts.actions.build")
 local output_targets = require("scripts.output_target")
 local placement_geometry = require("scripts.placement_geometry")
@@ -23,38 +30,30 @@ local function prototype_vector(value)
   return { x = x, y = y }
 end
 
-local function charted(force, surface, pos)
-  return force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) })
+-- The force's chart; `platform` (surfaces.is_platform of the surface,
+-- worked out once a step) saves the per-call platform read.
+local function charted(force, surface, pos, platform)
+  return surfaces.charted(force, surface, math.floor(pos.x / 32), math.floor(pos.y / 32), platform)
 end
 
-local function footprint_charted(force, surface, area)
+local function footprint_charted(force, surface, area, platform)
   local chunks = {
     { x = area.left_top.x, y = area.left_top.y },
     { x = area.right_bottom.x - 0.001, y = area.left_top.y },
     { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
     { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 },
   }
-  for _, corner in ipairs(chunks) do if not charted(force, surface, corner) then return false end end
+  for _, corner in ipairs(chunks) do if not charted(force, surface, corner, platform) then return false end end
   return true
 end
 
-local function is_water(surface, x, y)
-  local ok, tile = pcall(surface.get_tile, x, y)
-  if not ok or not tile then return false end
-  for _, layer in ipairs({ "water_tile", "water-tile", "player" }) do
-    local collision_ok, collides = pcall(tile.collides_with, layer)
-    if collision_ok and collides then return true end
-  end
-  return false
-end
-
-local function terrain(force, surface, proto, area)
+local function terrain(force, surface, proto, area, platform)
   if proto.type == "offshore-pump" then return "offshore" end
   local water, land = false, false
   for y = math.floor(area.left_top.y) - 1, math.ceil(area.right_bottom.y) do
     for x = math.floor(area.left_top.x) - 1, math.ceil(area.right_bottom.x) do
-      if charted(force, surface, { x = x, y = y }) then
-        if is_water(surface, x, y) then water = true else land = true end
+      if charted(force, surface, { x = x, y = y }, platform) then
+        if placement_geometry.is_liquid(surface, x, y) then water = true else land = true end
       end
     end
   end
@@ -85,14 +84,14 @@ end
 -- Returns the coverage rows and how many resource entities were read, which the
 -- caller charges against its engine budget (about four reads each: valid,
 -- position, name, amount). Categories are cached per name.
-local function drill_resource_coverage(force, surface, proto, pos, category_by_name)
+local function drill_resource_coverage(force, surface, proto, pos, category_by_name, platform)
   local radius = mining_radius(proto)
   if not radius then return nil end
   local area = {
     left_top = { x = pos.x - radius, y = pos.y - radius },
     right_bottom = { x = pos.x + radius, y = pos.y + radius },
   }
-  if not footprint_charted(force, surface, area) then return nil end
+  if not footprint_charted(force, surface, area, platform) then return nil end
   local ok_categories, categories = pcall(function() return proto.resource_categories end)
   if not ok_categories or type(categories) ~= "table" then return {} end
   local by_name = {}
@@ -136,6 +135,7 @@ end
 local MAX_EVALUATIONS = 2048
 local MAX_ENGINE_CALLS = 24000
 local COST_DIRECTION, COST_RECIPIENT, COST_PER_ENTITY, COST_PLACE_CHECK, COST_COVERAGE, COST_TILE = 6, 6, 4, 2, 7, 5
+local COST_FLUID = 4 -- an offshore pump's source tile: offset, tile, water layer, fluid
 
 local function fuel_inlet(proto)
   local ok, burner = pcall(function() return proto.burner_prototype end)
@@ -216,13 +216,27 @@ end
 -- data (names, positions and the resolved target entities) between ticks.
 -- MAX_EVALUATIONS and MAX_ENGINE_CALLS bound the whole search; past either
 -- it stops and says so (truncated, with a hint).
-local function placement_context(S, c)
+-- What the search stands on this tick: the character on its own surface,
+-- else a body-less viewpoint at `preferred` on the searched surface (kept in
+-- S by index), and whether the body is there.
+local function search_context(S)
+  local body = companion.require_present()
+  -- A search a 0.22.2 save left running searched the body's surface.
+  if S.surface_index == nil then S.surface_index, S.surface_ref = body.surface.index, body.surface_ref end
+  local surface = surfaces.stored(S.surface_index, body)
+  if not surface then error("SURFACE_GONE: surface " .. tostring(S.surface_ref) .. " no longer exists", 0) end
+  local here = body.surface ~= nil and body.surface.index == S.surface_index
+  return surfaces.viewpoint({ surface = surface, force = body.force, here = here, body = body }, S.preferred), here
+end
+
+local function placement_context(S, c, here)
   local item = prototypes.item[S.item]
   local proto = item and item.place_result
   if not proto then error(S.item .. " is not a placeable item") end
-  local X = { proto = proto, drop_offset = output_targets.output_offset(proto) }
+  local X = { proto = proto, drop_offset = output_targets.output_offset(proto), here = here }
   -- Read once a step, not per evaluation.
   X.force, X.surface, X.position = c.force, c.surface, c.position
+  X.platform = surfaces.is_platform(c.surface)
   X.output_capable = proto.type == "mining-drill" or proto.type == "inserter" or X.drop_offset ~= nil
   if proto.type == "inserter" then
     local ok_pickup, raw_pickup = pcall(function() return proto.inserter_pickup_position end)
@@ -239,7 +253,6 @@ local function placement_context(S, c)
 end
 
 local function search_start(params)
-  local c = companion.require_companion()
   if type(params.item) ~= "string" then error("find_placement item must be an item name") end
   local item = prototypes.item[params.item]
   if not item or not item.place_result then error(params.item .. " is not a placeable item") end
@@ -247,6 +260,13 @@ local function search_start(params)
   local belt_error = build.belt_to_ground_error(params.item, proto, params.belt_to_ground_type)
   if belt_error then error(belt_error) end
   local preferred = position(params.preferred, "find_placement preferred")
+  local target = surfaces.target(params.surface)
+  local c = surfaces.viewpoint(target, preferred)
+  local broken = placement_geometry.surface_condition(target.surface, proto.surface_conditions)
+  if broken then error(placement_geometry.condition_text(proto.name, broken), 0) end
+  if params.fluid ~= nil and (type(params.fluid) ~= "string" or proto.type ~= "offshore-pump") then
+    error("find_placement fluid names the liquid an offshore pump should pump (water, lava, heavy-oil, ammoniacal-solution)", 0)
+  end
   local radius = math.floor(tonumber(params.radius) or 10)
   local limit = math.floor(tonumber(params.limit) or 8)
   if radius < 1 or radius > 30 then error("find_placement radius must be 1-30") end
@@ -306,6 +326,7 @@ local function search_start(params)
   local origin_x, origin_y = snapped(preferred.x, width), snapped(preferred.y, height)
   return {
     item = params.item, belt_to_ground_type = params.belt_to_ground_type,
+    surface_index = target.surface.index, surface_ref = target.ref, fluid = params.fluid,
     output_recipient_item = params.output_recipient_item,
     preferred = preferred, radius = radius, limit = limit, directions = directions,
     input_target = input_target, output_target = output_target,
@@ -367,7 +388,7 @@ end
 local STAGE = {
   uncharted = 2, pickup_not_on_source = 3, output_endpoint_unknown = 4,
   output_not_on_recipient = 5, planned_recipient_unplaceable = 6, no_compatible_resource = 7,
-  codex_body_overlap = 8, blocked = 9,
+  codex_body_overlap = 8, blocked = 9, wrong_fluid = 10,
 }
 local function reject(S, reason, pos, direction, area)
   S.rejections[reason] = (S.rejections[reason] or 0) + 1
@@ -391,7 +412,7 @@ local function evaluate_spot(S, X, c, spot)
     S.engine_calls = S.engine_calls + COST_DIRECTION
     local pos = { x = x, y = y }
     local area = placement_geometry.footprint(proto, pos, direction)
-    if not footprint_charted(X.force, X.surface, area) then reject(S, "uncharted", pos, direction); goto continue end
+    if not footprint_charted(X.force, X.surface, area, X.platform) then reject(S, "uncharted", pos, direction); goto continue end
     do
       local output_position = output_targets.output_position(proto, pos, direction)
       local pickup_offset = X.inserter_pickup_offset and rotate(X.inserter_pickup_offset, direction) or nil
@@ -425,7 +446,7 @@ local function evaluate_spot(S, X, c, spot)
             recipient_proto, output_position, pos, proto.type)) do
             local recipient_area = placement_geometry.footprint(recipient_proto, recipient_position, 0)
             if not placement_geometry.overlaps(area, recipient_area)
-              and footprint_charted(X.force, X.surface, recipient_area) then
+              and footprint_charted(X.force, X.surface, recipient_area, X.platform) then
               local recipient_ok, _, _, checks = placement_geometry.can_place(c, recipient_proto, recipient_position, 0)
               S.engine_calls = S.engine_calls + COST_DIRECTION + COST_PLACE_CHECK * (1 + checks)
               if recipient_ok then
@@ -443,7 +464,7 @@ local function evaluate_spot(S, X, c, spot)
       if not spot_coverage_read then
         spot_coverage_read = true
         local resources_read
-        spot_coverage, resources_read = drill_resource_coverage(X.force, X.surface, proto, pos, S.category_by_name)
+        spot_coverage, resources_read = drill_resource_coverage(X.force, X.surface, proto, pos, S.category_by_name, X.platform)
         if resources_read then S.engine_calls = S.engine_calls + COST_COVERAGE + COST_PER_ENTITY * resources_read end
       end
       local resource_coverage = spot_coverage
@@ -456,6 +477,12 @@ local function evaluate_spot(S, X, c, spot)
       if not can_place then
         reject(S, placement_reason == "CODEX_BODY_OVERLAP" and "codex_body_overlap" or "blocked", pos, direction, area)
         goto continue
+      end
+      local pumped
+      if proto.type == "offshore-pump" then
+        pumped = placement_geometry.pumped_fluid(X.surface, proto, pos, direction)
+        S.engine_calls = S.engine_calls + COST_FLUID
+        if S.fluid and pumped ~= S.fluid then reject(S, "wrong_fluid", pos, direction); goto continue end
       end
       local producer_step = { name = S.item, x = pos.x, y = pos.y, direction = direction }
       producer_step.belt_to_ground_type = S.belt_to_ground_type
@@ -474,7 +501,8 @@ local function evaluate_spot(S, X, c, spot)
       S.candidates[#S.candidates + 1] = {
         item = S.item, entity = proto.name, position = pos, direction = direction,
         distance = math.sqrt(spot.distance_sq),
-        distance_from_codex = math.sqrt(codex_distance_sq),
+        distance_from_codex = X.here and math.sqrt(codex_distance_sq) or nil,
+        fluid = pumped,
         area = area,
         output_position = output_position,
         output_target = candidate_output_target,
@@ -537,7 +565,7 @@ local function detail_candidates(S, X, c, budget)
     if budget.left <= 0 then return false end
     local candidate = S.candidates[S.finished + 1]
     local area = candidate.area
-    candidate.terrain = terrain(X.force, X.surface, X.proto, area)
+    candidate.terrain = terrain(X.force, X.surface, X.proto, area, X.platform)
     candidate.fluid_connections = fluid_connections.prototype(X.proto, candidate.position, candidate.direction)
     candidate.area = nil
     local tiles = (math.ceil(area.right_bottom.x) - math.floor(area.left_top.x) + 2)
@@ -574,14 +602,15 @@ local function search_result(S, X, c)
       elseif reason == "planned_recipient_unplaceable" then hint = "no free spot for " .. tostring(S.output_recipient_item) .. " at any producer output point; clear the area or move preferred"
       elseif reason == "codex_body_overlap" then hint = "only Codex's own body blocks the best positions; walk clear and search again"
       elseif reason == "blocked" then hint = "the best positions are blocked" .. (blocker and string.format(" by %s at (%.17g, %.17g)", blocker.name, blocker.position.x, blocker.position.y) or "") .. "; clear it or move preferred"
-      elseif reason == "no_compatible_resource" then hint = "no compatible resource under the mining area near preferred; move preferred onto the resource patch" end
+      elseif reason == "no_compatible_resource" then hint = "no compatible resource under the mining area near preferred; move preferred onto the resource patch"
+      elseif reason == "wrong_fluid" then hint = "no offshore spot near preferred pumps " .. tostring(S.fluid) .. "; move preferred to the shore of that liquid" end
     end
     if S.truncated then
       local stopped = "the search stopped after " .. S.evaluated .. " evaluations, before covering the whole radius; reduce radius or move preferred closer"
       hint = hint and (hint .. "; " .. stopped) or stopped
     end
   end
-  return { item = S.item, entity = proto.name, preferred = S.preferred,
+  return { item = S.item, entity = proto.name, preferred = S.preferred, surface = S.surface_ref, fluid = S.fluid,
     input_target = input_target and input_target.identity or nil,
     output_target = output_target and output_target.identity or nil,
     output_recipient_item = S.output_recipient_item,
@@ -597,8 +626,8 @@ end
 local NEXT_STAGE = { positions = "search", search = "detail", detail = "result" }
 
 local function search_step(S, budget)
-  local c = companion.require_companion()
-  local X = placement_context(S, c)
+  local c, here = search_context(S)
+  local X = placement_context(S, c, here)
   while budget.left > 0 do
     local stage, done = S.stage, nil
     if stage == "positions" then done = list_positions(S, budget)
@@ -611,7 +640,8 @@ local function search_step(S, budget)
 end
 
 -- find_placement {item, preferred, radius?, limit?, directions?, input_target?,
--- output_target?, output_recipient_item?, belt_to_ground_type?}: the job
+-- output_target?, output_recipient_item?, belt_to_ground_type?, surface?,
+-- fluid?}: the job
 -- definition; the RPC answers at once when the search fits this tick.
 M.job = { start = search_start, step = search_step }
 jobs.register("find_placement", M.job)

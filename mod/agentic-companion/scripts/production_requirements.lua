@@ -1,4 +1,22 @@
 -- Deterministic item/fluid expansion plus current-force technology/location closure.
+--
+-- Resource roots per planet (prototype data only, never charted or hidden
+-- map state; built once per load into a module-local table, since
+-- prototypes change only with a configuration change): for every space
+-- location with map generation, the resources, rocks, trees, plants and
+-- fish its autoplace settings (or an autoplace control it has) place, and
+-- the liquids of its tiles; for every location and space connection, the
+-- asteroid chunks that spawn there. Each root says how it is gathered:
+-- drill, big_drill (a resource category only the big mining drill mines),
+-- pump (a fluid resource), offshore (a liquid tile), hand (rocks, trees,
+-- plants, fish), tower (plants) or asteroid.
+-- The expansion plans for one place: `planet`, else the body's planet (or
+-- its platform's location). Products rooted there are raw; others expand
+-- through their recipes; a raw entry that cannot be made there lists in
+-- `roots` where it can be gathered, and in `unobtainable` when nowhere.
+-- With `planet` given, recipes whose surface conditions that planet breaks
+-- are not routes. `surface_limited` names the recipes used whose surface
+-- conditions limit where they run, with the planets that allow them.
 local companion = require("scripts.companion")
 local research = require("scripts.research")
 
@@ -46,7 +64,229 @@ local function ingredients_of(recipe)
   return out
 end
 
-local function candidate_recipes(force, product, permitted_locked)
+-- ------------------------------------------------------------------ roots
+
+local function read(fn)
+  local ok, value = pcall(fn)
+  if ok then return value end
+end
+
+local function each_key(map)
+  local keys = {}
+  for key in pairs(type(map) == "table" and map or {}) do keys[#keys + 1] = key end
+  table.sort(keys)
+  return keys
+end
+
+local HAND_TYPES = { tree = true, plant = true, ["simple-entity"] = true, fish = true }
+
+-- {by_product = {[name] = {{planet, via}}}, at = {[location] = {[name] =
+-- true}}, properties = {[location] = {[property] = value}}, planets = the
+-- locations with map generation, sorted}.
+local roots_cache
+local function roots()
+  if roots_cache then return roots_cache end
+  local R = { by_product = {}, at = {}, properties = {}, planets = {} }
+  local seen = {}
+  local function add(location, product, via)
+    if type(product) ~= "string" then return end
+    local key = location .. "\0" .. product .. "\0" .. via
+    if seen[key] then return end
+    seen[key] = true
+    local list = R.by_product[product] or {}
+    R.by_product[product] = list
+    list[#list + 1] = { planet = location, via = via }
+    R.at[location] = R.at[location] or {}
+    R.at[location][product] = true
+  end
+  -- Resource categories no drill but the big mining drill mines.
+  local drills_of = {}
+  for name, drill in pairs(prototypes.get_entity_filtered({ { filter = "type", type = "mining-drill" } })) do
+    for category in pairs(read(function() return drill.resource_categories end) or {}) do
+      drills_of[category] = drills_of[category] or {}
+      drills_of[category][name] = true
+    end
+  end
+  local function big_only(category)
+    local drills = category and drills_of[category]
+    if not drills or not drills["big-mining-drill"] then return false end
+    for name in pairs(drills) do if name ~= "big-mining-drill" then return false end end
+    return true
+  end
+  local function entity_roots(location, entity)
+    local kind = read(function() return entity.type end)
+    local mining = read(function() return entity.mineable_properties end)
+    if not (mining and mining.minable) then return end
+    if kind == "resource" then
+      for _, product in pairs(mining.products or {}) do
+        local via = product.type == "fluid" and "pump"
+          or big_only(read(function() return entity.resource_category end)) and "big_drill" or "drill"
+        add(location, product.name, via)
+      end
+    elseif HAND_TYPES[kind] then
+      for _, product in pairs(mining.products or {}) do
+        add(location, product.name, "hand")
+        if kind == "plant" then add(location, product.name, "tower") end
+      end
+    end
+  end
+  -- Entities a control places (trees, plants), once.
+  local controlled = {}
+  for name, entity in pairs(prototypes.get_entity_filtered({ { filter = "type", type = each_key(HAND_TYPES) } })) do
+    local control = read(function() return entity.autoplace_specification.control end)
+    if control then
+      controlled[control] = controlled[control] or {}
+      controlled[control][#controlled[control] + 1] = name
+    end
+  end
+  for _, names in pairs(controlled) do table.sort(names) end
+  local function asteroid_roots(location, definitions)
+    for _, definition in ipairs(definitions or {}) do
+      if definition.type == "asteroid-chunk" and definition.asteroid then
+        local chunk = read(function() return prototypes.asteroid_chunk[definition.asteroid] end)
+        local mining = chunk and read(function() return chunk.mineable_properties end)
+        local products = mining and mining.products
+        if products and #products > 0 then
+          for _, product in pairs(products) do add(location, product.name, "asteroid") end
+        else
+          add(location, definition.asteroid, "asteroid")
+        end
+      end
+    end
+  end
+  for _, location_name in ipairs(each_key(prototypes.space_location)) do
+    local location = prototypes.space_location[location_name]
+    local settings = read(function() return location.map_gen_settings end)
+    if settings then
+      R.planets[#R.planets + 1] = location_name
+      local autoplace = settings.autoplace_settings or {}
+      for _, name in ipairs(each_key(autoplace.entity and autoplace.entity.settings)) do
+        local entity = prototypes.entity and prototypes.entity[name]
+        if entity then entity_roots(location_name, entity) end
+      end
+      for _, control in ipairs(each_key(settings.autoplace_controls)) do
+        for _, name in ipairs(controlled[control] or {}) do entity_roots(location_name, prototypes.entity[name]) end
+      end
+      for _, name in ipairs(each_key(autoplace.tile and autoplace.tile.settings)) do
+        local tile = prototypes.tile and prototypes.tile[name]
+        add(location_name, tile and read(function() return tile.fluid.name end), "offshore")
+      end
+    end
+    asteroid_roots(location_name, read(function() return location.asteroid_spawn_definitions end))
+    R.properties[location_name] = read(function() return location.surface_properties end) or {}
+  end
+  for _, connection_name in ipairs(each_key(prototypes.space_connection)) do
+    local connection = prototypes.space_connection[connection_name]
+    asteroid_roots(connection_name, read(function() return connection.asteroid_spawn_definitions end))
+  end
+  for _, list in pairs(R.by_product) do
+    table.sort(list, function(a, b) return a.planet == b.planet and a.via < b.via or a.planet < b.planet end)
+  end
+  roots_cache = R
+  return R
+end
+
+-- The liquids of a location's own map-generated tiles (an offshore pump
+-- there pumps them), from that location's prototype alone, once per load:
+-- observe_local's legend and the power block ask it, never the whole
+-- catalogue roots() reads.
+local liquids_cache = {}
+local function liquids_of(location)
+  local known = liquids_cache[location]
+  if known == nil then
+    known = {}
+    local settings = read(function() return prototypes.space_location[location].map_gen_settings end)
+    local tiles = settings and settings.autoplace_settings and settings.autoplace_settings.tile
+    for name in pairs(tiles and tiles.settings or {}) do
+      local tile = prototypes.tile and prototypes.tile[name]
+      local fluid = tile and read(function() return tile.fluid.name end)
+      if fluid then known[fluid] = true end
+    end
+    liquids_cache[location] = known
+  end
+  return known
+end
+
+-- Whether a location's own map generation has tiles of this liquid.
+function M.has_liquid(location, fluid)
+  return location ~= nil and liquids_of(location)[fluid] == true
+end
+
+-- A surface property of a location: its own value, else the property's
+-- default.
+local function property(location, name)
+  local value = (roots().properties[location] or {})[name]
+  if value ~= nil then return value end
+  return read(function() return prototypes.surface_property[name].default_value end)
+end
+
+-- Whether every surface condition holds at a location.
+local function conditions_hold(conditions, location)
+  for _, condition in ipairs(conditions or {}) do
+    local value = property(location, condition.property)
+    if type(value) ~= "number" or (condition.min and value < condition.min) or (condition.max and value > condition.max) then
+      return false
+    end
+  end
+  return true
+end
+
+local function recipe_conditions(recipe)
+  local conditions = read(function() return recipe.prototype.surface_conditions end)
+  if conditions == nil then conditions = read(function() return recipe.surface_conditions end) end
+  return type(conditions) == "table" and #conditions > 0 and conditions or nil
+end
+
+-- The planets (locations with map generation) whose properties hold every
+-- condition.
+local function planets_allowing(conditions)
+  local list = {}
+  for _, name in ipairs(roots().planets) do
+    if conditions_hold(conditions, name) then list[#list + 1] = name end
+  end
+  return list
+end
+
+-- The place an expansion plans for: the named planet, else the body's
+-- planet or its platform's location (nil when none).
+local function planning_location(params, body)
+  if params.planet ~= nil then
+    if type(params.planet) ~= "string" or not (prototypes.space_location and prototypes.space_location[params.planet]) then
+      error("production_requirements planet must name a space location (nauvis, vulcanus, gleba, fulgora, aquilo)", 0)
+    end
+    return params.planet
+  end
+  local surface = body and body.surface
+  return read(function() return surface.planet.name end)
+    or read(function() return surface.platform.space_location.name end)
+end
+
+-- Roots, unobtainable raws and the surface-limited recipes of an expansion.
+local function annotate(result, expanded, force)
+  local R = roots()
+  local by_raw, unobtainable = {}, {}
+  for _, name in ipairs(each_key(expanded.raw)) do
+    local list = R.by_product[name]
+    if list then by_raw[name] = list else unobtainable[#unobtainable + 1] = name end
+  end
+  local limited = {}
+  for _, node in ipairs(expanded.nodes) do
+    local recipe = force.recipes and force.recipes[node.recipe]
+    local conditions = recipe and recipe_conditions(recipe)
+    if conditions then
+      local first = conditions[1]
+      limited[#limited + 1] = { recipe = node.recipe,
+        condition = { property = first.property, min = first.min, max = first.max },
+        planets = planets_allowing(conditions) }
+    end
+  end
+  result.roots, result.unobtainable, result.surface_limited = by_raw, unobtainable, limited
+  return result
+end
+
+-- ------------------------------------------------------------- expansion
+
+local function candidate_recipes(force, product, permitted_locked, location)
   local candidates, locked = {}, {}
   for name, recipe in pairs(force.recipes or {}) do
     -- Hidden recipes (quality recycling, debug items) are never production routes.
@@ -55,6 +295,8 @@ local function candidate_recipes(force, product, permitted_locked)
     if not (hidden_ok and hidden) then
       for _, candidate in ipairs(recipe.products or {}) do if candidate.name == product then produces = true end end
     end
+    -- Surface conditions are read only for the few recipes that make it.
+    if produces and location ~= nil and not conditions_hold(recipe_conditions(recipe), location) then produces = false end
     if produces then
       if recipe.enabled or permitted_locked and permitted_locked[name] then candidates[#candidates + 1] = recipe
       else locked[#locked + 1] = recipe end
@@ -68,38 +310,16 @@ end
 local function expand_targets(force, targets, choices, options)
   local nodes_by_item, raw, all_products, visiting = {}, {}, {}, {}
   local ambiguities, variable = options.ambiguities or {}, options.variable or {}
-  -- Acquisition roots are resources and offshore tile fluids that the surface's own
-  -- map generation places (game settings, not charted or hidden map state). Products
-  -- native to another planet keep their ordinary recipe, ambiguity, or locked handling.
-  -- Unreadable settings give no roots rather than every installed resource.
-  local function surface_autoplaces(kind)
-    local ok, settings = pcall(function()
-      return options.surface.map_gen_settings.autoplace_settings[kind].settings
-    end)
-    if ok and type(settings) == "table" then return settings end
-    return {}
-  end
-  local entity_settings, tile_settings = surface_autoplaces("entity"), surface_autoplaces("tile")
-  local resource_products = {}
-  for name, entity in pairs(prototypes.entity or {}) do
-    if entity.type == "resource" and entity_settings[name] ~= nil then
-      local mining = entity.mineable_properties
-      if mining and mining.minable then
-        for _, product in pairs(mining.products or {}) do resource_products[product.name] = true end
-      end
-    end
-  end
-  for name, tile in pairs(prototypes.tile or {}) do
-    local ok, fluid = pcall(function() return tile.fluid end)
-    if ok and fluid and fluid.name and tile_settings[name] ~= nil then
-      resource_products[fluid.name] = true
-    end
-  end
+  -- Acquisition roots are what the planning location's own map generation
+  -- (or its asteroids) gives (prototype data, not charted or hidden map state).
+  -- Products native to another planet keep their ordinary recipe, ambiguity, or
+  -- locked handling. No location gives no roots.
+  local resource_products = options.location and roots().at[options.location] or {}
 
   local function choose(product)
     local choice = choices[product]
     if choice == nil and resource_products[product] then return nil end
-    local candidates, locked = candidate_recipes(force, product, options.permitted_locked)
+    local candidates, locked = candidate_recipes(force, product, options.permitted_locked, options.filter_location)
     if choice ~= nil then
       if type(choice) ~= "string" then error("recipe choice for " .. product .. " must be a recipe name") end
       for _, recipe in ipairs(candidates) do if recipe.name == choice then return recipe end end
@@ -207,7 +427,7 @@ end
 
 local function exact_inventory_credit(character, required)
   local credit, remaining = {}, {}
-  local inventory = character.get_main_inventory and character.get_main_inventory() or nil
+  local inventory = character and character.valid and character.get_main_inventory() or nil
   for _, name in ipairs(sorted_keys(required)) do
     local available = inventory and inventory.get_item_count and inventory.get_item_count(name) or 0
     local used = math.min(required[name], tonumber(available) or 0)
@@ -240,7 +460,8 @@ local function flow_rows(force, surface, required, precision_name)
     basis = "remaining_science_divided_by_observed_force_output_rate" }
 end
 
-local function closure_requirements(params, character, force, target_kind, target_name)
+local function closure_requirements(params, body, location, force, target_kind, target_name)
+  local character = body.character
   local location_candidates = target_kind == "location" and find_location_unlock(force, target_name) or nil
   if location_candidates and #location_candidates > 1 then
     return { target_kind = target_kind, target = target_name, partial = true,
@@ -281,10 +502,11 @@ local function closure_requirements(params, character, force, target_kind, targe
   local credit, remaining = exact_inventory_credit(character, science)
   local deterministic = expand_targets(force, remaining, params.recipe_choices or {}, {
     partial = true, permitted_locked = permitted_locked, ambiguities = ambiguities, variable = variable,
-    surface = character.surface,
+    location = location, filter_location = params.planet,
   })
+  annotate(deterministic, deterministic, force)
   local precision = params.flow_precision or "one_minute"
-  local flows, time_estimate = flow_rows(force, character.surface, remaining, precision)
+  local flows, time_estimate = flow_rows(force, body.surface, remaining, precision)
   if time_estimate.kind then variable[#variable + 1] = time_estimate end
   return {
     target_kind = target_kind, target = target_name, target_technology = technology_name,
@@ -302,10 +524,11 @@ end
 function M.production_requirements(params)
   local modes = (params.targets and 1 or 0) + (params.technology and 1 or 0) + (params.location and 1 or 0)
   if modes ~= 1 then error("production_requirements requires exactly one of targets, technology, or location") end
-  local character = companion.require_companion()
-  local force = character.force
-  if params.technology then return closure_requirements(params, character, force, "technology", params.technology) end
-  if params.location then return closure_requirements(params, character, force, "location", params.location) end
+  local body = companion.require_present()
+  local force = body.force
+  local location = planning_location(params, body)
+  if params.technology then return closure_requirements(params, body, location, force, "technology", params.technology) end
+  if params.location then return closure_requirements(params, body, location, force, "location", params.location) end
 
   local targets, target_names = params.targets, {}
   if type(targets) ~= "table" then error("production_requirements targets must map item or fluid names to positive counts") end
@@ -321,11 +544,12 @@ function M.production_requirements(params)
   if #target_names < 1 or #target_names > 16 then error("production_requirements targets must contain 1-16 entries") end
   local choices = params.recipe_choices or {}
   if type(choices) ~= "table" then error("production_requirements recipe_choices must map product names to recipe names") end
-  local expanded = expand_targets(force, targets, choices, { partial = false, surface = character.surface })
-  return { units = { targets = "item_or_fluid_units", raw = "item_or_fluid_units",
+  local expanded = expand_targets(force, targets, choices,
+    { partial = false, location = location, filter_location = params.planet })
+  return annotate({ units = { targets = "item_or_fluid_units", raw = "item_or_fluid_units",
       products = "item_or_fluid_units", time = "seconds_at_crafting_speed_1" },
-    targets = targets, nodes = expanded.nodes, raw = expanded.raw, products = expanded.products,
-    total_craft_time_seconds_at_speed_1 = expanded.total_craft_time_seconds_at_speed_1 }
+    planet = location, targets = targets, nodes = expanded.nodes, raw = expanded.raw, products = expanded.products,
+    total_craft_time_seconds_at_speed_1 = expanded.total_craft_time_seconds_at_speed_1 }, expanded, force)
 end
 
 return M

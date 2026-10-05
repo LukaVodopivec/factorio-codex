@@ -1,7 +1,11 @@
 -- inspect: detailed view of an entity at an exact local map position
 -- (1.5-tile search, non-characters preferred). Beyond the local radius it
 -- reads only own-force entities in charted chunks and marks them remote.
+-- inspect {surface?} reads another surface the same way: there everything is
+-- remote (no body stands there). Heated machines add temperature and frozen.
 local companion = require("scripts.companion")
+local surfaces = require("scripts.surfaces")
+local items = require("scripts.items")
 local fluid_connections = require("scripts.fluid_connections")
 local inventory_roles = require("scripts.inventory_roles")
 local entity_settings = require("scripts.entity_settings")
@@ -39,9 +43,9 @@ local function entity_identity(entity)
   return nil
 end
 
--- Inventories by role (inventory_roles). input, output and fuel show when
--- the entity has them, empty or not; the other roles only when they hold
--- something.
+-- Inventories by role (inventory_roles), by item key (a non-normal quality
+-- is "name@quality"). input, output and fuel show when the entity has them,
+-- empty or not; the other roles only when they hold something.
 local ALWAYS_SHOWN = { input = true, output = true, fuel = true }
 
 local function collect_inventories(entity)
@@ -50,8 +54,8 @@ local function collect_inventories(entity)
     local inventories = inventory_roles.get(entity, role)
     local bucket, any = {}, false
     for _, inventory in ipairs(inventories) do
-      for _, item in ipairs(inventory.get_contents()) do
-        bucket[item.name] = (bucket[item.name] or 0) + item.count
+      for key, count in pairs(items.sum_contents(inventory)) do
+        bucket[key] = (bucket[key] or 0) + count
         any = true
       end
     end
@@ -138,17 +142,16 @@ local function locate(pos, c)
 
   local surface = c.surface
   -- Player parity: the map view shows a player their own machines anywhere the
-  -- force has charted. Beyond the local radius only such entities are read;
-  -- the chart is checked before the surface is queried, and one refusal covers
-  -- uncharted, foreign and empty positions so it reveals nothing about them.
-  local remote = distance(c.position, target) > 30
+  -- force has charted. Beyond the local radius (or on a surface the body is
+  -- not on) only such entities are read; the chart is checked before the
+  -- surface is queried, and one refusal covers uncharted, foreign and empty
+  -- positions so it reveals nothing about them.
+  local remote = c.position == nil or distance(c.position, target) > 30
   if remote then
     local refusal = "inspect positions must be within 30 tiles of Codex, or on an own-force entity in a charted chunk"
+    local platform = surfaces.is_platform(surface)
     local function is_charted(position)
-      local ok, known = pcall(function()
-        return c.force.is_chunk_charted(surface, { x = math.floor(position.x / 32), y = math.floor(position.y / 32) })
-      end)
-      return ok and known == true
+      return surfaces.charted(c.force, surface, math.floor(position.x / 32), math.floor(position.y / 32), platform)
     end
     if not is_charted(target) then error(refusal) end
     local best, best_d = nil, math.huge
@@ -202,6 +205,16 @@ local function inspect_one(position, c)
 
   local ok, health = pcall(function() return e.health end)
   if ok and health then out.health = round1(health) end
+
+  -- Heat on planets that freeze (Aquilo): a machine's heat buffer and
+  -- whether it froze.
+  local ok_freezable, freezable = pcall(function() return e.is_freezable end)
+  if ok_freezable and freezable then
+    local ok_frozen, frozen = pcall(function() return e.frozen end)
+    if ok_frozen then out.frozen = frozen == true end
+  end
+  local ok_temperature, temperature = pcall(function() return e.temperature end)
+  if ok_temperature and type(temperature) == "number" then out.temperature = round1(temperature) end
 
   -- entity.status can throw or be nil on some types
   local ok_status, status = pcall(function() return e.status end)
@@ -343,9 +356,22 @@ M.PER_TARGET = 40
 -- inspect as a job (jobs.lua) of up to MAX_TARGETS entities in ONE call —
 -- reading machines one at a time costs the brain a full round of thinking per
 -- machine. Positions past the limit are not read; `omitted` counts them.
+-- What the reads stand on: the surface (kept in the state by index), the
+-- force, and the body's position when it is on that surface (else none:
+-- every read there is remote).
+local function context(state)
+  local body = companion.require_present()
+  -- A read a 0.22.2 save left running read the body's surface.
+  if state.surface_index == nil then state.surface_index, state.surface = body.surface.index, body.surface_ref end
+  local surface = surfaces.stored(state.surface_index, body)
+  if not surface then error("SURFACE_GONE: surface " .. tostring(state.surface) .. " no longer exists", 0) end
+  local here = body.surface ~= nil and body.surface.index == state.surface_index
+  return { surface = surface, force = body.force, position = here and body.position or nil }
+end
+
 M.job = {
   start = function(params)
-    companion.require_companion()
+    local target = surfaces.target(type(params) == "table" and params.surface or nil)
     local targets = type(params) == "table" and params.targets or nil
     if type(targets) ~= "table" or #targets == 0 then
       error("targets must be a non-empty array of {x, y}")
@@ -354,10 +380,11 @@ M.job = {
     local list = {}
     for i = 1, #targets - omitted do list[i] = targets[i] end
     return { targets = list, omitted = omitted, index = 1, entities = {}, first_tick = game.tick,
+      surface_index = target.surface.index, surface = target.ref,
       evidence_class = "fresh_local_exact", scope = "within_30_tiles_of_codex_at_source_tick" }
   end,
   step = function(state, budget)
-    local c = companion.require_companion()
+    local c = context(state)
     while state.index <= #state.targets do
       if budget.left <= 0 then return nil end
       local i, target = state.index, state.targets[state.index]
@@ -383,7 +410,7 @@ M.job = {
       state.index, budget.left = i + 1, budget.left - M.PER_TARGET
     end
     return {
-      tick = game.tick,
+      tick = game.tick, surface = state.surface,
       -- Reads spread over ticks name the tick they began.
       first_tick = state.first_tick ~= game.tick and state.first_tick or nil,
       evidence_class = state.evidence_class,

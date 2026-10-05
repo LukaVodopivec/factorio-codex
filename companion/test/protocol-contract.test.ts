@@ -5,12 +5,12 @@ import { describe, expect, it } from "vitest";
 import { JOB_METHODS, PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 import { planStepSchema } from "../src/mcp/runPlan.js";
 
-describe("bridge protocol v27", () => {
+describe("bridge protocol v28", () => {
   it("has the expected version and retained methods", () => {
-    expect(PROTOCOL_VERSION).toBe(27);
+    expect(PROTOCOL_VERSION).toBe(28);
     expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk", "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now",
       "get_job", "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles",
-      "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe"]);
+      "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel"]);
   });
   it("matches the exact Lua registrations", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -73,7 +73,8 @@ describe("bridge protocol v27", () => {
     expect(read("mod/agentic-companion/scripts/map_summary.lua")).toMatch(/sections\.problems_by_status/);
     expect(types).toMatch(/problems_by_status\?: Record<string, number>/);
     expect(read("mod/agentic-companion/scripts/research.lua")).not.toMatch(/companion\.get|game\.forces\.player|connected_players/);
-    expect(read("mod/agentic-companion/scripts/research.lua")).toMatch(/companion\.require_companion\(\)\.force/);
+    // Research reads the live Codex body's force in every body state (aboard too), never a fallback force.
+    expect(read("mod/agentic-companion/scripts/research.lua")).toMatch(/companion\.require_present\(\)\.force/);
     // Mining keeps its exact target; only a count > 1 on trees or rocks looks
     // for the next one of the same type, never an own entity or a resource.
     const mineSource = read("mod/agentic-companion/scripts/actions/mine.lua");

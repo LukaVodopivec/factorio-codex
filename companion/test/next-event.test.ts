@@ -101,11 +101,32 @@ describe("next_event rocket and platform events", () => {
       last_space_event_tick: 230, space_events: [launched, landed] };
     const event = await waitForEvent(game([busy, ended]).bridge, input(), quiet(), undefined, fakeClock());
     expect(event).toMatchObject({ event: "plan_ended", plan_id: 5, space_events: [launched, landed] });
-    expect(eventSummary(event)).toBe(`plan 5 ended completed; 2 rocket/platform events in space_events; ${IDLE_NOW}`);
+    expect(eventSummary(event)).toBe(`plan 5 ended completed; 2 rocket, platform or travel events in space_events; ${IDLE_NOW}`);
     // An empty Lua ring arrives as {} and is no event.
     const empty = { ...busy, last_space_event_tick: 120, space_events: {} as never };
     expect(await waitForEvent(game([empty]).bridge, { timeout_seconds: 1, since_tick: 100 }, quiet(), undefined, fakeClock()))
       .toMatchObject({ event: "timeout" });
+  });
+
+  it("reports a trip: travel phases, a platform's arrival and the body's move to another surface", async () => {
+    const phase = { tick: 300, kind: "travel_phase" as const, phase: "wait_arrival", from: "nauvis", to: "vulcanus" };
+    const arrived = { tick: 9000, kind: "platform_arrived" as const, platform: { index: 3, name: "Orbit" }, location: "vulcanus" };
+    const moved = { tick: 9400, kind: "body_surface_changed" as const, from: "platform:3", to: "vulcanus", state: "on_surface" };
+    const before = { ...busy, last_space_event_tick: 300, space_events: [phase] };
+    const after = { ...before, tick: 9010, last_space_event_tick: 9000, space_events: [phase, arrived] };
+    const event = await waitForEvent(game([before, after]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(event).toMatchObject({ event: "platform_arrived", event_tick: 9000, location: "vulcanus", platform: { name: "Orbit" } });
+    expect(eventSummary(event)).toBe("platform Orbit arrived at vulcanus");
+    const landed = { ...after, tick: 9410, last_space_event_tick: 9400, space_events: [phase, arrived, moved] };
+    const move = await waitForEvent(game([landed]).bridge, input({ since_tick: 9005 }), quiet(), undefined, fakeClock());
+    expect(move).toMatchObject({ event: "body_surface_changed", from: "platform:3", to: "vulcanus", state: "on_surface" });
+    expect(eventSummary(move)).toBe("the body moved from platform:3 to vulcanus (on_surface)");
+    expect(eventSummary(await waitForEvent(game([landed]).bridge, input({ since_tick: 200 }), quiet(), undefined, fakeClock())))
+      .toBe("travel to vulcanus: wait_arrival");
+    // A plan that ends names the surface its positions were on.
+    const cancelled = { ...idle, tick: 9420, last_plan_ended: { plan_id: 8, status: "cancelled", tick: 9401, surface: "nauvis" } };
+    expect(await waitForEvent(game([cancelled]).bridge, input({ since_tick: 9400 }), quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "plan_ended", plan_id: 8, status: "cancelled", surface: "nauvis" });
   });
 });
 
@@ -179,10 +200,25 @@ describe("next_event", () => {
     expect(problem).toMatchObject({ event: "new_problem", problems: [{ status: "no_fuel", name: "stone-furnace" }] });
   });
 
+  it("names problems on other surfaces when the body's surface has none new", async () => {
+    let index = 0;
+    const samples = [busy, { ...busy, tick: 130, last_problem_tick: 120 }];
+    const call = vi.fn(async (method: string) => {
+      if (method === "factory_status") return { tick: 130, problems: {}, elsewhere: [
+        { surface: "nauvis", problems: 2, top_problems: [{ status: "no_fuel", name: "stone-furnace", position: { x: 1, y: 2 }, count: 2 }] },
+        { surface: "platform:1", problems: 0, top_problems: {} }] };
+      return samples[Math.min(index++, samples.length - 1)];
+    });
+    const event = await waitForEvent({ call } as unknown as Bridge, input(), quiet(), undefined, fakeClock());
+    expect(event).toMatchObject({ event: "new_problem",
+      problems: [{ status: "no_fuel", name: "stone-furnace", count: 2, surface: "nauvis" }] });
+    expect((event as any).problems).toHaveLength(1);
+  });
+
   it("reports a new problem, a human hold starting and ending, and new package failures while waiting", async () => {
     const { bridge, call } = game([busy, { ...busy, tick: 130, last_problem_tick: 120 }]);
     expect(await waitForEvent(bridge, input(), quiet(), undefined, fakeClock())).toMatchObject({ event: "new_problem", tick: 130 });
-    expect(call).toHaveBeenLastCalledWith("factory_status", { sections: ["problems"], since_tick: 100 });
+    expect(call).toHaveBeenLastCalledWith("factory_status", { sections: ["problems", "elsewhere"], since_tick: 100 });
     expect(await waitForEvent(game([busy, { ...busy, human_hold: true }]).bridge, input(), quiet(), undefined, fakeClock()))
       .toMatchObject({ event: "human_hold_started", body: { human_hold: true } });
     // A hold at the start is not idleness; its end is the event.

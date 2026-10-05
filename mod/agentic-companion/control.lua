@@ -17,6 +17,7 @@ local factory_status = require("scripts.factory_status")
 local thoughts = require("scripts.thoughts")
 local chores = require("scripts.chores")
 local registry = require("scripts.registry")
+local surfaces = require("scripts.surfaces")
 local jobs = require("scripts.jobs")
 local build_layout = require("scripts.actions.build_layout")
 local blueprints = require("scripts.blueprints")
@@ -28,6 +29,16 @@ local requests = require("scripts.requests")
 local configure = require("scripts.actions.configure")
 local build = require("scripts.actions.build")
 local timing = require("scripts.profiler")
+
+-- Where the body is ({state, surface_ref, platform_name?, rebind_refused?},
+-- companion.body_summary) and, while a travel step is pending in the FIFO,
+-- bound_for: the last such step's destination (the bridge holds a package
+-- for the old surface meanwhile).
+local function body_summary()
+  local summary = companion.body_summary()
+  summary.bound_for = tasks.bound_for()
+  return summary
+end
 
 -- Every read-only RPC result carries the body's FIFO state from the same Lua
 -- read, so a reader sees an idle body without another round trip.
@@ -54,7 +65,9 @@ local function fifo_state()
   if not ok then human_idle_ticks = nil end
   return { active_plan_id = active and active.type == "plan" and active.id or nil,
     queue_depth = depth, idle_seconds = idle_seconds,
-    human_control = human_control, human_idle_ticks = human_idle_ticks }
+    human_control = human_control, human_idle_ticks = human_idle_ticks,
+    -- Where the body is (body_summary).
+    body = body_summary() }
 end
 local function read(handler)
   return function(params)
@@ -64,17 +77,23 @@ local function read(handler)
   end
 end
 
+-- A body away on a trip (aboard a platform, in a cargo pod) still exists:
+-- the player is connected with the body away.
+local BODY_EXISTS = { on_surface = true, aboard_platform = true, in_transit = true }
 rpc.register("ping", read(function()
+  local exists = BODY_EXISTS[companion.body().state] == true
   return {
-    protocol_version = 27,
+    protocol_version = 28,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
-    companion_exists = companion.get() ~= nil,
+    companion_exists = exists,
     companion_ever_created = companion.record() ~= nil,
-    companion_dead = companion.record() ~= nil and companion.get() == nil,
+    companion_dead = companion.record() ~= nil and not exists,
     -- The last world-policy writes that failed (per surface), if any.
     world_policy_errors = companion.world_policy_errors(),
+    -- Where the body is (body_summary).
+    body = body_summary(),
   }
 end))
 rpc.register("spawn_companion", companion.connect)
@@ -100,6 +119,10 @@ jobs.register("inspect", inspect.job)
 -- platform_status compact is attribute reads; full reads one platform's
 -- foundation and entities over ticks.
 jobs.register("platform_status", platforms.status_job)
+-- run_snapshot (the run recorder's sample) reads one surface's statistics a
+-- step; it carries no fifo block.
+jobs.register("run_snapshot", run_snapshot.job)
+rpc.register("run_snapshot", jobs.rpc("run_snapshot"))
 for _, kind in ipairs({ "observe_local", "inspect", "map_summary", "connect_entities", "build_layout", "build_block",
   "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status" }) do
   rpc.register(kind, read(jobs.rpc(kind)))
@@ -115,13 +138,21 @@ rpc.register("start_research", research.start_research)
 -- platform window needs no body (each refuses a planet target, which needs
 -- the body: a plan step). launch_rocket needs the body (a plan step).
 rpc.register("create_platform", platforms.create_platform)
+rpc.register("set_platform_route", platforms.set_platform_route)
+-- travel moves the body: the direct tool queues it as a pilot plan and
+-- answers at once with the plan; plan_status and next_event follow it.
+rpc.register("travel", function(params)
+  local step = { action = "travel", to = params.to, via_silo = params.via_silo, max_wait_minutes = params.max_wait_minutes }
+  local queued = tasks.queue_plan({ steps = { step } })
+  queued.to = step._to
+  return queued
+end)
 rpc.register("set_requests", requests.rpc)
 rpc.register("configure_entity", configure.rpc)
 rpc.register("set_recipe", build.set_recipe_rpc)
 rpc.register("can_place", read(spatial.can_place))
 rpc.register("find_placement", read(find_placement.find_placement))
 rpc.register("production_requirements", read(production_requirements.production_requirements))
-rpc.register("run_snapshot", run_snapshot.capture)
 rpc.register("describe_prototype", read(spatial.describe_prototype))
 rpc.register("progression_status", read(research.progression_status))
 rpc.register("enqueue", tasks.enqueue)
@@ -141,6 +172,37 @@ remote.add_interface("agentic", {
   end,
 })
 
+-- The body moved (multi-surface rules): a rebind where the character may
+-- have changed, then, when its physical surface changed, the surface cancel
+-- rule and body_surface_changed in the space event ring, and when it now
+-- stands on a surface it did not stand on before (also after a pod landed
+-- it on a surface already seen in transit) the world policy and one chart
+-- around it. The remote view moving to another surface is no move: the
+-- physical surface is compared. Without an event (a load) it only records
+-- or compares the surface. It never raises into the event that moved the
+-- body.
+local function move_body(event)
+  local rec = companion.record()
+  if not (rec and rec.player_index) then return end
+  if event then
+    if event.player_index ~= rec.player_index then return end
+    companion.rebind(event)
+  end
+  local change = companion.note_body_surface()
+  if not change then return end
+  if change.changed then
+    tasks.on_body_surface_changed(change)
+    platforms.record("body_surface_changed", { from = change.from, to = change.to, state = change.state })
+  end
+  if change.arrived then
+    companion.enforce_peaceful_world({ surface_index = change.surface_index })
+    chores.on_arrival(change)
+  end
+end
+local function body_moved(event)
+  local ok, err = pcall(move_body, event)
+  if not ok and log then pcall(log, "[agentic-companion] body move handling failed: " .. tostring(err)) end
+end
 local function initialize()
   state.init()
   -- state.init dropped any pending path request: the active step re-plans.
@@ -150,6 +212,7 @@ local function initialize()
   for _, player in pairs(game.connected_players) do
     companion.on_player_available({ player_index = player.index })
   end
+  body_moved(nil)
   companion.enforce_normal_speed()
   -- An upgrade keeps the old version's GUI elements: rebuild the panel.
   thoughts.init()
@@ -195,6 +258,7 @@ end)
 script.on_event(defines.events.on_script_path_request_finished, walk.on_path_finished)
 local function player_available(event)
   companion.on_player_available(event)
+  body_moved(event)
   thoughts.on_player_joined(event)
 end
 script.on_event(defines.events.on_player_created, player_available)
@@ -234,8 +298,17 @@ script.on_event(defines.events.on_player_crafted_item, factory_activity.on_playe
 script.on_event(defines.events.on_chunk_charted, map_summary.on_chunk_charted)
 script.on_event(defines.events.on_resource_depleted, map_summary.on_resource_depleted)
 script.on_event(defines.events.on_player_left_game, companion.on_player_left)
-script.on_event(defines.events.on_player_died, companion.on_player_died)
-script.on_event(defines.events.on_player_respawned, companion.on_player_respawned)
+script.on_event(defines.events.on_player_died, function(event)
+  companion.on_player_died(event)
+  body_moved(event)
+end)
+script.on_event(defines.events.on_player_respawned, function(event)
+  companion.on_player_respawned(event)
+  body_moved(event)
+end)
+for _, name in ipairs({ "on_player_changed_surface", "on_player_controller_changed", "on_cargo_pod_finished_ascending" }) do
+  if defines.events[name] then script.on_event(defines.events[name], body_moved) end
+end
 -- Human takeover: real control input on the Codex client (data.lua's linked
 -- custom inputs, and any GUI it opens) parks the FIFO.
 for _, control in ipairs(human_inputs.controls) do
@@ -243,11 +316,21 @@ for _, control in ipairs(human_inputs.controls) do
 end
 script.on_event(defines.events.on_gui_opened, companion.on_human_input)
 script.on_event(defines.events.on_surface_created, companion.enforce_peaceful_world)
+-- A deleted surface (a platform removed) takes its registry aggregates and
+-- patch cache with it; a later surface may reuse its index.
+script.on_event(defines.events.on_surface_deleted, function(event)
+  for _, handler in ipairs({ registry.on_surface_deleted, map_summary.on_surface_deleted, surfaces.on_surface_deleted }) do
+    pcall(handler, event)
+  end
+end)
 -- The space event ring (platforms.lua); a game without Space Age has none of
--- these events.
+-- these events. A pod that lands with the body also moves the body.
 for name, handler in pairs({ on_rocket_launch_ordered = platforms.on_rocket_launch_ordered,
   on_space_platform_changed_state = platforms.on_platform_state_changed,
-  on_cargo_pod_finished_descending = platforms.on_cargo_pod_finished_descending }) do
+  on_cargo_pod_finished_descending = function(event)
+    platforms.on_cargo_pod_finished_descending(event)
+    body_moved(event)
+  end }) do
   if defines.events[name] then script.on_event(defines.events[name], handler) end
 end
 if defines.events.on_player_removed then

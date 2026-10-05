@@ -1,7 +1,8 @@
 // Astra's orders and build packages, read from the current run's
 // operations.json. Tool results carry the orders once per new ledger revision,
 // and one full-surface bridge queues each new package into the FIFO by itself,
-// first making the blueprint captures a package starts with.
+// first making the blueprint captures a package starts with, while the body
+// is on the package's surface.
 import fs from "node:fs";
 import path from "node:path";
 import { ModError, type Bridge } from "../bridge.js";
@@ -13,8 +14,10 @@ import { operationsLedgerSchema, type OperationsLedger } from "./ledger.js";
 export type RunDir = () => string | null;
 type BuildPackage = OperationsLedger["build_packages"][number];
 export interface PackageRecord {
-  /** queuing: the queue_plan call was sent without a recorded answer. */
-  status: "queuing" | "queued" | "failed"; revision: number; at: string;
+  /** queuing: the queue_plan call was sent without a recorded answer;
+   *  waiting_surface: the body is on another surface than the package's (not
+   *  a failure: it is queued once the body is back). */
+  status: "queuing" | "waiting_surface" | "queued" | "failed"; revision: number; at: string;
   tick?: number; plan_id?: number; reason?: string;
   /** Blueprints captured for the package; a package of captures only has no plan. */
   captured?: string[];
@@ -157,13 +160,15 @@ export function holdLock(dir: string, pid = process.pid, isAlive: (pid: number) 
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 // Trees and rocks are cleared by the placement itself; reach and body overlap
-// are handled when the step runs. Only a standing building or water rejects.
+// are handled when the step runs. Only a standing building, a liquid (water,
+// lava, an ocean) or the planet's surface conditions reject.
 function hardRejection(entry: any): string | null {
   if (!entry || entry.can_place !== false) return null;
   if (luaArray(entry.overlaps_batch ?? []).length > 0) return "overlaps another placement in the package";
   const reason = typeof entry.reason === "string" ? entry.reason : "";
+  if (entry.code === "SURFACE_CONDITION") return reason || "SURFACE_CONDITION";
   const blocker = /^blocked by (\S+)/.exec(reason)?.[1];
-  if ((blocker && !/tree|rock/.test(blocker)) || /touches water/.test(reason)) return reason;
+  if ((blocker && !/tree|rock/.test(blocker)) || /touches (?:water|lava|[a-z-]+ ocean)\b/.test(reason)) return reason;
   return null;
 }
 
@@ -182,7 +187,7 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage): Promise
     const places = checked.flatMap((step) => step.action === "place_entity" ? [step] : []);
     for (let start = 0; start < places.length; start += 24) {
       const batch = places.slice(start, start + 24);
-      const checked = await bridge.call<{ results?: unknown[] }>("can_place", toolPayloads.canPlace(batch));
+      const checked = await bridge.call<{ results?: unknown[] }>("can_place", toolPayloads.canPlace(batch, entry.surface));
       for (const [index, result] of luaArray(checked?.results ?? []).entries()) {
         const reason = hardRejection(result);
         const step = batch[index]!;
@@ -239,12 +244,13 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
     if (!known) return;
     const settled = (state: PackageQueueState, id: string) => {
       const record = state.packages[id];
-      return record !== undefined && record.status !== "queuing";
+      return record !== undefined && (record.status === "queued" || record.status === "failed");
     };
     // Every pass reads the game, even with no package yet: an emergency stop
     // is recorded when it happens, not when the first package after it appears.
     const b = await bridge();
-    const ping = await b.call<{ companion_exists?: boolean; tick?: number }>("ping");
+    const ping = await b.call<{ companion_exists?: boolean; tick?: number;
+      body?: { state?: string; surface_ref?: string; bound_for?: string } }>("ping");
     if (!ping.companion_exists || !holdLock(dir)) return;
     const state = readPackageQueue(dir);
     if (!state) return;
@@ -297,6 +303,21 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       // queuing: the call was sent and its answer lost; the mod returns the
       // same plan for a package source, so it is sent again unchecked.
       const retry = state.packages[id]?.status === "queuing";
+      // Any other package for another surface waits until the body is
+      // settled there: standing on it (or aboard), with no travel pending
+      // in the FIFO to somewhere else (bound_for), and not in a cargo pod.
+      const body = ping.body;
+      const atRest = body?.state === "on_surface" || body?.state === "aboard_platform";
+      const here = atRest ? body?.bound_for ?? body?.surface_ref : undefined;
+      if (!retry && here !== entry.surface) {
+        const where = !atRest ? (body?.state === "in_transit" ? "in a cargo pod" : "on no surface")
+          : body?.bound_for !== undefined ? `bound for ${body.bound_for}` : `on ${body?.surface_ref}`;
+        const reason = `the body is ${where}; the package is for ${entry.surface}`;
+        if (state.packages[id]?.status !== "waiting_surface" || state.packages[id]?.reason !== reason) {
+          record(id, { status: "waiting_surface", reason });
+        }
+        continue;
+      }
       const captures = entry.steps.flatMap((step) => step.action === "blueprint_capture" ? [step] : []);
       const steps = entry.steps.filter((step) => step.action !== "blueprint_capture");
       let afterPlanId: number | undefined;
@@ -312,8 +333,9 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
           record(id, { status: "failed", reason: `after_package_id ${entry.after_package_id} failed` });
           continue;
         }
-        // Its queue answer is still unknown: wait until it is resolved.
-        if (before.status === "queuing") continue;
+        // Its queue answer is still unknown, or it waits for its surface:
+        // wait until it is resolved.
+        if (before.status === "queuing" || before.status === "waiting_surface") continue;
         // A predecessor of captures only has no plan and is done.
         if (before.plan_id !== undefined) {
           let status: string | undefined, source: string | undefined;
@@ -352,7 +374,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       }
       const captured = captures.length > 0 ? { captured: captures.map((step) => step.name) } : {};
       if (steps.length === 0) { record(id, { status: "queued", ...captured }); continue; }
-      const plan = queuePlanSchema.safeParse({ steps, ...(afterPlanId ? { after_plan_id: afterPlanId } : {}) });
+      const plan = queuePlanSchema.safeParse({ steps, surface: entry.surface, ...(afterPlanId ? { after_plan_id: afterPlanId } : {}) });
       if (!plan.success) { record(id, { status: "failed", reason: plan.error.issues[0]?.message ?? "invalid steps" }); continue; }
       // An emergency stop or a human hold during this pass: nothing more is queued.
       const latest = await b.call<{ human_hold?: boolean; last_cancel_all_tick?: number }>("event_state");

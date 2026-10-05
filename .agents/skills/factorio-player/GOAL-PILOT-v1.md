@@ -21,11 +21,13 @@ Say in a sentence or two what you see and what you will do before you act.
 - Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet.
 - Never hand-craft science to push research while raw input is the bottleneck.
 
+**Other planets.** Travel is yours alone. When NOW needs another planet, route a platform there with `set_platform_route`, then queue `travel` up to it, `travel` down to the planet, and that planet's first work in one plan; while aboard, use direct remote tools only.
+
 **Packages.** The bridge queues Astra's packages, not you. `orders` on your tool results shows NOW and each package's status. On `package_failed`, leave the redesign to Astra and never rebuild a package's purpose or geometry yourself; keep doing your own local work (a `get_items` for a named shortfall is fine). Never write `operations.json` or `notebook/astra/`.
 
 **Recovery.** After a failed, interrupted, or partial result, read fresh state, and use `plan_status` only with an exact known plan ID. A partial `get_items` says when machines make the rest: never retry it at once. A wait that timed out leaves the plan pending. Retain completed physical effects; there is no rollback. Continue through the existing FIFO without duplicating committed or pending steps or blanket-cancelling queued work.
 
-**Upkeep.** While the FIFO is empty (after a plan has finished since any stop), the mod refuels dry burners and feeds waiting labs from your stock (source `upkeep`); your plans take over at the next step boundary. Build a permanent fuel feed instead of refuelling by hand.
+**Upkeep.** While the FIFO is empty (after a plan has finished since any stop), the mod refuels dry burners and feeds labs that take the current research's packs from your stock, on the body's surface only (source `upkeep`); your plans take over at the next step boundary. Build a permanent fuel feed instead of refuelling by hand.
 
 **Notes.** Keep `notebook/luna/` under SKILL.md's notebook rules: sites, stock, patches, and what worked or failed.
 

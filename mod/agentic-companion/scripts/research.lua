@@ -114,7 +114,7 @@ function M.start_research(params)
       end
       queued[#queued + 1] = name
     end
-    local force = companion.require_companion().force
+    local force = companion.require_present().force
     local queue = {}
     for _, technology in ipairs(force.research_queue or {}) do queue[#queue + 1] = technology.name end
     return { queued = true, technologies = queued, research_queue = queue }
@@ -127,7 +127,7 @@ function queue_one(name)
     error('start_research needs a technology name, e.g. {"technology": "logistics"}')
   end
 
-  local force = companion.require_companion().force
+  local force = companion.require_present().force
 
   local ok, tech = pcall(function() return force.technologies[name] end)
   if not ok or not tech then
@@ -175,7 +175,7 @@ function queue_one(name)
 end
 
 function M.progression_status()
-  local force = companion.require_companion().force
+  local force = companion.require_present().force
   local researched, available, trigger_unlocks, enabled_recipes = {}, {}, {}, {}
   local function technology_record(name, technology)
     local prerequisites, ready = {}, true

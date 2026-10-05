@@ -32,6 +32,9 @@ body.cancel_crafting = function() end
 package.loaded["scripts.companion"] = {
   get = function() return body end,
   require_companion = function() return body end,
+  -- Any body state but absent (remote actions, reads, queue_plan); no surface tag.
+  require_present = function() return { state = "on_surface", force = body.force, surface = body.surface } end,
+  anchor = function() return nil end,
 }
 local inert = { start = function() end, tick = function() return { status = "done", detail = "done" } end }
 package.loaded["scripts.actions.mine"] = inert

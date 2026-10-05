@@ -15,6 +15,7 @@ package.loaded["scripts.companion"] = {
     return body
   end,
 }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 
 local entity = mock.entity({
   valid = true, name = "stone-furnace", type = "furnace", direction = 0,

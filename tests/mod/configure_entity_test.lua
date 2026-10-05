@@ -21,6 +21,7 @@ local body = { valid = true, reach_distance = 10, force = own }
 local target
 local walked = {}
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 package.loaded["scripts.actions.approach"] = {
   ensure = function(_, _, position, reach) walked[#walked + 1] = { position = position, reach = reach }; return "ok" end,
   ensure_entity = function(_, _, e) walked[#walked + 1] = { entity = e }; return "ok" end,

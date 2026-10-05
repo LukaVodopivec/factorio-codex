@@ -222,6 +222,7 @@ body.surface = surface
 for _, record in ipairs(world) do record.entity.surface = surface end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end,
   burning_item = dofile(here .. "/../../mod/agentic-companion/scripts/companion.lua").burning_item }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 
 local map_summary = require("scripts.map_summary")
 local function summarize(params) return require("scripts.jobs").run_now(map_summary.summary_job, params) end
@@ -253,10 +254,13 @@ check(not pcall(map_summary.map_summary, { include = { "everything" } })
 -- Patches come from the per-chunk patch cache (filled a few chunks a tick),
 -- never from a resource scan per read.
 require("scripts.state").init()
+-- The surface's cache is made by the force's first chart of a chunk there.
+game.get_surface = function(index) return index == 1 and surface or nil end
+map_summary.on_chunk_charted({ force = force, surface_index = 1, position = { x = 0, y = 0 } })
 -- The rows are rebuilt on the ticks after the reads, never by a read.
 local function settled(cache) return cache.filled and not cache.build and not cache.dirty end
-for tick = 1, 20 do map_summary.patch_tick(tick); if settled(storage.patch_cache) then break end end
-check(settled(storage.patch_cache), "the patch cache reads the charted chunks and builds their patches")
+for tick = 1, 20 do map_summary.patch_tick(tick); if settled(storage.patch_caches[1]) then break end end
+check(settled(storage.patch_caches[1]), "the surface's patch cache reads the charted chunks and builds their patches")
 entity_queries = 0
 local cached_patches = summarize({ include = { "patches" } })
 check(entity_queries == plain_queries and #cached_patches.patches == 3 and cached_patches.patches_complete == true

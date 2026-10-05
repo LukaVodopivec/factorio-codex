@@ -13,6 +13,7 @@ package.loaded["scripts.companion"] = {
   require_companion = function() return body end,
   get = function() return body end,
 }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 package.loaded["scripts.tasks"] = { active_summary = function() return nil end }
 _G.defines = { build_check_type = { manual = 1, ghost_revive = 5 } }
 _G.prototypes = { item = {

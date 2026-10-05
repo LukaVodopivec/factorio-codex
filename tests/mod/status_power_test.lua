@@ -43,6 +43,7 @@ local force = mock.force({ name = "player", is_chunk_charted = function() return
 local body = { valid = true, position = { x = 0, y = 0 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end,
   human_control = function() return false, 999 end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 
 local state = require("scripts.state")
 local registry = require("scripts.registry")

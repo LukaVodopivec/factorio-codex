@@ -326,8 +326,10 @@ local function entity_name(name)
   if entity then return entity.name, entity end
 end
 
+-- Made from a list, it needs no body on any surface: the body's force in
+-- every state but absent (aboard and in transit too).
 function M.create(params)
-  local c = companion.require_companion()
+  local c = companion.require_present()
   check_name(params.name, "blueprint_create")
   local list = params.entities
   if type(list) ~= "table" or #list < 1 or #list > M.MAX_ENTITIES then
@@ -382,7 +384,7 @@ function M.list()
   end
   table.sort(rows, function(a, b) return a.name < b.name end)
   return { blueprints = rows, capacity = capacity(),
-    tool_unlock = M.tool_unlock(companion.require_companion(), "blueprint") }
+    tool_unlock = M.tool_unlock(companion.require_present(), "blueprint") }
 end
 
 M.describe_job = {
@@ -391,7 +393,7 @@ M.describe_job = {
     return { name = params.name }
   end,
   step = function(job, budget)
-    local c = companion.require_companion()
+    local c = companion.require_present()
     local stack, entry = stack_of(job.name, "blueprint_describe")
     local entities = stack.get_blueprint_entities() or {}
     budget.left = budget.left - #entities

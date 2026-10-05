@@ -70,6 +70,7 @@ surface.count_entities_filtered = function(filter)
 end
 local body = { valid = true, position = { x = 0, y = 0 }, force = own, surface = surface }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 
 -- A 0.21.0 save: plans in flight, no blueprint storage yet.
 local active = { id = 243, type = "plan", steps = { { action = "walk_to" } }, source = "pilot" }

@@ -22,6 +22,7 @@ _G.helpers = { table_to_json = function(value) responded = value; return "{}" en
 _G.rcon = { print = function() end }
 
 local body = { valid = true, crafting_queue_size = 0 }
+local body_state = "on_surface"
 local function stub(name, value) package.loaded[name] = value end
 stub("scripts.state", { init = function() end })
 local reads = {}
@@ -32,7 +33,7 @@ end
 local function job_reader(name)
   return { start = function() return {} end, step = reader(name) }
 end
-stub("scripts.tasks", { set_observer = function() end, on_tick = function() end,
+stub("scripts.tasks", { set_observer = function() end, on_tick = function() end, bound_for = function() return nil end,
   plan_status = reader("plan_status"), enqueue = reader("enqueue"), get = reader("get_task"),
   queue_plan = reader("queue_plan"), cancel = reader("cancel") })
 stub("scripts.inspect", { job = job_reader("inspect") })
@@ -44,12 +45,15 @@ stub("scripts.find_placement", { find_placement = reader("find_placement") })
 stub("scripts.map_summary", { summary_job = job_reader("map_summary") })
 stub("scripts.production_requirements", { production_requirements = reader("production_requirements") })
 stub("scripts.connect_entities", { job = job_reader("connect_entities") })
-stub("scripts.run_snapshot", { capture = reader("run_snapshot") })
+stub("scripts.run_snapshot", { job = job_reader("run_snapshot") })
 stub("scripts.companion", { get = function() return body end, record = function() return {} end,
   connect = reader("spawn_companion"), enforce_peaceful_world = function() end, enforce_normal_speed = function() end,
   update_map_tag = function() end, follow_spectators = function() end, on_player_available = function() end,
   on_player_left = function() end, on_player_died = function() end, on_player_respawned = function() end,
-  on_player_removed = function() end, world_policy_errors = function() end })
+  on_player_removed = function() end, world_policy_errors = function() end,
+  body = function() return { state = body_state } end,
+  body_summary = function() return { state = body_state, surface_ref = "nauvis" } end,
+  rebind = function() end, note_body_surface = function() end })
 assert(loadfile(here .. "/../../mod/agentic-companion/control.lua"))()
 
 local function call(method)
@@ -74,6 +78,18 @@ for _, method in ipairs(READS) do
 end
 check(all_idle, "every read-only RPC carries fifo {queue_depth=0, idle_seconds=45} without an extra call")
 check(#reads == #READS - 1, "fifo decoration adds no handler call beyond the read itself")
+local pinged = call("ping")
+check(pinged.protocol_version == 28 and pinged.body.state == "on_surface" and pinged.body.surface_ref == "nauvis"
+  and call("plan_status").fifo.body.surface_ref == "nauvis",
+  "ping (protocol 28) and every fifo block name the body's state and surface")
+body_state = "aboard_platform"
+local away = call("ping")
+body_state = "dead"
+local dead = call("ping")
+body_state = "on_surface"
+check(away.companion_exists == true and away.companion_dead == false and dead.companion_exists == false
+  and dead.companion_dead == true, "a body aboard a platform exists (connected, away); a dead one does not")
+reads = {}
 
 for _, method in ipairs({ "enqueue", "queue_plan", "cancel", "run_snapshot", "start_research" }) do
   local data = call(method)

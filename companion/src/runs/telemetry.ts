@@ -12,18 +12,26 @@ import { createThoughtFeed, type ThoughtFeed, type ThoughtRole } from "./thought
 
 const countRow = z.object({ name: z.string(), count: z.number() }).strict();
 const resourceName = z.object({ type: z.enum(["item", "fluid"]), name: z.string() }).strict();
+const counters = z.object({ produced: z.array(countRow), consumed: z.array(countRow), unavailable: z.boolean().optional() }).strict();
 export const runSnapshotSchema = z.object({
-  tick: z.number().int().nonnegative(), character: z.record(z.string(), z.unknown()),
+  // null while the body is aboard a platform or in a cargo pod without a readable character (mod 0.22.3 on).
+  tick: z.number().int().nonnegative(), character: z.record(z.string(), z.unknown()).nullable(),
+  /** Where the body is (mod 0.22.3 on). */
+  body: z.object({ state: z.string(), surface_ref: z.string().optional(), platform_name: z.string().optional() }).strict().optional(),
   progression: z.record(z.string(), z.unknown()), factory: z.record(z.string(), z.unknown()),
   lines: z.object({ line_count: z.number().int().nonnegative(), running_line_count: z.number().int().nonnegative(),
     self_sustaining_line_count: z.number().int().nonnegative(), hand_fed_line_count: z.number().int().nonnegative() }).strict().optional(),
   statistics: z.object({
-    items: z.object({ produced: z.array(countRow), consumed: z.array(countRow), unavailable: z.boolean().optional() }).strict(),
-    fluids: z.object({ produced: z.array(countRow), consumed: z.array(countRow), unavailable: z.boolean().optional() }).strict(),
+    /** Summed over every surface with own buildings (from mod 0.22.3; the body's surface before). */
+    items: counters,
+    fluids: counters,
+    /** The same counters per surface (mod 0.22.3 on). */
+    by_surface: z.record(z.string(), z.object({ items: counters, fluids: counters }).strict()).optional(),
     raw_resources: z.array(resourceName),
     /** Items the Codex player hand-crafted since since_tick, cumulative (mod 0.22.0 on). */
     hand_crafted: z.object({ since_tick: z.number().int().nonnegative(), items: z.array(countRow) }).strict().optional(),
-    semantics: z.object({ produced: z.literal("force_surface_input_counts"), consumed: z.literal("force_surface_output_counts") }).strict(),
+    semantics: z.object({ produced: z.literal("force_surface_input_counts"), consumed: z.literal("force_surface_output_counts"),
+      items: z.literal("summed_over_factory_surfaces").optional() }).strict(),
   }).strict(),
 }).strict();
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
@@ -31,18 +39,22 @@ export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
 function luaArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : value && typeof value === "object" && Object.keys(value).length === 0 ? [] : value as unknown[];
 }
+function counterLists(counts: any): void {
+  if (!counts) return;
+  counts.produced = luaArray(counts.produced);
+  counts.consumed = luaArray(counts.consumed);
+}
 export function parseRunSnapshot(value: any): RunSnapshot {
   if (value?.statistics) {
-    for (const kind of ["items", "fluids"]) {
-      if (value.statistics[kind]) {
-        value.statistics[kind].produced = luaArray(value.statistics[kind].produced);
-        value.statistics[kind].consumed = luaArray(value.statistics[kind].consumed);
-      }
-    }
+    for (const kind of ["items", "fluids"]) counterLists(value.statistics[kind]);
+    // An empty Lua table is a record here; each surface's counters are lists.
+    if (Array.isArray(value.statistics.by_surface) && value.statistics.by_surface.length === 0) value.statistics.by_surface = {};
+    for (const row of Object.values(value.statistics.by_surface ?? {}) as any[]) for (const kind of ["items", "fluids"]) counterLists(row?.[kind]);
     value.statistics.raw_resources = luaArray(value.statistics.raw_resources);
     if (value.statistics.hand_crafted) value.statistics.hand_crafted.items = luaArray(value.statistics.hand_crafted.items);
   }
-  // Lua omits a nil standing_on; a sample always states it.
+  // Lua omits a nil character (the body away) and standing_on; a sample always states them.
+  if (value && typeof value === "object" && value.character === undefined) value.character = null;
   if (value?.character && typeof value.character === "object" && value.character.standing_on === undefined) value.character.standing_on = null;
   return runSnapshotSchema.parse(value);
 }

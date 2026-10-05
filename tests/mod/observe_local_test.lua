@@ -85,6 +85,7 @@ character = { valid = true, name = "character", type = "character", force = play
   get_inventory = function(index) if index == 1 then return ammo_inventory end end }
 entities[#entities + 1] = character
 package.loaded["scripts.companion"] = { require_companion = function() return character end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return character end)
 package.loaded["scripts.tasks"] = { active_summary = function() return nil end, queue_length = function() return 0 end }
 _G.game = { tick = 123, forces = { enemy = enemy_force } }
 _G.defines = { entity_status = { no_power = 1 }, inventory = { character_ammo = 1 } }

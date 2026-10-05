@@ -1,6 +1,7 @@
 -- Sole-body FIFO dispatcher. Plans are atomic queue entries whose steps run
 -- contiguously on tick, so RCON cannot interleave physical work.
 local companion = require("scripts.companion")
+local items = require("scripts.items")
 local inspect = require("scripts.inspect")
 local walk = require("scripts.actions.walk")
 local mine = require("scripts.actions.mine")
@@ -20,6 +21,7 @@ local equip = require("scripts.actions.equip")
 local requests = require("scripts.requests")
 local platforms = require("scripts.platforms")
 local rocket = require("scripts.actions.rocket")
+local travel = require("scripts.actions.travel")
 local inventory_roles = require("scripts.inventory_roles")
 local set_walking = require("scripts.human_inputs").set_walking
 local placement_geometry = require("scripts.placement_geometry")
@@ -49,7 +51,9 @@ function M.set_observer(fn) observer = fn end
 -- budget_steps = function(step) -> n (optional: the step's share of the
 -- plan's active budget, counted in ordinary steps), remote = function(step)
 -- -> boolean (optional: the step acts on a space platform without the body,
--- so it binds the plan to no surface) }.
+-- so it carries no surface tag) }. A runner may add waiting(task) -> boolean
+-- (a deliberate wait the step watchdog leaves alone) and cancelled(task) ->
+-- table (what a cancel of the running step reports).
 local extensions = {}
 function M.register_action(action, spec)
   assert(type(action) == "string" and type(spec) == "table" and type(spec.runner) == "table"
@@ -70,16 +74,60 @@ local function stop_body()
   set_walking(c, { walking = false })
   c.mining_state, c.picking_state = { mining = false }, false
 end
--- The name of the surface the body stands on, or nil.
+-- The canonical surface of the body (planet name or "platform:<index>"):
+-- where it stands, the hub's surface aboard, the pod's in transit; or nil.
 local function body_surface()
-  local c = companion.get()
-  local ok, name = pcall(function() return c and c.surface.name end)
-  return ok and type(name) == "string" and name or nil
+  local anchor = companion.anchor()
+  return anchor and anchor.surface_ref or nil
 end
--- A plan tagged with another surface than the body's waits (parked) until
--- the body is back; plans from before the tag run anywhere.
-local function off_surface(plan, surface)
-  return plan.type == "plan" and plan.surface ~= nil and surface ~= nil and plan.surface ~= surface
+-- Surface tags (multi-surface rules 2-4). Only physical positional steps
+-- carry one (step._surface): the surface their positions belong to. Remote
+-- steps (an extension's remote(step)), hand-crafting, research waits, reads,
+-- equipment and travel itself carry none.
+local UNTAGGED = { craft_items = true, wait_for_research = true, inspect_entities = true, equip = true, travel = true }
+local function tagged(step)
+  if UNTAGGED[step.action] then return false end
+  local extension = extensions[step.action]
+  return not (extension and extension.remote and extension.remote(step))
+end
+-- A step's surface tag. A plan queued by 0.22.2 or older carries one tag
+-- for the whole plan (plan.surface), which then holds for every step that
+-- would carry one.
+local function step_surface(plan, index)
+  local step = plan.steps[index]
+  if not step then return nil end
+  if plan.step_tags then return step._surface end
+  return plan.surface ~= nil and tagged(step) and plan.surface or nil
+end
+-- The tag of the plan's next unfinished positional step, if any.
+local function next_surface(plan)
+  for index = plan.completed_steps + 1, #plan.steps do
+    local tag = step_surface(plan, index)
+    if tag then return tag end
+  end
+end
+-- The destinations (step._to) of the plan's unfinished travel steps, in order.
+local function pending_travel(plan, into)
+  for index = plan.completed_steps + 1, #plan.steps do
+    local step = plan.steps[index]
+    if step.action == "travel" and step._to then into[#into + 1] = step._to end
+  end
+  return into
+end
+-- Every pending travel destination in FIFO order: the active plan's, then
+-- the queued plans'.
+local function fifo_travel()
+  local tasks, into = storage.tasks, {}
+  if tasks.active and tasks.active.type == "plan" then pending_travel(tasks.active, into) end
+  for _, queued in ipairs(tasks.queue) do
+    if queued.type == "plan" then pending_travel(queued, into) end
+  end
+  return into
+end
+-- The destination of the last travel step pending in the FIFO, or nil.
+function M.bound_for()
+  local into = fifo_travel()
+  return into[#into]
 end
 -- The owner's real control input on the Codex client holds the body (companion.human_control
 -- owns the rule). A failed read never holds.
@@ -117,11 +165,17 @@ local function observe_terminal(plan)
   local ok, value = pcall(observer, { radius = plan.final_observation_radius, detail = "compact" })
   if ok then plan.observation = value else plan.observation_error = tostring(value) end
 end
-local function inventory_snapshot(c)
-  local out, inv = {}, c and c.get_main_inventory and c.get_main_inventory()
-  if not inv then return out end
-  for _, item in ipairs(inv.get_contents()) do out[item.name] = (out[item.name] or 0) + item.count end
-  return out
+-- What the body carries, by item key (a non-normal quality is
+-- "name@quality"): its character's main inventory in every body state (the
+-- character travels with it aboard), or nil when none can be read, so a plan
+-- that ends aboard or in a pod shows no invented loss.
+local function inventory_snapshot()
+  local ok, inv = pcall(function()
+    local c = companion.get() or companion.body().character
+    return c and c.get_main_inventory()
+  end)
+  if not (ok and inv) then return nil end
+  return items.sum_contents(inv)
 end
 local function inventory_delta(plan)
   if not plan.start_inventory or not plan.final_inventory then return {} end
@@ -156,22 +210,24 @@ local function log_plan(plan, detail)
   local log = storage.activity_log or {}
   storage.activity_log = log
   log[#log + 1] = { plan_id = plan.id, source = plan.source or "pilot", steps = #plan.steps,
-    status = plan.status, code = code, summary = summary, start_tick = plan.started_tick, end_tick = game.tick }
+    status = plan.status, code = code, summary = summary, start_tick = plan.started_tick, end_tick = game.tick,
+    surface = plan.surface }
   while #log > ACTIVITY_LOG_SIZE do table.remove(log, 1) end
   -- next_event wakes the pilot on this: the mod's own upkeep (often
   -- pre-empted) is in activity_log only.
   if plan.source ~= "upkeep" then
-    storage.tasks.last_plan_ended = { plan_id = plan.id, status = plan.status, tick = game.tick }
+    storage.tasks.last_plan_ended = { plan_id = plan.id, status = plan.status, tick = game.tick, surface = plan.surface }
   end
 end
-local function finish(task, status, detail, preserve_body, outcome)
-  if status == "cancelled" and task_crafts(task) then cancel_crafting() end
+-- keep_crafting: a surface change cancels plans but never hand-crafting.
+local function finish(task, status, detail, preserve_body, outcome, keep_crafting)
+  if status == "cancelled" and not keep_crafting and task_crafts(task) then cancel_crafting() end
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
   storage.tasks.last_finished_tick = game.tick
   if not preserve_body then stop_body() end
   if task.type == "plan" then
     task.finished_tick = game.tick
-    task.final_inventory = inventory_snapshot(companion.get())
+    task.final_inventory = inventory_snapshot()
     observe_terminal(task)
     local final_status = status == "done" and "completed" or status
     if final_status == "completed" and task.observation_error then final_status = "failed" end
@@ -220,6 +276,8 @@ M.register_action("equip", equip.action)
 M.register_action("set_requests", requests.action)
 M.register_action("create_platform", platforms.create_action)
 M.register_action("launch_rocket", rocket.action)
+M.register_action("set_platform_route", platforms.route_action)
+M.register_action("travel", travel.action)
 
 local ACTIONS = {
   walk_to = "walk_to", mine = "mine", pickup_items = "pickup", place_entity = "place", craft_items = "craft",
@@ -265,7 +323,9 @@ local function make_step_task(step)
   return task
 end
 function M.queue_plan(params)
-  companion.require_companion()
+  -- Plans may be queued in every body state but absent (aboard, for the
+  -- planet the body is about to land on); their steps check the body.
+  local present = companion.require_present()
   if type(params.steps) ~= "table" or #params.steps < 1 or #params.steps > MAX_PLAN_STEPS then
     error("queue_plan requires 1-" .. MAX_PLAN_STEPS .. " steps")
   end
@@ -332,6 +392,31 @@ function M.queue_plan(params)
     end
     local extension = extensions[step.action]
     if extension and extension.validate then extension.validate(step, i) end
+    -- Travel moves the body off its planet: the pilot's decision only.
+    if step.action == "travel" and source ~= "pilot" then
+      error("queue_plan travel step " .. i .. " is the pilot's: packages and upkeep never move the body off its surface")
+    end
+  end
+  -- The surface the positional steps belong to: the one named, else the
+  -- destination of the last travel step already pending in the FIFO, else
+  -- the body's own; a travel step hands its destination to the steps after it.
+  local current
+  if params.surface ~= nil then
+    local ref, code, why = platforms.canonical_ref(present.force, params.surface)
+    if not ref then error(code .. ": queue_plan surface: " .. why, 0) end
+    current = ref
+  else
+    local pending = fifo_travel()
+    current = pending[#pending] or body_surface()
+  end
+  local first_tag
+  for _, step in ipairs(params.steps) do
+    step._surface = nil
+    if step.action == "travel" then current = step._to
+    elseif tagged(step) then
+      step._surface = current
+      first_tag = first_tag or current
+    end
   end
   local budget_steps = 0
   for _, step in ipairs(params.steps) do
@@ -351,19 +436,13 @@ function M.queue_plan(params)
         .. " (pruned, a single task, or never queued); omit it or use a current plan ID")
     end
   end
-  -- A plan of remote steps only (platform windows) binds to no surface.
-  local remote = true
-  for _, step in ipairs(params.steps) do
-    local extension = extensions[step.action]
-    if not (extension and extension.remote and extension.remote(step)) then remote = false end
-  end
   local plan = {
     type = "plan", steps = params.steps, current_step = 0, completed_steps = 0, outcomes = {},
     final_observation_radius = tonumber(params.final_observation_radius) or 15,
     observation_detail = params.observation_detail == "compact" and "compact" or "none",
     after_plan_id = predecessor, source = source, budget_steps = budget_steps,
-    -- Positions in the steps belong to the surface the body stands on now.
-    surface = not remote and body_surface() or nil,
+    -- The first step tag; each positional step carries its own.
+    surface = first_tag, step_tags = true,
   }
   -- Ticks the FIFO sat empty before this plan: the body's idle time while the
   -- caller reasoned, so a short plan's cost is visible in the next result.
@@ -411,6 +490,8 @@ local function plan_payload(plan)
   return {
     plan_id = plan.id, after_plan_id = plan.after_plan_id, source = plan.source,
     status = plan.status, source_tick = game.tick,
+    -- Where the plan's next positional step acts (its first tag once done).
+    surface = plan.status ~= "completed" and next_surface(plan) or plan.surface,
     -- Present only when a human hold delayed this plan: delayed, not failed.
     human_control = plan.human_control,
     position = c and { x = c.position.x, y = c.position.y } or nil,
@@ -472,6 +553,16 @@ local function log_cancel(origin, id, cancelled)
   end
 end
 
+-- A running step ends from outside (a cancel, the plan's budget): its
+-- runner's cancelled hook, if any, lets go of what it holds (a travel step's
+-- launch marker). Returns the hook's note, or nil.
+local function step_cancelled(plan)
+  local task = plan.current_task
+  local runner = task and runners[task.type]
+  local noted, note = pcall(function() return runner and runner.cancelled and runner.cancelled(task) or nil end)
+  return noted and note or nil
+end
+
 function M.cancel(params)
   local origin = params.origin
   if type(origin) ~= "string" or origin == "" or #origin > MAX_ORIGIN then
@@ -485,7 +576,7 @@ function M.cancel(params)
       local step = plan.steps[plan.current_step]
       plan.outcomes[#plan.outcomes + 1] = {
         step = plan.current_step, action = step.action,
-        status = "cancelled", error = detail,
+        status = "cancelled", error = detail, result = step_cancelled(plan),
       }
       plan.current_task = nil
     end
@@ -586,7 +677,7 @@ end
 local function wait_for_research(plan, step)
   plan.wait_started_tick = plan.wait_started_tick or game.tick
   step._wait_started_tick = step._wait_started_tick or plan.wait_started_tick
-  local force = companion.require_companion().force
+  local force = companion.require_present().force
   local technology = force.technologies and force.technologies[step.technology]
   if not technology then return { status = "failed", detail = "UNKNOWN_TECHNOLOGY: " .. step.technology,
     outcome = { code = "UNKNOWN_TECHNOLOGY", technology = step.technology } } end
@@ -775,23 +866,13 @@ local function step_recovery(plan)
   recovery.phase = "retrying"
   return false
 end
--- The body left the plan's surface: its step stops and starts over once the
--- body is back; the plan waits at the tail of the FIFO meanwhile.
-local function park_off_surface(tasks, plan)
-  stop_body()
-  storage.path_request, plan._path_result = nil, nil
-  plan.current_task, plan._recovery = nil, nil
-  plan.surface_parked_tick = game.tick
-  set_plan_status(plan, "waiting")
-  tasks.active = nil
-  tasks.queue[#tasks.queue + 1] = plan
-end
 local function tick_plan(plan)
-  if off_surface(plan, body_surface()) then park_off_surface(storage.tasks, plan); return end
   local budget = math.max(PLAN_BUDGET_TICKS, (plan.budget_steps or #plan.steps) * STEP_BUDGET_TICKS)
   if game.tick - plan.started_tick >= budget then
     local detail = string.format("plan exceeded its %d-second active budget", budget / 60)
-    if plan.current_task then finish_step(plan, { status = "failed", detail = detail })
+    if plan.current_task then
+      step_cancelled(plan)
+      finish_step(plan, { status = "failed", detail = detail })
     else finish(plan, "failed", detail) end
     return
   end
@@ -814,6 +895,15 @@ local function tick_plan(plan)
       plan.wait_started_tick, plan.next_check_tick = nil, nil
       finish_step(plan, { status = "done", detail = "REMOVED_ACTION: " .. step.action .. " no longer exists",
         outcome = { code = "REMOVED_ACTION", action = step.action } })
+      return
+    end
+    -- A positional step never starts on another surface than its own (a body
+    -- with no surface at all fails in the step, naming its state).
+    local tag, here = step_surface(plan, plan.current_step), body_surface()
+    if tag and here and tag ~= here then
+      finish_step(plan, { status = "failed",
+        detail = string.format("SURFACE_MISMATCH: step %d (%s) acts on %s but the body is on %s", plan.current_step,
+          step.action, tag, here), outcome = { code = "SURFACE_MISMATCH", expected = tag, actual = here } })
       return
     end
     plan.current_task = (PARKED_ACTIONS[step.action] or step.action == "inspect_entities")
@@ -885,12 +975,11 @@ local function dispatch(tasks)
   local task = tasks.active
   if not task then
     if #tasks.queue == 0 then return end
-    local attempts, surface = #tasks.queue, body_surface()
+    local attempts = #tasks.queue
     for _ = 1, attempts do
       local candidate = table.remove(tasks.queue, 1)
       local parked = candidate.type == "plan" and candidate.status == "waiting"
         and candidate.next_check_tick and game.tick < candidate.next_check_tick
-        or off_surface(candidate, surface)
       local predecessor_blocked = false
       if candidate.type == "plan" and candidate.after_plan_id then
         local status = predecessor_status(candidate.after_plan_id)
@@ -903,20 +992,15 @@ local function dispatch(tasks)
         end
       end
       -- A candidate the predecessor check just cancelled leaves the queue,
-      -- even while it is parked off its surface.
+      -- even while it is parked.
       if candidate.status == "cancelled" then -- dropped
       elseif parked or predecessor_blocked then tasks.queue[#tasks.queue + 1] = candidate
       else task = candidate; break end
     end
     if not task then return end
     if task.type == "plan" then set_plan_status(task, "running") else task.status = "running" end
-    -- Time parked off its surface is not charged to the plan's budget.
-    if task.surface_parked_tick and task.started_tick then
-      task.started_tick = task.started_tick + (game.tick - task.surface_parked_tick)
-    end
-    task.surface_parked_tick = nil
     task.started_tick, tasks.active = task.started_tick or game.tick, task
-    if task.type == "plan" and task.start_inventory == nil then task.start_inventory = inventory_snapshot(companion.get()) end
+    if task.type == "plan" and task.start_inventory == nil then task.start_inventory = inventory_snapshot() end
     if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", tostring(err)); return end end
   end
   if task.type == "plan" then tick_plan(task); return end
@@ -935,7 +1019,7 @@ end
 -- crafting queue that advances is progress, and a human hold stops the
 -- watchdog and restarts its clock. Its state (storage.tasks.stall) is made
 -- when first needed, so a save from before it needs no migration.
-local NESTED_STEPS = { "_plan", "_layout", "_supply", "_sub", "_clear", "_exit" }
+local NESTED_STEPS = { "_plan", "_layout", "_supply", "_sub", "_clear", "_exit", "_launch" }
 -- What a step shows of its own progress, read from its plain task state: the
 -- phase names go to the failure, the scalars to the progress signature. A
 -- walker's state is left out: a walk that re-plans without the body getting
@@ -1001,6 +1085,9 @@ local function watchdog(tasks)
   local c = companion.get()
   local current = plan and plan.current_task or not plan and task or nil
   if not (c and c.valid and current) then tasks.stall = nil; return false end
+  -- A deliberate wait (a travel step waiting for a rocket or an arrival).
+  local runner = runners[current.type]
+  if runner and runner.waiting and runner.waiting(current) then tasks.stall = nil; return false end
   local phases, progress = {}, { "outcomes=" .. (plan and #plan.outcomes or 0) }
   describe_step(current, phases, progress, 0)
   local ok, signature = pcall(body_signature, c, progress)
@@ -1055,6 +1142,9 @@ local function release_plan(plan, held_ticks)
   if not step then return end
   if plan.wait_started_tick then plan.wait_started_tick = plan.wait_started_tick + held_ticks end
   if step._wait_started_tick then step._wait_started_tick = step._wait_started_tick + held_ticks end
+  -- A running step's own deadline (a travel phase's).
+  local current = plan.current_task
+  if current._deadline_tick then current._deadline_tick = current._deadline_tick + held_ticks end
 end
 -- The active step re-plans from where the body stands (after a hold, and
 -- after a load whose state.init dropped the pending path request).
@@ -1087,6 +1177,70 @@ function M.resume_active()
   if storage.tasks.human_hold then return end
   resume_active(storage.tasks)
 end
+-- The one cancel rule (multi-surface rule 4). The body's surface changed
+-- (event-driven: companion.note_body_surface); the dispatcher applies it at
+-- its next run, never during a hold. Every queued or active plan whose next
+-- unfinished positional step is tagged with another surface is cancelled
+-- with SURFACE_LEFT and leaves the FIFO; it never parks. A plan that still
+-- holds a travel step, and a plan for the destination of a travel step
+-- pending ahead of it in the FIFO, are exempt. Hand-crafting is never
+-- cancelled.
+function M.on_body_surface_changed(change)
+  storage.tasks.surface_changed = change or true
+end
+local function cancel_off_surface(plan, tag, here, queued)
+  local index = plan.current_task and plan.current_step or plan.completed_steps + 1
+  local step = plan.steps[index] or {}
+  local detail = string.format("SURFACE_LEFT: the body is on %s; step %d (%s) acts on %s", here, index,
+    tostring(step.action), tag)
+  plan.outcomes[#plan.outcomes + 1] = { step = index, action = step.action, status = "cancelled", error = detail,
+    result = { code = "SURFACE_LEFT", expected = tag, actual = here } }
+  plan.current_task, plan._recovery = nil, nil
+  if not queued then storage.path_request, plan._path_result = nil, nil end
+  finish(plan, "cancelled", detail, queued, nil, true)
+end
+local function surface_left(tasks)
+  tasks.surface_changed = nil
+  local here = body_surface()
+  if not here then return end
+  -- FIFO order: the active plan, then the queue; `ahead` holds the travel
+  -- destinations pending before the plan looked at.
+  local ahead = {}
+  local function stale(plan)
+    if plan.type ~= "plan" then return nil end
+    local travels = pending_travel(plan, {})
+    if #travels > 0 then
+      for _, destination in ipairs(travels) do ahead[destination] = true end
+      return nil
+    end
+    local tag = next_surface(plan)
+    if tag and tag ~= here and not ahead[tag] then return tag end
+  end
+  local active = tasks.active
+  local tag = active and stale(active)
+  if tag then cancel_off_surface(active, tag, here, false) end
+  local kept = {}
+  for _, plan in ipairs(tasks.queue) do
+    tag = stale(plan)
+    if tag then cancel_off_surface(plan, tag, here, true) else kept[#kept + 1] = plan end
+  end
+  tasks.queue = kept
+end
+-- A dead body pauses the dispatcher until it respawns: no step ticks or
+-- starts (each would fail for want of a body), and the plans resume after
+-- the respawn rebinds the character. The pause is charged to no deadline,
+-- like a hold, but it is no hold: human_control stays false.
+local function body_dead()
+  local ok, dead = pcall(companion.is_dead)
+  return ok and dead == true
+end
+local function leave_death(tasks)
+  local paused = game.tick - tasks.dead_since
+  tasks.dead_since = nil
+  for _, queued in ipairs(tasks.queue) do release_plan(queued, paused) end
+  if tasks.active then release_plan(tasks.active, paused) end
+  resume_active(tasks)
+end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end
   local tasks = storage.tasks
@@ -1098,6 +1252,14 @@ function M.on_tick()
     return
   end
   if tasks.human_hold then leave_hold(tasks) end
+  if tasks.active or #tasks.queue > 0 or tasks.dead_since then
+    if body_dead() then
+      if not tasks.dead_since then tasks.dead_since, tasks.stall = game.tick, nil end
+      return
+    end
+    if tasks.dead_since then leave_death(tasks) end
+  end
+  if tasks.surface_changed then surface_left(tasks) end
   expire_parked_waits(storage.tasks)
   -- Hand-crafting is body work: idle time starts when it ends, not when the
   -- asynchronous craft task that queued it finished.

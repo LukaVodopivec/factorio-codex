@@ -128,7 +128,10 @@ own.platforms = { [1] = alpha, [2] = waiting, [3] = twin_a, [4] = twin_b, [5] = 
 
 local body = mock.entity({ valid = true, force = own, surface = mock.surface({ index = 1, name = "nauvis",
   planet = mock.planet({ name = "nauvis" }) }), position = { x = 0, y = 0 } })
-package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
+package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end,
+  -- Any body state but absent (remote actions, reads, queue_plan); no surface tag.
+  require_present = function() return { state = "on_surface", force = body.force, surface = body.surface } end,
+  anchor = function() return nil end, body = function() return { state = "on_surface", force = body.force } end }
 local platforms = require("scripts.platforms")
 local jobs = require("scripts.jobs")
 -- The hub's requests come from requests.lua (set_requests_test covers it).
@@ -314,10 +317,14 @@ platforms.on_platform_state_changed({ platform = alpha, old_state = defines.spac
 event = storage.space.events[2]
 check(event.kind == "platform_state_changed" and event.old == "on_the_path" and event.new == "waiting_at_station",
   "a platform state change names old and new")
+event = storage.space.events[3]
+check(event.kind == "platform_arrived" and event.platform.name == "alpha" and event.location == "nauvis"
+  and storage.travel.arrivals[1].location == "nauvis" and storage.travel.arrivals[1].tick == 200,
+  "waiting at a station is also platform_arrived, and the arrival a waiting travel step reads")
 local pad_surface = mock.surface({ name = "nauvis", platform = nil })
 platforms.on_cargo_pod_finished_descending({ cargo_pod = entity({ name = "cargo-pod", type = "cargo-pod",
   position = { x = 0, y = 0 }, surface = pad_surface }) })
-check(storage.space.events[3].kind == "cargo_delivered" and storage.space.events[3].surface == "nauvis",
+check(storage.space.events[4].kind == "cargo_delivered" and storage.space.events[4].surface == "nauvis",
   "a pod landing on a planet names the planet")
 local enemy = mock.force({ name = "enemy" })
 platforms.on_rocket_launch_ordered({ rocket = rocket, rocket_silo = entity({ name = "rocket-silo", type = "rocket-silo",
@@ -333,6 +340,156 @@ check(#storage.space.events == 32 and last_tick == 340 and #recent == 4 and rece
   and recent[1].kind == "rocket_ready", "the ring keeps 32 entries; event_state returns the newest tick and the last 4")
 platforms.on_rocket_launch_ordered({})
 check(#storage.space.events == 32, "a malformed event is ignored, never an error")
+
+-- Surface references: one resolver for planets and platforms.
+local nauvis_surface = mock.surface({ valid = true, index = 1, name = "nauvis" })
+game.planets = { nauvis = mock.planet({ name = "nauvis", surface = nauvis_surface }), vulcanus = mock.planet({ name = "vulcanus" }),
+  gleba = mock.planet({ name = "gleba" }) }
+local ref, code, _, named = platforms.canonical_ref(own, { platform = "alpha" })
+check(ref == "platform:1" and named == alpha and platforms.canonical_ref(own, "platform:1") == "platform:1"
+  and platforms.canonical_ref(own, "vulcanus") == "vulcanus", "a planet name, platform:<index> or {platform} is canonical")
+_, code = platforms.canonical_ref(own, "mars")
+local _, twin_code = platforms.canonical_ref(own, { platform = "twin" })
+local _, gone_code = platforms.canonical_ref(own, "platform:5")
+check(code == "SURFACE_UNKNOWN" and twin_code == "AMBIGUOUS_PLATFORM" and gone_code == "UNKNOWN_PLATFORM",
+  "unknown, ambiguous and deleted references have their codes")
+local surface, resolved = platforms.resolve_surface(own, "nauvis")
+local _, not_created = platforms.resolve_surface(own, "vulcanus")
+local _, no_hub = platforms.resolve_surface(own, { platform = "beta" })
+check(surface == nauvis_surface and resolved == "nauvis" and not_created == "SURFACE_NOT_CREATED" and no_hub == "NO_HUB"
+  and platforms.resolve_surface(own, { platform = 1 }) == platform_surface,
+  "a planet nobody reached is SURFACE_NOT_CREATED; a platform without its pack is NO_HUB")
+
+-- Unlocked locations: the method documents no return value, so only a
+-- boolean answer is taken; else researched unlock technologies decide, and
+-- a location no technology unlocks (home) when its surface exists.
+_G.prototypes.technology = { ["planet-discovery-vulcanus"] = { effects = { { type = "unlock-space-location", space_location = "vulcanus" } } },
+  ["planet-discovery-gleba"] = { effects = { { type = "unlock-space-location", space_location = "gleba" } } } }
+local discovered = { ["planet-discovery-vulcanus"] = { researched = true }, ["planet-discovery-gleba"] = { researched = false } }
+own.technologies = discovered
+own.is_space_location_unlocked = function() end
+check(platforms.location_unlocked(own, "vulcanus") and not platforms.location_unlocked(own, "gleba")
+  and platforms.location_unlocked(own, "nauvis"), "without an answer, researched discoveries and the home planet are unlocked")
+own.is_space_location_unlocked = function(name) return name == "gleba" end
+check(platforms.location_unlocked(own, "gleba") and not platforms.location_unlocked(own, "vulcanus"),
+  "a boolean answer from the game decides")
+own.is_space_location_unlocked = function(name) return name ~= "gleba" end
+
+-- set_platform_route: through the platform's schedule object only.
+_G.prototypes.space_location = { nauvis = {}, vulcanus = {}, gleba = {} }
+local sched_records, sched_calls, rejects = {}, {}, {}
+local function copy(value)
+  if type(value) ~= "table" then return value end
+  local out = {}
+  for k, v in pairs(value) do out[k] = copy(v) end
+  return out
+end
+local schedule = { current = 1 }
+schedule.get_records = function() return copy(sched_records) end
+schedule.clear_records = function() sched_calls[#sched_calls + 1] = "clear"; sched_records = {} end
+schedule.set_records = function(records) sched_calls[#sched_calls + 1] = "set"; sched_records = copy(records) end
+schedule.go_to_station = function(i) sched_calls[#sched_calls + 1] = "go_to"; schedule.current = i end
+schedule.add_record = function(data)
+  sched_calls[#sched_calls + 1] = "add"
+  local waits = {}
+  -- The game keeps conditions it takes, compare_type always read back.
+  for _, w in ipairs(rejects[data.station] and {} or data.wait_conditions or {}) do
+    local kept = copy(w)
+    kept.compare_type = kept.compare_type or "and"
+    -- As 2.0.77 reads a condition back: an item signal's type is nil, the
+    -- comparator and a pair's quality are filled in, a missing constant is 0.
+    local condition = kept.condition
+    if condition then
+      for _, key in ipairs({ "first_signal", "second_signal" }) do
+        local signal = condition[key]
+        if signal and signal.type == "item" then signal.type = nil end
+      end
+      if condition.first_signal then
+        condition.comparator = condition.comparator or "<"
+        condition.constant = condition.constant or 0
+      end
+      if condition.name then condition.quality = condition.quality or "normal" end
+    end
+    waits[#waits + 1] = kept
+  end
+  sched_records[#sched_records + 1] = { station = data.station, wait_conditions = waits, allows_unloading = data.allows_unloading }
+  return #sched_records
+end
+local rho = platform({ index = 6, name = "rho", state = defines.space_platform_state.waiting_at_station, space_location = nauvis,
+  hub = hub, surface = platform_surface, paused = false, get_schedule = function() return schedule end })
+own.platforms[6] = rho
+local function bad(params, pattern)
+  local ok_bad, why = pcall(platforms.set_platform_route, params)
+  return not ok_bad and tostring(why):match(pattern) ~= nil and #sched_calls == 0
+end
+check(bad({ platform = "rho" }, "needs stops, go_to or paused")
+  and bad({ platform = "rho", stops = {} }, "1%-10 stops")
+  and bad({ platform = "rho", stops = { { location = "mars" } } }, "^UNKNOWN_LOCATION")
+  and bad({ platform = "rho", stops = { { location = "nauvis", wait = { { type = "forever" } } } } }, "WaitConditionType")
+  and bad({ platform = "rho", stops = { { location = "nauvis", wait = { { type = "time", seconds = 5 } } } } }, "no field seconds")
+  and bad({ platform = "rho", stops = { { location = "nauvis", wait = { { type = "time", compare_type = "xor" } } } } }, "compare_type")
+  and bad({ platform = "rho", stops = { { location = "nauvis" } }, go_to = 2 }, "go_to")
+  and bad({ platform = "rho", paused = "yes" }, "paused"), "a bad route is refused before anything is written")
+check(bad({ platform = "rho", stops = { { location = "gleba" } } }, "^LOCATION_LOCKED"), "a locked location is refused")
+local route = { platform = "rho", go_to = 2, paused = false, stops = {
+  { location = "nauvis", wait = { { type = "time", ticks = 600 } } },
+  { location = "vulcanus", unloading = false, wait = { { type = "all_requests_satisfied" }, { type = "time", ticks = 300, compare_type = "or" } } } } }
+local set = platforms.set_platform_route(route)
+check(table.concat(sched_calls, ",") == "clear,add,add,go_to" and set.code == "ROUTE_SET" and set.schedule.current == 2
+  and #set.schedule.records == 2 and set.schedule.records[2].station == "vulcanus" and set.schedule.records[2].allows_unloading == false
+  and set.schedule.records[2].wait_conditions[2].compare_type == "or" and table.concat(set.changed, ",") == "stops,go_to"
+  and rho.schedule == nil, "the stops replace the records through the schedule object, read back; go_to heads for stop 2")
+sched_calls = {}
+local again = platforms.set_platform_route(route)
+check(#sched_calls == 0 and #again.changed == 0, "the same route again changes nothing")
+local paused = platforms.set_platform_route({ platform = "rho", paused = true })
+check(rho.paused == true and table.concat(paused.changed, ",") == "paused" and #sched_calls == 0, "paused holds the platform")
+rejects.vulcanus = true
+local ok_rejected, rejected = pcall(platforms.set_platform_route, { platform = "rho", stops = { { location = "vulcanus",
+  wait = { { type = "time", ticks = 60 } } } } })
+check(not ok_rejected and tostring(rejected):match("^ROUTE_REJECTED") and #sched_records == 2
+  and sched_records[1].station == "nauvis" and sched_calls[#sched_calls] == "set",
+  "stops the game does not keep as given put the old route back")
+rejects.vulcanus = nil
+sched_calls = {}
+local counted = platforms.set_platform_route({ platform = "rho", stops = { { location = "vulcanus", wait = {
+  { type = "item_count", condition = { first_signal = { type = "item", name = "iron-plate" }, comparator = ">=", constant = 100 } },
+  { type = "fluid_count", condition = { first_signal = { type = "fluid", name = "water" } } },
+  { type = "request_satisfied", condition = { name = "iron-plate" } } } } } })
+check(counted.code == "ROUTE_SET" and table.concat(sched_calls, ",") == "clear,add",
+  "conditions the game reads back with its defaults filled in (item signal type, comparator, quality) are kept")
+sched_calls = {}
+local again_counted = platforms.set_platform_route({ platform = "rho", stops = { { location = "vulcanus", wait = {
+  { type = "item_count", condition = { first_signal = { type = "item", name = "iron-plate" }, comparator = ">=", constant = 100 } },
+  { type = "fluid_count", condition = { first_signal = { type = "fluid", name = "water" } } },
+  { type = "request_satisfied", condition = { name = "iron-plate" } } } } } })
+check(#sched_calls == 0 and #again_counted.changed == 0, "the same conditions again change nothing")
+platforms.set_platform_route(route)
+sched_calls = {}
+check(bad({ platform = "rho", go_to = 5 }, "^NO_SUCH_STOP"), "go_to alone must name an existing stop")
+local route_task = platforms.route_action.make_task({ platform = "rho", paused = false })
+platforms.route_action.runner.start(route_task)
+local route_step = platforms.route_action.runner.tick(route_task)
+check(platforms.route_action.remote({}) and route_step.status == "done" and route_step.outcome.code == "ROUTE_SET"
+  and rho.paused == false, "the plan step is remote and done in one tick")
+
+-- The platform lines show where it heads: travel, schedule and pause.
+mock.read(rho, "space_connection", function() return { from = { name = "nauvis" }, to = { name = "vulcanus" }, length = 15000 } end)
+mock.read(rho, "distance", function() return 0.25 end)
+local row = platforms.compact_row(rho)
+check(row.travel.from == "nauvis" and row.travel.to == "vulcanus" and row.travel.distance_fraction == 0.25
+  and row.travel.length_km == 15000 and row.paused == false and row.schedule.current == 2
+  and row.schedule.records[2].station == "vulcanus" and row.schedule.records[2].waits == 2,
+  "a platform line names its connection, how far along, its schedule and pause")
+
+-- create_platform over a named planet.
+local over = platforms.create_platform({ name = "omega", planet = "vulcanus" })
+local ok_unknown, unknown = pcall(platforms.create_platform, { name = "psi", planet = "mars" })
+local ok_planet_locked, planet_locked = pcall(platforms.create_platform, { name = "chi", planet = "gleba" })
+check(over.platform.planet == "vulcanus" and created_calls[#created_calls].planet == "vulcanus"
+  and not ok_unknown and tostring(unknown):match("^UNKNOWN_PLANET")
+  and not ok_planet_locked and tostring(planet_locked):match("^LOCATION_LOCKED"),
+  "create_platform makes a platform over a named unlocked planet")
 
 mock.assert_clean()
 print(failures == 0 and "\nALL PLATFORM TESTS PASSED" or ("\n" .. failures .. " FAILURES"))

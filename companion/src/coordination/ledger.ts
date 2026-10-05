@@ -16,14 +16,19 @@ const priority = z.object({
   essential_prerequisite: z.string().min(1)
     .max(160, "essential_prerequisite is one outcome sentence of at most 160 characters").nullable(),
 }).strict();
-const runSchema = z.object({
+// The strategist runs on gpt-6.1-sol (the owner's decision of 2026-10-05). A new
+// run is created with it; a ledger written before the decision (the run
+// that was live then) keeps its recorded gpt-6-astra.
+const run = (strategist: z.ZodType<string>) => z.object({
   id: text(160), release_sha: gitSha, baseline_save_sha256: sha256,
   save_identity: text(240), created_at: text(80),
   roles: z.object({
     pilot: z.object({ model: z.literal("gpt-6-luna"), reasoning: z.literal("low"), fast: z.literal(true) }).strict(),
-    strategist: z.object({ model: z.literal("gpt-6-astra"), reasoning: z.literal("medium"), fast: z.literal(false) }).strict(),
+    strategist: z.object({ model: strategist, reasoning: z.literal("medium"), fast: z.literal(false) }).strict(),
   }).strict(),
 }).strict();
+const runSchema = run(z.enum(["gpt-6.1-sol", "gpt-6-astra"]));
+const newRunSchema = run(z.literal("gpt-6.1-sol"));
 const capacity = z.object({
   stage: text(120), measure: text(160), value: z.number().finite(), unit: text(80),
   observed_tick: z.number().int().nonnegative(),
@@ -36,10 +41,16 @@ const notePath = z.string().max(160).refine((note) => {
     && segments.slice(1).every((segment) => /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(segment));
 }, "notes are relative notebook/<name>.md paths without '..' or absolute parts");
 const packageId = z.string().regex(/^[a-z0-9-]{1,32}$/, "package ids are 1-32 lowercase letters, digits or dashes");
+// The surface a package's positions are on, as ping names the body's: a
+// planet name or "platform:<index>".
+const packageSurface = z.string().regex(/^(?:[a-z][a-z0-9-]{0,39}|platform:[1-9][0-9]{0,5})$/,
+  'surface is a planet name such as "nauvis" or "platform:<index>"');
 // A plan Astra designed; the pilot's bridge checks its placements and queues it
-// into the FIFO by itself, in ledger order (coordination/orders.ts). Leading
-// blueprint_capture steps are made by the bridge before the rest is queued.
-const buildPackage = z.object({
+// into the FIFO by itself, in ledger order, while the body is on its surface
+// (coordination/orders.ts). Leading blueprint_capture steps are made by the
+// bridge before the rest is queued. Every package an update writes names its
+// surface; one stored before protocol 28 (no surface) was for nauvis.
+const packageFields = z.object({
   package_id: packageId,
   serves: z.enum(["NOW", "NEXT"]),
   intent: text(240),
@@ -52,6 +63,8 @@ const buildPackage = z.object({
   success_check: text(240),
   notes: z.array(notePath).max(3).optional(),
 }).strict();
+const buildPackage = packageFields.extend({ surface: packageSurface.default("nauvis") });
+const writtenPackage = packageFields.extend({ surface: packageSurface });
 const MAX_PACKAGE_BYTES = 8192;
 
 export const operationsLedgerSchema = z.object({
@@ -82,6 +95,8 @@ function packageIssues(packages: BuildPackage[], sourceTick: number | null): str
     }
     const removed = new Set(entry.steps.flatMap((step) => step.action === "mine" ? [`${step.x},${step.y}`] : []));
     entry.steps.forEach((step, stepIndex) => {
+      // Travel moves the body off its surface: the pilot's decision only.
+      if (step.action === "travel") issues.push(`${at}.steps.${stepIndex}: travel is the pilot's; a package never moves the body to another surface`);
       if (step.action === "place_entity" && removed.has(`${step.x},${step.y}`)) {
         issues.push(`${at}.steps.${stepIndex}: placement targets the position of this package's own mine step`);
       }
@@ -112,14 +127,14 @@ function schemaIssues(error: z.ZodError): string[] {
 // Every update restates the pending packages: an omitted list would silently
 // replace them with an empty one.
 const mutableSchema = operationsLedgerSchema.omit({ schema_version: true, run: true, revision: true, source_tick: true })
-  .extend({ build_packages: z.array(buildPackage).max(2) });
+  .extend({ build_packages: z.array(writtenPackage).max(2) });
 export const ledgerEnvelopeSchema = z.object({
   run_id: text(160), save_identity: text(240), source_tick: z.number().int().nonnegative(),
   update: mutableSchema,
 }).strict();
 /** Creates revision 1 of an absent ledger, so the strategist stays its sole writer. */
 export const ledgerInitSchema = z.object({
-  init: z.literal(true), run: runSchema, source_tick: z.number().int().nonnegative().nullable(), update: mutableSchema,
+  init: z.literal(true), run: newRunSchema, source_tick: z.number().int().nonnegative().nullable(), update: mutableSchema,
 }).strict();
 const applyEnvelopeSchema = z.union([ledgerEnvelopeSchema, ledgerInitSchema]);
 

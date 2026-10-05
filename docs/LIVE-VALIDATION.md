@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.22.2**. Prior live evidence remains historical
-until the 0.22.2 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.22.3**. Prior live evidence remains historical
+until the 0.22.3 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -25,8 +25,8 @@ not provide a Linux visual client launcher.
    shuts the server down at the run boundary instead of leaving it idle. Both
    server and couch client run the identical Space Age mod set.
    Console-backed RCON disables achievements for the save. Play reaches
-   orbit: rockets and remotely built space platforms, with no planet-travel
-   tools yet.
+   every planet: rockets, remotely built space platforms, and the body's own
+   trips by rocket, platform and landing pod.
 4. From the couch PC, run
    `scripts/launch-native-client.ps1 -Address <server:port>` to connect the
    isolated native client (highest graphics quality at 3840x2160) as the real
@@ -88,6 +88,39 @@ not provide a Linux visual client launcher.
    teleporting. A debug supervisor may use those surfaces only for recorded
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
+
+For the 0.22.3 release (other planets), record these observable checks
+(offline fixtures cover them; none is live evidence yet):
+
+- `ping`, `fifo` and `factory_status.body` report the body `state`
+  (`on_surface`, `aboard_platform`, `in_transit`, `dead`) and its surface;
+  `connect_status` stays connected while the body is aboard or in a pod.
+- `set_platform_route` sets a platform's stops and wait conditions at once
+  with the body unmoved; `platform_status` reads back the schedule, trip,
+  speed and `paused`, and a locked location is `LOCATION_LOCKED`.
+- `travel {to: "platform:<n>"}` waits for a ready rocket, walks to the silo
+  and rides up; `travel {to: "<planet>"}` waits aboard until the platform is
+  at that planet and lands by pod. `next_event` reports each `travel_phase`,
+  `platform_arrived` and `body_surface_changed`; the travel step counts in
+  `queue_depth` throughout, and `stop` during the wait leaves the body aboard.
+- After a surface change, an unfinished plan for the old surface ends with
+  `SURFACE_LEFT` and leaves `queue_depth`; work queued after the `travel`
+  step runs on arrival. Astra's package for another surface shows
+  `waiting_surface` in `orders` until the body is there; a package holding
+  `travel` is rejected by `ledger-apply`.
+- On another planet, `factory_status` details that planet and lists Nauvis
+  in `elsewhere`; `factory_status {surface: "nauvis"}` and `map_summary`
+  read Nauvis in full; upkeep and charting act only on the body's planet.
+- Labs are fed only with packs of the active research they accept; a lab and
+  pack that took nothing are not retried for 600 ticks; with no research
+  active no lab is fed and `factory_status` shows a `research_idle` problem.
+- `find_placement` with `fluid` finds offshore pumps on lava or the
+  ammoniacal ocean; `build_block` `power` refuses with
+  `NO_WATER_ON_SURFACE` on Vulcanus; a building whose surface conditions
+  fail reports `SURFACE_CONDITION`; `production_requirements` lists
+  `roots` per planet.
+- Upgrading a 0.22.1 or 0.22.2 save keeps its queued plans and jobs, and a
+  ledger package stored before protocol 28 is read as `nauvis`.
 
 For the 0.22.2 release (rocket and space platform), record these observable
 checks (offline fixtures cover them; none is live evidence yet):
@@ -323,7 +356,7 @@ couch PC. Do not launch a local GUI as a recovery shortcut.
 The fresh supervised-debug topology has exactly two persistent reasoning
 sessions and one physical writer. Start the sole gameplay pilot as
 `gpt-6-luna` with `low` reasoning and fast mode enabled. Start the persistent
-strategist as `gpt-6-astra` with `medium` reasoning at normal speed and expose
+strategist as `gpt-6.1-sol` with `medium` reasoning at normal speed and expose
 only the disabled-by-default `factorio-readonly` MCP server to it; disable the
 full `factorio` server in that Astra session. Astra owns NOW/NEXT/LATER and the
 architecture, and is the sole atomic writer of one compact `operations.json`,
@@ -378,7 +411,7 @@ override must name a complete server table; a partial
 session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio.args=["--role","pilot"]'
-session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off \
+session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effort medium --fast off \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
   -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
@@ -390,7 +423,7 @@ makes. The supervisor starts its own factorio server with
 `stop`; a server started without one reports `unknown`.
 
 Before relying on the feed, confirm on a throwaway session that `gpt-6-luna`
-and `gpt-6-astra` emit reasoning summaries with that setting, and record the
+and `gpt-6.1-sol` emit reasoning summaries with that setting, and record the
 setting in the role-profile evidence. If a model emits none, its assistant
 messages are the feed.
 
@@ -414,7 +447,8 @@ destinations are absent. The bridge reads the ledger at
 that absolute path and the exact `run` object (`id`, `release_sha`,
 `baseline_save_sha256`, `save_identity`, `created_at`, `roles` per the ledger
 schema: `{"pilot":{"model":"gpt-6-luna","reasoning":"low","fast":true},`
-`"strategist":{"model":"gpt-6-astra","reasoning":"medium","fast":false}}`), and
+`"strategist":{"model":"gpt-6.1-sol","reasoning":"medium","fast":false}}`; a ledger
+written before 2026-10-05 keeps its recorded `gpt-6-astra`), and
 have Astra create it by piping an
 `{"init": true, "run": <that object>, "source_tick": null, "update": ...}`
 envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger
@@ -470,7 +504,7 @@ To continue a run's factory with a new release instead of a fresh map:
    its directory. Astra initialises the new run's ledger from fresh reads
    (packages from the old ledger are not queued again); the copied notebook
    continues, because a resumed save of the same factory continues its run.
-5. Spawn the role sessions with this release's settings (for 0.22.2:
+5. Spawn the role sessions with this release's settings (for 0.22.3:
    `-c model_reasoning_summary=detailed` and the twenty-two read-only tools
    above) and their updated goal files, redo the role-profile readback, start
    the recorder with `--pilot-rollout` and `--strategist-rollout` (a later
@@ -1080,7 +1114,7 @@ Factorio process closed before Steam will launch a fresh connection. Wait for
 retained a lock on the old archive during the verified rollout.
 
 Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.22.2 on a
+copy of both the save and its matching 0.9.x mod archive. Validate 0.22.3 on a
 copy first. Rollback means stopping the server, restoring that paired save and
 archive, and confirming the restored version through `doctor`; never open the
 only rollback save with the newer mod.
@@ -1111,14 +1145,14 @@ during a physical `walk_to` action.
 
 ## Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.22.2. They
+The successful observations below were collected before release 0.22.3. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.22.2. Complete the fresh run above after installing 0.22.2 before recording a
+0.22.3. Complete the fresh run above after installing 0.22.3 before recording a
 current-release result.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.22.2 run must instead report protocol v27 and mod/app 0.22.2.
+  0.8.0. A 0.22.3 run must instead report protocol v28 and mod/app 0.22.3.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and

@@ -1,3 +1,7 @@
+/** A surface a read names: a planet, "platform:<index>" or {platform}. */
+type SurfaceRef = string | { platform: string | number };
+const onSurface = (surface?: SurfaceRef) => surface === undefined ? {} : { surface };
+
 export const toolPayloads = {
   target: ({ x, y, arrival_mode = "exact", arrival_radius = 1 }: { x: number; y: number; arrival_mode?: "exact" | "vicinity"; arrival_radius?: number }) => ({
     target: { x, y }, arrival_mode, arrival_radius,
@@ -14,23 +18,26 @@ export const toolPayloads = {
   extract: ({ x, y, items: values, inventory }: { x: number; y: number; items?: Record<string, number>; inventory?: string }) => ({
     target: { x, y }, ...(values === undefined ? { all: true } : { items: values }), ...(inventory === undefined ? {} : { inventory }) }),
   rotate: ({ x, y, direction }: { x: number; y: number; direction?: number }) => ({ target: { x, y }, direction }),
-  inspect: (positions: Array<{ x: number; y: number }>) => ({ targets: positions }),
+  inspect: (positions: Array<{ x: number; y: number }>, surface?: SurfaceRef) => ({ targets: positions, ...onSurface(surface) }),
   placement: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
-  canPlace: (placements: Array<{ x: number; y: number; name: string; direction?: number }>) => ({ placements: placements.map((placement) => toolPayloads.placement(placement)) }),
+  canPlace: (placements: Array<{ x: number; y: number; name: string; direction?: number }>, surface?: SurfaceRef) => ({
+    placements: placements.map((placement) => toolPayloads.placement(placement)), ...onSurface(surface) }),
   buildPlan: (steps: Array<{ x: number; y: number; name: string; [key: string]: unknown }>, rest: Record<string, unknown>) => ({ ...rest, steps: steps.map(({ x, y, name, ...step }) => ({ ...step, item: name, position: { x, y } })) }),
-  findPlacement: ({ item, preferred, radius, directions, limit, input_target, output_target, output_recipient_item, belt_to_ground_type }: {
+  findPlacement: ({ item, preferred, radius, directions, limit, input_target, output_target, output_recipient_item, belt_to_ground_type, fluid, surface }: {
     item: string; preferred: { x: number; y: number }; radius: number; directions: number[]; limit: number;
     input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; output_recipient_item?: string; belt_to_ground_type?: "input" | "output";
+    fluid?: string; surface?: SurfaceRef;
   }) => ({ item, preferred, radius, directions, limit,
     ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}),
     ...(output_recipient_item ? { output_recipient_item } : {}),
-    ...(belt_to_ground_type === undefined ? {} : { belt_to_ground_type }) }),
-  productionRequirements: ({ targets, technology, location, recipe_choices, flow_precision }: {
+    ...(belt_to_ground_type === undefined ? {} : { belt_to_ground_type }),
+    ...(fluid === undefined ? {} : { fluid }), ...onSurface(surface) }),
+  productionRequirements: ({ targets, technology, location, recipe_choices, flow_precision, planet }: {
     targets?: Record<string, number>; technology?: string; location?: string;
-    recipe_choices?: Record<string, string>; flow_precision?: string;
+    recipe_choices?: Record<string, string>; flow_precision?: string; planet?: string;
   }) => ({ ...(targets ? { targets } : {}), ...(technology ? { technology } : {}),
     ...(location ? { location } : {}), ...(recipe_choices ? { recipe_choices } : {}),
-    ...(flow_precision ? { flow_precision } : {}) }),
+    ...(flow_precision ? { flow_precision } : {}), ...(planet ? { planet } : {}) }),
   connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }) }),
 };
 
@@ -169,7 +176,10 @@ export function normalizeFactoryStatus(value: any): any {
     available: luaArray(value.research.available),
     ...(value.research.queue === undefined ? {} : { queue: luaArray(value.research.queue) }) };
   if (value.body && typeof value.body === "object") out.body = { ...value.body, inventory_summary: record(value.body.inventory_summary) };
-  if (value.platforms !== undefined) out.platforms = luaArray(value.platforms);
+  if (value.platforms !== undefined) out.platforms = platformRows(value.platforms);
+  if (value.elsewhere !== undefined) out.elsewhere = luaArray(value.elsewhere).map((row: any) =>
+    row && typeof row === "object" ? { ...row, top_problems: luaArray(row.top_problems ?? []) } : row);
+  if (value.unlocked_locations !== undefined) out.unlocked_locations = luaArray(value.unlocked_locations);
   return out;
 }
 
@@ -194,11 +204,32 @@ export function normalizeRequests(value: any): any {
   return value && typeof value === "object" ? { ...value, sections: requestSections(value.sections) } : value;
 }
 
+/** A platform's schedule: the stop it heads for and its records, each with
+ *  its wait conditions in full detail. */
+function schedule(value: any): any {
+  if (!value || typeof value !== "object") return value;
+  return { ...value, records: luaArray(value.records ?? []).map((row: any) => row?.wait_conditions !== undefined
+    ? { ...row, wait_conditions: luaArray(row.wait_conditions) } : row) };
+}
+/** Compact platform rows (platform_status, factory_status.platforms). */
+function platformRows(value: unknown): unknown {
+  const rows = luaArray(value);
+  return Array.isArray(rows) ? rows.map((row: any) => row?.schedule !== undefined ? { ...row, schedule: schedule(row.schedule) } : row) : rows;
+}
+
+/** set_platform_route's outcome: the schedule as the game kept it. */
+export function normalizeRoute(value: any): any {
+  if (!value || typeof value !== "object") return value;
+  return { ...value, changed: luaArray(value.changed ?? []), ...(value.schedule === undefined ? {} : { schedule: schedule(value.schedule) }) };
+}
+
 /** platform_status: compact rows, or one platform's full screen. */
 export function normalizePlatformStatus(value: any): any {
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = { ...value };
-  if (value.platforms !== undefined) out.platforms = luaArray(value.platforms);
+  if (value.platforms !== undefined) out.platforms = platformRows(value.platforms);
+  if (value.platform?.schedule !== undefined) out.platform = { ...value.platform, schedule: schedule(value.platform.schedule) };
+  if (value.schedule !== undefined) out.schedule = schedule(value.schedule);
   if (value.foundation && typeof value.foundation === "object") out.foundation = { ...value.foundation, rows: luaArray(value.foundation.rows ?? []) };
   if (value.hub && typeof value.hub === "object") out.hub = { ...value.hub,
     inventory: luaArray(value.hub.inventory ?? []), trash: luaArray(value.hub.trash ?? []) };
@@ -213,12 +244,27 @@ export function normalizeActivityLog(value: any): any {
   return value && typeof value === "object" ? { ...value, entries: luaArray(value.entries) } : value;
 }
 
+/** Where each raw material is gathered, per planet, what nothing gathers and
+ *  the surface-limited recipes: empty Lua tables are lists or records. An
+ *  expansion carries them at the top level; technology and location modes
+ *  inside deterministic_requirements. */
+function rootFields(value: any): any {
+  return {
+    ...(value.roots === undefined ? {} : { roots: Object.fromEntries(Object.entries(record(value.roots) as Record<string, unknown>)
+      .map(([name, list]) => [name, luaArray(list)])) }),
+    ...(value.unobtainable === undefined ? {} : { unobtainable: luaArray(value.unobtainable) }),
+    ...(value.surface_limited === undefined ? {} : { surface_limited: luaArray(value.surface_limited).map((row: any) =>
+      row && typeof row === "object" ? { ...row, planets: luaArray(row.planets ?? []) } : row) }),
+  };
+}
+
 export function normalizeProductionRequirements(value: any): any {
   if (!value || typeof value !== "object") return value;
   const deterministic = value.deterministic_requirements && typeof value.deterministic_requirements === "object"
     ? { ...value.deterministic_requirements, nodes: luaArray(value.deterministic_requirements.nodes),
       ambiguities: luaArray(value.deterministic_requirements.ambiguities),
-      variable_operating_requirements: luaArray(value.deterministic_requirements.variable_operating_requirements) }
+      variable_operating_requirements: luaArray(value.deterministic_requirements.variable_operating_requirements),
+      ...rootFields(value.deterministic_requirements) }
     : undefined;
   return { ...value, nodes: luaArray(value.nodes),
     ...(deterministic ? { deterministic_requirements: deterministic } : {}),
@@ -227,6 +273,7 @@ export function normalizeProductionRequirements(value: any): any {
     force_flows: luaArray(value.force_flows),
     ambiguities: luaArray(value.ambiguities),
     variable_operating_requirements: luaArray(value.variable_operating_requirements),
+    ...rootFields(value),
   };
 }
 
@@ -316,7 +363,9 @@ export const FIFO_IDLE_HINT = "body idle: queue bounded work before further read
 export const FIFO_IDLE_HINT_SECONDS = 30;
 export const FIFO_HUMAN_HINT = "human control: the body is held and plans stay queued in order; this is neither idleness nor failure";
 export interface FifoState { active_plan_id: number | null; queue_depth: number | null; idle_seconds: number | null;
-  human_control?: boolean; human_idle_ticks?: number; hint?: string }
+  human_control?: boolean; human_idle_ticks?: number; hint?: string;
+  /** Where the body is: {state, surface_ref, platform_name?}. */
+  body?: { state: string; surface_ref?: string; platform_name?: string } }
 
 // Lua omits nil fields; every read result states all three, plus the idle hint.
 // A human hold is reported as sent and replaces the idle hint: a parked FIFO is not idle.
@@ -330,6 +379,7 @@ export function normalizeFifo(value: unknown): FifoState | undefined {
   return { active_plan_id: number(fifo.active_plan_id), queue_depth: number(fifo.queue_depth), idle_seconds: idle,
     ...(typeof fifo.human_control === "boolean" ? { human_control: held } : {}),
     ...(humanIdle !== null ? { human_idle_ticks: humanIdle } : {}),
+    ...(fifo.body && typeof fifo.body === "object" && !Array.isArray(fifo.body) ? { body: fifo.body as FifoState["body"] } : {}),
     ...(held ? { hint: FIFO_HUMAN_HINT } : idle !== null && idle > FIFO_IDLE_HINT_SECONDS ? { hint: FIFO_IDLE_HINT } : {}) };
 }
 

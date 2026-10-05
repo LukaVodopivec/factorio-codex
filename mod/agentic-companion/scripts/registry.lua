@@ -3,9 +3,11 @@
 -- tick on the server and every client, so a whole-force query freezes all of
 -- them; this registry is what those paths read instead.
 --
--- Kept per entity (by unit_number, own force only):
---   machines  by type (the line sampler's machine types, plus beacons and
---             roboports, which it samples for problems only)
+-- Kept per entity (by unit_number, own force only, on every surface; each
+-- entry names its surface index):
+--   machines  by type (the line sampler's machine types, the planet machines
+--             among them, plus beacons and roboports, which it samples for
+--             problems only)
 --   holders   chests, cargo landing pads and crafting-machine outputs (stock)
 --   burners   entities with a burner (fuel)
 --   electric  poles, producers, accumulators and electric consumers (power)
@@ -13,14 +15,20 @@
 -- Added on the build, revive and clone events and directly where the mod
 -- itself creates an entity; removed on the mined, died and destroy events and
 -- through script.register_on_object_destroyed. An upgraded save fills it once
--- by a bootstrap spread over ticks, a few charted chunks per tick; until that
--- ends `ready` is false and reads say so.
+-- by a bootstrap spread over ticks, a few charted chunks of the body's
+-- surface per tick; until that ends `ready` is false and reads say so.
+-- Factory surfaces (surfaces()) are the surfaces with own entries; a deleted
+-- surface takes its aggregates with it (on_surface_deleted).
+--
+-- Reads name a surface by index (or "all"); without one they read the body's
+-- anchor surface (companion.anchor: its physical surface, the hub aboard).
 --
 -- Aggregates (what factory_status and map_summary's power rows read, never
 -- by walking entities): per surface, every type's count and nameplate sum;
 -- per electric network, its sources by kind, accumulators, the nominal demand
 -- of its consumers that try to run, and a pole for its statistics; per
--- surface, every item's stock in own holders with its largest holder. Build
+-- surface, every item's stock in own holders with its largest holder, keyed
+-- by items.key (a non-normal quality is "name@quality"). Build
 -- and remove events update them at once. A maintenance cursor (maintain,
 -- MAINTAIN_WORK_PER_TICK work items a tick) walks the entries in a ring and
 -- refreshes what changes without an event: network ids (they change when
@@ -28,6 +36,8 @@
 -- holder contents. pass_tick is when the last full pass ended.
 local companion = require("scripts.companion")
 local jobs = require("scripts.jobs")
+local surfaces = require("scripts.surfaces")
+local items = require("scripts.items")
 
 local M = {}
 
@@ -38,10 +48,14 @@ M.MAINTAIN_WORK_PER_TICK = 64
 M.RESCAN_CHUNKS_PER_TICK = 4
 
 -- Productive machines make something and form factory lines.
+-- The planet machines are of these types too: foundries, electromagnetic and
+-- cryogenic plants, biochambers, crushers and captive spawners are
+-- assembling machines, the recycler a furnace, the heating tower a reactor.
 local PRODUCTIVE_TYPES = {
   ["mining-drill"] = true, furnace = true, ["assembling-machine"] = true, ["rocket-silo"] = true,
   lab = true, boiler = true, generator = true, ["burner-generator"] = true, ["offshore-pump"] = true,
-  reactor = true,
+  reactor = true, ["fusion-reactor"] = true, ["fusion-generator"] = true, ["lightning-attractor"] = true,
+  ["agricultural-tower"] = true, ["asteroid-collector"] = true,
 }
 -- Sampled for problems only: no product, never a line.
 local PROBLEM_ONLY_TYPES = { beacon = true, roboport = true }
@@ -62,7 +76,8 @@ local SKIPPED_TYPES = { character = true, ["entity-ghost"] = true, ["tile-ghost"
 local SETS = { "holders", "burners", "electric", "poles" }
 -- Electric producers by power kind; a generator built for steam hotter than
 -- an engine's 165 degrees is a turbine, counted as nuclear.
-local SOURCE_TYPES = { ["solar-panel"] = "solar", generator = "steam", ["burner-generator"] = "burner" }
+local SOURCE_TYPES = { ["solar-panel"] = "solar", generator = "steam", ["burner-generator"] = "burner",
+  ["fusion-generator"] = "fusion", ["lightning-attractor"] = "lightning" }
 local ENGINE_STEAM_DEGREES = 165
 -- Consumer statuses that draw (or ask for) work power.
 local DRAWING = { working = true, low_power = true, no_power = true }
@@ -263,11 +278,13 @@ local function classify(r, entry)
   end
 end
 
+-- The one chart rule (surfaces.charted): all of a platform's surface counts
+-- as charted.
 local function chunk_charted(entry)
   local ok, value = pcall(function()
     local entity = entry.entity
-    return entity.force.is_chunk_charted(entity.surface,
-      { x = math.floor(entry.position.x / 32), y = math.floor(entry.position.y / 32) })
+    return surfaces.charted(entity.force, entity.surface, math.floor(entry.position.x / 32),
+      math.floor(entry.position.y / 32))
   end)
   return ok and value == true
 end
@@ -317,7 +334,10 @@ local function visit(r, entry)
       local inventory = M.holder_inventory(entity)
       local ok, rows = pcall(function() return inventory and inventory.get_contents() or {} end)
       for _, row in ipairs(ok and rows or {}) do
-        if type(row.name) == "string" then contents[row.name] = (contents[row.name] or 0) + (tonumber(row.count) or 0) end
+        if type(row.name) == "string" then
+          local key = items.key(row.name, row.quality)
+          contents[key] = (contents[key] or 0) + (tonumber(row.count) or 0)
+        end
       end
       cost = cost + 2 + math.floor(#(ok and rows or {}) / 8)
     end
@@ -445,18 +465,21 @@ local function bootstrap_step(r, c, tick)
     -- The charted chunk list seeds map_summary's patch cache, so the
     -- surface's chunks are listed once, not again on a later tick.
     r.ready, r.ready_tick, r.charted_seed, r.bootstrap = true, tick, b.chunks, nil
+    r.charted_seed_surface = c.surface.index
   end
 end
 
 -- Types a registry from an older version skipped (r.rescan.types, set by
 -- state.init on the upgrade) are found once the bootstrap is done: one typed
 -- query of one charted chunk each, RESCAN_CHUNKS_PER_TICK chunks a tick, over
--- the chunk list map_summary keeps. That list is seeded after the bootstrap
--- (an upgrade mid-bootstrap leaves it empty until then): the rescan waits.
+-- the chunk list map_summary keeps for the body's surface. That list is
+-- seeded after the bootstrap (an upgrade mid-bootstrap leaves it empty until
+-- then): the rescan waits.
 local function rescan_step(r, c)
   local job = r.rescan
-  if not (storage.patch_cache and storage.patch_cache.seeded) then return end
-  local chunks = storage.patch_cache.charted or {}
+  local cache = storage.patch_caches and storage.patch_caches[c.surface.index]
+  if not (cache and cache.seeded) then return end
+  local chunks = cache.charted or {}
   local read = 0
   while job.cursor <= #chunks and read < M.RESCAN_CHUNKS_PER_TICK do
     local chunk = chunks[job.cursor]
@@ -515,28 +538,75 @@ end
 
 -- ------------------------------------------------------------------- reads
 
--- Valid entries of one set (or of the machine types listed) on the body's
--- surface in charted chunks, ordered by unit number. An entry whose entity
--- is gone is dropped here (its destroy event may still be pending).
-local function collect(units_of, c)
+-- The body's anchor surface index (its physical surface, the hub aboard),
+-- or nil without a connected Codex player. A caller that read the anchor
+-- passes it.
+local function anchor_index(anchor)
+  anchor = anchor or companion.anchor()
+  local ok, index = pcall(function() return anchor.surface.index end)
+  return ok and index or nil
+end
+M.anchor_index = function() return anchor_index() end
+
+-- The own force for chart checks: the body's, else the registry's.
+local function own_force(r, anchor)
+  if anchor and anchor.force then return anchor.force end
+  local ok, force = pcall(function() return game.forces[r.force] end)
+  return ok and force or nil
+end
+
+-- Which surface a read covers: an index, "all", or nil (the anchor's).
+-- Returns a predicate on an entry's surface index, or nil when there is
+-- nothing to read.
+local function on_surface(surface, anchor)
+  if surface == "all" then return function() return true end end
+  local index = surface
+  if index == nil then index = anchor_index(anchor) end
+  if index == nil then return nil end
+  return function(entry_surface) return entry_surface == nil or entry_surface == index end
+end
+
+-- Whether an entry lies in a charted chunk: the maintenance cursor's own
+-- answer once it found the chunk charted, else one chart check per surface
+-- and chunk, kept in `cache` (plain data: chunk keys, and per surface index
+-- whether it is a platform's).
+local function entry_charted(entry, force, cache)
+  if entry.charted then return true end
+  local index = entry.surface or 0
+  local cx, cy = math.floor(entry.position.x / 32), math.floor(entry.position.y / 32)
+  local key = index .. ":" .. cx .. "," .. cy
+  local known = cache[key]
+  if known == nil then
+    local surface = surfaces.by_index(entry.surface) or entry.entity.surface
+    local platform = cache[index]
+    if platform == nil then platform = surfaces.is_platform(surface); cache[index] = platform end
+    known = surfaces.charted(force, surface, cx, cy, platform)
+    cache[key] = known
+  end
+  return known
+end
+
+-- Valid entries of one set (or of the machine types listed) on the surface
+-- (see on_surface) in charted chunks, ordered by unit number. An entry whose
+-- entity is gone is dropped here (its destroy event may still be pending).
+-- One chart check per surface and chunk.
+local function collect(units_of, surface)
   local r = data()
   local rows = {}
-  if not (r and c and c.valid) then return rows end
-  local surface_index = c.surface.index
-  local charted = {}
+  if not r then return rows end
+  local anchor = companion.anchor()
+  local wanted = on_surface(surface, anchor)
+  if not wanted then return rows end
+  local force = own_force(r, anchor)
+  if not force then return rows end
+  local cache = {}
   for _, units in ipairs(units_of) do
     for unit in pairs(units) do
       local entry = r.entries[unit]
       if entry and not (entry.entity and entry.entity.valid) then
         M.remove(unit)
-      elseif entry and (entry.surface == nil or entry.surface == surface_index) then
-        local cx, cy = math.floor(entry.position.x / 32), math.floor(entry.position.y / 32)
-        local key = cx .. "," .. cy
-        if charted[key] == nil then
-          local ok, value = pcall(c.force.is_chunk_charted, c.surface, { x = cx, y = cy })
-          charted[key] = ok and value == true
-        end
-        if charted[key] then rows[#rows + 1] = entry end
+      elseif entry and wanted(entry.surface) and entry_charted(entry, force, cache) then
+        rows[#rows + 1] = entry
       end
     end
   end
@@ -544,14 +614,51 @@ local function collect(units_of, c)
   return rows
 end
 
--- holders | burners | electric | poles
-function M.list(set)
+-- Unit numbers of every registered machine on every surface, in add order
+-- (the maintenance cursor's list, read once each): one pure Lua pass, no
+-- engine read and no sort. The line refresh then reads them a few a tick
+-- through charted_machine.
+function M.machine_units()
   local r = data()
-  return collect({ r and r[set] or {} }, companion.get())
+  local units, seen = {}, {}
+  if not r then return units end
+  for _, unit in ipairs(r.order) do
+    local entry = not seen[unit] and r.entries[unit]
+    local set = entry and r.machines[entry.type]
+    if set and set[unit] then units[#units + 1], seen[unit] = unit, true end
+  end
+  return units
 end
 
--- Machines of the given types (all machine types when nil).
-function M.machines(types)
+-- The own force for chart checks (the body's, else the registry's), or nil.
+function M.own_force()
+  local r = data()
+  return r and own_force(r, companion.anchor()) or nil
+end
+
+-- The entry of a registered machine whose entity is valid and lies in a
+-- chunk the force (M.own_force) has charted, else nil (a gone entity is
+-- dropped). `cache` keeps the chart checks across calls (see
+-- entry_charted); about one engine read.
+function M.charted_machine(unit, force, cache)
+  local r = data()
+  local entry = r and r.entries[unit]
+  if not entry then return nil end
+  if not (entry.entity and entry.entity.valid) then M.remove(unit); return nil end
+  if not (force and entry_charted(entry, force, cache)) then return nil end
+  return entry
+end
+
+-- holders | burners | electric | poles, on a surface (index, "all", or nil
+-- for the anchor's).
+function M.list(set, surface)
+  local r = data()
+  return collect({ r and r[set] or {} }, surface)
+end
+
+-- Machines of the given types (all machine types when nil) on a surface
+-- (index, "all", or nil for the anchor's).
+function M.machines(types, surface)
   local r = data()
   local sets = {}
   if r then
@@ -561,19 +668,20 @@ function M.machines(types)
       for _, units in pairs(r.machines) do sets[#sets + 1] = units end
     end
   end
-  return collect(sets, companion.get())
+  return collect(sets, surface)
 end
 
--- Whether any own entity of these types is registered and still valid: a
--- walk over the registry's sets only (no sort, no chunk read, no query).
--- Machine types are looked up directly; others (solar panels) through the
--- electric set.
-function M.any(types)
+-- Whether any own entity of these types is registered and still valid on a
+-- surface (index, or nil for the anchor's): a walk over the registry's sets
+-- only (no sort, no chunk read, no query). Machine types are looked up
+-- directly; others (solar panels) through the electric set.
+function M.any(types, surface)
   local r = data()
-  if not r then return false end
+  local wanted = r and on_surface(surface)
+  if not wanted then return false end
   local function live(unit)
     local entry = r.entries[unit]
-    return entry ~= nil and entry.entity ~= nil and entry.entity.valid
+    return entry ~= nil and wanted(entry.surface) and entry.entity ~= nil and entry.entity.valid
   end
   local others = {}
   for _, kind in ipairs(types) do
@@ -592,12 +700,6 @@ function M.any(types)
   return false
 end
 
-local function body_surface()
-  local c = companion.get()
-  local ok, index = pcall(function() return c.surface.index end)
-  return ok and index or 1
-end
-
 -- Up to `cap` registered holders on the body's surface whose last read held
 -- the item, nearest `position` first, skipping those skip(entry) names: a
 -- Lua pass over the holder set, with no engine read (the caller confirms the
@@ -605,8 +707,8 @@ end
 function M.holders_with(item, position, cap, skip)
   local r = data()
   local heap = {}
-  if not r then return heap end
-  local surface = body_surface()
+  local surface = anchor_index()
+  if not (r and surface) then return heap end
   local function nearer(a, b) return a.d < b.d or a.d == b.d and a.entry.unit < b.entry.unit end
   for unit in pairs(r.holders) do
     local entry = r.entries[unit]
@@ -623,15 +725,44 @@ function M.holders_with(item, position, cap, skip)
 end
 
 -- {[item] = count} held by own holders (chests and crafting outputs; belts
--- are not counted) on the body's surface, as the maintenance cursor last
--- read them: no holder is walked here. What is actually taken is read again
--- where it is taken.
-function M.stock_totals(items)
+-- are not counted) on a surface (index, or nil for the body's: items on
+-- another planet are not in its reach), as the maintenance cursor last read
+-- them: no holder is walked here. What is actually taken is read again where
+-- it is taken.
+function M.stock_totals(items, surface)
   local r = data()
-  local stock = r and r.stock[body_surface()] or {}
+  local index = surface or anchor_index()
+  local stock = r and index and r.stock[index] or {}
   local totals = {}
   for _, name in ipairs(items) do totals[name] = stock[name] and stock[name].total or 0 end
   return totals
+end
+
+-- The factory surfaces: indices of the surfaces holding own registered
+-- entities (any type's count above zero), ascending. Pure Lua over the type
+-- aggregates.
+function M.surfaces()
+  local r = data()
+  local list = {}
+  for index, by_type in pairs(r and r.types or {}) do
+    if index ~= 0 then
+      for _, row in pairs(by_type) do
+        if row.count > 0 then list[#list + 1] = index; break end
+      end
+    end
+  end
+  table.sort(list)
+  return list
+end
+
+-- on_surface_deleted: its aggregates go at once; its entries leave through
+-- their own destroy events (or when a read or the cursor finds them invalid).
+function M.on_surface_deleted(event)
+  local r = data()
+  local index = event and event.surface_index
+  if not (r and index) then return end
+  r.types[index], r.stock[index] = nil, nil
+  for id, net in pairs(r.networks) do if net.surface == index then r.networks[id] = nil end end
 end
 
 -- The `limit` most held items of a surface, most first, each with its
@@ -661,6 +792,41 @@ function M.stock_rows(surface, limit)
     rows[#rows + 1] = { item = row.item, total = row.total, holders = holders }
   end
   return rows, total - #rows
+end
+
+-- The live entry of the largest holder of an item on a surface (as the
+-- cursor last read it), or nil.
+function M.largest_holder(surface, item)
+  local r = data()
+  local row = r and r.stock[surface] and r.stock[surface][item]
+  local entry = row and row.unit and r.entries[row.unit]
+  if entry and entry.entity and entry.entity.valid then return entry end
+  return nil
+end
+
+-- How many electric networks have members, on every surface: one pass, no
+-- sort.
+function M.network_count()
+  local r = data()
+  local n = 0
+  for _, net in pairs(r and r.networks or {}) do if net.members > 0 then n = n + 1 end end
+  return n
+end
+
+-- The electric networks with members, by surface index: {[index] = nets
+-- by id}, in one pass over the networks.
+function M.networks_by_surface()
+  local r = data()
+  local by_surface = {}
+  for _, net in pairs(r and r.networks or {}) do
+    if net.members > 0 and net.surface ~= nil then
+      local list = by_surface[net.surface] or {}
+      by_surface[net.surface] = list
+      list[#list + 1] = net
+    end
+  end
+  for _, list in pairs(by_surface) do table.sort(list, function(a, b) return a.id < b.id end) end
+  return by_surface
 end
 
 -- The electric networks with members on a surface, by id.

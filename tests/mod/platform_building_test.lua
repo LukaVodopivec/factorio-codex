@@ -135,6 +135,7 @@ local planet_target
 local body = { valid = true, name = "character", position = { x = 500.5, y = 500.5 }, force = own,
   surface = { name = "nauvis", valid = true }, reach_distance = 10, build_distance = 10 }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 package.loaded["scripts.actions.approach"] = {
   ensure = function() walked = walked + 1; return "ok" end,
   ensure_entity = function() walked = walked + 1; return "ok" end,
@@ -529,6 +530,48 @@ local steps_out = layout._plan_steps({ placements = {}, routes = { { route = { k
     { name = "underground-belt", x = 4.5, y = 0.5, direction = 4, belt_to_ground_type = "output" } } } } })
 check(steps_out[1].belt_to_ground_type == "input" and steps_out[2].belt_to_ground_type == "output",
   "routed underground belt ends keep their input/output end")
+
+-- ------------------------------------------------------------------ aboard
+
+-- The body aboard the platform (companion.lua's body model): physical
+-- runners get no character and fail BODY_ABOARD, while every platform
+-- window (steps and direct tools) still works with the body's force.
+local stub = package.loaded["scripts.companion"]
+local on_planet = { get = stub.get, require_companion = stub.require_companion, require_present = stub.require_present }
+local aboard = { state = "aboard_platform", force = own, surface = platform_surface, surface_ref = "platform:1",
+  position = { x = 2, y = 2 } }
+stub.get = function() return nil end
+stub.require_companion = function() error("BODY_ABOARD: the body is aboard platform Forge (platform:1)", 0) end
+stub.require_present = function() return aboard end
+local walks_aboard = walked
+local aboard_layout = run(L, ghost_step)
+check(aboard_layout.status == "done" and aboard_layout.outcome.surface == "platform:1",
+  "aboard, a build_layout {platform} step runs (its ghosts stand already)")
+local aboard_dry = jobs.run_now(layout.layout_check_job, { check_only = true, platform = 1, anchor = { x = 0, y = 0 },
+  entities = { { name = "crusher", dx = -10, dy = 6.5 } } })
+check(aboard_dry.check_only and aboard_dry.platform.name == "Forge", "aboard, a platform layout dry run works")
+bp.built = {}
+local aboard_place = run(area_ops.place_action, { name = "cell", position = { x = -8, y = 4 }, platform = 1 })
+local aboard_place_dry = jobs.run_now(area_ops.place_check_job, { name = "cell", position = { x = -8, y = 4 }, platform = 1,
+  check_only = true })
+check(aboard_place.status == "done" and bp.built[1] ~= nil and aboard_place_dry.surface == "platform:1",
+  "aboard, blueprint_place {platform} and its dry run work")
+local aboard_orders = #orders
+local aboard_clear = run(D, { area = { left_top = { x = 6, y = 5.5 }, right_bottom = { x = 8, y = 8 } }, platform = 1 })
+check(aboard_clear.status == "done" and #orders > aboard_orders, "aboard, deconstruct_area {platform} orders the hub's work")
+local aboard_config = run(C, { action = "configure_entity", platform = 1, x = -3.5, y = 7.5,
+  collector = { filters = { "oxide-asteroid-chunk" } } })
+check(aboard_config.status == "done" and chunks[1] == "oxide-asteroid-chunk"
+  and configure.rpc({ platform = 1, x = -3.5, y = 7.5, collector = { filters = {} } }).code == "CONFIGURED" and chunks[1] == nil,
+  "aboard, configure_entity {platform} works as a step and over RPC")
+local aboard_recipe = run(R, { action = "set_recipe", platform = 1, x = 7, y = 6.5, recipe = "carbonic-asteroid-crushing" })
+check(aboard_recipe.status == "done" and recipe == "carbonic-asteroid-crushing"
+  and build.set_recipe_rpc({ platform = 1, x = 7, y = 6.5, recipe = "metallic-asteroid-crushing" }).code == "RECIPE_SET",
+  "aboard, set_recipe {platform} works as a step and over RPC")
+local planet_step = C.make_task({ x = 10.5, y = 10.5, silo = { auto_requests = false } })
+check(raises(function() C.runner.start(planet_step) end, "^BODY_ABOARD") and walked == walks_aboard,
+  "aboard, a planet entity's settings fail BODY_ABOARD and nothing walks")
+stub.get, stub.require_companion, stub.require_present = on_planet.get, on_planet.require_companion, on_planet.require_present
 
 mock.assert_clean()
 if failures > 0 then

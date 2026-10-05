@@ -8,12 +8,18 @@
 --                 entities searched chunk by chunk over the foundation's box,
 --                 hub stock and requests, ghosts and the items they still
 --                 miss, thrusters' fuel, tile damage)
---   create_platform the "new platform" button over the body's planet: the
---                 platform waits for its starter pack, which launch_rocket
---                 sends; nothing is built or consumed
+--   create_platform the "new platform" button over the body's planet (or a
+--                 named unlocked one): the platform waits for its starter
+--                 pack, which launch_rocket sends; nothing is built or consumed
+--   set_platform_route the platform's schedule: its stops with the game's own
+--                 wait conditions, which stop to head for, pause
+--   surfaces      one resolver for every surface reference (a planet name,
+--                 "platform:<index>" or {platform = selector})
 --   events        a ring of the last space events (rockets launched, platform
---                 state changes, cargo pods landed, rockets ready) that
---                 event_state and next_event read; only event handlers write it
+--                 state changes and arrivals, cargo pods landed, rockets
+--                 ready, the body's surface changes and travel phases) that
+--                 event_state and next_event read; only event handlers and
+--                 the travel step write it
 -- storage.space = {created = {[index] = planet}, events = {...}, last_event_tick}.
 local companion = require("scripts.companion")
 local jobs = require("scripts.jobs")
@@ -111,6 +117,83 @@ end
 -- The canonical reference of a platform's surface.
 function M.surface_ref(p) return "platform:" .. p.index end
 
+-- ---------------------------------------------------------------- surfaces
+
+-- A SurfaceRef in canonical form: a planet's name (whether or not its
+-- surface exists yet) or "platform:<index>", and the platform it names; or
+-- nil, the code and why. Input: a planet name, "platform:<index>", or
+-- {platform = name or index}.
+function M.canonical_ref(force, ref)
+  if type(ref) == "table" then
+    if ref.platform == nil then return nil, "SURFACE_UNKNOWN", "a surface table names a platform: {platform = name or index}" end
+    local p, code, why = M.resolve(force, ref.platform)
+    if not p then return nil, code, why end
+    return M.surface_ref(p), nil, nil, p
+  end
+  if type(ref) ~= "string" or ref == "" then
+    return nil, "SURFACE_UNKNOWN", "a surface is a planet name, \"platform:<index>\" or {platform = name or index}"
+  end
+  local index = ref:match("^platform:(%d+)$")
+  if index then
+    local p, code, why = M.resolve(force, tonumber(index))
+    if not p then return nil, code, why end
+    return M.surface_ref(p), nil, nil, p
+  end
+  if read(function() return game.planets[ref] end) then return ref end
+  return nil, "SURFACE_UNKNOWN", "no planet called " .. ref .. " (name a platform as {platform = name} or \"platform:<index>\")"
+end
+
+-- The surface a SurfaceRef names now and its canonical ref; else nil, the
+-- code and why: SURFACE_NOT_CREATED for a planet nobody has reached yet,
+-- NO_HUB for a platform still waiting for its starter pack.
+function M.resolve_surface(force, ref)
+  local canonical, code, why, p = M.canonical_ref(force, ref)
+  if not canonical then return nil, code, why end
+  if p then
+    local surface, no_hub, reason = M.surface_of(p)
+    if not surface then return nil, no_hub, reason end
+    return surface, canonical
+  end
+  local surface = read(function() return game.planets[canonical].surface end)
+  if not (surface and surface.valid) then
+    return nil, "SURFACE_NOT_CREATED", "planet " .. canonical .. " has no surface yet: nobody has been there"
+  end
+  return surface, canonical
+end
+
+-- Space location -> the technologies whose effects unlock it (prototype
+-- data, read once per load).
+local unlockers
+-- Whether the force has unlocked a space location. 2.0.77 documents no
+-- return value for LuaForce.is_space_location_unlocked, so only a boolean
+-- answer is taken from it; else the location is unlocked when a researched
+-- technology unlocks it, or (a location no technology unlocks: the home
+-- planet) when its surface exists.
+function M.location_unlocked(force, name)
+  local ok, value = pcall(force.is_space_location_unlocked, name)
+  if ok and type(value) == "boolean" then return value end
+  if not unlockers then
+    unlockers = {}
+    for tech_name, tech in pairs(read(function() return prototypes.technology end) or {}) do
+      for _, effect in ipairs(read(function() return tech.effects end) or {}) do
+        if effect.type == "unlock-space-location" and effect.space_location then
+          local list = unlockers[effect.space_location] or {}
+          unlockers[effect.space_location] = list
+          list[#list + 1] = tech_name
+        end
+      end
+    end
+  end
+  local techs = unlockers[name]
+  if techs then
+    for _, tech in ipairs(techs) do
+      if read(function() return force.technologies[tech].researched end) == true then return true end
+    end
+    return false
+  end
+  return read(function() return game.planets[name].surface ~= nil end) == true
+end
+
 -- Entities a platform target never names (ghosts are built by the hub).
 local NOT_TARGETS = { ["entity-ghost"] = true, ["tile-ghost"] = true, ["item-request-proxy"] = true,
   ["item-entity"] = true, character = true, ["deconstructible-tile-proxy"] = true, ["cargo-pod"] = true }
@@ -165,14 +248,45 @@ local function hub_inventory(hub, id)
   return read(function() return hub.get_inventory(defines.inventory[id]) end)
 end
 
--- One platform's line: attribute reads, the hub's free slots and its
--- request count (one read per request section); and the work it took.
+-- Where a platform is headed: the connection it travels (from, to), how
+-- far along (0..1) and its length; nil while it stays at a location.
+local function travel_of(p)
+  local connection = read(function() return p.space_connection end)
+  if not connection then return nil end
+  local distance = read(function() return p.distance end)
+  return { from = name_of(read(function() return connection.from end)), to = name_of(read(function() return connection.to end)),
+    distance_fraction = distance and math.floor(distance * 1000 + 0.5) / 1000 or nil,
+    length_km = read(function() return connection.length end) }
+end
+
+-- A schedule record as read back: {station, wait_conditions, allows_unloading}
+-- (full), or {station, waits = count} (compact).
+local function record_row(record, full)
+  if full then
+    return { station = record.station, wait_conditions = record.wait_conditions or {},
+      allows_unloading = record.allows_unloading ~= false }
+  end
+  return { station = record.station, waits = #(record.wait_conditions or {}) }
+end
+
+-- The platform's schedule: the record it heads for and its records.
+local function schedule_of(p, full)
+  local schedule = read(function() return p.get_schedule() end)
+  if not schedule then return nil end
+  local rows = {}
+  for _, record in ipairs(read(function() return schedule.get_records() end) or {}) do rows[#rows + 1] = record_row(record, full) end
+  return { current = read(function() return schedule.current end), records = rows }
+end
+
+-- One platform's line: attribute reads, its route, the hub's free slots and
+-- its request count (one read per request section); and the work it took.
 function M.compact_row(p)
   local pack = read(function() return p.starter_pack end)
   local row = { index = p.index, name = p.name, state = M.state_name(p), location = M.location(p),
     scheduled_for_deletion = p.scheduled_for_deletion, speed = read(function() return p.speed end),
+    paused = read(function() return p.paused end), travel = travel_of(p), schedule = schedule_of(p, false),
     starter_pack = pack and name_of(pack.name) or nil }
-  local hub, work = hub_of(p), 4
+  local hub, work = hub_of(p), 6 + (row.schedule and #row.schedule.records or 0)
   if hub then
     local main = hub_inventory(hub, "hub_main")
     row.hub_free_slots = main and main.count_empty_stacks() or nil
@@ -448,7 +562,7 @@ local function full_step(s, budget, force)
       local row, work = M.compact_row(p)
       budget.left = budget.left - 2 - work - math.ceil(#damaged / SCAN_PER_ITEM)
       return {
-        tick = game.tick, platform = row, surface = M.surface_ref(p),
+        tick = game.tick, platform = row, surface = M.surface_ref(p), schedule = schedule_of(p, true),
         foundation = { tiles = s.count, bbox = { left_top = { x = box[1], y = box[2] },
           right_bottom = { x = box[3] + 1, y = box[4] + 1 } }, rows = rows,
           omitted_rows = omitted_rows > 0 and omitted_rows or nil },
@@ -466,17 +580,18 @@ local function full_step(s, budget, force)
   return nil
 end
 
+-- A read: in every body state but absent (aboard and in transit too).
 M.status_job = {
   start = function(params)
     local detail = params.detail or "compact"
     if detail ~= "compact" and detail ~= "full" then error('platform_status detail must be "compact" or "full"', 0) end
     if params.platform ~= nil then M.check_selector(params.platform, "platform_status platform") end
     if detail == "full" and params.platform == nil then error("platform_status detail full reads one platform: name it", 0) end
-    companion.require_companion()
+    companion.require_present()
     return { detail = detail, platform = params.platform, phase = "chunks" }
   end,
   step = function(s, budget)
-    local force = companion.require_companion().force
+    local force = companion.require_present().force
     if s.detail == "full" then return full_step(s, budget, force) end
     local rows, omitted, work
     if s.platform ~= nil then
@@ -499,21 +614,33 @@ local function check_create(params, label)
   if type(params.name) ~= "string" or #params.name < 1 or #params.name > M.MAX_NAME then
     error(string.format("%s name must be 1-%d characters", label, M.MAX_NAME), 0)
   end
+  if params.planet ~= nil and (type(params.planet) ~= "string" or params.planet == "") then
+    error(label .. " planet must be a planet name", 0)
+  end
   -- The pack launch_rocket supplies and loads is a normal one.
   if params.quality ~= nil and params.quality ~= "normal" then error(label .. ' quality must be "normal"', 0) end
 end
 
 -- The new platform, or nil, the code and why. Validated before the one write.
-local function create(c, params)
-  local force = c.force
+-- Over the named planet, else the planet the body stands on.
+local function create(body, params)
+  local force = body.force
   if not force.is_space_platforms_unlocked() then
     return nil, "PLATFORMS_LOCKED", "space platforms are not unlocked yet (research rocket-silo)"
   end
   for _, p in ipairs(M.list(force)) do
     if p.name == params.name then return nil, "NAME_TAKEN", "platform " .. p.index .. " is already called " .. params.name end
   end
-  local planet = read(function() return c.surface.planet.name end)
-  if not planet then return nil, "NOT_ON_A_PLANET", "a platform is made over the planet the body stands on" end
+  local planet = params.planet
+  if planet then
+    if not read(function() return game.planets[planet] end) then return nil, "UNKNOWN_PLANET", "no planet called " .. planet end
+    if not M.location_unlocked(force, planet) then return nil, "LOCATION_LOCKED", planet .. " is not unlocked yet" end
+  else
+    planet = read(function() return body.surface.planet.name end)
+    if not planet then
+      return nil, "NOT_ON_A_PLANET", "a platform is made over the planet the body stands on, or over the planet you name"
+    end
+  end
   local ok, p = pcall(force.create_space_platform, { name = params.name, planet = planet,
     starter_pack = { name = M.STARTER_PACK, quality = "normal" } })
   if not (ok and p) then return nil, "CREATE_FAILED", ok and "the game made no platform" or tostring(p) end
@@ -526,23 +653,21 @@ local function create(c, params)
     next = "craft a " .. M.STARTER_PACK .. " and launch it to this platform with launch_rocket" }
 end
 
--- create_platform {name, quality?} over RPC: at once.
+-- create_platform {name, quality?, planet?} over RPC: at once.
 function M.create_platform(params)
   check_create(params, "create_platform")
-  local result, code, why = create(companion.require_companion(), params)
+  local result, code, why = create(companion.require_present(), params)
   if not result then error(code .. ": " .. why, 0) end
   return result
 end
 
 local CreateRunner = {}
 function CreateRunner.start(task)
-  companion.require_companion()
+  companion.require_present()
   check_create(task, "create_platform")
 end
 function CreateRunner.tick(task)
-  local c = companion.get()
-  if not c then return { status = "failed", detail = "the companion character is gone" } end
-  local result, code, why = create(c, task)
+  local result, code, why = create(companion.require_present(), task)
   if not result then return { status = "failed", detail = code .. ": " .. why, outcome = { code = code } } end
   return { status = "done", detail = string.format("created platform %s (%d) over %s: it waits for its starter pack",
     result.platform.name, result.platform.index, result.platform.planet), outcome = result }
@@ -551,16 +676,229 @@ end
 -- The plan action: remote, done in the tick the FIFO reaches it.
 M.create_action = {
   runner = CreateRunner,
-  make_task = function(step) return { name = step.name } end,
+  make_task = function(step) return { name = step.name, planet = step.planet } end,
   validate = function(step, index) check_create(step, "queue_plan create_platform step " .. index) end,
+  remote = function() return true end,
+}
+
+-- -------------------------------------------------------- set_platform_route
+
+M.MAX_STOPS = 10
+M.MAX_WAITS = 10
+-- WaitConditionType (2.0.77): every literal the game takes.
+local WAIT_TYPES = {}
+for _, name in ipairs({ "time", "full", "empty", "not_empty", "item_count", "circuit", "inactivity", "robots_inactive",
+  "fluid_count", "passenger_present", "passenger_not_present", "fuel_item_count_all", "fuel_item_count_any", "fuel_full",
+  "destination_full_or_no_path", "request_satisfied", "request_not_satisfied", "all_requests_satisfied",
+  "any_request_not_satisfied", "any_request_zero", "any_planet_import_zero", "specific_destination_full",
+  "specific_destination_not_full", "at_station", "not_at_station", "damage_taken" }) do WAIT_TYPES[name] = true end
+-- WaitCondition fields and their Lua types; condition is the game's own
+-- CircuitCondition or item-and-quality pair, passed through as given.
+local WAIT_FIELDS = { type = "string", compare_type = "string", ticks = "number", condition = "table",
+  planet = "string", station = "string", damage = "number" }
+
+local function check_wait(wait, label)
+  if type(wait) ~= "table" then error(label .. " must be a wait condition table", 0) end
+  for key, value in pairs(wait) do
+    if not WAIT_FIELDS[key] then
+      error(string.format("%s has no field %s (type, compare_type, ticks, condition, planet, station, damage)", label, tostring(key)), 0)
+    end
+    if type(value) ~= WAIT_FIELDS[key] then error(string.format("%s %s must be a %s", label, key, WAIT_FIELDS[key]), 0) end
+  end
+  if not WAIT_TYPES[wait.type] then error(label .. " type must be a WaitConditionType literal, such as time or all_requests_satisfied", 0) end
+  if wait.compare_type ~= nil and wait.compare_type ~= "and" and wait.compare_type ~= "or" then
+    error(label .. ' compare_type must be "and" or "or"', 0)
+  end
+  for _, key in ipairs({ "ticks", "damage" }) do
+    local n = wait[key]
+    if n ~= nil and (n % 1 ~= 0 or n < 0) then error(label .. " " .. key .. " must be a whole number from 0", 0) end
+  end
+end
+
+local function check_route(params, label)
+  M.check_selector(params.platform, label .. " platform")
+  if params.stops == nil and params.go_to == nil and params.paused == nil then
+    error(label .. " needs stops, go_to or paused", 0)
+  end
+  local stops = params.stops
+  if stops ~= nil then
+    if type(stops) ~= "table" or #stops < 1 or #stops > M.MAX_STOPS then
+      error(string.format("%s stops must list 1-%d stops", label, M.MAX_STOPS), 0)
+    end
+    for i, stop in ipairs(stops) do
+      local at = string.format("%s stop %d", label, i)
+      if type(stop) ~= "table" or type(stop.location) ~= "string" then error(at .. " needs a location", 0) end
+      if not read(function() return prototypes.space_location[stop.location] end) then
+        error(string.format("UNKNOWN_LOCATION: %s: no space location called %s", at, stop.location), 0)
+      end
+      if stop.wait ~= nil then
+        if type(stop.wait) ~= "table" or #stop.wait > M.MAX_WAITS then
+          error(string.format("%s wait must list at most %d wait conditions", at, M.MAX_WAITS), 0)
+        end
+        for k, wait in ipairs(stop.wait) do check_wait(wait, at .. " wait " .. k) end
+      end
+      if stop.unloading ~= nil and type(stop.unloading) ~= "boolean" then error(at .. " unloading must be true or false", 0) end
+    end
+  end
+  local go_to = params.go_to
+  if go_to ~= nil and (type(go_to) ~= "number" or go_to % 1 ~= 0 or go_to < 1 or stops and go_to > #stops) then
+    error(label .. " go_to must be the 1-based number of one of its stops", 0)
+  end
+  if params.paused ~= nil and type(params.paused) ~= "boolean" then error(label .. " paused must be true or false", 0) end
+end
+
+-- A wait condition's `condition` with the defaults the game fills in when
+-- it reads one back (2.0.77): a CircuitCondition's comparator "<", a
+-- signal's type "item" (read back as nil) and quality "normal", an item
+-- pair's quality "normal"; a prototype read back as an object is its name.
+local SIGNAL_DEFAULTS = { type = "item", quality = "normal" }
+local function normal_value(value)
+  if type(value) == "userdata" or type(value) == "table" and value.object_name then
+    return read(function() return value.name end)
+  end
+  return value
+end
+local function normal_condition(condition)
+  if type(condition) ~= "table" then return condition end
+  local out = {}
+  for key, value in pairs(condition) do
+    if type(value) == "table" and not value.object_name then
+      local signal = {}
+      for field, v in pairs(value) do signal[field] = normal_value(v) end
+      for field, default in pairs(SIGNAL_DEFAULTS) do if signal[field] == nil then signal[field] = default end end
+      out[key] = signal
+    else
+      out[key] = normal_value(value)
+    end
+  end
+  if out.name ~= nil and out.quality == nil then out.quality = "normal" end
+  if (out.first_signal ~= nil or out.second_signal ~= nil or out.constant ~= nil) and out.comparator == nil then
+    out.comparator = "<"
+  end
+  return out
+end
+
+-- Whether every field asked for is in the read-back value (one way: the
+-- game may add fields it fills in, such as a constant of 0).
+local function holds(asked, got)
+  if type(asked) ~= "table" then return asked == got end
+  if type(got) ~= "table" then return false end
+  for key, value in pairs(asked) do if not holds(value, got[key]) then return false end end
+  return true
+end
+
+-- Whether a read-back record is the stop as asked: its station, unloading
+-- and each wait condition's fields as given (compare_type reads back "and"
+-- when it was left out; a condition compares with the game's defaults
+-- filled in on both sides).
+local function record_is(record, stop)
+  if record.station ~= stop.location or (record.allows_unloading ~= false) ~= (stop.unloading ~= false) then return false end
+  local waits, read_back = stop.wait or {}, record.wait_conditions or {}
+  if #waits ~= #read_back then return false end
+  for i, wait in ipairs(waits) do
+    local got = read_back[i]
+    for key, value in pairs(wait) do
+      if key == "condition" then
+        if not holds(normal_condition(value), normal_condition(got.condition)) then return false end
+      elseif value ~= got[key] then
+        return false
+      end
+    end
+    if wait.compare_type == nil and (got.compare_type or "and") ~= "and" then return false end
+  end
+  return true
+end
+
+local function records_are(records, stops)
+  if #records ~= #stops then return false end
+  for i, stop in ipairs(stops) do if not record_is(records[i], stop) then return false end end
+  return true
+end
+
+-- Writes the route through the platform's schedule object (never
+-- LuaSpacePlatform.schedule, which drops interrupts): the stops replace the
+-- records, go_to heads for one, paused holds thrust. Everything is checked
+-- first; stops the game does not keep as given are put back as they were
+-- (ROUTE_REJECTED). Repeating the same route changes nothing.
+local function set_route(force, task)
+  local p, code, why = M.resolve(force, task.platform)
+  if not p then return nil, code, why end
+  for _, stop in ipairs(task.stops or {}) do
+    if not M.location_unlocked(force, stop.location) then
+      return nil, "LOCATION_LOCKED", stop.location .. " is not unlocked yet: research its discovery technology first"
+    end
+  end
+  local schedule = read(function() return p.get_schedule() end)
+  if not schedule then return nil, "NO_SCHEDULE", "platform " .. p.name .. " has no schedule yet: launch its starter pack first" end
+  local previous = schedule.get_records() or {}
+  if task.go_to and not task.stops and task.go_to > #previous then
+    return nil, "NO_SUCH_STOP", string.format("platform %s has %d stops; there is no stop %d", p.name, #previous, task.go_to)
+  end
+  local changed = {}
+  if task.stops and not records_are(previous, task.stops) then
+    schedule.clear_records()
+    for _, stop in ipairs(task.stops) do
+      schedule.add_record({ station = stop.location, wait_conditions = stop.wait, allows_unloading = stop.unloading ~= false })
+    end
+    local kept = schedule.get_records() or {}
+    if not records_are(kept, task.stops) then
+      schedule.clear_records()
+      if #previous > 0 then schedule.set_records(previous) end
+      return nil, "ROUTE_REJECTED", string.format("the game kept %d of the %d stops differently from what was asked;"
+        .. " the old route is back (check the wait conditions against WaitCondition)", #kept, #task.stops)
+    end
+    changed[#changed + 1] = "stops"
+  end
+  if task.go_to and (changed[1] or schedule.current ~= task.go_to) then
+    schedule.go_to_station(task.go_to)
+    changed[#changed + 1] = "go_to"
+  end
+  if task.paused ~= nil and p.paused ~= task.paused then
+    p.paused = task.paused
+    changed[#changed + 1] = "paused"
+  end
+  return { code = "ROUTE_SET", platform = { index = p.index, name = p.name }, state = M.state_name(p),
+    paused = p.paused, schedule = schedule_of(p, true), travel = travel_of(p), changed = changed }
+end
+
+local function route_params(params)
+  return { platform = params.platform, stops = params.stops, go_to = params.go_to, paused = params.paused }
+end
+
+-- set_platform_route {platform, stops?, go_to?, paused?} over RPC: at once.
+function M.set_platform_route(params)
+  check_route(params, "set_platform_route")
+  local result, code, why = set_route(companion.require_present().force, route_params(params))
+  if not result then error(code .. ": " .. why, 0) end
+  return result
+end
+
+local RouteRunner = {}
+function RouteRunner.start(task)
+  companion.require_present()
+  check_route(task, "set_platform_route")
+end
+function RouteRunner.tick(task)
+  local result, code, why = set_route(companion.require_present().force, task)
+  if not result then return { status = "failed", detail = code .. ": " .. why, outcome = { code = code } } end
+  return { status = "done", detail = string.format("platform %s's route: %s", result.platform.name,
+    #result.changed > 0 and table.concat(result.changed, ", ") .. " set" or "unchanged"), outcome = result }
+end
+
+-- The plan action: remote, done in the tick the FIFO reaches it.
+M.route_action = {
+  runner = RouteRunner,
+  make_task = route_params,
+  validate = function(step, index) check_route(step, "queue_plan set_platform_route step " .. index) end,
   remote = function() return true end,
 }
 
 -- ------------------------------------------------------------------ events
 
+-- The body's force, in every body state (aboard and in transit too).
 local function own(force)
-  local c = companion.get()
-  local ok, same = pcall(function() return not (c and c.valid) or force.name == c.force.name end)
+  local mine = companion.body().force
+  local ok, same = pcall(function() return not mine or force.name == mine.name end)
   return ok and same
 end
 
@@ -596,14 +934,24 @@ function M.on_rocket_launch_ordered(event)
   end)
 end
 
+-- A platform waiting at a station has arrived there: platform_arrived, and
+-- the arrival a travel step waiting aboard reads (storage.travel.arrivals).
 function M.on_platform_state_changed(event)
   pcall(function()
     local p = event.platform
     if not own(p.force) then return end
+    local state = M.state_name(p)
     M.record("platform_state_changed", { platform = platform_ref(p), old = define_name("space_platform_state", event.old_state),
-      new = M.state_name(p) })
+      new = state })
+    local location = M.location(p)
     -- Its pack landed: the platform names its own location from now on.
-    if M.location(p) then space().created[p.index] = nil end
+    if location then space().created[p.index] = nil end
+    if state == "waiting_at_station" and location then
+      M.record("platform_arrived", { platform = platform_ref(p), location = location })
+      storage.travel = storage.travel or {}
+      storage.travel.arrivals = storage.travel.arrivals or {}
+      storage.travel.arrivals[p.index] = { location = location, tick = game.tick }
+    end
   end)
 end
 

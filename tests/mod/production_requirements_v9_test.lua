@@ -8,7 +8,8 @@ end
 local native_autoplace = { autoplace_settings = {
   entity = { settings = { deposit = {}, unmineable = {} } }, tile = { settings = { water = {}, grass = {} } },
 } }
-local character = { surface = { name = "nauvis", map_gen_settings = native_autoplace } }
+-- Roots come from the planet prototype's map generation (prototype data).
+local character = { valid = true, surface = { name = "nauvis", planet = { name = "nauvis" } } }
 local force = { recipes = {
   gear = recipe("gear", { { name = "iron-plate", amount = 2 } }, { { name = "gear", amount = 1 } }, true, 0.5, "crafting"),
   widget_a = recipe("widget-a", { { name = "gear", amount = 1 } }, { { name = "widget", amount = 2 } }, true, 1, "crafting"),
@@ -18,7 +19,22 @@ local force = { recipes = {
 character.force = force
 character.get_main_inventory = function() return { get_item_count = function() return 0 end } end
 package.loaded["scripts.companion"] = { require_companion = function() return character end }
-_G.prototypes = { item = { widget = {}, gear = {}, ["iron-plate"] = {}, ["copper-plate"] = {}, future = {}, stone = {} }, fluid = {}, space_location = {} }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return character end)
+_G.prototypes = { item = { widget = {}, gear = {}, ["iron-plate"] = {}, ["copper-plate"] = {}, future = {}, stone = {} }, fluid = {},
+  space_location = { nauvis = { name = "nauvis", map_gen_settings = native_autoplace } }, space_connection = {} }
+function prototypes.get_entity_filtered(filters)
+  local wanted = {}
+  for _, kind in ipairs(type(filters[1].type) == "table" and filters[1].type or { filters[1].type }) do wanted[kind] = true end
+  local found = {}
+  for name, proto in pairs(prototypes.entity or {}) do if wanted[proto.type] then found[name] = proto end end
+  return found
+end
+-- Roots are built once per load (prototypes never change at runtime): a
+-- test that changes prototype data loads the module again.
+local function reload()
+  package.loaded["scripts.production_requirements"] = nil
+  return require("scripts.production_requirements")
+end
 _G.game = { tick = 42 }
 _G.defines = { flow_precision_index = { five_seconds = 1, one_minute = 2, ten_minutes = 3, one_hour = 4 } }
 local production = require("scripts.production_requirements")
@@ -51,6 +67,7 @@ prototypes.entity = {
   wreck = { type = "simple-entity", mineable_properties = { minable = true, products = { { name = "widget", amount = 1 } } } },
   unmineable = { type = "resource", mineable_properties = { minable = false, products = { { name = "future", amount = 1 } } } },
 }
+production = reload()
 force.recipes.smelting = recipe("smelting", { { name = "iron-ore", amount = 1 } }, { { name = "iron-plate", amount = 1 } }, true, 3.2, "smelting")
 force.recipes.plate_recycling = recipe("plate-recycling", { { name = "scrap", amount = 1 } }, { { name = "iron-plate", amount = 1 } }, true)
 force.recipes.ore_recycling = recipe("ore-recycling", { { name = "scrap", amount = 2 } }, { { name = "iron-ore", amount = 1 } }, true)
@@ -90,12 +107,13 @@ rejects({ targets = { steel = 1 }, recipe_choices = { steel = "steel-recycling" 
 -- Offshore-pump tile fluids are acquisition roots even when a locked recipe can also produce them.
 prototypes.fluid.water = {}
 prototypes.tile = { water = { name = "water", fluid = { name = "water" } }, grass = { name = "grass" } }
+production = reload()
 force.recipes.ice_melting = recipe("ice-melting", { { name = "custom-mineral", amount = 1 } }, { { name = "water", amount = 20 } }, false)
 local pumped = production.production_requirements({ targets = { water = 100 } })
 check(#pumped.nodes == 0 and pumped.raw.water == 100, "offshore tile fluid is a raw root despite a locked producer")
 force.recipes.ice_melting = nil
 
--- Roots follow the companion surface's own autoplace settings: another planet's
+-- Roots follow the companion planet's own autoplace settings: another planet's
 -- geyser fluid or ocean fluid keeps its ordinary recipe or ambiguity handling.
 for _, name in ipairs({ "acid", "sulfur", "heavy", "coal-feed", "oil-feed" }) do prototypes.fluid[name] = {}; prototypes.item[name] = {} end
 prototypes.entity.geyser = { type = "resource", mineable_properties = { minable = true, products = { { type = "fluid", name = "acid", amount = 10 } } } }
@@ -103,19 +121,22 @@ prototypes.tile.ocean = { name = "ocean", fluid = { name = "heavy" } }
 force.recipes.acid = recipe("acid", { { name = "sulfur", amount = 5 } }, { { name = "acid", amount = 50, type = "fluid" } }, true, 1, "chemistry")
 force.recipes.heavy_a = recipe("heavy-a", { { name = "oil-feed", amount = 1 } }, { { name = "heavy", amount = 1, type = "fluid" } }, true, 1, "oil-processing")
 force.recipes.heavy_b = recipe("heavy-b", { { name = "coal-feed", amount = 1 } }, { { name = "heavy", amount = 1, type = "fluid" } }, true, 1, "oil-processing")
-character.surface.map_gen_settings = { autoplace_settings = {
+prototypes.space_location.nauvis.map_gen_settings = { autoplace_settings = {
   entity = { settings = { deposit = {} } }, tile = { settings = { water = {}, grass = {} } },
 } }
+production = reload()
 local native = production.production_requirements({ targets = { acid = 50, ["iron-ore"] = 2, water = 10 } })
 check(#native.nodes == 1 and native.nodes[1].recipe == "acid" and native.raw.sulfur == 5 and native.raw.acid == nil
   and native.raw["iron-ore"] == 2 and native.raw.water == 10,
-  "a resource not autoplaced on the companion surface is expanded through its recipe; native roots stay raw")
+  "a resource not autoplaced on the companion's planet is expanded through its recipe; native roots stay raw")
 rejects({ targets = { heavy = 1 } }, "ambiguous production route", "a tile fluid from another surface keeps ambiguity refusal")
-character.surface.map_gen_settings = nil
+prototypes.space_location.nauvis.map_gen_settings = nil
+production = reload()
 local unreadable = production.production_requirements({ targets = { acid = 10 } })
 check(unreadable.raw.acid == nil and unreadable.raw.sulfur == 5 and unreadable.nodes[1].recipe == "acid",
-  "unreadable surface map generation gives no raw-root shortcut")
-character.surface.map_gen_settings = native_autoplace
+  "a planet without map generation gives no raw-root shortcut")
+prototypes.space_location.nauvis.map_gen_settings = native_autoplace
+production = reload()
 force.recipes.acid, force.recipes.heavy_a, force.recipes.heavy_b = nil, nil, nil
 prototypes.entity.geyser, prototypes.tile.ocean = nil, nil
 

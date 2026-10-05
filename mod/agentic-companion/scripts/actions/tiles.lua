@@ -10,7 +10,7 @@
 -- mineable tile (stone path under concrete) gives its items back to the body,
 -- as brushing over it does for a player. Only normal-quality items are laid.
 -- Result: {tile, requested, placed, already, ineligible:[{x, y, code,
--- current?, hint?}] (first 16), omitted_ineligible, consumed:{[item]: n},
+-- current?, liquid?, hint?}] (first 16), omitted_ineligible, consumed:{[item]: n},
 -- returned?:{[item]: n}, shortfall?, remaining?}. Over RPC (check_only) it only reads: would_place,
 -- items_needed, carried.
 local companion = require("scripts.companion")
@@ -122,6 +122,13 @@ local function classify_kind(place, tile_name, tp)
   end
   if not blocked then return "eligible" end
   local row = { code = "TILE_INELIGIBLE", current = tile_name }
+  -- A liquid tile names its liquid (lava and the oceans take foundation or
+  -- ice platform, not landfill: the hint says which).
+  local layers = tp.collision_mask and tp.collision_mask.layers or {}
+  if layers.water_tile then
+    local ok_fluid, fluid = pcall(function() return tp.fluid.name end)
+    row.liquid = ok_fluid and fluid or nil
+  end
   local ok, cover = pcall(function() return tp.default_cover_tile end)
   if ok and cover then row.hint = "use " .. placing_item(cover) end
   return row
@@ -140,7 +147,7 @@ end
 
 -- A copy of a memoised ineligible row, so each tile's row has its own x, y.
 local function row_copy(class)
-  return { code = class.code, current = class.current, hint = class.hint }
+  return { code = class.code, current = class.current, liquid = class.liquid, hint = class.hint }
 end
 
 local function note_ineligible(s, x, y, row)

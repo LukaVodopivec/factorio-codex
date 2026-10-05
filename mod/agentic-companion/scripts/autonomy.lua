@@ -1,9 +1,10 @@
 -- Factory lines: what each group of machines is doing, kept by the mod so no
 -- bot has to watch, wait or prove anything.
 --
--- A line is the own machines making the same product (same machine class and
--- recipe or mined resource) whose centres lie within LINK_TILES of another
--- member. Topology is refreshed only after something is built, removed or
+-- A line is the own machines on one surface making the same product (same
+-- machine class and recipe or mined resource) whose centres lie within
+-- LINK_TILES of another member. Lines on every factory surface are kept (a
+-- line's `surface` is its surface index); reads name the surface they want. Topology is refreshed only after something is built, removed or
 -- reconfigured (debounced), plus a slow safety cadence for changes that raise
 -- no event; it reads the event-maintained registry (registry.lua), never an
 -- entity query, and waits until the registry's bootstrap is ready. A refresh
@@ -15,14 +16,18 @@
 -- its stored entity reference, so about machines/30 entities are read a tick.
 --
 -- Per line the mod keeps:
---   state           running (some machine progressed in the last 10 s) |
---                   starved | output_full | no_fuel | no_power | no_heat |
+--   state           running (some machine progressed in the last 10 s, or a
+--                   farm waits for its plants to grow) | starved |
+--                   output_full | no_fuel | no_power | frozen | no_heat |
 --                   disabled | idle (the worst state among the machines that
 --                   are not progressing)
 --   cause           why the worst machine stalls: the item or fluid a starved
---                   one lacks, no_recipe / recipe_not_researched for an idle
---                   one (rocket_ready for a silo whose rocket waits for its
---                   launch), burnt_result for spent fuel that has nowhere to go;
+--                   one lacks ("seed" for an agricultural tower with no spot
+--                   its seeds take), no_recipe / recipe_not_researched /
+--                   not_connected_to_hub_or_pad / no_research (labs while no
+--                   research is active) for an idle one (rocket_ready for a
+--                   silo whose rocket waits for its launch), burnt_result for
+--                   spent fuel that has nowhere to go;
 --                   worked out when the cause machine or its status changes
 --                   (and every 10 s while it lasts), never by a read
 --   temperature     (power lines with a reactor or heat exchanger) the lowest
@@ -34,7 +39,6 @@
 --   hand_transfers  character transfers into or out of its machines in the
 --                   last 10 minutes, shown from the second on: a line served
 --                   by hand again needs a connection (belt, inserter, chest)
-local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 local platforms = require("scripts.platforms")
 
@@ -56,38 +60,44 @@ local MACHINE_TYPES = registry.MACHINE_TYPES
 -- Beacons and roboports make nothing: sampled for problems, never a line.
 local PROBLEM_ONLY_TYPES = registry.PROBLEM_ONLY_TYPES
 local CRAFTING_TYPES = { furnace = true, ["assembling-machine"] = true, ["rocket-silo"] = true }
--- Steam and nuclear power is one line: pumps, boilers, heat exchangers,
--- reactors and engines feed each other.
+-- Steam, nuclear and fusion power is one line: pumps, boilers, heat
+-- exchangers, reactors (and heating towers) and engines feed each other;
+-- lightning attractors join it.
 local POWER_TYPES = { boiler = true, generator = true, ["burner-generator"] = true, ["offshore-pump"] = true,
-  reactor = true }
+  reactor = true, ["fusion-reactor"] = true, ["fusion-generator"] = true, ["lightning-attractor"] = true }
 
 -- Raw entity status -> line state class of a machine that is not progressing.
 local STATUS_CLASS = {
   no_power = "no_power", low_power = "no_power", not_plugged_in_electric_network = "no_power",
-  no_fuel = "no_fuel", low_temperature = "no_heat",
+  no_fuel = "no_fuel", low_temperature = "no_heat", frozen = "frozen",
   full_output = "output_full", waiting_for_space_in_destination = "output_full",
-  full_burnt_result_output = "output_full",
+  full_burnt_result_output = "output_full", waiting_for_space_in_platform_hub = "output_full",
   no_ingredients = "starved", item_ingredient_shortage = "starved", fluid_ingredient_shortage = "starved",
   waiting_for_source_items = "starved", missing_science_packs = "starved", no_minable_resources = "starved",
   missing_required_fluid = "starved", no_input_fluid = "starved", low_input_fluid = "starved",
-  pipeline_overextended = "starved",
+  pipeline_overextended = "starved", no_spot_seedable_by_inputs = "starved",
   disabled_by_control_behavior = "disabled", disabled_by_script = "disabled",
-  no_recipe = "idle", recipe_not_researched = "idle",
+  no_recipe = "idle", recipe_not_researched = "idle", not_connected_to_hub_or_pad = "idle",
+  no_research_in_progress = "idle",
 }
+-- Statuses that count as progress: a farm waiting for its plants to grow.
+local PROGRESS_STATUS = { working = true, waiting_for_plants_to_grow = true }
 -- Statuses whose cause is the fluid a fluidbox filter names.
 local FLUID_STATUS = { missing_required_fluid = true, no_input_fluid = true, low_input_fluid = true,
   pipeline_overextended = true }
 -- The worst present state names the line when it is not running.
-local STATE_PRIORITY = { "no_power", "no_heat", "no_fuel", "output_full", "starved", "disabled", "idle" }
+local STATE_PRIORITY = { "no_power", "frozen", "no_heat", "no_fuel", "output_full", "starved", "disabled", "idle" }
 -- Statuses that are problems once they last this many ticks. Output full
--- is ordinary backpressure for a while; dead machines are not.
+-- is ordinary backpressure for a while; dead machines are not. Labs with no
+-- research active say research is idle (the strategist's cue).
 local PROBLEM_TICKS = {
   no_power = 60, not_plugged_in_electric_network = 60, no_fuel = 60,
   no_minable_resources = 60, full_output = 600, waiting_for_space_in_destination = 600,
   low_temperature = 600, no_modules_to_transmit = 600, pipeline_overextended = 600,
+  frozen = 60, no_research_in_progress = 600,
 }
 -- Problem rows that carry a fixed cause.
-local PROBLEM_CAUSE = { no_modules_to_transmit = "module" }
+local PROBLEM_CAUSE = { no_modules_to_transmit = "module", no_research_in_progress = "research_idle" }
 -- Statuses upkeep serves (chores.lua): kept per status as unit sets.
 local CHORE_STATUSES = { no_fuel = true, missing_science_packs = true }
 -- How long a computed line cause is trusted while its machine and status
@@ -110,8 +120,9 @@ end
 
 local function data() return storage and storage.autonomy end
 
-local function position_key(position)
-  return string.format("%.2f,%.2f", position.x, position.y)
+-- A machine's place: its surface index and position.
+local function position_key(surface, position)
+  return string.format("%d@%.2f,%.2f", surface or 0, position.x, position.y)
 end
 
 local function current_recipe(entity)
@@ -172,29 +183,34 @@ local function new_line(a, key, product)
     state = "idle", rate_bins = {}, rate_bin = nil }
 end
 
--- Starts a refresh: a snapshot of the own machines in charted chunks, valid,
--- ordered by unit number. Without the body there is no force to read: it is
--- tried again shortly.
+-- Starts a refresh: the unit numbers of the own machines on every surface,
+-- in the registry's add order (a pure Lua pass; no entity read, no sort).
 local function refresh_start(a)
-  local c = companion.get()
   a.dirty_tick, a.last_refresh_tick = nil, game.tick
-  if not c then a.dirty_tick = game.tick; return end
-  a.refresh_job = { list = registry.machines(), index = 1, recs = {} }
+  a.refresh_job = { units = registry.machine_units(), index = 1, list = {}, recs = {}, charted = {} }
 end
 
 -- What each machine makes, `count` machines at a time (onto its kept record,
--- which the sampler goes on reading). A machine removed since the snapshot
--- is left out. True once every machine is done.
+-- which the sampler goes on reading): only valid machines in charted chunks
+-- (one chart check per surface and chunk) join the job's list. True once
+-- every machine is done. A refresh a 0.22.2 or older save left half done
+-- starts again.
 local function refresh_identify(a, count)
   local job = a.refresh_job
-  local list = job.list
-  local stop = math.min(#list, job.index + count - 1)
+  if not job.units then
+    refresh_start(a)
+    job = a.refresh_job
+  end
+  local units = job.units
+  local stop = math.min(#units, job.index + count - 1)
+  local force = job.index <= stop and registry.own_force()
   for i = job.index, stop do
-    local entry = list[i]
-    local entity, unit = entry.entity, entry.unit
-    if entity and entity.valid then
+    local entry = registry.charted_machine(units[i], force, job.charted)
+    local entity, unit = entry and entry.entity, units[i]
+    if entity then
+      job.list[#job.list + 1] = entry
       local rec = a.machines[unit] or { unit = unit }
-      rec.entity, rec.name, rec.type = entity, entry.name, entry.type
+      rec.entity, rec.name, rec.type, rec.surface = entity, entry.name, entry.type, entry.surface
       rec.position = { x = entry.position.x, y = entry.position.y }
       if PROBLEM_ONLY_TYPES[entry.type] then
         rec.key, rec.product, rec.yield, rec.recipe, rec.line_id = nil, nil, 0, nil, nil
@@ -208,7 +224,17 @@ local function refresh_identify(a, count)
     end
   end
   job.index = stop + 1
-  return job.index > #list
+  return job.index > #units
+end
+
+-- The chore status sets: waiting[raw][surface index][unit] = true, so
+-- upkeep reads only the machines on the body's surface.
+local function add_waiting(waiting, rec)
+  local surface = rec.surface or 0
+  local by_surface = waiting[rec.raw] or {}
+  waiting[rec.raw] = by_surface
+  by_surface[surface] = by_surface[surface] or {}
+  by_surface[surface][rec.unit] = true
 end
 
 -- The refresh's last tick: groups the identified machines into lines (pure
@@ -223,19 +249,17 @@ local function refresh_finish(a)
     local rec = job.recs[unit]
     if rec then
       machines[unit] = rec
-      if CHORE_STATUSES[rec.raw] then
-        waiting[rec.raw] = waiting[rec.raw] or {}
-        waiting[rec.raw][unit] = true
-      end
+      if CHORE_STATUSES[rec.raw] then add_waiting(waiting, rec) end
       if PROBLEM_ONLY_TYPES[rec.type] then
         problem_only[#problem_only + 1] = unit
       else
         list[#list + 1] = rec
-        machine_at[position_key(rec.position)] = unit
+        machine_at[position_key(rec.surface, rec.position)] = unit
       end
     end
   end
-  -- Same product and within LINK_TILES (Chebyshev) of a member: one line.
+  -- Same surface and product and within LINK_TILES (Chebyshev) of a
+  -- member: one line.
   local parent, cells = {}, {}
   local function root(unit)
     while parent[unit] ~= unit do parent[unit] = parent[parent[unit]]; unit = parent[unit] end
@@ -244,8 +268,9 @@ local function refresh_finish(a)
   for _, rec in ipairs(list) do
     parent[rec.unit] = rec.unit
     local cx, cy = math.floor(rec.position.x / LINK_TILES), math.floor(rec.position.y / LINK_TILES)
+    local prefix = (rec.surface or 0) .. "@"
     for dy = -1, 1 do for dx = -1, 1 do
-      for _, other in ipairs(cells[(cx + dx) .. "," .. (cy + dy)] or {}) do
+      for _, other in ipairs(cells[prefix .. (cx + dx) .. "," .. (cy + dy)] or {}) do
         if other.key == rec.key and math.abs(other.position.x - rec.position.x) <= LINK_TILES
           and math.abs(other.position.y - rec.position.y) <= LINK_TILES then
           local ra, rb = root(other.unit), root(rec.unit)
@@ -253,7 +278,7 @@ local function refresh_finish(a)
         end
       end
     end end
-    local cell = cx .. "," .. cy
+    local cell = prefix .. cx .. "," .. cy
     cells[cell] = cells[cell] or {}
     table.insert(cells[cell], rec)
   end
@@ -264,13 +289,17 @@ local function refresh_finish(a)
     table.insert(groups[r], rec)
   end
   -- A group keeps the line its most members belonged to (lowest id on a tie),
-  -- so state and rate survive builds next to it.
+  -- so state and rate survive builds next to it (a line kept from before
+  -- lines had surfaces takes its members' surface).
   local lines, order, taken = {}, {}, {}
   for _, r in ipairs(group_order) do
     local members, votes, best = groups[r], {}, nil
     for _, rec in ipairs(members) do
       local id = rec.line_id
-      if id and old_lines[id] and old_lines[id].key == rec.key and not taken[id] then votes[id] = (votes[id] or 0) + 1 end
+      local old = id and old_lines[id]
+      if old and old.key == rec.key and (old.surface == nil or old.surface == rec.surface) and not taken[id] then
+        votes[id] = (votes[id] or 0) + 1
+      end
     end
     for id, count in pairs(votes) do
       if not best or count > votes[best] or count == votes[best] and id < best then best = id end
@@ -282,11 +311,11 @@ local function refresh_finish(a)
       rec.line_id = line.id
       units[#units + 1] = rec.unit
       sx, sy = sx + rec.position.x, sy + rec.position.y
-      local transfer = a.transfer_tick[position_key(rec.position)]
+      local transfer = a.transfer_tick[position_key(rec.surface, rec.position)]
       if transfer and (not last_transfer or transfer > last_transfer) then last_transfer = transfer end
     end
     if #units ~= #(line.machines or {}) then line.changed_tick = game.tick end
-    line.machines, line.product = units, members[1].product
+    line.machines, line.product, line.surface = units, members[1].product, members[1].surface
     line.position = { x = math.floor(sx / #members + 0.5), y = math.floor(sy / #members + 0.5) }
     if last_transfer and (not line.last_transfer_tick or last_transfer > line.last_transfer_tick) then
       line.last_transfer_tick = last_transfer
@@ -338,12 +367,11 @@ end
 local function set_raw(a, rec, raw)
   local old = rec.raw
   if old == raw then return end
-  if CHORE_STATUSES[old] and a.waiting[old] then a.waiting[old][rec.unit] = nil end
-  if CHORE_STATUSES[raw] then
-    a.waiting[raw] = a.waiting[raw] or {}
-    a.waiting[raw][rec.unit] = true
-  end
+  local by_surface = CHORE_STATUSES[old] and a.waiting[old]
+  local units = by_surface and by_surface[rec.surface or 0]
+  if units then units[rec.unit] = nil end
   rec.raw = raw
+  if CHORE_STATUSES[raw] then add_waiting(a.waiting, rec) end
 end
 
 local function sample(a, rec, tick)
@@ -354,7 +382,7 @@ local function sample(a, rec, tick)
     local ok, temperature = pcall(function() return entity.temperature end)
     rec.temperature = ok and type(temperature) == "number" and temperature or nil
   end
-  local progressed, produced = raw == "working", 0
+  local progressed, produced = PROGRESS_STATUS[raw] == true, 0
   if rec.type == "mining-drill" then
     local progress = entity.mining_progress
     if rec.progress and progress ~= rec.progress then
@@ -452,9 +480,13 @@ local function cause_of(rec, state)
   local raw = rec.raw
   if state == "starved" then
     if FLUID_STATUS[raw] then return fluid_cause(rec.entity) end
+    if raw == "no_spot_seedable_by_inputs" then return "seed" end
     return missing_input(rec)
-  elseif state == "idle" and (raw == "no_recipe" or raw == "recipe_not_researched") then
+  elseif state == "idle" and (raw == "no_recipe" or raw == "recipe_not_researched"
+    or raw == "not_connected_to_hub_or_pad") then
     return raw
+  elseif state == "idle" and raw == "no_research_in_progress" then
+    return "no_research"
   elseif state == "idle" and raw == "waiting_to_launch_rocket" then
     return "rocket_ready"
   elseif state == "output_full" and raw == "full_burnt_result_output" then
@@ -565,12 +597,16 @@ local function recent_transfers(line, tick)
   return kept
 end
 
+-- The body's anchor surface index (its physical surface, the hub aboard).
+local function body_surface() return registry.anchor_index() end
+
 -- A character transfer into (insert) or out of (extract) the entity at this
--- position. Only an insert feeds the machine; both count as hand transfers.
+-- position on the body's surface. Only an insert feeds the machine; both
+-- count as hand transfers.
 function M.on_transfer(position, kind)
   local a = data()
   if not a or type(position) ~= "table" then return end
-  local key = position_key(position)
+  local key = position_key(body_surface(), position)
   local feeds = kind ~= "extract"
   if feeds then a.transfer_tick[key] = game.tick end
   local unit = a.machine_at and a.machine_at[key]
@@ -597,15 +633,40 @@ local function rate_per_min(line, tick)
   return math.floor(total * 3600 / span * 10 + 0.5) / 10
 end
 
--- What own lines make of this item a minute (summed rates) and how many
+-- A machine's surface index; a record kept from before records had
+-- surfaces (until the next refresh) reads its entity's once.
+local function rec_surface(rec)
+  if rec.surface == nil then
+    local ok, index = pcall(function() return rec.entity.surface_index end)
+    rec.surface = ok and index or nil
+  end
+  return rec.surface
+end
+
+-- A line's surface index: its own, else (a line kept from before lines had
+-- surfaces, until its next refresh) its first machine's.
+local function line_surface(a, line)
+  if line.surface then return line.surface end
+  local rec = a.machines[line.machines[1]]
+  return rec and rec_surface(rec)
+end
+
+-- Whether a line is on the surface wanted (an index; nil or "all": any).
+local function on(a, line, surface)
+  return surface == nil or surface == "all" or line_surface(a, line) == surface
+end
+
+-- What own lines on a surface (default the body's: products elsewhere are
+-- not in its reach) make of this item a minute (summed rates) and how many
 -- lines make it: one pass over the lines, no entity read.
-function M.producing(item)
+function M.producing(item, surface)
   local a = data()
   local rate, count = 0, 0
   if not a then return rate, count end
+  surface = surface or body_surface()
   for _, id in ipairs(a.line_order) do
     local line = a.lines[id]
-    if line.product == item then
+    if line.product == item and on(a, line, surface) then
       count = count + 1
       rate = rate + rate_per_min(line, game.tick)
     end
@@ -613,15 +674,17 @@ function M.producing(item)
   return rate, count
 end
 
--- Public line rows, ordered by id. since_tick keeps only lines that changed
--- state, flags, membership or cause since then.
-function M.lines(since_tick)
+-- Public line rows of one surface (an index; nil or "all": every surface),
+-- ordered by id.
+-- since_tick keeps only lines that changed state, flags, membership or cause
+-- since then.
+function M.lines(since_tick, surface)
   local a = data()
   local rows = {}
   if not a then return rows end
   for _, id in ipairs(a.line_order) do
     local line = a.lines[id]
-    if not since_tick or line.changed_tick >= since_tick then
+    if (not since_tick or line.changed_tick >= since_tick) and on(a, line, surface) then
       local row = { id = id, product = line.product, machines = #line.machines, working = line.working, state = line.state,
         rate_per_min = rate_per_min(line, game.tick), hand_fed = line.hand_fed == true,
         self_sustaining = line.self_sustaining == true, position = line.position }
@@ -643,25 +706,33 @@ function M.lines(since_tick)
   return rows
 end
 
--- Machines whose problem status has lasted past its threshold, grouped by
--- status and entity name per line (beacons and roboports, which have no
--- line, after them); since_tick keeps rows that began since.
-function M.problems(since_tick)
+-- Machines on one surface (an index; nil or "all": every surface) whose
+-- problem status has
+-- lasted past its threshold, grouped by status and entity name per line
+-- (beacons and roboports, which have no line, after them); since_tick keeps
+-- rows that began since.
+-- Adds a problem machine to its row (by line, status and entity name).
+local function add_problem(rows, by_key, id, rec)
+  local key = tostring(id) .. "\0" .. rec.problem .. "\0" .. rec.name
+  local row = by_key[key]
+  if row then row.count = row.count + 1
+  else
+    row = { status = rec.problem, name = rec.name, position = { x = rec.position.x, y = rec.position.y },
+      count = 1, line = id, cause = PROBLEM_CAUSE[rec.problem] }
+    by_key[key] = row
+    rows[#rows + 1] = row
+  end
+end
+
+function M.problems(since_tick, surface)
   local a = data()
   local rows, by_key = {}, {}
   if not a then return rows end
   local function add(id, unit)
     local rec = a.machines[unit]
-    if rec and rec.problem_counted and (not since_tick or rec.problem_since >= since_tick) then
-      local key = tostring(id) .. "\0" .. rec.problem .. "\0" .. rec.name
-      local row = by_key[key]
-      if row then row.count = row.count + 1
-      else
-        row = { status = rec.problem, name = rec.name, position = { x = rec.position.x, y = rec.position.y },
-          count = 1, line = id, cause = PROBLEM_CAUSE[rec.problem] }
-        by_key[key] = row
-        rows[#rows + 1] = row
-      end
+    if rec and rec.problem_counted and (not since_tick or rec.problem_since >= since_tick)
+      and (surface == nil or surface == "all" or rec_surface(rec) == surface) then
+      add_problem(rows, by_key, id, rec)
     end
   end
   for _, id in ipairs(a.line_order) do
@@ -671,16 +742,53 @@ function M.problems(since_tick)
   return rows
 end
 
-function M.counts()
+-- Every surface at once, in one pass over the lines and the problem-only
+-- machines: {[surface index] = {line_count, running_line_count, problems =
+-- rows as M.problems gives them}}.
+function M.by_surface()
+  local a = data()
+  local out, keys = {}, {}
+  if not a then return out end
+  local function of(surface)
+    surface = surface or 0
+    local row = out[surface]
+    if not row then
+      row = { line_count = 0, running_line_count = 0, problems = {} }
+      out[surface], keys[surface] = row, {}
+    end
+    return row, keys[surface]
+  end
+  local function add(id, unit)
+    local rec = a.machines[unit]
+    if rec and rec.problem_counted then
+      local row, by_key = of(rec_surface(rec))
+      add_problem(row.problems, by_key, id, rec)
+    end
+  end
+  for _, id in ipairs(a.line_order) do
+    local line = a.lines[id]
+    local row = of(line_surface(a, line))
+    row.line_count = row.line_count + 1
+    if line.state == "running" then row.running_line_count = row.running_line_count + 1 end
+    for _, unit in ipairs(line.machines) do add(id, unit) end
+  end
+  for _, unit in ipairs(a.problem_only) do add(nil, unit) end
+  return out
+end
+
+-- Line counts of one surface (an index), or of every surface when nil.
+function M.counts(surface)
   local a = data()
   local counts = { line_count = 0, running_line_count = 0, self_sustaining_line_count = 0, hand_fed_line_count = 0 }
   if not a then return counts end
   for _, id in ipairs(a.line_order) do
     local line = a.lines[id]
-    counts.line_count = counts.line_count + 1
-    if line.state == "running" then counts.running_line_count = counts.running_line_count + 1 end
-    if line.self_sustaining then counts.self_sustaining_line_count = counts.self_sustaining_line_count + 1 end
-    if line.hand_fed then counts.hand_fed_line_count = counts.hand_fed_line_count + 1 end
+    if surface == nil or line_surface(a, line) == surface then
+      counts.line_count = counts.line_count + 1
+      if line.state == "running" then counts.running_line_count = counts.running_line_count + 1 end
+      if line.self_sustaining then counts.self_sustaining_line_count = counts.self_sustaining_line_count + 1 end
+      if line.hand_fed then counts.hand_fed_line_count = counts.hand_fed_line_count + 1 end
+    end
   end
   return counts
 end

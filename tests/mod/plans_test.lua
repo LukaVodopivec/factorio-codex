@@ -3,10 +3,16 @@ package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 local inventory_count = 2
+-- The body's surface for the tags (nil: no tags) is set by the surface tests.
+local anchor_ref
 local body = { valid = true, position = { x = 0, y = 0 }, walking_state = {}, mining_state = {}, crafting_queue = {}, crafting_queue_size = 0 }
 body.get_main_inventory = function() return { get_contents = function() return { { name = "iron-plate", count = inventory_count } } end } end
 body.cancel_crafting = function(args) table.remove(body.crafting_queue, args.index); body.crafting_queue_size = #body.crafting_queue end
-package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
+package.loaded["scripts.companion"] = { require_companion = function() return body end,
+  -- Any body state but absent (remote actions, reads, queue_plan); no surface tag.
+  require_present = function() return { state = "on_surface", force = body.force, surface = body.surface } end,
+  anchor = function() return anchor_ref and { surface_ref = anchor_ref, state = "on_surface" } or nil end,
+  get = function() return body end }
 local starts = {}
 local queued_place_output_target
 local walk_arrival
@@ -384,65 +390,135 @@ require("scripts.state").init()
 check(storage.tasks.last_cancel_all_tick == 401, "the last cancel-all survives a reload")
 _G.log = nil
 
--- Plans belong to the surface the body stood on when they were queued: off
--- that surface they wait, and their step starts over once it is back.
-body.surface.name = "nauvis"
-local surface_starts = 0
+-- Surface tags (multi-surface rules 2-4). Each positional step carries the
+-- surface its positions belong to: the queue_plan surface, else the
+-- destination of the last travel pending in the FIFO, else the body's; a
+-- travel step hands its destination to the steps after it. Remote steps,
+-- crafting, reads and travel carry none.
+anchor_ref = "nauvis"
+game.planets = { nauvis = {}, vulcanus = {} }
 local walk_start_fn = walk.start
+local surface_starts = 0
 walk.start = function() surface_starts = surface_starts + 1 end
-local home = tasks.queue_plan({ steps = { { action = "walk_to", x = 5, y = 5 } } })
-game.tick = 410; tasks.on_tick()
-check(storage.tasks.active and storage.tasks.active.id == home.plan_id and storage.tasks.active.surface == "nauvis",
-  "a plan is tagged with the body's surface")
-body.surface.name = "platform-1"
-game.tick = 411; tasks.on_tick()
-check(storage.tasks.active == nil and tasks.plan_status({ plan_id = home.plan_id }).status == "waiting"
-  and storage.tasks.queue[1].id == home.plan_id and body.walking_state.walking == false,
-  "on another surface the plan stops its body and waits in the FIFO")
-local away = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } } })
-walk.tick = function() return { status = "done", detail = "arrived" } end
-for tick = 412, 414 do game.tick = tick; tasks.on_tick() end
-check(tasks.plan_status({ plan_id = away.plan_id }).status == "completed"
-  and tasks.plan_status({ plan_id = home.plan_id }).status == "waiting",
-  "work queued on the new surface runs while the parked plan waits")
-body.surface.name = "nauvis"
-for tick = 415, 417 do game.tick = tick; tasks.on_tick() end
-check(tasks.plan_status({ plan_id = home.plan_id }).status == "completed" and surface_starts == 3,
-  "back on its surface the plan starts its step over and completes")
+local travel_runner = require("scripts.actions.travel").action.runner
+local travel_tick, travel_start = travel_runner.tick, travel_runner.start
+travel_runner.start, travel_runner.tick = function() end, function() return nil end
+local function queued_plan(id)
+  if storage.tasks.active and storage.tasks.active.id == id then return storage.tasks.active end
+  for _, plan in ipairs(storage.tasks.queue) do if plan.id == id then return plan end end
+end
+local tagged = tasks.queue_plan({ steps = { { action = "walk_to", x = 5, y = 5 }, { action = "craft_items", recipe = "gear", crafts = 1 },
+  { action = "create_platform", name = "alpha" }, { action = "travel", to = "vulcanus" }, { action = "mine", x = 2, y = 2, count = 1 } } })
+local steps = queued_plan(tagged.plan_id).steps
+check(steps[1]._surface == "nauvis" and steps[2]._surface == nil and steps[3]._surface == nil and steps[4]._surface == nil
+  and steps[4]._to == "vulcanus" and steps[5]._surface == "vulcanus" and queued_plan(tagged.plan_id).surface == "nauvis"
+  and tasks.plan_status({ plan_id = tagged.plan_id }).surface == "nauvis",
+  "positional steps carry the body's surface, steps after a travel its destination; remote, crafting and travel none")
+local behind = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } } })
+check(queued_plan(behind.plan_id).steps[1]._surface == "vulcanus", "a plan queued behind a pending travel is for its destination")
+local named = tasks.queue_plan({ surface = "nauvis", steps = { { action = "walk_to", x = 1, y = 1 } } })
+local bad_ok, bad = pcall(tasks.queue_plan, { surface = "mars", steps = { { action = "walk_to", x = 1, y = 1 } } })
+check(queued_plan(named.plan_id).steps[1]._surface == "nauvis" and not bad_ok and tostring(bad):match("^SURFACE_UNKNOWN"),
+  "queue_plan surface names the tag; an unknown surface is refused")
+local remote_plan = tasks.queue_plan({ steps = { { action = "create_platform", name = "beta" } } })
+check(queued_plan(remote_plan.plan_id).surface == nil and queued_plan(remote_plan.plan_id).steps[1]._surface == nil,
+  "a remote-only plan carries no surface tag")
+check(not pcall(tasks.queue_plan, { source = "package:p1", steps = { { action = "travel", to = "vulcanus" } } })
+  and not pcall(tasks.queue_plan, { steps = { { action = "travel", to = "mars" } } })
+  and not pcall(tasks.queue_plan, { steps = { { action = "travel", to = "vulcanus", max_wait_minutes = 241 } } }),
+  "travel is the pilot's, to a known surface, waiting at most 240 minutes")
+tasks.cancel({ all = true, origin = "test/plans" })
+
+-- The one cancel rule. A: active on nauvis; B: nauvis; C: vulcanus, queued
+-- before any travel; F: holds a travel to vulcanus; G: vulcanus, behind F;
+-- D: remote. The body leaves for platform 1: A, B and C are cancelled with
+-- SURFACE_LEFT and leave the FIFO; F is exempt (its own first step then
+-- fails SURFACE_MISMATCH when it starts); G, behind F's travel, and D stay.
+walk.tick = function() return nil end
+body.crafting_queue, body.crafting_queue_size = { { count = 2 } }, 1
+game.tick = 430
+local A = tasks.queue_plan({ steps = { { action = "walk_to", x = 5, y = 5 } } })
+tasks.on_tick()
+local B = tasks.queue_plan({ steps = { { action = "walk_to", x = 6, y = 5 } } })
+local C = tasks.queue_plan({ surface = "vulcanus", steps = { { action = "walk_to", x = 7, y = 5 } } })
+local F = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 }, { action = "travel", to = "vulcanus" },
+  { action = "walk_to", x = 2, y = 2 } } })
+local G = tasks.queue_plan({ steps = { { action = "walk_to", x = 3, y = 3 } } })
+local D = tasks.queue_plan({ steps = { { action = "create_platform", name = "gamma" } } })
+check(storage.tasks.active.id == A.plan_id and #storage.tasks.queue == 5, "the FIFO holds one active and five queued plans")
+anchor_ref = "platform:1"
+tasks.on_body_surface_changed({ from = "nauvis", to = "platform:1", state = "aboard_platform" })
+game.tick = 431; tasks.on_tick()
+local function status_of(plan) return tasks.plan_status({ plan_id = plan.plan_id }) end
+local a, c = status_of(A), status_of(C)
+local left = a.outcomes[#a.outcomes]
+local a_row
+for _, row in ipairs(storage.activity_log) do if row.plan_id == A.plan_id then a_row = row end end
+check(a.status == "cancelled" and left.result.code == "SURFACE_LEFT" and left.result.expected == "nauvis"
+  and left.result.actual == "platform:1" and status_of(B).status == "cancelled" and c.status == "cancelled"
+  and c.outcomes[1].result.code == "SURFACE_LEFT" and c.outcomes[1].result.expected == "vulcanus",
+  "plans whose next positional step is for another surface are cancelled with SURFACE_LEFT")
+check(a_row and a_row.code == "SURFACE_LEFT" and a_row.surface == "nauvis" and storage.tasks.last_plan_ended.surface ~= nil,
+  "activity_log and the plan-ended event name the code and the plan's surface")
+check(body.crafting_queue_size == 1, "a surface change never cancels hand-crafting")
+local f = status_of(F)
+check(f.status == "failed" and f.outcomes[1].result.code == "SURFACE_MISMATCH" and f.outcomes[1].result.expected == "nauvis"
+  and f.outcomes[1].result.actual == "platform:1",
+  "a plan holding a travel is exempt; a step that starts on the wrong surface fails SURFACE_MISMATCH")
+check(status_of(G).status == "queued" and status_of(D).status == "queued" and #storage.tasks.queue == 2,
+  "a plan behind a pending travel to its surface and a remote plan stay; cancelled plans leave queue_depth")
+tasks.cancel({ all = true, origin = "test/plans" })
+body.crafting_queue, body.crafting_queue_size = {}, 0
+
+-- A plan an older version queued carries one tag for the plan: its
+-- positional steps keep it.
+storage.tasks.queue[1] = { type = "plan", id = 990, status = "queued", surface = "nauvis", current_step = 0,
+  completed_steps = 0, outcomes = {}, source = "pilot", steps = { { action = "walk_to", x = 1, y = 1 } } }
+game.tick = 432; tasks.on_tick()
+local legacy = tasks.plan_status({ plan_id = 990 })
+check(legacy.status == "failed" and legacy.outcomes[1].result.code == "SURFACE_MISMATCH",
+  "a plan from 0.22.2 keeps its plan-wide tag on its positional steps")
+
+
+-- A travel step keeps the FIFO while it waits; the step watchdog leaves a
+-- deliberate wait alone; a cancel after its launch reports that the trip
+-- finishes natively.
+anchor_ref = "nauvis"
+storage.travel = { arrivals = {} }
+travel_runner.tick = function(task) task._phase = "board_wait"; return nil end
+local trip = tasks.queue_plan({ steps = { { action = "travel", to = "vulcanus" }, { action = "walk_to", x = 1, y = 1 } } })
+local after = tasks.queue_plan({ steps = { { action = "create_platform", name = "delta" } } })
+for tick = 440, 440 + 4000, 20 do game.tick = tick; tasks.on_tick() end
+check(storage.tasks.active and storage.tasks.active.id == trip.plan_id and status_of(after).status == "queued",
+  "a waiting travel keeps the FIFO for over a minute without STEP_STALLED; plans behind it wait")
+storage.tasks.active.current_task._launched = true
+storage.travel.active = { task_id = trip.plan_id, to = "vulcanus", since_tick = game.tick }
+tasks.cancel({ plan_id = trip.plan_id, origin = "stop/supervisor" })
+local stopped = status_of(trip)
+check(stopped.status == "cancelled" and stopped.outcomes[1].result.cancelled_after_launch == true
+  and storage.travel.active.cancelled == true,
+  "a cancel after the launch says the trip finishes natively")
+tasks.cancel({ all = true, origin = "test/plans" })
+travel_runner.tick, travel_runner.start = travel_tick, travel_start
 walk.start, walk.tick = walk_start_fn, walk_tick
+anchor_ref = nil
 
--- A plan of remote steps only (a platform's window: no body) binds to no
--- surface and runs wherever the body stands; one physical step binds it.
-local remote_plan = tasks.queue_plan({ steps = { { action = "create_platform", name = "alpha" } } })
-local mixed_plan = tasks.queue_plan({ steps = { { action = "create_platform", name = "beta" }, { action = "walk_to", x = 1, y = 1 } } })
-local tags = {}
-for _, plan in ipairs(storage.tasks.queue) do tags[plan.id] = plan.surface or "none" end
-check(tags[remote_plan.plan_id] == "none" and tags[mixed_plan.plan_id] == "nauvis",
-  "a remote-only plan carries no surface tag; a plan with a physical step does")
-body.surface.name = "platform-1"
-for _ = 1, 3 do game.tick = 417; tasks.on_tick() end
-local remote_status = tasks.plan_status({ plan_id = remote_plan.plan_id })
-check(remote_status.status ~= "waiting" and remote_status.status ~= "queued" and remote_status.outcomes[1].action == "create_platform"
-  and tasks.plan_status({ plan_id = mixed_plan.plan_id }).status == "queued"
-  and #tasks.plan_status({ plan_id = mixed_plan.plan_id }).outcomes == 0,
-  "off the body's planet the remote plan still runs; the tagged plan waits in the queue")
-tasks.cancel({ plan_id = mixed_plan.plan_id, origin = "test/plans" })
-body.surface.name = "nauvis"
-
--- A successor whose predecessor failed is cancelled once, even while it is
--- parked off its surface: it leaves the queue and is logged once.
-body.surface.name = "platform-1"
-local lost = tasks.queue_plan({ steps = { { action = "mine", x = 1, y = 4, count = 1 } } })
-body.surface.name = "nauvis"
-local orphan = tasks.queue_plan({ steps = { { action = "walk_to", x = 2, y = 2 } }, after_plan_id = lost.plan_id })
-body.surface.name = "platform-1"
-for tick = 418, 419 do game.tick = tick; tasks.on_tick() end
-local orphan_rows = 0
-for _, entry in ipairs(storage.activity_log) do if entry.plan_id == orphan.plan_id then orphan_rows = orphan_rows + 1 end end
-check(tasks.plan_status({ plan_id = lost.plan_id }).status == "failed"
-  and tasks.plan_status({ plan_id = orphan.plan_id }).status == "cancelled" and #storage.tasks.queue == 0
-  and orphan_rows == 1, "an off-surface successor of a failed plan is cancelled once and leaves the queue")
-body.surface.name = "nauvis"
+-- A 0.22.1 save upgraded in place: its running plan (one plan-wide tag, a
+-- step under way) and the plan queued behind it go on while the body stands
+-- on their surface.
+anchor_ref = "nauvis"
+storage.tasks.active = { type = "plan", id = 991, status = "running", surface = "nauvis", current_step = 1,
+  completed_steps = 0, outcomes = {}, source = "pilot", started_tick = 4499, observation_detail = "none",
+  final_observation_radius = 15, steps = { { action = "walk_to", x = 1, y = 1 }, { action = "mine", x = 3, y = 4, count = 1 } },
+  current_task = { type = "walk_to", id = 991 } }
+storage.tasks.queue[#storage.tasks.queue + 1] = { type = "plan", id = 992, status = "queued", surface = "nauvis",
+  current_step = 0, completed_steps = 0, outcomes = {}, source = "pilot", observation_detail = "none",
+  final_observation_radius = 15, steps = { { action = "walk_to", x = 2, y = 2 } } }
+for tick = 4500, 4507 do game.tick = tick; tasks.on_tick() end
+local resumed, behind = tasks.plan_status({ plan_id = 991 }), tasks.plan_status({ plan_id = 992 })
+check(resumed.status == "completed" and resumed.completed_steps == 2 and behind.status == "completed",
+  "a 0.22.1 plan under way and the one queued behind it finish on their own surface after the upgrade")
+anchor_ref = nil
 
 -- Step fields reach their runners: place_entity's insert map, insert_items'
 -- targets (per_target or items), and the explore action.

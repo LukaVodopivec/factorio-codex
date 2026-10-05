@@ -1,8 +1,16 @@
 -- Read-only summary of the force's already charted world. No chart or generation calls.
 -- map_summary is a job (summary_job, below) spread over ticks by a work budget;
--- factory_status and the run recorder read the patch cache kept here and the
--- power rows built here from the registry's aggregates (build_power).
+-- factory_status and the run recorder read the patch caches kept here (one
+-- per planet surface) and the power rows built here from the registry's
+-- aggregates (build_power).
+-- map_summary {surface?} describes one surface: the body's anchor surface
+-- (its physical surface, the hub aboard) or the one named, kept in the job's
+-- state, never re-read from the body. surface:"all" sums the flows of every
+-- factory surface; its map sections describe the body's surface.
 local companion = require("scripts.companion")
+local schema = require("scripts.state")
+local surfaces = require("scripts.surfaces")
+local items = require("scripts.items")
 local factory_activity = require("scripts.factory_activity")
 local autonomy = require("scripts.autonomy")
 local fluid_connections = require("scripts.fluid_connections")
@@ -70,8 +78,11 @@ local FLOW_PRECISIONS = {
   one_hour = { ticks = 216000, units = "units_per_minute" },
 }
 
-local function charted(force, surface, pos)
-  return force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) })
+-- The force's chart (all of a platform's surface counts as charted). A
+-- caller reading many positions of one surface passes whether it is a
+-- platform's, worked out once.
+local function charted(force, surface, pos, platform)
+  return surfaces.charted(force, surface, math.floor(pos.x / 32), math.floor(pos.y / 32), platform)
 end
 
 local function status_name(entity)
@@ -165,38 +176,31 @@ local function cap_rows(rows, limit)
   return omitted
 end
 
-local function read_force_flows(force, surface, candidates, precision_name, omissions)
-  local precision = FLOW_PRECISIONS[precision_name]
-  local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index[precision_name]
-  if not precision or precision_index == nil then error("unsupported map_summary flow_precision") end
-  local rows = sorted_rows(candidates, function(a, b)
-    return a.type == b.type and a.name < b.name or a.type < b.type
-  end)
-  omissions.capped_flows = cap_rows(rows, MAX_FLOW_ROWS)
-  local result = {}
-  for _, candidate in ipairs(rows) do
-    local getter_name = candidate.type == "fluid" and "get_fluid_production_statistics" or "get_item_production_statistics"
-    local ok_statistics, statistics = pcall(function() return force[getter_name](surface) end)
-    local ok_input, input_rate = pcall(function()
-      if not ok_statistics or not statistics then error("statistics unavailable") end
-      return statistics.get_flow_count({ name = candidate.name, category = "input", precision_index = precision_index, count = false })
-    end)
-    local ok_output, output_rate = pcall(function()
-      if not ok_statistics or not statistics then error("statistics unavailable") end
-      return statistics.get_flow_count({ name = candidate.name, category = "output", precision_index = precision_index, count = false })
-    end)
-    if ok_input and ok_output and type(input_rate) == "number" and type(output_rate) == "number" then
-      result[#result + 1] = {
-        type = candidate.type, name = candidate.name,
-        input_rate = input_rate, output_rate = output_rate,
-        precision = precision_name, window_ticks = precision.ticks, units = precision.units,
-        source = "force_flow_statistics",
-      }
-    else
-      omissions.unsupported_flow_statistics = omissions.unsupported_flow_statistics + 1
-    end
+-- The force's production statistics of a kind ("item" or "fluid") for each
+-- surface listed: a list of LuaFlowStatistics, or nil when one is unreadable.
+local function statistics_of(force, surface_list, kind)
+  local getter_name = kind == "fluid" and "get_fluid_production_statistics" or "get_item_production_statistics"
+  local list = {}
+  for _, surface in ipairs(surface_list) do
+    local ok, statistics = pcall(function() return force[getter_name](surface) end)
+    if not (ok and statistics) then return nil end
+    list[#list + 1] = statistics
   end
-  return result
+  return list
+end
+M.statistics_of = statistics_of
+
+-- A flow rate summed over statistics, or nil when one cannot say.
+local function summed_rate(list, name, category, precision_index)
+  local total = 0
+  for _, statistics in ipairs(list or {}) do
+    local ok, value = pcall(function()
+      return statistics.get_flow_count({ name = name, category = category, precision_index = precision_index, count = false })
+    end)
+    if not (ok and type(value) == "number") then return nil end
+    total = total + value
+  end
+  return list and total or nil
 end
 
 local function key_position(a, b)
@@ -243,10 +247,10 @@ end
 
 -- Installed nominal capacity, independent of duty/status and bonuses. This
 -- requires a current charted target.
-local function nominal_mining_capacity(entity, force, surface)
+local function nominal_mining_capacity(entity, force, surface, platform)
   local ok, rate = pcall(function()
     local target = entity.mining_target
-    if not entity_key(target) or not charted(force, surface, target.position) then return nil end
+    if not entity_key(target) or not charted(force, surface, target.position, platform) then return nil end
     local mining = target.prototype.mineable_properties
     local speed, time = entity.prototype.mining_speed, mining.mining_time
     if type(speed) ~= "number" or speed <= 0 or speed >= math.huge
@@ -1455,7 +1459,7 @@ local function flow_step(F, budget)
 end
 
 -- Caps are a presentation concern. Never mutate the graph itself.
-local function present_flow(flow, omissions)
+local function present_flow(flow, omissions, surface_index)
   local result = { relationship_semantics = flow.relationship_semantics }
   for _, field in ipairs({ "nodes", "edges", "components", "diagnostics" }) do
     result[field] = {}
@@ -1484,8 +1488,9 @@ local function present_flow(flow, omissions)
   for _, component in ipairs(flow.components) do
     result.products_finished_total = result.products_finished_total + component.products_finished_total
   end
-  -- Production lines the mod tracks (autonomy.lua), beside the components.
-  for key, value in pairs(autonomy.counts()) do result[key] = value end
+  -- Production lines the mod tracks on this surface (autonomy.lua), beside
+  -- the components.
+  for key, value in pairs(autonomy.counts(surface_index)) do result[key] = value end
   omissions.capped_flow_nodes = #flow.nodes - #result.nodes
   omissions.capped_flow_edges = #flow.edges - #result.edges
   omissions.capped_flow_components = #flow.components - #result.components
@@ -1568,12 +1573,14 @@ local function belt_lines(entity)
 end
 
 -- Inventories and transport lines both return an array of {name, quality, count}.
+-- Contents by item key (a non-normal quality is "name@quality").
 local function add_contents(bucket, source)
   local ok, contents = pcall(function() return source.get_contents() end)
   if not ok or type(contents) ~= "table" then return end
   for _, row in ipairs(contents) do
     if type(row) == "table" and type(row.name) == "string" then
-      bucket[row.name] = (bucket[row.name] or 0) + (tonumber(row.count) or 0)
+      local key = items.key(row.name, row.quality)
+      bucket[key] = (bucket[key] or 0) + (tonumber(row.count) or 0)
     end
   end
 end
@@ -1690,9 +1697,11 @@ local function power_environment(surface)
 end
 
 -- Production watts per power kind from the network's statistics (read
--- through its pole), or nil when no live pole of the network is known.
+-- through its pole), or nil when no live pole of the network is known; and
+-- the engine reads it made.
 local function production_by_kind(net)
   local pole = net.pole
+  local reads = 3
   local ok, by_kind = pcall(function()
     if not (pole and pole.valid and pole.electric_network_id == net.id) then return nil end
     local statistics = pole.electric_network_statistics
@@ -1702,13 +1711,30 @@ local function production_by_kind(net)
       local kind = registry.power_kind(name)
       out[kind] = (out[kind] or 0) + statistics.get_flow_count({ name = name, category = "output",
         precision_index = precision, count = false }) * 60
+      reads = reads + 1
     end
     return out
   end)
-  return ok and by_kind or nil
+  return ok and by_kind or nil, reads
 end
 
 local function watts(value) return math.floor(value + 0.5) end
+
+local function total_of(by_kind)
+  local total = 0
+  for _, value in pairs(by_kind) do total = total + value end
+  return total
+end
+
+-- 1 while no consumer reads low_power or no_power, else production over
+-- demand (0 when production is unknown).
+local function satisfaction_of(net, production_w)
+  if net.starved == 0 then return 1 end
+  if production_w and net.demand_w > 0 then
+    return math.floor(math.min(1, production_w / net.demand_w) * 1000 + 0.5) / 1000
+  end
+  return 0
+end
 
 local function cover(row, net, env, solar_w, other_w)
   local deficit = row.demand_w - row.sustained_w
@@ -1758,15 +1784,10 @@ function M.build_power(surface, limit)
     row._net, row._solar_w, row._other_w = nil, nil, nil
     local by_kind = production_by_kind(net)
     if by_kind then
-      local total = 0
-      for _, value in pairs(by_kind) do total = total + value end
-      row.production_w = watts(total)
+      row.production_w = watts(total_of(by_kind))
       if env.platform then row.capacity_w = watts(other_w + (by_kind.solar or 0)) end
     end
-    if net.starved == 0 then row.satisfaction = 1
-    elseif row.production_w and net.demand_w > 0 then
-      row.satisfaction = math.floor(math.min(1, row.production_w / net.demand_w) * 1000 + 0.5) / 1000
-    else row.satisfaction = 0 end
+    row.satisfaction = satisfaction_of(net, row.production_w)
     local sources = {}
     for kind, source in pairs(net.sources) do
       if source.count > 0 then
@@ -1789,6 +1810,32 @@ function M.build_power(surface, limit)
     end
   end
   return rows, omitted
+end
+
+-- The lowest satisfaction among one surface's networks (the registry's
+-- network rows; nil without one), as the power rows give it, and the
+-- engine reads it made: the statistics of at most one network are read,
+-- the one with the most demand among those whose consumers are short of
+-- power; another such network is judged by its sources' nameplate.
+function M.power_min_satisfaction(nets)
+  local read
+  for _, net in ipairs(nets) do
+    if net.starved > 0 and (read == nil or net.demand_w > read.demand_w) then read = net end
+  end
+  local lowest, reads = nil, 0
+  for _, net in ipairs(nets) do
+    local production
+    if net == read then
+      local by_kind, cost = production_by_kind(net)
+      production, reads = by_kind and total_of(by_kind), reads + cost
+    elseif net.starved > 0 then
+      production = 0
+      for _, source in pairs(net.sources) do production = production + source.nameplate_w end
+    end
+    local satisfaction = satisfaction_of(net, production)
+    if lowest == nil or satisfaction < lowest then lowest = satisfaction end
+  end
+  return lowest, reads
 end
 
 -- The sections map_summary's include reads, accumulated a record at a time
@@ -1967,18 +2014,21 @@ end
 --                each read once into flow nodes and the requested sections
 --   water_edges  (full) land/water edges a tile row at a time, pure Lua
 --   flow         the material-flow graph, stage by stage (flow_step)
---   flows_all    (include) every counted item and fluid's rates
+--   flows_all    (include) every counted item and fluid: names one surface
+--                and kind a step, then their rates
 --   sections     (include stockpiles) belt runs as stock holders
---   finish       groups, flows and the capped rows: no list is longer than
+--   force_flows  the capped force_flows rows' rates, a row at a time
+--   finish       groups and the capped rows: no list is longer than
 --                its cap here, so this tick's work does not grow with the factory
 -- Work items: one per engine call or so, plus the Lua work around it.
 local SCAN_CHUNK_COST, SCAN_ENTITY_COST, SCAN_FLUID_COST, SCAN_RESOURCE_COST = 4, 30, 16, 6
 local WATER_STRIP = 8 -- tile rows per water query (a chunk is 4 strips)
 
--- Charted chunks of the body's surface: the patch cache's list once it is
--- seeded (no engine call), else listed here once (a new game's first ticks).
+-- Charted chunks of the summary's surface: its patch cache's list once it
+-- is seeded (no engine call), else listed here once (a new game's first
+-- ticks, or a platform, whose chunks all count as charted).
 local function chunk_source(S, c)
-  local cache = storage.patch_cache
+  local cache = storage.patch_caches and storage.patch_caches[S.surface_index]
   if cache and cache.seeded and cache.charted then
     S.from_cache, S.chunk_total = true, #cache.charted
     return
@@ -1986,7 +2036,7 @@ local function chunk_source(S, c)
   local chunks = {}
   S.chunk_set = {}
   for chunk in c.surface.get_chunks() do
-    if c.force.is_chunk_charted(c.surface, chunk) then
+    if surfaces.charted(c.force, c.surface, chunk.x, chunk.y, c.platform) then
       chunks[#chunks + 1] = { x = chunk.x, y = chunk.y }
       S.chunk_set[chunk.x .. "," .. chunk.y] = true
     end
@@ -1995,16 +2045,21 @@ local function chunk_source(S, c)
   S.chunks, S.chunk_total = chunks, #chunks
 end
 
+local function summary_cache(S) return storage.patch_caches and storage.patch_caches[S.surface_index] end
+
 local function chunk_at(S, index)
   if index > S.chunk_total then return nil end
-  if S.from_cache then return storage.patch_cache and storage.patch_cache.charted[index] end
+  if S.from_cache then
+    local cache = summary_cache(S)
+    return cache and cache.charted[index]
+  end
   return S.chunks[index]
 end
 
 local function chunk_charted(S, cx, cy)
   local key = cx .. "," .. cy
   if S.from_cache then
-    local cache = storage.patch_cache
+    local cache = summary_cache(S)
     return cache ~= nil and cache.charted_set[key] == true
   end
   return S.chunk_set[key] == true
@@ -2044,8 +2099,8 @@ local function scan_entity(S, entity, c, budget)
     omissions.invalid_entities = omissions.invalid_entities + 1
     return
   end
-  if not (entity.force == c.force and charted(c.force, c.surface, entity.position)
-    and entity ~= c and entity.type ~= "character" and entity.type ~= "entity-ghost") then return end
+  if not (entity.force == c.force and charted(c.force, c.surface, entity.position, c.platform)
+    and entity.type ~= "character" and entity.type ~= "entity-ghost") then return end
   local key = string.format("%s\0%s\0%.17g\0%.17g", entity.name, entity.type, entity.position.x, entity.position.y)
   if S.seen_landmark[key] then return end
   S.seen_landmark[key] = true
@@ -2076,7 +2131,7 @@ local function scan_entity(S, entity, c, budget)
     if role == "source" then
       node._source_production = { working = node.status == "working" }
       local ok, target = pcall(function() return entity.mining_target end)
-      if ok and entity_key(target) and charted(c.force, c.surface, target.position) then
+      if ok and entity_key(target) and charted(c.force, c.surface, target.position, c.platform) then
         node._source_production.resource_key = entity_key(target)
       end
     end
@@ -2101,7 +2156,7 @@ local function scan_entity(S, entity, c, budget)
     end
     group.machine_count = group.machine_count + 1
     if entity.type == "mining-drill" then
-      local capacity = nominal_mining_capacity(entity, c.force, c.surface)
+      local capacity = nominal_mining_capacity(entity, c.force, c.surface, c.platform)
       group._mining_capacity = (group._mining_capacity or 0) + (capacity or 0)
       group.evidenced_drill_count = (group.evidenced_drill_count or 0) + (capacity and 1 or 0)
     end
@@ -2130,7 +2185,7 @@ end
 
 -- One resource (full detail): totals and the nearest to the body per name.
 local function scan_resource(S, entity, c)
-  local resource_key = entity.valid and charted(c.force, c.surface, entity.position)
+  local resource_key = entity.valid and charted(c.force, c.surface, entity.position, c.platform)
     and string.format("%s\0%.17g\0%.17g", entity.name, entity.position.x, entity.position.y) or nil
   if not resource_key or S.seen_resource[resource_key] then return end
   S.seen_resource[resource_key] = true
@@ -2252,56 +2307,89 @@ local function water_edges(S, budget)
   return false
 end
 
--- Every item and fluid the force's native statistics for this surface have
--- ever counted: input is produced, output is consumed. Only this section
--- lifts the force_flows row cap. Names are listed once, rates read a budget
--- at a time.
+-- What the summary reads with: {surface, force, position} of its surface,
+-- kept in S by index and resolved again on each tick it works.
+local function summary_context(S)
+  local body = companion.require_present()
+  -- A summary a 0.22.2 save left running read the body's surface.
+  if S.surface_index == nil then S.surface_index, S.surface_ref = body.surface.index, body.surface_ref end
+  local surface = surfaces.stored(S.surface_index, body)
+  if not surface then error("SURFACE_GONE: surface " .. tostring(S.surface_ref) .. " no longer exists", 0) end
+  if S.platform == nil then S.platform = surfaces.is_platform(surface) end
+  return { surface = surface, force = body.force, position = S.body, platform = S.platform }
+end
+
+-- The surfaces whose flows the summary reads: its own, or with surface:"all"
+-- every factory surface (registry.surfaces) and its own.
+local function flow_surfaces(S, c)
+  if not S.all_flows then return { c.surface } end
+  local list, seen = {}, {}
+  for _, index in ipairs(registry.surfaces()) do
+    local surface = surfaces.by_index(index)
+    if surface then list[#list + 1], seen[index] = surface, true end
+  end
+  if not seen[S.surface_index] then list[#list + 1] = c.surface end
+  return list
+end
+
+-- Every item and fluid the force's native statistics for the summary's
+-- surfaces have ever counted (summed): input is produced, output is
+-- consumed. Only this section lifts the force_flows row cap. Names are
+-- listed one surface and kind a step, rates read a budget at a time.
 local function flows_all(S, budget, c)
+  local FLOW_KINDS = { "item", "fluid" }
   local A = S.all
+  local surface_list = flow_surfaces(S, c)
   if not A then
-    A = { rows = {}, next = 1 }
-    for _, kind in ipairs({ "item", "fluid" }) do
-      local getter_name = kind == "fluid" and "get_fluid_production_statistics" or "get_item_production_statistics"
-      local ok, statistics = pcall(function() return c.force[getter_name](c.surface) end)
-      if ok and statistics then
-        local function counts(field)
-          local ok_counts, value = pcall(function() return statistics[field] end)
-          return ok_counts and type(value) == "table" and value or {}
-        end
-        local produced, consumed, names = counts("input_counts"), counts("output_counts"), {}
-        for name in pairs(produced) do names[name] = true end
-        for name in pairs(consumed) do names[name] = true end
-        for name in pairs(names) do
-          local lifetime_produced, lifetime_consumed = tonumber(produced[name]) or 0, tonumber(consumed[name]) or 0
-          if type(name) == "string" and (lifetime_produced > 0 or lifetime_consumed > 0) then
-            A.rows[#A.rows + 1] = { name = name, kind = kind,
-              lifetime_produced = lifetime_produced, lifetime_consumed = lifetime_consumed }
+    A = { rows = {}, next = 1, cursor = 1, by_name = { item = {}, fluid = {} } }
+    S.all = A
+  end
+  -- A summary a 0.22.2 or older save left here listed every name at once.
+  if A.cursor == nil then A.cursor = #surface_list * #FLOW_KINDS + 1 end
+  -- Lifetime counts: one surface and kind a step.
+  while A.cursor <= #surface_list * #FLOW_KINDS do
+    if budget.left <= 0 then return false end
+    local surface = surface_list[math.floor((A.cursor - 1) / #FLOW_KINDS) + 1]
+    local kind = FLOW_KINDS[(A.cursor - 1) % #FLOW_KINDS + 1]
+    local by_name, names = A.by_name[kind], 0
+    for _, statistics in ipairs(statistics_of(c.force, { surface }, kind) or {}) do
+      local function counts(field)
+        local ok_counts, value = pcall(function() return statistics[field] end)
+        return ok_counts and type(value) == "table" and value or {}
+      end
+      for field, list in pairs({ lifetime_produced = counts("input_counts"), lifetime_consumed = counts("output_counts") }) do
+        for name, count in pairs(list) do
+          if type(name) == "string" then
+            local row = by_name[name] or { name = name, kind = kind, lifetime_produced = 0, lifetime_consumed = 0 }
+            by_name[name] = row
+            row[field] = row[field] + (tonumber(count) or 0)
+            names = names + 1
           end
         end
       end
     end
-    S.all = A
-    budget.left = budget.left - 6 - math.ceil(#A.rows / 8)
+    budget.left = budget.left - 3 - math.ceil(names / 8)
+    A.cursor = A.cursor + 1
+    if A.cursor > #surface_list * #FLOW_KINDS then
+      for _, each in ipairs(FLOW_KINDS) do
+        for _, row in pairs(A.by_name[each]) do
+          if row.lifetime_produced > 0 or row.lifetime_consumed > 0 then A.rows[#A.rows + 1] = row end
+        end
+      end
+      A.by_name = nil
+      budget.left = budget.left - math.ceil(#A.rows / 8)
+    end
   end
   local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index[S.precision_name]
   local statistics = {}
   while A.next <= #A.rows do
     if budget.left <= 0 then return false end
     local row = A.rows[A.next]
-    if statistics[row.kind] == nil then
-      local getter_name = row.kind == "fluid" and "get_fluid_production_statistics" or "get_item_production_statistics"
-      local ok, value = pcall(function() return c.force[getter_name](c.surface) end)
-      statistics[row.kind] = ok and value or false
-    end
-    local source = statistics[row.kind]
-    local function rate(category)
-      local ok_rate, value = pcall(function()
-        return source.get_flow_count({ name = row.name, category = category, precision_index = precision_index, count = false })
-      end)
-      return ok_rate and type(value) == "number" and value or nil
-    end
-    row.produced_per_minute, row.consumed_per_minute = rate("input"), rate("output")
-    budget.left = budget.left - 3
+    if statistics[row.kind] == nil then statistics[row.kind] = statistics_of(c.force, surface_list, row.kind) or false end
+    local list = statistics[row.kind] or nil
+    row.produced_per_minute = summed_rate(list, row.name, "input", precision_index)
+    row.consumed_per_minute = summed_rate(list, row.name, "output", precision_index)
+    budget.left = budget.left - 3 * #surface_list
     A.next = A.next + 1
   end
   local rows = A.rows
@@ -2322,11 +2410,56 @@ local function flows_all(S, budget, c)
   return true
 end
 
+-- The force_flows rows (the candidates, capped at MAX_FLOW_ROWS): one
+-- candidate's rates on every surface of the summary a work item each.
+local function force_flows(S, budget, c)
+  local F = S.force_flow_read
+  if not F then
+    if not S.explicit_flows then add_current_research_flows(c.force, S.flow_candidates) end
+    local precision = FLOW_PRECISIONS[S.precision_name]
+    local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index[S.precision_name]
+    if not precision or precision_index == nil then error("unsupported map_summary flow_precision") end
+    local rows = sorted_rows(S.flow_candidates, function(a, b)
+      return a.type == b.type and a.name < b.name or a.type < b.type
+    end)
+    S.omissions.capped_flows = cap_rows(rows, MAX_FLOW_ROWS)
+    F = { rows = rows, next = 1, result = {} }
+    S.force_flow_read = F
+  end
+  local surface_list = flow_surfaces(S, c)
+  local precision = FLOW_PRECISIONS[S.precision_name]
+  local precision_index = defines.flow_precision_index[S.precision_name]
+  local by_kind = {}
+  while F.next <= #F.rows do
+    if budget.left <= 0 then return false end
+    local candidate = F.rows[F.next]
+    if by_kind[candidate.type] == nil then
+      by_kind[candidate.type] = statistics_of(c.force, surface_list, candidate.type) or false
+    end
+    local list = by_kind[candidate.type] or nil
+    local input_rate = summed_rate(list, candidate.name, "input", precision_index)
+    local output_rate = summed_rate(list, candidate.name, "output", precision_index)
+    if type(input_rate) == "number" and type(output_rate) == "number" then
+      F.result[#F.result + 1] = {
+        type = candidate.type, name = candidate.name,
+        input_rate = input_rate, output_rate = output_rate,
+        precision = S.precision_name, window_ticks = precision.ticks, units = precision.units,
+        source = "force_flow_statistics",
+      }
+    else
+      S.omissions.unsupported_flow_statistics = S.omissions.unsupported_flow_statistics + 1
+    end
+    budget.left = budget.left - 1 - 2 * #surface_list
+    F.next = F.next + 1
+  end
+  S.force_flows, S.force_flow_read = F.result, nil
+  return true
+end
+
 -- Groups, flows, sections and the result: bounded rows and a few
 -- statistics reads.
 local function finish(S, c)
   local omissions, want = S.omissions, S.want
-  if not S.explicit_flows then add_current_research_flows(c.force, S.flow_candidates) end
   local groups = sorted_rows(S.groups_by_key, function(a, b)
     if a.entity ~= b.entity then return a.entity < b.entity end
     return (a.recipe or "") < (b.recipe or "")
@@ -2348,7 +2481,7 @@ local function finish(S, c)
     end
   end
   omissions.capped_groups = cap_rows(groups, MAX_FACTORY_GROUPS)
-  local flows = read_force_flows(c.force, c.surface, S.flow_candidates, S.precision_name, omissions)
+  local flows = S.force_flows
   local power_status_counts = {}
   for _, group in ipairs(groups) do
     for name, count in pairs(group.status_counts) do
@@ -2358,11 +2491,12 @@ local function finish(S, c)
     end
   end
   local network_count = 0; for _ in pairs(S.electric_networks) do network_count = network_count + 1 end
-  local material_flow = present_flow(flow_result(S.flow), omissions)
+  local material_flow = present_flow(flow_result(S.flow), omissions, S.surface_index)
   local activity = factory_activity.snapshot(S.activity_since_tick)
   local partial = false; for _, count in pairs(omissions) do if count > 0 then partial = true end end
   local factory = {
-    scope = "force_charted", collected_at_tick = game.tick, started_tick = S.started_tick,
+    scope = "force_charted", surface = S.surface_ref, flow_surface = S.all_flows and "all" or nil,
+    collected_at_tick = game.tick, started_tick = S.started_tick,
     consistency = "spread_over_ticks",
     charted_chunks = S.chunk_total, currently_visible_charted_chunks = S.visible_chunks,
     machine_count = machine_count, registry_machine_count = registry.counts().machines,
@@ -2397,7 +2531,9 @@ local function finish(S, c)
   local sections = {}
   if want.stockpiles then sections.stockpiles, sections.stockpiles_omitted = sections_stockpiles(S.sections) end
   if want.sites then sections.sites, sections.sites_omitted = sections_sites(S.sections) end
-  if want.patches then sections.patches, sections.patches_complete, sections.patches_omitted = M.patches() end
+  if want.patches then
+    sections.patches, sections.patches_complete, sections.patches_omitted = M.patches(S.surface_index)
+  end
   if want.power then
     local networks, networks_omitted = M.build_power(c.surface, MAX_POWER_NETWORKS)
     sections.power = { networks = networks, networks_omitted = networks_omitted }
@@ -2412,7 +2548,9 @@ local function finish(S, c)
     for key, value in pairs(sections) do result[key] = value end
     return result
   end
-  if S.detail == "aggregate" then return with_sections({ tick = game.tick, summary = summary_text, factory = factory }) end
+  if S.detail == "aggregate" then
+    return with_sections({ tick = game.tick, surface = S.surface_ref, summary = summary_text, factory = factory })
+  end
 
   local resources = {}; for _, row in pairs(S.resources_by_name) do row._distance = nil; resources[#resources + 1] = row end
   table.sort(resources, function(a, b) return a.name < b.name end)
@@ -2423,7 +2561,7 @@ local function finish(S, c)
   local omitted_water_edges = S.water_edge_total - #edges
   local omitted_factory_landmarks = S.landmark_total - #landmarks
   return with_sections({
-    tick = game.tick, charted_chunks = S.chunk_total, resources = resources,
+    tick = game.tick, surface = S.surface_ref, charted_chunks = S.chunk_total, resources = resources,
     water_edges = edges, omitted_water_edges = omitted_water_edges,
     factory_landmarks = landmarks, omitted_factory_landmarks = omitted_factory_landmarks,
     factory = factory, summary = summary_text,
@@ -2448,8 +2586,17 @@ local function summary_start(params)
     error("activity_since_tick must be an integer tick", 0)
   end
   local want = parse_include(params.include)
-  local c = companion.require_companion()
-  local S = { detail = detail, precision_name = precision_name, want = want, started_tick = game.tick,
+  if params.surface ~= nil and type(params.surface) ~= "string" and type(params.surface) ~= "table" then
+    error("map_summary surface must be a planet name, \"platform:<index>\", {platform = name or index} or \"all\"", 0)
+  end
+  local all = params.surface == "all"
+  local target = surfaces.target(not all and params.surface or nil)
+  -- Distances are from the body when it is on this surface.
+  local at = target.here and target.body.position or { x = 0, y = 0 }
+  local c = { surface = target.surface, force = target.force, position = at,
+    platform = surfaces.is_platform(target.surface) }
+  local S = { detail = detail, surface_index = target.surface.index, surface_ref = target.ref, all_flows = all or nil,
+    platform = c.platform, precision_name = precision_name, want = want, started_tick = game.tick,
     activity_since_tick = params.activity_since_tick,
     explicit_flows = params.flow_items ~= nil or params.flow_fluids ~= nil, flow_candidates = {},
     -- Requested sections accumulate as own entities are read.
@@ -2482,10 +2629,10 @@ local function summary_start(params)
 end
 
 local NEXT_STAGE = { scan = "water_edges", water_edges = "flow", flow = "flows_all", flows_all = "sections",
-  sections = "finish" }
+  sections = "force_flows", force_flows = "finish" }
 
 local function summary_step(S, budget)
-  local c = companion.require_companion()
+  local c = summary_context(S)
   while budget.left > 0 do
     local stage = S.stage
     local done
@@ -2494,6 +2641,9 @@ local function summary_step(S, budget)
     elseif stage == "flow" then done = flow_step(S.flow, budget)
     elseif stage == "flows_all" then done = not S.want.flows_all or flows_all(S, budget, c)
     elseif stage == "sections" then done = not S.sections or sections_belts(S.sections, budget)
+    elseif stage == "force_flows" then done = force_flows(S, budget, c)
+    -- A summary a 0.22.2 or older save left at its finish reads its flows first.
+    elseif S.force_flows == nil then S.stage = "force_flows"
     else return finish(S, c) end
     if done then S.stage = NEXT_STAGE[stage] end
   end
@@ -2501,7 +2651,7 @@ local function summary_step(S, budget)
 end
 
 -- map_summary {detail?, include?, flow_precision?, flow_items?, flow_fluids?,
--- activity_since_tick?}: the job definition (jobs.lua registers it).
+-- activity_since_tick?, surface?}: the job definition (jobs.lua registers it).
 M.summary_job = { start = summary_start, step = summary_step }
 
 -- factory_status stock and power are the registry's aggregates, kept
@@ -2514,7 +2664,7 @@ function M.status_tick(tick) registry.maintain(tick) end
 -- belts from the event-maintained registry, machine groups by entity and
 -- product with their last sampled status from the line sampler
 -- (autonomy.lua, every 30 ticks), and electric networks from the registry's
--- network aggregates.
+-- network aggregates, all summed over every factory surface.
 function M.registry_factory()
   local a = storage.autonomy
   local groups_by_key, power_status_counts = {}, {}
@@ -2542,28 +2692,55 @@ function M.registry_factory()
     return (a_row.recipe or a_row.product or "") < (b_row.recipe or b_row.product or "")
   end)
   local counts = registry.counts()
-  local c = companion.get()
-  local ok, surface = pcall(function() return c.surface.index end)
+  local network_count = registry.network_count()
   local maintenance = registry.maintenance()
   return { scope = "maintained", collected_at_tick = game.tick, registry_ready = counts.registry_ready,
     lines_refreshed_tick = a and a.last_refresh_tick, power_refreshed_tick = maintenance.pass_tick,
     machine_count = counts.machines, groups = groups, belt_count = counts.belts,
-    power = { network_count = ok and #registry.networks(surface) or 0, status_counts = power_status_counts },
+    power = { network_count = network_count, status_counts = power_status_counts },
     character_transfers = factory_activity.snapshot(), omissions = { capped_groups = 0 } }
 end
 
 -- ------------------------------------------------------------ patch cache
--- Resource patches from a per-chunk cache (storage.patch_cache, created by
--- state.init). A chunk is read when it is first charted (radars and the body
--- re-chart chunks all the time; a re-chart is ignored), again when a resource
--- in it is depleted, and, while nothing else is pending, one cached resource chunk
--- every PATCH_REFRESH_TICKS so amounts follow mining. The first tick lists
--- every charted chunk. Reads never scan.
+-- Resource patches from a per-chunk cache per planet surface
+-- (storage.patch_caches[surface index], made when the force first charts a
+-- chunk there, as it does around the body on arrival; a 0.22.2 save's
+-- single cache becomes Nauvis's in state.init). A chunk is read when it is first
+-- charted (radars and the body re-chart chunks all the time; a re-chart is
+-- ignored), again when a resource in it is depleted, and, while nothing else
+-- is pending, one cached resource chunk every PATCH_REFRESH_TICKS so amounts
+-- follow mining. A cache's first tick lists the surface's charted chunks.
+-- One cache works a tick, in turn, so the per-tick work does not grow with
+-- the number of planets. Platform surfaces have no cache (no resources).
+-- Reads never scan.
 local PATCH_CHUNKS_PER_TICK = 2
 local PATCH_RESOURCES_PER_TICK = 2048
 local PATCH_REFRESH_TICKS = 120
 
 local function chunk_key(x, y) return x .. "," .. y end
+
+-- A new, unseeded cache for a surface.
+function M.new_patch_cache(surface_index)
+  return {
+    version = schema.PATCH_CACHE_VERSION, surface_index = surface_index, seeded = false, filled = false,
+    chunks = {}, known = {}, pending = {}, head = 1, queued = {}, refresh = {}, dirty = true, rows = nil,
+    updated_tick = nil, charted = {}, charted_set = {},
+    -- The patch rows being rebuilt over ticks (patch_tick), or nil.
+    build = nil,
+  }
+end
+
+-- The cache of a planet surface, made on first use when `create`.
+local function cache_for(surface, create)
+  local caches = storage.patch_caches
+  local ok, index = pcall(function() return surface.index end)
+  if not (caches and ok and index) then return nil end
+  local cache = caches[index]
+  if cache or not create or surfaces.is_platform(surface) then return cache end
+  cache = M.new_patch_cache(index)
+  caches[index] = cache
+  return cache
+end
 
 local function enqueue_chunk(cache, x, y)
   local key = chunk_key(x, y)
@@ -2578,38 +2755,59 @@ local function enqueue_chunk(cache, x, y)
   cache.pending[#cache.pending + 1] = { x = x, y = y }
 end
 
-local function own_force_event(force)
-  local c = companion.get()
-  local ok, same = pcall(function() return c and c.valid and force and force.name == c.force.name end)
-  return ok and same == true, c
+-- The own force (the body's), or nil.
+local function own_force()
+  local anchor = companion.anchor()
+  return anchor and anchor.force or nil
 end
 
--- on_chunk_charted: the force charted or re-charted a chunk on some surface.
+-- The own force's name: the registry's (no engine read), else the body's.
+local function own_force_name()
+  local r = storage.registry
+  if r and r.force then return r.force end
+  local force = own_force()
+  return force and force.name
+end
+
+-- on_chunk_charted: the force charted or re-charted a chunk on some surface
+-- (radars re-chart all the time: a known chunk returns before any read).
 function M.on_chunk_charted(event)
-  local cache = storage.patch_cache
-  if not (cache and event and event.position) then return end
-  if cache.known[chunk_key(event.position.x, event.position.y)] then return end
-  local own, c = own_force_event(event.force)
-  if not own or (event.surface_index ~= nil and event.surface_index ~= c.surface.index) then return end
+  local caches = storage.patch_caches
+  if not (caches and event and event.position) then return end
+  local cache = caches[event.surface_index]
+  if cache and cache.known[chunk_key(event.position.x, event.position.y)] then return end
+  local ok, own = pcall(function() return event.force.name == own_force_name() end)
+  if not (ok and own) then return end
+  if not cache then
+    local surface = surfaces.by_index(event.surface_index)
+    cache = surface and cache_for(surface, true)
+    if not cache then return end
+  end
   enqueue_chunk(cache, event.position.x, event.position.y)
 end
 
 -- on_resource_depleted: the resource is removed right after the event; the
 -- chunk is read again on a later tick.
 function M.on_resource_depleted(event)
-  local cache = storage.patch_cache
   local entity = event and event.entity
-  if not (cache and cache.seeded and entity and entity.valid) then return end
+  if not (storage.patch_caches and entity and entity.valid) then return end
+  local cache = storage.patch_caches[entity.surface_index]
+  if not (cache and cache.seeded) then return end
   local position = entity.position
   enqueue_chunk(cache, math.floor(position.x / 32), math.floor(position.y / 32))
 end
 
-local function read_chunk(c, cache, chunk)
+-- on_surface_deleted: its cache goes.
+function M.on_surface_deleted(event)
+  if storage.patch_caches and event and event.surface_index then storage.patch_caches[event.surface_index] = nil end
+end
+
+local function read_chunk(surface, cache, chunk)
   local key = chunk_key(chunk.x, chunk.y)
   cache.queued[key], cache.known[key] = nil, true
   local x0, y0 = chunk.x * 32, chunk.y * 32
   local cells, count = {}, 0
-  local ok, found = pcall(c.surface.find_entities_filtered,
+  local ok, found = pcall(surface.find_entities_filtered,
     { area = { { x0, y0 }, { x0 + 32, y0 + 32 } }, type = "resource" })
   for _, entity in ipairs(ok and found or {}) do
     count = count + 1
@@ -2697,28 +2895,33 @@ local function patch_build_step(cache)
   end
 end
 
-local function patch_step(cache, c, tick)
+local function patch_step(cache, surface, tick)
   if not cache.seeded then
-    -- Seeded from the chunks the registry bootstrap already listed (no API
-    -- call); chunks charted since then arrive through on_chunk_charted. Only
-    -- a cache rebuilt on a ready registry lists the surface itself.
+    local force = own_force()
+    if not force then return end
+    -- Seeded from the chunks the registry bootstrap already listed for this
+    -- surface (no API call); chunks charted since then arrive through
+    -- on_chunk_charted. Any other cache lists its surface itself, once.
     local r = storage.registry
     local seed = r and r.charted_seed
-    if seed then
+    if seed and r.charted_seed_surface == cache.surface_index then
       for _, chunk in ipairs(seed) do enqueue_chunk(cache, chunk.x, chunk.y) end
-      r.charted_seed = nil
+      r.charted_seed, r.charted_seed_surface = nil, nil
     else
-      for chunk in c.surface.get_chunks() do
-        if c.force.is_chunk_charted(c.surface, chunk) then enqueue_chunk(cache, chunk.x, chunk.y) end
+      for chunk in surface.get_chunks() do
+        if force.is_chunk_charted(surface, chunk) then enqueue_chunk(cache, chunk.x, chunk.y) end
       end
     end
     cache.seeded = true
     return
   end
   if cache.head > #cache.pending then
+    -- The idle refresh starts PATCH_REFRESH_TICKS after the cache first fills.
+    if not cache.filled then cache.refreshed_tick = tick end
     cache.pending, cache.head, cache.filled = {}, 1, true
     if cache.build or cache.dirty then patch_build_step(cache) end
-    if tick % PATCH_REFRESH_TICKS ~= 0 then return end
+    if tick - (cache.refreshed_tick or 0) < PATCH_REFRESH_TICKS then return end
+    cache.refreshed_tick = tick
     -- Round robin over the cached resource chunks.
     if #cache.refresh == 0 then
       for key, chunk in pairs(cache.chunks) do cache.refresh[#cache.refresh + 1] = { key = key, x = chunk.cx, y = chunk.cy } end
@@ -2732,27 +2935,35 @@ local function patch_step(cache, c, tick)
   while cache.head <= #cache.pending and chunks < PATCH_CHUNKS_PER_TICK and items < PATCH_RESOURCES_PER_TICK do
     local chunk = cache.pending[cache.head]
     cache.pending[cache.head], cache.head = false, cache.head + 1
-    items = items + read_chunk(c, cache, chunk)
+    items = items + read_chunk(surface, cache, chunk)
     chunks = chunks + 1
   end
 end
 
--- A failing step never stops the game; its error is kept on the cache.
+-- One cache works a tick: the caches in turn (by surface index). A failing
+-- step never stops the game; its error is kept on its cache.
 function M.patch_tick(tick)
-  local cache = storage.patch_cache
-  if not cache then return end
-  local c = companion.get()
-  if not (c and c.valid) then return end
-  local ok, err = pcall(patch_step, cache, c, tick)
+  local caches = storage.patch_caches
+  if not caches then return end
+  local order = {}
+  for index in pairs(caches) do order[#order + 1] = index end
+  if #order == 0 then return end
+  table.sort(order)
+  local index = order[tick % #order + 1]
+  local cache, surface = caches[index], surfaces.by_index(index)
+  if not surface then caches[index] = nil; return end
+  local ok, err = pcall(patch_step, cache, surface, tick)
   cache.error = not ok and tostring(err) or nil
 end
 
--- Resource patches in charted chunks from the cache (rebuilt on ticks by
--- patch_tick, never here), whether every charted chunk has been read at
--- least once and its patches built, and how many patches the cap left out.
-function M.patches()
-  local cache = storage.patch_cache
-  if not cache then return {}, false end
+-- Resource patches in charted chunks of a surface (an index; default the
+-- body's anchor surface) from its cache (rebuilt on ticks by patch_tick,
+-- never here), whether every charted chunk has been read at least once and
+-- its patches built, and how many patches the cap left out.
+function M.patches(surface_index)
+  if surface_index == nil then surface_index = registry.anchor_index() end
+  local cache = storage.patch_caches and surface_index and storage.patch_caches[surface_index]
+  if not cache then return {}, false, 0 end
   return cache.rows or {}, cache.filled == true and cache.rows ~= nil, cache.rows_omitted or 0
 end
 

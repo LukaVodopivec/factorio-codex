@@ -84,6 +84,7 @@ surface.find_entities_filtered = function(args)
 end
 local body = { position = { x = 1.5, y = 1.5 }, force = force, surface = surface }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 _G.defines = { build_check_type = { manual = 1, ghost_revive = 5 } }
 _G.prototypes = { item = {
   pipe = { place_result = { name = "pipe", type = "pipe", tile_width = 1, tile_height = 1, collision_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } } },

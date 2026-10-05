@@ -24,9 +24,11 @@ end
 local pole_reach = function() return 7.5 end
 local entities = {
   ["burner-mining-drill"] = entity("burner-mining-drill", "mining-drill", 2, 2,
-    { mining_drill_radius = 0.99, vector_to_place_result = { -0.5, -1.3 } }),
+    { mining_drill_radius = 0.99, vector_to_place_result = { -0.5, -1.3 }, resource_categories = { ["basic-solid"] = true },
+      burner_prototype = { fuel_categories = { chemical = true } }, items_to_place_this = { { name = "burner-mining-drill", count = 1 } } }),
   ["electric-mining-drill"] = entity("electric-mining-drill", "mining-drill", 3, 3,
-    { mining_drill_radius = 2.49, vector_to_place_result = { 0, -1.85 }, electric = true }),
+    { mining_drill_radius = 2.49, vector_to_place_result = { 0, -1.85 }, electric = true,
+      resource_categories = { ["basic-solid"] = true }, items_to_place_this = { { name = "electric-mining-drill", count = 1 } } }),
   ["stone-furnace"] = entity("stone-furnace", "furnace", 2, 2),
   ["steel-furnace"] = entity("steel-furnace", "furnace", 2, 2),
   ["electric-furnace"] = entity("electric-furnace", "furnace", 3, 3, { electric = true }),
@@ -48,9 +50,20 @@ local entities = {
 local items = {}
 for name, proto in pairs(entities) do items[name] = { name = name, place_result = proto, stack_size = 50 } end
 items["iron-plate"] = { name = "iron-plate", stack_size = 100 }
-_G.prototypes = { item = items, entity = { ["iron-ore"] = { name = "iron-ore", type = "resource" } },
-  tile = { water = { collision_mask = { layers = { water_tile = true } } },
-    grass = { collision_mask = { layers = { ground_tile = true } } } } }
+_G.prototypes = { item = items, entity = { ["iron-ore"] = { name = "iron-ore", type = "resource", resource_category = "basic-solid" } },
+  tile = { water = { collision_mask = { layers = { water_tile = true } }, fluid = { name = "water" } },
+    grass = { collision_mask = { layers = { ground_tile = true } } } },
+  -- Nauvis's map generation places water (power blocks need it).
+  space_location = { nauvis = { name = "nauvis", map_gen_settings = { autoplace_settings = { tile = { settings = { water = {} } } } } } },
+  space_connection = {} }
+for name, proto in pairs(entities) do prototypes.entity[name] = proto end
+function prototypes.get_entity_filtered(filters)
+  local wanted = {}
+  for _, kind in ipairs(type(filters[1].type) == "table" and filters[1].type or { filters[1].type }) do wanted[kind] = true end
+  local found = {}
+  for name, proto in pairs(prototypes.entity) do if wanted[proto.type] then found[name] = proto end end
+  return found
+end
 
 -- The world: a resource patch, a lake west of x = 0, and a body far away.
 local created, crafted = {}, 0
@@ -81,6 +94,7 @@ local character
 local crowded = false     -- a built-up base: every land tile holds a wall
 local engine = { can_place = 0, find = 0 }
 local surface = {
+  index = 1, name = "nauvis", planet = { name = "nauvis" },
   can_place_entity = function(args)
     engine.can_place = engine.can_place + 1
     if permissive then return true end
@@ -176,6 +190,7 @@ character = {
   can_reach_entity = function() return true end,
 }
 package.loaded["scripts.companion"] = { require_companion = function() return character end, get = function() return character end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return character end)
 package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end, ensure_entity = function() return "ok" end }
 package.loaded["scripts.factory_activity"] = { record = function() end }
 
@@ -703,6 +718,59 @@ check(result and result.status == "done" and #result.outcome.placed == 7,
 check(layout.layout_action.budget_steps({ entities = { {}, {} },
   connections = { { from = { dx = 0, dy = 0 }, to = { dx = 3, dy = 4 } } } }) == 10,
   "a layout's plan budget counts placements and route tiles")
+
+-- Liquids (C6): a site near a liquid reads only that liquid's tiles; this
+-- map's lake is water, so lava finds no site, and near_water is water.
+prototypes.tile.lava = { collision_mask = { layers = { water_tile = true, player = true } }, fluid = { name = "lava" } }
+local read_names = {}
+local find_tiles = surface.find_tiles_filtered
+surface.find_tiles_filtered = function(filter)
+  read_names[#read_names + 1] = table.concat(filter.name or {}, ",")
+  for _, name in ipairs(filter.name or {}) do if name == "water" then return find_tiles(filter) end end
+  return {}
+end
+permissive, crowded, blockers = false, false, {}
+local pump = { { name = "offshore-pump", dx = 0, dy = 0 } }
+local lava = check_layout({ check_only = true, site = { near = { x = 2, y = 0 }, near_liquid = "lava" }, entities = pump })
+check(not lava.ok and lava.failed[1].code == "SITE_NOT_FOUND" and lava.failed[1].reason:match("^no lava within")
+  and read_names[#read_names] == "lava", "a site near lava reads lava tiles only, and says when there is none")
+local wet = check_layout({ check_only = true, site = { near = { x = 2, y = 0 }, near_liquid = "water" }, entities = pump })
+local wet_legacy = check_layout({ check_only = true, site = { near = { x = 2, y = 0 }, near_water = true }, entities = pump })
+check(wet.ok and wet_legacy.ok and wet.anchor.x == wet_legacy.anchor.x and wet.anchor.y == wet_legacy.anchor.y
+  and read_names[#read_names] == "water", "near_liquid water finds the same site near_water does")
+check(not pcall(layout.validate_layout, { site = { near = { x = 0, y = 0 }, near_liquid = "mud" }, entities = pump }, "build_layout"),
+  "an unknown liquid is refused")
+surface.find_tiles_filtered = find_tiles
+
+-- Surface conditions (C10): an entity the planet forbids fails the layout's
+-- name checks, before any site is searched.
+surface.get_property = function(name) return name == "pressure" and 1000 or 0 end
+entities["big-mining-drill"] = entity("big-mining-drill", "mining-drill", 5, 5,
+  { surface_conditions = { { property = "pressure", min = 4000, max = 4000 } } })
+prototypes.entity["big-mining-drill"] = entities["big-mining-drill"]
+items["big-mining-drill"] = { name = "big-mining-drill", place_result = entities["big-mining-drill"], stack_size = 50 }
+local before_checks = engine.can_place
+local forbidden = check_layout({ check_only = true, anchor = { x = 60, y = 60 }, entities = { { name = "big-mining-drill", dx = 0, dy = 0 } } })
+check(not forbidden.ok and forbidden.failed[1].code == "SURFACE_CONDITION"
+  and forbidden.failed[1].reason:match("needs pressure = 4000; this surface has 1000") and engine.can_place == before_checks,
+  "an entity whose surface conditions the planet breaks fails SURFACE_CONDITION before any placement check")
+
+-- Another planet's ground (C7): a dry run with `surface` checks there from
+-- a body-less viewpoint, while the body stays where it is.
+local vulcanus_checks = 0
+local vulcanus = { index = 2, name = "vulcanus", valid = true, planet = { name = "vulcanus" },
+  get_property = function(name) return name == "pressure" and 4000 or 0 end,
+  can_place_entity = function() vulcanus_checks = vulcanus_checks + 1; return true end,
+  find_entities_filtered = function() return {} end }
+game.planets = { vulcanus = { surface = vulcanus } }
+character.force.is_space_location_unlocked = function() return true end
+local before_nauvis = engine.can_place
+local remote = check_layout({ check_only = true, surface = "vulcanus", anchor = { x = 0, y = 0 },
+  entities = { { name = "big-mining-drill", dx = 0, dy = 0 }, { name = "iron-chest", dx = 4, dy = 0 } } })
+check(remote.ok and vulcanus_checks > 0 and engine.can_place == before_nauvis and remote.materials[1].carried == 0,
+  "a dry run on another planet checks that planet's ground and conditions; the body there carries nothing")
+check(not pcall(jobs.run_now, layout.layout_check_job, { check_only = true, surface = "vulcanus", platform = 1,
+  anchor = { x = 0, y = 0 }, entities = {} }), "a dry run names a platform or a surface, not both")
 
 print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

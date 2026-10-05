@@ -139,6 +139,10 @@ function M.start(task)
       local belt_error = build.belt_to_ground_error(step.item, proto.place_result, step.belt_to_ground_type)
       if belt_error then error(string.format("step %d is malformed: %s", index, belt_error)) end
     end
+    -- Nothing is placed when any entity's surface conditions fail here.
+    local refused = proto and proto.place_result
+      and placement_geometry.condition_refusal(c.surface, "entity", proto.place_result.name)
+    if refused then error(string.format("step %d: %s", index, refused.reason), 0) end
     local function prepare_target(target, kind)
       local result = proto and proto.place_result
       if kind == "input" and (not result or result.type ~= "inserter") then
@@ -265,26 +269,8 @@ end
 
 -- ------------------------------------------------------------ step pieces
 
--- Why can_place_entity said no — mirrors build.lua's blocked_reason exactly.
-local function blocked_reason(c, pos)
-  for _, e in ipairs(c.surface.find_entities_filtered({ position = pos, radius = 1.0 })) do
-    if e.valid and e ~= c and e.type ~= "resource" then
-      return string.format("%s is in the way — pick a clear spot or remove it first", e.name)
-    end
-  end
-  local water = false
-  pcall(function()
-    water = c.surface.get_tile(math.floor(pos.x), math.floor(pos.y)).collides_with("player")
-  end)
-  if water then
-    return "the ground there is water or otherwise unbuildable"
-  end
-  local dx, dy = c.position.x - pos.x, c.position.y - pos.y
-  if dx * dx + dy * dy < 9 then
-    return "I might be standing in the way — walk a couple of tiles away and try again"
-  end
-  return "the spot is blocked — try a nearby position"
-end
+-- Why can_place_entity said no: build.lua's own answer.
+local blocked_reason = build.blocked_reason
 
 -- Same rules as build.lua's set_recipe, applied to the freshly placed entity.
 -- Returns nil on success, else a reason string.

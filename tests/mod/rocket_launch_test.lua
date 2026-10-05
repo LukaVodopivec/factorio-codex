@@ -70,9 +70,10 @@ silo.get_inventory = function(id)
   assert(id == defines.inventory.rocket_silo_rocket)
   return silo_state.rocket and inventory(rocket_items, 20, 1000000) or nil
 end
+local riders = {}
 silo.launch_rocket = function(destination, character)
-  assert(character == nil, "stage B never boards")
   launches[#launches + 1] = destination
+  riders[#launches] = character or false
   if silo_state.launch then silo_state.status = defines.rocket_silo_status.launch_starting end
   return silo_state.launch
 end
@@ -172,6 +173,7 @@ local rocket = require("scripts.actions.rocket")
 
 local function reset()
   carried, rocket_items, stock, supplied, inserts, launches = {}, {}, {}, {}, {}, {}
+  riders = {}
   walked, finds, at_silo = 0, 0, nil
   silo_state.status, silo_state.parts, silo_state.launch, silo_state.rocket = defines.rocket_silo_status.rocket_ready, 50, true, true
 end
@@ -330,6 +332,35 @@ check(invalid({ platform = "alpha", cargo = { mud = 1 } }, "^UNKNOWN_ITEM"), "ca
 check(invalid({ platform = "alpha", cargo = { ["iron-plate"] = 0 } }, "integers from 1"), "cargo counts are positive")
 check(invalid({ platform = "alpha", cargo = "everything" }, "requests"), "cargo is a map or \"requests\"")
 check(invalid({ platform = "alpha", partial = "yes" }, "partial"), "partial is a boolean")
+
+-- Boarding (the travel step's board phase): the body rides to the hub as a
+-- station destination, passed as launch_rocket's second argument, from a
+-- silo that launches to platforms; a platform without a hub and a silo
+-- that cannot carry the body are refused before walking.
+local carries = true
+mock.read(silo.prototype, "launch_to_space_platforms", function() return carries end)
+local function board(selector)
+  reset()
+  local task = { id = 4, silo = { x = 20.5, y = 30.5 }, platform = selector, character = true }
+  rocket.runner.start(task)
+  for _ = 1, 20 do
+    local result = rocket.runner.tick(task)
+    if result then return result end
+  end
+  error("boarding did not finish")
+end
+local boarded = board(1)
+check(boarded.status == "done" and boarded.outcome.boarded == true and #launches == 1
+  and launches[1].type == defines.cargo_destination.station and launches[1].station == hub and riders[1] == body,
+  "boarding launches the body itself to the platform's hub as a station")
+check(refused(board("beta"), "PLATFORM_NOT_IN_ORBIT"), "a platform still waiting for its pack cannot be boarded")
+carries = false
+check(refused(board(1), "SILO_NOT_FOR_PLATFORMS"), "a silo whose rockets do not go to platforms carries no body")
+carries = true
+check(rocket.find_silo(body, { x = 20.5, y = 30.5 }) == silo and rocket.carries_to_platforms(silo),
+  "travel finds the silo and asks whether it carries the body through the same engine")
+reset()
+check(run({ platform = "alpha" }).status == "done" and riders[1] == false, "an ordinary launch carries no body")
 
 -- inspect_entity's silo block: rocket state, parts, cargo, weight, auto requests.
 reset()

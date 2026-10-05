@@ -23,6 +23,7 @@ local force = { technologies = { automation = technology }, current_research = t
 local body = { valid = true, position = { x = 0, y = 0 }, surface = surface, force = force,
   walking_state = {}, mining_state = {}, crafting_queue = {} }
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
+dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
 local all_physical_starts, all_physical_ticks, transfer_effects, placement_effects = 0, 0, 0, {}
 local function runner(kind) return {
   start = function(task)

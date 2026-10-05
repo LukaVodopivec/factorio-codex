@@ -1,12 +1,16 @@
 -- build_layout and build_block: the bot gives a layout as offsets (dx, dy)
 -- from an anchor, or a site request (near a point, on a resource, near
--- water); the mod finds the site, checks every placement and connection
+-- water or another liquid: near_liquid water, lava, heavy-oil or
+-- ammoniacal-solution); the mod finds the site, checks every placement and connection
 -- route, then builds it all through build_plan (auto-supply, auto-clear,
 -- recipes) in dependency order: recipients first, then the drills and
 -- inserters that feed them, poles last. check_only is the same resolution
 -- without any side effect, run as a job (jobs.lua) over as many ticks as the
 -- build's own search would take, so it returns the site or a definite
--- SITE_NOT_FOUND. build_block expands a parametric block
+-- SITE_NOT_FOUND; it may name another planet's `surface` to check a layout
+-- there while the body is away (nothing counts as the body in the way).
+-- An entity or recipe whose surface conditions the surface breaks fails
+-- SURFACE_CONDITION before any site is searched. build_block expands a parametric block
 -- (scripts/blocks.lua) into a layout and may turn it to fit the site.
 -- Belt and pipe connections are searched by connect_entities' resumable A*
 -- (up to 200 tiles, underground hops where the way is blocked), spread over
@@ -42,12 +46,19 @@ local entity_settings = require("scripts.entity_settings")
 local jobs = require("scripts.jobs")
 local blueprints = require("scripts.blueprints")
 local platforms = require("scripts.platforms")
+local surfaces = require("scripts.surfaces")
+
+-- The liquids a site may be near (site.near_liquid); near_water is water.
+local LIQUIDS = { water = true, lava = true, ["heavy-oil"] = true, ["ammoniacal-solution"] = true }
+local function site_liquid(site)
+  return site.near_liquid or (site.near_water and "water") or nil
+end
 
 local M = {}
 
 local MAX_ENTITIES, MAX_CONNECTIONS, MAX_ROUTE, MAX_STEPS = 100, 32, connect_entities.MAX_LENGTH, 200
 local SITE_RADIUS = 24        -- anchors tried around site.near
-local SEARCH_RADIUS = 32      -- resource and water read around site.near
+local SEARCH_RADIUS = 32      -- resource and liquid read around site.near
 local MAX_CANDIDATES = 600
 local ROUTE_TYPES = { belt = "transport-belt", pipe = "pipe", power = "electric-pole" }
 local NATURAL = { tree = true, ["simple-entity"] = true }
@@ -222,6 +233,9 @@ local function validate_layout(params, label)
     if type(site) ~= "table" or not point(site.near, "x", "y") then error(label .. " site needs near = {x, y}", 0) end
     if site.on_resource ~= nil and type(site.on_resource) ~= "string" then error(label .. " site.on_resource must be a resource name", 0) end
     if site.near_water ~= nil and type(site.near_water) ~= "boolean" then error(label .. " site.near_water must be true or false", 0) end
+    if site.near_liquid ~= nil and not LIQUIDS[site.near_liquid] then
+      error(label .. " site.near_liquid must be water, lava, heavy-oil or ammoniacal-solution", 0)
+    end
   end
 end
 
@@ -277,14 +291,18 @@ local function belt_end(e)
   return e.belt_to_ground_type or type(e.settings) == "table" and e.settings.type or nil
 end
 
--- Name-level checks no site can fix. Returns the variant and its failures.
-local function prepare(c, layout)
+-- Name-level checks no site can fix, on the surface the layout goes on
+-- (its surface conditions too). Returns the variant and its failures.
+local function prepare(c, layout, surface)
   local variant, failed = { entities = {}, connections = {} }, {}
   for i, e in ipairs(layout.entities) do
     local item, proto = placeable(e.name)
     if not item then
       failed[#failed + 1] = { index = i - 1, code = "UNKNOWN_ENTITY", reason = "no placeable item or entity called '" .. e.name .. "'" }
     else
+      local refused = placement_geometry.condition_refusal(surface, "entity", proto.name)
+        or e.recipe and placement_geometry.condition_refusal(surface, "recipe", e.recipe)
+      if refused then failed[#failed + 1] = { index = i - 1, code = refused.code, reason = refused.reason } end
       if e.recipe then
         local recipe = c.force.recipes[e.recipe]
         local why
@@ -727,19 +745,24 @@ local function distance_sorted(list, near)
   return list
 end
 
-local water_names
-local function water_tile_names()
-  if water_names then return water_names end
-  water_names = {}
+-- The liquid tiles of a fluid (water, lava, heavy-oil,
+-- ammoniacal-solution): tiles on the water_tile layer whose fluid it is
+-- (placement_geometry's liquid rule), listed once per load.
+local liquid_names = {}
+local function liquid_tile_names(fluid)
+  if liquid_names[fluid] then return liquid_names[fluid] end
+  local names = {}
   for name, proto in pairs(prototypes.tile) do
     local ok, layers = pcall(function() return proto.collision_mask.layers end)
-    if ok and type(layers) == "table" and (layers.water_tile or layers["water-tile"]) then water_names[#water_names + 1] = name end
+    local fluid_ok, tile_fluid = pcall(function() return proto.fluid.name end)
+    if ok and type(layers) == "table" and layers.water_tile and fluid_ok and tile_fluid == fluid then names[#names + 1] = name end
   end
-  table.sort(water_names)
-  return water_names
+  table.sort(names)
+  liquid_names[fluid] = names
+  return names
 end
 
--- The resource or water window around site.near (SEARCH_RADIUS) is read as
+-- The resource or liquid window around site.near (SEARCH_RADIUS) is read as
 -- a phase of the search, a strip of SITE_STRIP rows per query, and ordered
 -- nearest first by bucketing on the squared distance, so no tick reads,
 -- keys or sorts the whole window. Tile keys are numbers (no tile is a
@@ -755,7 +778,7 @@ local function by_distance(a, b)
 end
 
 local function load_start(site)
-  return { kind = site.on_resource and "resource" or "water", row = math.floor(site.near.y - SEARCH_RADIUS),
+  return { kind = site.on_resource and "resource" or "liquid", liquid = site_liquid(site), row = math.floor(site.near.y - SEARCH_RADIUS),
     set = {}, water = {}, wet = {}, wi = 1, buckets = {}, top_bucket = -1, count = 0, b = 0, tiles = {} }
 end
 
@@ -793,7 +816,7 @@ local function load_step(s, limit)
         end
       end
     else
-      local ok, found = pcall(ctx.c.surface.find_tiles_filtered, { area = area, name = water_tile_names() })
+      local ok, found = pcall(ctx.c.surface.find_tiles_filtered, { area = area, name = liquid_tile_names(L.liquid or "water") })
       found = ok and found or {}
       ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
       for _, tile in ipairs(found) do
@@ -832,7 +855,7 @@ local function load_step(s, limit)
   if #L.tiles == 0 then
     s.result = { failed = { { code = "SITE_NOT_FOUND", reason = site.on_resource
       and string.format("no %s within %d tiles of (%.1f, %.1f)", site.on_resource, SEARCH_RADIUS, near.x, near.y)
-      or string.format("no water within %d tiles of (%.1f, %.1f)", SEARCH_RADIUS, near.x, near.y) } } }
+      or string.format("no %s within %d tiles of (%.1f, %.1f)", L.liquid or "water", SEARCH_RADIUS, near.x, near.y) } } }
     return true
   end
   s.tiles, s.set, s.numeric_keys = L.tiles, L.kind == "resource" and L.set or nil, true
@@ -1000,7 +1023,7 @@ local function new_search(c, request)
   end
   local variants = {}
   for v, layout in ipairs(request.layouts) do
-    local variant, problems = prepare(c, layout)
+    local variant, problems = prepare(c, layout, request.space and request.space.surface or c.surface)
     if v == 1 and #problems > 0 then s.result = { failed = problems }; return s end
     layout_geometry(variant, base)
     variants[v] = variant
@@ -1013,7 +1036,7 @@ local function new_search(c, request)
     s.result = { failed = variants[1].self_overlap, hard = true }
     return s
   end
-  if site.on_resource or site.near_water then
+  if site.on_resource or site_liquid(site) then
     -- The window is read by advance, over ticks (load_step).
     s.load, s.keys = load_start(site), {}
     for v, variant in ipairs(variants) do
@@ -1193,7 +1216,10 @@ local function materials(c, steps)
   end
   table.sort(names)
   local out = {}
-  for _, name in ipairs(names) do out[#out + 1] = { item = name, count = counts[name], carried = c.get_item_count(name) } end
+  -- A viewpoint on another surface carries nothing.
+  for _, name in ipairs(names) do
+    out[#out + 1] = { item = name, count = counts[name], carried = c.get_item_count and c.get_item_count(name) or 0 }
+  end
   return out
 end
 
@@ -1486,18 +1512,38 @@ end
 -- RPC build_layout / build_block {.., check_only = true}: a read-only dry run
 -- as a job, searching with the build's own budget per tick until it has the
 -- site or a definite answer.
+-- Who a search works for: a platform layout needs only a connected body
+-- (aboard or in transit too; its window reads the force), anything on a
+-- planet the character.
+local function actor(platform)
+  if platform ~= nil then return companion.require_present() end
+  return companion.require_companion()
+end
+
+-- What a dry run searches for: the body (actor), or on another surface
+-- named by `surface` a body-less viewpoint there, which the job keeps.
+local function check_viewer(params)
+  if params.surface == nil then return actor(params.platform), nil end
+  if params.platform ~= nil then error("check_only takes platform or surface, not both", 0) end
+  local target = surfaces.target(params.surface)
+  if target.here then return actor(nil), nil end
+  local at = params.anchor or params.near or (type(params.site) == "table" and params.site.near) or nil
+  local view = surfaces.viewpoint(target, type(at) == "table" and at or nil)
+  return view, view
+end
+
 local function check_job(label, make_request)
   return {
     start = function(params)
       require_check_only(params, label)
-      local c = companion.require_companion()
+      local c, view = check_viewer(params)
       local request, extra = make_request(c, params)
       local s = new_search(c, request)
       s.given_anchor = request.given_anchor
-      return { search = s, extra = extra }
+      return { search = s, extra = extra, view = view }
     end,
     step = function(state, budget)
-      local c = companion.require_companion()
+      local c = state.view or actor(state.search.ctx.space)
       local s = state.search
       local before = s.ctx.calls
       local result = advance(c, s, math.max(1, budget.left))
@@ -1549,7 +1595,7 @@ end
 -- prepares the search; the first tick searches with what the preparation
 -- left of one tick's budget.
 function Runner.start(task)
-  local c = companion.require_companion()
+  local c = actor(task.platform)
   local request = task.block and block_request(c, task) or layout_request(c, task)
   task.tiers = request.tiers
   task._search = new_search(c, request)
@@ -1574,7 +1620,7 @@ function Runner.tick(task)
     task._first_budget = nil
     local before = task._search.ctx.calls
     local s = task._search
-    search(task, companion.require_companion(), budget)
+    search(task, actor(task.platform), budget)
     jobs.charge(s.ctx.calls - before)
     -- Ghosts are placed from the next tick: this one spent its share.
     if task._search or task._plan or task._ghosts then return nil end
@@ -1587,7 +1633,7 @@ function Runner.tick(task)
         platform = task.platform } }
   end
   if task._ghosts then
-    local result, handled = place_batch(companion.require_companion(), task._ghosts, label)
+    local result, handled = place_batch(actor(task.platform), task._ghosts, label)
     jobs.charge(handled * GHOST_WORK)
     if result then task._ghosts = nil end
     return result

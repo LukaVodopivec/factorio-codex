@@ -19,7 +19,7 @@ function snapshot(tick: number, iron: number, copper = 0): RunSnapshot {
 function manifest(id: string, variant: string, baseline = "b".repeat(64)): RunManifest {
   return { schema_version: 1, run: { id, release_sha: "a".repeat(40), baseline_save_sha256: baseline,
     save_identity: "fresh-save", created_at: "2026-09-04T08:00:00Z",
-    roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6-astra", reasoning: "medium", fast: false } } },
+    roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6.1-sol", reasoning: "medium", fast: false } } },
     variant, change: `${variant} change`, kind: "benchmark", status: "finished", assisted: false,
     app_version: "0.17.0", mod_version: "0.17.0", factorio_version: "2.0.77",
     started_at: "2026-09-04T08:00:00Z", start_tick: 100, ended_at: "2026-09-04T08:20:00Z", end_tick: 72100 };
@@ -54,6 +54,23 @@ describe("five-minute run telemetry", () => {
     value.statistics.fluids.produced = {}; value.statistics.fluids.consumed = {}; value.statistics.raw_resources = {};
     expect(parseRunSnapshot(value).statistics).toMatchObject({ items: { produced: [], consumed: [] },
       fluids: { produced: [], consumed: [] }, raw_resources: [] });
+  });
+
+  it("reads 0.22.3 snapshots: summed counters with each surface's, the body's place, no character while it is away", () => {
+    const value: any = snapshot(100, 12);
+    delete value.character;
+    value.body = { state: "aboard_platform", surface_ref: "platform:3", platform_name: "Orbit" };
+    value.statistics.semantics.items = "summed_over_factory_surfaces";
+    value.statistics.by_surface = { nauvis: { items: { produced: [{ name: "iron-ore", count: 10 }], consumed: {} }, fluids: { produced: {}, consumed: {} } },
+      vulcanus: { items: { produced: [{ name: "iron-ore", count: 2 }], consumed: {} }, fluids: { produced: {}, consumed: {}, unavailable: true } } };
+    const parsed = parseRunSnapshot(value);
+    expect(parsed.character).toBeNull();
+    expect(parsed.body).toEqual({ state: "aboard_platform", surface_ref: "platform:3", platform_name: "Orbit" });
+    expect(parsed.statistics.by_surface?.vulcanus).toEqual({ items: { produced: [{ name: "iron-ore", count: 2 }], consumed: [] },
+      fluids: { produced: [], consumed: [], unavailable: true } });
+    // The recorder's deltas read the sums, as before.
+    expect(snapshotDelta(parsed, snapshot(50, 5)).items).toEqual([{ name: "iron-ore", produced: 7, consumed: 0 }]);
+    expect(parseRunSnapshot({ ...snapshot(100, 0), statistics: { ...snapshot(100, 0).statistics, by_surface: [] } }).statistics.by_surface).toEqual({});
   });
 
   it("records standing_on as null when Lua omits it and keeps a reported conveyor", () => {
@@ -121,10 +138,10 @@ describe("five-minute run telemetry", () => {
 
   it("keeps runs recorded with an earlier strategist profile readable", () => {
     const store = root(), zero = snapshot(100, 0), earlier = manifest("run-a", "old");
-    earlier.run.roles.strategist = { model: "gpt-6.1-sol", reasoning: "medium", fast: false };
+    earlier.run.roles.strategist = { model: "gpt-6-astra", reasoning: "medium", fast: false };
     storedRun(store, earlier, checkpoint(snapshot(18100, 10), zero));
     storedRun(store, manifest("run-b", "new"), checkpoint(snapshot(18100, 12), zero));
-    expect(readManifest(store, "run-a").run.roles.strategist.model).toBe("gpt-6.1-sol");
+    expect(readManifest(store, "run-a").run.roles.strategist.model).toBe("gpt-6-astra");
     expect(compareRuns(store, "run-a", "run-b")).toMatchObject({ eligible: true, verdict: "improved" });
   });
 

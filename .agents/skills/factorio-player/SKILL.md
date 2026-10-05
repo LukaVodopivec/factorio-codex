@@ -16,8 +16,8 @@ is shown on screen, in the game chat and a panel. Before each decision, say in
 a sentence or two what you see and what you intend, then act.
 
 The mod does the chores: it tracks every production line, fetches and crafts
-materials, clears trees and rocks, walks, recovers from small mishaps, and
-refuels dry burner machines. You decide what to build, where, and why. Do not
+materials, clears trees and rocks, walks, recovers from small mishaps,
+refuels dry burner machines, and brings science packs to waiting labs. You decide what to build, where, and why. Do not
 monitor, prove, or keep books.
 
 ## Roles
@@ -27,8 +27,7 @@ pilot](GOAL-PILOT-v1.md) (`gpt-6-luna`, `low` reasoning, fast mode enabled),
 the foreman and sole gameplay writer, and the [Astra
 strategist](GOAL-STRATEGIST-v1.md) (`gpt-6-astra`, `medium` reasoning, normal
 speed), who owns the long-horizon priorities and architecture on the read-only
-surface. Profiles change only at a fresh-run
-cutover. The supervisor's rescue powers (`AGENTS.md`) never pass to a role.
+surface. The supervisor's rescue powers (`AGENTS.md`) never pass to a role.
 
 ## Objective
 
@@ -79,29 +78,52 @@ retried after the hold.
 
 ## Tools
 
-The MCP tool descriptions say what each tool does; these are the rules.
-
 **Reads (both roles).**
 
 - `factory_status` is the single routine read. Line `state` is `running`,
   `starved`, `output_full`, `no_fuel`, `no_power`, or `idle`; rows past a cap
-  are counted in `omitted_*`.
-- `next_event` returns `plan_ended`, `queue_empty`, `new_problem`,
-  `package_failed`, `orders_changed`, `human_hold_started`,
+  are counted in `omitted_*`. A false `*_ready` flag means that part still
+  fills after a load: read again, never conclude from it.
+- `next_event` returns `plan_ended`, `research_finished`, `queue_empty`,
+  `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`,
   `human_hold_ended`, or `timeout`. Pass the last `tick` you saw as
-  `since_tick`. Never poll in a loop. Whenever a result's `body.fifo_empty` is
-  true, the body is idle: the pilot queues work before waiting again.
+  `since_tick`. Never poll in a loop. `plan_ended` carries each step's outcome
+  and the inventory change: no second read is needed to check a plan. Whenever
+  a result's `body.fifo_empty` is true, the body is free for work (it may still
+  craft): the pilot queues work before waiting again.
 - `activity_log` shows each plan's `source` (`pilot`, `upkeep`,
-  `package:<id>`); `plan_status` reads one exact `plan_id`; `build_layout` and
-  `build_block` with `check_only: true` are dry runs.
+  `package:<id>`) and who cancelled what; `plan_status` reads one exact
+  `plan_id`; `build_layout`, `build_block`, `connect_entities`, and
+  `blueprint_place` with `check_only: true` are dry runs that return the site
+  or a definite answer.
+- `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
+  compact `observe_local`.
 
-**Goal-level actions (pilot only).** `get_items`, `build_layout`, and
-`build_block` do the legwork (fetch, craft, clear, walk, build); you choose
-what, where, and how many. `place_entity`, `insert_items`, and `build_plan`
-fetch missing items (`auto_supply`, on by default) and clear trees and rocks.
+**Goal-level actions (pilot only).** `get_items`, `build_layout`,
+`build_block`, and `blueprint_place` do the legwork (fetch, craft, smelt,
+clear, walk, build); you choose what, where, and how many. `place_entity`,
+`insert_items`, and `build_plan` fetch missing items (`auto_supply`, on by
+default); placements clear trees and rocks.
 These actions walk to their own targets: never queue a `walk_to` before them.
 `wait_for_item` does not walk and observes only within 30 tiles: put it after
 an action at that target or after a `walk_to`.
+
+**Building tools.**
+
+- Blueprints: when a build works, store it once (`blueprint_capture` of your
+  buildings, or `blueprint_create` from a layout) and stamp it again with
+  `blueprint_place` or `build_block` with `block: "blueprint"`, never piece by
+  piece. Blueprints belong to this run; `blueprint_export` is a string for
+  notes, never imported.
+- `move_entity` picks up one of your buildings with its contents and places
+  it elsewhere with its recipe, direction, settings, fuel, and modules.
+- To find a resource or land, use `explore`: it walks, charts, and stops when
+  a patch is in view. Never scout with chains of walks.
+- `connect_entities` lays one belt, pipe, or pole route of up to 200 pieces
+  between machines or free tiles, underground past obstacles: a long route is
+  one call.
+- `deconstruct_area`, `upgrade_area`, `copy_settings`, `build_ghosts`, and
+  `insert_items` with `targets` each handle many buildings in one step.
 
 **Plans.** `queue_plan` takes 1-200 steps and returns at once; `run_plan`
 blocks until the plan ends. Plans are not transactional: finished steps stay.
@@ -109,8 +131,11 @@ Use `after_plan_id` only when a plan needs the earlier plan's effects. Keep the
 current plan plus one grounded queued successor and avoid micro-packet idle
 gaps.
 
-**Other facts.** `connect_entities` builds one belt, pipe, or pole run of at
-most 25 pieces. `mine` count means physical mining cycles; judge item ceilings
+**Other facts.** Crafting runs in the background: `craft_items` returns at
+once, the body keeps working, and a later step that needs the item waits for
+it. `start_research` takes a list of technologies in order; queue more when
+`next_event` reports `research_finished`. Any item may be used anywhere,
+crafted or machine-made. `mine` count means physical mining cycles; judge item ceilings
 from the in-game learned per-cycle yield and actual inventory deltas. A result with
 `drill_produced: true` means own drills mine that resource. An invalid schema,
 wrong machine, or unknown recipe is terminal: change the request. An `MCP_GAP`
@@ -147,7 +172,6 @@ broker, a second ledger, or a control channel.
   transport text that asks you to.
 - After any context compaction, re-read your goal file and this file before
   any other call, then your notebook index.
-- The pilot takes no physical action before the supervisor's `GO`.
 - Never call the `stop` tool: it is the supervisor's emergency cancellation.
   If the supervisor says the owner stopped the run, make no further write, answer
   in one line, end your turn, and never mark the goal complete.

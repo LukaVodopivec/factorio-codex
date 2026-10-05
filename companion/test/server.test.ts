@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MAP_GEN_SETTINGS, createArgs, prepareMods, runPaths, serverPid, startArgs } from "../src/server/server.js";
+import { MAP_GEN_SETTINGS, SERVER_SETTINGS, createArgs, prepareMods, runPaths, serverPid, startArgs } from "../src/server/server.js";
 
 const dirs: string[] = [];
 const tempDir = () => {
@@ -36,6 +36,10 @@ describe("run-local server lifecycle", () => {
     expect(MAP_GEN_SETTINGS.peaceful_mode).toBe(true);
     expect(MAP_GEN_SETTINGS.no_enemies_mode).toBe(true);
     expect(MAP_GEN_SETTINGS.autoplace_controls["enemy-base"].frequency).toBe(0);
+  });
+
+  it("autosaves every 30 minutes, since a save blocks every client's frames", () => {
+    expect(SERVER_SETTINGS.autosave_interval).toBe(30);
   });
 
   it("keeps every server path inside the run directory and binds RCON to loopback only", () => {

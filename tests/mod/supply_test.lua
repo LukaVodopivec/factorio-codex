@@ -10,7 +10,7 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 
 _G.storage = {}
 _G.game = { tick = 100 }
-_G.defines = { inventory = { chest = 1 } }
+_G.defines = { inventory = { chest = 1, furnace_source = 2, furnace_result = 3 } }
 _G.prototypes = { item = {
   ["iron-plate"] = { stack_size = 100 }, ["iron-gear-wheel"] = { stack_size = 100 },
   ["iron-ore"] = { stack_size = 50 }, coal = { stack_size = 50 }, wood = { stack_size = 100 },
@@ -19,6 +19,12 @@ _G.prototypes = { item = {
   ["stone-furnace"] = { stack_size = 50, place_result = { name = "stone-furnace",
     collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } } },
 } }
+
+-- The engine's recipe filter: which recipes make an item (supply caches it).
+prototypes.get_recipe_filtered = function(filters)
+  local wanted = filters[1].elem_filters[1].name
+  return wanted == "iron-plate" and { ["iron-plate"] = {} } or {}
+end
 
 local inventory = {}
 local world = {}
@@ -135,9 +141,19 @@ package.loaded["scripts.registry"] = {
     return own_entries(function(e) return HOLDER_TYPES[e.type] end)
   end,
   machines = function(types)
-    assert(types[1] == "mining-drill", "supply reads the registry's drills")
+    assert(#types == 1 and (types[1] == "mining-drill" or types[1] == "furnace"), "supply reads drills or furnaces")
     registry_reads = registry_reads + 1
-    return own_entries(function(e) return e.type == "mining-drill" end)
+    return own_entries(function(e) return e.type == types[1] end)
+  end,
+  stock_totals = function(names)
+    local totals = {}
+    for _, name in ipairs(names) do
+      totals[name] = 0
+      for _, row in ipairs(own_entries(function(e) return HOLDER_TYPES[e.type] end)) do
+        totals[name] = totals[name] + (row.entity.items[name] or 0)
+      end
+    end
+    return totals
   end,
 }
 
@@ -165,7 +181,10 @@ package.loaded["scripts.actions.pickup"] = stub("pickup", function(task)
   local n = move(at(task.target), task.item, task.count)
   return { status = n > 0 and "done" or "failed", detail = "picked " .. n }
 end)
-package.loaded["scripts.actions.craft"] = stub("craft", function(task)
+-- Crafts finish at once here unless a test puts output in the queue.
+local crafting = {}
+local craft_stub
+craft_stub = stub("craft", function(task)
   local recipe = recipes[task.recipe]
   for _, ingredient in ipairs(recipe.ingredients) do
     if (inventory[ingredient.name] or 0) < ingredient.amount * task.count then
@@ -178,6 +197,9 @@ package.loaded["scripts.actions.craft"] = stub("craft", function(task)
   inventory[task.recipe] = (inventory[task.recipe] or 0) + task.count
   return { status = "done", detail = "crafted" }
 end)
+craft_stub.queued = function(_, name) return crafting[name] or 0 end
+craft_stub.awaits = function(_, name, count) return (inventory[name] or 0) < count and (crafting[name] or 0) > 0 end
+package.loaded["scripts.actions.craft"] = craft_stub
 package.loaded["scripts.actions.mine"] = stub("mine", function(task)
   local e = task.entity
   local product = e.prototype.mineable_properties.products[1]
@@ -225,7 +247,8 @@ check(taken.status == "done" and inventory["iron-plate"] == 10 and calls[1].kind
   and calls[2].task.items["iron-plate"] == 7 and near_chest.items["iron-plate"] == 0 and far_chest.items["iron-plate"] == 43,
   "get_items takes from the nearest charted chest, then the next, before any belt")
 check(taken.outcome.code == "SUPPLIED" and taken.outcome.supplied.taken["iron-plate"] == 10
-  and taken.detail:match("taken 10 iron%-plate"), "the result says where the items came from")
+  and taken.detail == "carrying 10 iron-plate",
+  "the outcome says where the items came from; the text says only what is carried (any item may be used anywhere)")
 local bounded = true
 for _, query in ipairs(queries) do
   if query.force and not (query.type == "transport-belt" and query.position and query.radius and query.radius <= 64) then
@@ -384,6 +407,109 @@ local short = run({ items = { { name = "iron-plate", count = 5 } } })
 check(short.status == "partial" and inventory["iron-plate"] == 2 and short.outcome.missing[1].missing == 3
   and short.detail:match("cannot be hand%-crafted %(smelting%)"),
   "a partial supply is partial and names the missing count and why")
+check(short.outcome.missing[1].rate_per_min == nil and not short.detail:match("own machines make"),
+  "no producing line: the shortfall promises nothing")
+
+-- Own lines that make a missing item say when the rest can be fetched.
+reset()
+local autonomy = require("scripts.autonomy")
+local producing = autonomy.producing
+autonomy.producing = function(item) if item == "iron-plate" then return 1.5, 1 end return 0, 0 end
+chest({ x = 2.5, y = 0.5 }, { ["iron-plate"] = 2 })
+local expected = run({ items = { { name = "iron-plate", count = 5 } } })
+autonomy.producing = producing
+check(expected.status == "partial" and inventory["iron-plate"] == 2 and expected.outcome.missing[1].rate_per_min == 1.5
+  and expected.outcome.missing[1].expected_minutes == 2
+  and expected.detail:match("own machines make iron%-plate at 1%.5/min %(the missing 3 in about 2"),
+  "a partial get_items carries what exists and says when own machines make the rest")
+
+-- Output still in the crafting queue counts as supplied: never made twice.
+reset()
+crafting["iron-gear-wheel"] = 5
+local in_queue = run({ items = { { name = "iron-gear-wheel", count = 5 } } })
+check(in_queue.status == "done" and #calls == 0 and in_queue.detail:match("still in the crafting queue: 5 iron%-gear%-wheel"),
+  "get_items counts gears still in the crafting queue and crafts none")
+reset()
+crafting["iron-gear-wheel"] = 3
+chest({ x = 4.5, y = 0.5 }, { ["iron-plate"] = 50 })
+local topped = run({ items = { { name = "iron-gear-wheel", count = 5 } } })
+check(topped.status == "done" and calls[1].kind == "extract" and calls[1].task.items["iron-plate"] == 4
+  and calls[2].kind == "craft" and calls[2].task.count == 2,
+  "get_items crafts only what the queue does not already make")
+crafting = {}
+
+-- Smelting: plates nothing holds and no hand recipe makes come from an own
+-- furnace: ore and fuel in, wait by it, plates out.
+reset()
+chest({ x = 3.5, y = 0.5 }, { ["iron-ore"] = 20, coal = 10 })
+local furnace = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = {},
+  prototype = { crafting_categories = { smelting = true } } })
+local source, fuel, smelting = {}, {}, 0
+local function count_of(book) return function(name)
+  if name then return book[name] or 0 end
+  local total = 0; for _, n in pairs(book) do total = total + n end; return total
+end end
+furnace.get_inventory = function(id)
+  if id == defines.inventory.furnace_source then return { get_item_count = count_of(source) } end
+  if id == defines.inventory.furnace_result then return { get_item_count = count_of(furnace.items) } end
+end
+furnace.get_output_inventory = function() return holder(furnace.items) end
+furnace.get_fuel_inventory = function() return { is_empty = function() return (fuel.coal or 0) == 0 end } end
+furnace.is_crafting = function() return smelting > 0 end
+supply.register_runner("insert", stub("insert", function(task)
+  for name, count in pairs(task.items) do
+    local book = name == "coal" and fuel or source
+    book[name] = (book[name] or 0) + count
+    inventory[name] = inventory[name] - count
+  end
+  return { status = "done", detail = "inserted", outcome = { transfers = {} } }
+end))
+-- A plate every 10 ticks while ore and fuel are in.
+local function smelt_tick()
+  if (source["iron-ore"] or 0) > 0 and (fuel.coal or 0) > 0 then
+    smelting = smelting + 1
+    if smelting >= 10 then
+      smelting, source["iron-ore"] = 0, source["iron-ore"] - 1
+      furnace.items["iron-plate"] = (furnace.items["iron-plate"] or 0) + 1
+    end
+  end
+end
+local smelt_task = { items = { { name = "iron-plate", count = 5 } } }
+supply.start(smelt_task)
+local smelted
+for _ = 1, 400 do
+  smelted = supply.tick(smelt_task)
+  if smelted then break end
+  game.tick = game.tick + 1
+  smelt_tick()
+end
+local kinds = {}
+for _, call in ipairs(calls) do kinds[#kinds + 1] = call.kind end
+check(smelted and smelted.status == "done" and inventory["iron-plate"] == 5 and smelted.outcome.supplied.smelted["iron-plate"] == 5,
+  "get_items smelts iron plates through an own furnace when nothing holds them")
+check(table.concat(kinds, ",") == "extract,extract,insert,extract" and calls[3].task.items["iron-ore"] == 5
+  and calls[3].task.items.coal == 5 and calls[3].task.target.x == 6 and calls[4].task.items["iron-plate"] == 5,
+  "the body fetches the ore and fuel, loads the furnace, waits, then takes the plates")
+reset()
+local busy = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = { ["copper-plate"] = 3 },
+  prototype = { crafting_categories = { smelting = true } } })
+busy.get_inventory = function(id)
+  if id == defines.inventory.furnace_source then return { get_item_count = count_of({}) } end
+  return { get_item_count = count_of(busy.items) }
+end
+busy.get_output_inventory = function() return holder(busy.items) end
+local no_free = run({ items = { { name = "iron-plate", count = 5 } } })
+check(no_free.status == "failed" and no_free.detail:match("no own furnace is free to smelt it"),
+  "a furnace holding another product is never loaded; the shortfall says so")
+
+-- Fuel: what the body carries first, then own stock, in fuel order.
+reset()
+chest({ x = 3.5, y = 0.5 }, { wood = 12 })
+local fuel_name, fuel_total = supply.fuel_item(body)
+check(fuel_name == "wood" and fuel_total == 12, "the fuel is the first fuel carried or stored")
+inventory.coal = 2
+fuel_name, fuel_total = supply.fuel_item(body)
+check(fuel_name == "coal" and fuel_total == 2, "coal comes before wood")
 
 -- Plan step validation.
 check(not pcall(supply.action.validate, { item = "coal", count = 0 }, 1)
@@ -420,6 +546,7 @@ check(embedded and embedded.status == "failed" and owner._supply == nil,
 reset()
 package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end,
   ensure_entity = function() return "ok" end, find_entity_near = function(_, position) return at(position) end }
+package.loaded["scripts.actions.transfer"] = nil -- build loaded it with the real approach
 local transfer = require("scripts.actions.transfer")
 supply.register_runner("extract", stub("extract", function(task)
   local source = at(task.target)
@@ -446,5 +573,51 @@ transfer.insert.start(empty)
 local zero
 for _ = 1, 10 do zero = transfer.insert.tick(empty); if zero then break end end
 check(zero and zero.status == "failed" and zero.detail:match("SUPPLY_SHORTFALL"), "an insert with nothing to fetch names the shortfall")
+
+-- insert_items with several targets: each gets the same items, fetched in
+-- one trip; a target that takes nothing is reported, the rest still filled.
+reset()
+local fed_by = {}
+local function feedable(x, accepts)
+  local f = add({ type = "furnace", name = "stone-furnace", position = { x = x, y = 0.5 }, items = {} })
+  f.get_output_inventory = function() return holder({}) end
+  f.insert = function(stack) if not accepts then return 0 end; fed_by[x] = (fed_by[x] or 0) + stack.count; return stack.count end
+  return f
+end
+feedable(2.5, true); feedable(4.5, true); feedable(8.5, true); feedable(40.5, true)
+chest({ x = 6.5, y = 1.5 }, { coal = 50 })
+local several = { id = 13, targets = { { x = 2.5, y = 0.5 }, { x = 4.5, y = 0.5 }, { x = 8.5, y = 0.5 } }, items = { coal = 5 } }
+local events_before = #((storage.factory_activity or {}).events or {})
+transfer.insert.start(several)
+local filled
+for _ = 1, 20 do filled = transfer.insert.tick(several); if filled then break end end
+check(filled and filled.status == "done" and filled.outcome.code == "INSERTED_ALL_TARGETS" and fed_by[2.5] == 5
+  and fed_by[4.5] == 5 and fed_by[8.5] == 5 and #filled.outcome.targets == 3 and calls[1].kind == "extract"
+  and calls[1].task.items.coal == 15 and #calls == 1,
+  "insert_items fills several targets with the same items after one supply trip")
+local fed_events = {}
+for index = events_before + 1, #storage.factory_activity.events do
+  local event = storage.factory_activity.events[index]
+  if event.action == "insert" then fed_events[#fed_events + 1] = event.target.position.x end
+end
+check(#fed_events == 3 and fed_events[1] == 2.5 and fed_events[3] == 8.5,
+  "each target's insert is recorded as a hand transfer into that machine")
+reset()
+fed_by = {}
+feedable(2.5, true); feedable(4.5, false); feedable(9.5, true); feedable(40.5, true)
+inventory.coal = 20
+local named = { id = 14, targets = { name = "stone-furnace", near = { x = 3, y = 0.5 }, radius = 10 }, items = { coal = 5 } }
+transfer.insert.start(named)
+check(#named._targets == 3 and named._targets[1].x == 2.5 and named._targets[3].x == 9.5,
+  "targets by name are own entities near a point, nearest first, within the radius")
+local mixed
+for _ = 1, 20 do mixed = transfer.insert.tick(named); if mixed then break end end
+check(mixed and mixed.status == "partial" and mixed.outcome.code == "PARTIAL_INSERT_TARGETS"
+  and fed_by[2.5] == 5 and fed_by[9.5] == 5 and fed_by[40.5] == nil and mixed.outcome.targets[2].status == "failed"
+  and mixed.detail:match("1 of 3 targets"),
+  "a target that takes nothing is named and the others are still filled")
+check(not pcall(transfer.insert.start, { targets = { name = "stone-furnace", near = { x = 0, y = 0 }, radius = 64 }, items = { coal = 1 } })
+  and not pcall(transfer.insert.start, { targets = {}, items = { coal = 1 } }),
+  "a target search is bounded in radius and a target list is never empty")
 
 os.exit(failures == 0 and 0 or 1)

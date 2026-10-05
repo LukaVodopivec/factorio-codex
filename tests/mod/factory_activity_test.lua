@@ -6,7 +6,9 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 _G.game = { tick = 100 }
 _G.storage = {}
 local transfers_seen = {}
-package.loaded["scripts.autonomy"] = { on_transfer = function(position) transfers_seen[#transfers_seen + 1] = position end }
+package.loaded["scripts.autonomy"] = { on_transfer = function(position, kind)
+  transfers_seen[#transfers_seen + 1] = { position = position, kind = kind }
+end }
 local activity = require("scripts.factory_activity")
 activity.record("insert", { target = { name = "furnace", type = "furnace", position = { x = 1, y = 2 } },
   transfers = { { item = "ore", inserted = 3 }, { item = "fuel", inserted = 2 } } })
@@ -17,8 +19,9 @@ activity.record("craft", { transfers = { { item = "plate", extracted = 99 } } })
 activity.record("build_plan", { transfers = { { item = "ore", inserted = 99 } } })
 activity.record("insert", { transfers = { { item = "ore", inserted = 0 } } })
 local snapshot = activity.snapshot(100)
-check(#transfers_seen == 1 and transfers_seen[1].x == 1 and transfers_seen[1].y == 2,
-  "only a transfer into a machine tells the factory lines it was hand-fed; taking its output does not")
+check(#transfers_seen == 2 and transfers_seen[1].position.x == 1 and transfers_seen[1].position.y == 2
+  and transfers_seen[1].kind == "insert" and transfers_seen[2].kind == "extract",
+  "each successful character transfer with a target reaches the factory lines with its kind (insert or extract)")
 check(snapshot.validations == nil and storage.factory_activity.validations == nil,
   "activity keeps no component proofs")
 check(snapshot.transfer_actions == 2 and snapshot.transferred_items == 8,

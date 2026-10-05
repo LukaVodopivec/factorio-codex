@@ -33,16 +33,19 @@ local body = {
     name = x >= 0.5 and "water" or "grass", collides_with = function(layer) return tile_blocks and layer == "player" and x >= 0.5 and x < 2 end } end,
   find_entities_filtered = function(filter)
     entity_queries = entity_queries + 1; blocker_filter = filter; entity_filters[#entity_filters + 1] = filter
-    if filter.limit then
-      local overlaps = {}
-      for _, e in ipairs(found_blockers) do
-        local box = e.bounding_box
-        if box and box.left_top.x < filter.area.right_bottom.x and box.right_bottom.x > filter.area.left_top.x
-          and box.left_top.y < filter.area.right_bottom.y and box.right_bottom.y > filter.area.left_top.y then overlaps[#overlaps + 1] = e end
+    -- A blocker with a box is found only by areas overlapping it (the
+    -- start check and escape cells); one without a box by every query.
+    local out = {}
+    for _, e in ipairs(found_blockers) do
+      local box, area = e.bounding_box, filter.area
+      if not box then
+        if not filter.limit then out[#out + 1] = e end
+      elseif not area or (box.left_top.x < area.right_bottom.x and box.right_bottom.x > area.left_top.x
+        and box.left_top.y < area.right_bottom.y and box.right_bottom.y > area.left_top.y) then
+        out[#out + 1] = e
       end
-      return overlaps
     end
-    return found_blockers
+    return out
   end },
 }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }

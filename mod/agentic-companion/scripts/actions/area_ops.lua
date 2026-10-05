@@ -1,0 +1,800 @@
+-- Plan actions over blueprints and areas. Hand modes are the character's own
+-- work (walking, reach, inventory, mining time); robot modes are orders for
+-- construction robots, which never give free items. Each tick does at most
+-- one physical act, or at most ORDERS_PER_TICK robot orders.
+--
+--   blueprint_place {name, position, direction?, flip?, mode: hand | ghosts}
+--     hand:   the stored blueprint as a build_layout at position (auto-supply,
+--             auto-clear, recipes, settings, starter items, poles wire up);
+--     ghosts: LuaItemStack.build_blueprint places ghosts for robots.
+--     As an RPC it is the check_only dry run (place_check_job).
+--   build_ghosts {area | center+radius}: the character builds own ghosts by
+--     hand from its inventory, reviving each so its settings apply.
+--   deconstruct_area {area | center+radius, mode: hand | robots | cancel,
+--     filter?}: hand mines each own entity (and trees and rocks).
+--   upgrade_area {area | center+radius, from, to, mode: hand | robots}: hand
+--     fast-replaces same-footprint entities in place (direction and recipe
+--     kept); anything else is reported, to be mined and placed instead.
+--   copy_settings {from, to:[...]}: LuaEntity.copy_settings, within reach.
+local companion = require("scripts.companion")
+local registry = require("scripts.registry")
+local blueprints = require("scripts.blueprints")
+local approach = require("scripts.actions.approach")
+local placement_geometry = require("scripts.placement_geometry")
+local build = require("scripts.actions.build")
+local build_layout = require("scripts.actions.build_layout")
+local supply = require("scripts.actions.supply")
+local craft = require("scripts.actions.craft")
+
+local M = {}
+
+local MAX_AREA_ENTITIES = 300 -- entities one area action reads
+local MAX_GHOSTS = 100
+local ORDERS_PER_TICK = 50
+local MAX_ROWS = 10           -- failure rows listed in a result
+local MAX_TARGETS = 32
+local NATURAL_TYPES = { "tree", "simple-entity", "plant" } -- natural entities the body may clear
+-- Own-force entities that are never mined by an area action.
+local NEVER = { character = true, ["entity-ghost"] = true, ["tile-ghost"] = true, ["item-request-proxy"] = true,
+  ["item-entity"] = true, ["deconstructible-tile-proxy"] = true, ["character-corpse"] = true }
+
+local function plain(err) return (tostring(err):gsub("^.-:%d+:%s*", "")) end
+
+local function point(value)
+  return type(value) == "table" and type(value.x) == "number" and type(value.y) == "number"
+end
+
+local function row(e) return { name = e.name, x = e.position.x, y = e.position.y } end
+
+local function add_failure(task, e, reason)
+  task._failed_count = (task._failed_count or 0) + 1
+  task._failed = task._failed or {}
+  if #task._failed < MAX_ROWS then
+    -- A LuaEntity is userdata in 2.0; a plain {name, position} is a table.
+    local live = type(e) == "table" or type(e) == "userdata" and e.valid
+    local r = live and e.name and e.position and row(e) or {}
+    r.reason = reason
+    task._failed[#task._failed + 1] = r
+  end
+end
+
+-- Queue-time shape checks for area | center+radius (the chart check runs at
+-- start, with the body's force).
+local function validate_area(step, label)
+  if step.area == nil and not (point(step.center) and type(step.radius) == "number" and step.radius > 0) then
+    error(label .. " takes area {left_top, right_bottom} or center {x, y} with radius", 0)
+  end
+  if step.area ~= nil and not (type(step.area) == "table" and point(step.area.left_top) and point(step.area.right_bottom)) then
+    error(label .. " area must be {left_top:{x,y}, right_bottom:{x,y}}", 0)
+  end
+end
+
+local function area_params(step) return { area = step.area, center = step.center, radius = step.radius } end
+
+local function centre_of(area)
+  return { x = (area.left_top.x + area.right_bottom.x) / 2, y = (area.left_top.y + area.right_bottom.y) / 2 }
+end
+
+-- The entity a name places: an item or entity name -> entity name, prototype
+-- and the item that places it.
+local function placeable(name)
+  local item = prototypes.item[name]
+  if item and item.place_result then return item.place_result.name, item.place_result, name end
+  local proto = prototypes.entity[name]
+  if not proto then return nil end
+  local ok, items = pcall(function() return proto.items_to_place_this end)
+  local first = ok and type(items) == "table" and items[1] or nil
+  local item_name = type(first) == "string" and first or type(first) == "table" and first.name or nil
+  return proto.name, proto, item_name
+end
+
+-- The nearest still-valid entry of list (entries {entity}) to the body;
+-- invalid ones are dropped. Linear in what is left.
+local function nearest(c, list)
+  local best, best_d, best_i
+  local i = 1
+  while i <= #list do
+    local e = list[i].entity
+    if not (e and e.valid) then
+      table.remove(list, i)
+    else
+      local dx, dy = e.position.x - c.position.x, e.position.y - c.position.y
+      local d = dx * dx + dy * dy
+      if not best or d < best_d then best, best_d, best_i = list[i], d, i end
+      i = i + 1
+    end
+  end
+  if best then table.remove(list, best_i) end
+  return best
+end
+
+local function finish(task, status, code, detail, extra)
+  local outcome = { code = code, failed = task._failed, failed_count = task._failed_count }
+  for k, v in pairs(extra or {}) do outcome[k] = v end
+  if task._failed and task._failed[1] then detail = detail .. " — first failure: " .. tostring(task._failed[1].reason) end
+  return { status = status, detail = detail, outcome = outcome }
+end
+
+-- --------------------------------------------------------- blueprint_place
+
+local function validate_place(step, label)
+  if type(step.name) ~= "string" or step.name == "" then error(label .. " needs name = a stored blueprint", 0) end
+  if not point(step.position) then error(label .. " needs position = {x, y}", 0) end
+  local d = step.direction
+  if d ~= nil and (type(d) ~= "number" or d % 4 ~= 0 or d < 0 or d > 12) then
+    error(label .. " direction must be 0, 4, 8 or 12 (the blueprint turned clockwise)", 0)
+  end
+  blueprints.check_flip(step.flip, label)
+  if step.mode ~= nil and step.mode ~= "hand" and step.mode ~= "ghosts" then
+    error(label .. ' mode must be "hand" or "ghosts"', 0)
+  end
+end
+
+local function anchor_of(position)
+  return { x = math.floor(position.x + 0.5), y = math.floor(position.y + 0.5) }
+end
+
+-- The blueprint as a layout at the requested turn.
+local function placed_layout(task, label)
+  local layout = blueprints.layout(task.name, task.flip, label)
+  return build_layout._rotated(layout, math.floor((task.direction or 0) / 4))
+end
+
+local Place = {}
+
+function Place.start(task)
+  local c = companion.require_companion()
+  local label = "blueprint_place " .. tostring(task.name)
+  validate_place(task, label)
+  task.mode = task.mode or "hand"
+  task._anchor = anchor_of(task.position)
+  if task.mode == "hand" then
+    local layout = placed_layout(task, label)
+    local nested = { id = task.id, anchor = task._anchor, entities = layout.entities, connections = {} }
+    build_layout.validate_layout(nested, label)
+    build_layout.layout_action.runner.start(nested)
+    task._layout = nested
+  else
+    -- Ghosts go only on charted land.
+    blueprints.area(c, { center = task._anchor, radius = 0.5 }, label)
+    blueprints.layout(task.name, task.flip, label)
+  end
+end
+
+function Place.resume(task)
+  if task._layout then build_layout.layout_action.runner.resume(task._layout) end
+end
+
+local function place_ghosts(task, c)
+  local label = "blueprint_place " .. task.name
+  local stack = blueprints.build_stack(task.name, task.flip, label)
+  local ok, ghosts = pcall(stack.build_blueprint, { surface = c.surface, force = c.force, position = task._anchor,
+    direction = task.direction or 0, build_mode = defines.build_mode.forced, skip_fog_of_war = true,
+    raise_built = true })
+  if task.flip then blueprints.clear_scratch() end
+  if not ok then return { status = "failed", detail = "GHOSTS_NOT_PLACED: " .. plain(ghosts),
+    outcome = { code = "GHOSTS_NOT_PLACED" } } end
+  local rows = {}
+  for _, ghost in ipairs(ghosts or {}) do
+    if ghost.valid and #rows < 20 then
+      -- Entity and tile ghosts both name what they hold.
+      local ok_name, name = pcall(function() return ghost.ghost_name end)
+      if not ok_name then name = ghost.name end
+      rows[#rows + 1] = { name = name, x = ghost.position.x, y = ghost.position.y, direction = ghost.direction }
+    end
+  end
+  local count = #(ghosts or {})
+  local robots = blueprints.construction_robots(c, task._anchor)
+  local outcome = { code = count > 0 and "GHOSTS_PLACED" or "GHOSTS_NOT_PLACED", blueprint = task.name,
+    anchor = task._anchor, ghosts = count, placed = rows, construction_robots = robots,
+    tool_unlock = blueprints.tool_unlock(c, "blueprint") }
+  if count == 0 then
+    return { status = "failed", outcome = outcome,
+      detail = string.format("GHOSTS_NOT_PLACED: %s placed no ghosts at (%d, %d) — something stands in its way",
+        task.name, task._anchor.x, task._anchor.y) }
+  end
+  local detail = string.format("blueprint_place %s: %d ghosts at (%d, %d); %d construction robots cover the spot",
+    task.name, count, task._anchor.x, task._anchor.y, robots)
+  if robots == 0 then
+    outcome.note = "no construction robots cover the spot: build_ghosts builds them by hand"
+    detail = detail .. " — " .. outcome.note
+  end
+  return { status = "done", detail = detail, outcome = outcome }
+end
+
+function Place.tick(task)
+  local c = companion.get()
+  if not c then return { status = "failed", detail = "the companion character is gone" } end
+  if task.mode == "ghosts" then return place_ghosts(task, c) end
+  local result = build_layout.layout_action.runner.tick(task._layout)
+  if not result then return nil end
+  result.detail = "blueprint_place " .. task.name .. ": " .. tostring(result.detail)
+  if type(result.outcome) == "table" then result.outcome.blueprint = task.name end
+  return result
+end
+
+M.place_action = {
+  runner = Place,
+  make_task = function(step)
+    return { name = step.name, position = step.position, direction = step.direction, flip = step.flip, mode = step.mode }
+  end,
+  validate = function(step, index)
+    local label = "queue_plan blueprint_place step " .. index
+    validate_place(step, label)
+    if step.check_only then error(label .. ": check_only is the blueprint_place dry run, not a plan step", 0) end
+  end,
+  budget_steps = function(step)
+    return step.mode == "ghosts" and 1 or (blueprints.entity_count(step.name) or 1)
+  end,
+}
+
+-- blueprint_place {.., check_only = true} over RPC: the placement at the
+-- position (collisions), else the first free position near it, and the
+-- materials against what the body carries. A job: the same search and
+-- per-tick budget as build_layout's dry run.
+M.place_check_job = {
+  start = function(params)
+    local label = "blueprint_place"
+    if type(params) ~= "table" or params.check_only ~= true then
+      error("blueprint_place over RPC is a dry run: pass check_only = true, and queue it as a plan step to place", 0)
+    end
+    validate_place(params, label)
+    local c = companion.require_companion()
+    local layout = placed_layout(params, label)
+    local anchor = anchor_of(params.position)
+    return { name = params.name, mode = params.mode or "hand", anchor = anchor, layout = layout, phase = "at",
+      search = build_layout.search_start(c, { anchor = anchor, layouts = { layout } }) }
+  end,
+  step = function(job, budget)
+    local c = companion.require_companion()
+    local s = job.search
+    local before = s.ctx.calls
+    local result = build_layout.search_step(c, s, math.max(1, budget.left))
+    budget.left = budget.left - (s.ctx.calls - before)
+    if not result then return nil end
+    local report = build_layout.check_report(c, result)
+    if job.phase == "at" and not report.ok then
+      -- Blocked here: look for the first free position near it.
+      job.collisions = report.failed
+      job.phase = "near"
+      job.search = build_layout.search_start(c, { site = { near = job.anchor }, layouts = { job.layout } })
+      return nil
+    end
+    local missing = {}
+    for _, m in ipairs(report.materials or {}) do
+      if m.count > m.carried then missing[#missing + 1] = { item = m.item, missing = m.count - m.carried } end
+    end
+    local collisions = {}
+    for i = 1, math.min(MAX_ROWS, #(job.collisions or {})) do collisions[i] = job.collisions[i] end
+    local out = { check_only = true, blueprint = job.name, mode = job.mode, position = job.anchor,
+      ok = job.phase == "at", collisions = collisions, materials = report.materials, missing = missing,
+      free_position = report.ok and report.anchor or nil,
+      free_reason = not report.ok and report.failed[1] and report.failed[1].reason or nil,
+      tool_unlock = blueprints.tool_unlock(c, "blueprint") }
+    if job.mode == "ghosts" then out.construction_robots = blueprints.construction_robots(c, job.anchor) end
+    return out
+  end,
+}
+
+-- ------------------------------------------------------------ build_ghosts
+
+local Ghosts = {}
+Ghosts.resume = supply.resume
+
+function Ghosts.start(task)
+  local c = companion.require_companion()
+  local label = "build_ghosts"
+  local area = blueprints.area(c, task, label)
+  local found = c.surface.find_entities_filtered({ area = area, type = "entity-ghost", force = c.force,
+    limit = MAX_GHOSTS + 1 })
+  task._list, task._built, task._truncated = {}, 0, #found > MAX_GHOSTS
+  for i = 1, math.min(#found, MAX_GHOSTS) do task._list[i] = { entity = found[i] } end
+  task._total = #task._list
+end
+
+-- Items of this ghost's item still needed by the remaining ghosts.
+local function ghost_need(task, item)
+  local n = 1
+  for _, entry in ipairs(task._list) do if entry.item == item then n = n + 1 end end
+  return n
+end
+
+local function ghost_result(task)
+  local status = task._built == task._total and "done" or task._built > 0 and "partial" or "failed"
+  if task._total == 0 then
+    return { status = "done", detail = "build_ghosts: no own ghosts stand in that area",
+      outcome = { code = "NOTHING_TO_BUILD", built = 0 } }
+  end
+  local code = status == "done" and "GHOSTS_BUILT" or status == "partial" and "GHOSTS_PARTIAL" or "GHOSTS_NOT_BUILT"
+  return finish(task, status, code, string.format("build_ghosts: built %d/%d ghosts by hand%s", task._built, task._total,
+    task._truncated and " (the area holds more: build_ghosts again)" or ""),
+    { built = task._built, total = task._total, truncated = task._truncated or nil,
+      item_requests_pending = task._pending, shortfall = task._shortfall })
+end
+
+function Ghosts.tick(task)
+  local c = companion.get()
+  if not c then return { status = "failed", detail = "the companion character is gone" } end
+  if task._exit then
+    local walked = supply.step(task, "_exit")
+    if not walked then return nil end
+  end
+  local entry = task._current
+  if not entry then
+    entry = nearest(c, task._list)
+    if not entry then return ghost_result(task) end
+    task._current = entry
+    local ghost = entry.entity
+    local proto = ghost.ghost_prototype
+    local _, _, item = placeable(proto.name)
+    entry.proto, entry.item, entry.position, entry.direction = proto, item, ghost.position, ghost.direction
+    for _, other in ipairs(task._list) do
+      if other.item == nil and other.entity.valid then
+        local _, _, other_item = placeable(other.entity.ghost_name)
+        other.item = other_item
+      end
+    end
+  end
+  local ghost = entry.entity
+  local function skip(reason)
+    task._current = nil
+    if reason then add_failure(task, { name = entry.proto and entry.proto.name, position = entry.position }, reason) end
+    return nil
+  end
+  if not ghost.valid then return skip(nil) end
+  if not entry.item then return skip("no item places a " .. entry.proto.name) end
+  if not entry.supplied then
+    -- An item once short is not fetched again in this action.
+    local short = task._shortfall and task._shortfall[entry.item]
+    if not short and c.get_item_count(entry.item) == 0 and craft.queued(c, entry.item) == 0 then
+      local result = supply.ensure(task, { { name = entry.item, count = ghost_need(task, entry.item) } }, { bulk = true })
+      if not result then return nil end
+      if result.status ~= "done" then task._shortfall = task._shortfall or {}; task._shortfall[entry.item] = result.detail end
+    end
+    entry.supplied = true
+  end
+  if c.get_item_count(entry.item) == 0 and craft.queued(c, entry.item) == 0 then
+    return skip("I have no " .. entry.item)
+  end
+  if task._clear then
+    local cleared = build.clear_footprint(task, c, entry.proto, entry.position, entry.direction)
+    if cleared == nil then return nil end
+    if cleared ~= "ok" then return skip(cleared.detail) end
+  end
+  local reached = approach.ensure(task, c, entry.position, c.build_distance)
+  if type(reached) == "table" then return skip(reached.detail) end
+  if reached ~= "ok" then return nil end
+  local cleared = build.clear_footprint(task, c, entry.proto, entry.position, entry.direction)
+  if cleared == nil then return nil end
+  if cleared ~= "ok" then return skip(cleared.detail) end
+  if craft.awaits(c, entry.item, 1) then return nil end
+  if placement_geometry.overlaps_character(c, entry.proto, entry.position, entry.direction) then
+    if entry.exited then return skip("CODEX_BODY_OVERLAP: I stand in its footprint") end
+    entry.exited = true
+    local exit = build.footprint_exit(c, entry.proto, entry.position, entry.direction)
+    if exit and pcall(supply.begin, task, "_exit", { type = "walk_to", target = exit, arrival_mode = "exact", arrival_radius = 1 }) then
+      return nil
+    end
+    return skip("CODEX_BODY_OVERLAP: I stand in its footprint and found no tile beside it")
+  end
+  if c.get_item_count(entry.item) == 0 then return skip("I have no " .. entry.item) end
+  local had_requests = false
+  pcall(function() had_requests = #ghost.item_requests > 0 end)
+  local ok, collided, built, proxy = pcall(ghost.revive, { raise_revive = true })
+  if not ok or not built then
+    return skip(ok and "something stands in its footprint" or plain(collided))
+  end
+  c.remove_item({ name = entry.item, count = 1 })
+  pcall(registry.add, built)
+  -- Items lying in the footprint are the body's now.
+  for _, stack in ipairs(type(collided) == "table" and collided or {}) do
+    local kept = c.insert({ name = stack.name, count = stack.count })
+    if kept < stack.count then
+      pcall(c.surface.spill_item_stack, { position = c.position, stack = { name = stack.name, count = stack.count - kept } })
+    end
+  end
+  if had_requests and proxy then task._pending = (task._pending or 0) + 1 end
+  task._built = task._built + 1
+  task._current = nil
+  return nil
+end
+
+M.ghosts_action = {
+  runner = Ghosts,
+  make_task = function(step) return area_params(step) end,
+  validate = function(step, index) validate_area(step, "queue_plan build_ghosts step " .. index) end,
+  budget_steps = function() return MAX_GHOSTS end,
+}
+
+-- ------------------------------------------------------- deconstruct_area
+
+local function validate_names(list, label)
+  if list == nil then return end
+  if type(list) ~= "table" or #list < 1 or #list > MAX_TARGETS then error(label .. " must list 1-32 names", 0) end
+  for _, name in ipairs(list) do if type(name) ~= "string" then error(label .. " must list names", 0) end end
+end
+
+local Deconstruct = {}
+Deconstruct.resume = supply.resume
+
+function Deconstruct.start(task)
+  local c = companion.require_companion()
+  task.mode = task.mode or "hand"
+  local label = "deconstruct_area"
+  local area = blueprints.area(c, task, label)
+  task._centre = centre_of(area)
+  -- Only candidates are read, own first, each query with its own limit: an
+  -- unfiltered query on an ore field fills its limit with resources.
+  local limit = MAX_AREA_ENTITIES + 1
+  local own_found = c.surface.find_entities_filtered({ area = area, force = c.force, name = task.filter, limit = limit })
+  local natural_found = c.surface.find_entities_filtered({ area = area, type = NATURAL_TYPES, name = task.filter,
+    limit = limit })
+  task._list, task._done = {}, 0
+  task._truncated = #own_found > MAX_AREA_ENTITIES or #natural_found > MAX_AREA_ENTITIES
+  task._by_name = {}
+  for _, found in ipairs({ own_found, natural_found }) do
+    for _, e in ipairs(found) do
+      if #task._list >= MAX_AREA_ENTITIES then task._truncated = true; break end
+      local own = found == own_found
+      if e.valid and not (own and NEVER[e.type]) then
+        local ok, minable = pcall(function() return e.prototype.mineable_properties.minable end)
+        if ok and minable then task._list[#task._list + 1] = { entity = e, own = own } end
+      end
+    end
+  end
+  task._total = #task._list
+end
+
+local function deconstruct_result(task, c)
+  local hand = task.mode == "hand"
+  local status = task._done == task._total and "done" or task._done > 0 and "partial" or "failed"
+  if task._total == 0 then status = "done" end
+  local code = task.mode == "cancel" and "DECONSTRUCTION_CANCELLED"
+    or not hand and "DECONSTRUCTION_ORDERED"
+    or status == "done" and "AREA_CLEARED" or status == "partial" and "AREA_PARTIAL" or "AREA_NOT_CLEARED"
+  local verb = task.mode == "cancel" and "cancelled deconstruction of" or hand and "mined" or "ordered deconstruction of"
+  local extra = { done = task._done, total = task._total, by_name = task._by_name, truncated = task._truncated or nil,
+    stopped = task._stopped }
+  if not hand then
+    extra.construction_robots = blueprints.construction_robots(c, task._centre)
+    extra.tool_unlock = blueprints.tool_unlock(c, "deconstruction-planner")
+  end
+  return finish(task, status, code, string.format("deconstruct_area: %s %d/%d entities%s", verb, task._done, task._total,
+    task._truncated and " (the area holds more: run it again)" or ""), extra)
+end
+
+local function count_name(task, name) task._by_name[name] = (task._by_name[name] or 0) + 1 end
+
+function Deconstruct.tick(task)
+  local c = companion.get()
+  if not c then return { status = "failed", detail = "the companion character is gone" } end
+  if task.mode ~= "hand" then
+    -- Orders: a bounded batch per tick, in area order.
+    task._cursor = task._cursor or 1
+    local last = math.min(#task._list, task._cursor + ORDERS_PER_TICK - 1)
+    for i = task._cursor, last do
+      local entry = task._list[i]
+      local e = entry.entity
+      if e.valid then
+        local ok, done
+        if task.mode == "cancel" then
+          ok, done = pcall(function()
+            if not e.to_be_deconstructed() then return false end
+            e.cancel_deconstruction(c.force)
+            return true
+          end)
+        else
+          ok, done = pcall(e.order_deconstruction, c.force)
+        end
+        if ok and done then task._done = task._done + 1; count_name(task, e.name)
+        elseif task.mode ~= "cancel" then add_failure(task, e, ok and "the game refused the order" or plain(done)) end
+      end
+    end
+    task._cursor = last + 1
+    if task._cursor <= #task._list then return nil end
+    return deconstruct_result(task, c)
+  end
+  if task._sub then
+    local result = supply.step(task, "_sub")
+    if not result then return nil end
+    local entry = task._current
+    task._current = nil
+    if result.status == "done" then
+      task._done = task._done + 1
+      count_name(task, entry.name)
+    else
+      add_failure(task, { name = entry.name, position = entry.position }, result.detail)
+      -- A full inventory stops the clearing: nothing more fits.
+      if type(result.detail) == "string" and result.detail:find("inventory", 1, true) and result.detail:find("room", 1, true)
+        or type(result.detail) == "string" and result.detail:find("inventory is full", 1, true) then
+        task._stopped = "my inventory is full"
+        return deconstruct_result(task, c)
+      end
+    end
+  end
+  local entry = nearest(c, task._list)
+  if not entry then return deconstruct_result(task, c) end
+  local e = entry.entity
+  entry.name, entry.position = e.name, { x = e.position.x, y = e.position.y }
+  local sub = { type = "mine", target = entry.position, count = 1, expected_name = e.name }
+  if entry.own then
+    sub.target_kind, sub.allow_fluid_loss = "owned", true
+  else
+    sub.target_kind, sub.entity = "natural", e
+  end
+  task._current = entry
+  local ok, err = pcall(supply.begin, task, "_sub", sub)
+  if not ok then
+    task._current = nil
+    add_failure(task, e, plain(err))
+  end
+  return nil
+end
+
+M.deconstruct_action = {
+  runner = Deconstruct,
+  make_task = function(step)
+    local task = area_params(step)
+    task.mode, task.filter = step.mode, step.filter
+    return task
+  end,
+  validate = function(step, index)
+    local label = "queue_plan deconstruct_area step " .. index
+    validate_area(step, label)
+    if step.mode ~= nil and step.mode ~= "hand" and step.mode ~= "robots" and step.mode ~= "cancel" then
+      error(label .. ' mode must be "hand", "robots" or "cancel"', 0)
+    end
+    validate_names(step.filter, label .. " filter")
+  end,
+  budget_steps = function(step) return (step.mode == nil or step.mode == "hand") and 60 or 1 end,
+}
+
+-- ------------------------------------------------------------ upgrade_area
+
+local Upgrade = {}
+Upgrade.resume = supply.resume
+
+-- Same footprint and fast-replace group: only then a hand fast-replace.
+local function same_footprint(a, b)
+  return tonumber(a.tile_width) == tonumber(b.tile_width) and tonumber(a.tile_height) == tonumber(b.tile_height)
+    and a.fast_replaceable_group ~= nil and a.fast_replaceable_group == b.fast_replaceable_group
+end
+
+function Upgrade.start(task)
+  local c = companion.require_companion()
+  task.mode = task.mode or "hand"
+  local label = "upgrade_area"
+  local from_name, from_proto = placeable(task.from)
+  local to_name, to_proto, to_item = placeable(task.to)
+  if not from_name then error(label .. ": no entity called '" .. tostring(task.from) .. "'", 0) end
+  if not to_name then error(label .. ": no entity called '" .. tostring(task.to) .. "'", 0) end
+  if from_name == to_name then error(label .. ": from and to are the same entity", 0) end
+  task._to_name, task._to_item = to_name, to_item
+  if task.mode == "hand" then
+    if not same_footprint(from_proto, to_proto) then
+      task._refused = string.format("UPGRADE_NOT_FAST_REPLACEABLE: %s and %s differ in footprint or fast-replace group;"
+        .. " mine each %s and place a %s instead", from_name, to_name, from_name, to_name)
+    elseif not to_item then
+      task._refused = "UPGRADE_NOT_FAST_REPLACEABLE: no item places a " .. to_name
+    end
+  end
+  local area = blueprints.area(c, task, label)
+  task._centre = centre_of(area)
+  local found = c.surface.find_entities_filtered({ area = area, name = from_name, force = c.force,
+    limit = MAX_AREA_ENTITIES + 1 })
+  task._list, task._done, task._truncated = {}, 0, #found > MAX_AREA_ENTITIES
+  for i = 1, math.min(#found, MAX_AREA_ENTITIES) do task._list[i] = { entity = found[i] } end
+  task._total = #task._list
+end
+
+local function upgrade_result(task, c)
+  local status = (task._done == task._total or task._total == 0) and "done" or task._done > 0 and "partial" or "failed"
+  local hand = task.mode == "hand"
+  local code = not hand and "UPGRADE_ORDERED" or status == "done" and "UPGRADED" or status == "partial"
+    and "UPGRADE_PARTIAL" or "UPGRADE_FAILED"
+  local extra = { done = task._done, total = task._total, from = task.from, to = task._to_name,
+    truncated = task._truncated or nil, shortfall = task._shortfall }
+  if not hand then
+    extra.construction_robots = blueprints.construction_robots(c, task._centre)
+    extra.tool_unlock = blueprints.tool_unlock(c, "upgrade-planner")
+  end
+  return finish(task, status, code, string.format("upgrade_area: %s %d/%d %s to %s", hand and "replaced" or "ordered",
+    task._done, task._total, task.from, task._to_name), extra)
+end
+
+-- One fast-replace by the body, in build reach: the old entity and its
+-- contents go into the inventory (the engine's fast-replace by this
+-- character; no player's undo queue or last_user).
+local function replace(task, c, e)
+  local args = { name = task._to_name, position = e.position, direction = e.direction, force = c.force }
+  local ok_check, can = pcall(c.surface.can_fast_replace, args)
+  if not (ok_check and can) then return "the game will not fast-replace it here" end
+  local recipe
+  pcall(function() local r = e.get_recipe(); recipe = r and r.name end)
+  args.fast_replace, args.character, args.raise_built = true, c, true
+  if e.type == "underground-belt" then args.type = e.belt_to_ground_type end
+  local ok, built = pcall(c.surface.create_entity, args)
+  if not (ok and built) then return ok and "the fast-replace failed" or plain(built) end
+  c.remove_item({ name = task._to_item, count = 1 })
+  pcall(registry.add, built)
+  if recipe then
+    local same = false
+    pcall(function() local r = built.get_recipe(); same = r ~= nil and r.name == recipe end)
+    if not same then pcall(built.set_recipe, recipe) end
+  end
+  return nil
+end
+
+function Upgrade.tick(task)
+  local c = companion.get()
+  if not c then return { status = "failed", detail = "the companion character is gone" } end
+  if task._refused then
+    return { status = "failed", detail = task._refused,
+      outcome = { code = "UPGRADE_NOT_FAST_REPLACEABLE", total = task._total, from = task.from, to = task._to_name } }
+  end
+  if task.mode == "robots" then
+    task._cursor = task._cursor or 1
+    local last = math.min(#task._list, task._cursor + ORDERS_PER_TICK - 1)
+    for i = task._cursor, last do
+      local e = task._list[i].entity
+      if e.valid then
+        local ok, ordered = pcall(e.order_upgrade, { force = c.force, target = task._to_name })
+        if ok and ordered then task._done = task._done + 1
+        else add_failure(task, e, ok and "the game refused the upgrade order" or plain(ordered)) end
+      end
+    end
+    task._cursor = last + 1
+    if task._cursor <= #task._list then return nil end
+    return upgrade_result(task, c)
+  end
+  local entry = task._current
+  if not entry then
+    entry = nearest(c, task._list)
+    if not entry then return upgrade_result(task, c) end
+    task._current = entry
+  end
+  local e = entry.entity
+  local function skip(reason)
+    task._current = nil
+    if reason then add_failure(task, e.valid and e or { name = task.from, position = entry.position }, reason) end
+    return nil
+  end
+  if not e.valid then return skip(nil) end
+  entry.position = { x = e.position.x, y = e.position.y }
+  local item = task._to_item
+  if not entry.supplied then
+    if c.get_item_count(item) == 0 and craft.queued(c, item) == 0 then
+      local result = supply.ensure(task, { { name = item, count = #task._list + 1 } }, { bulk = true })
+      if not result then return nil end
+      if result.status ~= "done" then task._shortfall = result.detail end
+    end
+    entry.supplied = true
+  end
+  if c.get_item_count(item) == 0 and craft.queued(c, item) == 0 then
+    -- Nothing left to replace with: the rest are short too.
+    add_failure(task, e, "I have no " .. item)
+    task._list, task._current = {}, nil
+    return upgrade_result(task, c)
+  end
+  local reached = approach.ensure(task, c, e.position, c.build_distance)
+  if type(reached) == "table" then return skip(reached.detail) end
+  if reached ~= "ok" then return nil end
+  if craft.awaits(c, item, 1) then return nil end
+  local why = replace(task, c, e)
+  if why then return skip(why) end
+  task._done = task._done + 1
+  task._current = nil
+  return nil
+end
+
+M.upgrade_action = {
+  runner = Upgrade,
+  make_task = function(step)
+    local task = area_params(step)
+    task.from, task.to, task.mode = step.from, step.to, step.mode
+    return task
+  end,
+  validate = function(step, index)
+    local label = "queue_plan upgrade_area step " .. index
+    validate_area(step, label)
+    if type(step.from) ~= "string" or type(step.to) ~= "string" then error(label .. " needs from and to entity names", 0) end
+    if step.mode ~= nil and step.mode ~= "hand" and step.mode ~= "robots" then
+      error(label .. ' mode must be "hand" or "robots"', 0)
+    end
+  end,
+  budget_steps = function(step) return (step.mode == nil or step.mode == "hand") and 60 or 1 end,
+}
+
+-- ----------------------------------------------------------- copy_settings
+
+-- The own entity standing on a position.
+local function own_entity_at(c, position)
+  local ok, found = pcall(c.surface.find_entities_filtered, { position = position, force = c.force })
+  for _, e in ipairs(ok and found or {}) do
+    if e.valid and not NEVER[e.type] then return e end
+  end
+end
+
+local Copy = {}
+Copy.resume = supply.resume
+
+function Copy.start(task)
+  local c = companion.require_companion()
+  task._source = own_entity_at(c, task.from)
+  if not task._source then
+    error(string.format("copy_settings: no own entity stands at (%.1f, %.1f)", task.from.x, task.from.y), 0)
+  end
+  task._index, task._copied, task._returned = 0, 0, {}
+end
+
+function Copy.tick(task)
+  local c = companion.get()
+  if not c then return { status = "failed", detail = "the companion character is gone" } end
+  local source = task._source
+  if not source.valid then
+    return finish(task, task._copied > 0 and "partial" or "failed", "SOURCE_GONE",
+      string.format("copy_settings: the source vanished after %d copies", task._copied), { copied = task._copied })
+  end
+  if task._index == 0 then
+    local reached = approach.ensure_entity(task, c, source)
+    if type(reached) == "table" then return reached end
+    if reached ~= "ok" then return nil end
+    task._index = 1
+  end
+  local target_pos = task.to[task._index]
+  if not target_pos then
+    local status = task._copied == #task.to and "done" or task._copied > 0 and "partial" or "failed"
+    return finish(task, status, status == "done" and "SETTINGS_COPIED" or "SETTINGS_PARTIAL",
+      string.format("copy_settings: copied %s's settings to %d/%d entities", source.name, task._copied, #task.to),
+      { source = row(source), copied = task._copied, returned = next(task._returned) and task._returned or nil })
+  end
+  local target = task._target
+  if not target then
+    target = own_entity_at(c, target_pos)
+    if not target then
+      add_failure(task, { name = "nothing", position = target_pos }, "no own entity stands there")
+      task._index = task._index + 1
+      return nil
+    end
+    task._target = target
+  end
+  local reached = approach.ensure_entity(task, c, target)
+  if type(reached) == "table" then
+    add_failure(task, target.valid and target or { name = "gone", position = target_pos }, reached.detail)
+    task._target, task._index = nil, task._index + 1
+    return nil
+  end
+  if reached ~= "ok" then return nil end
+  local ok, removed = pcall(target.copy_settings, source)
+  if ok then
+    task._copied = task._copied + 1
+    -- What the new settings pushed out (old recipe ingredients) is the body's.
+    for _, stack in ipairs(type(removed) == "table" and removed or {}) do
+      local kept = c.insert({ name = stack.name, count = stack.count })
+      task._returned[stack.name] = (task._returned[stack.name] or 0) + stack.count
+      if kept < stack.count then
+        pcall(c.surface.spill_item_stack, { position = c.position, stack = { name = stack.name, count = stack.count - kept } })
+      end
+    end
+  else
+    add_failure(task, target, plain(removed))
+  end
+  task._target, task._index = nil, task._index + 1
+  return nil
+end
+
+M.copy_action = {
+  runner = Copy,
+  make_task = function(step) return { from = step.from, to = step.to } end,
+  validate = function(step, index)
+    local label = "queue_plan copy_settings step " .. index
+    if not point(step.from) then error(label .. " needs from = {x, y}", 0) end
+    if type(step.to) ~= "table" or #step.to < 1 or #step.to > MAX_TARGETS then error(label .. " to must list 1-32 positions", 0) end
+    for _, p in ipairs(step.to) do if not point(p) then error(label .. " to positions need numeric x and y", 0) end end
+  end,
+  budget_steps = function(step) return type(step.to) == "table" and #step.to or 1 end,
+}
+
+M.MAX_AREA_ENTITIES, M.ORDERS_PER_TICK, M.MAX_GHOSTS = MAX_AREA_ENTITIES, ORDERS_PER_TICK, MAX_GHOSTS
+
+return M

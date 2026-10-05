@@ -54,9 +54,12 @@ edge.bounding_box = { left_top = { x = 16, y = -0.5 }, right_bottom = { x = 17, 
 edge.selection_box = { left_top = { x = 14.75, y = -1.75 }, right_bottom = { x = 18.25, y = 1.75 } }
 entities[#entities + 1] = edge
 local entity_order = entities
+-- The query mock's own position reads are the engine's, not the observation's.
+local in_query = false
 local surface = {
   get_tile = function() return { collides_with = function() return false end } end,
   find_entities_filtered = function(filter)
+    in_query = true
     local area, result = filter.area, {}
     local left, top, right, bottom
     if area.left_top then
@@ -72,6 +75,7 @@ local surface = {
         result[#result + 1] = candidate
       end
     end
+    in_query = false
     return result
   end,
 }
@@ -91,16 +95,19 @@ _G.prototypes = { entity = {
   },
 } }
 local spatial = require("scripts.spatial")
+local jobs = require("scripts.jobs")
+-- observe_local is a job; this runs one to its end, a tick's budget at a time.
+local function observe_local(params) return (jobs.run_now(spatial.observe_job, params)) end
 local parse_require = require
 _G.require = function()
   error("require can't be used after control-stage parsing")
 end
-local observation = spatial.observe_local({ radius = 15, detail = "full" })
+local observation = observe_local({ radius = 15, detail = "full" })
 check(observation.tick == 123 and observation.radius == 15, "observation includes current tick and radius")
 check(observation.character.active_task == nil,
   "observation uses its parse-time task dependency when runtime require is prohibited")
 check(observation.grid.origin.x == -15 and observation.grid.origin.y == -15, "observation is centered on sole Codex character")
-local injected_center = spatial.observe_local({ radius = 15, detail = "full", center = { x = 999, y = -999 } })
+local injected_center = observe_local({ radius = 15, detail = "full", center = { x = 999, y = -999 } })
 check(injected_center.grid.origin.x == observation.grid.origin.x
   and injected_center.grid.origin.y == observation.grid.origin.y
   and canonical(injected_center) == canonical(observation),
@@ -163,9 +170,9 @@ check(a_detail and a_detail.status == "no_power" and a_detail.recipe == "iron-ge
 check(edge_detail and edge_detail.bounds.left_top.x == 14.75 and edge_detail.bounds.right_bottom.x == 18.25 and edge_detail.footprint.width == 3.5,
   "selection-only overlap with center and collision outside grid is queried and retained with precise union bounds")
 local reversed = {}; for i = #entities, 1, -1 do reversed[#reversed + 1] = entities[i] end; entity_order = reversed
-local shuffled_observation = spatial.observe_local({ radius = 15, detail = "full" })
+local shuffled_observation = observe_local({ radius = 15, detail = "full" })
 check(canonical(observation) == canonical(shuffled_observation), "shuffled entity input produces byte-identical canonical output")
-local compact = spatial.observe_local({ radius = 15 })
+local compact = observe_local({ radius = 15 })
 check(compact.detail == "compact" and compact.grid == nil and compact.character.crafting.queue_size == 0,
   "compact is the default and omits the grid while retaining actionable character state")
 check(#compact.ground_items == 12 and compact.omitted_ground_items == 247
@@ -181,10 +188,15 @@ local position_reads, dense = 0, {}
 for x = -14, 15 do for y = -14, 15 do
   local raw = resource("dense-ore", x + 0.5, y + 0.5, 10)
   local pos = raw.position; raw.position = nil
-  dense[#dense + 1] = setmetatable(raw, { __index = function(_, key) if key == "position" then position_reads = position_reads + 1; return pos end end })
+  dense[#dense + 1] = setmetatable(raw, { __index = function(_, key)
+    if key == "position" then
+      if not in_query then position_reads = position_reads + 1 end
+      return pos
+    end
+  end })
 end end
 entity_order = dense
-local dense_observation = spatial.observe_local({ radius = 15 })
+local dense_observation = observe_local({ radius = 15 })
 check(#dense_observation.resource_patches == 1 and dense_observation.resource_patches[1].entity_count == 900
   and dense_observation.resource_patches[1].total_amount == 9000,
   "a dense ore field clusters into one exact patch")
@@ -204,7 +216,7 @@ for _, fixture in ipairs({
   e.type, e.bounding_box = fixture.kind, e.selection_box
   e.prototype = { collision_mask = { layers = fixture.layers } }
   entity_order = { e }
-  local observed = spatial.observe_local({ radius = 5 }).character.path_start
+  local observed = observe_local({ radius = 5 }).character.path_start
   check(observed.state == fixture.state and canonical(observed) == canonical(geometry.path_start(character)),
     fixture.name .. " structured path_start agrees with the shared movement classifier")
 end
@@ -213,7 +225,7 @@ surface.find_entities_filtered = function(filter)
   if filter.limit then error("engine query failed") end
   return original_query(filter)
 end
-local failed_query = spatial.observe_local({ radius = 5 }).character.path_start
+local failed_query = observe_local({ radius = 5 }).character.path_start
 check(failed_query.state == "unknown" and not failed_query.clear and failed_query.reason:match("query failed"),
   "failed engine query cannot turn an empty collision list into proven clearance")
 surface.find_entities_filtered = original_query
@@ -221,12 +233,12 @@ character.bounding_box = { left_top = { x = -0.2, y = -0.2 }, right_bottom = { x
 local conveyor = { valid = true, name = "transport-belt", type = "transport-belt", direction = 4, position = { x = 0.5, y = 0.5 },
   bounding_box = { left_top = { x = 0, y = 0 }, right_bottom = { x = 1, y = 1 } } }
 entity_order = { conveyor }
-local on_belt = spatial.observe_local({ radius = 5 }).character.standing_on
+local on_belt = observe_local({ radius = 5 }).character.standing_on
 check(on_belt and on_belt.name == "transport-belt" and on_belt.type == "transport-belt" and on_belt.direction == 4
   and on_belt.position.x == 0.5 and on_belt.position.y == 0.5,
   "standing_on names the conveyor under the body")
 conveyor.position, conveyor.bounding_box = { x = 2.5, y = 2.5 }, { left_top = { x = 2, y = 2 }, right_bottom = { x = 3, y = 3 } }
-check(spatial.observe_local({ radius = 5 }).character.standing_on == nil,
+check(observe_local({ radius = 5 }).character.standing_on == nil,
   "standing_on is omitted when no conveyor lies under the body")
 character.bounding_box = nil
 _G.require = parse_require

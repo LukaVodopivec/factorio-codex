@@ -11,6 +11,9 @@ local transfer = require("scripts.actions.transfer")
 local build_plan = require("scripts.actions.build_plan")
 local supply = require("scripts.actions.supply")
 local build_layout = require("scripts.actions.build_layout")
+local explore = require("scripts.actions.explore")
+local move_entity = require("scripts.actions.move_entity")
+local area_ops = require("scripts.actions.area_ops")
 local set_walking = require("scripts.human_inputs").set_walking
 local placement_geometry = require("scripts.placement_geometry")
 local factory_activity = require("scripts.factory_activity")
@@ -53,6 +56,17 @@ local function stop_body()
   set_walking(c, { walking = false })
   c.mining_state, c.picking_state = { mining = false }, false
 end
+-- The name of the surface the body stands on, or nil.
+local function body_surface()
+  local c = companion.get()
+  local ok, name = pcall(function() return c and c.surface.name end)
+  return ok and type(name) == "string" and name or nil
+end
+-- A plan tagged with another surface than the body's waits (parked) until
+-- the body is back; plans from before the tag run anywhere.
+local function off_surface(plan, surface)
+  return plan.type == "plan" and plan.surface ~= nil and surface ~= nil and plan.surface ~= surface
+end
 -- The owner's real control input on the Codex client holds the body (companion.human_control
 -- owns the rule). A failed read never holds.
 local function human_control()
@@ -70,7 +84,8 @@ local function task_crafts(task)
   local current = task.type == "plan" and task.current_task or task
   -- get_items and auto-supply may hand-craft inside any step.
   return current and (current.type == "craft" or current.type == "build_plan" or current.type == "get_items"
-    or current.type == "build_layout" or current.type == "build_block" or current._supply ~= nil)
+    or current.type == "build_layout" or current.type == "build_block" or current.type == "blueprint_place"
+    or current.type == "build_ghosts" or current.type == "upgrade_area" or current._supply ~= nil)
 end
 local function set_plan_status(plan, status)
   plan.status = status
@@ -175,6 +190,13 @@ end
 M.register_action("get_items", supply.action)
 M.register_action("build_layout", build_layout.layout_action)
 M.register_action("build_block", build_layout.block_action)
+M.register_action("explore", explore.action)
+M.register_action("move_entity", move_entity.action)
+M.register_action("blueprint_place", area_ops.place_action)
+M.register_action("build_ghosts", area_ops.ghosts_action)
+M.register_action("deconstruct_area", area_ops.deconstruct_action)
+M.register_action("upgrade_area", area_ops.upgrade_action)
+M.register_action("copy_settings", area_ops.copy_action)
 
 local ACTIONS = {
   walk_to = "walk_to", mine = "mine", pickup_items = "pickup", place_entity = "place", craft_items = "craft",
@@ -203,10 +225,14 @@ local function make_step_task(step)
     task.item, task.position, task.direction = step.name, { x = step.x, y = step.y }, step.direction
     task.input_target, task.output_target = step.input_target, step.output_target
     task.belt_to_ground_type = step.belt_to_ground_type
-    task.auto_supply, task.auto_clear = step.auto_supply, step.auto_clear
+    task.auto_supply, task.auto_clear, task.insert = step.auto_supply, step.auto_clear, step.insert
   end
   if kind == "craft" then task.recipe, task.count, task.wait_for_completion = step.recipe, step.crafts, step.wait_for_completion end
-  if kind == "insert" then task.target, task.items, task.auto_supply = { x = step.x, y = step.y }, step.items, step.auto_supply end
+  if kind == "insert" then
+    -- Several targets each get the same items (per_target, or items).
+    task.target = step.targets == nil and { x = step.x, y = step.y } or nil
+    task.targets, task.items, task.auto_supply = step.targets, step.per_target or step.items, step.auto_supply
+  end
   if kind == "extract" then task.target, task.items, task.all = { x = step.x, y = step.y }, step.items, step.items == nil end
   if kind == "set_recipe" then task.target, task.recipe = { x = step.x, y = step.y }, step.recipe end
   if kind == "rotate" then task.target, task.direction = { x = step.x, y = step.y }, step.direction end
@@ -253,6 +279,9 @@ function M.queue_plan(params)
         error("queue_plan craft_items step " .. i .. " requires crafts as an integer from 1 to 100")
       end
     end
+    if step.action == "insert_items" and step.per_target ~= nil and step.items ~= nil then
+      error("queue_plan insert_items step " .. i .. " takes per_target or items, not both")
+    end
     if step.action == "inspect_entities" then
       if type(step.positions) ~= "table" or #step.positions < 1 or #step.positions > 16 then
         error("queue_plan inspect_entities step " .. i .. " requires 1-16 positions")
@@ -296,6 +325,8 @@ function M.queue_plan(params)
     final_observation_radius = tonumber(params.final_observation_radius) or 15,
     observation_detail = params.observation_detail == "compact" and "compact" or "none",
     after_plan_id = predecessor, source = source, budget_steps = budget_steps,
+    -- Positions in the steps belong to the surface the body stands on now.
+    surface = body_surface(),
   }
   -- Ticks the FIFO sat empty before this plan: the body's idle time while the
   -- caller reasoned, so a short plan's cost is visible in the next result.
@@ -379,14 +410,45 @@ function M.get(params)
   if record then return { status = record.status, detail = record.detail, outcome = record.outcome } end
   error("unknown task_id: " .. id)
 end
+-- Every cancel names who asked (the bridge's tool and role) and is kept in
+-- activity_log and the server log: {kind = "cancel", tick, origin, plan_id |
+-- all, cancelled_count}. A cancel-all row names the newest plan ID at that
+-- moment (after_plan_id); since_plan_id filters it by that ID.
+local MAX_ORIGIN = 120
+-- A row that is not a plan outcome ({kind, ...}): without a plan_id it names
+-- the newest plan ID at that moment (after_plan_id), which since_plan_id
+-- filters by.
+function M.log_event(row)
+  if not row.plan_id then row.after_plan_id = storage.tasks.next_id - 1 end
+  local log_rows = storage.activity_log or {}
+  storage.activity_log = log_rows
+  log_rows[#log_rows + 1] = row
+  while #log_rows > ACTIVITY_LOG_SIZE do table.remove(log_rows, 1) end
+end
+local function log_cancel(origin, id, cancelled)
+  local row = { kind = "cancel", tick = game.tick, origin = origin, cancelled_count = cancelled }
+  if id then row.plan_id = id else row.all = true end
+  M.log_event(row)
+  if log then
+    pcall(log, string.format("[agentic-companion] cancel origin=%s target=%s cancelled=%d tick=%d", origin,
+      id and ("plan " .. id) or "all", cancelled, game.tick))
+  end
+end
+
 function M.cancel(params)
+  local origin = params.origin
+  if type(origin) ~= "string" or origin == "" or #origin > MAX_ORIGIN then
+    error("cancel requires origin: who asks, as <tool>/<role> (at most " .. MAX_ORIGIN .. " characters)")
+  end
   local tasks, n = storage.tasks, 0
+  local detail = "CANCELLED by " .. origin
   local function record_cancelled_step(plan)
+    if plan.type == "plan" then plan.cancel_origin = origin end
     if plan.type == "plan" and plan.current_task then
       local step = plan.steps[plan.current_step]
       plan.outcomes[#plan.outcomes + 1] = {
         step = plan.current_step, action = step.action,
-        status = "cancelled", error = "cancelled",
+        status = "cancelled", error = detail,
       }
       plan.current_task = nil
     end
@@ -396,30 +458,36 @@ function M.cancel(params)
     tasks.queue = {}
     for _, queued in ipairs(queued_tasks) do
       record_cancelled_step(queued)
-      finish(queued, "cancelled", "", true)
+      finish(queued, "cancelled", detail, true)
       n = n + 1
     end
     if tasks.active then
       record_cancelled_step(tasks.active)
-      finish(tasks.active, "cancelled", ""); n = n + 1
+      finish(tasks.active, "cancelled", detail); n = n + 1
     end
     cancel_crafting()
     -- Emergency cancellation is not the next plan's idle time.
     tasks.last_finished_tick = nil
+    tasks.last_cancel_all_tick = game.tick
+    log_cancel(origin, nil, n)
     return { cancelled = n }
   end
   local id = tonumber(params.task_id or params.plan_id)
   if not id then error("cancel requires task_id, plan_id, or all=true") end
   if tasks.active and tasks.active.id == id then
     record_cancelled_step(tasks.active)
-    finish(tasks.active, "cancelled", ""); return { cancelled = 1 }
+    finish(tasks.active, "cancelled", detail)
+    log_cancel(origin, id, 1)
+    return { cancelled = 1 }
   end
   for i, queued in ipairs(tasks.queue) do if queued.id == id then
     table.remove(tasks.queue, i)
     record_cancelled_step(queued)
-    finish(queued, "cancelled", "", true)
+    finish(queued, "cancelled", detail, true)
+    log_cancel(origin, id, 1)
     return { cancelled = 1 }
   end end
+  log_cancel(origin, id, 0)
   return { cancelled = 0 }
 end
 function M.active_summary()
@@ -442,7 +510,9 @@ function M.activity_log(params)
   end
   local rows = {}
   for _, entry in ipairs(storage.activity_log) do
-    if not since or entry.plan_id > since then rows[#rows + 1] = entry end
+    if not since or (entry.plan_id or entry.after_plan_id) > since then
+      rows[#rows + 1] = entry
+    end
   end
   local omitted = math.max(0, #rows - limit)
   if omitted > 0 then rows = { table.unpack(rows, omitted + 1) } end
@@ -668,7 +738,19 @@ local function step_recovery(plan)
   recovery.phase = "retrying"
   return false
 end
+-- The body left the plan's surface: its step stops and starts over once the
+-- body is back; the plan waits at the tail of the FIFO meanwhile.
+local function park_off_surface(tasks, plan)
+  stop_body()
+  storage.path_request, plan._path_result = nil, nil
+  plan.current_task, plan._recovery = nil, nil
+  plan.surface_parked_tick = game.tick
+  set_plan_status(plan, "waiting")
+  tasks.active = nil
+  tasks.queue[#tasks.queue + 1] = plan
+end
 local function tick_plan(plan)
+  if off_surface(plan, body_surface()) then park_off_surface(storage.tasks, plan); return end
   local budget = math.max(PLAN_BUDGET_TICKS, (plan.budget_steps or #plan.steps) * STEP_BUDGET_TICKS)
   if game.tick - plan.started_tick >= budget then
     local detail = string.format("plan exceeded its %d-second active budget", budget / 60)
@@ -760,11 +842,12 @@ local function dispatch(tasks)
   local task = tasks.active
   if not task then
     if #tasks.queue == 0 then return end
-    local attempts = #tasks.queue
+    local attempts, surface = #tasks.queue, body_surface()
     for _ = 1, attempts do
       local candidate = table.remove(tasks.queue, 1)
       local parked = candidate.type == "plan" and candidate.status == "waiting"
         and candidate.next_check_tick and game.tick < candidate.next_check_tick
+        or off_surface(candidate, surface)
       local predecessor_blocked = false
       if candidate.type == "plan" and candidate.after_plan_id then
         local status = predecessor_status(candidate.after_plan_id)
@@ -776,11 +859,19 @@ local function dispatch(tasks)
           end
         end
       end
-      if parked or predecessor_blocked then tasks.queue[#tasks.queue + 1] = candidate
-      elseif candidate.status ~= "cancelled" then task = candidate; break end
+      -- A candidate the predecessor check just cancelled leaves the queue,
+      -- even while it is parked off its surface.
+      if candidate.status == "cancelled" then -- dropped
+      elseif parked or predecessor_blocked then tasks.queue[#tasks.queue + 1] = candidate
+      else task = candidate; break end
     end
     if not task then return end
     if task.type == "plan" then set_plan_status(task, "running") else task.status = "running" end
+    -- Time parked off its surface is not charged to the plan's budget.
+    if task.surface_parked_tick and task.started_tick then
+      task.started_tick = task.started_tick + (game.tick - task.surface_parked_tick)
+    end
+    task.surface_parked_tick = nil
     task.started_tick, tasks.active = task.started_tick or game.tick, task
     if task.type == "plan" and task.start_inventory == nil then task.start_inventory = inventory_snapshot(companion.get()) end
     if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", tostring(err)); return end end
@@ -818,13 +909,11 @@ local function release_plan(plan, held_ticks)
   if plan.wait_started_tick then plan.wait_started_tick = plan.wait_started_tick + held_ticks end
   if step._wait_started_tick then step._wait_started_tick = step._wait_started_tick + held_ticks end
 end
-local function leave_hold(tasks)
-  local held_ticks = game.tick - tasks.human_hold.since
-  tasks.human_hold = nil
-  for _, queued in ipairs(tasks.queue) do release_plan(queued, held_ticks) end
+-- The active step re-plans from where the body stands (after a hold, and
+-- after a load whose state.init dropped the pending path request).
+local function resume_active(tasks)
   local task = tasks.active
   if not task then return end
-  release_plan(task, held_ticks)
   storage.path_request, task._path_result = nil, nil
   local current = task.type == "plan" and task.current_task or task
   if not current then return end
@@ -837,6 +926,19 @@ local function leave_hold(tasks)
       if task.type == "plan" then finish_step(task, result) else finish(task, "failed", result.detail) end
     end
   end
+end
+local function leave_hold(tasks)
+  local held_ticks = game.tick - tasks.human_hold.since
+  tasks.human_hold = nil
+  for _, queued in ipairs(tasks.queue) do release_plan(queued, held_ticks) end
+  if tasks.active then release_plan(tasks.active, held_ticks) end
+  resume_active(tasks)
+end
+-- After state.init (a load with a configuration change). A held body resumes
+-- when the hold ends.
+function M.resume_active()
+  if storage.tasks.human_hold then return end
+  resume_active(storage.tasks)
 end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end

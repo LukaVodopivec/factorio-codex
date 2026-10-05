@@ -2,9 +2,13 @@
 -- player would. For each wanted item, in order: take it from the nearest own
 -- chest or machine output (then belt), walking there; else hand-craft it,
 -- supplying the recipe's ingredients the same way first (so intermediates
--- follow); else hand-gather it, only when no own mining drill produces it.
+-- follow); else smelt it in an own furnace (ore and fuel in, wait, products
+-- out); else hand-gather it, only when no own mining drill produces it.
 -- Whatever is still missing is a named shortfall. Every move is physical:
--- the nested walk/extract/pickup/craft/mine actions keep reach and time.
+-- the nested walk/extract/pickup/craft/mine/insert actions keep reach and
+-- time. Hand-crafts run in the background: output still in the crafting
+-- queue counts as supplied (never crafted twice), and the step that consumes
+-- it waits for it (craft.awaits).
 --
 -- A supply task is { items = {{name, count}, ...} } where count is the total
 -- the body should carry; exclude = {x, y} is never taken from (an insert's
@@ -17,6 +21,7 @@ local pickup = require("scripts.actions.pickup")
 local craft = require("scripts.actions.craft")
 local factory_activity = require("scripts.factory_activity")
 local registry = require("scripts.registry")
+local autonomy = require("scripts.autonomy")
 
 local M = {}
 
@@ -33,10 +38,17 @@ local GATHER_LIMIT = 100     -- natural entities read per query
 local BELT_SEARCH_RADIUS = 48
 local BELT_SEARCH_LIMIT = 64
 local CHEST_TYPES = { container = true, ["logistic-container"] = true }
-local NATURAL_TYPES = { "simple-entity", "tree", "resource" }
+local NATURAL_TYPES = { "simple-entity", "tree", "plant", "resource" }
+-- Smelting through an own furnace: one source stack per round, a poll every
+-- half second, a furnace that makes no progress for ten seconds is done.
+local SMELT_POLL_TICKS = 30
+local SMELT_STALL_TICKS = 600
+local MAX_SMELT_ROUNDS = 4
+local SMELT_FUEL = 5
+local FUELS = { "coal", "wood", "solid-fuel" }
 
--- Nested physical actions. transfer.lua registers extract here itself
--- (it requires this module for insert's auto-supply).
+-- Nested physical actions. transfer.lua registers extract and insert here
+-- itself (it requires this module for insert's auto-supply).
 local runners = { walk_to = walk, mine = mine, pickup = pickup, craft = craft }
 function M.register_runner(kind, runner) runners[kind] = runner end
 
@@ -77,6 +89,8 @@ end
 -- --------------------------------------------------------------- reading
 
 local function carried(c, name) return c.get_item_count(name) end
+-- Carried plus what the crafting queue still hands over.
+local function have(c, name) return c.get_item_count(name) + craft.queued(c, name) end
 
 local function dist_sq(a, b)
   local dx, dy = a.x - b.x, a.y - b.y
@@ -266,6 +280,70 @@ local function natural_source(c, item)
   return nil
 end
 
+-- The first fuel the body carries or the force stores (chests and machine
+-- outputs, one pass over the registry's holders), and how much in all.
+function M.fuel_item(c)
+  local names = {}
+  for _, name in ipairs(FUELS) do if prototypes.item[name] then names[#names + 1] = name end end
+  local stored = registry.stock_totals(names)
+  for _, name in ipairs(names) do
+    local total = c.get_item_count(name) + (stored[name] or 0)
+    if total > 0 then return name, total end
+  end
+end
+
+-- The enabled recipe an own furnace would smelt the item with: one item
+-- ingredient, a category the character cannot hand-craft. Recipes come from
+-- the engine's product filter, worked out once per item.
+local smelt_recipes_cache = {}
+local function smelt_recipe(c, item)
+  local names = smelt_recipes_cache[item]
+  if not names then
+    names = {}
+    local ok, found = pcall(prototypes.get_recipe_filtered,
+      { { filter = "has-product-item", elem_filters = { { filter = "name", name = item } } } })
+    for name in pairs(ok and type(found) == "table" and found or {}) do names[#names + 1] = name end
+    table.sort(names)
+    smelt_recipes_cache[item] = names
+  end
+  local ok_categories, categories = pcall(function() return c.prototype.crafting_categories end)
+  for _, name in ipairs(names) do
+    local recipe = c.force.recipes[name]
+    local ingredients = recipe and recipe.ingredients or {}
+    if recipe and recipe.enabled and #ingredients == 1 and ingredients[1].type == "item"
+      and not (ok_categories and type(categories) == "table" and categories[recipe.category]) then
+      return recipe, ingredients[1]
+    end
+  end
+end
+
+local function inventory_of(entity, id)
+  local ok, inventory = pcall(entity.get_inventory, defines.inventory[id])
+  return ok and inventory or nil
+end
+
+-- Nearest own furnace that smelts the recipe's category and is free for it:
+-- its source holds nothing or the same ore, its result nothing or the item.
+local function smelter(c, recipe, ore, item)
+  local ok, furnaces = pcall(registry.machines, { "furnace" })
+  local best, best_d
+  for _, entry in ipairs(ok and type(furnaces) == "table" and furnaces or {}) do
+    local e = entry.entity
+    local ok_fit, fits = pcall(function()
+      if not (e and e.valid and e.prototype.crafting_categories[recipe.category]) then return false end
+      local source, result = inventory_of(e, "furnace_source"), inventory_of(e, "furnace_result")
+      if not (source and result) then return false end
+      return source.get_item_count() == source.get_item_count(ore)
+        and result.get_item_count() == result.get_item_count(item)
+    end)
+    if ok_fit and fits then
+      local d = dist_sq(c.position, e.position)
+      if not best or d < best_d then best, best_d = e, d end
+    end
+  end
+  return best
+end
+
 -- ------------------------------------------------------------------ runner
 
 local function push(task, name, count, depth)
@@ -280,7 +358,9 @@ end
 
 local function note(task, kind, item, count)
   if count <= 0 then return end
-  local book = task._report[kind]
+  -- A supply begun by 0.21.0 has no smelted book.
+  local book = task._report[kind] or {}
+  task._report[kind] = book
   book[item] = (book[item] or 0) + count
 end
 
@@ -295,7 +375,7 @@ function M.start(task)
   local c = companion.require_companion()
   if type(task.items) ~= "table" or #task.items == 0 then error("get_items requires an item and a count") end
   task._before, task._stack, task._shortfall = {}, {}, {}
-  task._report = { taken = {}, crafted = {}, gathered = {} }
+  task._report = { taken = {}, crafted = {}, smelted = {}, gathered = {} }
   for index = #task.items, 1, -1 do
     local want = task.items[index]
     if type(want.name) ~= "string" or not prototypes.item[want.name] then
@@ -304,7 +384,7 @@ function M.start(task)
     local count = tonumber(want.count)
     if not count or count % 1 ~= 0 or count < 1 then error("get_items count must be a positive integer") end
     want.count = count
-    task._before[want.name] = carried(c, want.name)
+    task._before[want.name] = have(c, want.name)
     push(task, want.name, count, 0)
   end
 end
@@ -323,6 +403,8 @@ end
 -- scan is spent (either ends the tick).
 local function advance(task, c, frame)
   local need = frame.count - carried(c, frame.name)
+  -- Output still in the crafting queue is on its way: never made twice.
+  if need > 0 then need = need - craft.queued(c, frame.name) end
   if need <= 0 then table.remove(task._stack); return false end
 
   if frame.phase == "take" then
@@ -355,7 +437,7 @@ local function advance(task, c, frame)
         else
           sub = { type = "extract", target = source.position, items = { [frame.name] = want } }
         end
-        frame.source_kind, frame.before = source.kind, carried(c, frame.name)
+        frame.source_kind, frame.before = source.kind, have(c, frame.name)
         local ok, err = pcall(M.begin, task, "_sub", sub)
         if ok then return true end
         frame.error = tostring(err)
@@ -370,7 +452,7 @@ local function advance(task, c, frame)
     local recipe, per_craft = hand_recipe(c, frame.name)
     if not recipe or frame.depth >= MAX_DEPTH then
       frame.craft_error = recipe and "too many recipe levels" or per_craft
-      frame.phase = "gather"
+      frame.phase = recipe and "gather" or "smelt"
       return false
     end
     local crafts = math.min(math.ceil(need / per_craft), MAX_CRAFTS)
@@ -390,10 +472,81 @@ local function advance(task, c, frame)
   if frame.phase == "craft_start" then
     frame.phase = "end"
     local crafts = math.min(math.ceil(need / frame.per_craft), MAX_CRAFTS)
-    frame.before = carried(c, frame.name)
+    frame.before = have(c, frame.name)
     local ok, err = pcall(M.begin, task, "_sub", { type = "craft", recipe = frame.recipe, count = crafts })
     if ok then frame.source_kind = "craft"; return true end
     frame.error = tostring(err):gsub("^.-:%d+:%s*", "")
+    return false
+  end
+
+  if frame.phase == "smelt" then
+    local recipe, ingredient = smelt_recipe(c, frame.name)
+    if not recipe or frame.depth >= MAX_DEPTH or (frame.smelt_rounds or 0) >= MAX_SMELT_ROUNDS then
+      frame.phase = "gather"
+      return false
+    end
+    if not scan(task) then return true end
+    local furnace = smelter(c, recipe, ingredient.name, frame.name)
+    if not furnace then
+      frame.smelt_error = "no own furnace is free to smelt it (" .. recipe.category .. ")"
+      frame.phase = "gather"
+      return false
+    end
+    local per_craft = M.output_per_craft(recipe, frame.name) or 1
+    local amount = tonumber(ingredient.amount) or 1
+    local stack = tonumber(prototypes.item[ingredient.name] and prototypes.item[ingredient.name].stack_size) or amount
+    local crafts = math.max(1, math.min(math.ceil(need / per_craft), math.floor(stack / amount)))
+    local fuel
+    local fuel_inventory = furnace.get_fuel_inventory()
+    if fuel_inventory and fuel_inventory.is_empty() then fuel = M.fuel_item(c) or "coal" end
+    frame.smelt = { furnace = furnace, position = { x = furnace.position.x, y = furnace.position.y },
+      ore = ingredient.name, ore_count = crafts * amount, fuel = fuel }
+    frame.phase = "smelt_load"
+    -- The ore and fuel are supplied first, like a recipe's ingredients.
+    if fuel and not in_stack(task, fuel) then push(task, fuel, SMELT_FUEL, frame.depth + 1) end
+    if not in_stack(task, ingredient.name) then push(task, ingredient.name, crafts * amount, frame.depth + 1) end
+    return false
+  end
+
+  if frame.phase == "smelt_load" then
+    local s = frame.smelt
+    local ore = math.min(carried(c, s.ore), s.ore_count)
+    if ore <= 0 or not s.furnace.valid then
+      frame.error, frame.phase = ore <= 0 and ("no " .. s.ore .. " to smelt") or "the furnace is gone", "gather"
+      return false
+    end
+    local items = { [s.ore] = ore }
+    if s.fuel and carried(c, s.fuel) > 0 then items[s.fuel] = math.min(SMELT_FUEL, carried(c, s.fuel)) end
+    frame.phase = "smelt_wait"
+    local ok, err = pcall(M.begin, task, "_sub", { type = "insert", target = s.position, items = items, auto_supply = false })
+    if ok then return true end
+    frame.error, frame.phase = tostring(err), "gather"
+    return false
+  end
+
+  if frame.phase == "smelt_wait" then
+    local s = frame.smelt
+    if s.failed or not s.furnace.valid then
+      frame.error, frame.phase = s.failed or "the furnace is gone", "gather"
+      return false
+    end
+    if s.next_poll and game.tick < s.next_poll then return true end
+    s.next_poll = game.tick + SMELT_POLL_TICKS
+    local source, result = inventory_of(s.furnace, "furnace_source"), inventory_of(s.furnace, "furnace_result")
+    local left, made = source and source.get_item_count(s.ore) or 0, result and result.get_item_count(frame.name) or 0
+    if left ~= s.left or made ~= s.made then s.left, s.made, s.progress_tick = left, made, game.tick end
+    local finished = left == 0 and not s.furnace.is_crafting()
+    if made < need and not finished and game.tick - s.progress_tick < SMELT_STALL_TICKS then return true end
+    frame.smelt_rounds = (frame.smelt_rounds or 0) + 1
+    frame.phase = "smelt"
+    if made <= 0 then
+      frame.smelt_error, frame.phase = "the furnace smelted nothing (out of fuel or power?)", "gather"
+      return false
+    end
+    frame.source_kind, frame.before = "smelt", have(c, frame.name)
+    local ok, err = pcall(M.begin, task, "_sub", { type = "extract", target = s.position, items = { [frame.name] = made } })
+    if ok then return true end
+    frame.error, frame.phase = tostring(err), "gather"
     return false
   end
 
@@ -409,7 +562,7 @@ local function advance(task, c, frame)
         if entity then
           frame.gathers = frame.gathers + 1
           local cycles = entity.type == "resource" and math.min(need, MAX_RESOURCE_CYCLES) or 1
-          frame.source_kind, frame.before = "gather", carried(c, frame.name)
+          frame.source_kind, frame.before = "gather", have(c, frame.name)
           local ok, err = pcall(M.begin, task, "_sub", { type = "mine", entity = entity, count = cycles,
             target = { x = entity.position.x, y = entity.position.y }, target_kind = "natural" })
           if ok then return true end
@@ -431,6 +584,7 @@ local function advance(task, c, frame)
     local parts = {}
     if frame.takes == 0 then parts[#parts + 1] = "no own chest, machine output or belt holds it" end
     if frame.craft_error then parts[#parts + 1] = "not hand-craftable: " .. frame.craft_error end
+    if frame.smelt_error then parts[#parts + 1] = "not smelted: " .. frame.smelt_error end
     if frame.gather_error then parts[#parts + 1] = frame.gather_error end
     if frame.error then parts[#parts + 1] = "last attempt: " .. frame.error end
     reason = #parts > 0 and table.concat(parts, "; ") or "every source ran dry"
@@ -440,41 +594,50 @@ local function advance(task, c, frame)
   return false
 end
 
-local function summary_list(book)
-  local names, parts = {}, {}
-  for name in pairs(book) do names[#names + 1] = name end
-  table.sort(names)
-  for _, name in ipairs(names) do parts[#parts + 1] = string.format("%d %s", book[name], name) end
-  return table.concat(parts, ", ")
-end
-
 local function finish(task, c)
-  local missing, gained = {}, 0
+  local missing, gained, crafting = {}, 0, {}
   for _, want in ipairs(task.items) do
-    local have = carried(c, want.name)
-    gained = gained + math.max(0, have - (task._before[want.name] or 0))
-    if have < want.count then missing[#missing + 1] = { item = want.name, missing = want.count - have } end
+    local queued = craft.queued(c, want.name)
+    local count = carried(c, want.name) + queued
+    gained = gained + math.max(0, count - (task._before[want.name] or 0))
+    if count < want.count then missing[#missing + 1] = { item = want.name, missing = want.count - count } end
+    if queued > 0 then crafting[#crafting + 1] = string.format("%d %s", queued, want.name) end
   end
-  local ways = {}
-  for _, kind in ipairs({ "taken", "crafted", "gathered" }) do
-    local list = summary_list(task._report[kind])
-    if list ~= "" then ways[#ways + 1] = kind .. " " .. list end
+  -- Any item may be used anywhere: the text says what is carried, not
+  -- where it came from (outcome.supplied keeps that).
+  local moved = false
+  for _, kind in ipairs({ "taken", "crafted", "smelted", "gathered" }) do
+    if next(task._report[kind] or {}) then moved = true end
   end
-  local how = #ways > 0 and (" (" .. table.concat(ways, "; ") .. ")") or " (already carried)"
-  local report = { taken = task._report.taken, crafted = task._report.crafted, gathered = task._report.gathered }
+  local how = moved and "" or " (already carried)"
+  if #crafting > 0 then how = how .. "; still in the crafting queue: " .. table.concat(crafting, ", ") end
+  local report = { taken = task._report.taken, crafted = task._report.crafted, smelted = task._report.smelted,
+    gathered = task._report.gathered }
   if #missing == 0 then
     local parts = {}
     for _, want in ipairs(task.items) do parts[#parts + 1] = string.format("%d %s", want.count, want.name) end
     return { status = "done", detail = "carrying " .. table.concat(parts, ", ") .. how,
       outcome = { code = "SUPPLIED", supplied = report } }
   end
-  local parts = {}
-  for _, row in ipairs(missing) do parts[#parts + 1] = string.format("%d %s", row.missing, row.item) end
+  -- What exists is carried; own lines that make a missing item say when the
+  -- rest can be fetched (rate over the last minute).
+  local parts, expected = {}, {}
+  for _, row in ipairs(missing) do
+    parts[#parts + 1] = string.format("%d %s", row.missing, row.item)
+    local rate = autonomy.producing(row.item)
+    if rate > 0 then
+      row.rate_per_min = rate
+      row.expected_minutes = math.ceil(row.missing / rate * 10) / 10
+      expected[#expected + 1] = string.format("%s at %s/min (the missing %d in about %s min)", row.item,
+        rate, row.missing, row.expected_minutes)
+    end
+  end
   local reasons = {}
   for _, row in ipairs(task._shortfall) do reasons[#reasons + 1] = row.item .. ": " .. row.reason end
   return { status = gained > 0 and "partial" or "failed",
-    detail = "SUPPLY_SHORTFALL: missing " .. table.concat(parts, ", ") .. (#ways > 0 and how or "")
-      .. (#reasons > 0 and (" — " .. table.concat(reasons, "; ")) or ""),
+    detail = "SUPPLY_SHORTFALL: missing " .. table.concat(parts, ", ") .. (moved and how or "")
+      .. (#reasons > 0 and (" — " .. table.concat(reasons, "; ")) or "")
+      .. (#expected > 0 and ("; own machines make " .. table.concat(expected, ", ")) or ""),
     outcome = { code = "SUPPLY_SHORTFALL", missing = missing, shortfall = task._shortfall, supplied = report } }
 end
 
@@ -485,13 +648,17 @@ function M.tick(task)
     local kind = task._sub.type
     local result = M.step(task, "_sub")
     if not result then return nil end
-    -- Taking from a chest or machine is a character transfer like any other.
-    if kind == "extract" then factory_activity.record("extract", result.outcome) end
+    -- Taking from a chest or machine (or loading a furnace) is a character
+    -- transfer like any other.
+    if kind == "extract" or kind == "insert" then factory_activity.record(kind, result.outcome) end
     local frame = task._stack[#task._stack]
-    if frame then
-      local got = carried(c, frame.name) - (frame.before or 0)
-      note(task, frame.source_kind == "craft" and "crafted" or frame.source_kind == "gather" and "gathered" or "taken",
-        frame.name, got)
+    if frame and kind == "insert" then
+      -- Ore and fuel went into a furnace: the smelt waits, or fails.
+      if result.status == "failed" and frame.smelt then frame.smelt.failed = result.detail end
+    elseif frame then
+      local got = have(c, frame.name) - (frame.before or 0)
+      local kinds = { craft = "crafted", gather = "gathered", smelt = "smelted" }
+      note(task, kinds[frame.source_kind] or "taken", frame.name, got)
       if result.status ~= "done" and got <= 0 then frame.error = result.detail end
     end
   end

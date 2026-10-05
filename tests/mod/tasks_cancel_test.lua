@@ -43,7 +43,7 @@ local function check_crafting_stop(task_type)
   local task_state = storage.tasks
   check(first.task_id == 1 and second.task_id == 2 and task_state.active.id == 1 and task_state.queue[1].id == 2,
     task_type .. " remains active while a later action queues")
-  local stopped = tasks.cancel({ all = true })
+  local stopped = tasks.cancel({ origin = "stop/supervisor", all = true })
   check(stopped.cancelled == 2, "stop cancels active " .. task_type .. " and queued action")
   check(storage.tasks.records[1].status == "cancelled" and storage.tasks.records[2].status == "cancelled",
     task_type .. " and queued action cancellation remains observable")
@@ -56,7 +56,7 @@ check(cancelled_crafts == 2, "both crafting task types invoke physical queue can
 
 _G.storage = { tasks = { next_id = 2, records = {}, queue = {}, active = { id = 1, type = "mine" } } }
 body.mining_state = { mining = true, position = { x = 4, y = 5 } }
-local stopped_mining = tasks.cancel({ task_id = 1 })
+local stopped_mining = tasks.cancel({ origin = "stop/supervisor", task_id = 1 })
 check(stopped_mining.cancelled == 1 and body.mining_state.mining == false,
   "cancelling the active mine stops LuaControl mining immediately")
 check(storage.tasks.records[1].status == "cancelled", "mine cancellation remains observable")

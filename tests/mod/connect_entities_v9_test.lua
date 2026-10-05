@@ -30,7 +30,9 @@ package.loaded["scripts.companion"] = { require_companion = function() return { 
 _G.defines = { build_check_type = { manual = 1 } }
 _G.prototypes = { item = { ["transport-belt"] = { place_result = { name = "transport-belt", type = "transport-belt" } } } }
 local connect = require("scripts.connect_entities")
-local route = connect.connect_entities({ kind = "belt", prototype = "transport-belt", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 }, max_length = 10 })
+local jobs = require("scripts.jobs")
+local function connect_entities(params) return jobs.run_now(connect.job, params) end
+local route = connect_entities({ kind = "belt", prototype = "transport-belt", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 }, max_length = 10 })
 check(route.physical == true and route.ghosts == false and route.length == #route.steps and route.length <= 10,
   "route contract is physical, bounded and contains no ghosts")
 local uses_detour = false
@@ -41,7 +43,7 @@ end
 check(uses_detour, "belt route obeys authoritative placement rejection and finds a charted detour")
 from_entity.type, to_entity.type = "pipe", "pipe"
 _G.prototypes.item.pipe = { place_result = { name = "pipe", type = "pipe" } }
-local pipe = connect.connect_entities({ kind = "pipe", prototype = "pipe", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 }, max_length = 10 })
+local pipe = connect_entities({ kind = "pipe", prototype = "pipe", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 }, max_length = 10 })
 check(pipe.length > 0 and pipe.steps[1].direction == nil, "pipe routes use physical pipe placements without invented belt direction")
 
 from_entity.type, from_entity.name = "boiler", "boiler"
@@ -52,7 +54,7 @@ from_entity.fluidbox = { {}, get_pipe_connections = function() return { {
 to_entity.fluidbox = { {}, get_pipe_connections = function() return { {
   connection_type = "normal", position = { x = 4, y = 0.5 }, target_position = { x = 3.5, y = 0.5 },
 } } end }
-local machine_pipe = connect.connect_entities({ kind = "pipe", prototype = "pipe", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 }, max_length = 10 })
+local machine_pipe = connect_entities({ kind = "pipe", prototype = "pipe", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 }, max_length = 10 })
 local includes_source_port, includes_target_port = false, false
 for _, step in ipairs(machine_pipe.steps) do
   if step.x == 1.5 and step.y == 0.5 then includes_source_port = true end
@@ -82,7 +84,7 @@ local proposed_pole = {
 }
 _G.prototypes.item["small-electric-pole"] = { place_result = proposed_pole }
 local function power_route(max_length)
-  return connect.connect_entities({ kind = "power", prototype = "small-electric-pole",
+  return connect_entities({ kind = "power", prototype = "small-electric-pole",
     from = from_entity.position, to = to_entity.position, max_length = max_length or 10 })
 end
 local function rejects_power(max_length, message)
@@ -150,7 +152,18 @@ check(rejects_power(1, "endpoint coverage needs more poles"), "endpoint-covering
 proposed_supply = 0.25
 check(rejects_power(10, "no charted physical pole placement covers"), "machine endpoint coverage refuses placements outside supply area")
 proposed_supply = 2.5
+-- The job steps on a later tick: an endpoint mined in between is reported, not read.
+local pending = connect.job.start({ kind = "power", prototype = "small-electric-pole",
+  from = from_entity.position, to = to_entity.position, max_length = 10 })
+to_entity.valid = false
+local gone_ok, gone_error = pcall(connect.job.step, pending, { left = 600 })
+check(not gone_ok and tostring(gone_error) == "the power endpoint at (10.5, 0.5) is gone; connect again",
+  "a power endpoint gone before the job steps fails with a route answer")
+to_entity.valid = true
+check(connect.job.start({ kind = "power", prototype = "small-electric-pole", from = from_entity.position,
+  to = to_entity.position }).max_length == connect.MAX_LENGTH and connect.MAX_LENGTH == 200,
+  "a route without max_length may use up to 200 pieces")
 charted = false
-local uncharted, uncharted_error = pcall(connect.connect_entities, { kind = "power", prototype = "small-electric-pole", from = { x = 0.5, y = 0.5 }, to = { x = 10.5, y = 0.5 }, max_length = 10 })
+local uncharted, uncharted_error = pcall(connect_entities, { kind = "power", prototype = "small-electric-pole", from = { x = 0.5, y = 0.5 }, to = { x = 10.5, y = 0.5 }, max_length = 10 })
 check(not uncharted and tostring(uncharted_error):match("force%-charted") ~= nil, "uncharted exact endpoints are refused")
 os.exit(failures == 0 and 0 or 1)

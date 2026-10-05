@@ -28,18 +28,22 @@ local reads = {}
 local function reader(name, value)
   return function() reads[#reads + 1] = name; return value and value() or { source = name } end
 end
+-- A heavy read is a job (jobs.lua); a small one finishes in its RPC's tick.
+local function job_reader(name)
+  return { start = function() return {} end, step = reader(name) }
+end
 stub("scripts.tasks", { set_observer = function() end, on_tick = function() end,
   plan_status = reader("plan_status"), enqueue = reader("enqueue"), get = reader("get_task"),
   queue_plan = reader("queue_plan"), cancel = reader("cancel") })
 stub("scripts.inspect", { inspect = reader("inspect") })
 stub("scripts.research", { start_research = reader("start_research"), progression_status = reader("progression_status") })
 stub("scripts.actions.walk", { on_path_finished = function() end })
-stub("scripts.spatial", { observe_local = reader("observe_local"), can_place = reader("can_place"),
-  describe_prototype = reader("describe_prototype") })
+stub("scripts.spatial", { observe_job = job_reader("observe_local"), observe_compact = reader("observe_compact"),
+  can_place = reader("can_place"), describe_prototype = reader("describe_prototype") })
 stub("scripts.find_placement", { find_placement = reader("find_placement") })
-stub("scripts.map_summary", { map_summary = reader("map_summary") })
+stub("scripts.map_summary", { summary_job = job_reader("map_summary") })
 stub("scripts.production_requirements", { production_requirements = reader("production_requirements") })
-stub("scripts.connect_entities", { connect_entities = reader("connect_entities") })
+stub("scripts.connect_entities", { job = job_reader("connect_entities") })
 stub("scripts.run_snapshot", { capture = reader("run_snapshot") })
 stub("scripts.companion", { get = function() return body end, record = function() return {} end,
   connect = reader("spawn_companion"), enforce_peaceful_world = function() end, enforce_normal_speed = function() end,
@@ -55,7 +59,7 @@ local function call(method)
 end
 
 local READS = { "ping", "observe_local", "inspect", "can_place", "find_placement", "map_summary",
-  "production_requirements", "describe_prototype", "progression_status", "plan_status", "get_task" }
+  "production_requirements", "describe_prototype", "progression_status", "plan_status", "get_task", "connect_entities" }
 
 -- Idle: nothing active or queued, last task finished 45 s ago.
 storage.tasks = { queue = {}, records = {}, last_finished_tick = game.tick - 45 * 60 }
@@ -71,7 +75,7 @@ end
 check(all_idle, "every read-only RPC carries fifo {queue_depth=0, idle_seconds=45} without an extra call")
 check(#reads == #READS - 1, "fifo decoration adds no handler call beyond the read itself")
 
-for _, method in ipairs({ "enqueue", "queue_plan", "cancel", "run_snapshot", "connect_entities", "start_research" }) do
+for _, method in ipairs({ "enqueue", "queue_plan", "cancel", "run_snapshot", "start_research" }) do
   local data = call(method)
   check(data and data.fifo == nil, method .. " result stays undecorated")
 end

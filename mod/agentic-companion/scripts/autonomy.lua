@@ -18,6 +18,9 @@
 --   rate_per_min    products finished over the last minute (items, or crafts)
 --   hand_fed        a character transfer into one of its machines in the last 60 s
 --   self_sustaining 60 s running with no character transfer and no stall
+--   hand_transfers  character transfers into or out of its machines in the
+--                   last 10 minutes, shown from the second on: a line served
+--                   by hand again needs a connection (belt, inserter, chest)
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 
@@ -31,6 +34,8 @@ local MINUTE_TICKS = 3600
 local PRODUCTIVE_TICKS = 600
 local RATE_BIN_TICKS, RATE_BINS = 600, 6
 local LINK_TILES = 6
+-- Hand transfers a line keeps (ticks), and how long each counts.
+local REPEAT_WINDOW_TICKS, MAX_REPEAT_TICKS = 10 * MINUTE_TICKS, 8
 
 local MACHINE_TYPES = registry.MACHINE_TYPES
 local CRAFTING_TYPES = { furnace = true, ["assembling-machine"] = true, ["rocket-silo"] = true }
@@ -327,16 +332,33 @@ function M.on_tick(tick)
   if tick % SAMPLE_PERIOD == SAMPLE_PERIOD - 1 then evaluate(a, tick) end
 end
 
--- A character transfer into the entity at this position.
-function M.on_transfer(position)
+-- The ticks of a line's hand transfers that still count.
+local function recent_transfers(line, tick)
+  local kept = {}
+  for _, at in ipairs(line.hand_transfer_ticks or {}) do
+    if tick - at < REPEAT_WINDOW_TICKS then kept[#kept + 1] = at end
+  end
+  return kept
+end
+
+-- A character transfer into (insert) or out of (extract) the entity at this
+-- position. Only an insert feeds the machine; both count as hand transfers.
+function M.on_transfer(position, kind)
   local a = data()
   if not a or type(position) ~= "table" then return end
   local key = position_key(position)
-  a.transfer_tick[key] = game.tick
+  local feeds = kind ~= "extract"
+  if feeds then a.transfer_tick[key] = game.tick end
   local unit = a.machine_at and a.machine_at[key]
   local rec = unit and a.machines[unit]
   local line = rec and a.lines[rec.line_id]
-  if line then line.last_transfer_tick = game.tick end
+  if not line then return end
+  if feeds then line.last_transfer_tick = game.tick end
+  local ticks = recent_transfers(line, game.tick)
+  ticks[#ticks + 1] = game.tick
+  while #ticks > MAX_REPEAT_TICKS do table.remove(ticks, 1) end
+  line.hand_transfer_ticks = ticks
+  if #ticks >= 2 then line.changed_tick = game.tick end
 end
 
 -- The item a starved machine lacks: its first recipe ingredient below one
@@ -378,6 +400,22 @@ local function rate_per_min(line, tick)
   return math.floor(total * 3600 / span * 10 + 0.5) / 10
 end
 
+-- What own lines make of this item a minute (summed rates) and how many
+-- lines make it: one pass over the lines, no entity read.
+function M.producing(item)
+  local a = data()
+  local rate, count = 0, 0
+  if not a then return rate, count end
+  for _, id in ipairs(a.line_order) do
+    local line = a.lines[id]
+    if line.product == item then
+      count = count + 1
+      rate = rate + rate_per_min(line, game.tick)
+    end
+  end
+  return rate, count
+end
+
 -- Public line rows, ordered by id. since_tick keeps only lines that changed
 -- state, flags, membership or cause since then.
 function M.lines(since_tick)
@@ -390,6 +428,8 @@ function M.lines(since_tick)
       local row = { id = id, product = line.product, machines = #line.machines, working = line.working, state = line.state,
         rate_per_min = rate_per_min(line, game.tick), hand_fed = line.hand_fed == true,
         self_sustaining = line.self_sustaining == true, position = line.position }
+      local repeats = #recent_transfers(line, game.tick)
+      if repeats >= 2 then row.hand_transfers = repeats end
       local rec = line.cause_unit and a.machines[line.cause_unit]
       if rec and rec.entity and rec.entity.valid then
         row.cause_position = { x = rec.position.x, y = rec.position.y }

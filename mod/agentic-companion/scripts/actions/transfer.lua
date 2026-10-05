@@ -1,11 +1,18 @@
 -- Inventory transfer actions: insert (companion → entity) and extract
 -- (entity → companion). Both approach within reach_distance first and report
--- per-item results including shortfalls.
+-- per-item results including shortfalls. insert takes one target or several
+-- (targets: positions, or every own entity of a name around a point), each
+-- receiving the same items.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local supply = require("scripts.actions.supply")
+local craft = require("scripts.actions.craft")
+local factory_activity = require("scripts.factory_activity")
 
 local M = {}
+
+local MAX_TARGETS = 32
+local MAX_TARGET_RADIUS = 32
 
 local function gone()
   return { status = "failed", detail = "the companion character is gone" }
@@ -54,13 +61,108 @@ local function target_identity(e)
   return identity
 end
 
+-- Moves each listed {name, count} from the companion into the entity,
+-- removing exactly what was accepted. Returns problem strings (empty when
+-- everything went in), the total inserted and per-item transfer rows.
+function M.insert_list(c, e, list)
+  local problems, total, transfers = {}, 0, {}
+  for _, it in ipairs(list) do
+    if not prototypes.item[it.name] then
+      problems[#problems + 1] = "no item called '" .. it.name .. "'"
+    else
+      local have = c.get_item_count(it.name)
+      local n = math.min(it.count, have)
+      local inserted = 0
+      if n > 0 then
+        inserted = e.insert({ name = it.name, count = n })
+        if inserted > 0 then
+          c.remove_item({ name = it.name, count = inserted })
+        end
+      end
+      total = total + inserted
+      transfers[#transfers + 1] = { item = it.name, requested = it.count,
+        available = have, inserted = inserted, remainder = it.count - inserted }
+      if inserted < it.count then
+        if have == 0 then
+          problems[#problems + 1] = "I have no " .. it.name .. " to insert"
+        elseif inserted == 0 then
+          problems[#problems + 1] = "the " .. e.name .. " wouldn't accept " .. it.name
+        elseif inserted < n then
+          problems[#problems + 1] = string.format("the %s only took %d of %d %s",
+            e.name, inserted, it.count, it.name)
+        else
+          problems[#problems + 1] = string.format("only inserted %d of %d %s (that's all I had)",
+            inserted, it.count, it.name)
+        end
+      end
+    end
+  end
+  return problems, total, transfers
+end
+
+-- True while some listed item is short and still in the crafting queue.
+function M.awaits_crafting(c, list)
+  for _, it in ipairs(list) do
+    if craft.awaits(c, it.name, it.count) then return true end
+  end
+  return false
+end
+
 -- ----------------------------------------------------------------- insert
 
 M.insert = {}
 
+local function point(value)
+  return type(value) == "table" and type(value.x) == "number" and type(value.y) == "number"
+end
+
+-- targets = [{x, y}, ...] or {name, near = {x, y}, radius}: the positions to
+-- fill, in order (an own-entity search nearest to `near` first).
+local function resolve_targets(c, targets)
+  if type(targets) ~= "table" then error("insert targets must be positions or {name, near, radius}") end
+  local list = {}
+  if targets.name ~= nil then
+    local radius = tonumber(targets.radius) or 10
+    if type(targets.name) ~= "string" or not point(targets.near) or radius <= 0 or radius > MAX_TARGET_RADIUS then
+      error(string.format("insert targets {name, near, radius} needs an entity name, near = {x, y} and radius up to %d",
+        MAX_TARGET_RADIUS))
+    end
+    local near = targets.near
+    local found = c.surface.find_entities_filtered({ position = near, radius = radius, name = targets.name, force = c.force })
+    local rows = {}
+    for _, e in ipairs(found) do
+      if e.valid then
+        local dx, dy = e.position.x - near.x, e.position.y - near.y
+        rows[#rows + 1] = { x = e.position.x, y = e.position.y, d = dx * dx + dy * dy }
+      end
+    end
+    table.sort(rows, function(a, b)
+      if a.d ~= b.d then return a.d < b.d end
+      if a.y ~= b.y then return a.y < b.y end
+      return a.x < b.x
+    end)
+    for i = 1, math.min(#rows, MAX_TARGETS) do list[i] = { x = rows[i].x, y = rows[i].y } end
+    if #list == 0 then
+      error(string.format("no own %s within %g tiles of (%.1f, %.1f)", targets.name, radius, near.x, near.y))
+    end
+  else
+    if #targets < 1 or #targets > MAX_TARGETS then error("insert targets must list 1-" .. MAX_TARGETS .. " positions") end
+    for i, target in ipairs(targets) do
+      if not point(target) then error("insert targets[" .. (i - 1) .. "] must be {x, y}") end
+      list[i] = { x = target.x, y = target.y }
+    end
+  end
+  return list
+end
+
 function M.insert.start(task)
-  companion.require_companion()
-  validate_target(task, "insert")
+  local c = companion.require_companion()
+  if task.targets ~= nil then
+    task._targets = resolve_targets(c, task.targets)
+    task.target, task._target_index, task._rows = task._targets[1], 1, {}
+  else
+    validate_target(task, "insert")
+  end
   task._items = validate_items(task.items, "insert")
 end
 
@@ -70,25 +172,8 @@ local function shortfall_note(task)
   return task._shortfall and ("; " .. task._shortfall) or ""
 end
 
-function M.insert.tick(task)
-  local c = companion.get()
-  if not c then return gone() end
-
-  -- Auto-supply (default on): fetch what is not carried, once, never from the
-  -- target itself. A shortfall still inserts what is carried and is named.
-  if task.auto_supply ~= false and not task._supplied then
-    local needs = {}
-    for _, it in ipairs(task._items) do
-      if c.get_item_count(it.name) < it.count then needs[#needs + 1] = { name = it.name, count = it.count } end
-    end
-    if #needs > 0 then
-      local result = supply.ensure(task, needs, { exclude = task.target })
-      if not result then return nil end
-      if result.status ~= "done" then task._shortfall = result.detail end
-    end
-    task._supplied = true
-  end
-
+-- One target: approach it, wait for queued crafts, insert. nil while working.
+local function insert_one(task, c)
   local reached = approach.ensure(task, c, task.target, c.reach_distance)
   if type(reached) == "table" then return reached end
   if reached ~= "ok" then return nil end
@@ -99,6 +184,7 @@ function M.insert.tick(task)
   local entity_reached = approach.ensure_entity(task, c, e)
   if type(entity_reached) == "table" then return entity_reached end
   if entity_reached ~= "ok" then return nil end
+  if M.awaits_crafting(c, task._items) then return nil end
 
   local moved, problems, total, transfers = {}, {}, 0, {}
   for _, it in ipairs(task._items) do
@@ -162,6 +248,71 @@ function M.insert.tick(task)
     detail = string.format("inserted %s into the %s%s", table.concat(moved, ", "), e.name, tip),
     outcome = { total_inserted = total, transfers = transfers, target = target_identity(e) },
   }
+end
+
+-- Several targets: every one gets the same items, in order; a target that
+-- fails is reported and the rest still get theirs.
+local function multi_result(task)
+  local rows, total, failed, problems = task._rows, 0, 0, {}
+  for _, row in ipairs(rows) do
+    total = total + row.inserted
+    if row.status ~= "done" then
+      failed = failed + 1
+      if #problems < 4 then problems[#problems + 1] = string.format("(%.1f, %.1f): %s", row.x, row.y, row.detail) end
+    end
+  end
+  local per = {}
+  for _, it in ipairs(task._items) do per[#per + 1] = string.format("%d %s", it.count, it.name) end
+  local outcome = { total_inserted = total, targets = rows }
+  if failed == 0 then
+    outcome.code = "INSERTED_ALL_TARGETS"
+    return { status = "done", detail = string.format("inserted %s into each of %d targets%s", table.concat(per, ", "),
+      #rows, shortfall_note(task)), outcome = outcome }
+  end
+  outcome.code = total > 0 and "PARTIAL_INSERT_TARGETS" or "ZERO_PROGRESS"
+  return { status = total > 0 and "partial" or "failed",
+    detail = string.format("%d of %d targets did not take all of %s — %s%s", failed, #rows, table.concat(per, ", "),
+      table.concat(problems, "; "), shortfall_note(task)), outcome = outcome }
+end
+
+function M.insert.tick(task)
+  local c = companion.get()
+  if not c then return gone() end
+
+  -- Auto-supply (default on): fetch what is not carried, once, never from the
+  -- target itself. A shortfall still inserts what is carried and is named.
+  if task.auto_supply ~= false and not task._supplied then
+    local needs, targets = {}, task._targets and #task._targets or 1
+    for _, it in ipairs(task._items) do
+      local total = it.count * targets
+      if c.get_item_count(it.name) < total then needs[#needs + 1] = { name = it.name, count = total } end
+    end
+    if #needs > 0 then
+      local result = supply.ensure(task, needs, { exclude = not task._targets and task.target or nil })
+      if not result then return nil end
+      if result.status ~= "done" then task._shortfall = result.detail end
+    end
+    task._supplied = true
+  end
+
+  if not task._targets then return insert_one(task, c) end
+  local result = insert_one(task, c)
+  if not result then return nil end
+  -- The plan step's own outcome lists targets, not transfers: each target's
+  -- transfer is recorded here (hand-fed lines, factory activity).
+  factory_activity.record("insert", result.outcome)
+  local row = { x = task.target.x, y = task.target.y, status = result.status,
+    inserted = result.outcome and tonumber(result.outcome.total_inserted) or 0 }
+  if result.status ~= "done" then row.detail = result.detail end
+  task._rows[#task._rows + 1] = row
+  task._approach, task._approach_close = nil, nil
+  task._target_index = task._target_index + 1
+  task.target = task._targets[task._target_index]
+  if not task.target then
+    task.target = task._targets[#task._targets]
+    return multi_result(task)
+  end
+  return nil
 end
 
 -- ---------------------------------------------------------------- extract
@@ -321,7 +472,9 @@ function M.extract.tick(task)
   return extract_items(task, c, e)
 end
 
--- Auto-supply takes from chests and machine outputs through extract.
+-- Auto-supply takes from chests and machine outputs through extract and
+-- loads furnaces through insert.
 supply.register_runner("extract", M.extract)
+supply.register_runner("insert", M.insert)
 
 return M

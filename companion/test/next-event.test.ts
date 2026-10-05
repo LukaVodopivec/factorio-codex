@@ -6,11 +6,14 @@ const idle: EventState = { tick: 100, queue_depth: 0, fifo_empty: true, human_ho
 const busy: EventState = { tick: 100, queue_depth: 1, fifo_empty: false, human_hold: false, active_plan_id: 5,
   last_plan_ended: { plan_id: 4, status: "completed", tick: 90 } };
 
-/** Plays event_state samples in order (the last repeats); factory_status answers problems. */
+/** Plays event_state samples in order (the last repeats); factory_status answers problems, plan_status the ended plan. */
 function game(samples: EventState[]) {
   let index = 0;
-  const call = vi.fn(async (method: string) => {
+  const call = vi.fn(async (method: string, params?: any) => {
     if (method === "factory_status") return { tick: 1, problems: [{ status: "no_fuel", name: "stone-furnace", position: { x: 1, y: 2 } }] };
+    if (method === "plan_status") return { plan_id: params.plan_id, status: "completed", source: "pilot",
+      outcomes: [{ step: 1, action: "get_items", status: "completed", result: { supplied: { "iron-plate": 10 } } }],
+      inventory_delta: { "iron-plate": 10 } };
     return samples[Math.min(index++, samples.length - 1)];
   });
   return { call, bridge: { call } as unknown as Bridge };
@@ -47,6 +50,21 @@ describe("next_event package failures", () => {
   });
 });
 
+describe("next_event research beside a plan end", () => {
+  it("carries a research that finished in the same poll as a plan end, which a later since_tick call would miss", async () => {
+    const both = { ...idle, tick: 170, last_plan_ended: { plan_id: 5, status: "completed", tick: 160 },
+      last_research_finished: { technology: "automation", tick: 150 } };
+    const polled = await waitForEvent(game([busy, both]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(polled).toMatchObject({ event: "plan_ended", plan_id: 5, research_finished: { technology: "automation", research_tick: 150 } });
+    expect(eventSummary(polled)).toBe(`plan 5 ended completed; research automation finished; ${IDLE_NOW}`);
+    const since = await waitForEvent(game([both]).bridge, input({ since_tick: 140 }), quiet(), undefined, fakeClock());
+    expect(since).toMatchObject({ event: "plan_ended", research_finished: { technology: "automation", research_tick: 150 } });
+    const older = await waitForEvent(game([both]).bridge, input({ since_tick: 155 }), quiet(), undefined, fakeClock());
+    expect(older).toMatchObject({ event: "plan_ended" });
+    expect(older).not.toHaveProperty("research_finished");
+  });
+});
+
 describe("next_event", () => {
   it("returns queue_empty at once for an idle body, but waits when since_tick says it was already idle", async () => {
     expect(await waitForEvent(game([idle]).bridge, input(), quiet(), undefined, fakeClock()))
@@ -74,9 +92,40 @@ describe("next_event", () => {
     const ended = { ...idle, tick: 160, last_plan_ended: { plan_id: 5, status: "partial", tick: 150 } };
     const { bridge, call } = game([busy, busy, ended]);
     const clock = fakeClock();
-    expect(await waitForEvent(bridge, input(), quiet(), undefined, clock)).toMatchObject({ event: "plan_ended", plan_id: 5, status: "partial", tick: 160 });
+    // The event carries the plan's outcomes, so no follow-up read is needed.
+    expect(await waitForEvent(bridge, input(), quiet(), undefined, clock)).toMatchObject({ event: "plan_ended", plan_id: 5, status: "partial", tick: 160,
+      source: "pilot", outcomes: [{ step: 1, action: "get_items", status: "completed" }], inventory_delta: { "iron-plate": 10 } });
     expect(clock.slept).toBe(1_000);
-    expect(call.mock.calls.map(([method]) => method)).toEqual(["event_state", "event_state", "event_state"]);
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["event_state", "event_state", "event_state", "plan_status"]);
+    expect(call).toHaveBeenLastCalledWith("plan_status", { plan_id: 5 });
+  });
+
+  it("still reports a plan end when its outcomes cannot be read, with empty Lua tables as records", async () => {
+    const ended = { ...idle, tick: 160, last_plan_ended: { plan_id: 6, status: "completed", tick: 150 } };
+    let samples = 0;
+    const failing = { call: vi.fn(async (method: string) => {
+      if (method === "plan_status") throw new Error("unknown plan_id: 6");
+      return samples++ === 0 ? busy : ended;
+    }) } as unknown as Bridge;
+    const value = await waitForEvent(failing, input(), quiet(), undefined, fakeClock());
+    expect(value).toMatchObject({ event: "plan_ended", plan_id: 6, status: "completed" });
+    expect(value).not.toHaveProperty("outcomes");
+    const empty = { call: vi.fn(async (method: string) => method === "plan_status" ? { outcomes: {}, inventory_delta: [] } : ended) } as unknown as Bridge;
+    expect(await waitForEvent(empty, input({ since_tick: 140 }), quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "plan_ended", outcomes: [], inventory_delta: {} });
+  });
+
+  it("reports a finished research while it waits, and at once after since_tick", async () => {
+    const researched = { ...busy, tick: 300, last_research_finished: { technology: "automation", tick: 290 } };
+    const value = await waitForEvent(game([busy, researched]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(value).toMatchObject({ event: "research_finished", technology: "automation", research_tick: 290, tick: 300 });
+    expect(eventSummary(value)).toBe("research automation finished");
+    expect(await waitForEvent(game([researched]).bridge, input({ since_tick: 280 }), quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "research_finished", technology: "automation" });
+    // A research finished before since_tick is history, and one already seen at the start is not new.
+    const clock = fakeClock();
+    expect(await waitForEvent(game([researched]).bridge, { timeout_seconds: 2, since_tick: 295 }, quiet(), undefined, clock))
+      .toMatchObject({ event: "timeout" });
   });
 
   it("returns at once for a plan end or problem after since_tick", async () => {

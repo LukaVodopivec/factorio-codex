@@ -1,6 +1,7 @@
 -- build_plan: place many entities in one task. Walks within build reach of
 -- each step, places the item, then
--- optionally sets a recipe and inserts starter items — mirroring the exact
+-- optionally sets a recipe, settings (a blueprint's filters, priorities,
+-- bar, mirror: build.apply_settings) and inserts starter items — mirroring the exact
 -- validation rules of the single-step place/set_recipe/insert actions
 -- (scripts/actions/build.lua, scripts/actions/transfer.lua). A failed step is
 -- recorded and skipped unless stop_on_error. Output-target verification keeps
@@ -10,7 +11,9 @@
 -- step's items in one trip; trees and rocks in a footprint are mined first.
 -- Bounded recoveries, once per step: walk out of a footprint the body
 -- overlaps, re-approach a placed entity out of reach, retry a partial
--- starter insert after a second.
+-- starter insert after a second. Placement is idempotent: the same entity
+-- already standing there counts as placed (turned when it faces another
+-- way), and its recipe and starter items are still applied.
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
@@ -19,12 +22,32 @@ local placement_geometry = require("scripts.placement_geometry")
 local factory_activity = require("scripts.factory_activity")
 local build = require("scripts.actions.build")
 local supply = require("scripts.actions.supply")
+local transfer = require("scripts.actions.transfer")
+local craft = require("scripts.actions.craft")
 
 local M = {}
 
 local MAX_STEPS = 200
 local INSERT_RETRY_TICKS = 60
 local MAX_FAILURES_LISTED = 5
+local FUEL_PER_BURNER = 5
+
+-- Burner machines among steps (by their placed entity) that name no starter
+-- items get fuel: the first fuel the body carries or the force stores, else
+-- coal (supply fetches or gathers it).
+function M.fuel_burners(c, steps)
+  local fuel
+  for _, step in ipairs(steps) do
+    local item = prototypes.item[step.item]
+    local proto = item and item.place_result
+    local ok, burner = pcall(function() return proto and proto.burner_prototype end)
+    if step.insert == nil and ok and burner then
+      fuel = fuel or supply.fuel_item(c) or "coal"
+      step.insert = { [fuel] = FUEL_PER_BURNER }
+    end
+  end
+  return steps
+end
 
 -- ------------------------------------------------------------- validation
 
@@ -60,6 +83,9 @@ local function malformed(step)
   end
   if step.recipe ~= nil and type(step.recipe) ~= "string" then
     return "recipe must be a recipe name string"
+  end
+  if step.settings ~= nil and type(step.settings) ~= "table" then
+    return "settings must be an object of blueprint settings"
   end
   if step.insert ~= nil then
     if type(step.insert) ~= "table" then
@@ -261,6 +287,9 @@ local function apply_recipe(c, e, recipe_name)
     end
     return "the " .. e.name .. " can't have a recipe set — only crafting machines can"
   end
+  -- An entity already in place may already craft it: nothing to change.
+  local has_ok, current = pcall(e.get_recipe)
+  if has_ok and current and current.name == recipe_name then return nil end
   local ok, removed = pcall(e.set_recipe, recipe_name)
   if not ok then
     return string.format("couldn't set recipe %s on the %s — that machine probably can't craft it",
@@ -287,45 +316,6 @@ local function apply_recipe(c, e, recipe_name)
       recipe_name, e.name)
   end
   return nil
-end
-
--- Same rules as transfer.insert: move each requested item from the companion
--- into the placed entity, removing exactly what was accepted. Returns a list
--- of problem strings (empty = everything went in).
-local function insert_items(c, e, list)
-  local problems, total, transfers = {}, 0, {}
-  for _, it in ipairs(list) do
-    if not prototypes.item[it.name] then
-      problems[#problems + 1] = "no item called '" .. it.name .. "'"
-    else
-      local have = c.get_item_count(it.name)
-      local n = math.min(it.count, have)
-      local inserted = 0
-      if n > 0 then
-        inserted = e.insert({ name = it.name, count = n })
-        if inserted > 0 then
-          c.remove_item({ name = it.name, count = inserted })
-        end
-      end
-      total = total + inserted
-      transfers[#transfers + 1] = { item = it.name, requested = it.count,
-        available = have, inserted = inserted, remainder = it.count - inserted }
-      if inserted < it.count then
-        if have == 0 then
-          problems[#problems + 1] = "I have no " .. it.name .. " to insert"
-        elseif inserted == 0 then
-          problems[#problems + 1] = "the " .. e.name .. " wouldn't accept " .. it.name
-        elseif inserted < n then
-          problems[#problems + 1] = string.format("the %s only took %d of %d %s",
-            e.name, inserted, it.count, it.name)
-        else
-          problems[#problems + 1] = string.format("only inserted %d of %d %s (that's all I had)",
-            inserted, it.count, it.name)
-        end
-      end
-    end
-  end
-  return problems, total, transfers
 end
 
 -- --------------------------------------------------------------- progress
@@ -373,7 +363,8 @@ local function advance(task, ok, why)
   if not ok then
     task._failures[#task._failures + 1] = { index = i, why = why }
   end
-  task._built, task._interactions_applied, task._recipe_applied = nil, nil, nil
+  task._built, task._interactions_applied, task._recipe_applied, task._note = nil, nil, nil, nil
+  task._settings_applied = nil
   task._insert_remainder, task._insert_first, task._retry_tick = nil, nil, nil
   task._expected_input, task._expected_output, task._output_verification_tick = nil, nil, nil
   task._index = i + 1
@@ -424,7 +415,7 @@ local function finish_placed_step(task, c, step, built)
     end
   end
 
-  if (step.recipe or step._insert) and not task._interactions_applied then
+  if (step.recipe or step._insert or step.settings) and not task._interactions_applied then
     local reached = approach.ensure_entity(task, c, built)
     if type(reached) == "table" and task._reach_index ~= task._index then
       -- Out of reach once: approach the placed entity again from scratch.
@@ -440,6 +431,8 @@ local function finish_placed_step(task, c, step, built)
 
   if not task._interactions_applied then
     if task._retry_tick and game.tick < task._retry_tick then return nil end
+    -- Starter items still in the crafting queue are waited for.
+    if transfer.awaits_crafting(c, task._insert_remainder or step._insert or {}) then return nil end
     local issues = {}
     if not built.valid then
       issues[#issues + 1] = "the placed entity vanished immediately (another mod removed it?)"
@@ -449,9 +442,17 @@ local function finish_placed_step(task, c, step, built)
         local why = apply_recipe(c, built, step.recipe)
         if why then issues[#issues + 1] = why end
       end
+      if step.settings and not task._settings_applied then
+        -- A setting the entity does not take is a note, never a failure.
+        task._settings_applied = true
+        local unset = build.apply_settings(built, step.settings)
+        if #unset > 0 then
+          task._note = (task._note and (task._note .. "; ") or "") .. table.concat(unset, "; ")
+        end
+      end
       local list = task._insert_remainder or step._insert
       if list then
-        local problems, inserted, transfers = insert_items(c, built, list)
+        local problems, inserted, transfers = transfer.insert_list(c, built, list)
         factory_activity.record("insert", { target = {
           name = built.name, type = built.type, position = built.position,
         }, transfers = transfers })
@@ -498,7 +499,7 @@ local function finish_placed_step(task, c, step, built)
   end
   task._built, task._interactions_applied = nil, nil
   local detail = output_binding == "pending-output"
-    and "provisional output geometry is valid; Factorio's runtime output target is pending first output" or nil
+    and "provisional output geometry is valid; Factorio's runtime output target is pending first output" or task._note
   local pairing = build.underground_pairing(built)
   if pairing then
     local note = "placed " .. step.item .. build.pairing_note(pairing)
@@ -546,6 +547,24 @@ function M.tick(task)
   if not place_result then
     return advance(task, false, step.item .. " is not a placeable item")
   end
+  -- The same entity already standing there is this step's placement.
+  if task._existing_index ~= task._index then
+    task._existing_index = task._index
+    task._existing = build.existing(c, place_result, step.position, step.direction, step.belt_to_ground_type)
+  end
+  if task._existing then
+    local e = task._existing
+    local how = build.adopt(task, c, e, step.direction)
+    if how == nil then return nil end
+    task._existing = nil
+    if type(how) == "table" then return advance(task, false, how.detail) end
+    if how ~= "gone" then
+      step._placed_entity = e
+      task._placed = task._placed + 1
+      task._note, task._built = build.adopted_note(e, how), e
+      return finish_placed_step(task, c, step, e)
+    end
+  end
   if task.auto_supply and task._supplied_index ~= task._index then
     local needs = step_needs(task, c, step)
     if #needs > 0 then
@@ -558,7 +577,8 @@ function M.tick(task)
     end
     task._supplied_index = task._index
   end
-  if c.get_item_count(step.item) == 0 then
+  -- Still in the crafting queue: walk on, wait for it at the placement.
+  if c.get_item_count(step.item) == 0 and craft.queued(c, step.item) == 0 then
     return advance(task, false, "I don't have any " .. step.item .. " left in my inventory"
       .. (task._short[step.item] and (" — " .. task._short[step.item]) or ""))
   end
@@ -577,6 +597,10 @@ function M.tick(task)
   local cleared = build.clear_footprint(task, c, place_result, step.position, step.direction)
   if cleared == nil then return nil end
   if cleared ~= "ok" then return advance(task, false, cleared.detail) end
+  if craft.awaits(c, step.item, 1) then return nil end
+  if c.get_item_count(step.item) == 0 then
+    return advance(task, false, "I don't have any " .. step.item .. " left in my inventory")
+  end
 
   local entity_name = place_result.name
 

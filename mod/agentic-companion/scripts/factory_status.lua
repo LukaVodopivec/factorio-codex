@@ -108,7 +108,17 @@ local function research_section(c)
     omitted_available = cap(available, MAX_AVAILABLE) }
 end
 
-function M.on_research_changed() storage.research_cache = nil end
+-- Every research event drops the cache; a finished research of the body's
+-- force is also kept for next_event's research_finished.
+function M.on_research_changed(event)
+  storage.research_cache = nil
+  local finished = defines and defines.events and defines.events.on_research_finished
+  if not (event and finished and event.name == finished) then return end
+  local ok, name, force = pcall(function() return event.research.name, event.research.force.name end)
+  local c = companion.get()
+  local own = c and c.valid and c.force.name or force
+  if ok and force == own then storage.last_research_finished = { technology = name, tick = event.tick } end
+end
 M.RESEARCH_EVENTS = { "on_research_started", "on_research_finished", "on_research_cancelled", "on_research_reversed",
   "on_research_queued", "on_research_moved", "on_technology_effects_reset" }
 
@@ -181,8 +191,6 @@ end
 function M.event_state()
   local t = storage.tasks
   local a = storage.autonomy or {}
-  local body = companion.get()
-  local crafting = body and body.valid and (body.crafting_queue_size or 0) > 0
   local ok, held = pcall(companion.human_control)
   local queued = 0
   for _, task in ipairs(t.queue) do if pilot_work(task) then queued = queued + 1 end end
@@ -190,9 +198,14 @@ function M.event_state()
     tick = game.tick, last_plan_ended = t.last_plan_ended,
     active_plan_id = pilot_work(t.active) and t.active.type == "plan" and t.active.id or nil,
     queue_depth = queued,
-    fifo_empty = not pilot_work(t.active) and queued == 0 and not crafting,
+    -- The pilot's cue to queue work: no plan, whatever the body still
+    -- hand-crafts in the background.
+    fifo_empty = not pilot_work(t.active) and queued == 0,
     problem_count = a.problem_count or 0, last_problem_tick = a.last_problem_tick,
     human_hold = ok and held == true,
+    -- {technology, tick} of the last research the force finished.
+    last_research_finished = storage.last_research_finished,
+    last_cancel_all_tick = t.last_cancel_all_tick,
   }
 end
 

@@ -1,6 +1,7 @@
 // Astra's orders and build packages, read from the current run's
 // operations.json. Tool results carry the orders once per new ledger revision,
-// and one full-surface bridge queues each new package into the FIFO by itself.
+// and one full-surface bridge queues each new package into the FIFO by itself,
+// first making the blueprint captures a package starts with.
 import fs from "node:fs";
 import path from "node:path";
 import { ModError, type Bridge } from "../bridge.js";
@@ -15,8 +16,16 @@ export interface PackageRecord {
   /** queuing: the queue_plan call was sent without a recorded answer. */
   status: "queuing" | "queued" | "failed"; revision: number; at: string;
   tick?: number; plan_id?: number; reason?: string;
+  /** Blueprints captured for the package; a package of captures only has no plan. */
+  captured?: string[];
 }
-export interface PackageQueueState { packages: Record<string, PackageRecord> }
+export interface PackageQueueState {
+  packages: Record<string, PackageRecord>;
+  /** The last emergency stop (the mod's last_cancel_all_tick) and when it
+   *  happened: when a bridge first saw it, dated back by the game time
+   *  since its tick. */
+  cancel_all?: { tick: number; observed_at: string };
+}
 export interface Orders {
   revision: number; NOW: OperationsLedger["task_list"]["NOW"];
   packages: Array<{ id: string; status: "pending" | PackageRecord["status"]; plan_id?: number; reason?: string }>;
@@ -171,14 +180,21 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage): Promise
         if (reason) return `place_entity ${step.name} at (${step.x}, ${step.y}): ${reason}`;
       }
     }
+    // Dry runs search over ticks until they have the site or a definite answer.
     for (const step of entry.steps) {
+      if (step.action === "blueprint_place") {
+        const { action, ...params } = step;
+        const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number } }>(action, { ...params, check_only: true });
+        if (checked?.ok === false) {
+          const free = checked.free_position ? `; the nearest free position is (${checked.free_position.x}, ${checked.free_position.y})` : "";
+          return `blueprint_place ${step.name} at (${step.position.x}, ${step.position.y}): the position is blocked${free}`;
+        }
+        continue;
+      }
       if (step.action !== "build_layout" && step.action !== "build_block") continue;
       const { action, ...params } = step;
       const checked = await bridge.call<{ failed?: unknown }>(action, { ...params, check_only: true });
-      // A dry run that ran out of its one tick of work found no static
-      // problem; the queued build searches the site further.
-      const failed = (luaArray(checked?.failed ?? []) as Array<{ code?: string; reason?: string }>)
-        .filter((row) => row?.code !== "SITE_SEARCH_INCOMPLETE");
+      const failed = luaArray(checked?.failed ?? []) as Array<{ code?: string; reason?: string }>;
       if (failed.length > 0) return `${action}: ${[failed[0]?.code, failed[0]?.reason].filter(Boolean).join(" ")}`;
     }
     return null;
@@ -194,11 +210,15 @@ async function planSource(b: Bridge, planId: number): Promise<string | undefined
   catch (error) { if (error instanceof ModError) return null; throw error; }
 }
 
+const ledgerWrittenMs = (dir: string) => { try { return fs.statSync(ledgerFile(dir)).mtimeMs; } catch { return 0; } };
+
 /** Queues each new ledger package once, in ledger order, as a plan with
- *  source package:<id>. Outcomes persist in <run_dir>/package-queue.json; a
- *  connection problem is retried on the next tick. Nothing is queued while
- *  the mod's FIFO latch is closed (on a fresh map before the pilot's first
- *  plan, or after an emergency stop), the same latch upkeep waits for. */
+ *  source package:<id>; leading blueprint_capture steps are made first.
+ *  Outcomes persist in <run_dir>/package-queue.json; a connection problem is
+ *  retried on the next tick. It never waits for a pilot plan: nothing is
+ *  queued only while a human holds the body, or while the ledger is older than
+ *  the last emergency stop (packages written before a stop stay held until
+ *  Astra rewrites the ledger). */
 export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>, now = () => new Date()) {
   // Directories whose queued records this process has checked against the loaded save.
   const verified = new Set<string>();
@@ -212,10 +232,10 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       const record = state.packages[id];
       return record !== undefined && record.status !== "queuing";
     };
-    // Records exist: each pass checks them against the loaded save.
-    if (Object.keys(known.packages).length === 0 && ledger.build_packages.length === 0) return;
+    // Every pass reads the game, even with no package yet: an emergency stop
+    // is recorded when it happens, not when the first package after it appears.
     const b = await bridge();
-    const ping = await b.call<{ companion_exists?: boolean; tick?: number; fifo?: { idle_seconds?: number } }>("ping");
+    const ping = await b.call<{ companion_exists?: boolean; tick?: number }>("ping");
     if (!ping.companion_exists || !holdLock(dir)) return;
     const state = readPackageQueue(dir);
     if (!state) return;
@@ -230,7 +250,17 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
         write();
       }
     }
-    if (ping.fifo?.idle_seconds === undefined) return;
+    const events = await b.call<{ tick?: number; human_hold?: boolean; last_cancel_all_tick?: number }>("event_state");
+    const stopTick = events.last_cancel_all_tick;
+    if (typeof stopTick === "number" && state.cancel_all?.tick !== stopTick) {
+      // First seen now, but it happened (tick - stopTick) game ticks ago.
+      const agoMs = typeof events.tick === "number" ? Math.max(0, events.tick - stopTick) * 1000 / 60 : 0;
+      state.cancel_all = { tick: stopTick, observed_at: new Date(now().getTime() - agoMs).toISOString() };
+      write();
+    }
+    // Records exist: each pass checks them against the loaded save.
+    if (Object.keys(state.packages).length === 0 && ledger.build_packages.length === 0) return;
+    if (events.human_hold === true) return;
     // A save restored past a record's tick keeps the record, but its plan_id
     // may now name another plan: once per process, a queued record whose plan
     // has a different source is dropped, so the package is queued again. An
@@ -246,6 +276,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       verified.add(dir);
     }
     if (ledger.build_packages.every((entry) => settled(state, entry.package_id))) return;
+    if (state.cancel_all && ledgerWrittenMs(dir) <= Date.parse(state.cancel_all.observed_at)) return;
     const record = (id: string, entry: Omit<PackageRecord, "revision" | "at" | "tick">) => {
       state.packages[id] = { ...entry, revision: ledger.revision, at: now().toISOString(),
         ...(typeof ping.tick === "number" ? { tick: ping.tick } : {}) };
@@ -257,6 +288,8 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       // queuing: the call was sent and its answer lost; the mod returns the
       // same plan for a package source, so it is sent again unchecked.
       const retry = state.packages[id]?.status === "queuing";
+      const captures = entry.steps.flatMap((step) => step.action === "blueprint_capture" ? [step] : []);
+      const steps = entry.steps.filter((step) => step.action !== "blueprint_capture");
       let afterPlanId: number | undefined;
       if (entry.after_package_id !== null) {
         const before = state.packages[entry.after_package_id];
@@ -271,37 +304,53 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
           continue;
         }
         // Its queue answer is still unknown: wait until it is resolved.
-        if (before.status === "queuing" || before.plan_id === undefined) continue;
-        let status: string | undefined, source: string | undefined;
-        try { ({ status, source } = await b.call<{ status: string; source?: string }>("plan_status", { plan_id: before.plan_id })); }
-        catch (error) { if (!(error instanceof ModError)) throw error; /* pruned: it ended long ago */ }
-        if (status !== undefined && source !== `package:${entry.after_package_id}`) {
-          // The plan_id now names another plan (a save rollback): the
-          // predecessor is queued again first and this one follows it.
-          delete state.packages[entry.after_package_id];
-          write();
-          continue;
-        }
-        if (status === "queued" || status === "running" || status === "waiting") afterPlanId = before.plan_id;
-        else if (status !== undefined && status !== "completed") {
-          record(id, { status: "failed", reason: `after_package_id ${entry.after_package_id} ended ${status}` });
-          continue;
+        if (before.status === "queuing") continue;
+        // A predecessor of captures only has no plan and is done.
+        if (before.plan_id !== undefined) {
+          let status: string | undefined, source: string | undefined;
+          try { ({ status, source } = await b.call<{ status: string; source?: string }>("plan_status", { plan_id: before.plan_id })); }
+          catch (error) { if (!(error instanceof ModError)) throw error; /* pruned: it ended long ago */ }
+          if (status !== undefined && source !== `package:${entry.after_package_id}`) {
+            // The plan_id now names another plan (a save rollback): the
+            // predecessor is queued again first and this one follows it.
+            delete state.packages[entry.after_package_id];
+            write();
+            continue;
+          }
+          if (status === "queued" || status === "running" || status === "waiting") {
+            // A capture records what the predecessor built, so it waits for its end.
+            if (captures.length > 0) continue;
+            afterPlanId = before.plan_id;
+          } else if (status !== undefined && status !== "completed") {
+            record(id, { status: "failed", reason: `after_package_id ${entry.after_package_id} ended ${status}` });
+            continue;
+          }
         }
       }
       if (!retry) {
+        // Captures come first: the package's own steps may place what they capture.
+        try {
+          for (const { action, ...params } of captures) await b.call(action, params);
+        } catch (error) {
+          if (!(error instanceof ModError)) throw error;
+          record(id, { status: "failed", reason: `capture failed: ${message(error)}` });
+          continue;
+        }
         const problem = await checkPackage(b, entry);
         if (problem) { record(id, { status: "failed", reason: `check failed: ${problem}` }); continue; }
       }
-      const plan = queuePlanSchema.safeParse({ steps: entry.steps, ...(afterPlanId ? { after_plan_id: afterPlanId } : {}) });
+      const captured = captures.length > 0 ? { captured: captures.map((step) => step.name) } : {};
+      if (steps.length === 0) { record(id, { status: "queued", ...captured }); continue; }
+      const plan = queuePlanSchema.safeParse({ steps, ...(afterPlanId ? { after_plan_id: afterPlanId } : {}) });
       if (!plan.success) { record(id, { status: "failed", reason: plan.error.issues[0]?.message ?? "invalid steps" }); continue; }
-      // An emergency stop during this pass closes the latch: nothing more is queued.
-      const latch = await b.call<{ fifo?: { idle_seconds?: number } }>("ping");
-      if (latch.fifo?.idle_seconds === undefined) return;
+      // An emergency stop or a human hold during this pass: nothing more is queued.
+      const latest = await b.call<{ human_hold?: boolean; last_cancel_all_tick?: number }>("event_state");
+      if (latest.human_hold === true || latest.last_cancel_all_tick !== stopTick) return;
       // Recorded before the call, so a crash in between retries it, never queues it twice.
-      if (!retry) record(id, { status: "queuing" });
+      if (!retry) record(id, { status: "queuing", ...captured });
       try {
         const queued = await b.call<{ plan_id: number }>("queue_plan", { ...plan.data, source: `package:${id}` });
-        record(id, { status: "queued", plan_id: queued.plan_id });
+        record(id, { status: "queued", plan_id: queued.plan_id, ...captured });
       } catch (error) {
         // Only the mod's own refusal is a failure; a lost answer stays queuing.
         if (!(error instanceof ModError)) throw error;

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ModError, type Bridge } from "../src/bridge.js";
+import { JobBusyError, ModError, type Bridge } from "../src/bridge.js";
 import { createOrdersTracker, createPackageQueue, holdLock, packageFailures, readPackageQueue } from "../src/coordination/orders.js";
 import { result } from "../src/mcp/server.js";
 import { currentRunDir, currentRunPointer, runPaths } from "../src/server/server.js";
@@ -32,15 +32,19 @@ function writeLedger(dir: string, revision: number, packages: unknown[], objecti
   }));
 }
 
-/** A fake game: ping, can_place, build_block checks, queue_plan and plan_status. */
+/** A fake game: ping, event_state, can_place, layout, block and blueprint checks, captures, queue_plan and plan_status.
+ *  No pilot plan has run: the FIFO reports no idle time. */
 function fakeBridge(overrides: Record<string, (params: any) => unknown> = {}) {
   let next = 40;
   const sources = new Map<number, string>();
   const answer = async (method: string, params: any): Promise<any> => {
     if (overrides[method]) return overrides[method]!(params);
-    if (method === "ping") return { companion_exists: true, tick: 900, fifo: { idle_seconds: 0 } };
+    if (method === "ping") return { companion_exists: true, tick: 900, fifo: { queue_depth: 0 } };
+    if (method === "event_state") return { tick: 900, queue_depth: 0, fifo_empty: true, human_hold: false };
     if (method === "can_place") return { results: params.placements.map(() => ({ can_place: true })) };
     if (method === "build_block" || method === "build_layout") return { placed: {}, failed: {} };
+    if (method === "blueprint_place") return { check_only: true, ok: true, collisions: {} };
+    if (method === "blueprint_capture") return { name: params.name, entities: 4 };
     if (method === "queue_plan") return { plan_id: ++next };
     if (method === "plan_status") return { plan_id: params.plan_id, status: "running", source: sources.get(params.plan_id) };
     throw new Error(`unexpected ${method}`);
@@ -133,6 +137,27 @@ describe("package auto-queue", () => {
     expect(packageFailures(other)).toEqual([expect.objectContaining({ package_id: "refused", reason: "queue_plan requires 1-200 steps" })]);
   });
 
+  it("retries a package whose dry run or capture met busy job slots or a slow game, never failing it", async () => {
+    for (const method of ["build_block", "blueprint_capture"]) {
+      const dir = runDir();
+      const captured = { ...furnaces("iron-a"), steps: [{ action: "blueprint_capture", name: "cell", center: { x: 0, y: 0 }, radius: 4 },
+        ...furnaces("iron-a").steps] };
+      writeLedger(dir, 1, [captured]);
+      let busy = true;
+      const { call, bridge } = fakeBridge({ [method]: (params: any) => {
+        if (busy) { busy = false; throw new JobBusyError(`JOBS_BUSY: 8 jobs are pending or unread`); }
+        return method === "build_block" ? { placed: {}, failed: {} } : { name: params.name, entities: 4 };
+      } });
+      const queue = createPackageQueue(() => dir, bridge);
+      await queue.tick();
+      expect(readPackageQueue(dir)?.packages["iron-a"]).toBeUndefined();
+      expect(packageFailures(dir)).toEqual([]);
+      await queue.tick();
+      expect(readPackageQueue(dir)?.packages["iron-a"]).toMatchObject({ status: "queued" });
+      expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:iron-a"]);
+    }
+  });
+
   it("chains after_package_id onto a pending predecessor and fails after a failed one", async () => {
     const dir = runDir();
     writeLedger(dir, 1, [furnaces("first")]);
@@ -166,16 +191,65 @@ describe("package auto-queue", () => {
     expect(queuedPlans(present.call)).toHaveLength(1);
   });
 
-  it("queues nothing while the mod's FIFO latch is closed: before the pilot's first plan or after an emergency stop", async () => {
+  it("holds packages written before an emergency stop until Astra rewrites the ledger, and waits out a human hold", async () => {
     const dir = runDir();
+    const ledger = path.join(dir, "operations.json");
+    const at = (time: string) => new Date(`2026-10-05T${time}Z`);
     writeLedger(dir, 1, [furnaces("iron-a")]);
-    let fifo: Record<string, number> = {};
-    const { call, bridge } = fakeBridge({ ping: () => ({ companion_exists: true, tick: 900, fifo }) });
-    const queue = createPackageQueue(() => dir, bridge);
+    fs.utimesSync(ledger, at("09:00:00"), at("09:00:00"));
+    let events: Record<string, unknown> = { tick: 900, human_hold: true };
+    let clock = at("10:00:00");
+    const { call, bridge } = fakeBridge({ event_state: () => events });
+    const queue = createPackageQueue(() => dir, bridge, () => clock);
     await queue.tick();
     expect(queuedPlans(call)).toEqual([]);
-    fifo = { idle_seconds: 0 };
+    // The stop at tick 800 is first seen at 10:00, 100 ticks after it, and after the ledger was written.
+    events = { tick: 900, human_hold: false, last_cancel_all_tick: 800 };
     await queue.tick();
+    expect(queuedPlans(call)).toEqual([]);
+    expect(readPackageQueue(dir)?.cancel_all).toEqual({ tick: 800, observed_at: "2026-10-05T09:59:58.333Z" });
+    clock = at("10:05:00");
+    await createPackageQueue(() => dir, bridge, () => clock).tick();
+    expect(queuedPlans(call)).toEqual([]);
+    expect(readPackageQueue(dir)?.cancel_all?.observed_at).toBe("2026-10-05T09:59:58.333Z");
+    // Astra rewrites the ledger after the stop: the package is queued with no pilot plan having run.
+    writeLedger(dir, 2, [furnaces("iron-a")]);
+    fs.utimesSync(ledger, at("10:01:00"), at("10:01:00"));
+    await queue.tick();
+    expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:iron-a"]);
+    expect(readPackageQueue(dir)?.packages["iron-a"]).toMatchObject({ status: "queued", revision: 2 });
+  });
+
+  it("records a stop while no package exists, so the first package written after it is queued", async () => {
+    // The pre-GO rehearsal ends with a stop while the ledger has no packages.
+    const dir = runDir();
+    const ledger = path.join(dir, "operations.json");
+    const at = (time: string) => new Date(`2026-10-05T${time}Z`);
+    writeLedger(dir, 1, []);
+    fs.utimesSync(ledger, at("09:00:00"), at("09:00:00"));
+    let clock = at("10:00:00");
+    const { call, bridge } = fakeBridge({ event_state: () => ({ tick: 48_000, human_hold: false, last_cancel_all_tick: 48_000 }) });
+    const queue = createPackageQueue(() => dir, bridge, () => clock);
+    await queue.tick();
+    expect(readPackageQueue(dir)?.cancel_all).toEqual({ tick: 48_000, observed_at: "2026-10-05T10:00:00.000Z" });
+    // After GO Astra writes its first package; the next pass queues it.
+    writeLedger(dir, 2, [furnaces("iron-a")]);
+    fs.utimesSync(ledger, at("10:10:00"), at("10:10:00"));
+    clock = at("10:10:01");
+    await queue.tick();
+    expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:iron-a"]);
+  });
+
+  it("dates a stop it first sees back to when it happened, so a package written after the stop is queued", async () => {
+    // A new bridge starts 10 minutes (36000 ticks) after a stop; Astra wrote a package 5 minutes after the stop.
+    const dir = runDir();
+    const ledger = path.join(dir, "operations.json");
+    const at = (time: string) => new Date(`2026-10-05T${time}Z`);
+    writeLedger(dir, 3, [furnaces("iron-a")]);
+    fs.utimesSync(ledger, at("10:05:00"), at("10:05:00"));
+    const { call, bridge } = fakeBridge({ event_state: () => ({ tick: 84_000, human_hold: false, last_cancel_all_tick: 48_000 }) });
+    await createPackageQueue(() => dir, bridge, () => at("10:10:00")).tick();
+    expect(readPackageQueue(dir)?.cancel_all).toEqual({ tick: 48_000, observed_at: "2026-10-05T10:00:00.000Z" });
     expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:iron-a"]);
   });
 
@@ -184,7 +258,7 @@ describe("package auto-queue", () => {
     writeLedger(dir, 2, [furnaces("p3"), furnaces("p4", "p3")]);
     fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify({ packages: {
       p3: { status: "queued", plan_id: 57, revision: 1, at: "2026-10-04T00:00:00Z", tick: 1000 } } }));
-    const { call, bridge } = fakeBridge({ ping: () => ({ companion_exists: true, tick: 400, fifo: { idle_seconds: 3 } }) });
+    const { call, bridge } = fakeBridge({ ping: () => ({ companion_exists: true, tick: 400 }) });
     await createPackageQueue(() => dir, bridge).tick();
     expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:p3", "package:p4"]);
     expect(queuedPlans(call)[1]).toMatchObject({ after_plan_id: 41 });
@@ -220,15 +294,16 @@ describe("package auto-queue", () => {
     expect(queuedPlans(second.call).at(-1)).toMatchObject({ after_plan_id: 43 });
   });
 
-  it("queues nothing more once an emergency stop closes the latch during a pass", async () => {
-    const dir = runDir();
-    writeLedger(dir, 1, [furnaces("iron-a"), furnaces("iron-b")]);
-    let pings = 0;
-    const { call, bridge } = fakeBridge({ ping: () => ({ companion_exists: true, tick: 900,
-      fifo: ++pings <= 2 ? { idle_seconds: 0 } : {} }) });
-    await createPackageQueue(() => dir, bridge).tick();
-    expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:iron-a"]);
-    expect(readPackageQueue(dir)?.packages["iron-b"]).toBeUndefined();
+  it("queues nothing more once an emergency stop or a human hold comes during a pass", async () => {
+    for (const late of [{ last_cancel_all_tick: 950 }, { human_hold: true }]) {
+      const dir = runDir();
+      writeLedger(dir, 1, [furnaces("iron-a"), furnaces("iron-b")]);
+      let reads = 0;
+      const { call, bridge } = fakeBridge({ event_state: () => ({ tick: 900, human_hold: false, ...(++reads <= 2 ? {} : late) }) });
+      await createPackageQueue(() => dir, bridge).tick();
+      expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:iron-a"]);
+      expect(readPackageQueue(dir)?.packages["iron-b"]).toBeUndefined();
+    }
   });
 
   it("keeps a package whose queue answer was lost as queuing and resends it; the mod answers with the same plan", async () => {
@@ -258,13 +333,53 @@ describe("package auto-queue", () => {
     expect(call.mock.calls.some(([method, params]) => method === "plan_status" && params.plan_id === undefined)).toBe(false);
   });
 
-  it("dry runs that stop at their one tick of work do not fail a package", async () => {
+  it("checks blueprint placements and fails a package whose blueprint position is blocked", async () => {
     const dir = runDir();
-    writeLedger(dir, 1, [furnaces("big")]);
-    const { call, bridge } = fakeBridge({ build_block: () => ({ placed: {}, incomplete: true,
-      failed: [{ code: "SITE_SEARCH_INCOMPLETE", reason: "the dry run checked 120 sites" }] }) });
+    const place = (id: string) => ({ ...furnaces(id), steps: [{ action: "blueprint_place", name: "smelter", position: { x: 4, y: 4 } }] });
+    writeLedger(dir, 1, [place("open"), place("blocked")]);
+    let checks = 0;
+    const { call, bridge } = fakeBridge({ blueprint_place: () => checks++ === 0 ? { ok: true }
+      : { ok: false, collisions: [{ code: "PLACE_BLOCKED" }], free_position: { x: 9, y: 4 } } });
     await createPackageQueue(() => dir, bridge).tick();
-    expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:big"]);
+    expect(call).toHaveBeenCalledWith("blueprint_place", { name: "smelter", position: { x: 4, y: 4 }, check_only: true });
+    expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:open"]);
+    expect(packageFailures(dir)[0]).toMatchObject({ package_id: "blocked",
+      reason: "check failed: blueprint_place smelter at (4, 4): the position is blocked; the nearest free position is (9, 4)" });
+  });
+
+  it("makes a package's leading blueprint captures before its steps, after its predecessor's plan has ended", async () => {
+    const dir = runDir();
+    const capture = { action: "blueprint_capture", name: "smelter", center: { x: 0, y: 0 }, radius: 6 };
+    const reuse = { action: "blueprint_place", name: "smelter", position: { x: 20, y: 0 } };
+    writeLedger(dir, 1, [furnaces("build"), { ...furnaces("copy", "build"), steps: [capture, reuse] }]);
+    let status = "running";
+    const { call, bridge } = fakeBridge({ plan_status: (params) => ({ plan_id: params.plan_id, status, source: "package:build" }) });
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    // The capture waits until what it records is built.
+    expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:build"]);
+    expect(call.mock.calls.some(([method]) => method === "blueprint_capture")).toBe(false);
+    status = "completed";
+    await queue.tick();
+    const methods = call.mock.calls.map(([method]) => method);
+    expect(methods.indexOf("blueprint_capture")).toBeLessThan(methods.lastIndexOf("blueprint_place"));
+    expect(call).toHaveBeenCalledWith("blueprint_capture", { name: "smelter", center: { x: 0, y: 0 }, radius: 6 });
+    expect(queuedPlans(call).at(-1)).toEqual({ steps: [reuse], final_observation_radius: 15, observation_detail: "none", source: "package:copy" });
+    expect(readPackageQueue(dir)?.packages.copy).toMatchObject({ status: "queued", plan_id: 42, captured: ["smelter"] });
+    // A package of captures only has no plan; one that follows it is not held.
+    writeLedger(dir, 2, [{ ...furnaces("snap"), steps: [capture] }, furnaces("after", "snap")]);
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages.snap).toEqual(expect.objectContaining({ status: "queued", captured: ["smelter"] }));
+    expect(readPackageQueue(dir)?.packages.snap).not.toHaveProperty("plan_id");
+    expect(queuedPlans(call).at(-1)).toMatchObject({ source: "package:after" });
+    expect(queuedPlans(call).at(-1)).not.toHaveProperty("after_plan_id");
+    // A capture the game refuses fails its package.
+    writeLedger(dir, 3, [{ ...furnaces("bad"), steps: [capture, reuse] }]);
+    const refused = fakeBridge({ blueprint_capture: () => { throw new ModError("blueprint_capture: no own entities stand in that area"); } });
+    await createPackageQueue(() => dir, refused.bridge).tick();
+    expect(readPackageQueue(dir)?.packages.bad).toMatchObject({ status: "failed",
+      reason: "capture failed: blueprint_capture: no own entities stand in that area" });
+    expect(queuedPlans(refused.call)).toEqual([]);
   });
 
   it("takes over a dead process's lock atomically: a lock replaced meanwhile is put back", () => {

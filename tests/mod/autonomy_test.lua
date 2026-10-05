@@ -141,6 +141,23 @@ run(90, smelt)
 for _, line in ipairs(autonomy.lines()) do if line.id == plate_line.id then plate_line = line end end
 check(not plate_line.hand_fed and plate_line.self_sustaining,
   "a running line is self-sustaining again once a minute has passed without a transfer")
+check(plate_line.hand_transfers == nil, "one hand transfer is not yet a repeat")
+
+-- Taking a machine's output by hand does not feed it, but serving a line by
+-- hand again (in or out) is flagged: it needs a connection.
+since = game.tick
+autonomy.on_transfer({ x = 0, y = 2 }, "extract")
+run(30, smelt)
+changed = autonomy.lines(since)
+check(#changed == 1 and changed[1].id == plate_line.id and not changed[1].hand_fed and changed[1].self_sustaining
+  and changed[1].hand_transfers == 2,
+  "a second hand transfer within ten minutes flags the line, and taking output does not make it hand-fed")
+local rate, making = autonomy.producing("iron-plate")
+check(making == 2 and rate >= plate_line.rate_per_min and select(2, autonomy.producing("copper-plate")) == 0,
+  "producing sums the rate of every own line making an item (" .. rate .. "/min)")
+run(10 * 3600, smelt)
+for _, line in ipairs(autonomy.lines()) do if line.id == plate_line.id then plate_line = line end end
+check(plate_line.hand_transfers == nil, "hand transfers older than ten minutes no longer count")
 
 -- Starved furnaces name the missing input and where.
 for _, f in ipairs({ f1, f2, f3 }) do mock.state(f).status = RAW.no_ingredients end
@@ -319,7 +336,25 @@ storage.tasks.active, storage.tasks.queue = nil, {}
 check(during_upkeep.fifo_empty and during_upkeep.queue_depth == 0 and during_upkeep.active_plan_id == nil
   and queued_upkeep.fifo_empty and queued_upkeep.queue_depth == 0,
   "an upkeep plan, active or queued, leaves event_state's FIFO empty, so it never fires queue_empty")
+body.crafting_queue_size = 3
+check(factory_status.event_state().fifo_empty == true,
+  "hand-crafting in the background leaves the FIFO empty: the body is free for queued work")
+body.crafting_queue_size = 0
 storage.tasks.active, storage.tasks.queue = active_plan, { {} }
+-- next_event's research_finished: the last research the body's force finished.
+defines.events = defines.events or {}
+defines.events.on_research_finished, defines.events.on_research_started = 77, 78
+factory_status.on_research_changed({ name = 78, tick = 500, research = { name = "logistics", force = { name = force.name } } })
+local not_finished = factory_status.event_state().last_research_finished
+factory_status.on_research_changed({ name = 77, tick = 501, research = { name = "logistics", force = { name = "enemy" } } })
+local other_force = factory_status.event_state().last_research_finished
+factory_status.on_research_changed({ name = 77, tick = 502, research = { name = "automation", force = { name = force.name } } })
+local finished = factory_status.event_state().last_research_finished
+check(not_finished == nil and other_force == nil and finished.technology == "automation" and finished.tick == 502,
+  "event_state names the last research the body's force finished")
+storage.tasks.last_cancel_all_tick = 450
+check(factory_status.event_state().last_cancel_all_tick == 450, "event_state carries the last cancel-all tick")
+storage.tasks.last_cancel_all_tick = nil
 
 -- Cost and size at 200 machines: about seven machine samples a tick, no
 -- entity query, and a status read under 6 KB.

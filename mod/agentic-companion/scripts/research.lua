@@ -82,8 +82,35 @@ end
 
 M.trigger_action = trigger_action
 
+-- start_research {technology} or {technologies = [...]}: a list is queued
+-- in its order, each name checked as a single one would be; it stops at the
+-- first the game refuses and says which were queued.
+local MAX_TECHNOLOGIES = 7
+local queue_one
 function M.start_research(params)
-  local name = params.technology
+  if params.technologies ~= nil then
+    local list = params.technologies
+    if params.technology ~= nil or type(list) ~= "table" or #list < 1 or #list > MAX_TECHNOLOGIES then
+      error("start_research takes technology or technologies = 1-" .. MAX_TECHNOLOGIES .. " names in queue order")
+    end
+    local queued = {}
+    for _, name in ipairs(list) do
+      local ok, err = pcall(queue_one, name)
+      if not ok then
+        error(string.format("%s%s", tostring(err):gsub("^.-:%d+:%s*", ""),
+          #queued > 0 and ("; queued before it: " .. table.concat(queued, ", ")) or ""))
+      end
+      queued[#queued + 1] = name
+    end
+    local force = companion.require_companion().force
+    local queue = {}
+    for _, technology in ipairs(force.research_queue or {}) do queue[#queue + 1] = technology.name end
+    return { queued = true, technologies = queued, research_queue = queue }
+  end
+  return queue_one(params.technology)
+end
+
+function queue_one(name)
   if type(name) ~= "string" or name == "" then
     error('start_research needs a technology name, e.g. {"technology": "logistics"}')
   end

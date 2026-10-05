@@ -29,7 +29,9 @@ for _, id in pairs(defines.events) do assert(type(events[id]) == "function") end
 assert(type(nth[120]) == "function", "the map tag keeps its 120-tick handler")
 assert(type(nth[300]) == "function" and type(nth[3600]) == "function", "chores register upkeep and charting")
 local handlers = require("scripts.rpc").handlers
-for _, name in ipairs({ "factory_status", "activity_log", "event_state", "say", "say_now", "queue_plan", "plan_status" }) do
+for _, name in ipairs({ "factory_status", "activity_log", "event_state", "say", "say_now", "queue_plan", "plan_status",
+  "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export",
+  "blueprint_place" }) do
   assert(type(handlers[name]) == "function", "RPC " .. name .. " is registered")
 end
 -- Every custom input the data stage defines has a runtime listener and links

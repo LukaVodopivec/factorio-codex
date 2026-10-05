@@ -24,8 +24,6 @@ _G.log = function(message) logged[#logged + 1] = message end
 _G.rcon = { print = function(text) printed[#printed + 1] = text end }
 _G.game = { tick = 10 }
 _G.storage = { rpc_outbox = { next_id = 1, by_id = {} } }
-package.loaded["scripts.companion"] = {}
-package.loaded["scripts.actions.build_layout"] = { check_layout = function() end, check_block = function() end }
 
 local rpc = require("scripts.rpc")
 local timing = require("scripts.profiler")

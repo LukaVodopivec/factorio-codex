@@ -2,18 +2,18 @@
 import { parseArgs } from "node:util";
 import { resolveSettings } from "./config.js";
 import { runDoctor } from "./doctor.js";
-import { runMcpServer } from "./mcp/server.js";
+import { runMcpServer, SESSION_ROLES, type SessionRole } from "./mcp/server.js";
 import { runWizard } from "./setup/wizard.js";
 import { assertNodeRuntime } from "./runtime.js";
 import { runLedgerApply } from "./coordination/ledger.js";
 import { compareRuns, markRunAssisted, recordRun, renderComparison, runRoot } from "./runs/telemetry.js";
 import { createServerSave, startServer, stopServer } from "./server/server.js";
 
-const HELP = `factorio-codex — text-only Factorio control for Codex\n\nUsage:\n  factorio-codex setup\n  factorio-codex doctor [--json]\n  factorio-codex mcp [--surface full|read-only]\n  factorio-codex ledger-apply --ledger <operations.json>   (stdin: update envelope, or {"init":true,...} for an absent ledger)\n  factorio-codex runs record --ledger <operations.json> --variant <name> --change <description> [--kind debug|benchmark] [--pilot-rollout <rollout.jsonl>] [--strategist-rollout <rollout.jsonl>]\n  factorio-codex runs mark-assisted <run-id> --reason <text>\n  factorio-codex runs compare <baseline-run-id> <candidate-run-id> [--json]\n  factorio-codex server create <run-dir> [--seed <n>] [--factorio <path>]\n  factorio-codex server start <run-dir> [--bind <address>] [--factorio <path>]\n  factorio-codex server stop <run-dir>`;
+const HELP = `factorio-codex — text-only Factorio control for Codex\n\nUsage:\n  factorio-codex setup\n  factorio-codex doctor [--json]\n  factorio-codex mcp [--surface full|read-only] [--role pilot|strategist|supervisor]\n  factorio-codex ledger-apply --ledger <operations.json>   (stdin: update envelope, or {"init":true,...} for an absent ledger)\n  factorio-codex runs record --ledger <operations.json> --variant <name> --change <description> [--kind debug|benchmark] [--pilot-rollout <rollout.jsonl>] [--strategist-rollout <rollout.jsonl>]\n  factorio-codex runs mark-assisted <run-id> --reason <text>\n  factorio-codex runs compare <baseline-run-id> <candidate-run-id> [--json]\n  factorio-codex server create <run-dir> [--seed <n>] [--factorio <path>]\n  factorio-codex server start <run-dir> [--bind <address>] [--factorio <path>]\n  factorio-codex server stop <run-dir>`;
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({ options: {
-    json: { type: "boolean" }, ledger: { type: "string" }, surface: { type: "string" },
+    json: { type: "boolean" }, ledger: { type: "string" }, surface: { type: "string" }, role: { type: "string" },
     variant: { type: "string" }, change: { type: "string" }, kind: { type: "string" }, reason: { type: "string" },
     "pilot-rollout": { type: "string" }, "strategist-rollout": { type: "string" },
     factorio: { type: "string" }, bind: { type: "string" }, seed: { type: "string" },
@@ -27,7 +27,10 @@ async function main(): Promise<void> {
   if (command === "mcp") {
     const surface = values.surface ?? "full";
     if (surface !== "full" && surface !== "read-only") throw new Error("mcp --surface must be full or read-only");
-    return runMcpServer(surface);
+    // The session launcher names the role; cancels this process makes carry it.
+    const role = values.role ?? process.env.FACTORIO_CODEX_ROLE ?? "unknown";
+    if (!(SESSION_ROLES as readonly string[]).includes(role)) throw new Error(`mcp --role must be one of ${SESSION_ROLES.join(", ")}`);
+    return runMcpServer(surface, undefined, role as SessionRole);
   }
   if (command === "ledger-apply") {
     if (!values.ledger) throw new Error("ledger-apply requires --ledger <operations.json>");

@@ -1,7 +1,8 @@
 -- Parametric blocks for build_block: each one expands to a build_layout
 -- layout in tile-corner offsets (the anchor is the top-left corner of the
 -- block's first tile), plus the site request that fits it. The bot chooses
--- what, where and how many; this file only does the tile arithmetic.
+-- what, where and how many; this file only does the tile arithmetic. The
+-- blueprint block is a stored blueprint (blueprints.lua) as the layout.
 --
 -- Geometry facts (Factorio 2.0.77 base data):
 --  * an inserter facing 0 picks up 1 tile north and drops 1.2 tiles south;
@@ -14,14 +15,15 @@
 --    from the north and outputs south;
 --  * a small pole supplies 2.5 tiles around itself and wires 7.5 tiles.
 local registry = require("scripts.registry")
+local blueprints = require("scripts.blueprints")
 
 local M = {}
 
 local DROP = { south = 0, west = 4, north = 8, east = 12 }
 local BELT = { north = 0, east = 4, south = 8, west = 12 }
 
-M.BLOCKS = { mining = true, smelting = true, assembly = true, power = true, labs = true }
-M.MAX_COUNT = { mining = 24, smelting = 16, assembly = 16, power = 20, labs = 24 }
+M.BLOCKS = { mining = true, smelting = true, assembly = true, power = true, labs = true, blueprint = true }
+M.MAX_COUNT = { mining = 24, smelting = 16, assembly = 16, power = 20, labs = 24, blueprint = 1 }
 
 -- An item the body carries or can craft now.
 local function available(c, item)
@@ -212,9 +214,18 @@ local EXPAND = { mining = mining, smelting = smelting, assembly = assembly, powe
 function M.validate(params, label)
   label = label or "build_block"
   if not M.BLOCKS[params.block] then
-    error(label .. " block must be mining, smelting, assembly, power or labs", 0)
+    error(label .. " block must be mining, smelting, assembly, power, labs or blueprint", 0)
   end
-  local count = tonumber(params.count)
+  if params.block == "blueprint" then
+    if type(params.blueprint) ~= "string" or params.blueprint == "" then
+      error(label .. " blueprint needs blueprint = the name of a stored blueprint", 0)
+    end
+    if params.count ~= nil and params.count ~= 1 then error(label .. " blueprint count must be 1", 0) end
+    if params.resource ~= nil and type(params.resource) ~= "string" then
+      error(label .. " blueprint resource must be a resource name (its drills sit on it)", 0)
+    end
+  end
+  local count = tonumber(params.count or (params.block == "blueprint" and 1 or nil))
   local max = M.MAX_COUNT[params.block]
   if not count or count % 1 ~= 0 or count < 1 or count > max then
     error(string.format("%s count for a %s block must be an integer from 1 to %d", label, params.block, max), 0)
@@ -235,11 +246,24 @@ end
 -- The block's whole layout may be turned to fit the site.
 function M.expand(c, params)
   M.validate(params)
-  local tiers = {}
-  local l, site = EXPAND[params.block](c, { count = math.floor(params.count), resource = params.resource,
-    recipe = params.recipe }, tiers)
+  local tiers, entities, site = {}, nil, nil
+  if params.block == "blueprint" then
+    entities = blueprints.layout(params.blueprint, nil, "build_block").entities
+    site, tiers.blueprint = { on_resource = params.resource }, params.blueprint
+  else
+    local l
+    l, site = EXPAND[params.block](c, { count = math.floor(params.count), resource = params.resource,
+      recipe = params.recipe }, tiers)
+    entities = l.entities
+  end
   site.near = params.near and { x = params.near.x, y = params.near.y } or { x = c.position.x, y = c.position.y }
-  return { layout = { entities = l.entities }, site = site, tiers = tiers }
+  return { layout = { entities = entities }, site = site, tiers = tiers }
+end
+
+-- A block's share of its plan's active budget, in ordinary steps.
+function M.budget_steps(params)
+  if params.block == "blueprint" then return blueprints.entity_count(params.blueprint) or 8 end
+  return 8 * (tonumber(params.count) or 1)
 end
 
 return M

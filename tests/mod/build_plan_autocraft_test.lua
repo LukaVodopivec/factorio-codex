@@ -18,7 +18,7 @@ local followup_failure = false
 local followup_reach_checks = 0
 local character
 character = {
-  crafting_queue_size = 0,
+  crafting_queue_size = 0, crafting_queue = {},
   force = { recipes = {
     ["transport-belt"] = { name = "transport-belt", enabled = true,
       products = { { type = "item", name = "transport-belt", amount = 2 } } },
@@ -34,6 +34,8 @@ character = {
   begin_crafting = function(args)
     crafted[args.recipe] = (crafted[args.recipe] or 0) + args.count
     character.crafting_queue_size = character.crafting_queue_size + args.count
+    character.crafting_queue[#character.crafting_queue + 1] = { index = #character.crafting_queue + 1,
+      recipe = args.recipe, count = args.count, prerequisite = false }
     return args.count
   end,
   build_distance = 6,
@@ -90,12 +92,12 @@ local function tick_until(t, done)
   return result
 end
 check(tick_until(task, function() return crafted["transport-belt"] end) == nil and crafted["transport-belt"] == 1
-  and task._supply ~= nil and placed_count == 0,
+  and placed_count == 0,
   "build_plan: one two-output recipe craft supplies both belts the plan needs")
 check(build_plan.tick(task) == nil and placed_count == 0,
   "build_plan: construction waits for the real crafting queue")
 inventory["transport-belt"] = 2
-character.crafting_queue_size = 0
+character.crafting_queue_size, character.crafting_queue = 0, {}
 game.tick = game.tick + 30
 check(build_plan.tick(task) == nil and placed_count == 1 and inventory["transport-belt"] == 1,
   "build_plan: places the current step only after crafting completes")
@@ -119,12 +121,12 @@ local uncertain_product = { steps = {
 } }
 build_plan.start(uncertain_product)
 local uncertain_wait = tick_until(uncertain_product, function() return crafted["uncertain-machine"] end)
-check(uncertain_wait == nil and uncertain_product._supply ~= nil
+check(uncertain_wait == nil and build_plan.tick(uncertain_product) == nil
   and crafted["uncertain-machine"] == 1,
   "build_plan: matching uncertain item product uses a conservative yield of one")
 
 crafted = {}
-character.crafting_queue_size = 0
+character.crafting_queue_size, character.crafting_queue = 0, {}
 build_plan.start({ auto_craft = false, steps = {
   { item = "transport-belt", position = { x = 0, y = 0 } },
   { item = "transport-belt", position = { x = 1, y = 0 } },
@@ -206,10 +208,11 @@ local followup_creates, recipe_mutations, insert_mutations = 0, 0, 0
 local built_followup
 character.surface.create_entity = function(args)
   followup_creates = followup_creates + 1
+  local recipe
   built_followup = {
     valid = true, name = args.name, type = "assembling-machine",
-    set_recipe = function() recipe_mutations = recipe_mutations + 1 return {} end,
-    get_recipe = function() return { name = "iron-gear-wheel" } end,
+    set_recipe = function(name) recipe_mutations = recipe_mutations + 1; recipe = name; return {} end,
+    get_recipe = function() return recipe and { name = recipe } or nil end,
     insert = function(stack) insert_mutations = insert_mutations + 1 return stack.count end,
   }
   return built_followup

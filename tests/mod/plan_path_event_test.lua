@@ -107,7 +107,7 @@ plan_id = queue_walk()
 game.tick = 1
 tasks.on_tick()
 local stale_request = storage.path_request.id
-local cancelled = tasks.cancel({ plan_id = plan_id })
+local cancelled = tasks.cancel({ origin = "stop/supervisor", plan_id = plan_id })
 local cancelled_status = tasks.plan_status({ plan_id = plan_id })
 check(cancelled.cancelled == 1 and cancelled_status.status == "cancelled"
   and cancelled_status.outcomes[1].status == "cancelled" and body.walking_state.walking == false,

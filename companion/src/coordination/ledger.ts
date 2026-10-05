@@ -3,7 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { atomicWriteFile } from "../setup/atomic.js";
-import { MAX_PLAN_STEPS, planStepSchema } from "../mcp/runPlan.js";
+import { MAX_PLAN_STEPS, packageStepSchema, stepIssue } from "../mcp/runPlan.js";
 
 const text = (max: number) => z.string().min(1).max(max);
 const gitSha = z.string().regex(/^[0-9a-f]{40}$/);
@@ -37,7 +37,8 @@ const notePath = z.string().max(160).refine((note) => {
 }, "notes are relative notebook/<name>.md paths without '..' or absolute parts");
 const packageId = z.string().regex(/^[a-z0-9-]{1,32}$/, "package ids are 1-32 lowercase letters, digits or dashes");
 // A plan Astra designed; the pilot's bridge checks its placements and queues it
-// into the FIFO by itself, in ledger order (coordination/orders.ts).
+// into the FIFO by itself, in ledger order (coordination/orders.ts). Leading
+// blueprint_capture steps are made by the bridge before the rest is queued.
 const buildPackage = z.object({
   package_id: packageId,
   serves: z.enum(["NOW", "NEXT"]),
@@ -47,7 +48,7 @@ const buildPackage = z.object({
   anchor: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
   required_items: z.record(z.string().min(1), z.number().int().positive())
     .refine((required) => Object.keys(required).length <= 16, "at most 16 required items"),
-  steps: z.array(planStepSchema).min(1).max(MAX_PLAN_STEPS),
+  steps: z.array(packageStepSchema).min(1).max(MAX_PLAN_STEPS),
   success_check: text(240),
   notes: z.array(notePath).max(3).optional(),
 }).strict();
@@ -84,8 +85,10 @@ function packageIssues(packages: BuildPackage[], sourceTick: number | null): str
       if (step.action === "place_entity" && removed.has(`${step.x},${step.y}`)) {
         issues.push(`${at}.steps.${stepIndex}: placement targets the position of this package's own mine step`);
       }
-      if (step.action === "build_layout" && (step.anchor === undefined) === (step.site === undefined)) {
-        issues.push(`${at}.steps.${stepIndex}: build_layout takes exactly one of anchor or site`);
+      const issue = stepIssue(step);
+      if (issue) issues.push(`${at}.steps.${stepIndex}: ${issue}`);
+      if (step.action === "blueprint_capture" && stepIndex > 0 && entry.steps[stepIndex - 1]!.action !== "blueprint_capture") {
+        issues.push(`${at}.steps.${stepIndex}: blueprint_capture steps come first in a package`);
       }
     });
   });

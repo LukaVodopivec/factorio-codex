@@ -1,15 +1,19 @@
 -- Chores the mod does without any bot:
 -- * Upkeep: while the FIFO is empty (and not after an emergency stop) and
 --   The owner is not holding the body, the body refuels own burner machines that
---   ran dry, from carried fuel or own stock (insert's auto-supply walks to it). It is an ordinary plan with
---   source "upkeep", so activity_log shows it and any queued plan takes the
---   body at the next step boundary.
+--   ran dry and brings the current research's science packs to own labs
+--   that lack them, from what it carries or own stock (insert's auto-supply
+--   walks to it). It is an ordinary plan with source "upkeep", so
+--   activity_log shows it and any queued plan takes the body at the next
+--   step boundary.
 -- * Charting: every minute the force charts the chunks around the body that
 --   it has not charted yet, so patches and water appear without scouting.
 -- All state lives in storage.chores (created by state.init on load or upgrade).
 local companion = require("scripts.companion")
 local tasks = require("scripts.tasks")
 local registry = require("scripts.registry")
+local supply = require("scripts.actions.supply")
+local explore = require("scripts.actions.explore")
 
 local M = {}
 
@@ -19,7 +23,8 @@ local CHART_RADIUS_CHUNKS = 5        -- 11 x 11 chunks: about 350 tiles across
 local REFUEL_COOLDOWN_TICKS = 3600   -- one refuel attempt per machine a minute
 local MAX_REFUELS = 8
 local FUEL_PER_MACHINE = 10
-local FUELS = { "coal", "wood", "solid-fuel" }
+local MAX_LABS = 8
+local PACKS_PER_LAB = 10
 
 local function held()
   local ok, value = pcall(companion.human_control)
@@ -33,13 +38,14 @@ local function fifo_empty()
   return t and not t.active and #t.queue == 0 and t.last_finished_tick ~= nil
 end
 
--- Own burner machines out of fuel, from the factory lines' sampler.
-local function dry_machines(c, tick)
-  local a, refueled = storage.autonomy, storage.chores.refueled
+-- Own machines in a raw sampler state (of one type when given), not served
+-- within the cooldown, nearest first, at most `limit`.
+local function machines_in(c, tick, raw, kind, served, limit)
+  local a = storage.autonomy
   local rows = {}
   for unit, rec in pairs(a and a.machines or {}) do
-    if rec.raw == "no_fuel" and rec.entity and rec.entity.valid
-      and not (refueled[unit] and tick - refueled[unit] < REFUEL_COOLDOWN_TICKS) then
+    if rec.raw == raw and (kind == nil or rec.type == kind) and rec.entity and rec.entity.valid
+      and not (served[unit] and tick - served[unit] < REFUEL_COOLDOWN_TICKS) then
       local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
       rows[#rows + 1] = { unit = unit, position = rec.position, distance = dx * dx + dy * dy }
     end
@@ -48,31 +54,15 @@ local function dry_machines(c, tick)
     if x.distance ~= y.distance then return x.distance < y.distance end
     return x.unit < y.unit
   end)
-  while #rows > MAX_REFUELS do table.remove(rows) end
+  while #rows > limit do table.remove(rows) end
   return rows
 end
 
--- The first fuel the body carries or the force stores (chests and machine
--- outputs, one pass over the registry's holders), and how much.
-local function fuel(c)
-  local names = {}
-  for _, name in ipairs(FUELS) do if prototypes.item[name] then names[#names + 1] = name end end
-  local stored = registry.stock_totals(names)
-  for _, name in ipairs(names) do
-    local total = c.get_item_count(name) + (stored[name] or 0)
-    if total > 0 then return name, total end
-  end
-end
-
-function M.upkeep(tick)
-  local c = companion.get()
-  if not (c and c.valid and storage.chores) or not fifo_empty() or held() then return end
-  for unit, at in pairs(storage.chores.refueled) do
-    if tick - at >= REFUEL_COOLDOWN_TICKS then storage.chores.refueled[unit] = nil end
-  end
-  local machines = dry_machines(c, tick)
+-- Insert steps that refuel own burner machines out of fuel.
+local function refuel_steps(c, tick, steps)
+  local machines = machines_in(c, tick, "no_fuel", nil, storage.chores.refueled, MAX_REFUELS)
   if #machines == 0 then return end
-  local name, available = fuel(c)
+  local name, available = supply.fuel_item(c)
   if not name then return end
   local each = math.min(FUEL_PER_MACHINE, math.floor(available / #machines))
   while each < 1 and #machines > 1 do
@@ -80,28 +70,56 @@ function M.upkeep(tick)
     each = math.min(FUEL_PER_MACHINE, math.floor(available / #machines))
   end
   if each < 1 then return end
-  local steps = {}
-  for index, machine in ipairs(machines) do
-    steps[index] = { action = "insert_items", x = machine.position.x, y = machine.position.y, items = { [name] = each } }
+  for _, machine in ipairs(machines) do
+    steps[#steps + 1] = { action = "insert_items", x = machine.position.x, y = machine.position.y, items = { [name] = each } }
     storage.chores.refueled[machine.unit] = tick
   end
-  pcall(tasks.queue_plan, { steps = steps, source = "upkeep" })
+end
+
+-- Insert steps that bring the current research's packs, from what the body
+-- carries or own stock holds (one registry pass), to labs missing them.
+local function lab_steps(c, tick, steps)
+  local labs = machines_in(c, tick, "missing_science_packs", "lab", storage.chores.fed_labs, MAX_LABS)
+  if #labs == 0 then return end
+  local research = c.force.current_research
+  if not research then return end
+  local names = {}
+  for _, ingredient in ipairs(research.research_unit_ingredients or {}) do
+    if ingredient.type ~= "fluid" then names[#names + 1] = ingredient.name end
+  end
+  if #names == 0 then return end
+  local stored = registry.stock_totals(names)
+  local items, any = {}, false
+  for _, name in ipairs(names) do
+    local each = math.min(PACKS_PER_LAB, math.floor((c.get_item_count(name) + (stored[name] or 0)) / #labs))
+    if each >= 1 then items[name], any = each, true end
+  end
+  if not any then return end
+  for _, lab in ipairs(labs) do
+    steps[#steps + 1] = { action = "insert_items", x = lab.position.x, y = lab.position.y, items = items }
+    storage.chores.fed_labs[lab.unit] = tick
+  end
+end
+
+function M.upkeep(tick)
+  local c = companion.get()
+  if not (c and c.valid and storage.chores) or not fifo_empty() or held() then return end
+  for _, served in ipairs({ storage.chores.refueled, storage.chores.fed_labs }) do
+    for unit, at in pairs(served) do
+      if tick - at >= REFUEL_COOLDOWN_TICKS then served[unit] = nil end
+    end
+  end
+  local steps = {}
+  refuel_steps(c, tick, steps)
+  lab_steps(c, tick, steps)
+  if #steps > 0 then pcall(tasks.queue_plan, { steps = steps, source = "upkeep" }) end
 end
 
 -- Chart the uncharted chunks around the body; charted ones are left alone.
 function M.chart(_)
   local c = companion.get()
   if not (c and c.valid) then return end
-  local force, surface = c.force, c.surface
-  local cx, cy = math.floor(c.position.x / 32), math.floor(c.position.y / 32)
-  for y = cy - CHART_RADIUS_CHUNKS, cy + CHART_RADIUS_CHUNKS do
-    for x = cx - CHART_RADIUS_CHUNKS, cx + CHART_RADIUS_CHUNKS do
-      local chunk = { x = x, y = y }
-      if not force.is_chunk_charted(surface, chunk) and not force.is_chunk_requested_for_charting(surface, chunk) then
-        force.chart(surface, { { x * 32, y * 32 }, { x * 32 + 31, y * 32 + 31 } })
-      end
-    end
-  end
+  explore.chart_around(c, CHART_RADIUS_CHUNKS)
 end
 
 M.on_nth = {

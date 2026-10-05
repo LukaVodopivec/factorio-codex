@@ -5,8 +5,11 @@ export const toolPayloads = {
   mine: ({ x, y, count, target_kind, allow_fluid_loss, expected_name, observed_tick }: { x: number; y: number; count?: number; target_kind?: "natural" | "owned"; allow_fluid_loss?: boolean; expected_name?: string; observed_tick?: number }) => ({ target: { x, y }, count, ...(target_kind ? { target_kind } : {}), ...(allow_fluid_loss ? { allow_fluid_loss: true } : {}), ...(expected_name ? { expected_name } : {}), ...(observed_tick === undefined ? {} : { observed_tick }) }),
   pickup: ({ x, y, item, count }: { x: number; y: number; item: string; count: number }) => ({ target: { x, y }, item, count }),
   craft: ({ recipe, crafts, wait_for_completion }: { recipe: string; crafts: number; wait_for_completion?: boolean }) => ({ recipe, count: crafts, ...(wait_for_completion === undefined ? {} : { wait_for_completion }) }),
-  place: ({ x, y, name, direction, input_target, output_target, belt_to_ground_type, auto_supply }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; belt_to_ground_type?: "input" | "output"; auto_supply?: boolean }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}), ...(belt_to_ground_type ? { belt_to_ground_type } : {}), ...(auto_supply === undefined ? {} : { auto_supply }) }),
-  insert: ({ x, y, items: values, auto_supply }: { x: number; y: number; items: Record<string, number>; auto_supply?: boolean }) => ({ target: { x, y }, items: values, ...(auto_supply === undefined ? {} : { auto_supply }) }),
+  place: ({ x, y, name, direction, input_target, output_target, belt_to_ground_type, insert, auto_supply }: { x: number; y: number; name: string; direction?: number; input_target?: { x: number; y: number }; output_target?: { x: number; y: number }; belt_to_ground_type?: "input" | "output"; insert?: Record<string, number>; auto_supply?: boolean }) => ({ item: name, position: { x, y }, direction, ...(input_target ? { input_target } : {}), ...(output_target ? { output_target } : {}), ...(belt_to_ground_type ? { belt_to_ground_type } : {}), ...(insert ? { insert } : {}), ...(auto_supply === undefined ? {} : { auto_supply }) }),
+  // One position, or several targets that each get the same items.
+  insert: ({ x, y, targets, items: values, per_target, auto_supply }: { x?: number; y?: number; targets?: unknown; items?: Record<string, number>; per_target?: Record<string, number>; auto_supply?: boolean }) => ({
+    ...(targets === undefined ? { target: { x, y } } : { targets }), items: per_target ?? values,
+    ...(auto_supply === undefined ? {} : { auto_supply }) }),
   extract: ({ x, y, items: values }: { x: number; y: number; items?: Record<string, number> }) => values === undefined ? ({ target: { x, y }, all: true }) : ({ target: { x, y }, items: values }),
   recipe: ({ x, y, recipe }: { x: number; y: number; recipe: string }) => ({ target: { x, y }, recipe }),
   rotate: ({ x, y, direction }: { x: number; y: number; direction?: number }) => ({ target: { x, y }, direction }),
@@ -27,7 +30,7 @@ export const toolPayloads = {
   }) => ({ ...(targets ? { targets } : {}), ...(technology ? { technology } : {}),
     ...(location ? { location } : {}), ...(recipe_choices ? { recipe_choices } : {}),
     ...(flow_precision ? { flow_precision } : {}) }),
-  connectEntities: ({ kind, prototype, from, to, max_length }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number }) => ({ kind, prototype, from, to, max_length }),
+  connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }) }),
 };
 
 export function normalizeCanPlace(value: any, placements: Array<{ name: string; x: number; y: number; direction?: number }>): any {

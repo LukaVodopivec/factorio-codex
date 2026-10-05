@@ -32,7 +32,8 @@ export interface MapSummary {
   water_edges?: Array<{ land: Position; water: Position; observed_tick: number }>;
   factory_landmarks?: Array<{ name: string; type: string; position: Position; direction?: number; status?: string; recipe?: string; observed_tick: number }>;
   factory: {
-    scope: "force_charted"; collected_at_tick: number; consistency: "single_request";
+    /** Read over several ticks (a job): started_tick to collected_at_tick. */
+    scope: "force_charted"; started_tick: number; collected_at_tick: number; consistency: "spread_over_ticks";
     charted_chunks: number; currently_visible_charted_chunks: number; machine_count: number;
     groups: Array<Record<string, unknown>>; force_flows: Array<Record<string, unknown>>;
     material_flow: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>>;

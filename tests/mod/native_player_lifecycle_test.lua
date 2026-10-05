@@ -132,4 +132,20 @@ check(surface.peaceful_mode and game.map_settings.enemy_expansion.enabled == fal
 check(enemy_bases.frequency == 0 and enemy_bases.size == 0 and enemy_bases.richness == 0,
   "enemy-base generation remains disabled on every surface")
 
+-- A surface whose generation settings cannot be written (a space platform)
+-- never makes on_surface_created fail; Gleba's enemy control is zeroed where
+-- it exists.
+_G.prototypes = { autoplace_control = { gleba_enemy_base = {} } }
+local platform = setmetatable({}, { __index = function(_, key)
+  if key == "map_gen_settings" then error("platform surfaces have no map generation") end
+end, __newindex = function(_, key)
+  if key == "map_gen_settings" then error("platform surfaces have no map generation") end
+end })
+local gleba = { peaceful_mode = false, map_gen_settings = { autoplace_controls = {} } }
+game.surfaces = { platform, gleba, surface }
+check(pcall(companion.enforce_peaceful_world, { surface_index = 2 }), "an unwritable surface never raises")
+check(gleba.peaceful_mode and gleba.map_gen_settings.autoplace_controls.gleba_enemy_base.frequency == 0
+  and gleba.map_gen_settings.autoplace_controls["enemy-base"].frequency == 0,
+  "the other surfaces stay peaceful, Gleba enemies included")
+
 os.exit(failures == 0 and 0 or 1)

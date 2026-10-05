@@ -17,6 +17,10 @@ local factory_status = require("scripts.factory_status")
 local thoughts = require("scripts.thoughts")
 local chores = require("scripts.chores")
 local registry = require("scripts.registry")
+local jobs = require("scripts.jobs")
+local build_layout = require("scripts.actions.build_layout")
+local blueprints = require("scripts.blueprints")
+local area_ops = require("scripts.actions.area_ops")
 local timing = require("scripts.profiler")
 
 -- Every read-only RPC result carries the body's FIFO state from the same Lua
@@ -56,7 +60,7 @@ end
 
 rpc.register("ping", read(function()
   return {
-    protocol_version = 24,
+    protocol_version = 25,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
@@ -66,15 +70,37 @@ rpc.register("ping", read(function()
   }
 end))
 rpc.register("spawn_companion", companion.connect)
-rpc.register("observe_local", read(spatial.observe_local))
+-- Heavy reads are jobs (jobs.lua): the RPC answers at once with the result
+-- when it fits what is left of this tick's work, else with {job_id,
+-- job_status = "pending"}; get_job {job_id} then returns it once done.
+-- build_layout/build_block over RPC are check_only dry runs; the builds
+-- themselves are plan steps.
+jobs.register("observe_local", spatial.observe_job)
+jobs.register("map_summary", map_summary.summary_job)
+jobs.register("connect_entities", connect_entities.job)
+jobs.register("build_layout", build_layout.layout_check_job)
+jobs.register("build_block", build_layout.block_check_job)
+-- Blueprints (blueprints.lua): capture and describe read up to a blueprint's
+-- worth of entities; blueprint_place over RPC is its check_only dry run.
+jobs.register("blueprint_capture", blueprints.capture_job)
+jobs.register("blueprint_describe", blueprints.describe_job)
+jobs.register("blueprint_place", area_ops.place_check_job)
+for _, kind in ipairs({ "observe_local", "map_summary", "connect_entities", "build_layout", "build_block",
+  "blueprint_capture", "blueprint_describe", "blueprint_place" }) do
+  rpc.register(kind, read(jobs.rpc(kind)))
+end
+rpc.register("blueprint_create", blueprints.create)
+rpc.register("blueprint_list", read(blueprints.list))
+rpc.register("blueprint_delete", blueprints.delete)
+rpc.register("blueprint_export", read(blueprints.export))
+blueprints.set_logger(tasks.log_event)
+rpc.register("get_job", read(jobs.get))
 rpc.register("inspect", read(inspect.inspect))
 rpc.register("start_research", research.start_research)
 rpc.register("can_place", read(spatial.can_place))
 rpc.register("find_placement", read(find_placement.find_placement))
-rpc.register("map_summary", read(map_summary.map_summary))
 rpc.register("production_requirements", read(production_requirements.production_requirements))
 rpc.register("run_snapshot", run_snapshot.capture)
-rpc.register("connect_entities", connect_entities.connect_entities)
 rpc.register("describe_prototype", read(spatial.describe_prototype))
 rpc.register("progression_status", read(research.progression_status))
 rpc.register("enqueue", tasks.enqueue)
@@ -96,7 +122,9 @@ remote.add_interface("agentic", {
 
 local function initialize()
   state.init()
-  tasks.set_observer(spatial.observe_local)
+  -- state.init dropped any pending path request: the active step re-plans.
+  tasks.resume_active()
+  tasks.set_observer(spatial.observe_compact)
   companion.enforce_peaceful_world()
   for _, player in pairs(game.connected_players) do
     companion.on_player_available({ player_index = player.index })
@@ -105,7 +133,7 @@ local function initialize()
   -- An upgrade keeps the old version's GUI elements: rebuild the panel.
   thoughts.init()
 end
-tasks.set_observer(spatial.observe_local)
+tasks.set_observer(spatial.observe_compact)
 
 script.on_init(initialize)
 script.on_configuration_changed(initialize)
@@ -124,7 +152,8 @@ for period, handlers in pairs(nth) do
   end)
 end
 -- Tick work is bounded by item budgets: the registry bootstrap and then the
--- patch cache read a few chunks a tick, the line sampler about machines/30.
+-- patch cache read a few chunks a tick, the line sampler about machines/30,
+-- and read jobs share one allowance with the build search.
 local function tick(event)
   tasks.on_tick(event)
   registry.on_tick(event.tick)
@@ -135,6 +164,7 @@ local function tick(event)
     map_summary.status_tick(event.tick)
   end
   autonomy.on_tick(event.tick)
+  jobs.on_tick()
   companion.follow_spectators()
 end
 script.on_event(defines.events.on_tick, function(event)

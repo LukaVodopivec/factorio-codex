@@ -17,7 +17,8 @@ describe("current queued-plan protocol", () => {
     expect(runPlanSchema.safeParse({ steps: [] }).success).toBe(false);
     expect(runPlanSchema.safeParse({ steps: Array(200).fill({ action: "walk_to", x: 0, y: 0 }) }).success).toBe(true);
     expect(runPlanSchema.safeParse({ steps: Array(201).fill({ action: "walk_to", x: 0, y: 0 }) }).success).toBe(false);
-    expect(runPlanSchema.parse({ steps: [{ action: "craft_items", recipe: "gear", crafts: 1 }] }).steps[0]).toMatchObject({ crafts: 1, wait_for_completion: true });
+    // Crafting does not hold the body unless asked to.
+    expect(runPlanSchema.parse({ steps: [{ action: "craft_items", recipe: "gear", crafts: 1 }] }).steps[0]).not.toHaveProperty("wait_for_completion");
     expect(runPlanSchema.safeParse({ steps: [{ action: "craft_items", recipe: "gear", count: 1 }] }).success).toBe(false);
     expect(runPlanSchema.parse({ steps: [{ action: "mine", x: 0, y: 0 }] }).steps[0]).toMatchObject({ count: 1 });
     expect(runPlanSchema.parse({ steps: [{ action: "mine", x: 0, y: 0 }] }).steps[0]).not.toHaveProperty("target_kind");
@@ -141,6 +142,8 @@ describe("current queued-plan protocol", () => {
     expect(result).toMatchObject({ plan_id: 10, status: "cancelled", completed_steps: 1,
       execution: { rollback: "none", incomplete_step: { effects: "unknown" } } });
     expect(call.mock.calls.map(([method]) => method)).toEqual(["queue_plan", "plan_status", "cancel", "plan_status"]);
+    // The cancel names the tool and that the bridge aborted its own plan.
+    expect(call).toHaveBeenCalledWith("cancel", { plan_id: 10, origin: "run_plan/run_plan-abort" });
   });
 
   it("preserves a structured failure result in a failed terminal bridge response", async () => {

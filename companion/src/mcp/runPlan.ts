@@ -7,43 +7,126 @@ const position = { x: z.number(), y: z.number() };
 const point = z.object(position).strict();
 const items = z.record(z.string(), z.number().int().positive());
 const offset = z.object({ dx: z.number(), dy: z.number() }).strict();
+const direction = z.number().int().min(0).max(15);
+/** A stored blueprint's name (the mod's rule). */
+export const blueprintName = z.string().min(1).max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/, "blueprint names are letters, digits, spaces, dots, dashes or underscores");
 /** Relative layout the mod sites, checks, supplies, clears and builds (build_layout). */
+/** A layout has entities, or only connections from an anchor (a route that
+ *  joins what already stands); the mod checks the same rule. */
+export const layoutEntitiesRule = (layout: { anchor?: unknown; entities: unknown[]; connections?: unknown[] }) =>
+  layout.entities.length > 0 || (layout.anchor !== undefined && (layout.connections?.length ?? 0) > 0);
+export const layoutEntitiesMessage = { message: "a layout needs entities, or connections from an anchor" };
 export const layoutFields = {
   anchor: point.optional(),
   site: z.object({ near: point, on_resource: z.string().min(1).optional(), near_water: z.boolean().optional() }).strict().optional(),
   entities: z.array(z.object({ name: z.string().min(1), dx: z.number(), dy: z.number(),
-    direction: z.number().int().min(0).max(15).optional(), recipe: z.string().min(1).optional() }).strict()).min(1).max(100),
+    direction: direction.optional(), recipe: z.string().min(1).optional(), insert: items.optional(),
+    settings: z.record(z.string(), z.unknown()).optional() }).strict()).max(100),
   connections: z.array(z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string().min(1),
-    from: offset, to: offset }).strict()).max(32).optional(),
+    from: offset, to: offset, underground: z.union([z.string().min(1), z.literal(false)]).optional() }).strict()).max(32).optional(),
 };
-/** Parametric block expanded by the mod into a layout (build_block). */
+/** Parametric block expanded by the mod into a layout (build_block); a
+ *  blueprint block is a stored blueprint. */
 export const blockFields = {
-  block: z.enum(["mining", "smelting", "assembly", "power", "labs"]),
-  count: z.number().int().min(1).max(32),
+  block: z.enum(["mining", "smelting", "assembly", "power", "labs", "blueprint"]),
+  count: z.number().int().min(1).max(24).optional(),
   resource: z.string().min(1).optional(),
   recipe: z.string().min(1).optional(),
+  blueprint: blueprintName.optional(),
   near: point.optional(),
 };
+/** An area {left_top, right_bottom}, or center with radius (at most 64 x 64 tiles). */
+export const areaFields = {
+  area: z.object({ left_top: point, right_bottom: point }).strict().optional(),
+  center: point.optional(),
+  radius: z.number().positive().max(32).optional(),
+};
+export const moveEntityFields = { from: point, to: point, direction: direction.optional(), allow_fluid_loss: z.boolean().optional() };
+export const exploreFields = { resource: z.string().min(1).optional(), direction: direction.optional(),
+  max_distance: z.number().int().min(32).max(3000) };
+export const blueprintPlaceFields = { name: blueprintName, position: point,
+  direction: z.number().int().min(0).max(12).multipleOf(4).optional(), flip: z.enum(["horizontal", "vertical"]).optional(),
+  mode: z.enum(["hand", "ghosts"]).optional() };
+export const deconstructFields = { ...areaFields, mode: z.enum(["hand", "robots", "cancel"]).optional(),
+  filter: z.array(z.string().min(1)).min(1).max(32).optional() };
+export const upgradeFields = { ...areaFields, from: z.string().min(1), to: z.string().min(1), mode: z.enum(["hand", "robots"]).optional() };
+export const copySettingsFields = { from: point, to: z.array(point).min(1).max(32) };
+/** insert_items: one position with items, or several targets that each get
+ *  the same items (per_target or items). */
+export const insertFields = {
+  x: z.number().optional(), y: z.number().optional(),
+  targets: z.union([z.array(point).min(1).max(32),
+    z.object({ name: z.string().min(1), near: point, radius: z.number().positive().max(32).optional() }).strict()]).optional(),
+  items: items.optional(), per_target: items.optional(),
+};
 const autoSupply = { auto_supply: z.boolean().optional() };
-export const planStepSchema = z.discriminatedUnion("action", [
+const planSteps = [
   z.object({ action: z.literal("walk_to"), ...position,
     arrival_mode: z.enum(["exact", "vicinity"]).default("exact"),
     arrival_radius: z.number().min(0.5, "arrival_radius is 0.5–6 tiles").max(6, "arrival_radius is 0.5–6 tiles; for a farther goal walk to the target and use vicinity arrival").default(1) }).strict(),
   z.object({ action: z.literal("mine"), ...position, count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict(),
   z.object({ action: z.literal("pickup_items"), ...position, item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
-  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: point.optional(), output_target: point.optional(), belt_to_ground_type: z.enum(["input", "output"]).optional(), ...autoSupply }).strict(),
-  z.object({ action: z.literal("craft_items"), recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict(),
-  z.object({ action: z.literal("insert_items"), ...position, items, ...autoSupply }).strict(),
+  z.object({ action: z.literal("place_entity"), ...position, name: z.string(), direction: z.number().int().optional(), input_target: point.optional(), output_target: point.optional(), belt_to_ground_type: z.enum(["input", "output"]).optional(), insert: items.optional(), ...autoSupply }).strict(),
+  z.object({ action: z.literal("craft_items"), recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().optional() }).strict(),
+  z.object({ action: z.literal("insert_items"), ...insertFields, ...autoSupply }).strict(),
   z.object({ action: z.literal("extract_items"), ...position, items: items.optional() }).strict(),
   z.object({ action: z.literal("set_recipe"), ...position, recipe: z.string() }).strict(),
-  z.object({ action: z.literal("rotate_entity"), ...position, direction: z.number().int().min(0).max(15).optional() }).strict(),
+  z.object({ action: z.literal("rotate_entity"), ...position, direction: direction.optional() }).strict(),
   z.object({ action: z.literal("inspect_entities"), positions: z.array(point).min(1).max(16) }).strict(),
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("wait_for_research"), technology: z.string().min(1), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("get_items"), item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
   z.object({ action: z.literal("build_layout"), ...layoutFields }).strict(),
   z.object({ action: z.literal("build_block"), ...blockFields }).strict(),
-]);
+  z.object({ action: z.literal("explore"), ...exploreFields }).strict(),
+  z.object({ action: z.literal("move_entity"), ...moveEntityFields }).strict(),
+  z.object({ action: z.literal("blueprint_place"), ...blueprintPlaceFields }).strict(),
+  z.object({ action: z.literal("build_ghosts"), ...areaFields }).strict(),
+  z.object({ action: z.literal("deconstruct_area"), ...deconstructFields }).strict(),
+  z.object({ action: z.literal("upgrade_area"), ...upgradeFields }).strict(),
+  z.object({ action: z.literal("copy_settings"), ...copySettingsFields }).strict(),
+] as const;
+export const planStepSchema = z.discriminatedUnion("action", [...planSteps]);
+/** A build package may also start with blueprint captures, which the bridge
+ *  makes before it queues the package's other steps. */
+export const captureFields = { name: blueprintName, ...areaFields };
+export const packageStepSchema = z.discriminatedUnion("action", [...planSteps,
+  z.object({ action: z.literal("blueprint_capture"), ...captureFields }).strict()]);
+export type PlanStep = z.infer<typeof planStepSchema>;
+export type PackageStep = z.infer<typeof packageStepSchema>;
+
+/** Cross-field rules one step's object schema cannot express; a message or null. */
+export function areaIssue(value: { area?: unknown; center?: unknown; radius?: unknown }): string | null {
+  const centred = value.center !== undefined || value.radius !== undefined;
+  if ((value.area === undefined) === !centred) return "give either area {left_top, right_bottom} or center with radius";
+  if (centred && (value.center === undefined || value.radius === undefined)) return "center and radius go together";
+  return null;
+}
+export function insertIssue(value: { x?: number; y?: number; targets?: unknown; items?: unknown; per_target?: unknown }): string | null {
+  if ((value.items === undefined) === (value.per_target === undefined)) return "give items or per_target, not both";
+  if (value.targets === undefined) {
+    if (value.x === undefined || value.y === undefined) return "give x and y, or targets";
+    if (value.per_target !== undefined) return "per_target goes with targets; use items for one position";
+  } else if (value.x !== undefined || value.y !== undefined) return "give x and y, or targets, not both";
+  return null;
+}
+export function blockIssue(value: { block: string; count?: number; blueprint?: string }): string | null {
+  if (value.block === "blueprint") return value.blueprint === undefined ? "a blueprint block names its blueprint" : null;
+  if (value.blueprint !== undefined) return "blueprint goes with block: \"blueprint\"";
+  return value.count === undefined ? `a ${value.block} block needs count` : null;
+}
+export function stepIssue(step: PackageStep): string | null {
+  switch (step.action) {
+    case "walk_to": return step.arrival_mode === "exact" && step.arrival_radius !== 1
+      ? "exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius" : null;
+    case "build_layout": return (step.anchor === undefined) === (step.site === undefined) ? "build_layout takes exactly one of anchor or site" : null;
+    case "build_block": return blockIssue(step);
+    case "insert_items": return insertIssue(step);
+    case "build_ghosts": case "deconstruct_area": case "upgrade_area": case "blueprint_capture": return areaIssue(step);
+    default: return null;
+  }
+}
 export const MAX_PLAN_STEPS = 200;
 export const queuePlanSchema = z.object({
   steps: z.array(planStepSchema).min(1).max(MAX_PLAN_STEPS),
@@ -52,13 +135,8 @@ export const queuePlanSchema = z.object({
   after_plan_id: z.number().int().positive().optional(),
 }).strict().superRefine((plan, context) => {
   plan.steps.forEach((step, index) => {
-    if (step.action === "walk_to" && step.arrival_mode === "exact" && step.arrival_radius !== 1) {
-      context.addIssue({ code: "custom", path: ["steps", index, "arrival_radius"],
-        message: "exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius" });
-    }
-    if (step.action === "build_layout" && (step.anchor === undefined) === (step.site === undefined)) {
-      context.addIssue({ code: "custom", path: ["steps", index], message: "build_layout takes exactly one of anchor or site" });
-    }
+    const issue = stepIssue(step);
+    if (issue) context.addIssue({ code: "custom", path: ["steps", index], message: issue });
   });
 });
 export const runPlanSchema = queuePlanSchema;
@@ -116,7 +194,9 @@ export async function waitForPlanStatus(
   return { ...status, wait: { condition, timed_out: true, waited_ms: Math.max(0, clock.now() - started) } };
 }
 
-export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal?: AbortSignal, clock: TaskClock = realClock): Promise<RunPlanResult> {
+/** tool names the MCP tool for a cancel's origin. */
+export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal?: AbortSignal, clock: TaskClock = realClock,
+  tool = "run_plan"): Promise<RunPlanResult> {
   if (signal?.aborted) return { status: "cancelled", completed_steps: 0, outcomes: [],
     execution: { mode: "sequential_nontransactional", rollback: "none", committed_steps: [] } };
   const { plan_id } = await bridge.call<{ plan_id: number }>("queue_plan", input);
@@ -150,7 +230,7 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
       await clock.sleep(Math.min(1_000, budget.remaining()));
     }
   } catch (error) {
-    await bridge.call("cancel", { plan_id }).catch(() => {});
+    await bridge.call("cancel", { plan_id, origin: `${tool}/run_plan-abort` }).catch(() => {});
     try {
       const cancelled = await bridge.call<RunPlanResult>("plan_status", { plan_id });
       if (isTerminal(cancelled)) {

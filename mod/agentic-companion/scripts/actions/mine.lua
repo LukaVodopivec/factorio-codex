@@ -1,26 +1,46 @@
--- Mine exactly the visible entity occupying the requested coordinate.
+-- Mine exactly the visible entity occupying the requested coordinate. count
+-- > 1 on a tree or rock mines it and then the nearest others of its kind. An
+-- own entity with contents is mined the way a player mines it: its contents
+-- go into the inventory with it, after a check that they all fit.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
+local walk = require("scripts.actions.walk")
 -- Optional: the charted-stock reader may be absent or fail to load.
 local registry = require("scripts.registry")
 local M = {}
-local NATURAL_MINABLE_TYPES = { resource = true, tree = true, ["simple-entity"] = true }
+local NATURAL_MINABLE_TYPES = { resource = true, tree = true, ["simple-entity"] = true, plant = true }
+-- The next tree or rock of a count > 1 mine: nearest to the requested
+-- coordinate, small radii first, at most NEXT_LIMIT read per query.
+local NEXT_RADII = { 8, 16, 32 }
+local NEXT_LIMIT = 100
 
 local function table_empty(value)
   if type(value) ~= "table" then return true end
   return next(value) == nil
 end
 
-local function inventory_empty(e)
-  local seen = {}
+-- Items an own entity holds that mining hands to the miner: every
+-- inventory and, for belts, the items on them.
+local function entity_contents(e)
+  local contents, seen = {}, {}
+  local function add(rows)
+    for _, row in ipairs(rows or {}) do
+      if type(row.name) == "string" then contents[row.name] = (contents[row.name] or 0) + (tonumber(row.count) or 0) end
+    end
+  end
   for _, inventory_id in pairs(defines.inventory or {}) do
     if type(inventory_id) == "number" and not seen[inventory_id] then
       seen[inventory_id] = true
       local ok, inv = pcall(e.get_inventory, inventory_id)
-      if ok and inv and not inv.is_empty() then return false end
+      if ok and inv and not inv.is_empty() then add(inv.get_contents()) end
     end
   end
-  return true
+  local ok_lines, lines = pcall(e.get_max_transport_line_index)
+  for index = 1, ok_lines and tonumber(lines) or 0 do
+    local ok, line = pcall(e.get_transport_line, index)
+    if ok and line then add(line.get_contents()) end
+  end
+  return contents
 end
 
 
@@ -33,7 +53,7 @@ local function fluid_contents(e)
 end
 
 local function recoverable(e, allow_fluid_loss)
-  return inventory_empty(e) and (allow_fluid_loss or table_empty(fluid_contents(e)))
+  return allow_fluid_loss or table_empty(fluid_contents(e))
 end
 
 local function fluid_loss_detail(fluids)
@@ -120,8 +140,9 @@ end
 -- the entity's products. Fail before starting the mining state instead of
 -- waiting until the bridge timeout or bypassing the character with scripted
 -- entity mining.
-local function character_accepts_products(inv, e)
+local function character_accepts_products(inv, e, contents)
   local required = {}
+  for name, count in pairs(contents or {}) do required[name] = (required[name] or 0) + count end
   local products = e.prototype.mineable_properties.products or {}
   for _, product in ipairs(products) do
     if (product.type == nil or product.type == "item") and product.name then
@@ -210,9 +231,6 @@ function M.start(task)
   if task.allow_fluid_loss and target_kind ~= "owned" then
     error("mine allow_fluid_loss=true is valid only with target_kind=owned")
   end
-  if target_kind == "owned" and (tonumber(c.crafting_queue_size) or 0) > 0 then
-    error("refusing to recover a player-owned entity while Codex has active hand-crafting")
-  end
   -- The mod's own supply and footprint clearing name the exact natural entity
   -- (a tree on an ore tile shares its coordinate with the resource).
   local exact = task.entity
@@ -263,11 +281,9 @@ function M.start(task)
       string.format("expected %s but exact coordinate contains %s", task.expected_name, found.name), entity_snapshot(found))
     return
   end
-  if count > 1 and found.type ~= "resource" then error("mine count greater than 1 is only valid for resources") end
+  if count > 1 and found == owned then error("mine count greater than 1 is only valid for resources, trees and rocks") end
   if found == owned and not recoverable(found, task.allow_fluid_loss) then
-    error(task.allow_fluid_loss
-      and "refusing to recover a player-owned entity with nonempty inventories"
-      or "refusing to recover a player-owned entity with nonempty inventories or fluids; set allow_fluid_loss=true to discard fluids through ordinary dismantling")
+    error("refusing to recover a player-owned entity with fluids; set allow_fluid_loss=true to discard fluids through ordinary dismantling")
   end
   task._entity, task._entity_name = found, found.name
   task._resolved_target = entity_snapshot(found)
@@ -341,11 +357,42 @@ function M.resume(task)
   task._mining_started = false
 end
 
+local function charted(c, position)
+  local ok, value = pcall(c.force.is_chunk_charted, c.surface,
+    { x = math.floor(position.x / 32), y = math.floor(position.y / 32) })
+  return ok and value == true
+end
+
+-- The nearest charted tree or rock (not own) of the first one's kind to
+-- the requested coordinate, for the next cycle of a count > 1 mine.
+local function next_natural(c, task)
+  for _, radius in ipairs(NEXT_RADII) do
+    local ok, found = pcall(c.surface.find_entities_filtered, { position = task.target, radius = radius,
+      type = task._resolved_target.type, limit = NEXT_LIMIT })
+    local best, best_d
+    for _, e in ipairs(ok and type(found) == "table" and found or {}) do
+      local ok_minable, minable = pcall(function()
+        return e.valid and e.force ~= c.force and e.prototype.mineable_properties.minable
+      end)
+      if ok_minable and minable and charted(c, e.position) then
+        local dx, dy = e.position.x - task.target.x, e.position.y - task.target.y
+        local d = dx * dx + dy * dy
+        if not best or d < best_d or (d == best_d and (e.position.y < best.position.y
+          or e.position.y == best.position.y and e.position.x < best.position.x)) then
+          best, best_d = e, d
+        end
+      end
+    end
+    if best then return best end
+  end
+end
+
 function M.tick(task)
   local c, e = companion.get(), task._entity
   if task._initial_failure then return task._initial_failure end
   if not c then return partial_failure(task, "the Codex character is gone") end
-  if task._target_kind == "owned" and (tonumber(c.crafting_queue_size) or 0) > 0 then
+  local crafting = (tonumber(c.crafting_queue_size) or 0) > 0
+  if task._target_kind == "owned" and crafting and task._mining_started then
     c.mining_state = { mining = false }
     return partial_failure(task, "refusing owned recovery while Codex has active hand-crafting")
   end
@@ -355,7 +402,8 @@ function M.tick(task)
       return target_failure(task, c, "TARGET_GONE_AFTER_RESOLUTION", task._approach and "during_approach" or "before_approach",
         "the exact target was removed after resolution and before mining started", task._resolved_target)
     end
-    local reached = approach.ensure_entity(task, c, e)
+    -- A walk's start blocker is mined from where the body stands.
+    local reached = task.from_here and "ok" or approach.ensure_entity(task, c, e)
     if type(reached) == "table" then
       if not (e and e.valid) then
         return target_failure(task, c, "TARGET_GONE_AFTER_RESOLUTION", "during_approach",
@@ -375,12 +423,17 @@ function M.tick(task)
     end
     if task._target_kind == "owned" and not recoverable(e, task.allow_fluid_loss) then
       c.mining_state = { mining = false }
-      return partial_failure(task, "refusing to recover a player-owned entity that gained inventory or fluid contents")
+      return partial_failure(task, "refusing to recover a player-owned entity that gained fluid contents")
     end
+    -- Hand-crafting changes the inventory the gain is measured on: an owned
+    -- entity is mined once the crafting queue is done.
+    if task._target_kind == "owned" and crafting then return nil end
     local inv = c.get_main_inventory()
     if not inv then return { status = "failed", detail = "the Codex character has no inventory" } end
-    if not character_accepts_products(inv, e) then
-      return partial_failure(task, "Codex inventory is full")
+    local contents = task._target_kind == "owned" and entity_contents(e) or nil
+    if not character_accepts_products(inv, e, contents) then
+      return partial_failure(task, contents and next(contents) and "Codex inventory has no room for the entity and its contents"
+        or "Codex inventory is full")
     end
     task._target_amount = entity_amount(e)
     task._inventory_before = {}
@@ -400,9 +453,16 @@ function M.tick(task)
     return nil
   end
 
-  if task._target_kind == "owned" and e and e.valid and not recoverable(e, task.allow_fluid_loss) then
-    c.mining_state = { mining = false }
-    return partial_failure(task, "refusing to continue recovery after the player-owned entity gained inventory or fluid contents")
+  if task._target_kind == "owned" and e and e.valid then
+    if not recoverable(e, task.allow_fluid_loss) then
+      c.mining_state = { mining = false }
+      return partial_failure(task, "refusing to continue recovery after the player-owned entity gained fluid contents")
+    end
+    local inv = c.get_main_inventory()
+    if inv and not character_accepts_products(inv, e, entity_contents(e)) then
+      c.mining_state = { mining = false }
+      return partial_failure(task, "the entity's contents grew past the room in Codex inventory")
+    end
   end
   local current_amount = entity_amount(e)
   local target_changed = not (e and e.valid)
@@ -447,8 +507,22 @@ function M.tick(task)
       outcome = hint,
     }
   end
-  if not (e and e.valid) then return partial_failure(task, "the initially selected resource was exhausted") end
+  if not (e and e.valid) then
+    if task._resolved_target.type == "resource" then
+      return partial_failure(task, "the initially selected resource was exhausted")
+    end
+    local nxt = next_natural(c, task)
+    if not nxt then
+      return partial_failure(task, string.format("no other %s within %d tiles", task._resolved_target.type,
+        NEXT_RADII[#NEXT_RADII]))
+    end
+    task._entity, task._entity_name, task._expected_items = nxt, nxt.name, expected_item_names(nxt)
+    task._approach, task._approach_close = nil, nil
+  end
   return nil
 end
+
+-- A walk whose start a tree or rock blocks mines it through this runner.
+walk.start_clearer = M
 
 return M

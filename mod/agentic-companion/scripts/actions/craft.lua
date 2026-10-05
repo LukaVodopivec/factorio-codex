@@ -1,12 +1,54 @@
--- craft: hand-crafting via the character crafting queue. begin_crafting
--- returns how many it actually started; the queue progresses on a detached
--- character and is polled via crafting_queue_size.
+-- craft: hand-crafting via the character crafting queue. Like a player, the
+-- body queues the crafts and moves on while they finish (the default);
+-- wait_for_completion = true waits for them. A craft whose direct
+-- ingredients are still in the crafting queue waits for them first, so
+-- begin_crafting never makes them a second time from raw materials, and a
+-- step that consumes an item waits while its output is still queued
+-- (M.awaits). begin_crafting returns how many it actually started; the queue
+-- is polled via crafting_queue_size.
 local companion = require("scripts.companion")
 
 local M = {}
 
 local POLL_TICKS = 30
 local MAX_COUNT = 100
+
+-- Items of `item` one craft of `recipe` yields; an uncertain amount counts 1.
+local function per_craft(recipe, item)
+  local total = 0
+  for _, product in ipairs(recipe and recipe.products or {}) do
+    if product.type == "item" and product.name == item then
+      local amount = product.amount
+      if amount == nil and product.amount_min == product.amount_max then amount = product.amount_min end
+      if (product.probability ~= nil and product.probability ~= 1) or type(amount) ~= "number" or amount <= 0 then
+        amount = 1
+      end
+      total = total + amount
+    end
+  end
+  return total
+end
+
+-- How many of `item` the body's crafting queue will still hand over.
+-- Prerequisite entries are intermediates the next entry consumes.
+function M.queued(c, item)
+  local ok, queue = pcall(function() return c.crafting_queue end)
+  if not ok or type(queue) ~= "table" then return 0 end
+  local total = 0
+  for _, entry in ipairs(queue) do
+    if not entry.prerequisite and type(entry.recipe) == "string" then
+      local recipe = c.force.recipes[entry.recipe]
+      total = total + per_craft(recipe, item) * (tonumber(entry.count) or 0)
+    end
+  end
+  return total
+end
+
+-- A step about to consume `count` of `name` waits while it carries fewer
+-- and the crafting queue still makes some.
+function M.awaits(c, name, count)
+  return c.get_item_count(name) < count and M.queued(c, name) > 0
+end
 
 -- What's short for `count` crafts, e.g. "2x iron-plate, 1x iron-gear-wheel".
 -- Must run BEFORE begin_crafting consumes the ingredients.
@@ -22,6 +64,13 @@ local function missing_ingredients(c, recipe, count)
     end
   end
   return table.concat(parts, ", ")
+end
+
+local function awaits_ingredients(c, recipe, count)
+  for _, ing in ipairs(recipe.ingredients or {}) do
+    if ing.type == "item" and M.awaits(c, ing.name, ing.amount * count) then return true end
+  end
+  return false
 end
 
 function M.start(task)
@@ -42,7 +91,13 @@ function M.start(task)
   if not r.enabled then
     error("recipe " .. task.recipe .. " isn't unlocked yet — research it first")
   end
+  task._craft = nil
+end
 
+-- Queues the crafts. Returns a failed result when none could start.
+local function begin(task, c)
+  local r = c.force.recipes[task.recipe]
+  local count = task.count
   local product_names, before, products_per_craft = {}, {}, {}
   for _, p in ipairs(r.products or {}) do
     if p.type == "item" then
@@ -60,9 +115,9 @@ function M.start(task)
   local started = c.begin_crafting({ count = count, recipe = task.recipe })
   if started == 0 then
     if missing ~= "" then
-      error("can't craft " .. task.recipe .. " — missing ingredients: " .. missing)
+      return { status = "failed", detail = "can't craft " .. task.recipe .. " — missing ingredients: " .. missing }
     end
-    error("can't craft " .. task.recipe .. " — this recipe can't be crafted by hand")
+    return { status = "failed", detail = "can't craft " .. task.recipe .. " — this recipe can't be crafted by hand" }
   end
 
   local note = ""
@@ -85,8 +140,14 @@ function M.tick(task)
   if not c then
     return { status = "failed", detail = "the companion character is gone" }
   end
+  if not task._craft then
+    local r = c.force.recipes[task.recipe]
+    if awaits_ingredients(c, r, task.count) then return nil end
+    local failed = begin(task, c)
+    if failed then return failed end
+  end
   local s = task._craft
-  if task.wait_for_completion == false then
+  if task.wait_for_completion ~= true then
     local expected = {}
     for name, amount in pairs(s.products_per_craft) do
       expected[#expected + 1] = string.format("%g %s", amount * s.started, name)
@@ -114,9 +175,9 @@ function M.tick(task)
     if gained > 0 then
       parts[#parts + 1] = string.format("+%d %s", gained, name)
     end
-    local per_craft = s.products_per_craft[name]
-    if per_craft and per_craft > 0 then
-      local crafts = math.max(0, math.floor(gained / per_craft))
+    local per = s.products_per_craft[name]
+    if per and per > 0 then
+      local crafts = math.max(0, math.floor(gained / per))
       if not produced or crafts < produced then produced = crafts end
     end
   end

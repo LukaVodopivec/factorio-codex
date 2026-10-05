@@ -13,8 +13,8 @@ local body = {
   surface = {},
 }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
-package.loaded["scripts.spatial"] = { observe_local = function(params)
-  check(params.radius == 5 and params.detail == "compact", "snapshot reuses a bounded compact observation")
+package.loaded["scripts.spatial"] = { observe_compact = function(params)
+  check(params.radius == 5, "snapshot reuses a bounded compact observation")
   return { character = { inventory = { ["iron-ore"] = 7 } } }
 end }
 package.loaded["scripts.map_summary"] = {

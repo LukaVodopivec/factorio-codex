@@ -18,13 +18,45 @@ package.loaded["scripts.companion"] = { require_companion = function() return bo
 _G.game = { tick = 0 }
 local craft = require("scripts.actions.craft")
 
-local task = { recipe = "transport-belt", count = 2 }
+local task = { recipe = "transport-belt", count = 2, wait_for_completion = true }
 craft.start(task)
+check(craft.tick(task) == nil and inventory["iron-plate"] == 0, "a waiting craft queues its crafts on its first tick")
 game.tick = 30
 local done = craft.tick(task)
 check(done and done.status == "done" and done.detail:match("2 recipe crafts")
   and done.detail:match("%+4 transport%-belt"),
   "craft result distinguishes recipe crafts from actual output item count")
+
+-- By default the crafts run in the background: the step ends once queued.
+inventory["iron-plate"] = 3
+local background = { recipe = "transport-belt", count = 1 }
+craft.start(background)
+local queued = craft.tick(background)
+check(queued and queued.status == "done" and queued.detail:match("hand%-crafting queue"),
+  "a craft step does not wait for its crafts unless asked to")
+
+-- An ingredient still in the crafting queue is waited for, not re-crafted.
+local gear = { name = "iron-gear-wheel", enabled = true,
+  ingredients = { { type = "item", name = "iron-plate", amount = 2 } },
+  products = { { type = "item", name = "iron-gear-wheel", amount = 1 } } }
+local inserter = { name = "burner-inserter", enabled = true,
+  ingredients = { { type = "item", name = "iron-plate", amount = 1 }, { type = "item", name = "iron-gear-wheel", amount = 1 } },
+  products = { { type = "item", name = "burner-inserter", amount = 1 } } }
+body.force.recipes["iron-gear-wheel"], body.force.recipes["burner-inserter"] = gear, inserter
+inventory["iron-plate"], inventory["iron-gear-wheel"] = 1, 0
+body.crafting_queue = { { index = 1, recipe = "iron-gear-wheel", count = 1, prerequisite = false } }
+local began = 0
+body.begin_crafting = function(args) began = began + args.count; return args.count end
+check(craft.queued(body, "iron-gear-wheel") == 1 and craft.awaits(body, "iron-gear-wheel", 1)
+  and not craft.awaits(body, "iron-plate", 1), "queued output counts toward what the body will carry")
+local consumer = { recipe = "burner-inserter", count = 1 }
+craft.start(consumer)
+check(craft.tick(consumer) == nil and began == 0, "a craft waits while its ingredient is still being crafted")
+body.crafting_queue, inventory["iron-gear-wheel"] = {}, 1
+local consumed = craft.tick(consumer)
+check(consumed and consumed.status == "done" and began == 1, "the craft starts once its ingredient is carried")
+body.crafting_queue = { { index = 1, recipe = "iron-gear-wheel", count = 5, prerequisite = true } }
+check(craft.queued(body, "iron-gear-wheel") == 0, "a prerequisite craft's output is consumed by the next one, never counted")
 local missing_count_ok = pcall(craft.start, { recipe = "transport-belt" })
 check(not missing_count_ok, "craft rejects a missing recipe execution count")
 for _, invalid in ipairs({ 0, 1.5, 101 }) do

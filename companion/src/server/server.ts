@@ -41,7 +41,8 @@ export const SERVER_SETTINGS = {
   max_players: 2,
   require_user_verification: false,
   auto_pause: true,
-  autosave_interval: 10,
+  // Minutes. A save blocks every client for 50-85 ms; keep it rare.
+  autosave_interval: 30,
   autosave_slots: 2,
 } as const;
 

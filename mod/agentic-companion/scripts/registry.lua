@@ -265,19 +265,15 @@ end
 
 function M.holder_kind(entry) return CHEST_TYPES[entry.type] and "chest" or "machine_output" end
 
--- {[item] = count} over every holder in one pass (belts are not counted).
+-- {[item] = count} held by own holders (chests and crafting outputs; belts
+-- are not counted), as the last stock refresh found them
+-- (map_summary.status_tick reads every holder a few per tick and keeps the
+-- totals): no holder is walked here. Zero until the first refresh after a
+-- load; what is actually taken is read again where it is taken.
 function M.stock_totals(items)
+  local cached = storage and storage.status_cache and storage.status_cache.totals or {}
   local totals = {}
-  for _, name in ipairs(items) do totals[name] = 0 end
-  for _, entry in ipairs(M.list("holders")) do
-    local inventory = M.holder_inventory(entry.entity)
-    if inventory then
-      for _, name in ipairs(items) do
-        local ok, count = pcall(inventory.get_item_count, name)
-        if ok and type(count) == "number" then totals[name] = totals[name] + count end
-      end
-    end
-  end
+  for _, name in ipairs(items) do totals[name] = cached[name] or 0 end
   return totals
 end
 

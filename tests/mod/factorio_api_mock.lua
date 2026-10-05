@@ -11,8 +11,10 @@ local function invalid(class, key, action)
   error(message, 3)
 end
 
+-- LuaFluidBox and LuaInventory have a numeric index operator.
+local INDEXED = { LuaFluidBox = true, LuaInventory = true }
 local function allowed(class, key)
-  return members[class][key] or class == "LuaFluidBox" and type(key) == "number"
+  return members[class][key] or INDEXED[class] and type(key) == "number"
     and key >= 1 and key % 1 == 0
 end
 
@@ -70,6 +72,10 @@ function M.flow_statistics(values) return wrap("LuaFlowStatistics", values) end
 function M.transport_line(values) return wrap("LuaTransportLine", values) end
 function M.inventory(values) return wrap("LuaInventory", values) end
 function M.entity_prototype(values) return wrap("LuaEntityPrototype", values) end
+-- Documented 2.0.77 members (not probed natively).
+function M.item_stack(values) return wrap("LuaItemStack", values) end
+function M.shortcut_prototype(values) return wrap("LuaShortcutPrototype", values) end
+function M.logistic_network(values) return wrap("LuaLogisticNetwork", values) end
 function M.state(object)
   assert(objects[object], "simulation state requires a strict mock")
   return objects[object].simulation
@@ -85,7 +91,7 @@ function M.read(object, key, reader)
   record.readers[key] = reader
 end
 function M.length(object, reader)
-  assert(objects[object] and objects[object].class == "LuaFluidBox", "length requires a fluidbox mock")
+  assert(objects[object] and INDEXED[objects[object].class], "length requires a fluidbox or inventory mock")
   -- The proxy metatable remains protected; only the native length behavior changes.
   objects[object].length = reader
 end

@@ -44,7 +44,7 @@ observations, exact positions included; nothing carries over to another run.
   upstream so surplus never starves the fuel loop.
 - **Whole blocks.** Build a mining row, a smelting column, or an assembler row
   at once rather than one machine at a time; a design that worked is cheapest
-  to repeat at a new site.
+  to repeat at a new site as this run's blueprint.
 - **Outlets.** Every line ends in a consumer or a chest with space. Fix a full
   output at its cause: use the stock, add a consumer, or extend the line.
 - **Use your stock.** Chests, furnace outputs, and belts are the first source

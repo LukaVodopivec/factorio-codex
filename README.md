@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.21.0**.
+Current release: **0.21.1**.
 
 Factorio Codex shows how Codex bots think about and architect a Factorio
 factory. Two reasoning sessions plan and direct one physical character named
@@ -64,7 +64,7 @@ body and one FIFO plan queue.
 
 - **Astra** (`gpt-6-astra`, `medium` reasoning, normal speed) is the strategist
   and architect. It owns coordinate-free NOW/NEXT/LATER priorities and designs
-  build packages of whole blocks, dry-run with `build_block`/`build_layout`
+  build packages of whole blocks or this run's blueprints, dry-run with
   `check_only`. It uses only the read-only MCP surface and is the sole writer of
   `operations.json`, through `ledger-apply`.
 - **Luna** (`gpt-6-luna`, `low` reasoning, fast mode) is the foreman and the
@@ -129,38 +129,58 @@ replacement.
   `state` (`running`, `starved` with the missing item as `cause`,
   `output_full`, `no_fuel`, `no_power`, `idle`), the position that causes a
   problem, `rate_per_min`, `hand_fed` (a character transfer in the last
-  minute) and `self_sustaining` (a minute of running with no character
-  transfer and no stall). There are no proofs or validation windows.
+  minute), `self_sustaining` (a minute of running with no character
+  transfer and no stall) and, from the second hand transfer into or out of
+  its machines within ten minutes, `hand_transfers`: such a line needs a
+  connection, not another trip. There are no proofs or validation windows.
 - **Auto-supply.** `get_items`, `place_entity`, `insert_items`, `build_plan`,
   `build_layout` and `build_block` fetch what they lack: from the nearest own
   chest or machine output (belts only when nothing else holds it), else by
-  hand-crafting with intermediates up to four levels deep, else by
+  smelting ore in an own furnace or hand-crafting with intermediates up to
+  four levels deep (queued crafts count, so nothing is crafted twice), else by
   hand-gathering a raw resource no own drill produces. A shortfall is reported
-  as `SUPPLY_SHORTFALL` with each missing item and why.
+  as `SUPPLY_SHORTFALL` with each missing item and why; what exists is
+  carried, and own lines that make a missing item add their `rate_per_min`
+  and `expected_minutes` for the rest.
 - **Auto-clear.** Placement mines trees and rocks in the footprint first.
 - **Recoveries.** Stepping off a belt, leaving a placement footprint, mining an
   owned blocker that encloses the body, one re-approach after an out-of-reach
   result, and one retry of a partial insert happen inside the action.
-- **Upkeep.** While the FIFO is empty and no hold is active, the body refuels
-  dry burner machines from own stock as a plan with source `upkeep`; any
-  queued plan takes the body at the next step boundary.
+- **Upkeep.** While the FIFO is empty, no hold is active, and some plan has
+  finished since the last emergency stop (a stop is never undone by upkeep),
+  the body refuels dry burner machines and brings the current research's
+  science packs to waiting labs from own stock as a plan with source `upkeep`;
+  any queued plan
+  takes the body at the next step boundary.
+- **Background crafting.** Hand-crafting runs while the body keeps working; a
+  later step that needs the item waits for it.
 - **Charting.** Every minute the force charts the chunks around the body, so
-  patches and water appear without scouting walks.
+  patches and water appear without scouting walks; `explore` walks toward
+  uncharted land, charting as it goes, until a wanted patch is in view.
+- **Blueprints.** The mod keeps this run's blueprints as real blueprint items:
+  capture a build that works once, then stamp it again by hand or as ghosts.
+  Nothing is imported; an export is a string for the notebook.
 
 ## MCP tools
 
-The full surface has 31 tools; the read-only surface used by Astra has 15.
+The full surface has 44 tools; the read-only surface used by Astra has 20.
 Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
-`idle_seconds`, `human_control`).
+`idle_seconds`, `human_control`). Heavy reads (`map_summary`, a full
+`observe_local`, route and site searches, dry runs, blueprint capture and
+description) run in the game as jobs spread over ticks; the bridge polls
+`get_job` and returns the same result shape.
 
 | Tool | Surface | Purpose |
 | --- | --- | --- |
 | `connect_status` | both | config, RCON, mod and protocol check; binds the `Codex` player |
 | `factory_status` | both | the single routine read: lines, problems, power, stock, research, body, patches; `since_tick`, `sections` |
-| `next_event` | both | waits up to 120 s for `plan_ended`, `queue_empty`, `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, or `timeout` |
-| `activity_log` | both | recent plan outcomes with `source` (`pilot`, `upkeep`, `package:<id>`) and package statuses |
-| `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes and belt/pipe/power connections |
-| `build_block` | both (read-only: dry run) | `mining`, `smelting`, `assembly`, `power` or `labs` blocks, `count` copies |
+| `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change), `research_finished`, `queue_empty`, `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, or `timeout` |
+| `activity_log` | both | recent plan outcomes with `source` (`pilot`, `upkeep`, `package:<id>`), cancels with their `origin`, blueprint changes, and package statuses |
+| `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections |
+| `build_block` | both (read-only: dry run) | `mining`, `smelting`, `assembly`, `power` or `labs` blocks, `count` copies, or a stored `blueprint` |
+| `connect_entities` | both (read-only: dry run) | belt, pipe or power route of up to 200 pieces between entities or free tiles, underground past obstacles |
+| `blueprint_list`, `blueprint_describe`, `blueprint_export` | both | this run's stored blueprints; export is a string for notes, never imported |
+| `blueprint_place` | both (read-only: dry run) | build a stored blueprint by hand or as ghosts |
 | `map_summary` | both | full flow graph of the charted factory; `include` adds `stockpiles`, `sites`, `patches`, `power`, `problems`, `flows_all` |
 | `observe_local`, `inspect_entity` | both | nearby entities and exact entity state (own entities anywhere charted) |
 | `can_place`, `find_placement` | both | placement checks anywhere charted |
@@ -168,13 +188,20 @@ Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
 | `plan_status` | both | one exact plan, optionally waiting up to 60 s |
 | `get_items` | full | fetch, craft or gather `count` of an item |
 | `queue_plan`, `run_plan` | full | 1-200 plan steps; `queue_plan` returns at once |
-| `walk_to`, `mine`, `pickup_items`, `place_entity`, `craft_items`, `insert_items`, `extract_items`, `set_recipe`, `rotate_entity`, `build_plan`, `connect_entities`, `start_research` | full | single physical actions |
+| `walk_to`, `mine`, `pickup_items`, `place_entity`, `craft_items`, `insert_items`, `extract_items`, `set_recipe`, `rotate_entity`, `build_plan`, `start_research` | full | single physical actions |
+| `move_entity`, `explore`, `build_ghosts`, `deconstruct_area`, `upgrade_area`, `copy_settings` | full | one-step plans: move a building with its contents, scout and chart, build ghosts by hand, clear or upgrade an area, copy settings |
+| `blueprint_capture`, `blueprint_create`, `blueprint_delete` | full | store a blueprint from own buildings or a layout; delete one |
 | `stop` | full | supervisor-only emergency cancellation |
 
 Plan steps are `walk_to`, `mine`, `pickup_items`, `place_entity`,
 `craft_items`, `insert_items`, `extract_items`, `set_recipe`, `rotate_entity`,
 `inspect_entities`, `wait_for_item`, `wait_for_research`, `get_items`,
-`build_layout` and `build_block`. Plans are sequential and nontransactional:
+`build_layout`, `build_block`, `explore`, `move_entity`, `blueprint_place`,
+`build_ghosts`, `deconstruct_area`, `upgrade_area` and `copy_settings`. A build
+package may also start with `blueprint_capture` steps, which the bridge makes
+before it queues the rest (after its `after_package_id` plan has ended).
+`craft_items` does not hold the body unless `wait_for_completion` is true; a
+later step that needs the item waits for it. Plans are sequential and nontransactional:
 completed steps stay committed. `after_plan_id` runs a plan only after that
 plan completes; a chained successor is cancelled when its predecessor fails.
 `mine` accepts an optional `expected_name` and `observed_tick`. A plan step
@@ -186,7 +213,10 @@ from a plain transport belt tile as an exact conserved transfer (the body
 within `item_pickup_distance` of the belt's centre and room for the whole
 count, or an honest refusal, never a partial spill). A hand-mining result adds
 `drill_produced: true` when own drills already mine that resource.
-`connect_entities` builds one belt, pipe or power route of at most 25 pieces.
+Every cancel names its `origin` (the tool, and the role its MCP process was
+started with: `factorio-codex mcp --role pilot|strategist|supervisor`) in
+`activity_log` and the server log. Packages written before an emergency stop stay held until
+Astra rewrites the ledger; nothing else holds them but a human hold.
 
 ## Run recorder
 

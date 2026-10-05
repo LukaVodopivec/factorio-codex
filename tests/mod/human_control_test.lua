@@ -256,6 +256,50 @@ check(storage.tasks.last_finished_tick == game.tick and finished < game.tick,
   "time the owner plays the body with an empty queue is not counted as body idle time")
 check(queue_walk(10).body_idle_ticks == 0, "a plan queued during the hold reports no body idle time")
 
+-- An in-place mod upgrade (on_configuration_changed: state.init, then
+-- tasks.resume_active) while a walk waits for its path: state.init drops the
+-- path request, and the walk asks again from where the body stands.
+local mod_state = require("scripts.state")
+reset()
+local upgraded = queue_walk(10)
+tick()
+check(storage.path_request ~= nil and #path_requests == 1, "fixture: the walk waits for its path when the save is made")
+state.position = { x = 1, y = 0 }
+mod_state.init()
+tasks.resume_active()
+tick()
+check(#path_requests == 2 and path_requests[2].x == 1 and storage.path_request ~= nil
+  and storage.path_request.id == 2, "after the upgrade the waiting walk requests its path again")
+answer_path(10)
+tick()
+state.position = { x = 10, y = 0 }
+for _ = 1, 3 do tick() end
+check(tasks.plan_status({ plan_id = upgraded.plan_id }).status == "completed",
+  "the walk in flight at the upgrade completes instead of timing out")
+
+-- A hold in progress at the upgrade survives it and is still credited.
+reset()
+local held_plan = queue_walk(10)
+tick()
+answer_path(10)
+tick()
+press()
+tick()
+hold_key()
+game.tick = game.tick + 700 * 60
+tasks.on_tick()
+local requests_at_upgrade = #path_requests
+mod_state.init()
+tasks.resume_active()
+check(storage.tasks.human_hold ~= nil and #path_requests == requests_at_upgrade,
+  "state.init keeps a hold in progress, and a held step is not resumed yet")
+release_key()
+game.tick = game.tick + 299
+tick()
+check(storage.tasks.human_hold == nil and tasks.plan_status({ plan_id = held_plan.plan_id }).status == "running"
+  and #path_requests == requests_at_upgrade + 1,
+  "the hold ends after the upgrade: its ticks are credited to the plan and the step re-plans")
+
 -- A disconnected player never holds: the dispatcher keeps running (and, with
 -- no body, fails the work instead of parking it).
 reset()
@@ -577,7 +621,7 @@ do
   state.begin_crafting = function(request) state.crafting_queue_size = request.count; return request.count end
   local function crafted(gears)
     counts["iron-gear-wheel"] = 0
-    local crafting = { recipe = "iron-gear-wheel", count = 10 }
+    local crafting = { recipe = "iron-gear-wheel", count = 10, wait_for_completion = true }
     craft.start(crafting)
     game.tick = game.tick + 31
     check(craft.tick(crafting) == nil, "fixture: the craft waits while its queue is busy")
@@ -614,11 +658,13 @@ do
   package.loaded["scripts.state"] = { init = function() end }
   package.loaded["scripts.inspect"] = { inspect = reader() }
   package.loaded["scripts.research"] = { start_research = reader(), progression_status = reader() }
-  package.loaded["scripts.spatial"] = { observe_local = reader(), can_place = reader(), describe_prototype = reader() }
+  local function job() return { start = function() return {} end, step = reader() } end
+  package.loaded["scripts.spatial"] = { observe_job = job(), observe_compact = reader(), can_place = reader(),
+    describe_prototype = reader() }
   package.loaded["scripts.find_placement"] = { find_placement = reader() }
-  package.loaded["scripts.map_summary"] = { map_summary = reader() }
+  package.loaded["scripts.map_summary"] = { summary_job = job() }
   package.loaded["scripts.production_requirements"] = { production_requirements = reader() }
-  package.loaded["scripts.connect_entities"] = { connect_entities = reader() }
+  package.loaded["scripts.connect_entities"] = { job = job() }
   package.loaded["scripts.run_snapshot"] = { capture = reader() }
   assert(loadfile(here .. "/../../mod/agentic-companion/control.lua"))()
   local function fifo(method)

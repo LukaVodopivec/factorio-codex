@@ -119,10 +119,14 @@ local surface = {
       return { { valid = true, name = "stone-wall", type = "wall", position = filter.area.left_top } }
     end
     if filter.type == "resource" then
+      -- The site search reads its window in strips of rows.
+      assert(filter.area and filter.area.right_bottom.y - filter.area.left_top.y <= 8, "a resource window is read in strips")
+      engine.resource_reads = (engine.resource_reads or 0) + 1
       local out = {}
       for _, e in ipairs(resources) do
-        local dx, dy = e.position.x - filter.position.x, e.position.y - filter.position.y
-        if dx * dx + dy * dy <= filter.radius * filter.radius then out[#out + 1] = e end
+        local p = e.position
+        if p.x >= filter.area.left_top.x and p.x < filter.area.right_bottom.x
+          and p.y >= filter.area.left_top.y and p.y < filter.area.right_bottom.y then out[#out + 1] = e end
       end
       return out
     end
@@ -138,16 +142,21 @@ local surface = {
     return {}
   end,
   find_tiles_filtered = function(filter)
+    assert(filter.area and filter.area.right_bottom.y - filter.area.left_top.y <= 8, "a water window is read in strips")
     local out = {}
     for _, t in ipairs(water) do
-      local dx, dy = t.position.x + 0.5 - filter.position.x, t.position.y + 0.5 - filter.position.y
-      if dx * dx + dy * dy <= filter.radius * filter.radius then out[#out + 1] = t end
+      local p = t.position
+      if p.x >= filter.area.left_top.x and p.x < filter.area.right_bottom.x
+        and p.y >= filter.area.left_top.y and p.y < filter.area.right_bottom.y then out[#out + 1] = t end
     end
     return out
   end,
   create_entity = function(args)
     created[#created + 1] = args
-    return { valid = true, name = args.name, type = entities[args.name].type, position = args.position }
+    local e = { valid = true, name = args.name, type = entities[args.name].type, position = args.position, inserted = {} }
+    e.insert = function(stack) e.inserted[stack.name] = (e.inserted[stack.name] or 0) + stack.count; return stack.count end
+    args.entity = e
+    return e
   end,
 }
 local recipes = {}
@@ -173,6 +182,10 @@ package.loaded["scripts.factory_activity"] = { record = function() end }
 local geometry = require("scripts.placement_geometry")
 local layout = require("scripts.actions.build_layout")
 local blocks = require("scripts.blocks")
+local jobs = require("scripts.jobs")
+-- The RPC dry runs are jobs; these run one to its end, a tick's budget at a time.
+local function check_layout(params) return jobs.run_now(layout.layout_check_job, params) end
+local function check_block(params) return jobs.run_now(layout.block_check_job, params) end
 
 -- ---------------------------------------------------------------- helpers
 
@@ -315,25 +328,38 @@ check(not bad and not too_many and not no_resource, "build_block validation reje
 
 -- ------------------------------------------------------------- site search
 
-local mined = layout.check_block({ block = "mining", count = 4, resource = "iron-ore", near = { x = 30, y = 50 }, check_only = true })
+local mined = check_block({ block = "mining", count = 4, resource = "iron-ore", near = { x = 30, y = 50 }, check_only = true })
 local on_patch = mined.ok
 for _, row in ipairs(mined.placed) do
   if row.name == "burner-mining-drill" and not (row.x > 40 and row.x < 80 and row.y > 40 and row.y < 60) then on_patch = false end
 end
 check(on_patch and #mined.failed == 0, "a mining block finds a site with every drill on the resource patch")
-local nowhere = layout.check_block({ block = "mining", count = 2, resource = "iron-ore", near = { x = -300, y = -300 }, check_only = true })
+-- The resource window is a phase of the search: starting one reads nothing,
+-- and the window is read a strip of rows per query.
+engine.resource_reads = 0
+local window = layout.block_check_job.start({ block = "mining", count = 4, resource = "iron-ore", near = { x = 60, y = 50 },
+  check_only = true })
+check(engine.resource_reads == 0, "starting a site search reads no resource: the window is read in the search's ticks")
+local window_result, window_slices = nil, 0
+repeat
+  window_slices = window_slices + 1
+  window_result = layout.block_check_job.step(window, { left = jobs.WORK_PER_TICK })
+until window_result or window_slices > 200
+check(window_result and window_result.ok and engine.resource_reads == 8,
+  "a 64-row resource window is read in 8 strips (" .. engine.resource_reads .. " reads) and the site is found")
+local nowhere = check_block({ block = "mining", count = 2, resource = "iron-ore", near = { x = -300, y = -300 }, check_only = true })
 check(not nowhere.ok and nowhere.failed[1].code == "SITE_NOT_FOUND", "no resource near the site is SITE_NOT_FOUND")
 
-local shore = layout.check_block({ block = "power", count = 2, near = { x = 5, y = 3 }, check_only = true })
+local shore = check_block({ block = "power", count = 2, near = { x = 5, y = 3 }, check_only = true })
 local pump_row
 for _, row in ipairs(shore.placed) do if row.name == "offshore-pump" then pump_row = row end end
 check(shore.ok and pump_row and not is_water(math.floor(pump_row.x), math.floor(pump_row.y))
   and is_water(math.floor(pump_row.x) - 1, math.floor(pump_row.y)),
   "a power block turns to fit the shore: pump on land with water behind it")
-local landlocked = layout.check_block({ block = "power", count = 1, near = { x = 300, y = 300 }, check_only = true })
+local landlocked = check_block({ block = "power", count = 1, near = { x = 300, y = 300 }, check_only = true })
 check(not landlocked.ok and landlocked.failed[1].code == "SITE_NOT_FOUND", "no water near the site is SITE_NOT_FOUND")
 
-local smelt = layout.check_block({ block = "smelting", count = 2, near = { x = 10.5, y = 10.5 }, check_only = true })
+local smelt = check_block({ block = "smelting", count = 2, near = { x = 10.5, y = 10.5 }, check_only = true })
 local nearest = math.huge
 for _, row in ipairs(smelt.placed) do nearest = math.min(nearest, (row.x - 10.5) ^ 2 + (row.y - 10.5) ^ 2) end
 check(smelt.ok and nearest < 25, "a smelting block is sited around near")
@@ -342,7 +368,7 @@ check(smelt.ok and nearest < 25, "a smelting block is sited around near")
 
 local function dry(params)
   params.check_only = true
-  return layout.check_layout(params)
+  return check_layout(params)
 end
 local overlap = dry({ anchor = { x = 10, y = 10 }, entities = {
   { name = "stone-furnace", dx = 1, dy = 1 }, { name = "wooden-chest", dx = 1.5, dy = 1.5 } } })
@@ -391,7 +417,7 @@ local bad_layout = pcall(layout.layout_action.validate, { action = "build_layout
 local both = pcall(layout.layout_action.validate, { anchor = { x = 0, y = 0 }, site = { near = { x = 0, y = 0 } },
   entities = { { name = "pipe", dx = 0, dy = 0 } } }, 1)
 check(not bad_layout and not both, "queue_plan validation rejects empty layouts and anchor plus site")
-local rpc_build = pcall(layout.check_layout, { anchor = { x = 0, y = 0 }, entities = { { name = "pipe", dx = 0, dy = 0 } } })
+local rpc_build = pcall(check_layout, { anchor = { x = 0, y = 0 }, entities = { { name = "pipe", dx = 0, dy = 0 } } })
 check(not rpc_build, "the RPC only dry-runs: without check_only it refuses")
 
 -- ---------------------------------------------------- check_only is read-only
@@ -400,8 +426,8 @@ created, crafted = {}, 0
 local storage_before = next(storage)
 local inventory_before = {}
 for k, v in pairs(inventory) do inventory_before[k] = v end
-layout.check_block({ block = "smelting", count = 3, near = { x = 10, y = 10 }, check_only = true })
-layout.check_block({ block = "power", count = 1, near = { x = 5, y = 3 }, check_only = true })
+check_block({ block = "smelting", count = 3, near = { x = 10, y = 10 }, check_only = true })
+check_block({ block = "power", count = 1, near = { x = 5, y = 3 }, check_only = true })
 dry({ anchor = { x = 100, y = 100 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
 local same = true
 for k, v in pairs(inventory) do if inventory_before[k] ~= v then same = false end end
@@ -439,11 +465,20 @@ check(worst <= per_tick_engine and ticks <= layout.MAX_WORK / layout.WORK_PER_TI
   string.format("the site search spreads over ticks within its budget (worst tick %d placement checks, %d ticks)", worst, ticks))
 check(overlap_calls <= 4 * entity_count * 4,
   string.format("layout overlaps are checked once per rotation, not per candidate (%d footprint comparisons)", overlap_calls))
-engine.can_place, engine.find = 0, 0
-local dry_big = layout.check_block({ block = big.block, count = big.count, recipe = big.recipe, near = big.near, check_only = true })
-check(not dry_big.ok and dry_big.incomplete and dry_big.failed[1].code == "SITE_SEARCH_INCOMPLETE"
-  and engine.can_place <= per_tick_engine,
-  string.format("a dry run stops at one tick's work and says it is incomplete (%d placement checks)", engine.can_place))
+-- The dry run is a job with the same per-tick budget: it searches as far as
+-- the build would and gives the same definite answer.
+local dry_job = layout.block_check_job.start({ block = big.block, count = big.count, recipe = big.recipe,
+  near = big.near, check_only = true })
+local dry_big, dry_ticks, dry_worst = nil, 0, 0
+while not dry_big and dry_ticks < 200 do
+  engine.can_place = 0
+  dry_big = layout.block_check_job.step(dry_job, { left = layout.WORK_PER_TICK })
+  dry_ticks, dry_worst = dry_ticks + 1, math.max(dry_worst, engine.can_place)
+end
+check(dry_big and not dry_big.ok and dry_big.failed[1].code == "SITE_NOT_FOUND"
+  and dry_big.failed[1].reason == outcome.outcome.failed[1].reason and dry_worst <= per_tick_engine,
+  string.format("a dry run searches over ticks within the same budget and answers like the build (%d ticks, worst %d checks)",
+    dry_ticks, dry_worst))
 crowded = false
 geometry.overlaps = real_overlaps
 
@@ -458,6 +493,17 @@ local walled_route = dry({ anchor = { x = 300, y = 300 }, entities = {
 check(not walled_route.ok and walled_route.failed[1].code == "ROUTE_FAILED" and engine.can_place <= per_tick_engine,
   string.format("a walled-in route fails as ROUTE_FAILED within one tick's work (%d placement checks)", engine.can_place))
 engine.can_place = 0
+-- A route-only layout joins what already stands: no entities, connections from an anchor.
+local route_only = dry({ anchor = { x = 600, y = 600 }, entities = {},
+  connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 10.5, dy = 0.5 } } } })
+local route_belts = 0
+for _, row in ipairs(route_only.placed or {}) do if row.name == "transport-belt" then route_belts = route_belts + 1 end end
+check(route_only.ok and route_belts >= 10, "a layout of connections only (from an anchor) plans its route (" .. route_belts .. " belts)")
+check(not pcall(layout.layout_check_job.start, { site = { near = { x = 0, y = 0 } }, entities = {}, check_only = true,
+  connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0, dy = 0 }, to = { dx = 1, dy = 0 } } } })
+  and not pcall(layout.layout_check_job.start, { anchor = { x = 0, y = 0 }, entities = {}, check_only = true }),
+  "no entities needs connections and an anchor")
+engine.can_place = 0
 local long_route = dry({ anchor = { x = 400, y = 400 }, entities = {
   { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 25.5, dy = 6.5 } },
   connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 25.5, dy = 6.5 } } } })
@@ -466,6 +512,45 @@ for _, row in ipairs(long_route.placed) do if row.name == "transport-belt" then 
 check(long_route.ok and long_belts == 30 and engine.can_place < 200,
   string.format("an open 31-tile route is found by its shortest path without searching the whole area (%d placement checks)",
     engine.can_place))
+
+-- Connections reach 200 tiles; the search resumes over ticks and hops a
+-- planned wall with an underground pair when the belt tier has one.
+local far = layout.layout_check_job.start({ check_only = true, anchor = { x = 600, y = 600 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 150.5, dy = 0.5 } },
+  connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 150.5, dy = 0.5 } } } })
+local far_result, far_ticks, far_worst = nil, 0, 0
+while not far_result and far_ticks < 500 do
+  engine.can_place = 0
+  far_result = layout.layout_check_job.step(far, { left = layout.WORK_PER_TICK })
+  far_ticks, far_worst = far_ticks + 1, math.max(far_worst, engine.can_place)
+end
+local far_belts = 0
+for _, row in ipairs(far_result and far_result.placed or {}) do if row.name == "transport-belt" then far_belts = far_belts + 1 end end
+check(far_result and far_result.ok and far_belts == 149 and far_ticks > 1 and far_worst <= per_tick_engine,
+  string.format("a 150-tile layout connection is routed over %d ticks (worst %d placement checks)", far_ticks, far_worst))
+items["underground-belt"] = { name = "underground-belt", stack_size = 50,
+  place_result = entity("underground-belt", "underground-belt", 1, 1, { max_underground_distance = 5 }) }
+entities["underground-belt"] = items["underground-belt"].place_result
+entities["transport-belt"].related_underground_belt = entities["underground-belt"]
+recipes["underground-belt"] = { name = "underground-belt", enabled = true }
+local wall = { { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 20.5, dy = 0.5 } }
+for dy = -40, 40 do wall[#wall + 1] = { name = "iron-chest", dx = 10.5, dy = dy + 0.5 } end
+local hopped = check_layout({ check_only = true, anchor = { x = 700, y = 700 }, entities = wall,
+  connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 20.5, dy = 0.5 } } } })
+local unders = 0
+for _, row in ipairs(hopped.placed) do if row.name == "underground-belt" then unders = unders + 1 end end
+check(hopped.ok and unders == 2, "a layout belt hops a planned wall of chests with one underground pair")
+local walled_off = check_layout({ check_only = true, anchor = { x = 800, y = 800 }, entities = wall,
+  connections = { { kind = "belt", prototype = "transport-belt", underground = false,
+    from = { dx = 0.5, dy = 0.5 }, to = { dx = 20.5, dy = 0.5 } } } })
+local detour_belts, detour_unders = 0, 0
+for _, row in ipairs(walled_off.placed) do
+  if row.name == "transport-belt" then detour_belts = detour_belts + 1 end
+  if row.name == "underground-belt" then detour_unders = detour_unders + 1 end
+end
+check(walled_off.ok and detour_unders == 0 and detour_belts >= 100,
+  "underground = false keeps a layout route above ground: it goes round the wall")
+entities["transport-belt"].related_underground_belt = nil
 
 -- ------------------------------------------------------------------ build
 
@@ -513,6 +598,66 @@ held._plan._approach, held._plan._approach_close = { phase = "walking" }, true
 layout.layout_action.runner.resume(held)
 check(held._plan._approach == nil and held._plan._approach_close == nil,
   "after a takeover hold the nested build approaches again from where the body stands")
+-- Starter items: an entity's insert map goes in after it is placed, and a
+-- block fuels its burner machines without being asked.
+items.coal = { name = "coal", stack_size = 50 }
+entities["burner-mining-drill"].burner_prototype = { fuel_categories = { chemical = true } }
+created = {}
+inventory = { ["stone-furnace"] = 1, coal = 4 }
+local fuelled = { id = 11, anchor = { x = 230, y = 200 }, entities = {
+  { name = "stone-furnace", dx = 1, dy = 1, insert = { coal = 4 } } } }
+check(pcall(layout.layout_action.validate, fuelled, 1)
+  and not pcall(layout.layout_action.validate, { anchor = { x = 0, y = 0 }, entities = {
+    { name = "stone-furnace", dx = 1, dy = 1, insert = { coal = 0 } } } }, 1),
+  "a layout entity's insert maps item names to positive counts")
+layout.layout_action.runner.start(fuelled)
+for _ = 1, 20 do
+  result = layout.layout_action.runner.tick(fuelled)
+  if result then break end
+end
+check(result and result.status == "done" and created[1].entity.inserted.coal == 4 and inventory.coal == 0,
+  "a layout entity's insert map is put into the placed entity")
+check(layout._rotated({ entities = { { name = "stone-furnace", dx = 1, dy = 0, insert = { coal = 2 } } } }, 1).entities[1].insert.coal == 2,
+  "a turned layout keeps each entity's insert map")
+set_powered(false)
+created = {}
+inventory = { ["burner-mining-drill"] = 1, ["iron-chest"] = 1, coal = 10 }
+local drill_block = { id = 12, block = "mining", count = 1, resource = "iron-ore", near = { x = 50.5, y = 50.5 } }
+layout.block_action.runner.start(drill_block)
+for _ = 1, 60 do
+  result = layout.block_action.runner.tick(drill_block)
+  if result then break end
+end
+local drill, chest_built
+for _, args in ipairs(created) do
+  if args.name == "burner-mining-drill" then drill = args.entity elseif args.name == "iron-chest" then chest_built = args.entity end
+end
+check(result and result.status == "done" and drill and drill.inserted.coal == 5 and chest_built and next(chest_built.inserted) == nil,
+  "build_block fuels its burner drill by default and puts nothing in the chest")
+local steps = require("scripts.actions.build_plan").fuel_burners(character, {
+  { item = "burner-mining-drill" }, { item = "burner-mining-drill", insert = { wood = 2 } }, { item = "wooden-chest" } })
+check(steps[1].insert.coal == 5 and steps[2].insert.wood == 2 and steps[2].insert.coal == nil and steps[3].insert == nil,
+  "only burner steps without starter items get fuel")
+
+-- A save made by 0.21.0 mid-search loads into this version: its search kept
+-- a boolean deferral and connections without underground facts.
+created = {}
+inventory = { ["wooden-chest"] = 2, ["transport-belt"] = 10 }
+local loaded = { id = 13, anchor = { x = 240, y = 200 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 6.5, dy = 0.5 } },
+  connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 6.5, dy = 0.5 } } } }
+layout.layout_action.runner.start(loaded)
+loaded._search.deferred = true
+for _, variant in ipairs(loaded._search.variants) do
+  for _, route in ipairs(variant.connections) do route.under = nil end
+end
+for _ = 1, 40 do
+  result = layout.layout_action.runner.tick(loaded)
+  if result then break end
+end
+check(result and result.status == "done" and #result.outcome.placed == 7,
+  "an in-flight 0.21.0 layout search continues after the upgrade and builds")
+
 check(layout.layout_action.budget_steps({ entities = { {}, {} },
   connections = { { from = { dx = 0, dy = 0 }, to = { dx = 3, dy = 4 } } } }) == 10,
   "a layout's plan budget counts placements and route tiles")

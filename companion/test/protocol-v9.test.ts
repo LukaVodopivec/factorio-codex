@@ -3,19 +3,21 @@ import type { Bridge } from "../src/bridge.js";
 import { MCP_SERVER_VERSION, registerMcpTools } from "../src/mcp/server.js";
 import { normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "../src/mcp/toolPayloads.js";
 import { PROTOCOL_VERSION, RPC_METHODS } from "../src/protocol/contract.js";
+import { packageStepSchema } from "../src/mcp/runPlan.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v24 DTO and tool registry", () => {
-  it("declares v24 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(24);
-    expect(MCP_SERVER_VERSION).toBe("0.21.0");
-    expect(RPC_METHODS).toHaveLength(26);
+describe("protocol v25 DTO and tool registry", () => {
+  it("declares v25 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(25);
+    expect(MCP_SERVER_VERSION).toBe("0.21.1");
+    expect(RPC_METHODS).toHaveLength(34);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
-      "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now"]));
+      "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now", "get_job",
+      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place"]));
   });
 
-  it("registers exactly 31 tools and forwards exact v24 payloads", async () => {
+  it("registers exactly 44 tools and forwards exact v25 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -24,7 +26,7 @@ describe("protocol v24 DTO and tool registry", () => {
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(31);
+    expect(Object.keys(handlers)).toHaveLength(44);
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
     await handlers.find_placement(find);
@@ -35,15 +37,15 @@ describe("protocol v24 DTO and tool registry", () => {
     expect(schemas.find_placement.safeParse({ ...find, output_target: { x: 3, y: 4 }, output_recipient_item: "wooden-chest" }).success).toBe(false);
     const place = schemas.place_entity.parse({ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
     await handlers.place_entity(place);
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 1, y: 2 }, direction: undefined, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 1, y: 2 }, direction: undefined, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }, { tool: "place_entity", role: "unknown" });
     await handlers.place_entity({ ...place, auto_supply: false });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith(expect.objectContaining({ type: "place", auto_supply: false }));
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith(expect.objectContaining({ type: "place", auto_supply: false }), { tool: "place_entity", role: "unknown" });
     const build = schemas.build_plan.parse({ steps: [{ name: "inserter", x: 1, y: 2, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
     await handlers.build_plan(build);
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
-      steps: [{ item: "inserter", position: { x: 1, y: 2 }, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] });
+      steps: [{ item: "inserter", position: { x: 1, y: 2 }, input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } }] }, { tool: "build_plan", role: "unknown" });
     await handlers.map_summary({});
-    expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute" });
+    expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute" }, undefined);
     await handlers.production_requirements({ targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
     expect(call).toHaveBeenLastCalledWith("production_requirements", { targets: { "automation-science-pack": 10 }, recipe_choices: { "petroleum-gas": "advanced-oil-processing" } });
     await handlers.production_requirements({ technology: "automation", flow_precision: "one_minute" });
@@ -53,13 +55,118 @@ describe("protocol v24 DTO and tool registry", () => {
     expect(schemas.production_requirements.safeParse({ targets: { gear: 1 }, technology: "automation" }).success).toBe(false);
     const route = schemas.connect_entities.parse({ kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 } });
     await handlers.connect_entities(route);
-    expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, max_length: 25 });
+    expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, max_length: 200 }, undefined);
     expect(enqueueAndWait).toHaveBeenCalledWith({
       type: "build_plan", auto_craft: true, stop_on_error: true,
       steps: [{ item: "transport-belt", position: { x: 1.5, y: 0.5 }, direction: 4 }],
-    });
+    }, expect.objectContaining({ tool: "connect_entities", role: "unknown" }));
     expect(schemas.find_placement.safeParse({ item: "x", preferred: { x: 0, y: 0 }, radius: 31 }).success).toBe(false);
-    expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 26 }).success).toBe(false);
+    expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 200 }).success).toBe(true);
+    expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 201 }).success).toBe(false);
+  });
+
+  it("accepts a route-only layout (connections from an anchor) as a tool call and as a package step", () => {
+    const schemas: Record<string, any> = {};
+    registerMcpTools({ registerTool(name: string, config: any) { schemas[name] = config.inputSchema; } },
+      async () => ({} as Bridge), validConfig);
+    const route = { kind: "belt", prototype: "transport-belt", from: { dx: 0.5, dy: 0.5 }, to: { dx: 9.5, dy: 0.5 } };
+    expect(schemas.build_layout.safeParse({ anchor: { x: 0, y: 0 }, entities: [], connections: [route] }).success).toBe(true);
+    expect(schemas.build_layout.safeParse({ anchor: { x: 0, y: 0 }, entities: [] }).success).toBe(false);
+    expect(schemas.build_layout.safeParse({ site: { near: { x: 0, y: 0 } }, entities: [], connections: [route] }).success).toBe(false);
+    expect(packageStepSchema.safeParse({ action: "build_layout", anchor: { x: 0, y: 0 }, entities: [], connections: [route] }).success)
+      .toBe(true);
+  });
+
+  it("forwards the 0.21.1 actions: moves, exploring, blueprints, area work, several insert targets and research lists", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const call = vi.fn(async (method: string, params?: any) => method === "queue_plan" ? { plan_id: 8 }
+      : method === "plan_status" ? { plan_id: 8, status: "completed", outcomes: [] }
+      : method === "connect_entities" ? { kind: "pipe", steps: [{ name: "pipe", x: 1.5, y: 0.5 }] }
+      : { method, params });
+    const enqueueAndWait = vi.fn(async () => "built");
+    const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
+      async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
+    const queued = () => call.mock.calls.filter(([method]) => method === "queue_plan").at(-1)?.[1];
+    const plans: Array<[string, Record<string, unknown>]> = [
+      ["move_entity", { from: { x: 1.5, y: 1.5 }, to: { x: 5.5, y: 1.5 } }],
+      ["explore", { resource: "crude-oil", max_distance: 500 }],
+      ["blueprint_place", { name: "smelter", position: { x: 10, y: 10 }, direction: 4, mode: "hand" }],
+      ["build_ghosts", { center: { x: 0, y: 0 }, radius: 8 }],
+      ["deconstruct_area", { area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 8, y: 8 } }, mode: "robots", filter: ["stone-furnace"] }],
+      ["upgrade_area", { center: { x: 0, y: 0 }, radius: 4, from: "transport-belt", to: "fast-transport-belt" }],
+      ["copy_settings", { from: { x: 0.5, y: 0.5 }, to: [{ x: 3.5, y: 0.5 }] }],
+    ];
+    for (const [tool, args] of plans) {
+      const parsed = schemas[tool].parse(args);
+      expect(parsed).not.toHaveProperty("check_only", true);
+      await handlers[tool]!(parsed);
+      expect(queued(), tool).toMatchObject({ steps: [{ action: tool, ...args }] });
+    }
+    await handlers.blueprint_place(schemas.blueprint_place.parse({ name: "smelter", position: { x: 10, y: 10 }, check_only: true }));
+    expect(call).toHaveBeenLastCalledWith("blueprint_place", { name: "smelter", position: { x: 10, y: 10 }, check_only: true }, undefined);
+    for (const [tool, args] of [["blueprint_capture", { name: "smelter", center: { x: 0, y: 0 }, radius: 6 }],
+      ["blueprint_create", { name: "pair", entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] }],
+      ["blueprint_list", {}], ["blueprint_describe", { name: "smelter" }], ["blueprint_export", { name: "smelter" }],
+      ["blueprint_delete", { name: "smelter" }]] as const) {
+      await handlers[tool]!(args);
+      expect(call).toHaveBeenLastCalledWith(tool, tool === "blueprint_list" ? {} : args, undefined);
+    }
+    await handlers.insert_items({ targets: { name: "stone-furnace", near: { x: 0, y: 0 }, radius: 10 }, per_target: { coal: 5 } });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "insert", targets: { name: "stone-furnace", near: { x: 0, y: 0 }, radius: 10 },
+      items: { coal: 5 } }, { tool: "insert_items", role: "unknown" });
+    await handlers.insert_items({ x: 1, y: 2, items: { coal: 5 } });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "insert", target: { x: 1, y: 2 }, items: { coal: 5 } }, { tool: "insert_items", role: "unknown" });
+    await handlers.place_entity({ name: "stone-furnace", x: 1, y: 2, insert: { coal: 5 } });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "stone-furnace", position: { x: 1, y: 2 }, direction: undefined,
+      insert: { coal: 5 } }, { tool: "place_entity", role: "unknown" });
+    await handlers.start_research({ technologies: ["automation", "logistics"] });
+    expect(call).toHaveBeenLastCalledWith("start_research", { technologies: ["automation", "logistics"] }, undefined);
+    const routed = await handlers.connect_entities(schemas.connect_entities.parse({ kind: "pipe", prototype: "pipe", from: { x: 0.5, y: 0.5 },
+      to: { x: 2.5, y: 0.5 }, fluid: "water", underground: false, check_only: true }));
+    expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "pipe", prototype: "pipe", from: { x: 0.5, y: 0.5 }, to: { x: 2.5, y: 0.5 },
+      max_length: 200, fluid: "water", underground: false }, undefined);
+    expect(routed.structuredContent).toMatchObject({ check_only: true, steps: [{ name: "pipe" }] });
+    expect(enqueueAndWait).not.toHaveBeenCalled();
+
+    const area = (extra: Record<string, unknown>) => schemas.build_ghosts.safeParse(extra).success;
+    expect(area({ area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 1, y: 1 } }, center: { x: 0, y: 0 }, radius: 1 })).toBe(false);
+    expect(area({ center: { x: 0, y: 0 } })).toBe(false);
+    expect(area({})).toBe(false);
+    expect(area({ center: { x: 0, y: 0 }, radius: 33 })).toBe(false);
+    expect(schemas.insert_items.safeParse({ x: 1, y: 2, items: { coal: 1 }, per_target: { coal: 1 } }).success).toBe(false);
+    expect(schemas.insert_items.safeParse({ x: 1, y: 2, targets: [{ x: 3, y: 4 }], items: { coal: 1 } }).success).toBe(false);
+    expect(schemas.insert_items.safeParse({ x: 1, y: 2, per_target: { coal: 1 } }).success).toBe(false);
+    expect(schemas.insert_items.safeParse({ targets: Array(33).fill({ x: 0, y: 0 }), items: { coal: 1 } }).success).toBe(false);
+    expect(schemas.build_block.safeParse({ block: "blueprint", blueprint: "smelter" }).success).toBe(true);
+    expect(schemas.build_block.safeParse({ block: "blueprint" }).success).toBe(false);
+    expect(schemas.build_block.safeParse({ block: "labs" }).success).toBe(false);
+    expect(schemas.blueprint_place.safeParse({ name: "smelter", position: { x: 0, y: 0 }, direction: 2 }).success).toBe(false);
+    expect(schemas.blueprint_capture.safeParse({ name: "../x", center: { x: 0, y: 0 }, radius: 4 }).success).toBe(false);
+    expect(schemas.start_research.safeParse({ technology: "automation", technologies: ["logistics"] }).success).toBe(false);
+    expect(schemas.start_research.safeParse({ technologies: Array(8).fill("automation") }).success).toBe(false);
+    expect(schemas.craft_items.parse({ recipe: "iron-gear-wheel", crafts: 2 })).not.toHaveProperty("wait_for_completion");
+  });
+
+  it("summarizes activity_log rows that are not plan outcomes: cancels with who asked, and blueprint changes", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    let entries: unknown[] = [];
+    const call = vi.fn(async () => ({ tick: 900, entries, omitted: 0 }));
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig, "read-only");
+    const plan = { plan_id: 4, source: "pilot", status: "completed", summary: "built 4 furnaces", start_tick: 1, end_tick: 2 };
+    const cancel = { kind: "cancel", tick: 800, origin: "stop/supervisor", all: true, after_plan_id: 4, cancelled_count: 3 };
+    entries = [plan, cancel];
+    const cancelled = await handlers.activity_log({ limit: 16 });
+    expect(cancelled.structuredContent.entries).toEqual([plan, cancel]);
+    expect(cancelled.content[0].text).toBe("2 rows; last: cancel by stop/supervisor (3 cancelled)");
+    entries = [plan, cancel, { kind: "blueprint", action: "capture", name: "smelter", tick: 850, after_plan_id: 4 }];
+    expect((await handlers.activity_log({ limit: 16 })).content[0].text).toBe("3 rows; last: blueprint capture smelter");
+    entries = [plan];
+    expect((await handlers.activity_log({ limit: 16 })).content[0].text).toBe("1 row; last: plan 4 built 4 furnaces");
+    entries = {} as unknown[];
+    expect((await handlers.activity_log({ limit: 16 })).content[0].text).toBe("0 rows");
   });
 
   it("parses and forwards both underground ends through placement search and returns verbatim plan steps", async () => {

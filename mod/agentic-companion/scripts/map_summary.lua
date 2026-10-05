@@ -1,12 +1,16 @@
 -- Read-only summary of the force's already charted world. No chart or generation calls.
+-- map_summary is a job (summary_job, below) spread over ticks by a work budget;
+-- factory_status and the run recorder read caches kept here (status, patches).
 local companion = require("scripts.companion")
 local factory_activity = require("scripts.factory_activity")
 local autonomy = require("scripts.autonomy")
 local fluid_connections = require("scripts.fluid_connections")
 local output_target = require("scripts.output_target")
 local registry = require("scripts.registry")
+local jobs = require("scripts.jobs")
 
 local M = {}
+local sort_step, heap_keep = jobs.sort_step, jobs.keep_first
 local MAX_EDGES = 256
 local MAX_LANDMARKS = 256
 local MAX_FACTORY_GROUPS = 12
@@ -339,791 +343,1114 @@ local function fluid_compatible(box, name, temperature)
     and (not box.maximum_temperature or type(temperature) == "number" and temperature <= box.maximum_temperature)
 end
 
--- `activity` is the requested character-transfer window (internal snapshot).
-local function build_material_flow(flow_entities, node_by_key, activity, network_poles)
-  local nodes = sorted_rows(node_by_key, key_position)
-  local retained = {}
-  for index, node in ipairs(nodes) do
-    node.id = "node-" .. index
-    retained[node._key] = node
+-- ------------------------------------------------------- material flow
+-- The exact runtime relationships between the charted own flow nodes and the
+-- components they form, built in stages (the map_summary job): every loop
+-- over entities or nodes resumes at a cursor, so a tick reads at most its
+-- budget. F is plain data kept in the job between ticks.
+
+-- A drill's pending recipient: the one charted flow node of the drill's
+-- force whose collision box holds its drop position, by the native
+-- point/collision endpoint query, that can take a mined product: a conveyor
+-- carries anything, other recipients must accept one natively.
+local CONVEYORS = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
+  ["lane-splitter"] = true, loader = true, ["loader-1x1"] = true, ["linked-belt"] = true }
+local function pending_drill_recipient(F, entity)
+  local ok, found = pcall(function()
+    local point, products = entity.drop_position, mining_products(entity)
+    local function accepts(candidate)
+      if CONVEYORS[candidate.type] then return true end
+      for _, product in ipairs(products) do
+        if product.type == "item" and candidate.can_insert({ name = product.name, count = 1 }) then return true end
+      end
+      return false
+    end
+    local match
+    for _, candidate in ipairs(entity.surface.find_entities_filtered({
+      area = output_target.endpoint_area(point, entity.type, "output"), force = entity.force })) do
+      if candidate.valid and candidate ~= entity and F.retained[entity_key(candidate)]
+        and output_target.can_target_type(candidate.type, "output")
+        and output_target.recipient_contains(candidate.bounding_box, point, entity.type, "output")
+        and accepts(candidate) then
+        if match then return nil end
+        match = candidate
+      end
+    end
+    return match
+  end)
+  return ok and found ~= nil
+end
+
+local function diagnostic(F, node, reason, confidence, class, related_edge)
+  confidence = confidence or "exact"
+  F.diagnostics[#F.diagnostics + 1] = { node_id = node.id, reason = reason, confidence = confidence,
+    class = class or ((confidence == "ambiguous" or confidence == "unsupported") and "evidence" or "structural"),
+    related_edge = related_edge }
+end
+
+local function status_class(node)
+  return STRUCTURAL_RAW_STATUSES[node._raw_status] and "structural" or "transient"
+end
+
+local function add_edge(F, from_entity, to_entity, kind, from_box, to_box)
+  local from_key, to_key = entity_key(from_entity), entity_key(to_entity)
+  local from, to = from_key and F.retained[from_key], to_key and F.retained[to_key]
+  if not from or not to then return false end
+  local key = from.id .. "\0" .. to.id .. "\0" .. kind .. ":" .. tostring(from_box) .. ":" .. tostring(to_box)
+  if F.seen_edges[key] then return true end
+  F.seen_edges[key] = true
+  F.edges[#F.edges + 1] = { from = from.id, to = to.id, kind = kind, confidence = "exact_runtime_relationship",
+    from_fluidbox = from_box, to_fluidbox = to_box }
+  return true
+end
+
+-- Calls fn(i) for i from F.cursor up to n while the budget lasts, charging
+-- cost each (fn may charge more). True once all are done.
+local function each(F, budget, n, cost, fn)
+  local i = F.cursor or 1
+  while i <= n do
+    if budget.left <= 0 then F.cursor = i; return false end
+    budget.left = budget.left - cost
+    fn(i)
+    i = i + 1
   end
-  -- Natively get_capacity is one box's capacity, so a segment's capacity sums
-  -- its sampled member boxes; an unsampled member only makes it look fuller.
-  local segment_capacity = {}
-  for _, node in ipairs(nodes) do
+  F.cursor = nil
+  return true
+end
+
+-- Pure-Lua passes over nodes, edges and rows cost this much per element.
+local LUA_ITEM = 0.5
+
+-- Nodes in position order (their scan order sorted over ticks).
+local function flow_sort_nodes(F, budget)
+  local sorted = sort_step(F, "_sort", F.node_list, key_position, budget)
+  if not sorted then return false end
+  F.nodes, F.node_list = sorted, nil
+  F.retained, F.segment_capacity = {}, {}
+  F.edges, F.seen_edges, F.diagnostics = {}, {}, {}
+  return true
+end
+
+-- Node ids. Natively get_capacity is one box's capacity, so a segment's
+-- capacity sums its sampled member boxes; an unsampled member only makes it
+-- look fuller.
+local function flow_prepare(F, budget)
+  return each(F, budget, #F.nodes, LUA_ITEM, function(index)
+    local node = F.nodes[index]
+    node.id = "node-" .. index
+    F.retained[node._key] = node
     for _, box in ipairs(node._fluid_boxes or {}) do
-      if box.segment then segment_capacity[box.segment] = (segment_capacity[box.segment] or 0) + box.capacity end
+      if box.segment then F.segment_capacity[box.segment] = (F.segment_capacity[box.segment] or 0) + box.capacity end
+    end
+  end)
+end
+
+-- One flow entity's exact relationships.
+local function link_entity(F, entity, budget)
+  local node = entity.valid and F.retained[entity_key(entity)]
+  if not node then return end
+  if entity.type == "inserter" then
+    local ok_pickup, pickup = pcall(function() return entity.pickup_target end)
+    local ok_drop, drop = pcall(function() return entity.drop_target end)
+    if not ok_pickup then diagnostic(F, node, "inserter_pickup_ambiguous_requires_local_inspection", "ambiguous")
+    elseif not pickup or not add_edge(F, pickup, entity, "inserter_pickup") then
+      diagnostic(F, node, "inserter_pickup_has_no_eligible_entity", nil, nil, { kind = "inserter_pickup" })
+    end
+    if not ok_drop then diagnostic(F, node, "inserter_drop_ambiguous_requires_local_inspection", "ambiguous")
+    elseif not drop or not add_edge(F, entity, drop, "inserter_drop") then
+      diagnostic(F, node, "inserter_drop_has_no_eligible_sink", nil, nil, { kind = "inserter_drop" })
+    end
+  elseif entity.type == "mining-drill" then
+    local ok_drop, drop = pcall(function() return entity.drop_target end)
+    if not ok_drop then diagnostic(F, node, "output_connection_ambiguous_requires_local_inspection", "ambiguous")
+    elseif drop == nil and pending_drill_recipient(F, entity) then
+      -- Factorio binds a drill's drop_target at its first output; until
+      -- then exactly one charted recipient at its drop position is a
+      -- pending binding, not a missing sink. It still proves no path.
+      budget.left = budget.left - 8
+      node._output_pending = true
+    elseif not drop or not add_edge(F, entity, drop, "machine_output") then
+      diagnostic(F, node, "output_has_no_physical_sink", nil, nil, { kind = "machine_output" })
+    end
+  elseif entity.type == "transport-belt" or entity.type == "underground-belt"
+    or entity.type == "splitter" or entity.type == "loader" or entity.type == "loader-1x1" then
+    local ok_neighbours, neighbours = pcall(function() return entity.belt_neighbours end)
+    if ok_neighbours and type(neighbours) == "table" then
+      for _, input in pairs(neighbours.inputs or {}) do add_edge(F, input, entity, "belt_direction") end
+      local outputs = 0
+      for _, output in pairs(neighbours.outputs or {}) do if add_edge(F, entity, output, "belt_direction") then outputs = outputs + 1 end end
+      -- belt_neighbours omits the other end of an underground pair.
+      if entity.type == "underground-belt" then
+        local ok_kind, kind = pcall(function() return entity.belt_to_ground_type end)
+        local ok_exit, exit = pcall(function() return entity.neighbours end)
+        if ok_kind and kind == "input" and ok_exit and exit and add_edge(F, entity, exit, "belt_direction") then outputs = outputs + 1 end
+      end
+      node._belt_outputs = outputs
+    else
+      diagnostic(F, node, "belt_connection_ambiguous_requires_local_inspection", "ambiguous")
+    end
+    if entity.type == "loader" or entity.type == "loader-1x1" then
+      local ok_container, container = pcall(function() return entity.loader_container end)
+      local ok_kind, kind = pcall(function() return entity.loader_type end)
+      if ok_container and container and ok_kind and kind == "input" then add_edge(F, entity, container, "loader_container")
+      elseif ok_container and container and ok_kind and kind == "output" then add_edge(F, container, entity, "loader_container") end
     end
   end
-  local edges, seen_edges, diagnostics = {}, {}, {}
-  -- The one charted flow node of the drill's force whose collision box holds
-  -- its drop position, by the native point/collision endpoint query, that can
-  -- take a mined product: a conveyor carries anything, other recipients must
-  -- accept one natively.
-  local CONVEYORS = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
-    ["lane-splitter"] = true, loader = true, ["loader-1x1"] = true, ["linked-belt"] = true }
-  local function pending_drill_recipient(entity)
-    local ok, found = pcall(function()
-      local point, products = entity.drop_position, mining_products(entity)
-      local function accepts(candidate)
-        if CONVEYORS[candidate.type] then return true end
-        for _, product in ipairs(products) do
-          if product.type == "item" and candidate.can_insert({ name = product.name, count = 1 }) then return true end
-        end
-        return false
-      end
-      local match
-      for _, candidate in ipairs(entity.surface.find_entities_filtered({
-        area = output_target.endpoint_area(point, entity.type, "output"), force = entity.force })) do
-        if candidate.valid and candidate ~= entity and retained[entity_key(candidate)]
-          and output_target.can_target_type(candidate.type, "output")
-          and output_target.recipient_contains(candidate.bounding_box, point, entity.type, "output")
-          and accepts(candidate) then
-          if match then return nil end
-          match = candidate
-        end
-      end
-      return match
-    end)
-    return ok and found ~= nil
-  end
-  local function diagnostic(node, reason, confidence, class, related_edge)
-    confidence = confidence or "exact"
-    diagnostics[#diagnostics + 1] = { node_id = node.id, reason = reason, confidence = confidence,
-      class = class or ((confidence == "ambiguous" or confidence == "unsupported") and "evidence" or "structural"),
-      related_edge = related_edge }
-  end
-  local function status_class(node)
-    return STRUCTURAL_RAW_STATUSES[node._raw_status] and "structural" or "transient"
-  end
-  local function add_edge(from_entity, to_entity, kind, from_box, to_box)
-    local from_key, to_key = entity_key(from_entity), entity_key(to_entity)
-    local from, to = from_key and retained[from_key], to_key and retained[to_key]
-    if not from or not to then return false end
-    local key = from.id .. "\0" .. to.id .. "\0" .. kind .. ":" .. tostring(from_box) .. ":" .. tostring(to_box)
-    if seen_edges[key] then return true end
-    seen_edges[key] = true
-    edges[#edges + 1] = { from = from.id, to = to.id, kind = kind, confidence = "exact_runtime_relationship",
-      from_fluidbox = from_box, to_fluidbox = to_box }
-    return true
-  end
-  for _, entity in ipairs(flow_entities) do
-    local node = retained[entity_key(entity)]
-    if node then
-      if entity.type == "inserter" then
-        local ok_pickup, pickup = pcall(function() return entity.pickup_target end)
-        local ok_drop, drop = pcall(function() return entity.drop_target end)
-        if not ok_pickup then diagnostic(node, "inserter_pickup_ambiguous_requires_local_inspection", "ambiguous")
-        elseif not pickup or not add_edge(pickup, entity, "inserter_pickup") then
-          diagnostic(node, "inserter_pickup_has_no_eligible_entity", nil, nil, { kind = "inserter_pickup" })
-        end
-        if not ok_drop then diagnostic(node, "inserter_drop_ambiguous_requires_local_inspection", "ambiguous")
-        elseif not drop or not add_edge(entity, drop, "inserter_drop") then
-          diagnostic(node, "inserter_drop_has_no_eligible_sink", nil, nil, { kind = "inserter_drop" })
-        end
-      elseif entity.type == "mining-drill" then
-        local ok_drop, drop = pcall(function() return entity.drop_target end)
-        if not ok_drop then diagnostic(node, "output_connection_ambiguous_requires_local_inspection", "ambiguous")
-        elseif drop == nil and pending_drill_recipient(entity) then
-          -- Factorio binds a drill's drop_target at its first output; until
-          -- then exactly one charted recipient at its drop position is a
-          -- pending binding, not a missing sink. It still proves no path.
-          node._output_pending = true
-        elseif not drop or not add_edge(entity, drop, "machine_output") then
-          diagnostic(node, "output_has_no_physical_sink", nil, nil, { kind = "machine_output" })
-        end
-      elseif entity.type == "transport-belt" or entity.type == "underground-belt"
-        or entity.type == "splitter" or entity.type == "loader" or entity.type == "loader-1x1" then
-        local ok_neighbours, neighbours = pcall(function() return entity.belt_neighbours end)
-        if ok_neighbours and type(neighbours) == "table" then
-          for _, input in pairs(neighbours.inputs or {}) do add_edge(input, entity, "belt_direction") end
-          local outputs = 0
-          for _, output in pairs(neighbours.outputs or {}) do if add_edge(entity, output, "belt_direction") then outputs = outputs + 1 end end
-          -- belt_neighbours omits the other end of an underground pair.
-          if entity.type == "underground-belt" then
-            local ok_kind, kind = pcall(function() return entity.belt_to_ground_type end)
-            local ok_exit, exit = pcall(function() return entity.neighbours end)
-            if ok_kind and kind == "input" and ok_exit and exit and add_edge(entity, exit, "belt_direction") then outputs = outputs + 1 end
-          end
-          node._belt_outputs = outputs
-        else
-          diagnostic(node, "belt_connection_ambiguous_requires_local_inspection", "ambiguous")
-        end
-        if entity.type == "loader" or entity.type == "loader-1x1" then
-          local ok_container, container = pcall(function() return entity.loader_container end)
-          local ok_kind, kind = pcall(function() return entity.loader_type end)
-          if ok_container and container and ok_kind and kind == "input" then add_edge(entity, container, "loader_container")
-          elseif ok_container and container and ok_kind and kind == "output" then add_edge(container, entity, "loader_container") end
-        end
-      end
-      if FLUID_TYPES[node.type] then
-        if number_property(entity, "unit_number") == nil then diagnostic(node, "fluid_entity_identity_unproven", "unsupported") end
-        if not node._fluid_supported or not node._fluid_connections_complete then
-          diagnostic(node, "fluid_native_evidence_unproven", "unsupported")
-        end
-        for _, connection in ipairs(node._fluid_connections or {}) do
-          local target = connection._target_entity
-          if target then
-            local other = retained[entity_key(target)]
-            local source_box = node._fluid_boxes and node._fluid_boxes[connection.fluidbox_index]
-            local target_box = other and other._fluid_boxes and other._fluid_boxes[connection._target_fluidbox_index]
-            local proven = other and other._entity == target and target.surface == entity.surface and target_box and source_box
-            if not proven then
-              diagnostic(node, "fluid_connected_target_unproven", "unsupported")
-            elseif connection.flow_direction == "output" or connection.flow_direction == "input-output" then
-              local name = source_box.filter or source_box.name or target_box.filter or target_box.name
-              local temperature = source_box.temperature
-              if not temperature then
-                for _, product in ipairs(node.products) do
-                  if product.type == "fluid" and product.name == name then temperature = product.temperature end
-                end
-              end
-              if name and (source_box.filter and source_box.filter ~= name or target_box.filter and target_box.filter ~= name
-                or source_box.name and source_box.name ~= name or target_box.name and target_box.name ~= name
-                or temperature and not (fluid_compatible(source_box, name, temperature) and fluid_compatible(target_box, name, temperature))) then
-                diagnostic(node, "fluid_connection_incompatible", nil, "structural")
-              end
-              add_edge(entity, target, "fluid_connection", source_box.index, target_box.index)
-            elseif connection.flow_direction ~= "input" then
-              diagnostic(node, "fluid_direction_unproven", "unsupported")
+  if FLUID_TYPES[node.type] then
+    budget.left = budget.left - 2 * #(node._fluid_connections or {})
+    if number_property(entity, "unit_number") == nil then diagnostic(F, node, "fluid_entity_identity_unproven", "unsupported") end
+    if not node._fluid_supported or not node._fluid_connections_complete then
+      diagnostic(F, node, "fluid_native_evidence_unproven", "unsupported")
+    end
+    for _, connection in ipairs(node._fluid_connections or {}) do
+      local target = connection._target_entity
+      if target then
+        local other = target.valid and F.retained[entity_key(target)]
+        local source_box = node._fluid_boxes and node._fluid_boxes[connection.fluidbox_index]
+        local target_box = other and other._fluid_boxes and other._fluid_boxes[connection._target_fluidbox_index]
+        local proven = other and other._entity == target and target.surface == entity.surface and target_box and source_box
+        if not proven then
+          diagnostic(F, node, "fluid_connected_target_unproven", "unsupported")
+        elseif connection.flow_direction == "output" or connection.flow_direction == "input-output" then
+          local name = source_box.filter or source_box.name or target_box.filter or target_box.name
+          local temperature = source_box.temperature
+          if not temperature then
+            for _, product in ipairs(node.products) do
+              if product.type == "fluid" and product.name == name then temperature = product.temperature end
             end
           end
+          if name and (source_box.filter and source_box.filter ~= name or target_box.filter and target_box.filter ~= name
+            or source_box.name and source_box.name ~= name or target_box.name and target_box.name ~= name
+            or temperature and not (fluid_compatible(source_box, name, temperature) and fluid_compatible(target_box, name, temperature))) then
+            diagnostic(F, node, "fluid_connection_incompatible", nil, "structural")
+          end
+          add_edge(F, entity, target, "fluid_connection", source_box.index, target_box.index)
+        elseif connection.flow_direction ~= "input" then
+          diagnostic(F, node, "fluid_direction_unproven", "unsupported")
         end
       end
-      if node.status == "full_output" then diagnostic(node, "downstream_inventory_blocked", nil, status_class(node)) end
-      if node.status == "no_power" or node.status == "low_power" then diagnostic(node, "missing_power", nil, status_class(node)) end
-      if node.status == "no_fuel" then diagnostic(node, "missing_fuel", nil, status_class(node)) end
-      if node.status == "insufficient_input" then diagnostic(node, "missing_or_mismatched_input", "status_only", status_class(node)) end
     end
   end
-  for _, node in ipairs(nodes) do
+  if node.status == "full_output" then diagnostic(F, node, "downstream_inventory_blocked", nil, status_class(node)) end
+  if node.status == "no_power" or node.status == "low_power" then diagnostic(F, node, "missing_power", nil, status_class(node)) end
+  if node.status == "no_fuel" then diagnostic(F, node, "missing_fuel", nil, status_class(node)) end
+  if node.status == "insufficient_input" then diagnostic(F, node, "missing_or_mismatched_input", "status_only", status_class(node)) end
+end
+
+local function flow_links(F, budget)
+  return each(F, budget, #F.flow_entities, 16, function(i) link_entity(F, F.flow_entities[i], budget) end)
+end
+
+-- Segment capacities onto every box; generators by electric network.
+local function flow_generators(F, budget)
+  if not F.generators then F.generators = {} end
+  return each(F, budget, #F.nodes, 1, function(i)
+    local node = F.nodes[i]
     for _, box in ipairs(node._fluid_boxes or {}) do
-      box.segment_capacity = box.segment and segment_capacity[box.segment] or box.capacity
+      box.segment_capacity = box.segment and F.segment_capacity[box.segment] or box.capacity
     end
-  end
-  local generators = {}
-  for _, node in ipairs(nodes) do
     if node.type == "generator" then
-      local network = number_property(node._entity, "electric_network_id")
+      budget.left = budget.left - 2
+      local network = node._entity.valid and number_property(node._entity, "electric_network_id") or nil
       node._power_network = network
-      if not network then diagnostic(node, "generator_electrical_network_unproven", "unsupported")
+      if not network then diagnostic(F, node, "generator_electrical_network_unproven", "unsupported")
       else
-        generators[network] = generators[network] or {}
-        generators[network][#generators[network] + 1] = node
+        F.generators[network] = F.generators[network] or {}
+        F.generators[network][#F.generators[network] + 1] = node
       end
     end
-  end
-  for _, node in ipairs(nodes) do
-    local ok, energy_source = pcall(function() return node._entity.prototype.electric_energy_source_prototype end)
-    local network = number_property(node._entity, "electric_network_id")
-    local material_relevant = node.role == "source" or node.role == "processor" or node.type == "pump"
-    for _, edge in ipairs(edges) do
-      if edge.kind ~= "fluid_connection" and (edge.from == node.id or edge.to == node.id)
-        and (node.role == "transport" or node.role == "sink") then material_relevant = true end
+  end)
+end
+
+-- Electrical consumers on a generator's network that matter to material
+-- flow depend on it; power is a dependency, not a path. One edge per
+-- consumer, from the network's first generator: the graph joins a
+-- network's generators into one component, so that edge names the supply.
+local function flow_consumers(F, budget)
+  if not F.touches then
+    -- Nodes on a non-fluid edge (computed before any electrical edge exists).
+    F.touches = {}
+    for _, edge in ipairs(F.edges) do
+      if edge.kind ~= "fluid_connection" then F.touches[edge.from], F.touches[edge.to] = true, true end
     end
-    if ok and energy_source and node.type ~= "generator" and generators[network] and material_relevant then
+  end
+  return each(F, budget, #F.nodes, 3, function(i)
+    local node = F.nodes[i]
+    local entity = node._entity
+    if not entity.valid then return end
+    local ok, energy_source = pcall(function() return entity.prototype.electric_energy_source_prototype end)
+    local network = number_property(entity, "electric_network_id")
+    local material_relevant = node.role == "source" or node.role == "processor" or node.type == "pump"
+      or (F.touches[node.id] and (node.role == "transport" or node.role == "sink"))
+    if ok and energy_source and node.type ~= "generator" and F.generators[network] and material_relevant then
       node._power_network = network
       node._power_consumer = true
       if energy_source.usage_priority ~= "primary-input" and energy_source.usage_priority ~= "secondary-input" then
-        diagnostic(node, "electrical_consumer_usage_unproven", "unsupported")
+        diagnostic(F, node, "electrical_consumer_usage_unproven", "unsupported")
       end
-      for _, generator in ipairs(generators[network]) do
-        add_edge(generator._entity, node._entity, "electrical_dependency")
-        generator._power_delivery = true
+      local generators = F.generators[network]
+      add_edge(F, generators[1]._entity, entity, "electrical_dependency")
+      F.delivering = F.delivering or {}
+      if not F.delivering[network] then
+        F.delivering[network] = true
+        budget.left = budget.left - #generators
+        for _, generator in ipairs(generators) do generator._power_delivery = true end
       end
     end
-  end
-  for _, node in ipairs(nodes) do
-    if node.type == "generator" and not node._power_delivery then
-      diagnostic(node, "electrical_material_consumer_unproven", "unsupported")
-    end
-  end
-  -- An engine on standby: its own box holds steam above the fluid's default
-  -- temperature and every material consumer on its network is idle with a
-  -- charged buffer, so it serves at most their constant drain. No material
-  -- demand is neither an interruption nor blocked output.
-  local demand = {}
-  for _, node in ipairs(nodes) do
-    if node._power_consumer then
-      local energy = number_property(node._entity, "energy")
-      if not IDLE_CONSUMER_STATUSES[node.status] or not energy or energy <= 0 then demand[node._power_network] = true end
-    end
-  end
-  for _, node in ipairs(nodes) do
-    local box = node.type == "generator" and node._fluid_supported and node._fluid_boxes and node._fluid_boxes[1]
-    if box and node._power_delivery and not demand[node._power_network]
-      and (number_property(node._entity, "energy_generated_last_tick") or -1) >= 0
-      and box.amount > 0 and type(box.temperature) == "number" and box.temperature > node._generator.default_temperature
-      and fluid_compatible(box, box.name, box.temperature) then
-      node._standby = true
-    end
-  end
-  table.sort(edges, function(a, b)
-    if a.from ~= b.from then return a.from < b.from end
-    if a.to ~= b.to then return a.to < b.to end
-    if a.kind ~= b.kind then return a.kind < b.kind end
-    if a.from_fluidbox ~= b.from_fluidbox then return (a.from_fluidbox or 0) < (b.from_fluidbox or 0) end
-    return (a.to_fluidbox or 0) < (b.to_fluidbox or 0)
   end)
-  -- A belt run is the tiles joined by belt_direction edges. Its consumer may
-  -- pick up anywhere along it (inserter pickup, loader container), so a dead
-  -- end is decided per run, after every exact edge exists, at its last tile.
-  local run_parent = {}
-  for _, node in ipairs(nodes) do if node._belt_outputs then run_parent[node.id] = node.id end end
-  local function run_root(id)
-    while run_parent[id] ~= id do run_parent[id] = run_parent[run_parent[id]]; id = run_parent[id] end
-    return id
-  end
-  local run_consumed = {}
-  for _, edge in ipairs(edges) do
-    if edge.kind == "belt_direction" and run_parent[edge.from] and run_parent[edge.to] then
-      local a, b = run_root(edge.from), run_root(edge.to)
-      if a ~= b then run_parent[b] = a end
-    end
-  end
-  for _, edge in ipairs(edges) do
-    if edge.kind ~= "belt_direction" and run_parent[edge.from] then run_consumed[run_root(edge.from)] = true end
-  end
-  for _, node in ipairs(nodes) do
-    if node._belt_outputs == 0 and not run_consumed[run_root(node.id)] then
-      diagnostic(node, "belt_dead_end_without_consumer", nil, "structural", { kind = "belt_or_pickup" })
-    end
-  end
+end
 
-  local parent = {}; for _, node in ipairs(nodes) do parent[node.id] = node.id end
-  local function root(id)
-    while parent[id] ~= id do parent[id] = parent[parent[id]]; id = parent[id] end
-    return id
+-- Material demand per network: a consumer that is not idle with a charged
+-- buffer draws more than its constant drain.
+local function flow_demand(F, budget)
+  if not F.demand then
+    F.demand = {}
+    for _, node in ipairs(F.nodes) do
+      if node.type == "generator" and not node._power_delivery then
+        diagnostic(F, node, "electrical_material_consumer_unproven", "unsupported")
+      end
+    end
   end
-  local function join(a, b) a, b = root(a), root(b); if a ~= b then parent[b] = a end end
-  -- Power is a dependency, not a material path: a consumer keeps its own
-  -- material component and names its network's supply (checked per
-  -- component below). Generators sharing a network supply it together.
-  for _, edge in ipairs(edges) do if edge.kind ~= "electrical_dependency" then join(edge.from, edge.to) end end
-  for _, list in pairs(generators) do
-    for index = 2, #list do join(list[1].id, list[index].id) end
+  return each(F, budget, #F.nodes, 1, function(i)
+    local node = F.nodes[i]
+    if node._power_consumer then
+      budget.left = budget.left - 1
+      local energy = node._entity.valid and number_property(node._entity, "energy") or nil
+      if not IDLE_CONSUMER_STATUSES[node.status] or not energy or energy <= 0 then F.demand[node._power_network] = true end
+    end
+  end)
+end
+
+-- An engine on standby: its own box holds steam above the fluid's default
+-- temperature and every material consumer on its network is idle with a
+-- charged buffer, so it serves at most their constant drain. No material
+-- demand is neither an interruption nor blocked output.
+local function flow_standby(F, budget)
+  return each(F, budget, #F.nodes, 1, function(i)
+    local node = F.nodes[i]
+    local box = node.type == "generator" and node._fluid_supported and node._fluid_boxes and node._fluid_boxes[1]
+    if box and node._power_delivery and not F.demand[node._power_network] then
+      budget.left = budget.left - 1
+      if (node._entity.valid and number_property(node._entity, "energy_generated_last_tick") or -1) >= 0
+        and box.amount > 0 and type(box.temperature) == "number" and box.temperature > node._generator.default_temperature
+        and fluid_compatible(box, box.name, box.temperature) then
+        node._standby = true
+      end
+    end
+  end)
+end
+
+local function run_root(F, id)
+  local parent = F.run_parent
+  while parent[id] ~= id do parent[id] = parent[parent[id]]; id = parent[id] end
+  return id
+end
+
+local function root(F, id)
+  local parent = F.parent
+  while parent[id] ~= id do parent[id] = parent[parent[id]]; id = parent[id] end
+  return id
+end
+
+-- The graph from the edges, without engine reads, in stages a budget at a
+-- time: edges in order, belt runs, components, adjacency, character
+-- transfers and the edges per node.
+local function edge_order(a, b)
+  if a.from ~= b.from then return a.from < b.from end
+  if a.to ~= b.to then return a.to < b.to end
+  if a.kind ~= b.kind then return a.kind < b.kind end
+  if a.from_fluidbox ~= b.from_fluidbox then return (a.from_fluidbox or 0) < (b.from_fluidbox or 0) end
+  return (a.to_fluidbox or 0) < (b.to_fluidbox or 0)
+end
+
+local function graph_sort_edges(F, budget)
+  F.seen_edges = nil
+  local sorted = sort_step(F, "_sort", F.edges, edge_order, budget)
+  if not sorted then return false end
+  F.edges = sorted
+  F.run_parent, F.run_consumed, F.parent = {}, {}, {}
+  return true
+end
+
+-- A belt run is the tiles joined by belt_direction edges. Its consumer may
+-- pick up anywhere along it (inserter pickup, loader container), so a dead
+-- end is decided per run, after every exact edge exists, at its last tile.
+local function graph_run_tiles(F, budget)
+  return each(F, budget, #F.nodes, LUA_ITEM, function(i)
+    local node = F.nodes[i]
+    F.parent[node.id] = node.id
+    if node._belt_outputs then F.run_parent[node.id] = node.id end
+  end)
+end
+
+local function graph_run_joins(F, budget)
+  return each(F, budget, #F.edges, LUA_ITEM, function(i)
+    local edge = F.edges[i]
+    if edge.kind == "belt_direction" and F.run_parent[edge.from] and F.run_parent[edge.to] then
+      local a, b = run_root(F, edge.from), run_root(F, edge.to)
+      if a ~= b then F.run_parent[b] = a end
+    end
+  end)
+end
+
+local function graph_run_consumers(F, budget)
+  return each(F, budget, #F.edges, LUA_ITEM, function(i)
+    local edge = F.edges[i]
+    if edge.kind ~= "belt_direction" and F.run_parent[edge.from] then F.run_consumed[run_root(F, edge.from)] = true end
+  end)
+end
+
+local function graph_dead_ends(F, budget)
+  if not each(F, budget, #F.nodes, LUA_ITEM, function(i)
+    local node = F.nodes[i]
+    if node._belt_outputs == 0 and not F.run_consumed[run_root(F, node.id)] then
+      diagnostic(F, node, "belt_dead_end_without_consumer", nil, "structural", { kind = "belt_or_pickup" })
+    end
+  end) then return false end
+  F.run_parent, F.run_consumed = nil, nil
+  return true
+end
+
+local function join(F, a, b)
+  a, b = root(F, a), root(F, b)
+  if a ~= b then F.parent[b] = a end
+end
+
+-- Power is a dependency, not a material path: a consumer keeps its own
+-- material component and names its network's supply (checked per
+-- component below). Generators sharing a network supply it together.
+local function graph_joins(F, budget)
+  if not each(F, budget, #F.edges, LUA_ITEM, function(i)
+    local edge = F.edges[i]
+    if edge.kind ~= "electrical_dependency" then join(F, edge.from, edge.to) end
+  end) then return false end
+  for _, list in pairs(F.generators) do
+    for index = 2, #list do join(F, list[1].id, list[index].id) end
   end
-  local by_root = {}
-  for _, node in ipairs(nodes) do
-    local r = root(node.id)
-    local component = by_root[r] or { node_ids = {}, roles = {}, status_counts = {}, edge_count = 0,
-      products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil,
-      _edges = {}, _diagnostics = {} }
-    by_root[r] = component
+  F.by_root, F.component_list = {}, {}
+  F.node_by_id, F.incoming, F.outgoing, F.pickup_of, F.edges_of = {}, {}, {}, {}, {}
+  return true
+end
+
+local function graph_components(F, budget)
+  return each(F, budget, #F.nodes, LUA_ITEM, function(i)
+    local node = F.nodes[i]
+    local r = root(F, node.id)
+    local component = F.by_root[r]
+    if not component then
+      component = { node_ids = {}, roles = {}, status_counts = {}, edge_count = 0,
+        products_finished_total = 0, character_transfer_actions = 0, last_character_transfer_tick = nil,
+        _edges = {}, _diagnostics = {}, _electrical = {} }
+      F.by_root[r] = component
+      F.component_list[#F.component_list + 1] = component
+    end
     component.node_ids[#component.node_ids + 1] = node.id
     component.roles[node.role] = (component.roles[node.role] or 0) + 1
     component.status_counts[node.status] = (component.status_counts[node.status] or 0) + 1
     component.products_finished_total = component.products_finished_total + (node.products_finished or 0)
-  end
-  for _, edge in ipairs(edges) do
+    F.node_by_id[node.id], F.incoming[node.id], F.outgoing[node.id], F.edges_of[node.id] = node, {}, {}, {}
+  end)
+end
+
+local function graph_adjacency(F, budget)
+  local by_root = F.by_root
+  return each(F, budget, #F.edges, LUA_ITEM, function(i)
+    local edge = F.edges[i]
+    local from_list, to_list = F.edges_of[edge.from], F.edges_of[edge.to]
+    from_list[#from_list + 1] = edge
+    if edge.to ~= edge.from then to_list[#to_list + 1] = edge end
     if edge.kind ~= "electrical_dependency" then
-      local component = by_root[root(edge.from)]
+      local component = by_root[root(F, edge.from)]
       component.edge_count = component.edge_count + 1
       component._edges[#component._edges + 1] = edge
+      F.incoming[edge.to][#F.incoming[edge.to] + 1] = edge.from
+      F.outgoing[edge.from][#F.outgoing[edge.from] + 1] = edge.to
+      if edge.kind == "inserter_pickup" then F.pickup_of[edge.to] = edge.from end
+    else
+      -- Electrical dependents outside the supplying component, one edge
+      -- (and so one entry) per consumer.
+      local supplier = by_root[root(F, edge.from)]
+      if by_root[root(F, edge.to)] ~= supplier then supplier._electrical[#supplier._electrical + 1] = edge end
     end
-  end
-  for _, event in ipairs(activity.events or {}) do
+  end)
+end
+
+local function graph_transfers(F, budget)
+  local events = F.activity.events or {}
+  return each(F, budget, #events, LUA_ITEM, function(i)
+    local event = events[i]
     if event.target then
       local key = string.format("%s\0%s\0%.17g\0%.17g", event.target.name, event.target.type,
         event.target.position.x, event.target.position.y)
-      local node = retained[key]
+      local node = F.retained[key]
       if node then
-        local component = by_root[root(node.id)]
+        local component = F.by_root[root(F, node.id)]
         component.character_transfer_actions = component.character_transfer_actions + 1
         component.last_character_transfer_tick = math.max(component.last_character_transfer_tick or 0,
           tonumber(event.tick) or 0)
       end
     end
-  end
-  local components = sorted_rows(by_root, function(a, b) return a.node_ids[1] < b.node_ids[1] end)
-  local node_by_id, incoming, outgoing, pickup_of = {}, {}, {}, {}
-  for _, node in ipairs(nodes) do node_by_id[node.id], incoming[node.id], outgoing[node.id] = node, {}, {} end
-  for _, edge in ipairs(edges) do
-    if edge.kind ~= "electrical_dependency" then
-      incoming[edge.to][#incoming[edge.to] + 1] = edge.from
-      outgoing[edge.from][#outgoing[edge.from] + 1] = edge.to
-      if edge.kind == "inserter_pickup" then pickup_of[edge.to] = edge.from end
-    end
-  end
-  local function product_matches(node, ingredient, fuel_only)
-    for _, product in ipairs(node.products or {}) do
-      if fuel_only and product.fuel_category and ingredient[product.fuel_category] then return true end
-      if not fuel_only and product.name == ingredient.name and product.type == ingredient.type then return true end
-    end
-    return false
-  end
-  local function upstream_proven(start_id, ingredient, fuel_only)
-    local queue, seen, head = {}, { [start_id] = true }, 1
-    for _, id in ipairs(incoming[start_id]) do queue[#queue + 1] = id end
-    while head <= #queue do
-      local id = queue[head]; head = head + 1
-      -- A burner source may physically refuel itself from its own output
-      -- (a coal drill feeding back through transport): that loop is fuel
-      -- provenance. Its own product never stands in for another input.
-      if id == start_id and fuel_only and node_by_id[id].role == "source"
-        and product_matches(node_by_id[id], ingredient, true) then return true end
-      if not seen[id] then
-        seen[id] = true
-        local node = node_by_id[id]
-        if node and node.role ~= "buffer" and product_matches(node, ingredient, fuel_only) then return true end
-        -- A processor transforms its inputs; an ancestor's product cannot
-        -- stand in for this node's different physical output.
-        if node and (node.role == "transport" or node.role == "buffer") then
-          for _, parent_id in ipairs(incoming[id] or {}) do queue[#queue + 1] = parent_id end
-        end
-      end
-    end
-    return false
-  end
-  -- A replenishment inserter may wait at the ordinary fuel target while
-  -- the burner continues working and its fuel inventory still has space.
-  -- Prove the specific held fuel and physical supply, never infer a limit
-  -- from a hard-coded stock count or exempt other full-output entities.
-  for _, node in ipairs(nodes) do
-    if node.type == "inserter" and node._waiting_for_destination then
-      local pickup, destination
-      for _, edge in ipairs(edges) do
-        if edge.from == node.id and edge.kind == "inserter_drop" then destination = node_by_id[edge.to] end
-        if edge.to == node.id and edge.kind == "inserter_pickup" then pickup = node_by_id[edge.from] end
-      end
-      if pickup and destination and destination._fuel_destination_proven
-        and destination.requires_fuel and destination.status == "working" then
-        local ok, fuel, quality, identity = pcall(function()
-          local held = node._entity.held_stack
-          local burner = destination._entity.burner
-          -- Factorio 2.0 ItemIDAndQualityIDPair: name and quality are prototypes.
-          local burning = burner.currently_burning
-          if not burning or type(burning.name.name) ~= "string" or type(burning.quality.name) ~= "string"
-            or not destination.fuel_categories[item_fuel_category(burning.name.name)]
-            or not (burner.remaining_burning_fuel > 0) then return end
-          local inventory = destination._entity.get_fuel_inventory()
-          local name, quality_name, identity_source
-          if held.valid_for_read == true then
-            if held.count <= 0 then return end
-            name, quality_name, identity_source = held.name, held.quality.name, "held_stack"
-          elseif held.valid_for_read == false then
-            -- An empty stack's identity is unreadable; require one stocked
-            -- pair matching the burning pair (inventory contents carry names).
-            local contents = inventory.get_contents()
-            if type(contents) ~= "table" or #contents ~= 1 then return end
-            for index in pairs(contents) do if index ~= 1 then return end end
-            local stock = contents[1]
-            if type(stock) ~= "table" or type(stock.count) ~= "number" or stock.count <= 0
-              or stock.name ~= burning.name.name or stock.quality ~= burning.quality.name then return end
-            name, quality_name, identity_source = stock.name, stock.quality, "burning_and_stocked_fuel"
-          else return end
-          if type(name) ~= "string" or name == "" or type(quality_name) ~= "string" or quality_name == "" then return end
-          local category = item_fuel_category(name)
-          if not category or not destination.fuel_categories[category] then return end
-          -- A fuel that is also a recipe ingredient could be waiting on
-          -- material input instead; the destination compartment is ambiguous.
-          for _, ingredient in ipairs(destination.ingredients) do
-            if ingredient.type == "item" and ingredient.name == name then return end
-          end
-          local item = { name = name, quality = quality_name, count = 1 }
-          if inventory.get_item_count({ name = item.name, quality = item.quality }) > 0
-            and inventory.can_insert(item) == true then
-            return name, quality_name, identity_source
-          end
-        end)
-        local product = { name = fuel, type = "item" }
-        local supplied = (pickup.role == "source" or pickup.role == "processor") and product_matches(pickup, product, false)
-          or (pickup.role == "transport" or pickup.role == "buffer") and upstream_proven(pickup.id, product, false)
-        if ok and fuel and supplied then
-          node.fuel_return_saturation = { destination_node_id = destination.id, fuel = fuel, quality = quality,
-            identity_source = identity, observed_status = "waiting_for_space_in_destination",
-            evidence = "supplied_working_burner_with_fuel_inventory_space" }
-        end
-      end
-    end
-  end
-  local function reaches_downstream(start_id)
-    local queue, seen, head = { start_id }, {}, 1
-    while head <= #queue do
-      local id = queue[head]; head = head + 1
-      if not seen[id] then
-        seen[id] = true
-        if id ~= start_id and node_by_id[id] and (node_by_id[id].role == "sink" or node_by_id[id]._downstream_buffer) then return true end
-        for _, next_id in ipairs(outgoing[id] or {}) do queue[#queue + 1] = next_id end
-      end
-    end
-    return false
-  end
-  local source_by_resource = {}
-  for _, node in ipairs(nodes) do
+  end)
+end
+
+local function graph_sort_components(F, budget)
+  local sorted = sort_step(F, "_sort", F.component_list, function(a, b) return a.node_ids[1] < b.node_ids[1] end, budget)
+  if not sorted then return false end
+  F.components, F.component_list, F.source_by_resource = sorted, nil, {}
+  return true
+end
+
+local function graph_sources(F, budget)
+  if not each(F, budget, #F.nodes, LUA_ITEM, function(i)
+    local node = F.nodes[i]
     local source = node._source_production
     if source and source.resource_key then
-      local previous = source_by_resource[source.resource_key]
+      local previous = F.source_by_resource[source.resource_key]
       if previous then
-        diagnostic(previous, "shared_mining_target_production_ambiguous", "ambiguous")
-        diagnostic(node, "shared_mining_target_production_ambiguous", "ambiguous")
-      else source_by_resource[source.resource_key] = node end
+        diagnostic(F, previous, "shared_mining_target_production_ambiguous", "ambiguous")
+        diagnostic(F, node, "shared_mining_target_production_ambiguous", "ambiguous")
+      else F.source_by_resource[source.resource_key] = node end
+    end
+  end) then return false end
+  F.source_by_resource = nil
+  return true
+end
+
+-- Graph walks (pure Lua). Each returns how many nodes it visited as its
+-- last value, which the caller charges.
+local function product_matches(node, ingredient, fuel_only)
+  for _, product in ipairs(node.products or {}) do
+    if fuel_only and product.fuel_category and ingredient[product.fuel_category] then return true end
+    if not fuel_only and product.name == ingredient.name and product.type == ingredient.type then return true end
+  end
+  return false
+end
+
+local function upstream_proven(F, start_id, ingredient, fuel_only)
+  local queue, seen, head = {}, { [start_id] = true }, 1
+  for _, id in ipairs(F.incoming[start_id]) do queue[#queue + 1] = id end
+  while head <= #queue do
+    local id = queue[head]; head = head + 1
+    -- A burner source may physically refuel itself from its own output
+    -- (a coal drill feeding back through transport): that loop is fuel
+    -- provenance. Its own product never stands in for another input.
+    if id == start_id and fuel_only and F.node_by_id[id].role == "source"
+      and product_matches(F.node_by_id[id], ingredient, true) then return true, head end
+    if not seen[id] then
+      seen[id] = true
+      local node = F.node_by_id[id]
+      if node and node.role ~= "buffer" and product_matches(node, ingredient, fuel_only) then return true, head end
+      -- A processor transforms its inputs; an ancestor's product cannot
+      -- stand in for this node's different physical output.
+      if node and (node.role == "transport" or node.role == "buffer") then
+        for _, parent_id in ipairs(F.incoming[id] or {}) do queue[#queue + 1] = parent_id end
+      end
     end
   end
-  -- The nodes a node's output reaches first, through transport only.
-  local function first_reached(start_id)
-    local reached, queue, seen, head = {}, { start_id }, { [start_id] = true }, 1
-    while head <= #queue do
-      local id = queue[head]; head = head + 1
-      for _, next_id in ipairs(outgoing[id] or {}) do
-        local next_node = node_by_id[next_id]
-        if not seen[next_id] and next_node then
-          seen[next_id] = true
-          if next_node.role == "transport" and not (next_node.type == "inserter" and pickup_of[next_id] ~= id) then
-            queue[#queue + 1] = next_id
-          else reached[#reached + 1] = next_node end
+  return false, head
+end
+
+local function reaches_downstream(F, start_id)
+  local queue, seen, head = { start_id }, {}, 1
+  while head <= #queue do
+    local id = queue[head]; head = head + 1
+    if not seen[id] then
+      seen[id] = true
+      local node = F.node_by_id[id]
+      if id ~= start_id and node and (node.role == "sink" or node._downstream_buffer) then return true, head end
+      for _, next_id in ipairs(F.outgoing[id] or {}) do queue[#queue + 1] = next_id end
+    end
+  end
+  return false, head
+end
+
+-- The nodes a node's output reaches first, through transport only.
+local function first_reached(F, start_id)
+  local reached, queue, seen, head = {}, { start_id }, { [start_id] = true }, 1
+  while head <= #queue do
+    local id = queue[head]; head = head + 1
+    for _, next_id in ipairs(F.outgoing[id] or {}) do
+      local next_node = F.node_by_id[next_id]
+      if not seen[next_id] and next_node then
+        seen[next_id] = true
+        if next_node.role == "transport" and not (next_node.type == "inserter" and F.pickup_of[next_id] ~= id) then
+          queue[#queue + 1] = next_id
+        else reached[#reached + 1] = next_node end
+      end
+    end
+  end
+  return reached, head
+end
+
+local function ancestors(F, start_id)
+  local queue, seen, head = { start_id }, {}, 1
+  while head <= #queue do
+    local id = queue[head]; head = head + 1
+    for _, parent_id in ipairs(F.incoming[id] or {}) do
+      if not seen[parent_id] then seen[parent_id] = true; queue[#queue + 1] = parent_id end
+    end
+  end
+  return seen, head
+end
+
+-- A burner takes these products only as fuel: one burns in its
+-- categories and none is a recipe ingredient that could be material input.
+local function fuel_inlet(products, target)
+  if not target.requires_fuel or (target.role ~= "source" and target.role ~= "processor"
+    and target.type ~= "inserter") then return false end
+  local fuel = false
+  for _, product in pairs(products) do
+    if product.fuel_category and (target.fuel_categories or {})[product.fuel_category] then fuel = true end
+    for _, ingredient in ipairs(target.ingredients or {}) do
+      if ingredient.type == product.type and ingredient.name == product.name then return false end
+    end
+  end
+  return fuel
+end
+
+-- Whether a producer upstream through transport and buffers makes
+-- something that is not fuel: material that will give a furnace that has
+-- not smelted yet its recipe.
+local function material_upstream(F, start_id)
+  local queue, seen, head = {}, { [start_id] = true }, 1
+  for _, id in ipairs(F.incoming[start_id]) do queue[#queue + 1] = id end
+  while head <= #queue do
+    local id = queue[head]; head = head + 1
+    local node = F.node_by_id[id]
+    if node and not seen[id] then
+      seen[id] = true
+      if node.role == "source" or node.role == "processor" then
+        for _, product in ipairs(node.products) do if not product.fuel_category then return true, head end end
+      elseif node.role == "transport" or node.role == "buffer" then
+        for _, parent_id in ipairs(F.incoming[id] or {}) do queue[#queue + 1] = parent_id end
+      end
+    end
+  end
+  return false, head
+end
+
+-- The products that physically reach a node: its own when it produces,
+-- otherwise its producers' through transport, buffers and labs (an
+-- inserter relays a lab's packs into the next lab of a chain).
+local function upstream_products(F, start_id)
+  local products, queue, seen, head = {}, { start_id }, {}, 1
+  while head <= #queue do
+    local id = queue[head]; head = head + 1
+    if not seen[id] then
+      seen[id] = true
+      local upstream = F.node_by_id[id]
+      if upstream.role == "source" or upstream.role == "processor" then
+        for _, product in ipairs(upstream.products) do products[product.type .. ":" .. product.name] = product end
+      elseif upstream.type == "inserter" then
+        -- Another inserter drops into this burner's fuel inventory, never
+        -- its hand. Only the pickup target supplies cargo relayed onward.
+        if F.pickup_of[id] then queue[#queue + 1] = F.pickup_of[id] end
+      elseif upstream.role == "transport" or upstream.role == "buffer" or upstream.type == "lab" or id == start_id then
+        for _, parent_id in ipairs(F.incoming[id]) do queue[#queue + 1] = parent_id end
+      end
+    end
+  end
+  return products, head
+end
+
+-- Walk lengths are charged at this many nodes per work item.
+local WALK_NODES_PER_ITEM = 16
+
+-- A replenishment inserter may wait at the ordinary fuel target while
+-- the burner continues working and its fuel inventory still has space.
+-- Prove the specific held fuel and physical supply, never infer a limit
+-- from a hard-coded stock count or exempt other full-output entities.
+local function fuel_return(F, node, budget)
+  local pickup, destination
+  for _, edge in ipairs(F.edges_of[node.id]) do
+    if edge.from == node.id and edge.kind == "inserter_drop" then destination = F.node_by_id[edge.to] end
+    if edge.to == node.id and edge.kind == "inserter_pickup" then pickup = F.node_by_id[edge.from] end
+  end
+  if not (pickup and destination and destination._fuel_destination_proven
+    and destination.requires_fuel and destination.status == "working") then return end
+  budget.left = budget.left - 12
+  local ok, fuel, quality, identity = pcall(function()
+    local held = node._entity.held_stack
+    local burner = destination._entity.burner
+    -- Factorio 2.0 ItemIDAndQualityIDPair: name and quality are prototypes.
+    local burning = burner.currently_burning
+    if not burning or type(burning.name.name) ~= "string" or type(burning.quality.name) ~= "string"
+      or not destination.fuel_categories[item_fuel_category(burning.name.name)]
+      or not (burner.remaining_burning_fuel > 0) then return end
+    local inventory = destination._entity.get_fuel_inventory()
+    local name, quality_name, identity_source
+    if held.valid_for_read == true then
+      if held.count <= 0 then return end
+      name, quality_name, identity_source = held.name, held.quality.name, "held_stack"
+    elseif held.valid_for_read == false then
+      -- An empty stack's identity is unreadable; require one stocked
+      -- pair matching the burning pair (inventory contents carry names).
+      local contents = inventory.get_contents()
+      if type(contents) ~= "table" or #contents ~= 1 then return end
+      for index in pairs(contents) do if index ~= 1 then return end end
+      local stock = contents[1]
+      if type(stock) ~= "table" or type(stock.count) ~= "number" or stock.count <= 0
+        or stock.name ~= burning.name.name or stock.quality ~= burning.quality.name then return end
+      name, quality_name, identity_source = stock.name, stock.quality, "burning_and_stocked_fuel"
+    else return end
+    if type(name) ~= "string" or name == "" or type(quality_name) ~= "string" or quality_name == "" then return end
+    local category = item_fuel_category(name)
+    if not category or not destination.fuel_categories[category] then return end
+    -- A fuel that is also a recipe ingredient could be waiting on
+    -- material input instead; the destination compartment is ambiguous.
+    for _, ingredient in ipairs(destination.ingredients) do
+      if ingredient.type == "item" and ingredient.name == name then return end
+    end
+    local item = { name = name, quality = quality_name, count = 1 }
+    if inventory.get_item_count({ name = item.name, quality = item.quality }) > 0
+      and inventory.can_insert(item) == true then
+      return name, quality_name, identity_source
+    end
+  end)
+  local product = { name = fuel, type = "item" }
+  local supplied, visited = false, 0
+  if pickup.role == "source" or pickup.role == "processor" then
+    supplied = product_matches(pickup, product, false)
+  elseif pickup.role == "transport" or pickup.role == "buffer" then
+    supplied, visited = upstream_proven(F, pickup.id, product, false)
+  end
+  budget.left = budget.left - math.ceil(visited / WALK_NODES_PER_ITEM)
+  if ok and fuel and supplied then
+    node.fuel_return_saturation = { destination_node_id = destination.id, fuel = fuel, quality = quality,
+      identity_source = identity, observed_status = "waiting_for_space_in_destination",
+      evidence = "supplied_working_burner_with_fuel_inventory_space" }
+  end
+end
+
+local function flow_fuel(F, budget)
+  return each(F, budget, #F.nodes, 1, function(i)
+    local node = F.nodes[i]
+    if node.type == "inserter" and node._waiting_for_destination and node._entity.valid then fuel_return(F, node, budget) end
+  end)
+end
+
+-- Which buffers and sinks are terminal, accept what reaches them, or block.
+local function buffer_or_sink(F, node, budget)
+  local products, visited = upstream_products(F, node.id)
+  budget.left = budget.left - math.ceil(visited / WALK_NODES_PER_ITEM)
+  -- A buffer is terminal when nothing leaves it, or when everything that
+  -- leaves only refuels producers upstream of it: a self-fuelling loop's
+  -- chest is where its surplus ends, not an intermediate stage.
+  node._downstream_buffer = false
+  if node.role == "buffer" then
+    local reached, walked = first_reached(F, node.id)
+    local upstream = nil
+    budget.left = budget.left - math.ceil(walked / WALK_NODES_PER_ITEM)
+    node._downstream_buffer = #F.outgoing[node.id] == 0 or #reached > 0
+    for _, target in ipairs(reached) do
+      if not upstream then
+        upstream, walked = ancestors(F, node.id)
+        budget.left = budget.left - math.ceil(walked / WALK_NODES_PER_ITEM)
+      end
+      if not (upstream[target.id] and fuel_inlet(products, target)) then node._downstream_buffer = false end
+    end
+  end
+  budget.left = budget.left - 4
+  -- A lab waiting for science packs consumes only when the line supplies
+  -- every pack its current research needs; otherwise it never starts.
+  -- Any lab with research in progress, whatever its status, needs that
+  -- supply: hand-stocked packs only defer the wait.
+  local lab_waiting = node.type == "lab" and node._raw_status == "missing_science_packs"
+  if node.type == "lab" and node._raw_status ~= "no_research_in_progress" then
+    local ok, ingredients = pcall(function() return node._entity.force.current_research.research_unit_ingredients end)
+    local readable = ok and type(ingredients) == "table" and next(ingredients) ~= nil
+    if not readable then lab_waiting = false end
+    for _, ingredient in pairs(readable and ingredients or {}) do
+      if type(ingredient) ~= "table" or not products[(ingredient.type or "item") .. ":" .. tostring(ingredient.name)] then
+        lab_waiting, node._missing_science_pack = false, true
+      end
+    end
+  end
+  node._accepting = next(products) ~= nil and (node.role == "buffer" or node.status == "working" or lab_waiting)
+  for _, product in pairs(products) do
+    budget.left = budget.left - 2
+    -- Unsupported fluid endpoints remain unproven rather than guessing capacity.
+    local ok, count, accepting = pcall(function()
+      if product.type == "fluid" then
+        if not node._fluid_supported or (node.type ~= "generator" and node.type ~= "storage-tank") then
+          error("unsupported fluid endpoint acceptance")
         end
-      end
-    end
-    return reached
-  end
-  local function ancestors(start_id)
-    local queue, seen, head = { start_id }, {}, 1
-    while head <= #queue do
-      local id = queue[head]; head = head + 1
-      for _, parent_id in ipairs(incoming[id] or {}) do
-        if not seen[parent_id] then seen[parent_id] = true; queue[#queue + 1] = parent_id end
-      end
-    end
-    return seen
-  end
-  -- A burner takes these products only as fuel: one burns in its
-  -- categories and none is a recipe ingredient that could be material input.
-  local function fuel_inlet(products, target)
-    if not target.requires_fuel or (target.role ~= "source" and target.role ~= "processor"
-      and target.type ~= "inserter") then return false end
-    local fuel = false
-    for _, product in pairs(products) do
-      if product.fuel_category and (target.fuel_categories or {})[product.fuel_category] then fuel = true end
-      for _, ingredient in ipairs(target.ingredients or {}) do
-        if ingredient.type == product.type and ingredient.name == product.name then return false end
-      end
-    end
-    return fuel
-  end
-  -- Whether a producer upstream through transport and buffers makes
-  -- something that is not fuel: material that will give a furnace that has
-  -- not smelted yet its recipe.
-  local function material_upstream(start_id)
-    local queue, seen, head = {}, { [start_id] = true }, 1
-    for _, id in ipairs(incoming[start_id]) do queue[#queue + 1] = id end
-    while head <= #queue do
-      local id = queue[head]; head = head + 1
-      local node = node_by_id[id]
-      if node and not seen[id] then
-        seen[id] = true
-        if node.role == "source" or node.role == "processor" then
-          for _, product in ipairs(node.products) do if not product.fuel_category then return true end end
-        elseif node.role == "transport" or node.role == "buffer" then
-          for _, parent_id in ipairs(incoming[id] or {}) do queue[#queue + 1] = parent_id end
+        local box = node._fluid_boxes[1]
+        local temperature = box.temperature or product.temperature
+        local compatible = fluid_compatible(box, product.name, temperature)
+        if node.type == "generator" then
+          -- An engine that generated last tick consumed steam then; a
+          -- pump refills its own segment to exactly full after that.
+          return 0, compatible and (box.segment_amount < box.segment_capacity
+              or (number_property(node._entity, "energy_generated_last_tick") or 0) > 0) and box.amount > 0
+            and type(box.temperature) == "number" and box.temperature > node._generator.default_temperature
         end
+        return box.amount, compatible and box.segment_amount < box.segment_capacity
       end
-    end
-    return false
-  end
-  -- The products that physically reach a node: its own when it produces,
-  -- otherwise its producers' through transport, buffers and labs (an
-  -- inserter relays a lab's packs into the next lab of a chain).
-  local function upstream_products(start_id)
-    local products, queue, seen, head = {}, { start_id }, {}, 1
-    while head <= #queue do
-      local id = queue[head]; head = head + 1
-      if not seen[id] then
-        seen[id] = true
-        local upstream = node_by_id[id]
-        if upstream.role == "source" or upstream.role == "processor" then
-          for _, product in ipairs(upstream.products) do products[product.type .. ":" .. product.name] = product end
-        elseif upstream.type == "inserter" then
-          -- Another inserter drops into this burner's fuel inventory, never
-          -- its hand. Only the pickup target supplies cargo relayed onward.
-          if pickup_of[id] then queue[#queue + 1] = pickup_of[id] end
-        elseif upstream.role == "transport" or upstream.role == "buffer" or upstream.type == "lab" or id == start_id then
-          for _, parent_id in ipairs(incoming[id]) do queue[#queue + 1] = parent_id end
-        end
-      end
-    end
-    return products
-  end
-  for _, node in ipairs(nodes) do
-    if node.role == "buffer" or node.role == "sink" then
-      local products = upstream_products(node.id)
-      -- A buffer is terminal when nothing leaves it, or when everything that
-      -- leaves only refuels producers upstream of it: a self-fuelling loop's
-      -- chest is where its surplus ends, not an intermediate stage.
-      node._downstream_buffer = false
-      if node.role == "buffer" then
-        local reached, upstream = first_reached(node.id), nil
-        node._downstream_buffer = #outgoing[node.id] == 0 or #reached > 0
-        for _, target in ipairs(reached) do
-          upstream = upstream or ancestors(node.id)
-          if not (upstream[target.id] and fuel_inlet(products, target)) then node._downstream_buffer = false end
-        end
-      end
-      -- A lab waiting for science packs consumes only when the line supplies
-      -- every pack its current research needs; otherwise it never starts.
-      -- Any lab with research in progress, whatever its status, needs that
-      -- supply: hand-stocked packs only defer the wait.
-      local lab_waiting = node.type == "lab" and node._raw_status == "missing_science_packs"
-      if node.type == "lab" and node._raw_status ~= "no_research_in_progress" then
-        local ok, ingredients = pcall(function() return node._entity.force.current_research.research_unit_ingredients end)
-        local readable = ok and type(ingredients) == "table" and next(ingredients) ~= nil
-        if not readable then lab_waiting = false end
-        for _, ingredient in pairs(readable and ingredients or {}) do
-          if type(ingredient) ~= "table" or not products[(ingredient.type or "item") .. ":" .. tostring(ingredient.name)] then
-            lab_waiting, node._missing_science_pack = false, true
-          end
-        end
-      end
-      node._accepting = next(products) ~= nil and (node.role == "buffer" or node.status == "working" or lab_waiting)
-      for _, product in pairs(products) do
-        -- Unsupported fluid endpoints remain unproven rather than guessing capacity.
-        local ok, count, accepting = pcall(function()
-          if product.type == "fluid" then
-            if not node._fluid_supported or (node.type ~= "generator" and node.type ~= "storage-tank") then
-              error("unsupported fluid endpoint acceptance")
-            end
-            local box = node._fluid_boxes[1]
-            local temperature = box.temperature or product.temperature
-            local compatible = fluid_compatible(box, product.name, temperature)
-            if node.type == "generator" then
-              -- An engine that generated last tick consumed steam then; a
-              -- pump refills its own segment to exactly full after that.
-              return 0, compatible and (box.segment_amount < box.segment_capacity
-                  or (number_property(node._entity, "energy_generated_last_tick") or 0) > 0) and box.amount > 0
-                and type(box.temperature) == "number" and box.temperature > node._generator.default_temperature
-            end
-            return box.amount, compatible and box.segment_amount < box.segment_capacity
-          end
-          local inventory
-          if node.role == "buffer" then inventory = node._entity.get_inventory(defines.inventory.chest)
-          elseif node.type == "lab" then inventory = node._entity.get_inventory(defines.inventory.lab_input)
-          elseif node.type == "burner-generator" then inventory = node._entity.get_fuel_inventory()
-          else error("unsupported consumer acceptance") end
-          if node.role == "sink" then return 0, inventory.can_insert({ name = product.name, count = 1 }) end
-          return inventory.get_item_count(product.name), inventory.can_insert({ name = product.name, count = 1 })
-        end)
-        if not ok or type(count) ~= "number" or type(accepting) ~= "boolean" then
-          node._accepting = false
-          diagnostic(node, node.role == "buffer" and "downstream_buffer_acceptance_unproven"
-            or "downstream_consumer_acceptance_unproven", "unsupported")
-        else
-          -- A full intermediate buffer is ordinary backpressure; only a
-          -- terminal endpoint that refuses the item proves blocked output.
-          if not accepting then
-            node._accepting = false
-            if node._downstream_buffer or (node.role == "sink" and not node._standby) then node._blocked_output = true end
-          end
-        end
+      local inventory
+      if node.role == "buffer" then inventory = node._entity.get_inventory(defines.inventory.chest)
+      elseif node.type == "lab" then inventory = node._entity.get_inventory(defines.inventory.lab_input)
+      elseif node.type == "burner-generator" then inventory = node._entity.get_fuel_inventory()
+      else error("unsupported consumer acceptance") end
+      if node.role == "sink" then return 0, inventory.can_insert({ name = product.name, count = 1 }) end
+      return inventory.get_item_count(product.name), inventory.can_insert({ name = product.name, count = 1 })
+    end)
+    if not ok or type(count) ~= "number" or type(accepting) ~= "boolean" then
+      node._accepting = false
+      diagnostic(F, node, node.role == "buffer" and "downstream_buffer_acceptance_unproven"
+        or "downstream_consumer_acceptance_unproven", "unsupported")
+    else
+      -- A full intermediate buffer is ordinary backpressure; only a
+      -- terminal endpoint that refuses the item proves blocked output.
+      if not accepting then
+        node._accepting = false
+        if node._downstream_buffer or (node.role == "sink" and not node._standby) then node._blocked_output = true end
       end
     end
   end
-  for _, row in ipairs(diagnostics) do
-    if row.reason == "downstream_inventory_blocked" and node_by_id[row.node_id].fuel_return_saturation then
+end
+
+local function flow_buffers(F, budget)
+  return each(F, budget, #F.nodes, 1, function(i)
+    local node = F.nodes[i]
+    if node.role == "buffer" or node.role == "sink" then buffer_or_sink(F, node, budget) end
+  end)
+end
+
+-- Diagnostics in order, each on its component.
+local function diagnostic_order(a, b)
+  return a.node_id == b.node_id and a.reason < b.reason or a.node_id < b.node_id
+end
+
+local function diagnostics_mark(F, budget)
+  return each(F, budget, #F.diagnostics, LUA_ITEM, function(i)
+    local row = F.diagnostics[i]
+    if row.reason == "downstream_inventory_blocked" and F.node_by_id[row.node_id].fuel_return_saturation then
       row.nonblocking_reason = "proven_fuel_return_saturation"
     end
-  end
-  table.sort(diagnostics, function(a, b)
-    return a.node_id == b.node_id and a.reason < b.reason or a.node_id < b.node_id
   end)
-  for _, diagnostic in ipairs(diagnostics) do
-    local component = by_root[root(diagnostic.node_id)]
-    component._diagnostics[#component._diagnostics + 1] = diagnostic
+end
+
+local function diagnostics_sort(F, budget)
+  local sorted = sort_step(F, "_sort", F.diagnostics, diagnostic_order, budget)
+  if not sorted then return false end
+  F.diagnostics = sorted
+  return true
+end
+
+local function diagnostics_assign(F, budget)
+  return each(F, budget, #F.diagnostics, LUA_ITEM, function(i)
+    local row = F.diagnostics[i]
+    local component = F.by_root[root(F, row.node_id)]
+    component._diagnostics[#component._diagnostics + 1] = row
+  end)
+end
+
+-- A component's signature is an order-independent sum of its rows' hashes,
+-- so each row is hashed as it is made and no whole-component string is
+-- built or sorted.
+local HASH_P1, HASH_P2 = 4294967291, 4294967279
+local HASH_BYTES_PER_ITEM = 16
+local function sign(C, row, budget)
+  local h1, h2 = 0, 0
+  for index = 1, #row do
+    local byte = row:byte(index)
+    h1, h2 = (h1 * 31 + byte) % HASH_P1, (h2 * 37 + byte) % HASH_P2
   end
-  for index, component in ipairs(components) do
-    component.component_id = "component-" .. index
-    local local_work = (component.status_counts.working or 0) > 0
-    local rows, signature_rows, producing_nodes, accepting_sinks = {}, {}, 0, 0
-    local buffers, consumers, blocked_output = 0, 0, false
-    local unreached, endpoints = {}, {}
-    -- Every row is located at the node where a repair or inspection starts.
-    -- Transient rows are single status samples and never gate topology.
-    local function block(node, reason, class, related_edge, gate)
-      rows[#rows + 1] = { reason = reason, class = class, node_id = node.id, position = node.position,
-        entity = node.name, related_edge = related_edge, gate = gate }
-    end
-    for _, id in ipairs(component.node_ids) do
-      local node = node_by_id[id]
-      if FLUID_TYPES[node.type] or node._power_consumer then
-        signature_rows[#signature_rows + 1] = node._key .. ":network:" .. tostring(node._power_network)
-        if node._generator then
-          for _, field in ipairs({ "default_temperature", "heat_capacity", "effectivity", "maximum_temperature" }) do
-            signature_rows[#signature_rows + 1] = node._key .. ":generator:" .. field .. ":" .. tostring(node._generator[field])
-          end
-        end
-      end
-      signature_rows[#signature_rows + 1] = node._key .. ":" .. tostring(node.direction) .. ":"
-        .. tostring(number_property(node._entity, "unit_number")) .. ":" .. tostring(node.recipe)
-      for _, box in ipairs(node._fluid_boxes or {}) do
-        signature_rows[#signature_rows + 1] = table.concat({ node._key, "box", tostring(box.index),
-          tostring(box.segment), tostring(box.production_type), tostring(box.filter), tostring(box.name),
-          tostring(box.minimum_temperature), tostring(box.maximum_temperature), tostring(box.capacity) }, ":")
-      end
-      for _, connection in ipairs(node._fluid_connections or {}) do
-        signature_rows[#signature_rows + 1] = table.concat({ node._key, "connection",
-          tostring(connection.fluidbox_index), tostring(connection._pipe_connection_index),
-          tostring(connection.connection_type), tostring(connection.flow_direction),
-          tostring(connection.position.x), tostring(connection.position.y),
-          tostring(connection.target_position.x), tostring(connection.target_position.y),
-          tostring(entity_key(connection._target_entity)), tostring(connection._target_fluidbox_index),
-          tostring(connection._target_pipe_connection_index) }, ":")
-      end
-      for _, product in ipairs(node.products) do
-        if product.type == "fluid" then signature_rows[#signature_rows + 1] = node._key .. ":temperature:" .. tostring(product.temperature) end
-      end
-      for _, ingredient in ipairs(node.ingredients) do signature_rows[#signature_rows + 1] = node._key .. ":input:" .. ingredient.type .. ":" .. ingredient.name end
-      for _, product in ipairs(node.products) do signature_rows[#signature_rows + 1] = node._key .. ":output:" .. product.type .. ":" .. product.name end
-      if node.role == "sink" then
-        consumers = consumers + 1
-        -- A lab with no research selected consumes nothing until one is.
-        if node.type == "lab" and node._raw_status == "no_research_in_progress" then
-          block(node, "consumer_idle_no_research", "evidence", nil, "readiness")
-        elseif node._missing_science_pack then
-          block(node, "consumer_missing_required_science_pack", "evidence", nil, "readiness")
-        end
-        endpoints[#endpoints + 1] = node
-      elseif node._downstream_buffer then
-        buffers = buffers + 1
-        endpoints[#endpoints + 1] = node
-        if node._accepting then accepting_sinks = accepting_sinks + 1 end
-      end
-      -- Only an inventory that cannot accept the item proves blocked output.
-      if node._blocked_output then blocked_output = true; block(node, "blocked_output", "structural") end
-      if node.role == "source" or node.role == "processor" then
-        producing_nodes = producing_nodes + 1
-        if node.role == "source" and not node._source_production.working then
-          block(node, "source_not_locally_operating", "transient")
-        end
-        -- A furnace before its first smelt has no recipe yet: with material
-        -- arriving from upstream, that is a later start, not a defect.
-        if #node.products == 0 and node.type == "furnace" and material_upstream(id) then
-          block(node, "furnace_recipe_not_yet_established", "evidence", { kind = "material_input" }, "readiness")
-        elseif #node.products == 0 then block(node, "output_identity_unproven", "structural") end
-        if not reaches_downstream(id) then
-          unreached[#unreached + 1] = node
-          if node._output_pending then
-            block(node, "drill_output_target_pending_first_output", "evidence", { kind = "machine_output" }, "readiness")
-          else
-            block(node, "downstream_acceptance_path_unproven", "structural",
-              { kind = "downstream_path" }, "readiness")
-          end
-        end
-      end
-      if node.role == "sink" and node._accepting then accepting_sinks = accepting_sinks + 1 end
-      for _, ingredient in ipairs(node.ingredients or {}) do
-        if not upstream_proven(id, ingredient, false) then
-          block(node, "material_input_provenance_unresolved:" .. ingredient.type .. ":" .. ingredient.name, "structural",
-            { kind = "material_input" })
-        end
-      end
-      if node.requires_fuel and not upstream_proven(id, node.fuel_categories or {}, true) then
-        local related_edge = { kind = "fuel_input" }
-        -- A burner inserter refuels only from fuel it carries. When its
-        -- produced cargo is known and none of it burns here, say so: it needs
-        -- a fuel feed of its own.
-        if node.role == "transport" then
-          local cargo = upstream_products(id)
-          if next(cargo) then
-            related_edge.transport_cargo_fuel = false
-            for _, product in pairs(cargo) do
-              if product.fuel_category and (node.fuel_categories or {})[product.fuel_category] then
-                related_edge.transport_cargo_fuel = nil
-              end
-            end
-          end
-        end
-        block(node, next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven",
-          "structural", related_edge, "readiness")
-      end
-      if node.status == "no_power" or node.status == "low_power" or node.status == "no_fuel"
-        or node.status == "insufficient_input" or node.status == "full_output" and not node.fuel_return_saturation
-        or node.status == "disabled" or node.status == "no_resources" then
-        block(node, "nonproductive_status:" .. node.status, status_class(node))
+  C.h1, C.h2 = (C.h1 + h1) % HASH_P1, (C.h2 + h2) % HASH_P2
+  budget.left = budget.left - math.ceil((#row + 1) / HASH_BYTES_PER_ITEM)
+end
+
+-- Every row is located at the node where a repair or inspection starts.
+-- Transient rows are single status samples and never gate topology.
+local function block(C, node, reason, class, related_edge, gate)
+  C.rows[#C.rows + 1] = { reason = reason, class = class, node_id = node.id, position = node.position,
+    entity = node.name, related_edge = related_edge, gate = gate }
+end
+
+-- One node's share of its component's state and signature.
+local function component_node(F, C, id, budget)
+  local node = F.node_by_id[id]
+  local walked = 0
+  local function walk(found, visited)
+    walked = walked + (visited or 0)
+    return found
+  end
+  if FLUID_TYPES[node.type] or node._power_consumer then
+    sign(C, node._key .. ":network:" .. tostring(node._power_network), budget)
+    if node._generator then
+      for _, field in ipairs({ "default_temperature", "heat_capacity", "effectivity", "maximum_temperature" }) do
+        sign(C, node._key .. ":generator:" .. field .. ":" .. tostring(node._generator[field]), budget)
       end
     end
-    for _, edge in ipairs(component._edges) do
-      signature_rows[#signature_rows + 1] = node_by_id[edge.from]._key .. "->" .. node_by_id[edge.to]._key .. ":" .. edge.kind .. ":" .. tostring(edge.from_fluidbox) .. ":" .. tostring(edge.to_fluidbox)
+  end
+  sign(C, node._key .. ":" .. tostring(node.direction) .. ":"
+    .. tostring(node._unit) .. ":" .. tostring(node.recipe), budget)
+  for _, box in ipairs(node._fluid_boxes or {}) do
+    sign(C, table.concat({ node._key, "box", tostring(box.index),
+      tostring(box.segment), tostring(box.production_type), tostring(box.filter), tostring(box.name),
+      tostring(box.minimum_temperature), tostring(box.maximum_temperature), tostring(box.capacity) }, ":"), budget)
+  end
+  for _, connection in ipairs(node._fluid_connections or {}) do
+    sign(C, table.concat({ node._key, "connection",
+      tostring(connection.fluidbox_index), tostring(connection._pipe_connection_index),
+      tostring(connection.connection_type), tostring(connection.flow_direction),
+      tostring(connection.position.x), tostring(connection.position.y),
+      tostring(connection.target_position.x), tostring(connection.target_position.y),
+      tostring(connection._target_key), tostring(connection._target_fluidbox_index),
+      tostring(connection._target_pipe_connection_index) }, ":"), budget)
+  end
+  for _, product in ipairs(node.products) do
+    if product.type == "fluid" then sign(C, node._key .. ":temperature:" .. tostring(product.temperature), budget) end
+  end
+  for _, ingredient in ipairs(node.ingredients) do sign(C, node._key .. ":input:" .. ingredient.type .. ":" .. ingredient.name, budget) end
+  for _, product in ipairs(node.products) do sign(C, node._key .. ":output:" .. product.type .. ":" .. product.name, budget) end
+  if node.role == "sink" then
+    C.consumers = C.consumers + 1
+    -- A lab with no research selected consumes nothing until one is.
+    if node.type == "lab" and node._raw_status == "no_research_in_progress" then
+      block(C, node, "consumer_idle_no_research", "evidence", nil, "readiness")
+    elseif node._missing_science_pack then
+      block(C, node, "consumer_missing_required_science_pack", "evidence", nil, "readiness")
     end
-    -- Electrical dependents are part of the supplying component's identity
-    -- without joining their material paths.
-    for _, edge in ipairs(edges) do
-      if edge.kind == "electrical_dependency" and by_root[root(edge.from)] == component
-        and by_root[root(edge.to)] ~= component then
-        local node = node_by_id[edge.to]
-        signature_rows[#signature_rows + 1] = table.concat({ "electrical-dependent", node._key,
-          tostring(number_property(node._entity, "unit_number")), tostring(node._power_network),
-          tostring(node.direction) }, ":")
-        for _, connection in ipairs(edges) do
-          if connection.from == node.id or connection.to == node.id then
-            signature_rows[#signature_rows + 1] = table.concat({ "electrical-dependent-connection", connection.kind,
-              node_by_id[connection.from]._key, node_by_id[connection.to]._key }, ":")
-          end
-        end
-      end
+    C.endpoints[#C.endpoints + 1] = node
+  elseif node._downstream_buffer then
+    C.buffers = C.buffers + 1
+    C.endpoints[#C.endpoints + 1] = node
+    if node._accepting then C.accepting_sinks = C.accepting_sinks + 1 end
+  end
+  -- Only an inventory that cannot accept the item proves blocked output.
+  if node._blocked_output then C.blocked_output = true; block(C, node, "blocked_output", "structural") end
+  if node.role == "source" or node.role == "processor" then
+    C.producing_nodes = C.producing_nodes + 1
+    if node.role == "source" and not node._source_production.working then
+      block(C, node, "source_not_locally_operating", "transient")
     end
-    table.sort(signature_rows)
-    -- Compact identifier of the component's exact topology.
-    local signature = table.concat(signature_rows, "|")
-    local h1, h2 = 0, 0
-    for i = 1, #signature do
-      local byte = signature:byte(i)
-      h1, h2 = (h1 * 31 + byte) % 4294967291, (h2 * 37 + byte) % 4294967279
-    end
-    component.component_signature = string.format("%08x%08x", h1, h2)
-    for _, diagnostic in ipairs(component._diagnostics) do
-      local node = node_by_id[diagnostic.node_id]
-      if diagnostic.reason ~= "downstream_inventory_blocked" or not node.fuel_return_saturation then
-        block(node, "relationship_diagnostic:" .. diagnostic.reason, diagnostic.class, diagnostic.related_edge)
-      end
-    end
-    -- Component-level gaps attach to the producers lacking a downstream path,
-    -- or to the component's first node when no producer can carry the row.
-    local anchors = #unreached > 0 and unreached or { node_by_id[component.node_ids[1]] }
-    if producing_nodes == 0 or (component.roles.source or 0) == 0
-      or buffers + consumers == 0 then
-      for _, node in ipairs(anchors) do
-        block(node, "physical_source_downstream_path_unproven", "structural",
+    -- A furnace before its first smelt has no recipe yet: with material
+    -- arriving from upstream, that is a later start, not a defect.
+    if #node.products == 0 and node.type == "furnace" and walk(material_upstream(F, id)) then
+      block(C, node, "furnace_recipe_not_yet_established", "evidence", { kind = "material_input" }, "readiness")
+    elseif #node.products == 0 then block(C, node, "output_identity_unproven", "structural") end
+    if not walk(reaches_downstream(F, id)) then
+      C.unreached[#C.unreached + 1] = node
+      if node._output_pending then
+        block(C, node, "drill_output_target_pending_first_output", "evidence", { kind = "machine_output" }, "readiness")
+      else
+        block(C, node, "downstream_acceptance_path_unproven", "structural",
           { kind = "downstream_path" }, "readiness")
       end
     end
-    if accepting_sinks == 0 then
-      for _, node in ipairs(#endpoints > 0 and endpoints or anchors) do block(node, "downstream_acceptance_not_observed", "transient") end
-    end
-    local blocker_names, seen_blocker, details, seen_detail = {}, {}, {}, {}
-    local hard_rows = {}
-    for _, row in ipairs(rows) do
-      if row.class ~= "transient" then
-        hard_rows[#hard_rows + 1] = row
-        if not seen_blocker[row.reason] then seen_blocker[row.reason] = true; blocker_names[#blocker_names + 1] = row.reason end
-      end
-    end
-    table.sort(blocker_names)
-    table.sort(hard_rows, function(a, b)
-      if (a.gate == "readiness") ~= (b.gate == "readiness") then return a.gate == "readiness" end
-      if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-      if a.position.x ~= b.position.x then return a.position.x < b.position.x end
-      return a.reason < b.reason
-    end)
-    -- One compact row per distinct site; every name stays in autonomy_blockers.
-    for _, row in ipairs(hard_rows) do
-      local key = string.format("%.17g\0%.17g", row.position.x, row.position.y)
-      if #details < MAX_COMPONENT_BLOCKER_DETAILS and not seen_detail[key] then
-        seen_detail[key] = true
-        details[#details + 1] = { reason = row.reason, class = row.class, position = row.position,
-          entity = row.entity, related_edge = row.related_edge }
-      end
-    end
-    component.state = {
-      downstream_kind = buffers > 0 and (consumers > 0 and "mixed" or "buffer") or (consumers > 0 and "consumer" or "none"),
-      blocked_output = blocked_output,
-      machine_present = true,
-      locally_operating = local_work,
-      autonomy_topology_ready = #hard_rows == 0,
-      autonomy_blockers = blocker_names,
-      blocker_details = details,
-    }
   end
-  return { nodes = nodes, edges = edges, components = components, diagnostics = diagnostics,
+  if node.role == "sink" and node._accepting then C.accepting_sinks = C.accepting_sinks + 1 end
+  for _, ingredient in ipairs(node.ingredients or {}) do
+    if not walk(upstream_proven(F, id, ingredient, false)) then
+      block(C, node, "material_input_provenance_unresolved:" .. ingredient.type .. ":" .. ingredient.name, "structural",
+        { kind = "material_input" })
+    end
+  end
+  if node.requires_fuel and not walk(upstream_proven(F, id, node.fuel_categories or {}, true)) then
+    local related_edge = { kind = "fuel_input" }
+    -- A burner inserter refuels only from fuel it carries. When its
+    -- produced cargo is known and none of it burns here, say so: it needs
+    -- a fuel feed of its own.
+    if node.role == "transport" then
+      local cargo = walk(upstream_products(F, id))
+      if next(cargo) then
+        related_edge.transport_cargo_fuel = false
+        for _, product in pairs(cargo) do
+          if product.fuel_category and (node.fuel_categories or {})[product.fuel_category] then
+            related_edge.transport_cargo_fuel = nil
+          end
+        end
+      end
+    end
+    block(C, node, next(node.fuel_categories or {}) and "fuel_input_provenance_unresolved" or "fuel_compatibility_unproven",
+      "structural", related_edge, "readiness")
+  end
+  if node.status == "no_power" or node.status == "low_power" or node.status == "no_fuel"
+    or node.status == "insufficient_input" or node.status == "full_output" and not node.fuel_return_saturation
+    or node.status == "disabled" or node.status == "no_resources" then
+    block(C, node, "nonproductive_status:" .. node.status, status_class(node))
+  end
+  budget.left = budget.left - math.ceil(walked / WALK_NODES_PER_ITEM)
+end
+
+-- A component's signature rows from its edges and electrical dependents
+-- (and each dependent's own edges), a budget at a time: true once done.
+local function component_edges(F, component, C, budget)
+  while C.edge <= #component._edges do
+    if budget.left <= 0 then return false end
+    local edge = component._edges[C.edge]
+    sign(C, F.node_by_id[edge.from]._key .. "->" .. F.node_by_id[edge.to]._key .. ":" .. edge.kind .. ":"
+      .. tostring(edge.from_fluidbox) .. ":" .. tostring(edge.to_fluidbox), budget)
+    C.edge = C.edge + 1
+  end
+  -- Electrical dependents are part of the supplying component's identity
+  -- without joining their material paths.
+  while C.dependent <= #component._electrical do
+    if budget.left <= 0 then return false end
+    local node = F.node_by_id[component._electrical[C.dependent].to]
+    sign(C, table.concat({ "electrical-dependent", node._key,
+      tostring(node._unit), tostring(node._power_network), tostring(node.direction) }, ":"), budget)
+    for _, connection in ipairs(F.edges_of[node.id]) do
+      sign(C, table.concat({ "electrical-dependent-connection", connection.kind,
+        F.node_by_id[connection.from]._key, F.node_by_id[connection.to]._key }, ":"), budget)
+    end
+    C.dependent = C.dependent + 1
+  end
+  return true
+end
+
+-- Calls fn(row) for each row of list from C.i on while the budget lasts:
+-- true once all are done.
+local function component_each(C, budget, list, fn)
+  local i = C.i or 1
+  while i <= #list do
+    if budget.left <= 0 then C.i = i; return false end
+    budget.left = budget.left - LUA_ITEM
+    fn(list[i])
+    i = i + 1
+  end
+  C.i = nil
+  return true
+end
+
+-- Hard rows in presentation order: readiness rows first, then by position.
+local function hard_order(a, b)
+  if (a.gate == "readiness") ~= (b.gate == "readiness") then return a.gate == "readiness" end
+  if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+  if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+  return a.reason < b.reason
+end
+
+-- Keeps C.best the first MAX_COMPONENT_BLOCKER_DETAILS hard rows at
+-- distinct sites, as a full sort would list them, without sorting them all.
+local function keep_detail(C, row)
+  local key = string.format("%.17g\0%.17g", row.position.x, row.position.y)
+  local best = C.best
+  for index, kept in ipairs(best) do
+    if kept.key == key then
+      if hard_order(row, kept.row) then best[index] = { key = key, row = row } else return end
+      table.sort(best, function(a, b) return hard_order(a.row, b.row) end)
+      return
+    end
+  end
+  if #best < MAX_COMPONENT_BLOCKER_DETAILS then best[#best + 1] = { key = key, row = row }
+  elseif hard_order(row, best[#best].row) then best[#best] = { key = key, row = row }
+  else return end
+  table.sort(best, function(a, b) return hard_order(a.row, b.row) end)
+end
+
+-- The component's rows and state, a budget at a time: true once done.
+local function component_finish(F, component, C, budget)
+  if C.phase == 1 then
+    if not component_each(C, budget, component._diagnostics, function(row)
+      local node = F.node_by_id[row.node_id]
+      if row.reason ~= "downstream_inventory_blocked" or not node.fuel_return_saturation then
+        block(C, node, "relationship_diagnostic:" .. row.reason, row.class, row.related_edge)
+      end
+    end) then return false end
+    -- Component-level gaps attach to the producers lacking a downstream
+    -- path, or to the component's first node when no producer can carry the row.
+    C.anchors = #C.unreached > 0 and C.unreached or { F.node_by_id[component.node_ids[1]] }
+    C.phase = 2
+  end
+  if C.phase == 2 then
+    if C.producing_nodes == 0 or (component.roles.source or 0) == 0 or C.buffers + C.consumers == 0 then
+      if not component_each(C, budget, C.anchors, function(node)
+        block(C, node, "physical_source_downstream_path_unproven", "structural", { kind = "downstream_path" }, "readiness")
+      end) then return false end
+    end
+    C.phase = 3
+  end
+  if C.phase == 3 then
+    if C.accepting_sinks == 0 then
+      if not component_each(C, budget, #C.endpoints > 0 and C.endpoints or C.anchors, function(node)
+        block(C, node, "downstream_acceptance_not_observed", "transient")
+      end) then return false end
+    end
+    C.phase, C.best, C.blocker_names, C.seen_blocker, C.hard_rows = 4, {}, {}, {}, 0
+  end
+  if not component_each(C, budget, C.rows, function(row)
+    if row.class ~= "transient" then
+      C.hard_rows = C.hard_rows + 1
+      if not C.seen_blocker[row.reason] then C.seen_blocker[row.reason] = true; C.blocker_names[#C.blocker_names + 1] = row.reason end
+      keep_detail(C, row)
+    end
+  end) then return false end
+  table.sort(C.blocker_names)
+  -- One compact row per distinct site; every name stays in autonomy_blockers.
+  local details = {}
+  for _, kept in ipairs(C.best) do
+    local row = kept.row
+    details[#details + 1] = { reason = row.reason, class = row.class, position = row.position,
+      entity = row.entity, related_edge = row.related_edge }
+  end
+  component.component_signature = string.format("%08x%08x", C.h1, C.h2)
+  component.state = {
+    downstream_kind = C.buffers > 0 and (C.consumers > 0 and "mixed" or "buffer") or (C.consumers > 0 and "consumer" or "none"),
+    blocked_output = C.blocked_output,
+    machine_present = true,
+    locally_operating = (component.status_counts.working or 0) > 0,
+    autonomy_topology_ready = C.hard_rows == 0,
+    autonomy_blockers = C.blocker_names,
+    blocker_details = details,
+  }
+  return true
+end
+
+-- Components one at a time, their nodes, signature rows and blocker rows a
+-- budget's worth per tick.
+local function flow_components(F, budget)
+  while true do
+    local index = F.component_index or 1
+    local component = F.components[index]
+    if not component then
+      F.component_index, F.current = nil, nil
+      return true
+    end
+    local C = F.current
+    if not C then
+      component.component_id = "component-" .. index
+      C = { rows = {}, producing_nodes = 0, accepting_sinks = 0, buffers = 0, consumers = 0,
+        blocked_output = false, unreached = {}, endpoints = {}, node = 1, edge = 1, dependent = 1,
+        h1 = 0, h2 = 0, phase = 1 }
+      F.current = C
+    end
+    while C.node <= #component.node_ids do
+      if budget.left <= 0 then return false end
+      budget.left = budget.left - 2
+      component_node(F, C, component.node_ids[C.node], budget)
+      C.node = C.node + 1
+    end
+    if not component_edges(F, component, C, budget) then return false end
+    if not component_finish(F, component, C, budget) then return false end
+    F.current, F.component_index = nil, index + 1
+  end
+end
+
+-- The finished graph, as the presentation reads it.
+local function flow_result(F)
+  return { nodes = F.nodes, edges = F.edges, components = F.components, diagnostics = F.diagnostics,
     relationship_semantics = "exact_runtime_targets_only; absence_or_unsupported_is_not_a_connection" }
+end
+
+-- Stages in order; each returns true once done.
+local FLOW_STAGES = {
+  flow_sort_nodes, flow_prepare, flow_links, flow_generators, flow_consumers, flow_demand, flow_standby,
+  graph_sort_edges, graph_run_tiles, graph_run_joins, graph_run_consumers, graph_dead_ends, graph_joins,
+  graph_components, graph_adjacency, graph_transfers, graph_sort_components, graph_sources,
+  flow_fuel, flow_buffers, diagnostics_mark, diagnostics_sort, diagnostics_assign, flow_components,
+}
+
+-- Advances the material flow; true once the graph is complete.
+local function flow_step(F, budget)
+  while F.stage <= #FLOW_STAGES do
+    if budget.left <= 0 then return false end
+    if not FLOW_STAGES[F.stage](F, budget) then return false end
+    F.stage, F.cursor = F.stage + 1, nil
+  end
+  return true
 end
 
 -- Caps are a presentation concern. Never mutate the graph itself.
@@ -1252,114 +1579,6 @@ local function add_contents(bucket, source)
   end
 end
 
-local function build_stockpiles(own)
-  local items, belts = {}, {}
-  local function hold(item, count, entity, kind)
-    if count <= 0 then return end
-    local row = items[item] or { item = item, total = 0, holders = {} }
-    items[item] = row
-    row.total = row.total + count
-    row.holders[#row.holders + 1] = { entity = entity.name, position = xy(entity.position), count = count, kind = kind }
-  end
-  for _, record in ipairs(own) do
-    local entity = record.entity
-    if BELT_TYPES[entity.type] then
-      belts[#belts + 1] = entity
-    elseif CHEST_TYPES[entity.type] or OUTPUT_TYPES[entity.type] then
-      -- The status cache reads contents while it walks (record.contents).
-      local bucket = record.contents
-      if not bucket then
-        local inventory = stock_inventory(entity)
-        if inventory then bucket = {}; add_contents(bucket, inventory) end
-      end
-      for item, count in pairs(bucket or {}) do hold(item, count, entity, CHEST_TYPES[entity.type] and "chest" or "machine_output") end
-    end
-  end
-  -- One holder per connected belt run, located at the run's entity carrying
-  -- most of that item. Runs join through belt_neighbours among the collected
-  -- (own, charted) belts only, so a run never reaches into uncharted chunks.
-  local parent, index_of = {}, {}
-  for index, belt in ipairs(belts) do
-    parent[index] = index
-    local id = number_property(belt, "unit_number")
-    if id then index_of[id] = index end
-  end
-  local function find(index)
-    while parent[index] ~= index do parent[index] = parent[parent[index]]; index = parent[index] end
-    return index
-  end
-  for index, belt in ipairs(belts) do
-    local ok, outputs = pcall(function() return belt.belt_neighbours.outputs end)
-    for _, other in ipairs(ok and type(outputs) == "table" and outputs or {}) do
-      local other_index = index_of[number_property(other, "unit_number") or false]
-      if other_index then parent[find(index)] = find(other_index) end
-    end
-    -- belt_neighbours omits the other end of an underground pair.
-    if belt.type == "underground-belt" then
-      local ok_pair, pair = pcall(function() return belt.neighbours end)
-      local pair_index = ok_pair and pair and index_of[number_property(pair, "unit_number") or false]
-      if pair_index then parent[find(index)] = find(pair_index) end
-    end
-  end
-  local runs = {}
-  for index, belt in ipairs(belts) do
-    local bucket = {}
-    for _, line in ipairs(belt_lines(belt)) do add_contents(bucket, line) end
-    local run = runs[find(index)] or {}
-    runs[find(index)] = run
-    for item, count in pairs(bucket) do
-      local held = run[item] or { count = 0, best = 0 }
-      run[item] = held
-      held.count = held.count + count
-      if count > held.best or (count == held.best and held.entity and key_position(belt, held.entity)) then
-        held.best, held.entity = count, belt
-      end
-    end
-  end
-  for _, run in pairs(runs) do
-    for item, held in pairs(run) do if held.entity then hold(item, held.count, held.entity, "belt") end end
-  end
-  local rows = sorted_rows(items, function(a, b)
-    if a.total ~= b.total then return a.total > b.total end
-    return a.item < b.item
-  end)
-  for _, row in ipairs(rows) do
-    table.sort(row.holders, function(a, b)
-      if a.count ~= b.count then return a.count > b.count end
-      return row_position(a, b)
-    end)
-    row.holders_omitted = cap_rows(row.holders, MAX_STOCK_HOLDERS)
-  end
-  return rows, cap_rows(rows, MAX_STOCK_ITEMS)
-end
-
--- One row per charted chunk holding own machines. This is independent of the
--- detail=full landmark cap, so a full landmark list cannot hide a remote site.
-local function build_sites(own)
-  local by_chunk = {}
-  for _, record in ipairs(own) do
-    local entity = record.entity
-    if SITE_TYPES[entity.type] then
-      local cx, cy = math.floor(entity.position.x / 32), math.floor(entity.position.y / 32)
-      local key = cx .. "," .. cy
-      local site = by_chunk[key] or { chunk = { x = cx, y = cy }, machines = {}, _count = 0, _x = 0, _y = 0 }
-      by_chunk[key] = site
-      site.machines[entity.name] = (site.machines[entity.name] or 0) + 1
-      site._count, site._x, site._y = site._count + 1, site._x + entity.position.x, site._y + entity.position.y
-    end
-  end
-  local rows = sorted_rows(by_chunk, function(a, b)
-    if a._count ~= b._count then return a._count > b._count end
-    if a.chunk.y ~= b.chunk.y then return a.chunk.y < b.chunk.y end
-    return a.chunk.x < b.chunk.x
-  end)
-  for _, site in ipairs(rows) do
-    site.position = { x = math.floor(site._x / site._count + 0.5), y = math.floor(site._y / site._count + 0.5) }
-    site._count, site._x, site._y = nil, nil, nil
-  end
-  return rows, cap_rows(rows, MAX_SITES)
-end
-
 -- Resource entities are bucketed per chunk while the charted chunks are
 -- scanned; a patch is the same resource across touching (8-neighbour) chunks.
 -- That is coarser than tile adjacency but needs no per-tile work.
@@ -1378,45 +1597,6 @@ local function add_patch_resource(cells, entity)
   cell.x, cell.y = cell.x + x, cell.y + y
   cell.left, cell.right = math.min(cell.left, x), math.max(cell.right, x)
   cell.top, cell.bottom = math.min(cell.top, y), math.max(cell.bottom, y)
-end
-
-local function build_patches(cells)
-  -- Cells may be cached (patch_cache): visits are marked here, never on them.
-  local rows, seen = {}, {}
-  for name, by_name in pairs(cells) do
-    for _, first in pairs(by_name) do
-      if not seen[first] then
-        seen[first] = true
-        local patch = { name = name, amount = 0, tiles = 0, _x = 0, _y = 0,
-          _left = first.left, _right = first.right, _top = first.top, _bottom = first.bottom }
-        local stack = { first }
-        while #stack > 0 do
-          local cell = table.remove(stack)
-          patch.amount, patch.tiles = patch.amount + cell.amount, patch.tiles + cell.tiles
-          patch._x, patch._y = patch._x + cell.x, patch._y + cell.y
-          patch._left, patch._right = math.min(patch._left, cell.left), math.max(patch._right, cell.right)
-          patch._top, patch._bottom = math.min(patch._top, cell.top), math.max(patch._bottom, cell.bottom)
-          for dy = -1, 1 do for dx = -1, 1 do
-            local neighbour = by_name[(cell.cx + dx) .. "," .. (cell.cy + dy)]
-            if neighbour and not seen[neighbour] then seen[neighbour] = true; stack[#stack + 1] = neighbour end
-          end end
-        end
-        patch.bbox = { left_top = { x = math.floor(patch._left), y = math.floor(patch._top) },
-          right_bottom = { x = math.ceil(patch._right), y = math.ceil(patch._bottom) } }
-        patch.centroid = { x = math.floor(patch._x / patch.tiles * 10 + 0.5) / 10,
-          y = math.floor(patch._y / patch.tiles * 10 + 0.5) / 10 }
-        patch._x, patch._y, patch._left, patch._right, patch._top, patch._bottom = nil, nil, nil, nil, nil, nil
-        rows[#rows + 1] = patch
-      end
-    end
-  end
-  table.sort(rows, function(a, b)
-    if a.amount ~= b.amount then return a.amount > b.amount end
-    if a.name ~= b.name then return a.name < b.name end
-    if a.centroid.y ~= b.centroid.y then return a.centroid.y < b.centroid.y end
-    return a.centroid.x < b.centroid.x
-  end)
-  return rows, cap_rows(rows, MAX_PATCHES)
 end
 
 -- Per electric network, as the electric-network view shows it.
@@ -1448,32 +1628,190 @@ local function nominal_watts(entity, method)
   return ok and type(value) == "number" and value * 60 or 0
 end
 
-local function build_power(own, network_poles)
-  local networks = {}
-  for _, record in ipairs(own) do
-    local entity, id = record.entity, record.network_id
-    if id and entity.type ~= "electric-pole" then
-      local network = networks[id] or { id = id, capacity_w = 0, accumulator_j = 0, accumulator_capacity_j = 0,
-        producers = {}, consumers = {}, _starved = 0, _demand = 0 }
-      networks[id] = network
-      if entity.type == "accumulator" then
-        network.accumulator_j = network.accumulator_j + (number_property(entity, "energy") or 0)
-        network.accumulator_capacity_j = network.accumulator_capacity_j + (number_property(entity, "electric_buffer_size") or 0)
-      elseif POWER_PRODUCER_TYPES[entity.type] then
-        network.producers[entity.name] = (network.producers[entity.name] or 0) + 1
-        network.capacity_w = network.capacity_w + (record.capacity_w or nominal_watts(entity, "get_max_energy_production"))
-      else
-        network.consumers[entity.name] = (network.consumers[entity.name] or 0) + 1
-        local status = normalize_status(record.status)
-        if status == "low_power" or status == "no_power" then network._starved = network._starved + 1 end
-        if status == "working" or status == "low_power" or status == "no_power" then
-          network._demand = network._demand + (record.usage_w or nominal_watts(entity, "get_max_energy_usage"))
-        end
+-- The sections map_summary's include and factory_status's stock and power
+-- read, accumulated a record at a time as the scan (or the status refresh)
+-- reads each own entity, so building them never walks every entity in one
+-- tick. Records are plain (no entity reads): chests and crafting outputs
+-- carry record.contents; belts carry record.belt = {outputs = unit numbers
+-- it feeds, pair = its underground partner's unit, bucket = what its lines
+-- hold}.
+local function sections_new(want)
+  return { want = want, items = {}, belts = {}, sites = {}, networks = {}, problems = {}, problems_total = 0,
+    problems_by_status = {} }
+end
+
+local function holder_order(a, b)
+  if a.count ~= b.count then return a.count > b.count end
+  return row_position(a, b)
+end
+
+local function hold(A, item, count, entity, kind)
+  if count <= 0 then return end
+  local row = A.items[item]
+  if not row then
+    row = { item = item, total = 0, holders = {}, holder_count = 0 }
+    A.items[item] = row
+  end
+  row.total, row.holder_count = row.total + count, row.holder_count + 1
+  heap_keep(row.holders, MAX_STOCK_HOLDERS,
+    { entity = entity.name, position = xy(entity.position), count = count, kind = kind }, holder_order)
+end
+
+-- Input waits last, then machines before inserters (a dead network must not
+-- fill the cap with arms), then the more severe status.
+local function problem_order(a, b)
+  local a_wait, b_wait = a._rank == INPUT_WAIT_RANK, b._rank == INPUT_WAIT_RANK
+  if a_wait ~= b_wait then return b_wait end
+  if a._inserter ~= b._inserter then return b._inserter end
+  if a._rank ~= b._rank then return a._rank < b._rank end
+  return row_position(a, b)
+end
+
+local function sections_add(A, record)
+  local entity, want = record.entity, A.want
+  local kind = entity.type
+  if want.stockpiles then
+    if BELT_TYPES[kind] then
+      if record.belt then A.belts[#A.belts + 1] = record end
+    elseif CHEST_TYPES[kind] or OUTPUT_TYPES[kind] then
+      for item, count in pairs(record.contents or {}) do hold(A, item, count, entity, CHEST_TYPES[kind] and "chest" or "machine_output") end
+    end
+  end
+  if want.sites and SITE_TYPES[kind] then
+    local cx, cy = math.floor(entity.position.x / 32), math.floor(entity.position.y / 32)
+    local key = cx .. "," .. cy
+    local site = A.sites[key] or { chunk = { x = cx, y = cy }, machines = {}, _count = 0, _x = 0, _y = 0 }
+    A.sites[key] = site
+    site.machines[entity.name] = (site.machines[entity.name] or 0) + 1
+    site._count, site._x, site._y = site._count + 1, site._x + entity.position.x, site._y + entity.position.y
+  end
+  local id = record.network_id
+  if want.power and id and kind ~= "electric-pole" then
+    local network = A.networks[id] or { id = id, capacity_w = 0, accumulator_j = 0, accumulator_capacity_j = 0,
+      producers = {}, consumers = {}, _starved = 0, _demand = 0 }
+    A.networks[id] = network
+    if kind == "accumulator" then
+      network.accumulator_j = network.accumulator_j + (number_property(entity, "energy") or 0)
+      network.accumulator_capacity_j = network.accumulator_capacity_j + (number_property(entity, "electric_buffer_size") or 0)
+    elseif POWER_PRODUCER_TYPES[kind] then
+      network.producers[entity.name] = (network.producers[entity.name] or 0) + 1
+      network.capacity_w = network.capacity_w + (record.capacity_w or nominal_watts(entity, "get_max_energy_production"))
+    else
+      network.consumers[entity.name] = (network.consumers[entity.name] or 0) + 1
+      local status = normalize_status(record.status)
+      if status == "low_power" or status == "no_power" then network._starved = network._starved + 1 end
+      if status == "working" or status == "low_power" or status == "no_power" then
+        network._demand = network._demand + (record.usage_w or nominal_watts(entity, "get_max_energy_usage"))
       end
     end
   end
+  if want.problems and PROBLEM_STATUSES[record.status] then
+    A.problems_total = A.problems_total + 1
+    A.problems_by_status[record.status] = (A.problems_by_status[record.status] or 0) + 1
+    heap_keep(A.problems, MAX_PROBLEMS, { entity = entity.name, position = xy(entity.position),
+      status = record.status, _inserter = kind == "inserter", _rank = PROBLEM_RANK[record.status] or INPUT_WAIT_RANK },
+      problem_order)
+  end
+end
+
+-- Belt contents as stock, a budget at a time: one holder per connected
+-- belt run, located at the run's entity carrying most of that item. Runs
+-- join through belt_neighbours among the collected (own, charted) belts
+-- only, so a run never reaches into uncharted chunks. True once done.
+local function sections_belts(A, budget)
+  local belts = A.belts
+  A.phase = A.phase or 1
+  if A.phase == 1 then
+    A.parent, A.index_of = A.parent or {}, A.index_of or {}
+    if not each(A, budget, #belts, LUA_ITEM, function(index)
+      A.parent[index] = index
+      local unit = belts[index].entity.unit_number
+      if unit then A.index_of[unit] = index end
+    end) then return false end
+    A.phase = 2
+  end
+  local parent = A.parent
+  local function find(index)
+    while parent[index] ~= index do parent[index] = parent[parent[index]]; index = parent[index] end
+    return index
+  end
+  if A.phase == 2 then
+    if not each(A, budget, #belts, LUA_ITEM, function(index)
+      local record = belts[index]
+      for _, unit in ipairs(record.belt.outputs) do
+        local other_index = A.index_of[unit]
+        if other_index then parent[find(index)] = find(other_index) end
+      end
+      -- belt_neighbours omits the other end of an underground pair.
+      local pair_index = record.belt.pair and A.index_of[record.belt.pair]
+      if pair_index then parent[find(index)] = find(pair_index) end
+    end) then return false end
+    A.phase, A.runs, A.run_list = 3, {}, {}
+  end
+  if A.phase == 3 then
+    if not each(A, budget, #belts, LUA_ITEM, function(index)
+      local record = belts[index]
+      local belt = record.entity
+      local root_index = find(index)
+      local run = A.runs[root_index]
+      if not run then
+        run = {}
+        A.runs[root_index], A.run_list[#A.run_list + 1] = run, run
+      end
+      for item, count in pairs(record.belt.bucket) do
+        local held = run[item] or { count = 0, best = 0 }
+        run[item] = held
+        held.count = held.count + count
+        if count > held.best or (count == held.best and held.entity and key_position(belt, held.entity)) then
+          held.best, held.entity = count, belt
+        end
+      end
+    end) then return false end
+    A.phase = 4
+  end
+  if not each(A, budget, #A.run_list, LUA_ITEM, function(index)
+    for item, held in pairs(A.run_list[index]) do if held.entity then hold(A, item, held.count, held.entity, "belt") end end
+  end) then return false end
+  A.belts, A.parent, A.index_of, A.runs, A.run_list, A.phase = {}, nil, nil, nil, nil, nil
+  return true
+end
+
+-- The stock rows (most held first, each with its first holders) and how
+-- many the cap left out; every item's uncapped total in totals.
+local function sections_stockpiles(A)
+  local totals = {}
+  local rows = sorted_rows(A.items, function(a, b)
+    if a.total ~= b.total then return a.total > b.total end
+    return a.item < b.item
+  end)
+  for _, row in ipairs(rows) do
+    totals[row.item] = row.total
+    table.sort(row.holders, holder_order)
+    row.holders_omitted = row.holder_count - #row.holders
+    row.holder_count = nil
+  end
+  return rows, cap_rows(rows, MAX_STOCK_ITEMS), totals
+end
+
+-- One row per charted chunk holding own machines. This is independent of the
+-- detail=full landmark cap, so a full landmark list cannot hide a remote site.
+local function sections_sites(A)
+  local rows = sorted_rows(A.sites, function(a, b)
+    if a._count ~= b._count then return a._count > b._count end
+    if a.chunk.y ~= b.chunk.y then return a.chunk.y < b.chunk.y end
+    return a.chunk.x < b.chunk.x
+  end)
+  for _, site in ipairs(rows) do
+    site.position = { x = math.floor(site._x / site._count + 0.5), y = math.floor(site._y / site._count + 0.5) }
+    site._count, site._x, site._y = nil, nil, nil
+  end
+  return rows, cap_rows(rows, MAX_SITES)
+end
+
+-- One electric-network statistics read per network.
+local function sections_power(A, network_poles)
   local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index.five_seconds
-  local rows = sorted_rows(networks, function(a, b) return a.id < b.id end)
+  local rows = sorted_rows(A.networks, function(a, b) return a.id < b.id end)
   for _, network in ipairs(rows) do
     local ok, statistics = pcall(function() return network_poles[network.id].electric_network_statistics end)
     local function watts(counts, category)
@@ -1508,284 +1846,404 @@ local function build_power(own, network_poles)
   return rows, cap_rows(rows, MAX_POWER_NETWORKS)
 end
 
-local function build_problems(own)
-  local rows, by_status = {}, {}
-  for _, record in ipairs(own) do
-    if PROBLEM_STATUSES[record.status] then
-      rows[#rows + 1] = { entity = record.entity.name, position = xy(record.entity.position),
-        status = record.status, _inserter = record.entity.type == "inserter",
-        _rank = PROBLEM_RANK[record.status] or INPUT_WAIT_RANK }
-      by_status[record.status] = (by_status[record.status] or 0) + 1
+-- The first problem rows, the total and the per-status counts (which
+-- cover every problem, including rows the cap left out).
+local function sections_problems(A)
+  local rows = A.problems
+  table.sort(rows, problem_order)
+  for _, row in ipairs(rows) do row._inserter, row._rank = nil, nil end
+  return rows, A.problems_total, A.problems_by_status
+end
+
+-- ------------------------------------------------------- map_summary job
+-- map_summary reads every own entity in the charted chunks, so it is a job
+-- (jobs.lua): the RPC returns at once and on_tick advances it a budget of
+-- work items per tick through these stages, its state S plain data in
+-- storage between ticks:
+--   scan         a chunk at a time from the patch cache's charted list: its
+--                own entities (and, for full, resources and water tiles),
+--                each read once into flow nodes and the requested sections
+--   water_edges  (full) land/water edges a tile row at a time, pure Lua
+--   flow         the material-flow graph, stage by stage (flow_step)
+--   flows_all    (include) every counted item and fluid's rates
+--   sections     (include stockpiles) belt runs as stock holders
+--   finish       groups, flows and the capped rows: no list is longer than
+--                its cap here, so this tick's work does not grow with the factory
+-- Work items: one per engine call or so, plus the Lua work around it.
+local SCAN_CHUNK_COST, SCAN_ENTITY_COST, SCAN_FLUID_COST, SCAN_RESOURCE_COST = 4, 30, 16, 6
+local WATER_STRIP = 8 -- tile rows per water query (a chunk is 4 strips)
+
+-- Charted chunks of the body's surface: the patch cache's list once it is
+-- seeded (no engine call), else listed here once (a new game's first ticks).
+local function chunk_source(S, c)
+  local cache = storage.patch_cache
+  if cache and cache.seeded and cache.charted then
+    S.from_cache, S.chunk_total = true, #cache.charted
+    return
+  end
+  local chunks = {}
+  S.chunk_set = {}
+  for chunk in c.surface.get_chunks() do
+    if c.force.is_chunk_charted(c.surface, chunk) then
+      chunks[#chunks + 1] = { x = chunk.x, y = chunk.y }
+      S.chunk_set[chunk.x .. "," .. chunk.y] = true
     end
   end
-  -- Input waits last, then machines before inserters (a dead network must not
-  -- fill the cap with arms), then the more severe status.
-  table.sort(rows, function(a, b)
-    local a_wait, b_wait = a._rank == INPUT_WAIT_RANK, b._rank == INPUT_WAIT_RANK
-    if a_wait ~= b_wait then return b_wait end
-    if a._inserter ~= b._inserter then return b._inserter end
-    if a._rank ~= b._rank then return a._rank < b._rank end
-    return row_position(a, b)
-  end)
-  local total = #rows
-  cap_rows(rows, MAX_PROBLEMS)
-  for _, row in ipairs(rows) do row._inserter, row._rank = nil, nil end
-  -- Per-status counts cover every problem, including rows the cap left out.
-  return rows, total, by_status
+  table.sort(chunks, function(a, b) return a.y == b.y and a.x < b.x or a.y < b.y end)
+  S.chunks, S.chunk_total = chunks, #chunks
+end
+
+local function chunk_at(S, index)
+  if index > S.chunk_total then return nil end
+  if S.from_cache then return storage.patch_cache and storage.patch_cache.charted[index] end
+  return S.chunks[index]
+end
+
+local function chunk_charted(S, cx, cy)
+  local key = cx .. "," .. cy
+  if S.from_cache then
+    local cache = storage.patch_cache
+    return cache ~= nil and cache.charted_set[key] == true
+  end
+  return S.chunk_set[key] == true
+end
+
+local function unit_of(entity) return number_property(entity, "unit_number") end
+
+-- A plain record of an own entity for the requested sections.
+local function own_record(S, entity, raw_status, network_id)
+  local record = { entity = { name = entity.name, type = entity.type, unit_number = unit_of(entity),
+    position = xy(entity.position) }, status = raw_status, network_id = network_id }
+  local kind = entity.type
+  if S.want.stockpiles then
+    if CHEST_TYPES[kind] or OUTPUT_TYPES[kind] then
+      local inventory = stock_inventory(entity)
+      record.contents = {}
+      if inventory then add_contents(record.contents, inventory) end
+    elseif BELT_TYPES[kind] then
+      local belt = { outputs = {}, bucket = {} }
+      local ok, outputs = pcall(function() return entity.belt_neighbours.outputs end)
+      for _, other in ipairs(ok and type(outputs) == "table" and outputs or {}) do belt.outputs[#belt.outputs + 1] = unit_of(other) end
+      if kind == "underground-belt" then
+        local ok_pair, pair = pcall(function() return entity.neighbours end)
+        belt.pair = ok_pair and pair and unit_of(pair) or nil
+      end
+      for _, line in ipairs(belt_lines(entity)) do add_contents(belt.bucket, line) end
+      record.belt = belt
+    end
+  end
+  if S.want.power and network_id and kind ~= "electric-pole" then
+    if kind == "accumulator" then
+      record.entity.energy = number_property(entity, "energy")
+      record.entity.electric_buffer_size = number_property(entity, "electric_buffer_size")
+    elseif POWER_PRODUCER_TYPES[kind] then
+      record.capacity_w = nominal_watts(entity, "get_max_energy_production")
+    else
+      record.usage_w = nominal_watts(entity, "get_max_energy_usage")
+    end
+  end
+  return record
+end
+
+-- One own entity found in a chunk: its landmark, group, flow node and record.
+local function scan_entity(S, entity, c, budget)
+  local omissions = S.omissions
+  if not entity.valid then
+    omissions.invalid_entities = omissions.invalid_entities + 1
+    return
+  end
+  if not (entity.force == c.force and charted(c.force, c.surface, entity.position)
+    and entity ~= c and entity.type ~= "character" and entity.type ~= "entity-ghost") then return end
+  local key = string.format("%s\0%s\0%.17g\0%.17g", entity.name, entity.type, entity.position.x, entity.position.y)
+  if S.seen_landmark[key] then return end
+  S.seen_landmark[key] = true
+  local raw_status = status_name(entity)
+  local recipe = recipe_fact(entity)
+  local role = FLOW_NODE_ROLES[entity.type]
+  local network_id = number_property(entity, "electric_network_id")
+  if network_id then
+    S.electric_networks[network_id] = true
+    if entity.type == "electric-pole" then
+      local previous = S.network_poles[network_id]
+      if not previous or not previous.valid or (unit_of(entity) or 0) < (unit_of(previous) or 0) then
+        S.network_poles[network_id] = entity
+      end
+    end
+  end
+  if S.sections then sections_add(S.sections, own_record(S, entity, raw_status, network_id)) end
+  if role then
+    local node = {
+      _key = key, _entity = entity, _unit = unit_of(entity), name = entity.name, type = entity.type,
+      role = role, position = { x = entity.position.x, y = entity.position.y },
+      direction = entity.direction, status = normalize_status(raw_status),
+      _raw_status = raw_status,
+      _waiting_for_destination = raw_status == "waiting_for_space_in_destination",
+      _fuel_destination_proven = entity.type == "mining-drill" or recipe and recipe.ingredients_proven,
+      recipe = recipe and recipe.name or nil,
+      products_finished = number_property(entity, "products_finished"),
+      ingredients = recipe and recipe.ingredients or {},
+      products = products_with_fuel(recipe and recipe.products
+        or (entity.type == "mining-drill" and mining_products(entity) or {})),
+      requires_fuel = has_burner(entity),
+      fuel_categories = burner_categories(entity),
+      power_state = raw_status == "no_power" and "missing" or raw_status == "low_power" and "low" or "not_exactly_observed",
+      fuel_state = raw_status == "no_fuel" and "missing" or "not_exactly_observed",
+    }
+    if role == "source" then
+      node._source_production = { working = node.status == "working" }
+      local ok, target = pcall(function() return entity.mining_target end)
+      if ok and entity_key(target) and charted(c.force, c.surface, target.position) then
+        node._source_production.resource_key = entity_key(target)
+      end
+    end
+    fluid_facts(node)
+    if node._fluid_connections then
+      budget.left = budget.left - SCAN_FLUID_COST
+      for _, connection in ipairs(node._fluid_connections) do
+        connection._target_key = entity_key(connection._target_entity)
+      end
+    end
+    local F = S.flow
+    F.flow_entities[#F.flow_entities + 1] = entity
+    F.node_list[#F.node_list + 1] = node
+  end
+  if MACHINE_TYPES[entity.type] then
+    local group_key = entity.name .. "\0" .. (recipe and recipe.name or "")
+    local group = S.groups_by_key[group_key]
+    if not group then
+      group = { entity = entity.name, type = entity.type, recipe = recipe and recipe.name or nil,
+        machine_count = 0, status_counts = {}, summed_crafting_speed = 0, _recipe_energy = recipe and recipe.energy or nil }
+      S.groups_by_key[group_key] = group
+    end
+    group.machine_count = group.machine_count + 1
+    if entity.type == "mining-drill" then
+      local capacity = nominal_mining_capacity(entity, c.force, c.surface)
+      group._mining_capacity = (group._mining_capacity or 0) + (capacity or 0)
+      group.evidenced_drill_count = (group.evidenced_drill_count or 0) + (capacity and 1 or 0)
+    end
+    local bucket = normalize_status(raw_status)
+    group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
+    local speed = number_property(entity, "crafting_speed") or 0
+    group.summed_crafting_speed = group.summed_crafting_speed + speed
+    if recipe and not S.explicit_flows then
+      for _, row in ipairs(recipe.ingredients) do add_flow_candidate(S.flow_candidates, row.type, row.name) end
+      for _, row in ipairs(recipe.products) do add_flow_candidate(S.flow_candidates, row.type, row.name) end
+    end
+  elseif not role then
+    omissions.unsupported_entities = omissions.unsupported_entities + 1
+  end
+  if S.detail == "full" then
+    -- The first MAX_LANDMARKS in position order are kept as they arrive.
+    S.landmark_total = S.landmark_total + 1
+    heap_keep(S.landmarks, MAX_LANDMARKS, {
+      name = entity.name, type = entity.type,
+      position = { x = entity.position.x, y = entity.position.y },
+      direction = entity.direction, status = raw_status, recipe = recipe and recipe.name or recipe_name(entity),
+      observed_tick = game.tick,
+    }, key_position)
+  end
+end
+
+-- One resource (full detail): totals and the nearest to the body per name.
+local function scan_resource(S, entity, c)
+  local resource_key = entity.valid and charted(c.force, c.surface, entity.position)
+    and string.format("%s\0%.17g\0%.17g", entity.name, entity.position.x, entity.position.y) or nil
+  if not resource_key or S.seen_resource[resource_key] then return end
+  S.seen_resource[resource_key] = true
+  local row = S.resources_by_name[entity.name] or { name = entity.name, entity_count = 0, total_amount = 0, nearest = nil, observed_tick = game.tick, _distance = nil }
+  S.resources_by_name[entity.name] = row
+  row.entity_count = row.entity_count + 1
+  row.total_amount = row.total_amount + (tonumber(entity.amount) or 0)
+  local dx, dy = entity.position.x - S.body.x, entity.position.y - S.body.y
+  local distance = dx * dx + dy * dy
+  if row._distance == nil or distance < row._distance
+    or (distance == row._distance and (entity.position.y < row.nearest.y
+      or (entity.position.y == row.nearest.y and entity.position.x < row.nearest.x))) then
+    row._distance = distance
+    row.nearest = { x = entity.position.x, y = entity.position.y }
+  end
+end
+
+-- Reads the next chunk: queues its entities (and, for full, its resources
+-- and water) for the scan.
+local function fetch_chunk(S, chunk, c, budget)
+  budget.left = budget.left - SCAN_CHUNK_COST
+  local ok_visible, visible = pcall(c.force.is_chunk_visible, c.surface, chunk)
+  if ok_visible and visible then S.visible_chunks = S.visible_chunks + 1 end
+  local x0, y0 = chunk.x * 32, chunk.y * 32
+  local area = { { x0, y0 }, { x0 + 32, y0 + 32 } }
+  if S.detail == "full" then
+    S.water_strip = 0
+    S.rqueue, S.ri = c.surface.find_entities_filtered({ area = area, type = "resource" }), 1
+  end
+  S.queue, S.qi = c.surface.find_entities_filtered({ area = area, force = c.force }), 1
+end
+
+-- Water tiles of one strip of the current chunk (full detail).
+local function fetch_water(S, chunk, c, budget)
+  local x0, y0 = chunk.x * 32, chunk.y * 32 + S.water_strip * WATER_STRIP
+  S.water_strip = S.water_strip + 1
+  local tiles = c.surface.find_tiles_filtered({ area = { { x0, y0 }, { x0 + 32, y0 + WATER_STRIP } }, name = S.water_names })
+  budget.left = budget.left - 1 - #tiles
+  for _, tile in ipairs(tiles) do
+    local position = tile.position
+    local row = S.water[position.y] or {}
+    S.water[position.y] = row
+    row[position.x] = true
+  end
+end
+
+local function scan(S, budget, c)
+  while budget.left > 0 do
+    local chunk = S.ci and chunk_at(S, S.ci)
+    if chunk and S.water_strip and S.water_strip < 32 / WATER_STRIP then
+      fetch_water(S, chunk, c, budget)
+    elseif S.rqueue and S.rqueue[S.ri] then
+      budget.left = budget.left - SCAN_RESOURCE_COST
+      scan_resource(S, S.rqueue[S.ri], c)
+      S.ri = S.ri + 1
+    elseif S.queue and S.queue[S.qi] then
+      budget.left = budget.left - SCAN_ENTITY_COST
+      scan_entity(S, S.queue[S.qi], c, budget)
+      S.qi = S.qi + 1
+    else
+      S.queue, S.rqueue, S.water_strip = nil, nil, nil
+      S.ci = (S.ci or 0) + 1
+      chunk = chunk_at(S, S.ci)
+      if not chunk then return true end
+      fetch_chunk(S, chunk, c, budget)
+    end
+  end
+  return false
+end
+
+-- Land/water edges of each charted chunk (full detail), pure Lua, a tile
+-- row at a time. Each pair of cells is compared by exactly one chunk (a
+-- chunk's east and south borders are its own), so no edge repeats; the
+-- first MAX_EDGES in presentation order are kept as they are found.
+local EDGE_DIRECTIONS = { { 1, 0 }, { 0, 1 } }
+local WATER_CELLS_PER_ITEM = 8
+local function water_edge_order(a, b)
+  if a.land.y ~= b.land.y then return a.land.y < b.land.y end
+  if a.land.x ~= b.land.x then return a.land.x < b.land.x end
+  if a.water.y ~= b.water.y then return a.water.y < b.water.y end
+  return a.water.x < b.water.x
+end
+local function water_edges(S, budget)
+  local water = S.water
+  while budget.left > 0 do
+    if not S.ey then
+      S.ei = (S.ei or 0) + 1
+      local chunk = chunk_at(S, S.ei)
+      if not chunk then return true end
+      S.ey = 0
+      S.east_charted = chunk_charted(S, chunk.x + 1, chunk.y)
+      S.south_charted = chunk_charted(S, chunk.x, chunk.y + 1)
+    end
+    local chunk = chunk_at(S, S.ei)
+    local x0, y0 = chunk.x * 32, chunk.y * 32
+    local y = y0 + S.ey
+    budget.left = budget.left - 32 * #EDGE_DIRECTIONS / WATER_CELLS_PER_ITEM
+    local row = water[y]
+    for x = x0, x0 + 31 do
+      local current = row and row[x] or false
+      for _, delta in ipairs(EDGE_DIRECTIONS) do
+        local nx, ny = x + delta[1], y + delta[2]
+        if (nx < x0 + 32 and ny < y0 + 32)
+          or (nx == x0 + 32 and S.east_charted)
+          or (ny == y0 + 32 and S.south_charted) then
+          local neighbor = water[ny] and water[ny][nx] or false
+          if current ~= neighbor then
+            budget.left = budget.left - 1
+            local land = current and { x = nx, y = ny } or { x = x, y = y }
+            local wet = current and { x = x, y = y } or { x = nx, y = ny }
+            S.water_edge_total = S.water_edge_total + 1
+            heap_keep(S.water_edges, MAX_EDGES, { land = land, water = wet, observed_tick = game.tick }, water_edge_order)
+          end
+        end
+      end
+    end
+    S.ey = S.ey < 31 and S.ey + 1 or nil
+  end
+  return false
 end
 
 -- Every item and fluid the force's native statistics for this surface have
 -- ever counted: input is produced, output is consumed. Only this section
--- lifts the force_flows row cap.
-local function read_all_flows(force, surface, precision_name)
-  local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index[precision_name]
-  local rows = {}
-  for _, kind in ipairs({ "item", "fluid" }) do
-    local getter_name = kind == "fluid" and "get_fluid_production_statistics" or "get_item_production_statistics"
-    local ok, statistics = pcall(function() return force[getter_name](surface) end)
-    if ok and statistics then
-      local function counts(field)
-        local ok_counts, value = pcall(function() return statistics[field] end)
-        return ok_counts and type(value) == "table" and value or {}
-      end
-      local produced, consumed, names = counts("input_counts"), counts("output_counts"), {}
-      for name in pairs(produced) do names[name] = true end
-      for name in pairs(consumed) do names[name] = true end
-      for name in pairs(names) do
-        local lifetime_produced, lifetime_consumed = tonumber(produced[name]) or 0, tonumber(consumed[name]) or 0
-        if type(name) == "string" and (lifetime_produced > 0 or lifetime_consumed > 0) then
-          local function rate(category)
-            local ok_rate, value = pcall(function()
-              return statistics.get_flow_count({ name = name, category = category, precision_index = precision_index, count = false })
-            end)
-            return ok_rate and type(value) == "number" and value or nil
+-- lifts the force_flows row cap. Names are listed once, rates read a budget
+-- at a time.
+local function flows_all(S, budget, c)
+  local A = S.all
+  if not A then
+    A = { rows = {}, next = 1 }
+    for _, kind in ipairs({ "item", "fluid" }) do
+      local getter_name = kind == "fluid" and "get_fluid_production_statistics" or "get_item_production_statistics"
+      local ok, statistics = pcall(function() return c.force[getter_name](c.surface) end)
+      if ok and statistics then
+        local function counts(field)
+          local ok_counts, value = pcall(function() return statistics[field] end)
+          return ok_counts and type(value) == "table" and value or {}
+        end
+        local produced, consumed, names = counts("input_counts"), counts("output_counts"), {}
+        for name in pairs(produced) do names[name] = true end
+        for name in pairs(consumed) do names[name] = true end
+        for name in pairs(names) do
+          local lifetime_produced, lifetime_consumed = tonumber(produced[name]) or 0, tonumber(consumed[name]) or 0
+          if type(name) == "string" and (lifetime_produced > 0 or lifetime_consumed > 0) then
+            A.rows[#A.rows + 1] = { name = name, kind = kind,
+              lifetime_produced = lifetime_produced, lifetime_consumed = lifetime_consumed }
           end
-          rows[#rows + 1] = { name = name, kind = kind,
-            produced_per_minute = rate("input"), consumed_per_minute = rate("output"),
-            lifetime_produced = lifetime_produced, lifetime_consumed = lifetime_consumed }
         end
       end
     end
+    S.all = A
+    budget.left = budget.left - 6 - math.ceil(#A.rows / 8)
   end
+  local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index[S.precision_name]
+  local statistics = {}
+  while A.next <= #A.rows do
+    if budget.left <= 0 then return false end
+    local row = A.rows[A.next]
+    if statistics[row.kind] == nil then
+      local getter_name = row.kind == "fluid" and "get_fluid_production_statistics" or "get_item_production_statistics"
+      local ok, value = pcall(function() return c.force[getter_name](c.surface) end)
+      statistics[row.kind] = ok and value or false
+    end
+    local source = statistics[row.kind]
+    local function rate(category)
+      local ok_rate, value = pcall(function()
+        return source.get_flow_count({ name = row.name, category = category, precision_index = precision_index, count = false })
+      end)
+      return ok_rate and type(value) == "number" and value or nil
+    end
+    row.produced_per_minute, row.consumed_per_minute = rate("input"), rate("output")
+    budget.left = budget.left - 3
+    A.next = A.next + 1
+  end
+  local rows = A.rows
   table.sort(rows, function(a, b)
     local a_total, b_total = a.lifetime_produced + a.lifetime_consumed, b.lifetime_produced + b.lifetime_consumed
     if a_total ~= b_total then return a_total > b_total end
     if a.kind ~= b.kind then return a.kind < b.kind end
     return a.name < b.name
   end)
-  return rows, cap_rows(rows, MAX_FLOWS_ALL)
+  -- Each row's keys in the order the result has always had.
+  for index, row in ipairs(rows) do
+    rows[index] = { name = row.name, kind = row.kind, produced_per_minute = row.produced_per_minute,
+      consumed_per_minute = row.consumed_per_minute, lifetime_produced = row.lifetime_produced,
+      lifetime_consumed = row.lifetime_consumed }
+  end
+  S.flows_all_rows, S.flows_all_omitted = rows, cap_rows(rows, MAX_FLOWS_ALL)
+  S.all = nil
+  return true
 end
 
-local function collect_summary(params)
-  params = type(params) == "table" and params or {}
-  local detail = params.detail or "aggregate"
-  if detail ~= "aggregate" and detail ~= "full" then error("map_summary detail must be aggregate or full") end
-  local precision_name = params.flow_precision or "one_minute"
-  if not FLOW_PRECISIONS[precision_name] then error("unsupported map_summary flow_precision") end
-  for _, field in ipairs({ "flow_items", "flow_fluids" }) do
-    if params[field] ~= nil and (type(params[field]) ~= "table" or #params[field] > 32) then
-      error("map_summary " .. field .. " must contain at most 32 names")
-    end
-  end
-  if params.activity_since_tick ~= nil and (tonumber(params.activity_since_tick) == nil
-    or tonumber(params.activity_since_tick) % 1 ~= 0) then
-    error("activity_since_tick must be an integer tick")
-  end
-  local want = parse_include(params.include)
-  -- Own entities are retained only for a requested section.
-  local own = (want.stockpiles or want.sites or want.power or want.problems) and {} or nil
-  -- Patches come from the per-chunk patch cache (M.patches); resources are
-  -- scanned only for the full detail's resource rows.
-  local c = companion.require_companion()
-  local chunks = {}
-  local visible_chunks = 0
-  for chunk in c.surface.get_chunks() do
-    if c.force.is_chunk_charted(c.surface, chunk) then
-      chunks[#chunks + 1] = { x = chunk.x, y = chunk.y }
-      local ok_visible, visible = pcall(c.force.is_chunk_visible, c.surface, chunk)
-      if ok_visible and visible then visible_chunks = visible_chunks + 1 end
-    end
-  end
-  table.sort(chunks, function(a, b) return a.y == b.y and a.x < b.x or a.y < b.y end)
-
-  -- Match the predecessor's any-layer classification through prototype masks.
-  -- Name filtering avoids passing unsupported historical collision-layer aliases
-  -- to the native query. All lookup data belongs to this single request.
-  local charted_chunks, water_tiles = {}, {}
-  if detail == "full" then
-    local water_names = {}
-    for name, prototype in pairs(prototypes.tile) do
-      local layers = prototype.collision_mask.layers
-      if layers.water_tile or layers["water-tile"] or layers.player then
-        water_names[#water_names + 1] = name
-      end
-    end
-    table.sort(water_names)
-    for _, chunk in ipairs(chunks) do
-      local chunk_row = charted_chunks[chunk.y] or {}
-      charted_chunks[chunk.y] = chunk_row
-      chunk_row[chunk.x] = true
-      local x0, y0 = chunk.x * 32, chunk.y * 32
-      for _, tile in ipairs(c.surface.find_tiles_filtered({
-        area = { { x0, y0 }, { x0 + 32, y0 + 32 } }, name = water_names,
-      })) do
-        local position = tile.position
-        local row = water_tiles[position.y] or {}
-        water_tiles[position.y] = row
-        row[position.x] = true
-      end
-    end
-  end
-
-  local resources_by_name, landmarks, seen_landmark, seen_resource, water_edges, seen_edge = {}, {}, {}, {}, {}, {}
-  local groups_by_key, flow_candidates, electric_networks, network_poles = {}, {}, {}, {}
-  local flow_entities, flow_nodes_by_key = {}, {}
-  local omissions = { capped_groups = 0, capped_flows = 0, unsupported_entities = 0,
-    invalid_entities = 0, unsupported_flow_statistics = 0, capped_flow_nodes = 0,
-    capped_flow_edges = 0, capped_edge_diagnostics = 0 }
-  for _, name in ipairs(params.flow_items or {}) do add_flow_candidate(flow_candidates, "item", name) end
-  for _, name in ipairs(params.flow_fluids or {}) do add_flow_candidate(flow_candidates, "fluid", name) end
-  local explicit_flows = params.flow_items ~= nil or params.flow_fluids ~= nil
-  local edge_directions = { { 1, 0 }, { 0, 1 } }
-  for _, chunk in ipairs(chunks) do
-    local x0, y0 = chunk.x * 32, chunk.y * 32
-    local area = { { x0, y0 }, { x0 + 32, y0 + 32 } }
-    if detail == "full" then for _, entity in ipairs(c.surface.find_entities_filtered({ area = area, type = "resource" })) do
-      local resource_key = entity.valid and charted(c.force, c.surface, entity.position)
-        and string.format("%s\0%.17g\0%.17g", entity.name, entity.position.x, entity.position.y) or nil
-      if resource_key and not seen_resource[resource_key] then
-        seen_resource[resource_key] = true
-        local row = resources_by_name[entity.name] or { name = entity.name, entity_count = 0, total_amount = 0, nearest = nil, observed_tick = game.tick, _distance = nil }
-        resources_by_name[entity.name] = row
-        row.entity_count = row.entity_count + 1
-        row.total_amount = row.total_amount + (tonumber(entity.amount) or 0)
-        local dx, dy = entity.position.x - c.position.x, entity.position.y - c.position.y
-        local distance = dx * dx + dy * dy
-        if row._distance == nil or distance < row._distance
-          or (distance == row._distance and (entity.position.y < row.nearest.y
-            or (entity.position.y == row.nearest.y and entity.position.x < row.nearest.x))) then
-          row._distance = distance
-          row.nearest = { x = entity.position.x, y = entity.position.y }
-        end
-      end
-    end end
-    for _, entity in ipairs(c.surface.find_entities_filtered({ area = area, force = c.force })) do
-      if not entity.valid then
-        omissions.invalid_entities = omissions.invalid_entities + 1
-      elseif entity.force == c.force and charted(c.force, c.surface, entity.position)
-        and entity ~= c and entity.type ~= "character" and entity.type ~= "entity-ghost" then
-        local key = string.format("%s\0%s\0%.17g\0%.17g", entity.name, entity.type, entity.position.x, entity.position.y)
-        if not seen_landmark[key] then
-          seen_landmark[key] = true
-          local raw_status = status_name(entity)
-          local recipe = recipe_fact(entity)
-          local role = FLOW_NODE_ROLES[entity.type]
-          local network_id = number_property(entity, "electric_network_id")
-          if network_id then
-            electric_networks[network_id] = true
-            if entity.type == "electric-pole" then
-              local previous = network_poles[network_id]
-              if not previous or (number_property(entity, "unit_number") or 0) < (number_property(previous, "unit_number") or 0) then
-                network_poles[network_id] = entity
-              end
-            end
-          end
-          if own then own[#own + 1] = { entity = entity, status = raw_status, network_id = network_id } end
-          if role then
-            local node = {
-              _key = key, _entity = entity, name = entity.name, type = entity.type,
-              role = role, position = { x = entity.position.x, y = entity.position.y },
-              direction = entity.direction, status = normalize_status(raw_status),
-              _raw_status = raw_status,
-              _waiting_for_destination = raw_status == "waiting_for_space_in_destination",
-              _fuel_destination_proven = entity.type == "mining-drill" or recipe and recipe.ingredients_proven,
-              recipe = recipe and recipe.name or nil,
-              products_finished = number_property(entity, "products_finished"),
-              ingredients = recipe and recipe.ingredients or {},
-              products = products_with_fuel(recipe and recipe.products
-                or (entity.type == "mining-drill" and mining_products(entity) or {})),
-              requires_fuel = has_burner(entity),
-              fuel_categories = burner_categories(entity),
-              power_state = raw_status == "no_power" and "missing" or raw_status == "low_power" and "low" or "not_exactly_observed",
-              fuel_state = raw_status == "no_fuel" and "missing" or "not_exactly_observed",
-            }
-            if role == "source" then
-              node._source_production = { working = node.status == "working" }
-              local ok, target = pcall(function() return entity.mining_target end)
-              if ok and entity_key(target) and charted(c.force, c.surface, target.position) then
-                node._source_production.resource_key = entity_key(target)
-              end
-            end
-            fluid_facts(node)
-            flow_entities[#flow_entities + 1] = entity
-            flow_nodes_by_key[key] = node
-          end
-          if MACHINE_TYPES[entity.type] then
-            local group_key = entity.name .. "\0" .. (recipe and recipe.name or "")
-            local group = groups_by_key[group_key]
-            if not group then
-              group = { entity = entity.name, type = entity.type, recipe = recipe and recipe.name or nil,
-                machine_count = 0, status_counts = {}, summed_crafting_speed = 0, _recipe_energy = recipe and recipe.energy or nil }
-              groups_by_key[group_key] = group
-            end
-            group.machine_count = group.machine_count + 1
-            if entity.type == "mining-drill" then
-              local capacity = nominal_mining_capacity(entity, c.force, c.surface)
-              group._mining_capacity = (group._mining_capacity or 0) + (capacity or 0)
-              group.evidenced_drill_count = (group.evidenced_drill_count or 0) + (capacity and 1 or 0)
-            end
-            local bucket = normalize_status(raw_status)
-            group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
-            local speed = number_property(entity, "crafting_speed") or 0
-            group.summed_crafting_speed = group.summed_crafting_speed + speed
-            if recipe and not explicit_flows then
-              for _, row in ipairs(recipe.ingredients) do add_flow_candidate(flow_candidates, row.type, row.name) end
-              for _, row in ipairs(recipe.products) do add_flow_candidate(flow_candidates, row.type, row.name) end
-            end
-          elseif not role then
-            omissions.unsupported_entities = omissions.unsupported_entities + 1
-          end
-          if detail == "full" then
-            landmarks[#landmarks + 1] = {
-              name = entity.name, type = entity.type,
-              position = { x = entity.position.x, y = entity.position.y },
-              direction = entity.direction, status = raw_status, recipe = recipe and recipe.name or recipe_name(entity),
-              observed_tick = game.tick,
-            }
-          end
-        end
-      end
-    end
-    if detail == "full" then
-      local east_charted = charted_chunks[chunk.y][chunk.x + 1]
-      local south_row = charted_chunks[chunk.y + 1]
-      local south_charted = south_row and south_row[chunk.x]
-      for y = y0, y0 + 31 do
-      for x = x0, x0 + 31 do
-        local current = water_tiles[y] and water_tiles[y][x] or false
-        for _, delta in ipairs(edge_directions) do
-          local nx, ny = x + delta[1], y + delta[2]
-          if (nx < x0 + 32 and ny < y0 + 32)
-            or (nx == x0 + 32 and east_charted)
-            or (ny == y0 + 32 and south_charted) then
-            local neighbor = water_tiles[ny] and water_tiles[ny][nx] or false
-            if current ~= neighbor then
-              local land = current and { x = nx, y = ny } or { x = x, y = y }
-              local water = current and { x = x, y = y } or { x = nx, y = ny }
-              local edge_key = string.format("%d,%d:%d,%d", land.x, land.y, water.x, water.y)
-              if not seen_edge[edge_key] then
-                seen_edge[edge_key] = true
-                water_edges[#water_edges + 1] = { land = land, water = water, observed_tick = game.tick }
-              end
-            end
-          end
-        end
-      end
-    end end
-  end
-
-  if not explicit_flows then add_current_research_flows(c.force, flow_candidates) end
-  local groups = sorted_rows(groups_by_key, function(a, b)
+-- Groups, flows, sections and the result: bounded rows and a few
+-- statistics reads.
+local function finish(S, c)
+  local omissions, want = S.omissions, S.want
+  if not S.explicit_flows then add_current_research_flows(c.force, S.flow_candidates) end
+  local groups = sorted_rows(S.groups_by_key, function(a, b)
     if a.entity ~= b.entity then return a.entity < b.entity end
     return (a.recipe or "") < (b.recipe or "")
   end)
@@ -1806,7 +2264,7 @@ local function collect_summary(params)
     end
   end
   omissions.capped_groups = cap_rows(groups, MAX_FACTORY_GROUPS)
-  local flows = read_force_flows(c.force, c.surface, flow_candidates, precision_name, omissions)
+  local flows = read_force_flows(c.force, c.surface, S.flow_candidates, S.precision_name, omissions)
   local power_status_counts = {}
   for _, group in ipairs(groups) do
     for name, count in pairs(group.status_counts) do
@@ -1815,14 +2273,14 @@ local function collect_summary(params)
       end
     end
   end
-  local network_count = 0; for _ in pairs(electric_networks) do network_count = network_count + 1 end
-  local material_flow = present_flow(build_material_flow(flow_entities, flow_nodes_by_key,
-    factory_activity.snapshot(params.activity_since_tick, true), network_poles), omissions)
-  local activity = factory_activity.snapshot(params.activity_since_tick)
+  local network_count = 0; for _ in pairs(S.electric_networks) do network_count = network_count + 1 end
+  local material_flow = present_flow(flow_result(S.flow), omissions)
+  local activity = factory_activity.snapshot(S.activity_since_tick)
   local partial = false; for _, count in pairs(omissions) do if count > 0 then partial = true end end
   local factory = {
-    scope = "force_charted", collected_at_tick = game.tick, consistency = "single_request",
-    charted_chunks = #chunks, currently_visible_charted_chunks = visible_chunks,
+    scope = "force_charted", collected_at_tick = game.tick, started_tick = S.started_tick,
+    consistency = "spread_over_ticks",
+    charted_chunks = S.chunk_total, currently_visible_charted_chunks = S.visible_chunks,
     machine_count = machine_count, groups = groups, force_flows = flows,
     power = { network_count = network_count, status_counts = power_status_counts },
     material_flow = material_flow, character_transfers = activity,
@@ -1834,7 +2292,7 @@ local function collect_summary(params)
       },
       force_flows = {
         evidence_class = "rolling_force_surface_flow", source_tick = game.tick,
-        precision = precision_name, window_ticks = FLOW_PRECISIONS[precision_name].ticks,
+        precision = S.precision_name, window_ticks = FLOW_PRECISIONS[S.precision_name].ticks,
         exact_stock = false,
       },
       character_transfers = {
@@ -1852,58 +2310,127 @@ local function collect_summary(params)
   -- Requested sections are top-level keys beside `factory`, each with the
   -- count of what its cap left out.
   local sections = {}
-  if want.stockpiles then sections.stockpiles, sections.stockpiles_omitted = build_stockpiles(own) end
-  if want.sites then sections.sites, sections.sites_omitted = build_sites(own) end
+  if want.stockpiles then sections.stockpiles, sections.stockpiles_omitted = sections_stockpiles(S.sections) end
+  if want.sites then sections.sites, sections.sites_omitted = sections_sites(S.sections) end
   if want.patches then sections.patches, sections.patches_complete, sections.patches_omitted = M.patches() end
   if want.power then
-    local networks, networks_omitted = build_power(own, network_poles)
+    local networks, networks_omitted = sections_power(S.sections, S.network_poles)
     sections.power = { networks = networks, networks_omitted = networks_omitted }
   end
   if want.problems then
-    sections.problems, sections.problems_total, sections.problems_by_status = build_problems(own)
+    sections.problems, sections.problems_total, sections.problems_by_status = sections_problems(S.sections)
   end
   if want.flows_all then
-    sections.force_flows_all, sections.force_flows_all_omitted = read_all_flows(c.force, c.surface, precision_name)
+    sections.force_flows_all, sections.force_flows_all_omitted = S.flows_all_rows, S.flows_all_omitted
   end
   local function with_sections(result)
     for key, value in pairs(sections) do result[key] = value end
     return result
   end
-  if detail == "aggregate" then return with_sections({ tick = game.tick, summary = summary_text, factory = factory }) end
+  if S.detail == "aggregate" then return with_sections({ tick = game.tick, summary = summary_text, factory = factory }) end
 
-  local resources = {}; for _, row in pairs(resources_by_name) do row._distance = nil; resources[#resources + 1] = row end
+  local resources = {}; for _, row in pairs(S.resources_by_name) do row._distance = nil; resources[#resources + 1] = row end
   table.sort(resources, function(a, b) return a.name < b.name end)
+  -- Both lists were kept to their caps while they were collected.
+  local landmarks, edges = S.landmarks, S.water_edges
   table.sort(landmarks, key_position)
-  table.sort(water_edges, function(a, b)
-    if a.land.y ~= b.land.y then return a.land.y < b.land.y end
-    if a.land.x ~= b.land.x then return a.land.x < b.land.x end
-    if a.water.y ~= b.water.y then return a.water.y < b.water.y end
-    return a.water.x < b.water.x
-  end)
-  local omitted_water_edges = math.max(0, #water_edges - MAX_EDGES)
-  local omitted_factory_landmarks = math.max(0, #landmarks - MAX_LANDMARKS)
-  while #water_edges > MAX_EDGES do table.remove(water_edges) end
-  while #landmarks > MAX_LANDMARKS do table.remove(landmarks) end
+  table.sort(edges, water_edge_order)
+  local omitted_water_edges = S.water_edge_total - #edges
+  local omitted_factory_landmarks = S.landmark_total - #landmarks
   return with_sections({
-    tick = game.tick, charted_chunks = #chunks, resources = resources,
-    water_edges = water_edges, omitted_water_edges = omitted_water_edges,
+    tick = game.tick, charted_chunks = S.chunk_total, resources = resources,
+    water_edges = edges, omitted_water_edges = omitted_water_edges,
     factory_landmarks = landmarks, omitted_factory_landmarks = omitted_factory_landmarks,
     factory = factory, summary = summary_text,
   })
 end
 
-function M.map_summary(params) return collect_summary(params) end
+local function summary_start(params)
+  params = type(params) == "table" and params or {}
+  local detail = params.detail or "aggregate"
+  if detail ~= "aggregate" and detail ~= "full" then error("map_summary detail must be aggregate or full", 0) end
+  local precision_name = params.flow_precision or "one_minute"
+  if not FLOW_PRECISIONS[precision_name] then error("unsupported map_summary flow_precision", 0) end
+  local precision_index = defines and defines.flow_precision_index and defines.flow_precision_index[precision_name]
+  if precision_index == nil then error("unsupported map_summary flow_precision", 0) end
+  for _, field in ipairs({ "flow_items", "flow_fluids" }) do
+    if params[field] ~= nil and (type(params[field]) ~= "table" or #params[field] > 32) then
+      error("map_summary " .. field .. " must contain at most 32 names", 0)
+    end
+  end
+  if params.activity_since_tick ~= nil and (tonumber(params.activity_since_tick) == nil
+    or tonumber(params.activity_since_tick) % 1 ~= 0) then
+    error("activity_since_tick must be an integer tick", 0)
+  end
+  local want = parse_include(params.include)
+  local c = companion.require_companion()
+  local S = { detail = detail, precision_name = precision_name, want = want, started_tick = game.tick,
+    activity_since_tick = params.activity_since_tick,
+    explicit_flows = params.flow_items ~= nil or params.flow_fluids ~= nil, flow_candidates = {},
+    -- Requested sections accumulate as own entities are read.
+    sections = (want.stockpiles or want.sites or want.power or want.problems) and sections_new(want) or nil,
+    seen_landmark = {}, groups_by_key = {}, electric_networks = {}, network_poles = {}, visible_chunks = 0,
+    omissions = { capped_groups = 0, capped_flows = 0, unsupported_entities = 0,
+      invalid_entities = 0, unsupported_flow_statistics = 0, capped_flow_nodes = 0,
+      capped_flow_edges = 0, capped_edge_diagnostics = 0 },
+    flow = { stage = 1, flow_entities = {}, node_list = {},
+      activity = factory_activity.snapshot(params.activity_since_tick, true) },
+    stage = "scan", body = { x = c.position.x, y = c.position.y } }
+  for _, name in ipairs(params.flow_items or {}) do add_flow_candidate(S.flow_candidates, "item", name) end
+  for _, name in ipairs(params.flow_fluids or {}) do add_flow_candidate(S.flow_candidates, "fluid", name) end
+  if detail == "full" then
+    -- Match the predecessor's any-layer classification through prototype
+    -- masks. Name filtering avoids passing unsupported historical
+    -- collision-layer aliases to the native query.
+    local water_names = {}
+    for name, prototype in pairs(prototypes.tile) do
+      local layers = prototype.collision_mask.layers
+      if layers.water_tile or layers["water-tile"] or layers.player then water_names[#water_names + 1] = name end
+    end
+    table.sort(water_names)
+    S.water_names, S.water = water_names, {}
+    S.resources_by_name, S.seen_resource, S.landmarks, S.water_edges = {}, {}, {}, {}
+    S.landmark_total, S.water_edge_total = 0, 0
+  end
+  chunk_source(S, c)
+  return S
+end
+
+local NEXT_STAGE = { scan = "water_edges", water_edges = "flow", flow = "flows_all", flows_all = "sections",
+  sections = "finish" }
+
+local function summary_step(S, budget)
+  local c = companion.require_companion()
+  while budget.left > 0 do
+    local stage = S.stage
+    local done
+    if stage == "scan" then done = scan(S, budget, c)
+    elseif stage == "water_edges" then done = S.detail ~= "full" or water_edges(S, budget)
+    elseif stage == "flow" then done = flow_step(S.flow, budget)
+    elseif stage == "flows_all" then done = not S.want.flows_all or flows_all(S, budget, c)
+    elseif stage == "sections" then done = not S.sections or sections_belts(S.sections, budget)
+    else return finish(S, c) end
+    if done then S.stage = NEXT_STAGE[stage] end
+  end
+  return nil
+end
+
+-- map_summary {detail?, include?, flow_precision?, flow_items?, flow_fluids?,
+-- activity_since_tick?}: the job definition (jobs.lua registers it).
+M.summary_job = { start = summary_start, step = summary_step }
 
 -- The stockpiles and power sections for factory_status, from a cache in
 -- storage.status_cache that status_tick refreshes from the event-maintained
 -- registry (no entity query): electric entities for power, chests and
 -- crafting-machine outputs for stock. Belts are counted by the registry,
 -- never listed, so belt contents are not stock here. A refresh starts at most
--- every STATUS_REFRESH_TICKS: its first tick lists the registry sets, each
--- later tick reads at most STATUS_ENTITIES_PER_TICK entities (status,
--- network, inventory contents, nominal power) into plain records, and the
--- tick after the last read builds the sections from those records with only
--- one flow-statistics read per network. A read never scans.
+-- every STATUS_REFRESH_TICKS: its first tick takes the registry sets' unit
+-- numbers (no sort, no entity read), each later tick reads at most
+-- STATUS_ENTITIES_PER_TICK of them (validity, surface and chart, then status,
+-- network, inventory contents, nominal power) into the sections as they
+-- arrive, and the tick after the last read finishes the capped rows with
+-- one flow-statistics read per network. The refresh also keeps every item's
+-- uncapped stock total (registry.stock_totals). A read never scans.
 local STATUS_ENTITIES_PER_TICK = 48
 local STATUS_REFRESH_TICKS = 300
 M.STATUS_ENTITIES_PER_TICK = STATUS_ENTITIES_PER_TICK
@@ -1913,7 +2440,7 @@ local function status_record(entry, set, network_poles)
   local network_id = set == "electric" and number_property(entity, "electric_network_id") or nil
   if network_id and entry.type == "electric-pole" then
     local previous = network_poles[network_id]
-    if not previous or entry.unit < (number_property(previous, "unit_number") or 0) then
+    if not previous or not previous.valid or entry.unit < (number_property(previous, "unit_number") or 0) then
       network_poles[network_id] = entity
     end
   end
@@ -1938,33 +2465,50 @@ local function status_record(entry, set, network_poles)
   return record
 end
 
+-- The registry entry, when it is live, on the body's surface and charted.
+local function status_entry(job, c, unit)
+  local entries = storage.registry and storage.registry.entries
+  local entry = entries and entries[unit]
+  if not (entry and entry.entity and entry.entity.valid) then return nil end
+  if entry.surface ~= nil and entry.surface ~= c.surface.index then return nil end
+  local cx, cy = math.floor(entry.position.x / 32), math.floor(entry.position.y / 32)
+  local key = cx .. "," .. cy
+  if job.charted[key] == nil then
+    local ok, value = pcall(c.force.is_chunk_charted, c.surface, { x = cx, y = cy })
+    job.charted[key] = ok and value == true
+  end
+  return job.charted[key] and entry or nil
+end
+
 local function status_step(cache, tick)
   local job = cache.job
   if not job then
     if cache.updated_tick and tick - cache.updated_tick < STATUS_REFRESH_TICKS then return end
+    local r = storage.registry
     local units, seen = {}, {}
     for _, set in ipairs({ "electric", "holders" }) do
-      for _, entry in ipairs(registry.list(set)) do
-        if not seen[entry.unit] then seen[entry.unit] = true; units[#units + 1] = { unit = entry.unit, set = set } end
+      for unit in pairs(r and r[set] or {}) do
+        if not seen[unit] then seen[unit] = true; units[#units + 1] = { unit = unit, set = set } end
       end
     end
-    cache.job = { units = units, cursor = 1, own = {}, network_poles = {} }
+    cache.job = { units = units, cursor = 1, sections = sections_new({ stockpiles = true, power = true }),
+      network_poles = {}, charted = {} }
     return
   end
   if job.cursor > #job.units then
-    cache.stockpiles = build_stockpiles(job.own)
-    cache.power = build_power(job.own, job.network_poles)
+    local stockpiles, _, totals = sections_stockpiles(job.sections)
+    cache.stockpiles, cache.totals = stockpiles, totals
+    cache.power = sections_power(job.sections, job.network_poles)
     cache.updated_tick, cache.job = tick, nil
     return
   end
-  local entries = storage.registry and storage.registry.entries or {}
+  local c = companion.get()
+  if not (c and c.valid) then return end
   local last = math.min(#job.units, job.cursor + STATUS_ENTITIES_PER_TICK - 1)
   for index = job.cursor, last do
     local item = job.units[index]
-    local entry = entries[item.unit]
-    if entry and entry.entity and entry.entity.valid then
-      job.own[#job.own + 1] = status_record(entry, item.set, job.network_poles)
-    end
+    local entry = status_entry(job, c, item.unit)
+    if entry then sections_add(job.sections, status_record(entry, item.set, job.network_poles)) end
   end
   job.cursor = last + 1
 end
@@ -1986,66 +2530,39 @@ function M.status_sections()
     ready = cache.updated_tick ~= nil, error = cache.error }
 end
 
--- The factory aggregate the run recorder samples, from the registry (no
--- chunk walk, no entity query, no material-flow graph): machine groups by
--- entity and recipe with status counts and nominal capacity, electric
--- network count, character transfers and the belt count.
+-- The factory aggregate the run recorder samples, from what the mod already
+-- maintains, with no chunk walk and no entity read: the machine count and
+-- belts from the event-maintained registry, machine groups by entity and
+-- product with their last sampled status from the line sampler
+-- (autonomy.lua, every 30 ticks), and electric networks from the stock and
+-- power cache (status_tick).
 function M.registry_factory()
-  local c = companion.require_companion()
-  local groups_by_key, networks, power_status_counts = {}, {}, {}
-  for _, entry in ipairs(registry.machines()) do
-    local entity = entry.entity
-    local recipe_ok, recipe = pcall(function() return entity.get_recipe and entity.get_recipe() end)
-    if not recipe_ok or not recipe then recipe = previous_furnace_recipe(entity) end
-    local recipe_name_value = recipe and recipe.name or nil
-    local key = entry.name .. "\0" .. (recipe_name_value or "")
+  local a = storage.autonomy
+  local groups_by_key, power_status_counts = {}, {}
+  for _, rec in pairs(a and a.machines or {}) do
+    local key = rec.name .. "\0" .. (rec.product or "")
     local group = groups_by_key[key]
     if not group then
-      group = { entity = entry.name, type = entry.type, recipe = recipe_name_value, machine_count = 0,
-        status_counts = {}, summed_crafting_speed = 0, _recipe_energy = recipe and number_property(recipe, "energy") or nil }
+      group = { entity = rec.name, type = rec.type, product = rec.product, machine_count = 0, status_counts = {} }
       groups_by_key[key] = group
     end
     group.machine_count = group.machine_count + 1
-    local bucket = normalize_status(status_name(entity))
+    local bucket = normalize_status(rec.raw)
     group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
     if bucket == "no_power" or bucket == "low_power" then
       power_status_counts[bucket] = (power_status_counts[bucket] or 0) + 1
     end
-    group.summed_crafting_speed = group.summed_crafting_speed + (number_property(entity, "crafting_speed") or 0)
-    if entry.type == "mining-drill" then
-      local capacity = nominal_mining_capacity(entity, c.force, c.surface)
-      group._mining_capacity = (group._mining_capacity or 0) + (capacity or 0)
-      group.evidenced_drill_count = (group.evidenced_drill_count or 0) + (capacity and 1 or 0)
-    end
   end
-  for _, entry in ipairs(registry.list("poles")) do
-    local id = number_property(entry.entity, "electric_network_id")
-    if id then networks[id] = true end
-  end
-  local groups = sorted_rows(groups_by_key, function(a, b)
-    if a.entity ~= b.entity then return a.entity < b.entity end
-    return (a.recipe or "") < (b.recipe or "")
+  local groups = sorted_rows(groups_by_key, function(a_row, b_row)
+    if a_row.entity ~= b_row.entity then return a_row.entity < b_row.entity end
+    return (a_row.product or "") < (b_row.product or "")
   end)
-  local machine_count = 0
-  for _, group in ipairs(groups) do
-    machine_count = machine_count + group.machine_count
-    if group._recipe_energy and group._recipe_energy > 0 and group.summed_crafting_speed > 0 then
-      group.theoretical_crafts_per_second = group.summed_crafting_speed / group._recipe_energy
-    end
-    group._recipe_energy = nil
-    if group.type == "mining-drill" then
-      group.capacity_state = group.evidenced_drill_count == group.machine_count and "complete"
-        or group.evidenced_drill_count > 0 and "incomplete" or "unavailable"
-      if group.capacity_state == "complete" then group.theoretical_items_per_minute = group._mining_capacity end
-      group._mining_capacity = nil
-    end
-  end
-  local network_count = 0
-  for _ in pairs(networks) do network_count = network_count + 1 end
   local counts = registry.counts()
-  return { scope = "registry", collected_at_tick = game.tick, registry_ready = counts.registry_ready,
-    machine_count = machine_count, groups = groups, belt_count = counts.belts,
-    power = { network_count = network_count, status_counts = power_status_counts },
+  local power = storage.status_cache and storage.status_cache.power
+  return { scope = "maintained", collected_at_tick = game.tick, registry_ready = counts.registry_ready,
+    lines_refreshed_tick = a and a.last_refresh_tick, power_refreshed_tick = storage.status_cache and storage.status_cache.updated_tick,
+    machine_count = counts.machines, groups = groups, belt_count = counts.belts,
+    power = { network_count = power and #power or 0, status_counts = power_status_counts },
     character_transfers = factory_activity.snapshot(), omissions = { capped_groups = 0 } }
 end
 
@@ -2064,6 +2581,12 @@ local function chunk_key(x, y) return x .. "," .. y end
 
 local function enqueue_chunk(cache, x, y)
   local key = chunk_key(x, y)
+  -- Every charted chunk once, in the order it became known (map_summary's
+  -- chunk list).
+  if not cache.charted_set[key] then
+    cache.charted_set[key] = true
+    cache.charted[#cache.charted + 1] = { x = x, y = y }
+  end
   if cache.queued[key] then return end
   cache.queued[key] = true
   cache.pending[#cache.pending + 1] = { x = x, y = y }
@@ -2117,6 +2640,77 @@ local function read_chunk(c, cache, chunk)
   return count
 end
 
+-- Rebuilds the patch rows from the cached chunks on ticks with no chunk to
+-- read, PATCH_CELLS_PER_TICK cells a tick (a cell is one resource in one
+-- chunk), so neither a read nor map_summary ever rebuilds them. A patch is
+-- the same resource across touching (8-neighbour) chunks. The first tick
+-- lists the cells; a chunk read meanwhile marks the cache dirty again.
+local PATCH_CELLS_PER_TICK = 256
+local function patch_build_step(cache)
+  local B = cache.build
+  if not B then
+    local cells, list = {}, {}
+    for key, chunk in pairs(cache.chunks) do
+      for name, cell in pairs(chunk.cells) do
+        cells[name] = cells[name] or {}
+        cells[name][key] = cell
+        list[#list + 1] = { name = name, key = key }
+      end
+    end
+    cache.build, cache.dirty = { cells = cells, list = list, next = 1, seen = {}, rows = {} }, false
+    return
+  end
+  local visited = 0
+  while visited < PATCH_CELLS_PER_TICK do
+    local patch = B.patch
+    if patch and #B.stack > 0 then
+      visited = visited + 1
+      local by_name = B.cells[patch.name]
+      local cell = by_name[table.remove(B.stack)]
+      patch.amount, patch.tiles = patch.amount + cell.amount, patch.tiles + cell.tiles
+      patch._x, patch._y = patch._x + cell.x, patch._y + cell.y
+      patch._left, patch._right = math.min(patch._left, cell.left), math.max(patch._right, cell.right)
+      patch._top, patch._bottom = math.min(patch._top, cell.top), math.max(patch._bottom, cell.bottom)
+      for dy = -1, 1 do for dx = -1, 1 do
+        local key = (cell.cx + dx) .. "," .. (cell.cy + dy)
+        if by_name[key] and not B.seen[patch.name .. "|" .. key] then
+          B.seen[patch.name .. "|" .. key] = true
+          B.stack[#B.stack + 1] = key
+        end
+      end end
+    elseif patch then
+      patch.bbox = { left_top = { x = math.floor(patch._left), y = math.floor(patch._top) },
+        right_bottom = { x = math.ceil(patch._right), y = math.ceil(patch._bottom) } }
+      patch.centroid = { x = math.floor(patch._x / patch.tiles * 10 + 0.5) / 10,
+        y = math.floor(patch._y / patch.tiles * 10 + 0.5) / 10 }
+      patch._x, patch._y, patch._left, patch._right, patch._top, patch._bottom = nil, nil, nil, nil, nil, nil
+      B.rows[#B.rows + 1], B.patch = patch, nil
+    elseif B.next <= #B.list then
+      local first = B.list[B.next]
+      B.next = B.next + 1
+      if not B.seen[first.name .. "|" .. first.key] then
+        B.seen[first.name .. "|" .. first.key] = true
+        local cell = B.cells[first.name][first.key]
+        B.patch = { name = first.name, amount = 0, tiles = 0, _x = 0, _y = 0,
+          _left = cell.left, _right = cell.right, _top = cell.top, _bottom = cell.bottom }
+        B.stack = { first.key }
+      end
+    else
+      -- One row per patch: few enough to sort at once.
+      local rows = B.rows
+      table.sort(rows, function(a, b)
+        if a.amount ~= b.amount then return a.amount > b.amount end
+        if a.name ~= b.name then return a.name < b.name end
+        if a.centroid.y ~= b.centroid.y then return a.centroid.y < b.centroid.y end
+        return a.centroid.x < b.centroid.x
+      end)
+      cache.rows_omitted = cap_rows(rows, MAX_PATCHES)
+      cache.rows, cache.updated_tick, cache.build = rows, game.tick, nil
+      return
+    end
+  end
+end
+
 local function patch_step(cache, c, tick)
   if not cache.seeded then
     -- Seeded from the chunks the registry bootstrap already listed (no API
@@ -2137,6 +2731,7 @@ local function patch_step(cache, c, tick)
   end
   if cache.head > #cache.pending then
     cache.pending, cache.head, cache.filled = {}, 1, true
+    if cache.build or cache.dirty then patch_build_step(cache) end
     if tick % PATCH_REFRESH_TICKS ~= 0 then return end
     -- Round robin over the cached resource chunks.
     if #cache.refresh == 0 then
@@ -2166,23 +2761,13 @@ function M.patch_tick(tick)
   cache.error = not ok and tostring(err) or nil
 end
 
--- Resource patches in charted chunks from the cache, whether every charted
--- chunk has been read at least once, and how many patches the cap left out.
+-- Resource patches in charted chunks from the cache (rebuilt on ticks by
+-- patch_tick, never here), whether every charted chunk has been read at
+-- least once and its patches built, and how many patches the cap left out.
 function M.patches()
   local cache = storage.patch_cache
   if not cache then return {}, false end
-  if cache.dirty or not cache.rows then
-    local cells = {}
-    for key, chunk in pairs(cache.chunks) do
-      for name, cell in pairs(chunk.cells) do
-        cells[name] = cells[name] or {}
-        cells[name][key] = cell
-      end
-    end
-    cache.rows, cache.rows_omitted = build_patches(cells)
-    cache.dirty, cache.updated_tick = false, game.tick
-  end
-  return cache.rows, cache.filled == true, cache.rows_omitted or 0
+  return cache.rows or {}, cache.filled == true and cache.rows ~= nil, cache.rows_omitted or 0
 end
 
 return M

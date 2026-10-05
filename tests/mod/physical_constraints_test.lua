@@ -112,7 +112,7 @@ body.begin_crafting = function()
   return 1
 end
 local craft = require("scripts.actions.craft")
-local craft_task = { recipe = "iron-gear-wheel", count = 1 }
+local craft_task = { recipe = "iron-gear-wheel", count = 1, wait_for_completion = true }
 craft.start(craft_task)
 game.tick = 29
 check(craft.tick(craft_task) == nil, "crafting cannot complete before elapsed polling ticks")
@@ -145,7 +145,15 @@ local pinned = false
 local physical_blocker = { valid = true, name = "solid-fixture", type = "simple-entity", position = { x = 0, y = 0 },
   prototype = { collision_mask = { layers = { player = true, object = true } } },
   bounding_box = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } } }
-surface.find_entities_filtered = function() return pinned and { physical_blocker } or {} end
+-- Area queries see the blocker only where its box is (escape cells around it are clear).
+body.force.is_chunk_charted = function() return true end
+surface.find_entities_filtered = function(filter)
+  if not pinned then return {} end
+  local a, b = filter.area, physical_blocker.bounding_box
+  if a and not (a.left_top.x < b.right_bottom.x and a.right_bottom.x > b.left_top.x
+    and a.left_top.y < b.right_bottom.y and a.right_bottom.y > b.left_top.y) then return {} end
+  return { physical_blocker }
+end
 surface.get_tile = function() return { collides_with = function() return false end } end
 surface.find_non_colliding_position = function() return { x = -1, y = 0 } end
 surface.can_place_entity = function() return true end

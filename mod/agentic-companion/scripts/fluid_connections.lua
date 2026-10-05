@@ -112,6 +112,17 @@ function M.live(entity, internal)
   return rows, complete
 end
 
+-- The fluid a live box takes: its runtime filter (a crafting machine's comes
+-- from its recipe), else its prototype filter, else what it holds; nil when
+-- none says.
+function M.box_fluid(entity, index, prototype_filter)
+  local ok, filter = pcall(function() return entity.fluidbox.get_filter(index) end)
+  if ok and type(filter) == "table" and type(filter.name) == "string" then return filter.name end
+  if prototype_filter then return prototype_filter end
+  local held_ok, fluid = pcall(function() return entity.fluidbox[index] end)
+  return held_ok and type(fluid) == "table" and type(fluid.name) == "string" and fluid.name or nil
+end
+
 -- Private component samples only: runtime filters and stock, not recipe
 -- ingredients or identities inferred from stock. Natively get_capacity is
 -- this box's own capacity, while segment contents include every member box.

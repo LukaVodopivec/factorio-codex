@@ -12,7 +12,8 @@ describe("strategist read-only MCP surface", () => {
     const names: string[] = [];
     registerMcpTools({ registerTool(name) { names.push(name); } }, async () => ({} as Bridge), validConfig, "read-only");
     expect(names.sort()).toEqual([...READ_ONLY_TOOLS].sort());
-    expect([...READ_ONLY_TOOLS].sort()).toEqual(["activity_log", "build_block", "build_layout", "can_place", "connect_status",
+    expect([...READ_ONLY_TOOLS].sort()).toEqual(["activity_log", "blueprint_describe", "blueprint_export", "blueprint_list",
+      "blueprint_place", "build_block", "build_layout", "can_place", "connect_entities", "connect_status",
       "describe_prototype", "factory_status", "find_placement", "inspect_entity", "map_summary", "next_event", "observe_local",
       "plan_status", "production_requirements", "progression_status"]);
   });
@@ -21,7 +22,7 @@ describe("strategist read-only MCP surface", () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => {
-      if (method === "ping") return { protocol_version: 24, mod_version: "0.21.0", factorio_version: "2.0.77",
+      if (method === "ping") return { protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.77",
         tick: 12, companion_exists: false, companion_ever_created: false, companion_dead: false };
       if (method === "observe_local") return { tick: 12, entities: [], resource_patches: [], ground_items: [] };
       if (method === "inspect") return { tick: 12, entities: [{ name: "iron-chest", position: { x: 400.5, y: 0.5 }, remote: true }] };
@@ -33,6 +34,9 @@ describe("strategist read-only MCP surface", () => {
       if (method === "activity_log") return { tick: 12, entries: {}, omitted: 0 };
       if (method === "event_state") return { tick: 12, queue_depth: 0, fifo_empty: true, human_hold: false };
       if (method === "build_layout" || method === "build_block") return { placed: {}, failed: {} };
+      if (method === "connect_entities") return { kind: "belt", steps: [{ name: "transport-belt", x: 1.5, y: 0.5 }] };
+      if (method === "blueprint_place") return { check_only: true, ok: true, collisions: {} };
+      if (method === "blueprint_list") return { blueprints: {}, capacity: 31 };
       if (method === "find_placement") return { candidates: [{ position: { x: 1, y: 1 }, direction: 0,
         build_steps: [{ name: "stone-furnace", x: 1, y: 1, direction: 0, fuel_inlet: true }] }] };
       return {};
@@ -52,7 +56,7 @@ describe("strategist read-only MCP surface", () => {
     expect(inspected.structuredContent.entities[0].remote).toBe(true);
     const include = ["stockpiles", "sites", "patches", "power", "problems", "flows_all"];
     const summary = await handlers.map_summary({ detail: "aggregate", flow_precision: "one_minute", include });
-    expect(call).toHaveBeenCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute", include });
+    expect(call).toHaveBeenCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute", include }, undefined);
     expect(summary.structuredContent).toMatchObject({ stockpiles: [], sites: [], patches: [],
       power: { networks: [] }, problems: [], force_flows_all: [] });
     await handlers.progression_status({});
@@ -76,16 +80,29 @@ describe("strategist read-only MCP surface", () => {
     const layout = { anchor: { x: 0, y: 0 }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] };
     expect(schemas.build_layout.safeParse({ ...layout, check_only: false }).success).toBe(false);
     await handlers.build_layout(layout);
-    expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true });
+    expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true }, undefined);
     expect(schemas.build_block.safeParse({ block: "labs", count: 2, check_only: false }).success).toBe(false);
     await handlers.build_block({ block: "labs", count: 2 });
-    expect(call).toHaveBeenLastCalledWith("build_block", { block: "labs", count: 2, check_only: true });
+    expect(call).toHaveBeenLastCalledWith("build_block", { block: "labs", count: 2, check_only: true }, undefined);
+
+    // Route and blueprint placement checks: the route is only planned, nothing is built.
+    const route = { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 3.5, y: 0.5 } };
+    expect(schemas.connect_entities.safeParse({ ...route, check_only: false }).success).toBe(false);
+    expect((await handlers.connect_entities(schemas.connect_entities.parse(route))).structuredContent)
+      .toMatchObject({ check_only: true, steps: [{ name: "transport-belt" }] });
+    const place = { name: "smelter", position: { x: 4, y: 4 } };
+    expect(schemas.blueprint_place.safeParse({ ...place, check_only: false }).success).toBe(false);
+    await handlers.blueprint_place(schemas.blueprint_place.parse(place));
+    expect(call).toHaveBeenLastCalledWith("blueprint_place", { ...place, check_only: true }, undefined);
+    await handlers.blueprint_list({});
+    await handlers.blueprint_describe({ name: "smelter" });
+    await handlers.blueprint_export({ name: "smelter" });
 
     expect(enqueueAndWait).not.toHaveBeenCalled();
     expect(enqueueAndWaitResult).not.toHaveBeenCalled();
     const methods = call.mock.calls.map(([method]) => method);
     expect(methods).not.toEqual(expect.arrayContaining([
-      "spawn_companion", "start_research", "enqueue", "queue_plan", "cancel", "connect_entities",
+      "spawn_companion", "start_research", "enqueue", "queue_plan", "cancel", "blueprint_capture", "blueprint_create", "blueprint_delete",
     ]));
   });
 });

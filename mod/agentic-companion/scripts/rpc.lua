@@ -3,8 +3,6 @@
 -- connection as a {ok, data|error} JSON envelope. Envelopes larger than
 -- CHUNK_SIZE are stored in storage.rpc_outbox and streamed back to the
 -- app part by part via get_chunk.
-local companion = require("scripts.companion")
-local build_layout = require("scripts.actions.build_layout")
 local timing = require("scripts.profiler")
 
 local M = {}
@@ -84,11 +82,6 @@ function M.dispatch(method, params_json)
   run(method, params_json)
   timing.log_rpc(method, profiler)
 end
-
--- build_layout/build_block dry runs (check_only, read-only); the builds
--- themselves are plan steps.
-M.register("build_layout", build_layout.check_layout)
-M.register("build_block", build_layout.check_block)
 
 -- Built-in transport helpers; everything else registers from control.lua.
 

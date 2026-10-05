@@ -1,6 +1,10 @@
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 local mock = dofile(here .. "/factorio_api_mock.lua")
 -- Keep mock/locator in an outer scope: this suite reaches Lua's local limit.
+-- map_summary is a job; this runs one to its end, a tick's budget at a time.
+local function summarize(params)
+  return require("scripts.jobs").run_now(require("scripts.map_summary").summary_job, params)
+end
 local function run()
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
@@ -63,7 +67,7 @@ _G.prototypes = { tile = {
 _G.game = { tick = 777 }
 _G.storage = {}
 _G.defines = { entity_status = { no_power = 1 }, flow_precision_index = { one_minute = 1 } }
-local summary = require("scripts.map_summary").map_summary({ detail = "full" })
+local summary = summarize({ detail = "full" })
 check(summary.tick == 777 and summary.charted_chunks == 1, "map summary carries source tick and charted chunk count")
 check(#summary.resources == 1 and summary.resources[1].total_amount == 30 and summary.resources[1].nearest.x == 3,
   "resource totals and nearest target are deterministic and exclude uncharted entity centers")
@@ -74,7 +78,7 @@ check(#summary.factory_landmarks == 1 and summary.factory_landmarks[1].status ==
   "factory landmarks include machine facts and observation ticks without characters or ghosts")
 check(force.chart == nil and surface.request_to_generate_chunks == nil, "summary exposes no terrain generation path")
 check(force.get_charted_chunks == nil, "summary uses the Factorio 2.0 surface iterator and force chart filter")
-local aggregate = require("scripts.map_summary").map_summary({})
+local aggregate = summarize({})
 check(aggregate.resources == nil and aggregate.water_edges == nil and aggregate.factory_landmarks == nil,
   "aggregate is the compact default and omits legacy detail")
 check(aggregate.factory.scope == "force_charted" and aggregate.factory.charted_chunks == 1
@@ -127,7 +131,7 @@ do
     return installed
   end
   local function group()
-    return require("scripts.map_summary").map_summary({ flow_items = { "ore" } }).factory.groups[1]
+    return summarize({ flow_items = { "ore" } }).factory.groups[1]
   end
   local one = group()
   check(one.theoretical_items_per_minute == 30 and one.capacity_state == "complete"
@@ -141,7 +145,7 @@ do
     and many.capacity_state == "complete" and many.evidenced_drill_count == 2
     and many.capacity_basis == "nominal_prototype_mining_speed_times_item_yield_divided_by_current_resource_mining_time",
     "mixed-resource-time drill group sums per-drill speed/time/item-yield capacities")
-  local measured = require("scripts.map_summary").map_summary({ flow_items = { "ore" } })
+  local measured = summarize({ flow_items = { "ore" } })
   check(measured.factory.force_flows[1].input_rate == 2
     and measured.factory.groups[1].theoretical_items_per_minute == 90,
     "nominal installed capacity remains distinct from rolling force production")
@@ -204,7 +208,7 @@ for i = 1, 70 do
       ingredients = {}, products = { { name = string.format("product-%02d", i), type = "item" } } } end })
 end
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return dense end
-local bounded = require("scripts.map_summary").map_summary({})
+local bounded = summarize({})
 check(#bounded.factory.groups == 12 and bounded.factory.omissions.capped_groups == 58
   and #bounded.factory.material_flow.nodes == 12 and bounded.factory.omissions.capped_flow_nodes == 58
   and #bounded.factory.force_flows == 12 and bounded.factory.omissions.capped_flows == 58
@@ -215,7 +219,7 @@ check(bounded.factory.material_flow.component_count == 70 and #bounded.factory.m
   and bounded.factory.material_flow.self_sustaining_line_count == 0
   and bounded.factory.material_flow.autonomous_component_count == nil,
   "whole-graph component counters stay uncapped beside the capped component rows")
-local bounded_full = require("scripts.map_summary").map_summary({ detail = "full" })
+local bounded_full = summarize({ detail = "full" })
 local aggregate_bytes, full_bytes = #canonical(bounded), #canonical(bounded_full)
 -- 18k plus the uncapped whole-graph and line counters beside the capped rows.
 check(aggregate_bytes <= 18250 and aggregate_bytes * 5 < full_bytes * 4,
@@ -225,7 +229,7 @@ check(aggregate_bytes <= 18250 and aggregate_bytes * 5 < full_bytes * 4,
 -- The public component of the node at a position (fixtures stay within the
 -- presentation caps).
 local function component_at(position)
-  local flow = require("scripts.map_summary").map_summary({}).factory.material_flow
+  local flow = summarize({}).factory.material_flow
   local id
   for _, node in ipairs(flow.nodes) do
     if node.position.x == position.x and node.position.y == position.y then id = node.id end
@@ -276,7 +280,7 @@ storage = {}
 local flow_entities, flow_source, flow_processor = flow_fixture(false, false)
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return flow_entities end
 game.tick = 900
-local ready = require("scripts.map_summary").map_summary({})
+local ready = summarize({})
 local ready_component = ready.factory.material_flow.components[1]
 check(ready_component.state.autonomy_topology_ready and ready_component.state.autonomous_end_to_end == nil
   and ready_component.state.validation == nil,
@@ -306,7 +310,7 @@ build_plan.start(starter_plan)
 local starter_result = build_plan.tick(starter_plan)
 check(starter_result.status == "done" and starter_stock.processor == 0 and starter_stock.ore == 0,
   "offline build-plan fixture commits placement and conserved starter insertion")
-local touched = require("scripts.map_summary").map_summary({ activity_since_tick = 900 })
+local touched = summarize({ activity_since_tick = 900 })
 check(touched.factory.material_flow.components[1].character_transfer_actions == 2
   and touched.factory.material_flow.components[1].state.autonomy_topology_ready,
   "character transfers are counted per component without changing its topology")
@@ -320,7 +324,7 @@ check(transfers.transfer_actions == 2 and transfers.transferred_items == 3
   and transfers.target_actions[1].last_transfer_tick == 960 and transfers.history_complete,
   "map summary includes build-plan accepted items and exact target actions in the requested interval")
 game.tick = 961
-check(require("scripts.map_summary").map_summary({ activity_since_tick = 961 }).factory.character_transfers.transfer_actions == 0,
+check(summarize({ activity_since_tick = 961 }).factory.character_transfers.transfer_actions == 0,
   "map summary excludes starter insertion from a later interval")
 force.recipes = { process = { enabled = true } }
 flow_processor.set_recipe = function(name) assert(name == "process"); return {} end
@@ -335,7 +339,7 @@ storage = {}
 local buffer_entities = flow_fixture(true, false)
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return buffer_entities end
 game.tick = 1000
-local buffered = require("scripts.map_summary").map_summary({})
+local buffered = summarize({})
 check(not buffered.factory.material_flow.components[1].state.autonomy_topology_ready
   and table.concat(buffered.factory.material_flow.components[1].state.autonomy_blockers, ","):match("material_input_provenance_unresolved"),
   "a buffer root cannot prove non-character material provenance")
@@ -344,7 +348,7 @@ storage = {}
 local burner_entities = flow_fixture(false, true)
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return burner_entities end
 game.tick = 1100
-local burner_flow = require("scripts.map_summary").map_summary({})
+local burner_flow = summarize({})
 check(not burner_flow.factory.material_flow.components[1].state.autonomy_topology_ready
   and table.concat(burner_flow.factory.material_flow.components[1].state.autonomy_blockers, ","):match("fuel_input_provenance_unresolved"),
   "finite hand-loaded burner fuel cannot prove autonomous fuel provenance")
@@ -366,7 +370,7 @@ storage = {}
 local self_fed = { coal_drill, refuel, coal_chest }
 surface.find_entities_filtered = function(filter) if filter.type == "resource" then return {} end; return self_fed end
 local blockers = {}
-for _, component in ipairs(require("scripts.map_summary").map_summary({}).factory.material_flow.components) do
+for _, component in ipairs(summarize({}).factory.material_flow.components) do
   for _, blocker in ipairs(component.state.autonomy_blockers) do blockers[#blockers + 1] = blocker end
 end
 return table.concat(blockers, ",")
@@ -393,7 +397,7 @@ end
 large_source.drop_target = large[5]
 surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or large end
 local map = require("scripts.map_summary")
-local large_summary = map.map_summary({})
+local large_summary = summarize({})
 local large_component = large_summary.factory.material_flow.components[1]
 check(#large_summary.factory.material_flow.nodes == 12 and #large_summary.factory.material_flow.edges == 24
   and large_summary.factory.omissions.capped_flow_nodes == 5 and large_summary.factory.omissions.capped_flow_edges == 5
@@ -405,7 +409,7 @@ for i = 1, 20 do
   require("scripts.factory_activity").record("insert", { target = target, transfers = { { item = "ore", inserted = 1 } } })
 end
 require("scripts.factory_activity").record("insert", { target = large_processor, transfers = { { item = "ore", inserted = 1 } } })
-local transfer_public = map.map_summary({ activity_since_tick = 1200 })
+local transfer_public = summarize({ activity_since_tick = 1200 })
 check(#transfer_public.factory.character_transfers.target_actions == 16
   and transfer_public.factory.character_transfers.target_actions_omitted == 5
   and transfer_public.factory.material_flow.components[1].character_transfer_actions == 1,
@@ -423,13 +427,13 @@ buffer_sink.get_inventory = function(index)
 end
 defines.inventory = { chest = 1, lab_input = 2 }
 surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or buffer_segment end
-local buffer_summary = map.map_summary({})
+local buffer_summary = summarize({})
 check(buffer_summary.factory.material_flow.components[1].state.downstream_kind == "buffer"
   and buffer_summary.factory.material_flow.components[1].state.autonomy_topology_ready
   and buffer_summary.factory.material_flow.components[1].state.autonomy_topology_ready,
   "buffer endpoints are explicit")
 buffer_accepting = false
-local full_buffer = map.map_summary({ activity_since_tick = 1300 })
+local full_buffer = summarize({ activity_since_tick = 1300 })
 check(full_buffer.factory.material_flow.components[1].state.blocked_output
   and table.concat(full_buffer.factory.material_flow.components[1].state.autonomy_blockers, ","):match("blocked_output"),
   "a full or nonaccepting downstream buffer reports blocked_output")
@@ -465,7 +469,7 @@ buffer_source.get_fuel_inventory = function() return {
 } end
 fuel_feed.held_stack = { valid_for_read = true, name = "coal", quality = { name = "normal" }, count = 1 }
 fuel_feed.status = 5
-local saturated = map.map_summary({})
+local saturated = summarize({})
 local saturation_component = saturated.factory.material_flow.components[1]
 local saturation_node
 for _, node in ipairs(saturated.factory.material_flow.nodes) do if node.name == "fuel-feed" then saturation_node = node end end
@@ -478,7 +482,7 @@ check(not saturation_component.state.blocked_output and saturation_component.sta
 local string_burning = buffer_source.burner.currently_burning
 buffer_source.burner.currently_burning = { name = { name = "coal", fuel_value = 4000000 }, quality = { name = "normal" } }
 local object_saturated
-for _, node in ipairs(map.map_summary({}).factory.material_flow.nodes) do
+for _, node in ipairs(summarize({}).factory.material_flow.nodes) do
   if node.name == "fuel-feed" then object_saturated = node.fuel_return_saturation end
 end
 check(object_saturated and object_saturated.fuel == "coal",
@@ -489,7 +493,7 @@ local fuel_inventory = buffer_source.get_fuel_inventory
 -- blocked output or a topology blocker, and never earns the exemption.
 local function rejects_saturation(label, mutate, restore)
   mutate()
-  local summary = map.map_summary({})
+  local summary = summarize({})
   local component = summary.factory.material_flow.components[1]
   local feed_id, feed_saturation, wait_class, wait_exempt
   for _, node in ipairs(summary.factory.material_flow.nodes) do
@@ -519,7 +523,7 @@ rejects_saturation("fuel-inventory acceptance of another quality does not prove 
 local processor_recipe = buffer_processor.get_recipe
 fuel_feed.drop_target = buffer_processor
 buffer_processor.status, buffer_processor.burner, buffer_processor.get_fuel_inventory = 3, buffer_source.burner, fuel_inventory
-local furnace_saturated = map.map_summary({})
+local furnace_saturated = summarize({})
 local furnace_return
 for _, node in ipairs(furnace_saturated.factory.material_flow.nodes) do
   if node.name == "fuel-feed" then furnace_return = node end
@@ -563,7 +567,7 @@ local empty_held = setmetatable({ valid_for_read = false }, {
   __newindex = function() error("empty stack fields are read-only") end,
 })
 fuel_feed.held_stack = empty_held
-local empty_wait = map.map_summary({})
+local empty_wait = summarize({})
 local empty_wait_node
 for _, node in ipairs(empty_wait.factory.material_flow.nodes) do if node.name == "fuel-feed" then empty_wait_node = node end end
 check(empty_wait.factory.material_flow.components[1].state.autonomy_topology_ready
@@ -645,12 +649,12 @@ buffer_segment[9] = coal_belt
 -- Match the reported self-return binding as well as the useful furnace branch.
 coal_source.burner, coal_source.prototype, coal_source.get_fuel_inventory = buffer_source.burner, burner_prototype, fuel_inventory
 fuel_feed.drop_target = coal_source
-local picked = map.map_summary({})
+local picked = summarize({})
 check(not canonical(picked.factory.material_flow.diagnostics):match("belt_")
   and not canonical(picked.factory.material_flow.components[1].state.autonomy_blockers):match("belt_"),
   "exact drill-to-belt-to-fuel-inserter bindings ending at an inserter pickup are not a dead end")
 fuel_feed.pickup_target, furnace_fuel.pickup_target = coal_source, coal_source
-local dead_end = map.map_summary({})
+local dead_end = summarize({})
 local dead_row, dead_node
 for _, row in ipairs(dead_end.factory.material_flow.diagnostics) do
   if row.reason == "belt_dead_end_without_consumer" then dead_row = row end
@@ -706,7 +710,7 @@ do
   local function dead_ends(entities)
     storage = {}
     surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or entities end
-    local summary = map.map_summary({})
+    local summary = summarize({})
     local positions, by_id = {}, {}
     for _, node in ipairs(summary.factory.material_flow.nodes) do by_id[node.id] = node.position end
     for _, row in ipairs(summary.factory.material_flow.diagnostics) do
@@ -1092,10 +1096,12 @@ surface.find_tiles_filtered = function(filter)
   tile_queries = tile_queries + 1
   local x0, y0 = filter.area[1][1], filter.area[1][2]
   assert(fixture_charted(math.floor(x0 / 32), math.floor(y0 / 32)), "uncharted query")
-  assert(filter.area[2][1] == x0 + 32 and filter.area[2][2] == y0 + 32, "chunk query extent")
+  -- A chunk is read in four strips of eight rows, so no tick reads more
+  -- than 256 tiles.
+  assert(filter.area[2][1] == x0 + 32 and filter.area[2][2] == y0 + 8 and y0 % 8 == 0, "chunk strip query extent")
   local names, tiles = {}, {}
   for _, name in ipairs(filter.name) do names[name] = true end
-  for y = y0, y0 + 31 do
+  for y = y0, y0 + 7 do
     for x = x0, x0 + 31 do
       if names[tile_name(x, y)] then tiles[#tiles + 1] = { position = { x = x, y = y } } end
     end
@@ -1138,17 +1144,17 @@ local function predecessor_edges()
 end
 local function equivalence_case(name, chunks, terrain)
   fixture_chunks, tile_name, reverse_results, tile_queries = chunks, terrain, false, 0
-  local actual = require("scripts.map_summary").map_summary({ detail = "full" })
+  local actual = summarize({ detail = "full" })
   local expected, omitted = predecessor_edges()
   check(canonical(actual.water_edges) == canonical(expected) and actual.omitted_water_edges == omitted,
     name .. " matches predecessor coordinates, ordering, cap and omissions")
-  check(tile_queries == #chunks, name .. " uses exactly one tile query per charted chunk")
+  check(tile_queries == 4 * #chunks, name .. " uses exactly four strip tile queries per charted chunk")
   reverse_results, tile_queries = true, 0
-  local shuffled = require("scripts.map_summary").map_summary({ detail = "full" })
-  check(canonical(actual) == canonical(shuffled) and tile_queries == #chunks,
+  local shuffled = summarize({ detail = "full" })
+  check(canonical(actual) == canonical(shuffled) and tile_queries == 4 * #chunks,
     name .. " has byte-identical complete output with shuffled tile results")
   tile_queries = 0
-  local compact = require("scripts.map_summary").map_summary({ detail = "aggregate" })
+  local compact = summarize({ detail = "aggregate" })
   check(tile_queries == 0 and canonical(compact.factory) == canonical(actual.factory)
     and compact.summary == actual.summary, name .. " preserves aggregate with zero tile queries")
   return actual
@@ -1231,7 +1237,7 @@ do
   end
   link(source, sl, 1, boiler, bl, 1); link(boiler, bl, 2, pipe, pl, 1); link(pipe, pl, 1, generator, gl, 1)
   surface.find_entities_filtered = function(filter) return filter.type == "resource" and {} or { generator, pipe, boiler, source } end
-  local summary = map.map_summary({})
+  local summary = summarize({})
   local sample = component_at(boiler.position)
   check(#summary.factory.material_flow.edges == 3, "native connected fluidboxes create exact directed relationships including underground pipes")
   local output_edge
@@ -1254,7 +1260,7 @@ do
   -- A recipe-merged box reads back as an array of prototypes: unsupported.
   local boiler_prototype = boiler.fluidbox.get_prototype
   boiler.fluidbox.get_prototype = function(index) return { boiler_prototype(1), boiler_prototype(2) } end
-  local merged = map.map_summary({})
+  local merged = summarize({})
   check(canonical(merged.factory.material_flow.diagnostics):find("fluid_native_evidence_unproven", 1, true) ~= nil
     and #merged.factory.material_flow.edges < 3,
     "a merged fluidbox prototype array stays unsupported native evidence")
@@ -1304,7 +1310,7 @@ do
     local endpoints, complete = native.live(boiler, true)
     check(native.sample(boiler) == nil and not complete and endpoints[1].filter == nil
       and endpoints[1].production_type == nil, case.label .. " refuses sample and endpoint identity")
-    local refused = map.map_summary({})
+    local refused = summarize({})
     check(#refused.factory.material_flow.edges == 1
       and canonical(refused.factory.material_flow.diagnostics):find("fluid_native_evidence_unproven", 1, true),
       case.label .. " never creates boiler topology from connected endpoints")
@@ -1321,12 +1327,12 @@ do
   boiler.prototype.target_temperature = 165
   local old_force = generator.force
   generator.force = foreign_force
-  local excluded = map.map_summary({})
+  local excluded = summarize({})
   check(canonical(excluded.factory.material_flow.diagnostics):find("fluid_connected_target_unproven", 1, true) ~= nil,
     "native connected foreign-force target remains unproven")
   generator.force = old_force
   gl[1], pl[1] = {}, {}
-  check(#map.map_summary({}).factory.material_flow.edges == 2, "disconnected pipe targets never become edges through proximity")
+  check(#summarize({}).factory.material_flow.edges == 2, "disconnected pipe targets never become edges through proximity")
   surface.find_entities_filtered, prototypes.fluid = previous_find, previous_fluids
 end
 

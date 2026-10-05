@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { Bridge, DEFAULT_TASK_TIMEOUT_MS, escapeLuaString, ModError, type TaskClock } from "../src/bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, escapeLuaString, JOB_TIMEOUT_MS, JobBusyError, ModError, TaskCancelledError,
+  type TaskClock } from "../src/bridge.js";
 import type { RconClient } from "../src/rcon.js";
 
 function fakeRcon(execImpl: (cmd: string) => Promise<string>): {
@@ -151,21 +152,25 @@ describe("Bridge.enqueueAndWait", () => {
       ),
     ).rejects.toThrow(/gave up/);
     expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]).toContain(escapeLuaString(JSON.stringify({ task_id: 9, origin: "walk_to/direct-task-timeout" })));
   });
 
   it("cancels its owned task on abort and never polls again", async () => {
     const controller = new AbortController();
     const methods: string[] = [];
+    const cancels: string[] = [];
     const { rcon } = fakeRcon((cmd) => {
       if (cmd.includes('"enqueue"')) { methods.push("enqueue"); return ok({ task_id: 12 }); }
-      if (cmd.includes('"cancel"')) { methods.push("cancel"); return ok({ cancelled: 1 }); }
+      if (cmd.includes('"cancel"')) { methods.push("cancel"); cancels.push(cmd); return ok({ cancelled: 1 }); }
       methods.push("get_task"); return ok({ status: "running" });
     });
     const clock: TaskClock = { now: () => 0, sleep: async () => { controller.abort(); } };
     await expect(new Bridge(rcon).enqueueAndWait(
-      { type: "mine", target: { x: 0, y: 0 }, count: 2 }, { signal: controller.signal, clock },
+      { type: "mine", target: { x: 0, y: 0 }, count: 2 }, { signal: controller.signal, clock, tool: "mine", role: "pilot" },
     )).rejects.toThrow(/cancelled/);
     expect(methods).toEqual(["enqueue", "cancel"]);
+    // An interrupted turn's cancel names the session role of this process.
+    expect(cancels[0]).toContain(escapeLuaString(JSON.stringify({ task_id: 12, origin: "mine/pilot" })));
   });
 
   it("does not enqueue when already aborted", async () => {
@@ -236,5 +241,84 @@ describe("Bridge.enqueueAndWaitResult under a human hold", () => {
       { clock, timeoutMs: 1_000 })).rejects.toThrow(/gave up after 1s/);
     expect(now).toBe(1_000);
     expect(methods.at(-1)).toBe("cancel");
+  });
+});
+
+describe("Bridge.call for reads the game runs as jobs", () => {
+  const pending = (id: number, kind: string) => ok({ job_id: id, job_status: "pending", kind, fifo: { queue_depth: 0 } });
+
+  it("polls get_job until the job is done and returns its result with the job's FIFO state", async () => {
+    const commands: string[] = [];
+    let polls = 0;
+    const { rcon } = fakeRcon((cmd) => {
+      commands.push(cmd);
+      if (cmd.includes('"map_summary"')) return pending(4, "map_summary");
+      return ++polls < 3 ? ok({ job_id: 4, kind: "map_summary", job_status: "pending", ticks: polls })
+        : ok({ job_id: 4, kind: "map_summary", job_status: "done", result: { tick: 99, factory: {} }, fifo: { queue_depth: 2 } });
+    });
+    const time = fakeClock();
+    const summary = await new Bridge(rcon, time.clock).call("map_summary", { detail: "aggregate" });
+    expect(summary).toEqual({ tick: 99, factory: {}, fifo: { queue_depth: 2 } });
+    expect(commands.slice(1)).toEqual(Array(3).fill(`/silent-command remote.call("agentic","rpc","get_job","${escapeLuaString('{"job_id":4}')}")`));
+    expect(time.sleeps).toEqual([50, 100, 250]);
+  });
+
+  it("returns a result that fit in the tick at once, and keeps a result's own FIFO state", async () => {
+    const { rcon, exec } = fakeRcon(() => ok({ tick: 5, entities: [], fifo: { queue_depth: 1 } }));
+    expect(await new Bridge(rcon, fakeClock().clock).call("observe_local", { radius: 15 })).toEqual({ tick: 5, entities: [], fifo: { queue_depth: 1 } });
+    expect(exec).toHaveBeenCalledTimes(1);
+    const done = fakeRcon((cmd) => cmd.includes('"get_job"')
+      ? ok({ job_id: 2, job_status: "done", result: { tick: 6, fifo: { queue_depth: 3 } }, fifo: { queue_depth: 4 } })
+      : pending(2, "observe_local"));
+    expect(await new Bridge(done.rcon, fakeClock().clock).call("observe_local", {})).toEqual({ tick: 6, fifo: { queue_depth: 3 } });
+  });
+
+  it("raises a failed job's error and gives up on a job that does not finish", async () => {
+    const failed = fakeRcon((cmd) => cmd.includes('"get_job"')
+      ? ok({ job_id: 3, job_status: "failed", error: "connect_entities endpoints must both be force-charted" })
+      : pending(3, "connect_entities"));
+    await expect(new Bridge(failed.rcon, fakeClock().clock).call("connect_entities", {}))
+      .rejects.toThrow(new ModError("connect_entities endpoints must both be force-charted"));
+    const forgets: string[] = [];
+    const slow = fakeRcon((cmd) => {
+      if (cmd.includes("forget")) { forgets.push(cmd); return ok({ job_id: 8, forgotten: true }); }
+      return cmd.includes('"get_job"') ? ok({ job_id: 8, job_status: "pending" }) : pending(8, "build_block");
+    });
+    const time = fakeClock();
+    const late = await new Bridge(slow.rcon, time.clock).call("build_block", { check_only: true }).catch((e: unknown) => e);
+    expect(late).toBeInstanceOf(JobBusyError);
+    expect(late).not.toBeInstanceOf(ModError);
+    expect((late as Error).message).toMatch(/build_block was still being computed in the game after 120 s \(job 8, now dropped\)/);
+    expect(time.sleeps.reduce((total, ms) => total + ms, 0)).toBeGreaterThanOrEqual(JOB_TIMEOUT_MS);
+    // The timed-out job gives its slot back.
+    expect(forgets).toEqual([`/silent-command remote.call("agentic","rpc","get_job","${escapeLuaString('{"job_id":8,"forget":true}')}")`]);
+  });
+
+  it("drops the job when the caller aborts its poll, and never polls again", async () => {
+    const controller = new AbortController();
+    const methods: string[] = [];
+    const { rcon } = fakeRcon((cmd) => {
+      if (cmd.includes("forget")) { methods.push("forget"); return ok({ job_id: 6, forgotten: true }); }
+      if (cmd.includes('"get_job"')) { methods.push("get_job"); return ok({ job_id: 6, job_status: "pending" }); }
+      methods.push("map_summary"); return pending(6, "map_summary");
+    });
+    let sleeps = 0;
+    const clock: TaskClock = { now: () => 0, sleep: async () => { if (++sleeps === 2) controller.abort(); } };
+    await expect(new Bridge(rcon, clock).call("map_summary", {}, controller.signal)).rejects.toBeInstanceOf(TaskCancelledError);
+    expect(methods).toEqual(["map_summary", "get_job", "forget"]);
+  });
+
+  it("reports full job slots as a busy error, not a mod failure", async () => {
+    const { rcon } = fakeRcon(() => Promise.resolve(JSON.stringify({ ok: false,
+      error: "JOBS_BUSY: 8 jobs are pending or unread; read their results with get_job before starting another" })));
+    const busy = await new Bridge(rcon, fakeClock().clock).call("observe_local", {}).catch((e: unknown) => e);
+    expect(busy).toBeInstanceOf(JobBusyError);
+    expect((busy as Error).message).toMatch(/^JOBS_BUSY: 8 jobs/);
+  });
+
+  it("never polls for a method the game does not run as a job", async () => {
+    const { rcon, exec } = fakeRcon(() => ok({ job_id: 1, job_status: "pending" }));
+    expect(await new Bridge(rcon, fakeClock().clock).call("plan_status", { plan_id: 1 })).toEqual({ job_id: 1, job_status: "pending" });
+    expect(exec).toHaveBeenCalledTimes(1);
   });
 });

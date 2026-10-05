@@ -118,7 +118,7 @@ local useful_plan = tasks.queue_plan({ steps = { { action = "walk_to", x = 3, y 
 game.tick = 71; tasks.on_tick()
 check(tasks.plan_status({ plan_id = useful_plan.plan_id }).status == "running",
   "independent physical work runs while research wait is parked")
-tasks.cancel({ plan_id = useful_plan.plan_id })
+tasks.cancel({ origin = "stop/supervisor", plan_id = useful_plan.plan_id })
 technology.researched = true; game.tick = 100; tasks.on_tick()
 local research_done = tasks.plan_status({ plan_id = research_wait.plan_id })
 check(research_done.status == "completed" and research_done.outcomes[1].result.code == "RESEARCH_COMPLETED"
@@ -150,13 +150,13 @@ storage.tasks.queue, storage.tasks.last_finished_tick = {}, nil
 local fresh_queued = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
 check(crafting_queued.body_idle_ticks == 0 and fresh_queued.body_idle_ticks == 0,
   "hand-crafting in progress and a cleared or pre-upgrade clock are not idle time")
-tasks.cancel({ all = true })
+tasks.cancel({ origin = "stop/supervisor", all = true })
 game.tick = 900
 check(tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } }).body_idle_ticks == 0,
   "emergency cancel-all clears the idle clock, so the first plan after it is not blamed")
 local emptied = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1 } } })
 check(tasks.plan_status({ plan_id = emptied.plan_id }).fifo_empty == false, "a queued plan keeps the FIFO non-empty")
-tasks.cancel({ all = true })
+tasks.cancel({ origin = "stop/supervisor", all = true })
 check(tasks.plan_status({ plan_id = emptied.plan_id }).fifo_empty == true, "plan_status reports an empty FIFO once nothing is pending")
 
 -- A queued placement carries the underground belt end it asks for into the

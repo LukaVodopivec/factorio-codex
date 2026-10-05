@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { Bridge } from "../bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS } from "../bridge.js";
 import { RconClient } from "../rcon.js";
 import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../compatibility.js";
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
@@ -9,11 +9,13 @@ import { createOrdersTracker, createPackageQueue, packageFailures, readPackageQu
 import { currentRunDir } from "../server/server.js";
 import { eventSummary, nextEventSchema, waitForEvent, type FailureDelivery } from "./events.js";
 import { normalizeObservation } from "./observation.js";
-import { blockFields, executeRunPlan, layoutFields, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
+import { areaFields, areaIssue, blockFields, blockIssue, blueprintName, blueprintPlaceFields, captureFields, copySettingsFields, deconstructFields,
+  executeRunPlan, exploreFields, insertFields, insertIssue, layoutEntitiesMessage, layoutEntitiesRule, layoutFields, moveEntityFields, planStatusSchema, queuePlanSchema, runPlanSchema,
+  upgradeFields, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
 import { normalizeActivityLog, normalizeCanPlace, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizeProductionRequirements, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.21.0";
+export const MCP_SERVER_VERSION = "0.21.1";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();
@@ -57,10 +59,15 @@ export const MAP_SUMMARY_SECTIONS = ["stockpiles", "sites", "patches", "power", 
 export const FACTORY_STATUS_SECTIONS = ["lines", "problems", "power", "stock", "research", "body", "patches"] as const;
 
 export type McpSurface = "full" | "read-only";
+/** Who runs this MCP process, named in the origin of every cancel it makes:
+ *  the session launcher passes --role (or FACTORIO_CODEX_ROLE). */
+export const SESSION_ROLES = ["pilot", "strategist", "supervisor", "unknown"] as const;
+export type SessionRole = typeof SESSION_ROLES[number];
 export const READ_ONLY_TOOLS = [
   "connect_status", "map_summary", "progression_status", "production_requirements",
   "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement",
-  "factory_status", "activity_log", "next_event", "build_layout", "build_block",
+  "factory_status", "activity_log", "next_event", "build_layout", "build_block", "connect_entities",
+  "blueprint_list", "blueprint_describe", "blueprint_export", "blueprint_place",
 ] as const;
 
 export async function connectStatus(
@@ -119,32 +126,34 @@ export function registerMcpTools(
   configDiagnostic: () => ConfigDiagnostic,
   surface: McpSurface = "full",
   runDir: RunDir = () => null,
+  role: SessionRole = "unknown",
 ): void {
   const orders = createOrdersTracker(runDir);
   const failureDelivery: FailureDelivery = { keys: null };
   // Every result carries Astra's orders once per new ledger revision.
   const tools: ToolRegistrar = { registerTool: (name, config, handler) =>
     server.registerTool(name, config, async (args, extra) => orders.attach(await handler(args, extra))) };
-  const rpc = async (method: any, params: unknown = {}) => {
-    try { return result(await (await bridge()).call(method, params)); }
+  // signal (the MCP request's) stops the poll of a read the game runs as a job.
+  const rpc = async (method: any, params: unknown = {}, signal?: AbortSignal) => {
+    try { return result(await (await bridge()).call(method, params, signal)); }
     catch (error) { return failure(error); }
   };
-  // A TUI turn interruption aborts the MCP request; the bridge then cancels the owned game task.
-  const task = async (type: string, params: Record<string, unknown>, signal?: AbortSignal) => {
+  // A TUI turn interruption aborts the MCP request; the bridge then cancels
+  // the owned game task, naming the tool and this process's role in the
+  // cancel's origin.
+  const task = async (tool: string, type: string, params: Record<string, unknown>, signal?: AbortSignal) => {
     try {
-      const terminal = signal
-        ? await (await bridge()).enqueueAndWaitResult({ type, ...params } as never, { signal })
-        : await (await bridge()).enqueueAndWaitResult({ type, ...params } as never);
+      const terminal = await (await bridge()).enqueueAndWaitResult({ type, ...params } as never, { tool, role, ...(signal ? { signal } : {}) });
       const status = terminal.status === "done" ? "completed" : terminal.status;
       return result({ status, terminal: true, summary: terminal.detail || status,
         ...(terminal.human_control ? { human_control: true } : {}),
         ...(terminal.outcome ?? {}), next_action: null }, status === "failed" || status === "cancelled");
     } catch (error) { return failure(error); }
   };
-  const runPlan = async (input: unknown, signal?: AbortSignal) => {
+  const runPlan = async (input: unknown, signal?: AbortSignal, tool = "run_plan") => {
     const parsed = runPlanSchema.parse(input);
     try {
-      const outcome = await executeRunPlan(await bridge(), parsed, signal);
+      const outcome = await executeRunPlan(await bridge(), parsed, signal, undefined, tool);
       const terminal = ["completed", "partial", "failed", "cancelled"].includes(outcome.status);
       return result(normalizePlanDiagnostics({ ...outcome, terminal, next_action: terminal ? null
         : { tool: "next_event", arguments: { timeout_seconds: 60 } } }),
@@ -161,19 +170,89 @@ export function registerMcpTools(
       return result(normalizePlanDiagnostics({ ...outcome, terminal: true, next_action: null }), true);
     }
   };
-  // build_layout/build_block: a dry run is a read-only mod check; a build is a one-step plan.
-  const build = async (action: "build_layout" | "build_block", { check_only, ...params }: Record<string, unknown>, signal?: AbortSignal) => {
-    if (check_only) return rpc(action, { ...params, check_only: true });
-    return runPlan({ steps: [{ action, ...params }] }, signal);
+  // A plan action as one tool: a one-step plan, or its dry run as a read-only mod check.
+  const step = (action: string) => async ({ check_only, ...params }: Record<string, unknown>, signal?: AbortSignal) => {
+    if (check_only) return rpc(action, { ...params, check_only: true }, signal);
+    return runPlan({ steps: [{ action, ...params }] }, signal, action);
+  };
+  const checkOnly = surface === "full" ? z.boolean().default(false) : z.literal(true).default(true);
+  const issue = <T>(check: (value: T) => string | null) => (value: T, context: z.RefinementCtx) => {
+    const message = check(value);
+    if (message) context.addIssue({ code: "custom", message });
   };
   const layoutSite = (layout: { anchor?: unknown; site?: unknown }) => (layout.anchor === undefined) !== (layout.site === undefined);
   const siteMessage = { message: "give exactly one of anchor or site" };
-  const layoutSchema = z.object({ ...layoutFields, check_only: surface === "full" ? z.boolean().default(false) : z.literal(true).default(true) })
-    .strict().refine(layoutSite, siteMessage);
-  const blockSchema = z.object({ ...blockFields, check_only: surface === "full" ? z.boolean().default(false) : z.literal(true).default(true) }).strict();
-  const dryRun = (surface === "full" ? " check_only: true is a dry run that builds nothing." : " Dry run only: checks without building.")
-    + " A dry run does one tick of site search: SITE_SEARCH_INCOMPLETE means no site was found yet, not that none fits.";
+  const layoutSchema = z.object({ ...layoutFields, check_only: checkOnly }).strict().refine(layoutSite, siteMessage)
+    .refine(layoutEntitiesRule, layoutEntitiesMessage);
+  const blockSchema = z.object({ ...blockFields, check_only: checkOnly }).strict().superRefine(issue(blockIssue));
+  const placeBlueprintSchema = z.object({ ...blueprintPlaceFields, check_only: checkOnly }).strict();
+  const routeSchema = z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string().min(1), from: position, to: position,
+    max_length: z.number().int().min(1).max(200).default(200), fluid: z.string().min(1).optional(),
+    underground: z.union([z.string().min(1), z.literal(false)]).optional(), check_only: checkOnly }).strict();
+  const areaSchema = (fields: Record<string, z.ZodType>) => z.object({ ...areaFields, ...fields }).strict().superRefine(issue(areaIssue));
+  const named = z.object({ name: blueprintName }).strict();
+  const dryRun = surface === "full" ? " check_only: true is a dry run that builds nothing." : " Dry run only: checks without building.";
+  // connect_entities plans the route as a read; the build is a direct
+  // build_plan task, and a power route is then checked for continuity.
+  const connectRoute = async ({ check_only, ...p }: z.infer<typeof routeSchema>, signal?: AbortSignal) => {
+    // The whole tool, route search and inspections included, returns under
+    // the MCP tool timeout: the build's guard counts from here.
+    const started = Date.now();
+    const b = await bridge();
+    const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities(p), signal));
+    if (check_only) return result({ ...route, check_only: true, status: "completed", terminal: true,
+      summary: `route of ${route.steps.length} pieces planned; nothing built`, next_action: null });
+    const detail = route.steps.length === 0
+      ? "endpoints already have a physical connection"
+      : await b.enqueueAndWait({ type: "build_plan", ...toolPayloads.buildPlan(route.steps, { auto_craft: true, stop_on_error: true }) } as never,
+        { tool: "connect_entities", role, deadlineMs: started + DEFAULT_TASK_TIMEOUT_MS,
+          returnByMs: started + DEFAULT_TASK_TIMEOUT_MS, ...(signal ? { signal } : {}) });
+    if (p.kind !== "power") return result({ ...route, status: "completed", terminal: true, summary: detail, detail, next_action: null });
 
+    const ordered = [p.from, ...route.steps.map((step: any) => ({ x: step.x, y: step.y })), p.to];
+    const inspected: Array<{ position: { x: number; y: number }; network_id: number | null }> = new Array(ordered.length);
+    for (let offset = 0; offset < ordered.length; offset += 16) {
+      const points = ordered.slice(offset, offset + 16);
+      const response: any = normalizeInspection(await b.call("inspect", toolPayloads.inspect(points)));
+      for (let local = 0; local < points.length; local++) {
+        const point = points[local]!;
+        const entity = response.entities?.[local];
+        inspected[offset + local] = { position: point,
+          network_id: typeof entity?.electrical?.network_id === "number" ? entity.electrical.network_id : null };
+      }
+    }
+    const missing = inspected.flatMap((entry, index) => entry.network_id === null ? [index] : []);
+    if (missing.length > 0) {
+      return result({ ...route, placement: { requested: route.steps.length, placed: route.steps.length, complete: true },
+        status: "placed_unverified", terminal: true,
+        summary: `placed ${route.steps.length}/${route.steps.length}; electrical network evidence missing for ${missing.length} route member(s)`,
+        validation: { missing_member_indexes: missing }, next_action: null });
+    }
+    const firstNetwork = inspected[1]?.network_id ?? inspected[0]?.network_id ?? null;
+    const lastNetwork = inspected[inspected.length - 2]?.network_id ?? inspected[inspected.length - 1]?.network_id ?? null;
+    const fromCovered = firstNetwork !== null && inspected[0]?.network_id === firstNetwork;
+    const toCovered = lastNetwork !== null && inspected[inspected.length - 1]?.network_id === lastNetwork;
+    let splitAfter: number | null = null;
+    for (let index = 0; index < inspected.length - 1; index++) {
+      if (inspected[index]?.network_id === null || inspected[index]?.network_id !== inspected[index + 1]?.network_id) {
+        splitAfter = index; break;
+      }
+    }
+    const connected = fromCovered && toCovered && splitAfter === null;
+    return result({ ...route,
+      placement: { requested: route.steps.length, placed: route.steps.length, complete: true },
+      endpoint_coverage: {
+        from: { covered: fromCovered, network_id: inspected[0]?.network_id ?? null },
+        to: { covered: toCovered, network_id: inspected[inspected.length - 1]?.network_id ?? null },
+      },
+      network_continuity: { connected, split_after_index: splitAfter,
+        split: splitAfter === null ? null : { from: inspected[splitAfter], to: inspected[splitAfter + 1] } },
+      status: connected ? "connected" : "placed_unconnected", terminal: true,
+      summary: connected ? `placed ${route.steps.length}/${route.steps.length}; electrical route connected`
+        : `placed ${route.steps.length}/${route.steps.length}; electrical route is not continuous`,
+      detail, next_action: null,
+    });
+  };
   tools.registerTool("connect_status", { description: "Check config, RCON, mod and protocol versions, then bind the connected native player named Codex.", inputSchema: z.object({}) }, async () => {
     try {
       return await connectStatus(bridge, configDiagnostic, surface === "full");
@@ -182,8 +261,8 @@ export function registerMcpTools(
       return result({ status: "offline", terminal: true, summary: `Offline: ${message}`, next_action: null }, false);
     }
   });
-  tools.registerTool("observe_local", { description: "Nearby entities, ground items and resource patches around the body. compact is bounded; full returns more.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15), detail: z.enum(["compact", "full"]).default("compact") }) }, async ({ radius, detail }) => {
-    try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }))); }
+  tools.registerTool("observe_local", { description: "Nearby entities, ground items and resource patches around the body. compact is bounded; full returns more and takes a few game ticks.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15), detail: z.enum(["compact", "full"]).default("compact") }) }, async ({ radius, detail }, extra) => {
+    try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }, extra?.signal))); }
     catch (error) { return failure(error); }
   });
   tools.registerTool("inspect_entity", { description: 'Inspect up to 16 exact positions. Beyond 30 tiles only own entities in charted chunks are read, marked remote: true. Input: {"positions":[{"x":1.5,"y":2.5}]}.', inputSchema: z.object({ positions: z.array(position).min(1).max(16) }) }, async ({ positions }) => {
@@ -208,8 +287,8 @@ export function registerMcpTools(
     activity_since_tick: z.number().int().nonnegative().optional(),
     include: z.array(z.enum(MAP_SUMMARY_SECTIONS)).max(MAP_SUMMARY_SECTIONS.length).optional(),
   }).strict();
-  tools.registerTool("map_summary", { description: "Detailed graph of the charted own factory: machine groups, flow rates, connections, line counts and character transfers. Prefer factory_status for routine reads. include adds capped sections: stockpiles, sites, patches, power, problems (problems_by_status counts every problem machine by status), flows_all. Reading is not reach.", inputSchema: mapSummarySchema }, async (p) => {
-    try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", mapSummarySchema.parse(p)))); }
+  tools.registerTool("map_summary", { description: "Detailed graph of the charted own factory: machine groups, flow rates, connections, line counts and character transfers. Prefer factory_status for routine reads. include adds capped sections: stockpiles, sites, patches, power, problems (problems_by_status counts every problem machine by status), flows_all. Reading is not reach.", inputSchema: mapSummarySchema }, async (p, extra) => {
+    try { return result(normalizeMapSummary(await (await bridge()).call("map_summary", mapSummarySchema.parse(p), extra?.signal))); }
     catch (error) { return failure(error); }
   });
   const productionRequirementsSchema = z.object({
@@ -240,25 +319,29 @@ export function registerMcpTools(
     since_tick: z.number().int().nonnegative().optional(),
     sections: z.array(z.enum(FACTORY_STATUS_SECTIONS)).min(1).max(FACTORY_STATUS_SECTIONS.length).optional(),
   }).strict();
-  tools.registerTool("factory_status", { description: "One compact read of the whole factory: production lines with state (running, starved, output_full, no_fuel, no_power, idle), rate, cause and position; problem machines; power; stock; research; the body; nearby resource patches. since_tick returns only lines and problems changed since then; sections picks parts.", inputSchema: factoryStatusSchema }, async (p) => {
+  tools.registerTool("factory_status", { description: "One compact read of the whole factory: production lines with state (running, starved, output_full, no_fuel, no_power, idle), rate, cause and position (hand_transfers: served by hand twice or more in ten minutes, so it needs a connection); problem machines; power; stock; research; the body; nearby resource patches. since_tick returns only lines and problems changed since then; sections picks parts.", inputSchema: factoryStatusSchema }, async (p) => {
     try {
       const value = normalizeFactoryStatus(await (await bridge()).call("factory_status", factoryStatusSchema.parse(p)));
       return result({ ...value, summary: factoryStatusSummary(value) });
     } catch (error) { return failure(error); }
   });
   const activityLogSchema = z.object({ since_plan_id: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(64).default(16) }).strict();
-  tools.registerTool("activity_log", { description: "What the body did: recent plan outcomes, oldest first, each with source (pilot, upkeep or package:<id>), status and a summary; plus the queue status of Astra's packages.", inputSchema: activityLogSchema }, async (p) => {
+  tools.registerTool("activity_log", { description: "What the body did: recent plan outcomes, oldest first, each with source (pilot, upkeep or package:<id>), status and a summary; cancels (with who asked) and blueprint changes; plus the queue status of Astra's packages.", inputSchema: activityLogSchema }, async (p) => {
     try {
       const value = normalizeActivityLog(await (await bridge()).call("activity_log", activityLogSchema.parse(p)));
       const dir = runDir();
       const packages = Object.entries((dir ? readPackageQueue(dir)?.packages : undefined) ?? {}).slice(-16)
         .map(([package_id, record]) => ({ package_id, ...record }));
       const entries: any[] = value?.entries ?? [];
+      // Plan outcomes, and rows of another kind (cancel, blueprint) without a status.
+      const last = entries.at(-1);
+      const lastText = !last ? "" : last.kind === undefined ? `plan ${last.plan_id} ${last.summary ?? ""}`
+        : last.kind === "cancel" ? `cancel by ${last.origin} (${last.cancelled_count} cancelled)` : `${last.kind} ${last.action ?? ""} ${last.name ?? ""}`;
       return result({ ...value, ...(packages.length ? { packages } : {}),
-        summary: `${entries.length} plan outcomes${entries.length ? `; last: plan ${entries.at(-1)?.plan_id} ${entries.at(-1)?.summary ?? ""}` : ""}` });
+        summary: `${entries.length} row${entries.length === 1 ? "" : "s"}${last ? `; last: ${lastText.trim()}` : ""}` });
     } catch (error) { return failure(error); }
   });
-  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended, queue_empty, new_problem, package_failed, orders_changed, human_hold_started, human_hold_ended, or timeout. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, problem or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
+  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended (with the plan's step outcomes and inventory change), research_finished, queue_empty, new_problem, package_failed, orders_changed, human_hold_started, human_hold_ended, or timeout. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, research, problem or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
     try {
       const value = await waitForEvent(await bridge(), nextEventSchema.parse(input), {
         ordersChanged: orders.changed,
@@ -268,84 +351,77 @@ export function registerMcpTools(
       return result({ ...value, status: "completed", terminal: true, summary: eventSummary(value), next_action: null });
     } catch (error) { return failure(error); }
   });
-  tools.registerTool("build_layout", { description: `Build a layout given as offsets (dx, dy) from an anchor, or from a site the mod finds (near a point, on a resource, near water): entities with direction and recipe, plus belt, pipe and power connections. The mod checks every placement, fetches or crafts the materials, clears trees and rocks, walks and builds.${dryRun}`, inputSchema: layoutSchema }, async (p, extra) => {
-    try { return await build("build_layout", layoutSchema.parse(p), extra?.signal); }
+  tools.registerTool("build_layout", { description: `Build a layout given as offsets (dx, dy) from an anchor, or from a site the mod finds (near a point, on a resource, near water): entities with direction, recipe, starting items (insert) and settings, plus belt, pipe and power connections. The mod checks every placement, fetches or crafts the materials, clears trees and rocks, walks and builds.${dryRun}`, inputSchema: layoutSchema }, async (p, extra) => {
+    try { return await step("build_layout")(layoutSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("build_block", { description: `Build count copies of a standard block near a point: mining (drills on a resource), smelting (furnace column), assembly (assembler row for a recipe), power (steam at water), labs. The mod works out tiles and directions, then builds it like build_layout.${dryRun}`, inputSchema: blockSchema }, async (p, extra) => {
-    try { return await build("build_block", blockSchema.parse(p), extra?.signal); }
+  tools.registerTool("build_block", { description: `Build count copies of a standard block near a point: mining (drills on a resource), smelting (furnace column), assembly (assembler row for a recipe), power (steam at water), labs, or a stored blueprint (block "blueprint"). The mod works out tiles and directions, fuels burner machines, then builds it like build_layout.${dryRun}`, inputSchema: blockSchema }, async (p, extra) => {
+    try { return await step("build_block")(blockSchema.parse(p), extra?.signal); }
+    catch (error) { return failure(error); }
+  });
+  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile. Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun}`, inputSchema: routeSchema }, async (p, extra) => {
+    try { return await connectRoute(routeSchema.parse(p), extra?.signal); }
+    catch (error) { return failure(error); }
+  });
+  tools.registerTool("blueprint_list", { description: "The blueprints stored for this run, with size and entity count.", inputSchema: z.object({}).strict() }, async () => rpc("blueprint_list"));
+  tools.registerTool("blueprint_describe", { description: "One stored blueprint: its entities with offsets, size and item cost.", inputSchema: named }, async (p, extra) => rpc("blueprint_describe", named.parse(p), extra?.signal));
+  tools.registerTool("blueprint_export", { description: "A stored blueprint as a string for the notebook. It is never imported back.", inputSchema: named }, async (p) => rpc("blueprint_export", named.parse(p)));
+  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots.${dryRun} A dry run lists collisions, missing items and the nearest free position.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
+    try { return await step("blueprint_place")(placeBlueprintSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
   if (surface === "read-only") return;
-  tools.registerTool("get_items", { description: "Get count of an item into the inventory: from the nearest own chest, belt or machine output, else by crafting it with its intermediates, else by hand-gathering a raw resource no drill produces. The result names any shortfall.", inputSchema: z.object({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) =>
-    runPlan({ steps: [{ action: "get_items", ...p }] }, extra?.signal));
-  tools.registerTool("connect_entities", { description: "Build a belt, pipe or power-pole route of at most 25 pieces between two exact points, walking and placing from the inventory.", inputSchema: z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string(), from: position, to: position, max_length: z.number().int().min(1).max(25).default(25) }).strict() }, async (p, extra) => {
-    try {
-      const b = await bridge();
-      const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities(p)));
-      const detail = route.steps.length === 0
-        ? "endpoints already have a physical connection"
-        : await b.enqueueAndWait({ type: "build_plan", ...toolPayloads.buildPlan(route.steps, { auto_craft: true, stop_on_error: true }) } as never, ...(extra?.signal ? [{ signal: extra.signal }] : []));
-      if (p.kind !== "power") return result({ ...route, status: "completed", terminal: true, summary: detail, detail, next_action: null });
-
-      const ordered = [p.from, ...route.steps.map((step: any) => ({ x: step.x, y: step.y })), p.to];
-      const inspected: Array<{ position: { x: number; y: number }; network_id: number | null }> = new Array(ordered.length);
-      for (let offset = 0; offset < ordered.length; offset += 16) {
-        const points = ordered.slice(offset, offset + 16);
-        const response: any = normalizeInspection(await b.call("inspect", toolPayloads.inspect(points)));
-        for (let local = 0; local < points.length; local++) {
-          const point = points[local]!;
-          const entity = response.entities?.[local];
-          inspected[offset + local] = { position: point,
-            network_id: typeof entity?.electrical?.network_id === "number" ? entity.electrical.network_id : null };
-        }
-      }
-      const missing = inspected.flatMap((entry, index) => entry.network_id === null ? [index] : []);
-      if (missing.length > 0) {
-        return result({ ...route, placement: { requested: route.steps.length, placed: route.steps.length, complete: true },
-          status: "placed_unverified", terminal: true,
-          summary: `placed ${route.steps.length}/${route.steps.length}; electrical network evidence missing for ${missing.length} route member(s)`,
-          validation: { missing_member_indexes: missing }, next_action: null });
-      }
-      const firstNetwork = inspected[1]?.network_id ?? inspected[0]?.network_id ?? null;
-      const lastNetwork = inspected[inspected.length - 2]?.network_id ?? inspected[inspected.length - 1]?.network_id ?? null;
-      const fromCovered = firstNetwork !== null && inspected[0]?.network_id === firstNetwork;
-      const toCovered = lastNetwork !== null && inspected[inspected.length - 1]?.network_id === lastNetwork;
-      let splitAfter: number | null = null;
-      for (let index = 0; index < inspected.length - 1; index++) {
-        if (inspected[index]?.network_id === null || inspected[index]?.network_id !== inspected[index + 1]?.network_id) {
-          splitAfter = index; break;
-        }
-      }
-      const connected = fromCovered && toCovered && splitAfter === null;
-      return result({ ...route,
-        placement: { requested: route.steps.length, placed: route.steps.length, complete: true },
-        endpoint_coverage: {
-          from: { covered: fromCovered, network_id: inspected[0]?.network_id ?? null },
-          to: { covered: toCovered, network_id: inspected[inspected.length - 1]?.network_id ?? null },
-        },
-        network_continuity: { connected, split_after_index: splitAfter,
-          split: splitAfter === null ? null : { from: inspected[splitAfter], to: inspected[splitAfter + 1] } },
-        status: connected ? "connected" : "placed_unconnected", terminal: true,
-        summary: connected ? `placed ${route.steps.length}/${route.steps.length}; electrical route connected`
-          : `placed ${route.steps.length}/${route.steps.length}; electrical route is not continuous`,
-        detail, next_action: null,
-      });
-    }
+  tools.registerTool("get_items", { description: "Get count of an item into the inventory: from the nearest own chest, belt or machine output, else by smelting ore in an own furnace or crafting it with its intermediates, else by hand-gathering a raw resource no drill produces. The result names any shortfall and when more is expected.", inputSchema: z.object({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) =>
+    runPlan({ steps: [{ action: "get_items", ...p }] }, extra?.signal, "get_items"));
+  tools.registerTool("walk_to", { description: "Walk to a point. exact stops within 1 tile; vicinity stops anywhere within arrival_radius. Other actions walk to their targets by themselves.", inputSchema: walkInput }, async (p, extra) => task("walk_to", "walk_to", toolPayloads.target(p), extra?.signal));
+  tools.registerTool("mine", { description: "Mine the entity or resource at a position, count times; on trees or rocks count mines the nearest ones. target_kind picks natural or owned where both overlap; owned picks up your own building with its contents when they fit. A result with drill_produced: true means own drills already mine it: take it from their output instead.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict() }, async (p, extra) => task("mine", "mine", toolPayloads.mine(p), extra?.signal));
+  tools.registerTool("pickup_items", { description: "Pick up one item stack from the ground, or take count items riding a plain belt tile. The whole count must fit in the inventory or nothing is taken; nothing is created; a belt tile that runs dry ends the step with the count actually picked up.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) => task("pickup_items", "pickup", toolPayloads.pickup(p), extra?.signal));
+  tools.registerTool("place_entity", { description: 'Place one item at a position; the same entity already there counts as placed. auto_supply (default on) fetches or crafts it first; trees and rocks in the way are cleared; insert puts starting items in. Use name, never item: {"name":"wooden-chest","x":1.5,"y":2.5}. Optional input_target/output_target must match what an inserter picks from and drops into. Underground belts take belt_to_ground_type input|output.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, insert: items.optional(), auto_supply: z.boolean().optional() }).strict() }, async (p, extra) => task("place_entity", "place", toolPayloads.place(p), extra?.signal));
+  const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().optional() }).strict();
+  tools.registerTool("craft_items", { description: 'Queue a hand-craft: {"recipe":"iron-gear-wheel","crafts":2}. The body keeps working while it crafts, and a later step that needs the item waits for it; wait_for_completion: true waits here.', inputSchema: craftInput }, async (p, extra) => task("craft_items", "craft", toolPayloads.craft(p), extra?.signal));
+  const insertInput = z.object({ ...insertFields, auto_supply: z.boolean().optional() }).strict().superRefine(issue(insertIssue));
+  tools.registerTool("insert_items", { description: 'Put items from the inventory into the entity at x, y, or the same items into each of up to 32 targets: a list of positions, or {"name":"stone-furnace","near":{"x":0,"y":0},"radius":10}. per_target names what each target gets. auto_supply (default on) fetches missing items first, in one trip. A partial insert reports what is left.', inputSchema: insertInput }, async (p, extra) => {
+    try { return await task("insert_items", "insert", toolPayloads.insert(insertInput.parse(p)), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("walk_to", { description: "Walk to a point. exact stops within 1 tile; vicinity accepts a free spot within arrival_radius. Other actions walk to their targets by themselves.", inputSchema: walkInput }, async (p, extra) => task("walk_to", toolPayloads.target(p), extra?.signal));
-  tools.registerTool("mine", { description: "Mine the entity or resource at a position, count times. target_kind picks natural or owned where both overlap; owned removes your own empty building. A result with drill_produced: true means own drills already mine it: take it from their output instead.", inputSchema: position.extend({ count: z.number().int().min(1).max(200).default(1), target_kind: z.enum(["natural", "owned"]).optional(), allow_fluid_loss: z.boolean().default(false), expected_name: z.string().min(1).optional(), observed_tick: z.number().int().nonnegative().optional() }).strict() }, async (p, extra) => task("mine", toolPayloads.mine(p), extra?.signal));
-  tools.registerTool("pickup_items", { description: "Pick up one item stack from the ground, or take count items riding a plain belt tile. The whole count must fit in the inventory or nothing is taken; nothing is created; a belt tile that runs dry ends the step with the count actually picked up.", inputSchema: position.extend({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) => task("pickup", toolPayloads.pickup(p), extra?.signal));
-  tools.registerTool("place_entity", { description: 'Place one item at a position. auto_supply (default on) fetches or crafts it first; trees and rocks in the way are cleared. Use name, never item: {"name":"wooden-chest","x":1.5,"y":2.5}. Optional input_target/output_target must match what an inserter picks from and drops into. Underground belts take belt_to_ground_type input|output.', inputSchema: position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, auto_supply: z.boolean().optional() }).strict() }, async (p, extra) => task("place", toolPayloads.place(p), extra?.signal));
-  const craftInput = z.object({ recipe: z.string(), crafts: z.number().int().min(1).max(100), wait_for_completion: z.boolean().default(true) }).strict();
-  tools.registerTool("craft_items", { description: 'Hand-craft a recipe a number of times: {"recipe":"iron-gear-wheel","crafts":2}.', inputSchema: craftInput }, async (p, extra) => task("craft", toolPayloads.craft(p), extra?.signal));
-  tools.registerTool("insert_items", { description: "Put items from the inventory into the entity at a position. auto_supply (default on) fetches missing items first. A partial insert reports what is left.", inputSchema: position.extend({ items, auto_supply: z.boolean().optional() }) }, async (p, extra) => task("insert", toolPayloads.insert(p), extra?.signal));
-  tools.registerTool("extract_items", { description: "Take the named items, or everything when items is omitted, out of the entity at a position.", inputSchema: position.extend({ items: items.optional() }) }, async (p, extra) => task("extract", toolPayloads.extract(p), extra?.signal));
-  tools.registerTool("set_recipe", { description: "Set the recipe of your assembler at a position. Furnaces choose their own recipe from their input.", inputSchema: position.extend({ recipe: z.string() }) }, async (p, extra) => task("set_recipe", toolPayloads.recipe(p), extra?.signal));
-  tools.registerTool("rotate_entity", { description: "Rotate the entity at a position once, or set its direction 0-15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate", toolPayloads.rotate(p), extra?.signal));
-  tools.registerTool("build_plan", { description: "Place up to 25 items in order; each may set a recipe and insert items. Stops at the first failure by default; earlier placements stay.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), auto_supply: z.boolean().optional(), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
-  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, build_block. after_plan_id runs it only after that plan completes. Wait with next_event.", inputSchema: queuePlanSchema }, async (input) => {
+  tools.registerTool("extract_items", { description: "Take the named items, or everything when items is omitted, out of the entity at a position.", inputSchema: position.extend({ items: items.optional() }) }, async (p, extra) => task("extract_items", "extract", toolPayloads.extract(p), extra?.signal));
+  tools.registerTool("set_recipe", { description: "Set the recipe of your assembler at a position. Furnaces choose their own recipe from their input.", inputSchema: position.extend({ recipe: z.string() }) }, async (p, extra) => task("set_recipe", "set_recipe", toolPayloads.recipe(p), extra?.signal));
+  tools.registerTool("rotate_entity", { description: "Rotate the entity at a position once, or set its direction 0-15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate_entity", "rotate", toolPayloads.rotate(p), extra?.signal));
+  tools.registerTool("build_plan", { description: "Place up to 25 items in order; each may set a recipe and insert items. Stops at the first failure by default; earlier placements stay.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), auto_supply: z.boolean().optional(), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", "build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
+  const moveInput = z.object(moveEntityFields).strict();
+  tools.registerTool("move_entity", { description: "Move one of your buildings: the body picks it up with its contents, places it at to, and restores its recipe, direction (unless given), settings, fuel, modules and ingredients. A failed placement leaves it in the inventory.", inputSchema: moveInput }, async (p, extra) =>
+    step("move_entity")(moveInput.parse(p), extra?.signal));
+  const exploreInput = z.object(exploreFields).strict();
+  tools.registerTool("explore", { description: "Scout on foot toward uncharted land (or a direction 0-15, 0 = north, 4 = east), charting as it goes, until a patch of resource is in view or max_distance tiles are walked.", inputSchema: exploreInput }, async (p, extra) =>
+    step("explore")(exploreInput.parse(p), extra?.signal));
+  const captureInput = areaSchema(captureFields);
+  tools.registerTool("blueprint_capture", { description: "Store your buildings in a charted area (at most 64 x 64 tiles, 100 entities) as a named blueprint of this run. Nothing in the world changes; the same name replaces the old one.", inputSchema: captureInput }, async (p, extra) => {
+    try { return await rpc("blueprint_capture", captureInput.parse(p), extra?.signal); }
+    catch (error) { return failure(error); }
+  });
+  const createInput = z.object({ name: blueprintName, entities: z.array(z.object({ name: z.string().min(1), dx: z.number(), dy: z.number(),
+    direction: z.number().int().min(0).max(15).optional(), recipe: z.string().min(1).optional() }).strict()).min(1).max(100) }).strict();
+  tools.registerTool("blueprint_create", { description: "Store a named blueprint from a layout of entities (name, dx, dy, direction, recipe) without building anything.", inputSchema: createInput }, async (p) => rpc("blueprint_create", createInput.parse(p)));
+  tools.registerTool("blueprint_delete", { description: "Delete a stored blueprint.", inputSchema: named }, async (p) => rpc("blueprint_delete", named.parse(p)));
+  const ghostsInput = areaSchema({});
+  tools.registerTool("build_ghosts", { description: "Build the ghosts in an area by hand from the inventory, fetching or crafting what is missing.", inputSchema: ghostsInput }, async (p, extra) => {
+    try { return await step("build_ghosts")(ghostsInput.parse(p), extra?.signal); }
+    catch (error) { return failure(error); }
+  });
+  const deconstructInput = areaSchema(deconstructFields);
+  tools.registerTool("deconstruct_area", { description: "Clear an area. mode hand (default): the body mines each of your buildings and the trees and rocks there; robots: mark them for construction robots; cancel: unmark. filter limits it to those names.", inputSchema: deconstructInput }, async (p, extra) => {
+    try { return await step("deconstruct_area")(deconstructInput.parse(p), extra?.signal); }
+    catch (error) { return failure(error); }
+  });
+  const upgradeInput = areaSchema(upgradeFields);
+  tools.registerTool("upgrade_area", { description: "Replace every from entity in an area with to. mode hand (default): the body swaps same-size ones in place, keeping direction and recipe; robots: mark them for upgrade.", inputSchema: upgradeInput }, async (p, extra) => {
+    try { return await step("upgrade_area")(upgradeInput.parse(p), extra?.signal); }
+    catch (error) { return failure(error); }
+  });
+  const copyInput = z.object(copySettingsFields).strict();
+  tools.registerTool("copy_settings", { description: "Copy the recipe, filters and limits of one building onto up to 32 others of the same kind; the body walks within reach of each.", inputSchema: copyInput }, async (p, extra) =>
+    step("copy_settings")(copyInput.parse(p), extra?.signal));
+  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, build_block, blueprint_place. after_plan_id runs it only after that plan completes. Wait with next_event.", inputSchema: queuePlanSchema }, async (input) => {
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
       return result({ ...queued, status: "queued", terminal: false, summary: queuedPlanSummary(queued),
@@ -353,8 +429,13 @@ export function registerMcpTools(
     } catch (error) { return failure(error); }
   });
   tools.registerTool("run_plan", { description: "Run 1-200 steps and block until the plan is terminal (up to 570 s, then it returns the plan still running and never cancels it); the queue stays empty while you then think, so prefer queue_plan.", inputSchema: runPlanSchema }, async (input, extra) => runPlan(input, extra?.signal));
-  tools.registerTool("start_research", { description: "Start researching an unlocked technology.", inputSchema: z.object({ technology: z.string() }) }, async (p) => rpc("start_research", p));
-  tools.registerTool("stop", { description: "Emergency stop: cancels the active and queued plans and hand-crafting. Supervisor only, never for gameplay or routine recovery.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true }));
+  const researchInput = z.object({ technology: z.string().min(1).optional(), technologies: z.array(z.string().min(1)).min(1).max(7).optional() }).strict()
+    .refine((p) => (p.technology === undefined) !== (p.technologies === undefined), { message: "give technology or technologies, not both" });
+  tools.registerTool("start_research", { description: "Start researching an unlocked technology, or queue up to 7 technologies in order (technologies).", inputSchema: researchInput }, async (p) => {
+    try { return await rpc("start_research", researchInput.parse(p)); }
+    catch (error) { return failure(error); }
+  });
+  tools.registerTool("stop", { description: "Emergency stop: cancels the active and queued plans and hand-crafting. Supervisor only, never for gameplay or routine recovery.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true, origin: `stop/${role}` }));
 }
 
 type Connection = { rcon: RconClient; bridge: Bridge };
@@ -414,13 +495,14 @@ export function createBridgeProvider(
 export async function runMcpServer(
   surface: McpSurface = "full",
   configDiagnostic: () => ConfigDiagnostic = diagnoseConfig,
+  role: SessionRole = "unknown",
 ): Promise<void> {
   const instructions = surface === "read-only"
     ? "Read Factorio state without moving, mutating, queueing, cancelling, or controlling the Codex character."
     : "Control one physical Factorio character named Codex. queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot until they finish. Wait with next_event instead of polling. Never use screenshots or screen capture.";
   const server = new McpServer({ name: "factorio-codex", version: MCP_SERVER_VERSION }, { instructions });
   const bridge = createBridgeProvider(configDiagnostic);
-  registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface, currentRunDir);
+  registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface, currentRunDir, role);
   if (surface === "full") {
     // Astra's packages start without a pilot turn; one full-surface process per run queues them.
     const packages = createPackageQueue(currentRunDir, bridge);

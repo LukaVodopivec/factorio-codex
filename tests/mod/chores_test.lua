@@ -34,7 +34,8 @@ package.loaded["scripts.tasks"] = { queue_plan = function(params) queued[#queued
 
 local chores = require("scripts.chores")
 require("scripts.state").init()
-check(type(storage.chores.refueled) == "table", "state.init creates the chores storage")
+check(type(storage.chores.refueled) == "table" and type(storage.chores.fed_labs) == "table",
+  "state.init creates the chores storage")
 check(type(storage.thoughts.lines) == "table", "state.init creates the thoughts storage")
 
 local function machine(unit, x, raw)
@@ -81,6 +82,31 @@ carried.coal = 0
 stocked.wood = 40
 chores.upkeep(game.tick)
 check(#queued == 3 and queued[3].steps[1].items.wood == 10, "another fuel is used when there is no coal")
+
+-- Labs missing the current research's packs get them from carried or stored
+-- packs, in the same upkeep plan as refuelling.
+local function lab(unit, x, raw)
+  return { unit = unit, type = "lab", raw = raw, position = { x = x, y = 4 }, entity = { valid = true } }
+end
+storage.autonomy.machines = { [7] = lab(7, 3, "missing_science_packs"), [8] = lab(8, 9, "missing_science_packs"),
+  [9] = lab(9, 6, "working"), [10] = machine(10, 2, "no_fuel") }
+storage.chores.refueled = {}
+stocked = { coal = 20, ["automation-science-pack"] = 30, ["logistic-science-pack"] = 1 }
+prototypes.item["automation-science-pack"], prototypes.item["logistic-science-pack"] = { stack_size = 200 }, { stack_size = 200 }
+body.force.current_research = { name = "logistics", research_unit_ingredients = {
+  { type = "item", name = "automation-science-pack", amount = 1 }, { type = "item", name = "logistic-science-pack", amount = 1 } } }
+game.tick = 12000
+local before = #queued
+chores.upkeep(game.tick)
+local fed = queued[#queued]
+check(#queued == before + 1 and #fed.steps == 3 and fed.steps[1].x == 2 and fed.steps[1].items.wood == nil
+  and fed.steps[2].x == 3 and fed.steps[3].x == 9 and fed.steps[2].items["automation-science-pack"] == 10
+  and fed.steps[2].items["logistic-science-pack"] == nil and fed.steps[3].action == "insert_items",
+  "upkeep brings the current research's packs to starved labs, nearest first, after refuelling")
+game.tick = 12300
+chores.upkeep(game.tick)
+check(#queued == before + 1, "a lab fed in the last minute is not fed again")
+body.force.current_research = nil
 
 local ok = pcall(chores.on_nth[300], { tick = 9300 })
 check(ok and chores.on_nth[3600] ~= nil, "chores run on their periods")

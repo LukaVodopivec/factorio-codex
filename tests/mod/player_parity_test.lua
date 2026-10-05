@@ -222,6 +222,7 @@ package.loaded["scripts.companion"] = { require_companion = function() return bo
   burning_item = dofile(here .. "/../../mod/agentic-companion/scripts/companion.lua").burning_item }
 
 local map_summary = require("scripts.map_summary")
+local function summarize(params) return require("scripts.jobs").run_now(map_summary.summary_job, params) end
 local function row(rows, field, value)
   for _, candidate in ipairs(rows or {}) do if candidate[field] == value then return candidate end end
   return nil
@@ -237,7 +238,7 @@ local function names_anywhere(value, needle)
 end
 
 -- Default output is unchanged and reads no remote inventory.
-local plain = map_summary.map_summary({})
+local plain = summarize({})
 local plain_queries = entity_queries
 check(plain.stockpiles == nil and plain.sites == nil and plain.patches == nil and plain.power == nil
   and plain.problems == nil and plain.force_flows_all == nil and plain.problems_total == nil
@@ -250,14 +251,16 @@ check(not pcall(map_summary.map_summary, { include = { "everything" } })
 -- Patches come from the per-chunk patch cache (filled a few chunks a tick),
 -- never from a resource scan per read.
 require("scripts.state").init()
-for tick = 1, 10 do map_summary.patch_tick(tick); if storage.patch_cache.filled then break end end
-check(storage.patch_cache.filled, "the patch cache reads the charted chunks")
+-- The rows are rebuilt on the ticks after the reads, never by a read.
+local function settled(cache) return cache.filled and not cache.build and not cache.dirty end
+for tick = 1, 20 do map_summary.patch_tick(tick); if settled(storage.patch_cache) then break end end
+check(settled(storage.patch_cache), "the patch cache reads the charted chunks and builds their patches")
 entity_queries = 0
-local cached_patches = map_summary.map_summary({ include = { "patches" } })
+local cached_patches = summarize({ include = { "patches" } })
 check(entity_queries == plain_queries and #cached_patches.patches == 3 and cached_patches.patches_complete == true
   and cached_patches.patches_omitted == 0, "include patches reads the cache: no resource query per read")
 local everything = { "stockpiles", "sites", "patches", "power", "problems", "flows_all" }
-local full = map_summary.map_summary({ detail = "full", include = everything })
+local full = summarize({ detail = "full", include = everything })
 
 -- Cycle 8: the landmark list is full, yet the remote site and its stock show.
 check(#full.factory_landmarks == 256 and full.omitted_factory_landmarks > 0
@@ -351,9 +354,9 @@ check(#leaked == 0, "uncharted and foreign entities appear in no section (leaked
 
 -- Sections add no entity query beyond the per-chunk scan.
 entity_queries = 0
-map_summary.map_summary({ include = { "stockpiles", "sites", "power", "problems", "flows_all" } })
+summarize({ include = { "stockpiles", "sites", "power", "problems", "flows_all" } })
 check(entity_queries == plain_queries, "entity sections reuse the existing per-chunk scan")
-local only_sites = map_summary.map_summary({ include = { "sites" } })
+local only_sites = summarize({ include = { "sites" } })
 check(only_sites.sites ~= nil and only_sites.stockpiles == nil and only_sites.power == nil and only_sites.patches == nil,
   "only the requested sections are computed")
 
@@ -407,7 +410,7 @@ for index = 0, 4 do
   add({ name = "burner-mining-drill", type = "mining-drill", position = { x = index * 2 + 1, y = 30 },
     status = defines.entity_status.no_fuel })
 end
-local crowded = map_summary.map_summary({ include = { "problems" } })
+local crowded = summarize({ include = { "problems" } })
 local unfuelled_drills = 0
 for _, candidate in ipairs(crowded.problems) do
   if candidate.entity == "burner-mining-drill" and candidate.status == "no_fuel" then unfuelled_drills = unfuelled_drills + 1 end

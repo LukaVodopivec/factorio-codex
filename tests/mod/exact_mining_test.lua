@@ -20,9 +20,16 @@ local tree = minable("tree-01", "tree", 3, nil)
 local player_force = {}
 local machine = minable("burner-mining-drill", "mining-drill", 5, nil)
 machine.force = player_force
-local machine_inventory_empty = true
+local machine_contents = {}
 local machine_fluids = {}
-machine.get_inventory = function() return { is_empty = function() return machine_inventory_empty end } end
+machine.get_inventory = function(id)
+  if id ~= defines.inventory.chest then return nil end
+  return { is_empty = function() return next(machine_contents) == nil end, get_contents = function()
+    local rows = {}
+    for name, count in pairs(machine_contents) do rows[#rows + 1] = { name = name, count = count, quality = "normal" } end
+    return rows
+  end }
+end
 machine.get_fluid_contents = function() return machine_fluids end
 local covered_resource = minable("iron-ore", "resource", 5, 100)
 _G.prototypes = { item = {
@@ -238,9 +245,6 @@ check(exhausted and exhausted.status == "failed" and exhausted.detail:match("com
   "partial resource exhaustion fails honestly without choosing a replacement")
 
 tree.valid = true
-local non_resource, non_resource_error = pcall(mine.start, { target = { x = 3, y = 0 }, count = 2 })
-check(not non_resource and tostring(non_resource_error):match("only valid for resources") ~= nil,
-  "tree and rock mining reject count greater than one")
 local invalid_count = pcall(mine.start, { target = { x = 0, y = 0 }, count = 201 })
 check(not invalid_count, "Lua enforces the public mine count cap")
 local by_name = pcall(mine.start, { resource = "iron-ore", count = 10 })
@@ -251,11 +255,14 @@ body.resource_reach_distance = 8
 engine_gain = 1
 configure_capacity(2)
 body.crafting_queue_size = 1
-local crafting_recovery, crafting_recovery_error = pcall(mine.start,
-  { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" })
-check(not crafting_recovery and tostring(crafting_recovery_error):match("active hand%-crafting") ~= nil
+local crafting_recovery = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(crafting_recovery)
+check(mine.tick(crafting_recovery) == nil and mine.tick(crafting_recovery) == nil and not body.mining_state.mining
   and machine.valid and covered_resource.amount == 100,
-  "owned recovery refuses a concurrent nonblocking handcraft before mining")
+  "owned recovery waits at the entity while background hand-crafting runs")
+body.crafting_queue_size = 0
+check(mine.tick(crafting_recovery) == nil and body.mining_state.mining, "and mines it once the crafting queue is done")
+body.mining_state, body.selected = { mining = false }, nil
+body.crafting_queue_size = 1
 local crafting_natural = { target = { x = 5, y = 0 }, count = 1, target_kind = "natural" }; mine.start(crafting_natural)
 check(crafting_natural._entity == covered_resource,
   "concurrent handcrafting does not change natural resource selection at an overlap")
@@ -276,12 +283,13 @@ check(crafting_mid_result and crafting_mid_result.status == "failed"
 body.crafting_queue_size, machine.valid = 0, true
 configure_capacity(2)
 local filled_before_mining = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(filled_before_mining)
-machine_inventory_empty = false
+machine_contents = { ["iron-ore"] = 4 }
 local filled_before_result = mine.tick(filled_before_mining)
 check(filled_before_result and filled_before_result.status == "failed" and not body.mining_state.mining
+  and filled_before_result.detail:match("no room for the entity and its contents")
   and machine.valid and covered_resource.amount == 100,
-  "owned recovery rechecks inventory after start and before physical mining")
-machine_inventory_empty = true
+  "owned mining checks that the entity and its contents fit before it starts")
+machine_contents = {}
 local filled_during_mining = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(filled_during_mining)
 check(mine.tick(filled_during_mining) == nil and body.mining_state.mining,
   "owned recovery starts only while the entity remains empty")
@@ -299,13 +307,15 @@ check(recovered and recovered.status == "done" and not machine.valid
   and inventory_total() == 1 and scripted_mine_calls == 0,
   "explicit player-owned machine recovery leaves underlying and adjacent ore untouched and uses physical LuaControl mining")
 
-machine.valid, machine_inventory_empty = true, false
-local occupied, occupied_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" })
-check(not occupied and tostring(occupied_error):match("nonempty inventories or fluids") ~= nil,
-  "player-owned recovery fails closed for nonempty inventories")
-machine_inventory_empty, machine_fluids = true, { water = 1 }
+machine.valid, machine_contents = true, { ["iron-ore"] = 1 }
+configure_capacity(4)
+local holding = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(holding)
+check(mine.tick(holding) == nil and body.mining_state.mining and body.selected == machine,
+  "an owned entity with contents that fit is mined natively, contents and all")
+body.mining_state, body.selected, machine_contents = { mining = false }, nil, {}
+machine_fluids = { water = 1 }
 local wet, wet_error = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" })
-check(not wet and tostring(wet_error):match("nonempty inventories or fluids") ~= nil,
+check(not wet and tostring(wet_error):match("with fluids") ~= nil,
   "player-owned recovery fails closed for nonempty fluids")
 configure_capacity(2)
 local drainless = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned", allow_fluid_loss = true }
@@ -344,5 +354,63 @@ check(named._entity == shaded_tree and named._initial_failure == nil,
 local owned_named = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, entity = machine })
 local owned_kind = pcall(mine.start, { target = { x = 5, y = 0 }, count = 1, entity = shaded_tree, target_kind = "owned" })
 check(not owned_named and not owned_kind, "an exact entity is only ever a natural one")
+
+-- count > 1 on a tree mines it, then the nearest other trees to the
+-- requested coordinate, one bounded query per cycle.
+local woods = {}
+local near_tree, far_tree, own_tree = minable("tree-03", "tree", 12, nil), minable("tree-04", "tree", 18, nil), minable("tree-05", "tree", 13, nil)
+own_tree.force = player_force
+local first_tree = minable("tree-01", "tree", 10, nil)
+for _, t in ipairs({ first_tree, near_tree, far_tree, own_tree }) do woods[#woods + 1] = t end
+for _, name in ipairs({ "tree-01", "tree-03", "tree-04", "tree-05" }) do prototypes.item[name] = { stack_size = 2 } end
+body.force.is_chunk_charted = function() return true end
+local radius_queries = {}
+body.surface.find_entities_filtered = function(filter)
+  if filter.radius then
+    radius_queries[#radius_queries + 1] = filter
+    local out = {}
+    for _, t in ipairs(woods) do
+      if t.valid and t.type == filter.type and math.abs(t.position.x - filter.position.x) <= filter.radius then out[#out + 1] = t end
+    end
+    return out
+  end
+  local out = {}
+  for _, t in ipairs(woods) do if t.valid and t.position.x == filter.area[1][1] then out[#out + 1] = t end end
+  return out
+end
+candidates = woods
+configure_capacity(8)
+body.mining_state, body.selected, mining_progress, engine_gain = { mining = false }, nil, 0, 1
+local three = { target = { x = 10, y = 0 }, count = 3 }; mine.start(three)
+local felled = run(three, 40)
+check(felled and felled.status == "done" and three._completed == 3 and not first_tree.valid and not near_tree.valid
+  and not far_tree.valid and own_tree.valid,
+  "mine count 3 on a tree fells it and the two nearest other trees, never an own one")
+check(#radius_queries >= 2 and radius_queries[1].limit and radius_queries[1].limit <= 100,
+  "each next tree is one bounded query around the requested coordinate")
+local lone = minable("tree-01", "tree", 30, nil); woods = { lone }; candidates = woods
+local alone = { target = { x = 30, y = 0 }, count = 2 }; mine.start(alone)
+local alone_result = run(alone, 20)
+check(alone_result and alone_result.status == "failed" and alone._completed == 1 and alone_result.detail:match("no other tree"),
+  "with no other tree near, the result says how many were felled")
+local plant = minable("yumako-tree", "plant", 40, nil); woods = { plant }; candidates = woods
+prototypes.item["yumako-tree"] = { stack_size = 2 }
+local harvest = { target = { x = 40, y = 0 } }; mine.start(harvest)
+check(harvest._entity == plant, "a plant is hand-minable like a tree")
+
+-- A walk's start blocker is mined from where the body stands: no approach
+-- (the approach would walk, and the walk is what is blocked).
+local stump = minable("tree-02", "tree", 50, nil); woods = { stump }; candidates = woods
+prototypes.item["tree-02"] = { stack_size = 2 }
+local approach_stub = package.loaded["scripts.actions.approach"]
+local approach_entity = approach_stub.ensure_entity
+approach_stub.ensure_entity = function() error("a start blocker is never approached") end
+local in_place = { target = { x = 50, y = 0 }, entity = stump, count = 1, target_kind = "natural", from_here = true }
+mine.start(in_place)
+local in_place_result = run(in_place, 10)
+check(in_place_result and in_place_result.status == "done" and not stump.valid,
+  "a start blocker is mined from where the body stands")
+approach_stub.ensure_entity = approach_entity
+check(require("scripts.actions.walk").start_clearer == mine, "mine is the walker's start clearer")
 
 os.exit(failures == 0 and 0 or 1)

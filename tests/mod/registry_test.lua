@@ -225,9 +225,6 @@ for tick = 5, 700 do game.tick = tick; autonomy.on_tick(tick) end
 local lines = autonomy.lines()
 check(#lines == 4 and finds.all == 0, "autonomy builds its lines from the registry with no entity query ("
   .. #lines .. " lines, " .. finds.all .. " queries)")
-chores.upkeep(game.tick)
-check(#queued == 1 and queued[1].steps[1].items.coal == 10 and queued[1].steps[1].x == 1.5 and finds.all == 0,
-  "upkeep refuels the dry furnace from registry stock with no entity query")
 -- Stock and power come from a cache refreshed a few entities a tick; a read
 -- before its first refresh says so instead of scanning.
 for i = 1, 100 do registry.on_built({ entity = chest(40.5 + i % 50, 20.5 + math.floor(i / 50), {}) }) end
@@ -238,11 +235,11 @@ local per_tick, refresh_ticks = {}, 0
 for tick = 701, 760 do
   game.tick = tick
   local job = storage.status_cache.job
-  local before = job and #job.own or 0
+  local before = job and job.cursor or 1
   map_summary.status_tick(tick)
   refresh_ticks = refresh_ticks + 1
   job = storage.status_cache.job
-  if job then per_tick[#per_tick + 1] = #job.own - before end
+  if job then per_tick[#per_tick + 1] = job.cursor - before end
   if storage.status_cache.updated_tick then break end
 end
 local most = 0
@@ -255,6 +252,13 @@ local refreshed_at = storage.status_cache.updated_tick
 for tick = refreshed_at + 1, refreshed_at + 299 do game.tick = tick; map_summary.status_tick(tick) end
 check(storage.status_cache.job == nil and storage.status_cache.updated_tick == refreshed_at,
   "the next refresh waits 300 ticks")
+check(storage.status_cache.totals.coal == 30 and registry.stock_totals({ "coal", "wood" }).coal == 30
+  and registry.stock_totals({ "wood", "stone" }).wood == 5 and registry.stock_totals({ "stone" }).stone == 0,
+  "the refresh keeps every item's stock total for stock_totals")
+finds.all = 0
+chores.upkeep(game.tick)
+check(#queued == 1 and queued[1].steps[1].items.coal == 10 and queued[1].steps[1].x == 1.5 and finds.all == 0,
+  "upkeep refuels the dry furnace from the refreshed stock totals with no entity query")
 local status = factory_status.factory_status({})
 local coal_row, gear_row
 for _, row in ipairs(status.stock) do
@@ -285,7 +289,19 @@ check(resource_reads[1] == 0 and resource_reads[2] == 2 and resource_reads[6] ==
   and storage.patch_cache.filled, "the patch cache reads the ten charted chunks two a tick (" .. table.concat(resource_reads, ",") .. ")")
 check(chunk_lists == 1 and storage.registry.charted_seed == nil,
   "the patch cache is seeded from the bootstrap's chunk list without listing the surface again")
+-- Patch rows are rebuilt on later ticks with nothing to read, a few cells a
+-- tick, never by a read.
+local function settle_patches()
+  local builds = 0
+  while storage.patch_cache.build or storage.patch_cache.dirty do
+    map_summary.patch_tick(game.tick)
+    builds = builds + 1
+    assert(builds < 10, "the patch rows never settle")
+  end
+  return builds
+end
 finds.all = 0
+check(not select(2, map_summary.patches()) and settle_patches() >= 1, "patch rows are built after the reads, not on a read")
 local patches, ready = map_summary.patches()
 local by_name = {}
 for _, patch in ipairs(patches) do by_name[patch.name] = patch end
@@ -300,6 +316,7 @@ depleted.valid = false
 game.tick = 1101
 local before = finds.resource
 map_summary.patch_tick(game.tick)
+settle_patches()
 patches = map_summary.patches()
 for _, patch in ipairs(patches) do by_name[patch.name] = patch end
 check(finds.resource == before + 1 and by_name["iron-ore"].tiles == 5 and by_name["iron-ore"].amount == 500,
@@ -313,6 +330,7 @@ CHARTED["20,20"] = true
 map_summary.on_chunk_charted({ force = force, surface_index = 1, position = { x = 20, y = 20 } })
 game.tick = 1102
 map_summary.patch_tick(game.tick)
+settle_patches()
 patches = map_summary.patches()
 by_name = {}
 for _, patch in ipairs(patches) do by_name[patch.name] = patch end

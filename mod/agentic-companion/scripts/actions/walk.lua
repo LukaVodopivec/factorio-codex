@@ -2,6 +2,9 @@
 -- M.begin/M.step (plain-data state, storage-safe). Pathfinder results arrive
 -- through on_script_path_request_finished → M.on_path_finished (wired in
 -- control.lua); storage.path_request belongs to the sole active task.
+-- A blocked start is recovered in the body's own way: a tree or rock in the
+-- way is mined (once), otherwise the body walks to the nearest charted tile
+-- centre whose box touches no water, building or belt.
 local companion = require("scripts.companion")
 local set_walking = require("scripts.human_inputs").set_walking
 local placement_geometry = require("scripts.placement_geometry")
@@ -82,6 +85,10 @@ local function stop(c)
   set_walking(c, { walking = false })
 end
 
+-- M.start_clearer: the runner that mines a tree or rock blocking the start
+-- (mine.lua sets itself: it needs this module through approach.lua).
+local NATURAL_BLOCKERS = { tree = true, ["simple-entity"] = true, plant = true }
+
 local function fail(c, code, detail, outcome)
   stop(c)
   return { failed = code .. ": " .. detail, outcome = outcome }
@@ -101,6 +108,7 @@ local function collision_labels(collisions)
   return #labels > 0 and table.concat(labels, ",") or "none"
 end
 
+local settle_cell
 local function begin_escape(state, c, evidence)
   local collisions = evidence.collisions
   if state.escape_attempted then
@@ -110,12 +118,17 @@ local function begin_escape(state, c, evidence)
   local pending = storage.path_request
   if pending and pending.id == state.request_id then storage.path_request = nil end
   state.path, state.request_id = nil, nil
-  local ok, target = pcall(c.surface.find_non_colliding_position,
-    c.name or "character", c.position, 1.5, 0.1, false)
-  if not ok or not target or type(target.x) ~= "number" or type(target.y) ~= "number"
-    or dist_sq(c.position, target) < STUCK_EPSILON_SQ then
+  -- A tile centre whose whole body box is clear: a point merely beside the
+  -- blocked one (find_non_colliding_position) can leave the body on the
+  -- water edge.
+  local target
+  for _, radius in ipairs(SETTLE_RADII) do
+    local ok, cell = pcall(settle_cell, c, nil, nil, radius)
+    if ok and cell then target = cell; break end
+  end
+  if not target then
     return escape_fail(state, c, "START_COLLISION", "character path body overlaps " .. collision_labels(collisions)
-      .. "; Factorio found no clear position within 1.5 tiles")
+      .. string.format("; no charted clear tile centre within %d tiles", SETTLE_RADII[#SETTLE_RADII]))
   end
   state.phase = "escaping"
   state.escape_target = { x = target.x, y = target.y }
@@ -269,7 +282,9 @@ local function goal_occupancy(c, point)
   local seen = {}
   for _, corner in ipairs(corners) do
     local tile_ok, tile = pcall(c.surface.get_tile, corner.x, corner.y)
-    local collision_ok, collides = tile_ok and tile and pcall(tile.collides_with, "player")
+    -- Two statements: a boolean expression keeps only pcall's first result.
+    local collision_ok, collides = false, false
+    if tile_ok and tile then collision_ok, collides = pcall(tile.collides_with, "player") end
     if collision_ok and collides then
       local key = math.floor(corner.x) .. ":" .. math.floor(corner.y)
       if not seen[key] then
@@ -366,7 +381,8 @@ local function nearby_collision_evidence(c)
   for y = math.floor(area.left_top.y), math.ceil(area.right_bottom.y) - 1 do
     for x = math.floor(area.left_top.x), math.ceil(area.right_bottom.x) - 1 do
       local tile_ok, tile = pcall(c.surface.get_tile, x, y)
-      local collision_ok, collides = tile_ok and tile and pcall(tile.collides_with, "player")
+      local collision_ok, collides = false, false
+      if tile_ok and tile then collision_ok, collides = pcall(tile.collides_with, "player") end
       if collision_ok and collides then tiles[#tiles + 1] = { name = tile.name or "collision-tile", position = { x = x, y = y } } end
     end
   end
@@ -497,7 +513,7 @@ end
 
 -- Nearest charted tile centre within `radius` tiles whose body box touches no
 -- conveyor and no character collider, optionally within `limit` of `anchor`.
-local function settle_cell(c, anchor, limit, radius)
+function settle_cell(c, anchor, limit, radius)
   local pos = c.position
   local tx, ty = math.floor(pos.x), math.floor(pos.y)
   local cells = {}
@@ -599,6 +615,46 @@ local function take_path_result(state, task_id)
   return result
 end
 
+-- A tree or rock (not own) among the start collisions, as an entity.
+local function natural_start_blocker(c, evidence)
+  for _, collision in ipairs(evidence.collisions or {}) do
+    if collision.kind == "entity" and NATURAL_BLOCKERS[collision.type] then
+      local ok, found = pcall(c.surface.find_entities_filtered, { position = collision.position, radius = 0.5,
+        name = collision.name, limit = 4 })
+      for _, e in ipairs(ok and type(found) == "table" and found or {}) do
+        local ok_minable, minable = pcall(function()
+          return e.valid and e.force ~= c.force and e.prototype.mineable_properties.minable
+        end)
+        if ok_minable and minable then return e end
+      end
+    end
+  end
+end
+
+-- Mines the start blocker from where the body stands; true while mining.
+local function step_clear(state, c)
+  local ok, result = pcall(M.start_clearer.tick, state.clearing)
+  if ok and result == nil then return true end
+  state.start_cleared = { name = state.clearing.entity_name, position = state.clearing.target,
+    status = ok and result.status or "failed", detail = ok and result.detail or tostring(result) }
+  state.clearing, state.phase = nil, "request"
+  c.mining_state = { mining = false }
+  return false
+end
+
+local function begin_clear(state, c, task_id, evidence)
+  if state.clear_attempted or not M.start_clearer then return false end
+  local blocker = natural_start_blocker(c, evidence)
+  if not blocker then return false end
+  state.clear_attempted = true
+  local clearing = { id = task_id, type = "mine", entity = blocker, count = 1, target_kind = "natural", from_here = true,
+    target = { x = blocker.position.x, y = blocker.position.y }, entity_name = blocker.name }
+  if not pcall(M.start_clearer.start, clearing) then return false end
+  state.clearing, state.phase = clearing, "clearing"
+  stop(c)
+  return true
+end
+
 -- (Re)initialize a walker. `state` must be a plain table stored on the task;
 -- all fields are plain data. The first step() issues the pathfinder request.
 -- arrival_mode "reach" (embedded approaches) aims at an occupied entity centre,
@@ -636,15 +692,18 @@ end
 
 -- Advance the walker one tick. Returns nil while moving, "arrived" once within
 -- arrive_within of the target, or {failed = "reason"} when it gives up.
+-- Within reach of where the walk should end: the resolved point, or, for a
+-- vicinity walk, anywhere within arrival_radius of the requested goal.
+local function at_goal(state, pos)
+  if dist_sq(pos, state.target) <= state.arrive_within * state.arrive_within then return true end
+  return state.arrival_mode == "vicinity"
+    and dist_sq(pos, state.requested_goal) <= state.arrival_radius * state.arrival_radius
+end
+
 function M.step(state, c, task_id)
   local pos = c.position
 
-  if state.resolve_failure then
-    return fail(c, "VICINITY_NOT_FOUND", state.resolve_failure, { code = "VICINITY_NOT_FOUND",
-      diagnostics = { path = { evidence_scope = "charted_visible_only",
-        requested_goal = state.requested_goal, resolved_goal = nil,
-        arrival_mode = state.arrival_mode, arrival_radius = state.arrival_radius } } })
-  end
+  if state.phase == "clearing" and M.start_clearer and step_clear(state, c) then return nil end
 
   local evidence = placement_geometry.path_start(c)
   if evidence.state == "unknown" then
@@ -652,6 +711,7 @@ function M.step(state, c, task_id)
       { code = "START_COLLISION_UNKNOWN", diagnostics = { path_start = evidence } })
   end
   if evidence.state == "blocked" then
+    if state.phase ~= "escaping" and begin_clear(state, c, task_id, evidence) then return nil end
     if state.escape_failed then
       return fail(c, "START_COLLISION", "the previous bounded escape failed and the current start remains blocked: "
         .. collision_labels(evidence.collisions) .. "; observe and choose a reachable local route",
@@ -684,7 +744,7 @@ function M.step(state, c, task_id)
 
   -- Arrival requires current proven clearance, including during an escape,
   -- and a body that no belt can carry away.
-  if dist_sq(pos, state.target) <= state.arrive_within * state.arrive_within then
+  if at_goal(state, pos) then
     local conveyor = placement_geometry.conveyor_under(c)
     if conveyor then
       if state.settle_attempted then
@@ -696,6 +756,12 @@ function M.step(state, c, task_id)
     end
     stop(c)
     return "arrived"
+  end
+  if state.resolve_failure then
+    return fail(c, "VICINITY_NOT_FOUND", state.resolve_failure, { code = "VICINITY_NOT_FOUND",
+      diagnostics = { path = { evidence_scope = "charted_visible_only",
+        requested_goal = state.requested_goal, resolved_goal = nil,
+        arrival_mode = state.arrival_mode, arrival_radius = state.arrival_radius } } })
   end
   if state.phase == "escaping" then
     state.escape_cleared_tick = game.tick
@@ -909,7 +975,7 @@ function M.tick(task)
           settle.conveyor.position.x, settle.conveyor.position.y) or ""),
       outcome = { requested_goal = task._walk.requested_goal, resolved_goal = task._walk.target,
         arrival_mode = task._walk.arrival_mode, arrival_radius = task._walk.arrival_radius,
-        recovery_segments = task._walk.frontier_segments, settle = settle } }
+        recovery_segments = task._walk.frontier_segments, settle = settle, start_cleared = task._walk.start_cleared } }
   elseif type(r) == "table" then
     return { status = "failed", detail = r.failed, outcome = r.outcome }
   end

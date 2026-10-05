@@ -1,10 +1,16 @@
 // Typed wrapper over RCON → remote.call("agentic","rpc",...).
 import { RconClient } from "./rcon.js";
 import type { ChunkedEnvelope, GetTaskResult, Task } from "./types.js";
-import { parseRpcEnvelope, type RpcMethod } from "./protocol/contract.js";
+import { JOB_METHODS, parseRpcEnvelope, type RpcMethod } from "./protocol/contract.js";
 
 export class ModError extends Error {}
 export class TaskCancelledError extends ModError {}
+/** A job could not be answered now: the mod's job slots are full (its error
+ *  starts with JOBS_BUSY) or the game had not finished it within
+ *  JOB_TIMEOUT_MS (a paused or slow server). It is transient, so not a
+ *  ModError: a caller retries instead of recording a failure. */
+export class JobBusyError extends Error {}
+export const JOBS_BUSY = "JOBS_BUSY:";
 
 /** Escapes a string for inclusion in a double-quoted Lua string literal.
  *  JSON.stringify output never contains raw control characters, so escaping
@@ -14,8 +20,17 @@ export function escapeLuaString(s: string): string {
 }
 
 export interface EnqueueOptions {
+  /** The MCP tool that owns the task; a cancel names it (default: the task type). */
+  tool?: string;
+  /** The session role of this MCP process (pilot, supervisor, ...); an
+   *  aborted call's cancel names it (default: unknown). */
+  role?: string;
   timeoutMs?: number;
   deadlineMs?: number;
+  /** When the wait must return whatever happens (default: enqueue time plus
+   *  DEFAULT_TASK_TIMEOUT_MS), so a tool that did work before the task stays
+   *  under the MCP tool timeout. */
+  returnByMs?: number;
   signal?: AbortSignal;
   clock?: TaskClock;
 }
@@ -31,12 +46,66 @@ const realClock: TaskClock = {
 };
 export const TASK_POLL_DELAYS_MS = [100, 200, 500] as const;
 export const DEFAULT_TASK_TIMEOUT_MS = 570_000;
+export const JOB_POLL_DELAYS_MS = [50, 100, 250] as const;
+export const JOB_TIMEOUT_MS = 120_000;
+
+interface JobStatus { job_id: number; kind?: string; job_status: "pending" | "done" | "failed";
+  result?: unknown; error?: string; ticks?: number; fifo?: unknown }
+const jobMethods = new Set<string>(JOB_METHODS);
+function pendingJob(value: unknown): value is JobStatus {
+  const job = value as JobStatus | undefined;
+  return !!job && typeof job === "object" && job.job_status === "pending" && typeof job.job_id === "number";
+}
 
 export class Bridge {
-  constructor(private readonly rcon: RconClient) {}
+  constructor(private readonly rcon: RconClient, private readonly clock: TaskClock = realClock) {}
 
-  async call<T>(method: RpcMethod, params?: unknown): Promise<T> {
-    return this.callUnchecked<T>(method, params);
+  /** One RPC. A read the mod runs as a job over several ticks is polled
+   *  through get_job here, so the caller gets the same result either way;
+   *  signal (the MCP request's) stops that poll. */
+  async call<T>(method: RpcMethod, params?: unknown, signal?: AbortSignal): Promise<T> {
+    let value: unknown;
+    try { value = await this.callUnchecked<unknown>(method, params); }
+    catch (error) {
+      if (jobMethods.has(method) && error instanceof ModError && error.message.startsWith(JOBS_BUSY)) {
+        throw new JobBusyError(error.message);
+      }
+      throw error;
+    }
+    if (!jobMethods.has(method) || !pendingJob(value)) return value as T;
+    return this.awaitJob<T>(method, value.job_id, signal);
+  }
+
+  /** Polls a job to its result. A poll that ends first (its timeout, or the
+   *  caller's abort) drops the job, so it does not keep one of the mod's
+   *  shared job slots for minutes. */
+  private async awaitJob<T>(method: string, jobId: number, signal?: AbortSignal): Promise<T> {
+    const started = this.clock.now();
+    try {
+      for (let poll = 0; ; poll++) {
+        if (signal?.aborted) throw new TaskCancelledError(`${method} was cancelled`);
+        await this.clock.sleep(JOB_POLL_DELAYS_MS[Math.min(poll, JOB_POLL_DELAYS_MS.length - 1)]!);
+        if (signal?.aborted) throw new TaskCancelledError(`${method} was cancelled`);
+        const job = await this.callUnchecked<JobStatus>("get_job", { job_id: jobId });
+        if (job.job_status === "failed") throw new ModError(job.error ?? `${method} failed`);
+        if (job.job_status === "done") {
+          // get_job carries the body's FIFO state from its own read.
+          const result = job.result;
+          if (result && typeof result === "object" && !Array.isArray(result) && job.fifo !== undefined
+            && (result as { fifo?: unknown }).fifo === undefined) return { ...result, fifo: job.fifo } as T;
+          return (result ?? {}) as T;
+        }
+        if (this.clock.now() - started >= JOB_TIMEOUT_MS) {
+          throw new JobBusyError(`${method} was still being computed in the game after ${Math.round(JOB_TIMEOUT_MS / 1000)} s`
+            + ` (job ${jobId}, now dropped); try again later or with a smaller request`);
+        }
+      }
+    } catch (error) {
+      if (error instanceof JobBusyError || error instanceof TaskCancelledError) {
+        await this.callUnchecked("get_job", { job_id: jobId, forget: true }).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   private async callUnchecked<T>(method: RpcMethod, params?: unknown): Promise<T> {
@@ -112,10 +181,10 @@ export class Bridge {
   async enqueueAndWaitResult(task: Task, opts: EnqueueOptions = {}): Promise<GetTaskResult> {
     if (opts.signal?.aborted) throw new TaskCancelledError("the task was cancelled");
     const { task_id } = await this.call<{ task_id: number }>("enqueue", { task });
-    const clock = opts.clock ?? realClock;
+    const clock = opts.clock ?? this.clock;
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
     const started = clock.now();
-    const budget = holdAwareDeadline(clock, opts.deadlineMs ?? started + timeoutMs);
+    const budget = holdAwareDeadline(clock, opts.deadlineMs ?? started + timeoutMs, opts.returnByMs);
     let poll = 0;
 
     try {
@@ -142,7 +211,10 @@ export class Bridge {
           + (budget.held ? ` (${waited}s wall time including a human hold)` : ""));
       }
     } catch (error) {
-      await this.call("cancel", { task_id }).catch(() => {});
+      // An interrupted turn cancels its own task, named by this process's
+      // session role; anything else is the bridge giving up at its deadline.
+      const role = opts.signal?.aborted ? opts.role ?? "unknown" : "direct-task-timeout";
+      await this.call("cancel", { task_id, origin: `${opts.tool ?? task.type}/${role}` }).catch(() => {});
       throw error;
     }
   }
@@ -155,7 +227,7 @@ export class Bridge {
  *  parked() means it ended at the guard with credited budget left. holding is
  *  the latest read; held is true once any read showed the hold. */
 export function holdAwareDeadline(clock: TaskClock, deadline: number,
-  returnBy = Math.max(deadline, clock.now() + DEFAULT_TASK_TIMEOUT_MS)) {
+  returnBy: number = Math.max(deadline, clock.now() + DEFAULT_TASK_TIMEOUT_MS)) {
   let last = clock.now();
   let holding = false;
   let held = false;

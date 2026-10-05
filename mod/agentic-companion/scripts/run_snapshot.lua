@@ -54,12 +54,14 @@ end
 
 function M.capture()
   local body = companion.require_companion()
-  local observation = spatial.observe_local({ radius = 5, detail = "compact" })
+  -- A compact observation of radius 5 is bounded by its small area.
+  local observation = spatial.observe_compact({ radius = 5 })
   return {
     tick = game.tick,
     character = observation.character,
     progression = research.progression_status({}),
-    -- Counts from the event-maintained registry: no chunk walk per sample.
+    -- What the mod maintains (registry, line sampler, power cache): no chunk
+    -- walk and no entity read per sample.
     factory = map_summary.registry_factory(),
     -- Production lines (autonomy.lua): how many run, self-sustain or are hand-fed.
     lines = autonomy.counts(),

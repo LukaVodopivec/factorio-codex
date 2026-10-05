@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
-import type { Bridge } from "../src/bridge.js";
+import { DEFAULT_TASK_TIMEOUT_MS, type Bridge } from "../src/bridge.js";
 import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
 import { queuePlanSchema } from "../src/mcp/runPlan.js";
 import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeFifo, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
@@ -85,14 +85,14 @@ describe("public MCP to Lua DTO mappings", () => {
       async () => ({ call } as unknown as Bridge), validConfig);
     const output = await handlers.map_summary({ include: [...MAP_SUMMARY_SECTIONS] });
     expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute",
-      include: ["stockpiles", "sites", "patches", "power", "problems", "flows_all"] });
+      include: ["stockpiles", "sites", "patches", "power", "problems", "flows_all"] }, undefined);
     expect(output.structuredContent).toMatchObject({ stockpiles_omitted: 3, sites: value.sites, sites_omitted: 0,
       patches: [], patches_omitted: 0, power: { networks: [network], networks_omitted: 1 },
       problems: value.problems, problems_total: 70, force_flows_all: [], force_flows_all_omitted: 0 });
     expect(output.structuredContent.stockpiles).toEqual([{ item: "iron-plate", total: 400, holders: [holder], holders_omitted: 0 },
       { item: "coal", total: 0, holders: [], holders_omitted: 0 }]);
     await handlers.map_summary({});
-    expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute" });
+    expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute" }, undefined);
     expect((await handlers.map_summary({ include: ["inventories"] })).isError).toBe(true);
     expect(call).toHaveBeenCalledTimes(2);
     expect(schemas.map_summary.safeParse({ include: ["power", "everything"] }).success).toBe(false);
@@ -138,7 +138,7 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(mined.structuredContent).toMatchObject({ status: "completed", drill_produced: true, drills: 3, stockpile_total: 1250 });
     expect(mined.content[0].text).toContain("drill_produced");
     const picked = await handlers.pickup_items({ x: 5.5, y: 6.5, item: "iron-plate", count: 4 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "pickup", target: { x: 5.5, y: 6.5 }, item: "iron-plate", count: 4 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "pickup", target: { x: 5.5, y: 6.5 }, item: "iron-plate", count: 4 }, { tool: "pickup_items", role: "unknown" });
     expect(picked.structuredContent).toMatchObject({ status: "completed", source: "belt", requested: 4, picked_up: 4,
       belt: { name: "transport-belt", position: { x: 5.5, y: 6.5 } } });
     expect(descriptions.pickup_items).toMatch(/plain belt tile/);
@@ -266,8 +266,22 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
       async () => ({ enqueueAndWaitResult } as unknown as Bridge), validConfig);
     const controller = new AbortController(); controller.abort();
     const output = await handlers.walk_to({ x: 1, y: 2 }, { signal: controller.signal });
-    expect(enqueueAndWaitResult.mock.calls[0]?.[1]).toEqual({ signal: controller.signal });
+    expect(enqueueAndWaitResult.mock.calls[0]?.[1]).toEqual({ tool: "walk_to", role: "unknown", signal: controller.signal });
     expect(output.structuredContent).toMatchObject({ status: "cancelled", terminal: true });
+  });
+
+  it("names its session role in the origin of every cancel it makes", async () => {
+    for (const role of ["pilot", "supervisor"] as const) {
+      const handlers: Record<string, (args: any, extra?: { signal?: AbortSignal }) => Promise<any>> = {};
+      const call = vi.fn(async () => ({ cancelled_count: 0 }));
+      const enqueueAndWaitResult = vi.fn(async () => ({ status: "cancelled", detail: "" }));
+      registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+        async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig, "full", () => null, role);
+      await handlers.stop!({});
+      expect(call).toHaveBeenLastCalledWith("cancel", { all: true, origin: `stop/${role}` }, undefined);
+      await handlers.walk_to!({ x: 1, y: 2 });
+      expect((enqueueAndWaitResult.mock.calls.at(-1) as any[])[1]).toMatchObject({ tool: "walk_to", role });
+    }
   });
 
   it("passes the abort signal to the build_plan owned by connect_entities", async () => {
@@ -277,15 +291,22 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
       async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
     const controller = new AbortController(); controller.abort();
-    await handlers.connect_entities({ kind: "belt", from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }, { signal: controller.signal });
-    expect(enqueueAndWait.mock.calls[0]?.[1]).toEqual({ signal: controller.signal });
+    const before = Date.now();
+    await handlers.connect_entities({ kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }, { signal: controller.signal });
+    const options: any = enqueueAndWait.mock.calls[0]?.[1];
+    expect(options).toMatchObject({ tool: "connect_entities", role: "unknown", signal: controller.signal });
+    // The route search came first: the build's return guard counts from the tool's start, not from its enqueue.
+    expect(call.mock.calls[0]?.[2]).toBe(controller.signal);
+    expect(options.returnByMs).toBe(options.deadlineMs);
+    expect(options.returnByMs).toBeGreaterThanOrEqual(before + DEFAULT_TASK_TIMEOUT_MS);
+    expect(options.returnByMs).toBeLessThanOrEqual(Date.now() + DEFAULT_TASK_TIMEOUT_MS);
   });
 
   it("invokes handlers with exact RPC and task payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 24, mod_version: "0.21.0", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.0", tick: 1 }
       : method === "observe_local" ? { entities: [], resource_patches: [], ground_items: [] }
       : method === "queue_plan" ? { plan_id: 3 }
       : method === "plan_status" ? { plan_id: 3, status: "completed", outcomes: [] } : { ok: method });
@@ -300,14 +321,14 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     await handlers.connect_status({});
     expect(call).toHaveBeenLastCalledWith("ping");
     await handlers.observe_local({ radius: 15, center: { x: 999, y: 999 } });
-    expect(call).toHaveBeenLastCalledWith("observe_local", { radius: 15, detail: undefined });
+    expect(call).toHaveBeenLastCalledWith("observe_local", { radius: 15, detail: undefined }, undefined);
     expect(schemas.observe_local.shape.center).toBeUndefined();
     expect(schemas.observe_local.safeParse({ radius: 15, center: { x: 999, y: 999 } }).data).toEqual({ radius: 15, detail: "compact" });
     await handlers.describe_prototype({ names: ["transport-belt"] });
-    expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"] });
+    expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"] }, undefined);
     expect(schemas.describe_prototype.safeParse({ names: ["transport-belt"] }).data.kind).toBe("auto");
     await handlers.describe_prototype({ names: ["transport-belt"], kind: "entity" });
-    expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"], kind: "entity" });
+    expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"], kind: "entity" }, undefined);
     expect(schemas.describe_prototype.safeParse({ names: ["x"], kind: "item" }).success).toBe(true);
     expect(schemas.describe_prototype.safeParse({ names: Array(10).fill("x") }).success).toBe(true);
     expect(schemas.describe_prototype.safeParse({ names: Array(11).fill("x") }).success).toBe(false);
@@ -317,12 +338,12 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     expect(schemas.craft_items.safeParse({ items: { "iron-gear-wheel": 2 } }).success).toBe(false);
 
     await handlers.extract_items({ x: 1, y: 2 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "extract", target: { x: 1, y: 2 }, all: true });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "extract", target: { x: 1, y: 2 }, all: true }, { tool: "extract_items", role: "unknown" });
     await handlers.extract_items({ x: 1, y: 2, items: { coal: 3 } });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "extract", target: { x: 1, y: 2 }, items: { coal: 3 } });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "extract", target: { x: 1, y: 2 }, items: { coal: 3 } }, { tool: "extract_items", role: "unknown" });
 
     await handlers.rotate_entity({ x: 3, y: 4, direction: 12 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "rotate", target: { x: 3, y: 4 }, direction: 12 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "rotate", target: { x: 3, y: 4 }, direction: 12 }, { tool: "rotate_entity", role: "unknown" });
     expect(schemas.rotate_entity.shape.direction).toBeDefined();
     expect(schemas.rotate_entity.shape.reverse).toBeUndefined();
 
@@ -331,16 +352,16 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     await handlers.can_place({ placements: [{ x: 7, y: 8, name: "transport-belt", direction: 4 }] });
     expect(call).toHaveBeenLastCalledWith("can_place", { placements: [{ item: "transport-belt", position: { x: 7, y: 8 }, direction: 4 }] });
     await handlers.walk_to({ x: 9, y: 10 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "walk_to", target: { x: 9, y: 10 }, arrival_mode: "exact", arrival_radius: 1 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "walk_to", target: { x: 9, y: 10 }, arrival_mode: "exact", arrival_radius: 1 }, { tool: "walk_to", role: "unknown" });
     expect(schemas.walk_to.safeParse({ x: 9, y: 10, arrival_mode: "exact", arrival_radius: 2 }).success).toBe(false);
     await handlers.mine({ x: 11, y: 12, count: 4 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 4 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 4 }, { tool: "mine", role: "unknown" });
     await handlers.mine({ x: 11, y: 12, count: 1, target_kind: "owned" });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 1, target_kind: "owned" });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 1, target_kind: "owned" }, { tool: "mine", role: "unknown" });
     await handlers.mine({ x: 11, y: 12, count: 1, target_kind: "owned", allow_fluid_loss: true });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 1, target_kind: "owned", allow_fluid_loss: true });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11, y: 12 }, count: 1, target_kind: "owned", allow_fluid_loss: true }, { tool: "mine", role: "unknown" });
     await handlers.mine({ x: 11.25, y: 12.5, count: 1, expected_name: "tree-01", observed_tick: 42 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11.25, y: 12.5 }, count: 1, expected_name: "tree-01", observed_tick: 42 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "mine", target: { x: 11.25, y: 12.5 }, count: 1, expected_name: "tree-01", observed_tick: 42 }, { tool: "mine", role: "unknown" });
     expect(schemas.mine.safeParse({ x: 0, y: 0 }).data.count).toBe(1);
     expect(schemas.mine.safeParse({ x: 0, y: 0 }).data.target_kind).toBeUndefined();
     expect(schemas.mine.safeParse({ x: 0, y: 0, target_kind: "owned" }).success).toBe(true);
@@ -350,26 +371,27 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     expect(schemas.mine.safeParse({ x: 0, y: 0, expected_name: "tree-01", observed_tick: 0 }).success).toBe(true);
     expect(schemas.mine.safeParse({ x: 0, y: 0, expected_name: "", observed_tick: -1 }).success).toBe(false);
     await handlers.pickup_items({ x: 11.25, y: 12.5, item: "iron-ore", count: 3 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "pickup", target: { x: 11.25, y: 12.5 }, item: "iron-ore", count: 3 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "pickup", target: { x: 11.25, y: 12.5 }, item: "iron-ore", count: 3 }, { tool: "pickup_items", role: "unknown" });
     expect(schemas.pickup_items.safeParse({ x: 0, y: 0, item: "iron-ore", count: 0 }).success).toBe(false);
     await handlers.place_entity({ x: 13, y: 14, name: "stone-furnace", direction: 8 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "stone-furnace", position: { x: 13, y: 14 }, direction: 8 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "stone-furnace", position: { x: 13, y: 14 }, direction: 8 }, { tool: "place_entity", role: "unknown" });
     await handlers.place_entity({ x: 13, y: 14, name: "inserter", input_target: { x: 13, y: 13 }, output_target: { x: 13, y: 15 } });
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "inserter", position: { x: 13, y: 14 }, direction: undefined,
-      input_target: { x: 13, y: 13 }, output_target: { x: 13, y: 15 } });
+      input_target: { x: 13, y: 13 }, output_target: { x: 13, y: 15 } }, { tool: "place_entity", role: "unknown" });
     await handlers.craft_items({ recipe: "iron-gear-wheel", crafts: 2 });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "craft", recipe: "iron-gear-wheel", count: 2 });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "craft", recipe: "iron-gear-wheel", count: 2 }, { tool: "craft_items", role: "unknown" });
     expect(schemas.craft_items.safeParse({ recipe: "iron-gear-wheel", count: 2 }).success).toBe(false);
     await handlers.insert_items({ x: 15, y: 16, items: { coal: 2 } });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "insert", target: { x: 15, y: 16 }, items: { coal: 2 } });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "insert", target: { x: 15, y: 16 }, items: { coal: 2 } }, { tool: "insert_items", role: "unknown" });
     await handlers.set_recipe({ x: 17, y: 18, recipe: "iron-gear-wheel" });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "set_recipe", target: { x: 17, y: 18 }, recipe: "iron-gear-wheel" });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "set_recipe", target: { x: 17, y: 18 }, recipe: "iron-gear-wheel" }, { tool: "set_recipe", role: "unknown" });
     await handlers.build_plan({ steps: [{ x: 19, y: 20, name: "transport-belt" }], auto_craft: true, stop_on_error: true });
-    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true, steps: [{ item: "transport-belt", position: { x: 19, y: 20 } }] });
+    expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true, steps: [{ item: "transport-belt", position: { x: 19, y: 20 } }] }, { tool: "build_plan", role: "unknown" });
     await handlers.start_research({ technology: "automation" });
-    expect(call).toHaveBeenLastCalledWith("start_research", { technology: "automation" });
+    expect(call).toHaveBeenLastCalledWith("start_research", { technology: "automation" }, undefined);
     await handlers.stop({});
-    expect(call).toHaveBeenLastCalledWith("cancel", { all: true });
+    // A process started without --role names itself unknown.
+    expect(call).toHaveBeenLastCalledWith("cancel", { all: true, origin: "stop/unknown" }, undefined);
     await handlers.factory_status({ since_tick: 600, sections: ["lines", "problems"] });
     expect(call).toHaveBeenLastCalledWith("factory_status", { since_tick: 600, sections: ["lines", "problems"] });
     expect(schemas.factory_status.safeParse({ sections: ["validations"] }).success).toBe(false);
@@ -378,23 +400,23 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     // A layout or block dry run is a direct mod check; a real build is a one-step plan.
     const layout = { anchor: { x: 1, y: 2 }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] };
     await handlers.build_layout({ ...layout, check_only: true });
-    expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true });
+    expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true }, undefined);
     expect(schemas.build_layout.safeParse({ entities: layout.entities }).success).toBe(false);
     await handlers.build_block({ block: "smelting", count: 4, near: { x: 0, y: 0 }, check_only: true });
-    expect(call).toHaveBeenLastCalledWith("build_block", { block: "smelting", count: 4, near: { x: 0, y: 0 }, check_only: true });
+    expect(call).toHaveBeenLastCalledWith("build_block", { block: "smelting", count: 4, near: { x: 0, y: 0 }, check_only: true }, undefined);
     call.mockClear();
     await handlers.build_layout(layout);
     await handlers.get_items({ item: "iron-plate", count: 20 });
     const queued = call.mock.calls.filter(([method]) => method === "queue_plan").map(([, params]) => (params as any).steps);
     expect(queued).toEqual([[{ action: "build_layout", ...layout }], [{ action: "get_items", item: "iron-plate", count: 20 }]]);
-    expect(Object.keys(handlers)).toHaveLength(31);
+    expect(Object.keys(handlers)).toHaveLength(44);
   });
 });
 
 describe("read-only FIFO state", () => {
   const fifoValue = (fifo: Record<string, unknown>) => ({ status: "completed", companion_exists: true, companion_ever_created: true,
-    protocol_version: 24, mod_version: "0.21.0", factorio_version: "2.0.0", tick: 1,
-    entities: [], resource_patches: [], ground_items: [], results: [], candidates: [], outcomes: [], fifo });
+    protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.0", tick: 1,
+    entities: [], resource_patches: [], ground_items: [], results: [], candidates: [], outcomes: [], steps: [], fifo });
   const args: Record<string, unknown> = {
     connect_status: {}, map_summary: {}, progression_status: {}, production_requirements: { targets: { "iron-plate": 1 } },
     describe_prototype: { names: ["transport-belt"] }, observe_local: { radius: 15 }, inspect_entity: { positions: [{ x: 1, y: 2 }] },
@@ -402,6 +424,9 @@ describe("read-only FIFO state", () => {
     find_placement: { item: "transport-belt", preferred: { x: 0, y: 0 } },
     factory_status: {}, activity_log: {}, build_layout: { anchor: { x: 0, y: 0 }, entities: [{ name: "lab", dx: 0, dy: 0 }] },
     build_block: { block: "labs", count: 1 },
+    connect_entities: { kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 3, y: 0 } },
+    blueprint_list: {}, blueprint_describe: { name: "smelter" }, blueprint_export: { name: "smelter" },
+    blueprint_place: { name: "smelter", position: { x: 0, y: 0 } },
   };
   // next_event reports the body in its own block from the cheap event probe.
   const fifoTools = READ_ONLY_TOOLS.filter((name) => name !== "next_event");
@@ -494,10 +519,10 @@ describe("underground belt end selection", () => {
     expect(queuePlanSchema.safeParse({ steps: [{ action: "place_entity", ...placement, belt_to_ground_type: "sideways" }] }).success).toBe(false);
     await handlers.place_entity({ ...placement, belt_to_ground_type: "output" });
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "place", item: "underground-belt", position: { x: 1.5, y: 2.5 },
-      direction: 4, belt_to_ground_type: "output" });
+      direction: 4, belt_to_ground_type: "output" }, { tool: "place_entity", role: "unknown" });
     await handlers.build_plan({ steps: [{ ...placement, belt_to_ground_type: "input" }], auto_craft: true, stop_on_error: true });
     expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
-      steps: [{ item: "underground-belt", position: { x: 1.5, y: 2.5 }, direction: 4, belt_to_ground_type: "input" }] });
+      steps: [{ item: "underground-belt", position: { x: 1.5, y: 2.5 }, direction: 4, belt_to_ground_type: "input" }] }, { tool: "build_plan", role: "unknown" });
     for (const belt_to_ground_type of ["input", "output"] as const) {
       const request = { item: placement.name, preferred: { x: placement.x, y: placement.y },
         radius: 3, directions: [4], limit: 8, belt_to_ground_type };
@@ -510,7 +535,7 @@ describe("underground belt end selection", () => {
       expect(schemas.run_plan.parse({ steps: candidate.plan_steps }).steps).toEqual(candidate.plan_steps);
       await handlers.build_plan(schemas.build_plan.parse({ steps: candidate.build_steps }));
       expect(enqueueAndWaitResult).toHaveBeenLastCalledWith({ type: "build_plan", auto_craft: true, stop_on_error: true,
-        steps: [{ item: placement.name, position: { x: placement.x, y: placement.y }, direction: 4, belt_to_ground_type }] });
+        steps: [{ item: placement.name, position: { x: placement.x, y: placement.y }, direction: 4, belt_to_ground_type }] }, { tool: "build_plan", role: "unknown" });
     }
   });
 });
@@ -520,8 +545,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 24, mod_version: "0.21.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 24, mod_version: "0.21.0", tick: 2 })
+        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 25, mod_version: "0.21.1", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 25, mod_version: "0.21.1", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -530,8 +555,8 @@ describe("connect_status body lifecycle", () => {
   });
 
   it("rejects a stale mod before reporting connected", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 24, mod_version: "0.6.0" });
-    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.21.0");
+    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 25, mod_version: "0.6.0" });
+    await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.21.1");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
@@ -539,8 +564,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 24, mod_version: "0.21.0", factorio_version: "2.0.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 24, mod_version: "0.21.0", factorio_version: "2.0.0", tick: 2 })
+        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 25, mod_version: "0.21.1", factorio_version: "2.0.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -550,7 +575,7 @@ describe("connect_status body lifecycle", () => {
 
   it("surfaces the bind-only no-player error without retrying or creating", async () => {
     const call = vi.fn()
-      .mockResolvedValueOnce({ protocol_version: 24, mod_version: "0.21.0", companion_exists: false, companion_ever_created: false, companion_dead: false })
+      .mockResolvedValueOnce({ protocol_version: 25, mod_version: "0.21.1", companion_exists: false, companion_ever_created: false, companion_dead: false })
       .mockRejectedValueOnce(new Error("native player 'Codex' is not connected with a living character"));
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("native player 'Codex' is not connected");
     expect(call.mock.calls).toEqual([["ping"], ["spawn_companion", {}]]);

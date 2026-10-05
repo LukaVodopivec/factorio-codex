@@ -314,19 +314,27 @@ end
 M.spawn = M.connect
 
 -- Fresh and existing surfaces remain peaceful and generate no enemy bases.
--- Shared wiring calls this on init/configuration and surface creation.
+-- Shared wiring calls this on init/configuration and surface creation. A
+-- surface whose settings cannot be written (a space platform) is skipped,
+-- never an error in the event that created it.
+local ENEMY_CONTROLS = { "enemy-base", "gleba_enemy_base" }
 function M.enforce_peaceful_world()
-  game.map_settings.enemy_expansion.enabled = false
+  pcall(function() game.map_settings.enemy_expansion.enabled = false end)
+  local controls = { "enemy-base" }
+  for _, control in ipairs(ENEMY_CONTROLS) do
+    local ok, exists = pcall(function() return prototypes.autoplace_control[control] ~= nil end)
+    if control ~= "enemy-base" and ok and exists then controls[#controls + 1] = control end
+  end
   for _, surface in pairs(game.surfaces) do
-    surface.peaceful_mode = true
-    local settings = surface.map_gen_settings
-    settings.autoplace_controls = settings.autoplace_controls or {}
-    settings.autoplace_controls["enemy-base"] = {
-      frequency = 0,
-      size = 0,
-      richness = 0,
-    }
-    surface.map_gen_settings = settings
+    pcall(function() surface.peaceful_mode = true end)
+    pcall(function()
+      local settings = surface.map_gen_settings
+      settings.autoplace_controls = settings.autoplace_controls or {}
+      for _, control in ipairs(controls) do
+        settings.autoplace_controls[control] = { frequency = 0, size = 0, richness = 0 }
+      end
+      surface.map_gen_settings = settings
+    end)
   end
 end
 

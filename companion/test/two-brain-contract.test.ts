@@ -21,7 +21,7 @@ const registered = new Set([...read("companion/src/mcp/server.ts").matchAll(/reg
 describe("persistent two-brain coordination contract", () => {
   it("keeps the instructions short, with shared rules only in SKILL.md", () => {
     const size = [skill, pilot, strategist, knowledge].reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
-    expect(size).toBeLessThan(23_000);
+    expect(size).toBeLessThan(26_000);
     expect(skill).not.toMatch(/## Engineering reuse/);
     for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
   });
@@ -97,7 +97,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/queues each new package into the FIFO by itself, in ledger order, as a plan with source `package:<id>`/);
     expect(flat(pilot)).toMatch(/The bridge queues Astra's packages, not you/);
     expect(pilot).toMatch(/Never write `operations\.json` or `notebook\/astra\/`/);
-    expect(flat(strategist)).toMatch(/Size packages as whole blocks: `build_block` or `build_layout` steps, never single placements/);
+    expect(flat(strategist)).toMatch(/Size packages as whole blocks: `build_block`, `build_layout`, or `blueprint_place` steps, never single placements/);
     expect(flat(strategist)).toMatch(/Keep at least one package queued ahead so the body never waits for a design/);
     expect(flat(strategist)).toMatch(/Rewrite the ledger only when NOW changes or a new package is ready, about six times an hour at most; never to record progress, which `activity_log` holds/);
     expect(flat(strategist)).toMatch(/Give each package a new `package_id`/);
@@ -115,6 +115,33 @@ describe("persistent two-brain coordination contract", () => {
     expect(strategist).toMatch(/Never plan hand-crafted science to push research while raw input is the bottleneck/);
     expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);
     for (const action of ["get_items", "build_layout", "build_block"]) expect(skill).toContain(`\`${action}\``);
+  });
+
+  it("teaches the 0.21.1 building tools in plain words", () => {
+    const flatSkill = flat(skill);
+    expect(flatSkill).toMatch(/when a build works, store it once \(`blueprint_capture`[\s\S]*stamp it again with `blueprint_place` or `build_block` with `block: "blueprint"`/);
+    expect(flatSkill).toMatch(/Blueprints belong to this run; `blueprint_export` is a string for notes, never imported/);
+    expect(flatSkill).toMatch(/`move_entity` picks up one of your buildings with its contents/);
+    expect(flatSkill).toMatch(/use `explore`[\s\S]*Never scout with chains of walks/);
+    expect(flatSkill).toMatch(/`connect_entities` lays one belt, pipe, or pole route of up to 200 pieces[\s\S]*a long route is one call/);
+    expect(flatSkill).toMatch(/Crafting runs in the background: `craft_items` returns at once/);
+    expect(flatSkill).toMatch(/`start_research` takes a list of technologies in order; queue more when `next_event` reports `research_finished`/);
+    expect(flatSkill).toMatch(/`plan_ended` carries each step's outcome and the inventory change/);
+    expect(flatSkill).toMatch(/Any item may be used anywhere, crafted or machine-made/);
+    expect(skill).not.toMatch(/at most 25 pieces/);
+    for (const tool of ["blueprint_capture", "blueprint_place", "move_entity", "explore", "connect_entities", "deconstruct_area", "upgrade_area", "copy_settings", "build_ghosts", "start_research"])
+      expect(registered).toContain(tool);
+    expect(flat(pilot)).toMatch(/never a `walk_to` before an action: actions walk to their own targets/);
+    expect(flat(pilot)).toMatch(/never wait for a package with an empty queue/);
+    expect(flat(pilot)).toMatch(/A machine starved or full a second time needs a connection \(belt, inserter, or chest\), not another hand transfer/);
+    expect(flat(pilot)).toMatch(/You send no messages to Astra, nor to anyone else after `GO`/);
+    expect(flat(pilot)).toMatch(/mark it blocked only when `factory_status` shows no productive action and no order is open/);
+    expect(flat(strategist)).toMatch(/a package may start with `blueprint_capture` steps \(made after its `after_package_id` package ends\)/);
+    expect(flat(strategist)).toMatch(/Package steps walk to their own targets: never add walk steps/);
+    expect(flat(strategist)).toMatch(/Packages written before an emergency stop stay held until you rewrite the ledger/);
+    for (const text of [agents, live, readme]) expect(text).not.toMatch(/latch/i);
+    expect(agents).toMatch(/It never waits for a pilot plan: it holds packages only during a human hold and while the ledger is older than the last `stop`/);
+    expect(live).toMatch(/It never waits for a pilot plan: it holds packages only during a human hold and while the ledger file is older than the last `stop`/);
   });
 
   it("keeps the opening, input-first, and power hints", () => {
@@ -140,7 +167,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/game chat never controls the bot, and the panel never triggers a takeover hold/);
     expect(live).toMatch(/session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on \\? ?-c model_reasoning_summary=detailed/);
     expect(live).toMatch(/session-launcher --name factorio-strategist --model gpt-6-astra --reasoning-effort medium --fast off \\? ?-c model_reasoning_summary=detailed/);
-    expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"\][^}]*enabled_tools=/);
+    expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"[^\]]*\][^}]*enabled_tools=/);
     expect(live).not.toMatch(/mcp_servers\.[a-z-]+\.enabled=/);
     for (const text of [readme, live]) expect(text).toMatch(/--pilot-rollout[\s\S]*--strategist-rollout/);
     expect(readme).toMatch(/The feed is output only: game chat never controls the bot/);

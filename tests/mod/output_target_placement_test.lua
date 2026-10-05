@@ -373,7 +373,7 @@ for _, terminal in ipairs({ "cancel", "target-invalid", "entity-invalid", "compl
   check(tasks.get({ task_id = id }).status == "running" and activity.snapshot(tick).transfer_actions == 1
     and stock.wood == 0, terminal .. " task exposes conserved starter insertion before terminal status")
   if terminal == "cancel" then
-    check(tasks.cancel({ task_id = id }).cancelled == 1, "real task cancellation retires waiting build plan")
+    check(tasks.cancel({ origin = "stop/supervisor", task_id = id }).cancelled == 1, "real task cancellation retires waiting build plan")
   elseif terminal == "target-invalid" then recipient.valid = false
   elseif terminal == "entity-invalid" then last_built.valid = false
   else last_built.drop_target = recipient end

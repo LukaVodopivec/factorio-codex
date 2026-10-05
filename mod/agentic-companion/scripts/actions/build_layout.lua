@@ -4,11 +4,20 @@
 -- route, then builds it all through build_plan (auto-supply, auto-clear,
 -- recipes) in dependency order: recipients first, then the drills and
 -- inserters that feed them, poles last. check_only is the same resolution
--- without any side effect. build_block expands a parametric block
+-- without any side effect, run as a job (jobs.lua) over as many ticks as the
+-- build's own search would take, so it returns the site or a definite
+-- SITE_NOT_FOUND. build_block expands a parametric block
 -- (scripts/blocks.lua) into a layout and may turn it to fit the site.
+-- Belt and pipe connections are searched by connect_entities' resumable A*
+-- (up to 200 tiles, underground hops where the way is blocked), spread over
+-- ticks like the site search.
 --
 -- Offsets are entity centres; each entity snaps to its own tile grid, so a
--- layout written for an integer anchor (top-left tile corner) is exact.
+-- layout written for an integer anchor (top-left tile corner) is exact. An
+-- entity's insert map is put in after it is placed (build_plan's starter
+-- items); build_block fuels its burner machines that way by default. An
+-- entity's settings (a blueprint's filters, priorities, bar, mirror, an
+-- underground belt's type) are set after it is placed.
 -- Result: {anchor, placed:[{name,x,y,direction}], failed:[{index|connection,
 -- code, reason}], shortfall?}; indexes are 0-based into entities/connections.
 local companion = require("scripts.companion")
@@ -16,10 +25,11 @@ local placement_geometry = require("scripts.placement_geometry")
 local connect_entities = require("scripts.connect_entities")
 local build_plan = require("scripts.actions.build_plan")
 local blocks = require("scripts.blocks")
+local jobs = require("scripts.jobs")
 
 local M = {}
 
-local MAX_ENTITIES, MAX_CONNECTIONS, MAX_ROUTE, MAX_STEPS = 100, 32, 32, 200
+local MAX_ENTITIES, MAX_CONNECTIONS, MAX_ROUTE, MAX_STEPS = 100, 32, connect_entities.MAX_LENGTH, 200
 local SITE_RADIUS = 24        -- anchors tried around site.near
 local SEARCH_RADIUS = 32      -- resource and water read around site.near
 local MAX_CANDIDATES = 600
@@ -38,12 +48,17 @@ end
 
 local function validate_layout(params, label)
   local entities = params.entities
-  if type(entities) ~= "table" or #entities < 1 or #entities > MAX_ENTITIES then
-    error(string.format("%s entities must be 1-%d placements", label, MAX_ENTITIES), 0)
+  -- A route-only layout (no entities, connections from an anchor) joins
+  -- what already stands.
+  local route_only = type(entities) == "table" and #entities == 0 and type(params.connections) == "table"
+    and #params.connections > 0 and params.anchor ~= nil
+  if type(entities) ~= "table" or (#entities < 1 and not route_only) or #entities > MAX_ENTITIES then
+    error(string.format("%s entities must be 1-%d placements (none only for connections from an anchor)", label,
+      MAX_ENTITIES), 0)
   end
   for i, e in ipairs(entities) do
     if type(e) ~= "table" or type(e.name) ~= "string" or type(e.dx) ~= "number" or type(e.dy) ~= "number" then
-      error(string.format("%s entities[%d] must be {name, dx, dy, direction?, recipe?}", label, i - 1), 0)
+      error(string.format("%s entities[%d] must be {name, dx, dy, direction?, recipe?, insert?, settings?}", label, i - 1), 0)
     end
     local d = e.direction
     if d ~= nil and (type(d) ~= "number" or d % 1 ~= 0 or d < 0 or d > 15) then
@@ -51,6 +66,16 @@ local function validate_layout(params, label)
     end
     if e.recipe ~= nil and type(e.recipe) ~= "string" then
       error(string.format("%s entities[%d].recipe must be a recipe name", label, i - 1), 0)
+    end
+    if e.insert ~= nil then
+      local ok = type(e.insert) == "table"
+      for name, count in pairs(ok and e.insert or {}) do
+        if type(name) ~= "string" or type(count) ~= "number" or count < 1 then ok = false end
+      end
+      if not ok then error(string.format('%s entities[%d].insert must map item names to counts, e.g. {"coal":5}', label, i - 1), 0) end
+    end
+    if e.settings ~= nil and type(e.settings) ~= "table" then
+      error(string.format("%s entities[%d].settings must be an object of blueprint settings", label, i - 1), 0)
     end
   end
   local connections = params.connections
@@ -60,8 +85,9 @@ local function validate_layout(params, label)
     end
     for j, route in ipairs(connections) do
       if type(route) ~= "table" or not ROUTE_TYPES[route.kind] or type(route.prototype) ~= "string"
-        or not point(route.from, "dx", "dy") or not point(route.to, "dx", "dy") then
-        error(string.format("%s connections[%d] must be {kind: belt|pipe|power, prototype, from:{dx,dy}, to:{dx,dy}}",
+        or not point(route.from, "dx", "dy") or not point(route.to, "dx", "dy")
+        or (route.underground ~= nil and route.underground ~= false and type(route.underground) ~= "string") then
+        error(string.format("%s connections[%d] must be {kind: belt|pipe|power, prototype, from:{dx,dy}, to:{dx,dy}, underground?}",
           label, j - 1), 0)
       end
     end
@@ -109,13 +135,13 @@ local function rotated(layout, quarters)
   local out = { entities = {}, connections = {} }
   for i, e in ipairs(layout.entities) do
     local dx, dy = turn(e.dx, e.dy)
-    out.entities[i] = { name = e.name, dx = dx, dy = dy, recipe = e.recipe,
+    out.entities[i] = { name = e.name, dx = dx, dy = dy, recipe = e.recipe, insert = e.insert, settings = e.settings,
       direction = ((e.direction or 0) + 4 * quarters) % 16 }
   end
   for j, route in ipairs(layout.connections or {}) do
     local fx, fy = turn(route.from.dx, route.from.dy)
     local tx, ty = turn(route.to.dx, route.to.dy)
-    out.connections[j] = { kind = route.kind, prototype = route.prototype,
+    out.connections[j] = { kind = route.kind, prototype = route.prototype, underground = route.underground,
       from = { dx = fx, dy = fy }, to = { dx = tx, dy = ty } }
   end
   return out
@@ -155,18 +181,22 @@ local function prepare(c, layout)
         if why then failed[#failed + 1] = { index = i - 1, code = why[1], reason = why[2] } end
       end
       variant.entities[#variant.entities + 1] = { index = i - 1, item = item, proto = proto, dx = e.dx, dy = e.dy,
-        direction = math.floor(e.direction or 0) % 16, recipe = e.recipe }
+        direction = math.floor(e.direction or 0) % 16, recipe = e.recipe, insert = e.insert, settings = e.settings }
     end
   end
   for j, route in ipairs(layout.connections or {}) do
     local item = prototypes.item[route.prototype]
     local proto = item and item.place_result
+    local under_ok, under = false, nil
+    if proto then under_ok, under = pcall(connect_entities.underground, c, route.kind, proto, route.underground) end
     if not proto or proto.type ~= ROUTE_TYPES[route.kind] or (tonumber(proto.tile_width) or 1) ~= 1 then
       failed[#failed + 1] = { connection = j - 1, code = "ROUTE_PROTOTYPE",
         reason = route.prototype .. " is not a one-tile " .. ROUTE_TYPES[route.kind] .. " item for a " .. route.kind .. " route" }
+    elseif not under_ok then
+      failed[#failed + 1] = { connection = j - 1, code = "ROUTE_PROTOTYPE", reason = plain(under) }
     else
       variant.connections[#variant.connections + 1] = { index = j - 1, kind = route.kind, item = route.prototype,
-        proto = proto, from = route.from, to = route.to }
+        proto = proto, under = under, from = route.from, to = route.to }
     end
   end
   return variant, failed
@@ -178,12 +208,13 @@ end
 -- tile tried, plus the engine work each makes (a can_place with its blocker
 -- query 3, an uncached chunk lookup 1). Every RCON command and on_tick
 -- handler runs inside one game tick on the server and every client, so a
--- search spends at most WORK_PER_TICK per tick (a site check already started
--- may finish up to twice that) and a build's whole search at most MAX_WORK,
--- spread over ticks; a check_only dry run gets one tick.
+-- search spends at most WORK_PER_TICK per tick (a site's placement checks
+-- already started may finish up to twice that; a route search pauses at the
+-- tick's share and resumes on the next) and a build's whole search, like a
+-- check_only dry run, at most MAX_WORK, spread over ticks.
 local WORK_PER_TICK = 600
-local MAX_WORK = 6000
-local ROUTE_WORK = 1000 -- one connection's route search
+local MAX_WORK = 60000
+local ROUTE_WORK = 20000 -- one connection's route search
 local BUDGET_SPENT = "the search's work budget is spent"
 
 -- Charges n work items; false (and out_of_budget) past the ceiling.
@@ -343,8 +374,10 @@ local function layout_geometry(variant, base)
   end
 end
 
--- Routes every connection around the planned footprints and earlier routes.
-local function route_all(ctx, variant, anchor, placements, failed)
+-- Routing state of a candidate whose placements fit: the planned
+-- footprints (and poles) the routes go around, the next connection to route
+-- and the routes found so far. Plain data, kept between ticks.
+local function routing(placements)
   local occupied, poles = {}, {}
   for _, p in ipairs(placements) do
     each_tile(p.area, function(x, y)
@@ -352,45 +385,89 @@ local function route_all(ctx, variant, anchor, placements, failed)
       if p.entity.proto.type == "electric-pole" then poles[tile_key(x, y)] = true end
     end)
   end
-  local routes = {}
-  for _, route in ipairs(variant.connections) do
-    -- One route's own share, so an endpoint walled in fails as that route.
-    local limit, spent = ctx.calls + ROUTE_WORK, false
-    local function fits(pos, direction)
-      if ctx.calls >= limit then spent = true; return false end
-      if not spend(ctx, 1) then return false end
-      if occupied[tile_key(math.floor(pos.x), math.floor(pos.y))] then return false end
-      return (ground(ctx, route.proto, pos, direction or 0))
-    end
-    local function has_pole(pos)
-      if poles[tile_key(math.floor(pos.x), math.floor(pos.y))] then return true end
-      if not spend(ctx, 1) then return false end
-      local ok, found = pcall(ctx.c.surface.find_entities_filtered,
-        { position = pos, radius = 0.5, type = "electric-pole", force = ctx.c.force })
-      return ok and type(found) == "table" and #found > 0
+  return { next = 1, occupied = occupied, poles = poles, routes = {} }
+end
+
+local function route_failed(failed, route, reason)
+  failed[#failed + 1] = { connection = route.index, code = "ROUTE_FAILED", reason = reason }
+end
+
+-- Routes the connections one after another around the planned footprints
+-- and earlier routes, resuming where the last tick stopped. True once every
+-- connection is routed or failed; false when work up to soft is spent.
+local function route_more(ctx, variant, anchor, result, soft)
+  local r = result.routing
+  local c = ctx.c
+  while r.next <= #variant.connections do
+    local route = variant.connections[r.next]
+    local function free(pos, direction, proto)
+      ctx.calls = ctx.calls + 1
+      if r.occupied[tile_key(math.floor(pos.x), math.floor(pos.y))] then return false end
+      return (ground(ctx, proto or route.proto, pos, direction or 0))
     end
     local from = { x = snapped(anchor.x + route.from.dx, 1), y = snapped(anchor.y + route.from.dy, 1) }
     local to = { x = snapped(anchor.x + route.to.dx, 1), y = snapped(anchor.y + route.to.dy, 1) }
     local ok, steps
     if route.kind == "power" then
-      ok, steps = pcall(connect_entities.route_poles, route.item, route.proto, from, to, MAX_ROUTE, fits, has_pole)
+      -- Linear in the poles it places: one step.
+      local function has_pole(pos)
+        if r.poles[tile_key(math.floor(pos.x), math.floor(pos.y))] then return true end
+        ctx.calls = ctx.calls + 1
+        local found_ok, found = pcall(c.surface.find_entities_filtered,
+          { position = pos, radius = 0.5, type = "electric-pole", force = c.force })
+        return found_ok and type(found) == "table" and #found > 0
+      end
+      ok, steps = pcall(connect_entities.route_poles, route.item, route.proto, from, to, MAX_ROUTE, free, has_pole)
     else
-      ok, steps = pcall(connect_entities.route_tiles, route.kind, route.item, from, to, MAX_ROUTE, fits)
+      if not r.search then
+        -- An endpoint tile that is not free is the entity the route ends at.
+        local include_from, include_to = free(from), free(to)
+        r.limit = ctx.calls + ROUTE_WORK
+        r.search = connect_entities.new_search({ kind = route.kind, item = route.item, max_length = MAX_ROUTE,
+          under = route.under, starts = { { position = from, include = include_from } },
+          goals = { { position = to, include = include_to } } })
+      end
+      local under = route.under
+      local env = {
+        more = function() return ctx.calls < soft and ctx.calls < r.limit and ctx.calls < MAX_WORK end,
+        spend = function(n) ctx.calls = ctx.calls + n end,
+        fits = function(pos, direction, role) return free(pos, direction, role == "under" and under.proto or nil) end,
+        gap_clear = function(entrance, exit)
+          ctx.calls = ctx.calls + 2
+          local area = { left_top = { x = math.min(entrance.x, exit.x) - 0.4, y = math.min(entrance.y, exit.y) - 0.4 },
+            right_bottom = { x = math.max(entrance.x, exit.x) + 0.4, y = math.max(entrance.y, exit.y) + 0.4 } }
+          local found_ok, found = pcall(c.surface.find_entities_filtered, { area = area, name = under.proto.name })
+          return found_ok and type(found) == "table" and #found == 0
+        end,
+      }
+      ok, steps = pcall(connect_entities.search_step, r.search, env)
+      if ok and steps == nil then
+        if ctx.calls < r.limit and ctx.calls < MAX_WORK then return false end
+        ok, steps = false, "no route found before its search budget ran out (is an endpoint walled in?)"
+      end
+      r.search, r.limit = nil, nil
     end
-    if ctx.out_of_budget then return routes end
     if not ok then
-      failed[#failed + 1] = { connection = route.index, code = "ROUTE_FAILED", reason = spent
-        and "no route found before its search budget ran out (is an endpoint walled in?)" or plain(steps) }
+      route_failed(result.failed, route, plain(steps))
     else
       for _, step in ipairs(steps) do
         local key = tile_key(math.floor(step.x), math.floor(step.y))
-        occupied[key] = true
-        if route.kind == "power" then poles[key] = true end
+        r.occupied[key] = true
+        if route.kind == "power" then r.poles[key] = true end
       end
-      routes[#routes + 1] = { route = route, steps = steps }
+      r.routes[#r.routes + 1] = { route = route, steps = steps }
     end
+    r.next = r.next + 1
   end
-  return routes
+  result.routes, result.routing = r.routes, nil
+  local count = #result.placements
+  for _, routed in ipairs(result.routes) do count = count + #routed.steps end
+  if count > MAX_STEPS then
+    result.failed[#result.failed + 1] = { code = "LAYOUT_TOO_LARGE",
+      reason = string.format("the layout needs %d placements; one build takes at most %d", count, MAX_STEPS) }
+    result.hard = true
+  end
+  return true
 end
 
 -- Checks one anchor. all = report every failure (else stop at the first).
@@ -422,15 +499,8 @@ local function check(ctx, variant, anchor, all)
   local placements = {}
   for i, r in ipairs(variant.rel) do placements[i] = shifted(r, ox, oy) end
   result.placements = placements
-  result.routes = route_all(ctx, variant, anchor, placements, result.failed)
-  if ctx.out_of_budget then return result end
-  local steps = #placements
-  for _, r in ipairs(result.routes) do steps = steps + #r.steps end
-  if steps > MAX_STEPS then
-    result.failed[#result.failed + 1] = { code = "LAYOUT_TOO_LARGE",
-      reason = string.format("the layout needs %d placements; one build takes at most %d", steps, MAX_STEPS) }
-    result.hard = true
-  end
+  -- The routes follow, resumable over ticks (route_more).
+  result.routing = routing(placements)
   return result
 end
 
@@ -446,22 +516,6 @@ local function distance_sorted(list, near)
   return list
 end
 
--- Tiles of the resource around near: list (nearest first) and set.
-local function resource_tiles(ctx, site)
-  ctx.calls = ctx.calls + 1
-  local ok, found = pcall(ctx.c.surface.find_entities_filtered,
-    { position = site.near, radius = SEARCH_RADIUS, type = "resource", name = site.on_resource })
-  local list, set = {}, {}
-  for _, e in ipairs(ok and found or {}) do
-    if e.valid then
-      local x, y = math.floor(e.position.x), math.floor(e.position.y)
-      if not set[tile_key(x, y)] then set[tile_key(x, y)] = true; list[#list + 1] = { x = x, y = y } end
-    end
-  end
-  ctx.calls = ctx.calls + math.ceil(#list / 8)
-  return distance_sorted(list, site.near), set
-end
-
 local water_names
 local function water_tile_names()
   if water_names then return water_names end
@@ -474,22 +528,104 @@ local function water_tile_names()
   return water_names
 end
 
--- Land tiles beside water around near, nearest first.
-local function shore_tiles(ctx, site)
-  ctx.calls = ctx.calls + 1
-  local ok, found = pcall(ctx.c.surface.find_tiles_filtered,
-    { position = site.near, radius = SEARCH_RADIUS, name = water_tile_names() })
-  local water, list, seen = {}, {}, {}
-  for _, tile in ipairs(ok and found or {}) do water[tile_key(tile.position.x, tile.position.y)] = true end
-  for _, tile in ipairs(ok and found or {}) do
-    for _, d in ipairs({ { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }) do
-      local x, y = tile.position.x + d[1], tile.position.y + d[2]
-      local key = tile_key(x, y)
-      if not water[key] and not seen[key] then seen[key] = true; list[#list + 1] = { x = x, y = y } end
+-- The resource or water window around site.near (SEARCH_RADIUS) is read as
+-- a phase of the search, a strip of SITE_STRIP rows per query, and ordered
+-- nearest first by bucketing on the squared distance, so no tick reads,
+-- keys or sorts the whole window. Tile keys are numbers (no tile is a
+-- million tiles from the origin on any Factorio map).
+local SITE_STRIP = 8
+local LOAD_PER_ITEM = 4  -- tiles taken in, or ordered, per work item
+local function site_key(x, y) return x * 2097152 + y end
+
+local function by_distance(a, b)
+  if a.d ~= b.d then return a.d < b.d end
+  if a.y ~= b.y then return a.y < b.y end
+  return a.x < b.x
+end
+
+local function load_start(site)
+  return { kind = site.on_resource and "resource" or "water", row = math.floor(site.near.y - SEARCH_RADIUS),
+    set = {}, water = {}, wet = {}, wi = 1, buckets = {}, top_bucket = -1, count = 0, b = 0, tiles = {} }
+end
+
+local function load_tile(L, near, x, y)
+  local d = (x + 0.5 - near.x) ^ 2 + (y + 0.5 - near.y) ^ 2
+  local b = math.floor(d)
+  local bucket = L.buckets[b]
+  if not bucket then bucket = {}; L.buckets[b] = bucket end
+  bucket[#bucket + 1] = { x = x, y = y, d = d }
+  L.top_bucket, L.count = math.max(L.top_bucket, b), L.count + 1
+end
+
+-- One phase of the load within the work up to limit: true once s.tiles (and
+-- for a resource s.set) are ready, or s.result says no site exists.
+local function load_step(s, limit)
+  local ctx, L, site = s.ctx, s.load, s.site
+  local near, radius_sq = site.near, SEARCH_RADIUS * SEARCH_RADIUS
+  local left, right = math.floor(near.x - SEARCH_RADIUS), math.ceil(near.x + SEARCH_RADIUS)
+  local bottom = math.ceil(near.y + SEARCH_RADIUS)
+  while L.row < bottom do
+    if ctx.calls >= limit then return false end
+    local area = { left_top = { x = left, y = L.row }, right_bottom = { x = right, y = math.min(bottom, L.row + SITE_STRIP) } }
+    L.row = L.row + SITE_STRIP
+    ctx.calls = ctx.calls + 1
+    if L.kind == "resource" then
+      local ok, found = pcall(ctx.c.surface.find_entities_filtered, { area = area, type = "resource", name = site.on_resource })
+      found = ok and found or {}
+      ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
+      for _, e in ipairs(found) do
+        local p = e.valid and e.position
+        if p and (p.x - near.x) ^ 2 + (p.y - near.y) ^ 2 <= radius_sq then
+          local x, y = math.floor(p.x), math.floor(p.y)
+          local key = site_key(x, y)
+          if not L.set[key] then L.set[key] = true; load_tile(L, near, x, y) end
+        end
+      end
+    else
+      local ok, found = pcall(ctx.c.surface.find_tiles_filtered, { area = area, name = water_tile_names() })
+      found = ok and found or {}
+      ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
+      for _, tile in ipairs(found) do
+        local p = tile.position
+        if (p.x + 0.5 - near.x) ^ 2 + (p.y + 0.5 - near.y) ^ 2 <= radius_sq then
+          L.water[site_key(p.x, p.y)] = true
+          L.wet[#L.wet + 1] = { x = p.x, y = p.y }
+        end
+      end
     end
   end
-  ctx.calls = ctx.calls + math.ceil(#list / 8)
-  return distance_sorted(list, site.near)
+  -- Water: the land tiles beside it.
+  while L.wi <= #L.wet do
+    if ctx.calls >= limit then return false end
+    ctx.calls = ctx.calls + 1
+    local tile = L.wet[L.wi]
+    L.wi = L.wi + 1
+    for _, d in ipairs({ { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }) do
+      local x, y = tile.x + d[1], tile.y + d[2]
+      local key = site_key(x, y)
+      if not L.water[key] and not L.set[key] then L.set[key] = true; load_tile(L, near, x, y) end
+    end
+  end
+  -- Nearest first: buckets in order, each (a few tiles) sorted.
+  while L.b <= L.top_bucket do
+    if ctx.calls >= limit then return false end
+    local bucket = L.buckets[L.b]
+    L.b = L.b + 1
+    if bucket then
+      ctx.calls = ctx.calls + math.ceil(#bucket / LOAD_PER_ITEM)
+      table.sort(bucket, by_distance)
+      for _, tile in ipairs(bucket) do L.tiles[#L.tiles + 1] = { x = tile.x, y = tile.y } end
+    end
+  end
+  s.load = nil
+  if #L.tiles == 0 then
+    s.result = { failed = { { code = "SITE_NOT_FOUND", reason = site.on_resource
+      and string.format("no %s within %d tiles of (%.1f, %.1f)", site.on_resource, SEARCH_RADIUS, near.x, near.y)
+      or string.format("no water within %d tiles of (%.1f, %.1f)", SEARCH_RADIUS, near.x, near.y) } } }
+    return true
+  end
+  s.tiles, s.set, s.numeric_keys = L.tiles, L.kind == "resource" and L.set or nil, true
+  return true
 end
 
 -- Anchor offsets around a site's centre, nearest first (the same for every
@@ -507,22 +643,24 @@ local function site_offsets()
   return site_offsets_list
 end
 
--- Every drill's mining area holds at least half resource tiles.
-local function covered(ctx, variant, anchor, set)
+-- Every drill's mining area holds at least half resource tiles. Charged per
+-- tile tested. (A search from a 0.21.0 save keyed its set by strings.)
+local function covered(ctx, variant, anchor, set, numeric_keys)
+  local key_of = numeric_keys and site_key or tile_key
   local ox, oy = anchor.x - variant.base.x, anchor.y - variant.base.y
   for i, e in ipairs(variant.entities) do
     local radius = e.radius
     if radius then
-      ctx.calls = ctx.calls + 1
       local r = variant.rel[i]
       local cx, cy = r.position.x + ox, r.position.y + oy
       local hits, total = 0, 0
       for y = math.floor(cy - radius + 0.5), math.ceil(cy + radius - 0.5) - 1 do
         for x = math.floor(cx - radius + 0.5), math.ceil(cx + radius - 0.5) - 1 do
           total = total + 1
-          if set[tile_key(x, y)] then hits = hits + 1 end
+          if set[key_of(x, y)] then hits = hits + 1 end
         end
       end
+      ctx.calls = ctx.calls + math.ceil(total / LOAD_PER_ITEM)
       if hits * 2 < total then return false end
     end
   end
@@ -565,23 +703,8 @@ local function new_search(c, request)
     return s
   end
   if site.on_resource or site.near_water then
-    local tiles, set
-    if site.on_resource then
-      tiles, set = resource_tiles(ctx, site)
-      if #tiles == 0 then
-        s.result = { failed = { { code = "SITE_NOT_FOUND", reason = string.format("no %s within %d tiles of (%.1f, %.1f)",
-          site.on_resource, SEARCH_RADIUS, site.near.x, site.near.y) } } }
-        return s
-      end
-    else
-      tiles = shore_tiles(ctx, site)
-      if #tiles == 0 then
-        s.result = { failed = { { code = "SITE_NOT_FOUND", reason = string.format("no water within %d tiles of (%.1f, %.1f)",
-          SEARCH_RADIUS, site.near.x, site.near.y) } } }
-        return s
-      end
-    end
-    s.tiles, s.set, s.keys = tiles, set, {}
+    -- The window is read by advance, over ticks (load_step).
+    s.load, s.keys = load_start(site), {}
     for v, variant in ipairs(variants) do
       s.keys[v] = key_entity(variant, site.on_resource and "mining-drill" or "offshore-pump")
     end
@@ -623,7 +746,7 @@ local function next_candidate(s, limit)
         local key = s.keys[v]
         anchor = { x = round(tile.x + 0.5 - key.dx), y = round(tile.y + 0.5 - key.dy) }
       end
-      if not s.set or covered(ctx, variant, anchor, s.set) then return { anchor = anchor, v = v } end
+      if not s.set or covered(ctx, variant, anchor, s.set, s.numeric_keys) then return { anchor = anchor, v = v } end
     end
   end
   return false
@@ -651,14 +774,22 @@ end
 -- Checks candidates until a site fits or the candidates or work run out
 -- (returns the chosen check result: failed empty when buildable), or until
 -- this call's budget is spent (returns nil: call again next tick). A
--- candidate cut off by the budget is checked again from the start of the
--- next call, with the warm cache; one that does not fit even then fails.
+-- candidate whose placement checks are cut off by the budget is checked again
+-- from the start of the next call, with the warm cache, while each try gets
+-- further; then it fails. Its route searches resume where they stopped.
 local function advance(c, s, budget)
   if s.result then return s.result end
   local ctx = s.ctx
   ctx.c = c
   local start = ctx.calls
   local soft = math.min(start + budget, MAX_WORK)
+  if s.load then
+    if not load_step(s, soft) then
+      if ctx.calls >= MAX_WORK then return not_found(s, true) end
+      return nil
+    end
+    if s.result then return s.result end
+  end
   while true do
     if not s.pending then
       if ctx.calls >= MAX_WORK then
@@ -671,22 +802,34 @@ local function advance(c, s, budget)
       local candidate = next_candidate(s, soft)
       if candidate == nil then return nil end
       if candidate == false then return s.anchor and s.result or not_found(s, false) end
-      s.pending, s.deferred = candidate, false
+      s.pending, s.deferred, s.checking = candidate, nil, nil
     end
     if ctx.calls >= soft then return nil end
-    ctx.ceiling, ctx.out_of_budget = math.min(start + 2 * budget, MAX_WORK), false
     local candidate = s.pending
-    local result = check(ctx, s.variants[candidate.v], candidate.anchor, s.anchor ~= nil)
-    if ctx.out_of_budget then
-      ctx.out_of_budget = false
-      if not s.deferred and ctx.calls < MAX_WORK then
-        s.deferred = true
-        return nil
+    local result = s.checking
+    if not result then
+      ctx.ceiling, ctx.out_of_budget = math.min(start + 2 * budget, MAX_WORK), false
+      result = check(ctx, s.variants[candidate.v], candidate.anchor, s.anchor ~= nil)
+      if ctx.out_of_budget then
+        -- Checked again next tick with the warm cache, as long as each try
+        -- gets further than the last.
+        ctx.out_of_budget = false
+        local reached = result.passed + #result.failed
+        -- (A 0.21.0 search in a loaded save kept a boolean here.)
+        if ctx.calls < MAX_WORK and reached > (type(s.deferred) == "number" and s.deferred or -1) then
+          s.deferred = reached
+          return nil
+        end
+        result = { anchor = candidate.anchor, passed = 0, failed = { { code = "CHECK_TOO_COSTLY",
+          reason = "checking this site needs more work than one tick allows" } } }
       end
-      result = { anchor = candidate.anchor, passed = 0, failed = { { code = "CHECK_TOO_COSTLY",
-        reason = "checking this site needs more work than one tick allows" } } }
     end
-    s.pending, s.tried = nil, s.tried + 1
+    if result.routing then
+      -- Routes pause at the tick's share and never fail for it.
+      s.checking, ctx.ceiling = result, math.huge
+      if not route_more(ctx, s.variants[candidate.v], candidate.anchor, result, soft) then return nil end
+    end
+    s.pending, s.checking, s.tried = nil, nil, s.tried + 1
     result.rotation = (candidate.v - 1) * 4
     if s.anchor or #result.failed == 0 or result.hard then
       s.result = result
@@ -697,24 +840,17 @@ local function advance(c, s, budget)
   end
 end
 
--- A dry run in one tick: what one tick of work decides, else incomplete.
-local function resolve_now(c, request)
-  local s = new_search(c, request)
-  local result = advance(c, s, math.max(1, WORK_PER_TICK - s.ctx.calls))
-  if result then return result end
-  return { incomplete = true, failed = { { code = "SITE_SEARCH_INCOMPLETE", reason = string.format(
-    "the dry run checked %d sites within one tick's work and found none yet; the layout itself has no static problem and a build searches further",
-    s.tried) } } }
-end
-
 -- build_plan steps in dependency order, each tagged with its layout source.
 local function plan_steps(result)
   local ranked = { {}, {}, {} }
   for _, p in ipairs(result.placements) do
     local e = p.entity
     local list = ranked[RANK[e.proto.type] or 1]
+    local settings = e.settings
+    local belt_type = settings and e.proto.type == "underground-belt"
+      and (settings.type == "input" or settings.type == "output") and settings.type or nil
     list[#list + 1] = { item = e.item, position = p.position, direction = e.direction, recipe = e.recipe,
-      _source = { index = e.index } }
+      insert = e.insert, settings = settings, belt_to_ground_type = belt_type, _source = { index = e.index } }
   end
   for _, r in ipairs(result.routes) do
     local list = r.route.kind == "power" and ranked[3] or ranked[1]
@@ -765,7 +901,7 @@ local function report(c, result, extra)
   for i, step in ipairs(steps) do placed[i] = placed_row(step) end
   local out = { check_only = true, ok = #result.failed == 0, anchor = result.anchor, rotation = result.rotation,
     placed = placed, failed = result.failed, materials = materials(c, steps),
-    clears = result.clears and result.clears > 0 and result.clears or nil, incomplete = result.incomplete }
+    clears = result.clears and result.clears > 0 and result.clears or nil }
   for k, v in pairs(extra or {}) do out[k] = v end
   return out
 end
@@ -776,21 +912,37 @@ local function require_check_only(params, label)
   end
 end
 
--- RPC build_layout {.., check_only = true}: read-only dry run.
-function M.check_layout(params)
-  require_check_only(params, "build_layout")
-  local c = companion.require_companion()
-  validate_layout(params, "build_layout")
-  return report(c, resolve_now(c, layout_request(params)))
+-- RPC build_layout / build_block {.., check_only = true}: a read-only dry run
+-- as a job, searching with the build's own budget per tick until it has the
+-- site or a definite answer.
+local function check_job(label, make_request)
+  return {
+    start = function(params)
+      require_check_only(params, label)
+      local c = companion.require_companion()
+      local request, extra = make_request(c, params)
+      return { search = new_search(c, request), extra = extra }
+    end,
+    step = function(state, budget)
+      local c = companion.require_companion()
+      local s = state.search
+      local before = s.ctx.calls
+      local result = advance(c, s, math.max(1, budget.left))
+      budget.left = budget.left - (s.ctx.calls - before)
+      if not result then return nil end
+      return report(c, result, state.extra)
+    end,
+  }
 end
 
--- RPC build_block {.., check_only = true}: read-only dry run.
-function M.check_block(params)
-  require_check_only(params, "build_block")
-  local c = companion.require_companion()
+M.layout_check_job = check_job("build_layout", function(_, params)
+  validate_layout(params, "build_layout")
+  return layout_request(params)
+end)
+M.block_check_job = check_job("build_block", function(c, params)
   local request = block_request(c, params)
-  return report(c, resolve_now(c, request), { block = params.block, tiers = request.tiers })
-end
+  return request, { block = params.block, tiers = request.tiers }
+end)
 
 -- ----------------------------------------------------------------- runner
 
@@ -806,7 +958,9 @@ local function search(task, c, budget)
     task._check_failed = result.failed
     return
   end
-  task._plan = { id = task.id, steps = plan_steps(result), stop_on_error = false }
+  local steps = plan_steps(result)
+  if task.block then build_plan.fuel_burners(c, steps) end
+  task._plan = { id = task.id, steps = steps, stop_on_error = false }
   build_plan.start(task._plan)
 end
 
@@ -833,9 +987,13 @@ function Runner.tick(task)
   local label = task.block and ("build_block " .. task.block) or "build_layout"
   if task._search then
     -- The site search runs over ticks; the build starts on the next one.
+    -- What it spends counts against the tick's allowance that read jobs share.
     local budget = task._first_budget or WORK_PER_TICK
     task._first_budget = nil
+    local before = task._search.ctx.calls
+    local s = task._search
     search(task, companion.require_companion(), budget)
+    jobs.charge(s.ctx.calls - before)
     if task._search or task._plan then return nil end
   end
   if task._check_failed then
@@ -899,10 +1057,11 @@ M.layout_action = {
 M.block_action = {
   runner = Runner,
   make_task = function(step)
-    return { block = step.block, count = step.count, resource = step.resource, recipe = step.recipe, near = step.near }
+    return { block = step.block, count = step.count, resource = step.resource, recipe = step.recipe, near = step.near,
+      blueprint = step.blueprint }
   end,
   validate = function(step, index) blocks.validate(step, "queue_plan build_block step " .. index) end,
-  budget_steps = function(step) return 8 * (tonumber(step.count) or 1) end,
+  budget_steps = function(step) return blocks.budget_steps(step) end,
 }
 
 -- For tests: a whole search, one tick's budget at a time.
@@ -913,6 +1072,11 @@ local function resolve(c, request)
   return result, s
 end
 M._resolve, M._rotated, M._block_request, M._plan_steps = resolve, rotated, block_request, plan_steps
+-- The resumable search for another dry run (blueprint_place check_only):
+-- search_start(c, {anchor? | site?, layouts}), search_step(c, s, budget) ->
+-- result | nil, check_report(c, result, extra) -> the check_only answer.
+M.search_start, M.search_step, M.check_report = new_search, advance, report
+M.validate_layout = validate_layout
 M.WORK_PER_TICK, M.MAX_WORK = WORK_PER_TICK, MAX_WORK
 
 return M

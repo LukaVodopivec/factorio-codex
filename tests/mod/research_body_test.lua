@@ -161,4 +161,28 @@ check(not gated_ok
   and gated_message:match("progression_status and retry"),
   "failed queue reports sorted trigger and ordinary prerequisite actions with exact filter constraints")
 
+-- A list of technologies is queued in its order.
+local logistics = setmetatable({ name = "logistics", researched = false, enabled = true, prerequisites = {}, prototype = {} },
+  technology_api)
+local optics = setmetatable({ name = "optics", researched = false, enabled = true, prerequisites = {}, prototype = {} },
+  technology_api)
+codex_force.technologies.logistics, codex_force.technologies.optics = logistics, optics
+codex_force.research_queue = {}
+codex_force.add_research = function(name)
+  codex_force.research_queue[#codex_force.research_queue + 1] = codex_force.technologies[name]
+  return true
+end
+local listed = research.start_research({ technologies = { "optics", "logistics" } })
+check(listed.queued and listed.technologies[1] == "optics" and listed.technologies[2] == "logistics"
+  and listed.research_queue[1] == "optics" and listed.research_queue[2] == "logistics",
+  "start_research queues a list of technologies in its order")
+codex_force.research_queue = {}
+local stopped_ok, stopped_error = pcall(research.start_research, { technologies = { "optics", "trigger-alpha", "logistics" } })
+check(not stopped_ok and tostring(stopped_error):match("cannot queue trigger technology trigger%-alpha")
+  and tostring(stopped_error):match("queued before it: optics") and #codex_force.research_queue == 1,
+  "a list stops at the first technology the game refuses and says which were queued")
+check(not pcall(research.start_research, { technologies = {} })
+  and not pcall(research.start_research, { technology = "optics", technologies = { "optics" } }),
+  "a list holds 1-7 names and replaces the single technology")
+
 os.exit(failures == 0 and 0 or 1)

@@ -1,4 +1,5 @@
 -- Protocol-v11 local perception: compact by default; full adds the ASCII grid.
+-- observe_local is a job (jobs.lua) spread over ticks by a work budget.
 -- (dry-run placement check with blocker naming),
 -- clear rectangle) and describe_prototype (geometry/energy facts about items,
 -- entities and recipes). All instant methods — no tasks, no side effects.
@@ -6,6 +7,7 @@ local companion = require("scripts.companion")
 local tasks = require("scripts.tasks")
 local placement_geometry = require("scripts.placement_geometry")
 local output_targets = require("scripts.output_target")
+local jobs = require("scripts.jobs")
 
 local M = {}
 
@@ -152,275 +154,387 @@ local PRIORITY = {
   resource = 5, ground_item = 6, building = 7, player = 8, companion = 9,
 }
 
-function M.observe_local(params)
-  local c = companion.require_companion()
-  local surface = c.surface
+-- observe_local is a job (jobs.lua): what it reads grows with the radius and
+-- with what stands there (an ore field is thousands of entities), so it runs
+-- in stages, a budget of work items per tick, its state S plain data:
+--   terrain  (full) land and water, a row of tiles at a time
+--   query    the area in bands of BAND_ROWS rows; each entity is taken once,
+--            from the band its centre lies in, if its footprint touches the grid
+--   names    the distinct names, for glyphs assigned lexically
+--   paint    footprints (full), details, ground items, resource positions;
+--            details and ground items are kept to their caps as they come
+--   cluster  resource patches, a resource at a time
+--   finish   the capped rows in order and the character's state
+-- A compact observation skips the terrain and the painting (it has no grid).
+-- The grid and every distance use the body's position when the job started.
+local BAND_ROWS = 8
+local QUERY_COST, VISIBLE_COST, NAME_COST, PAINT_COST, DETAIL_COST = 2, 6, 6, 8, 8
+-- Per resource clustered (25 bucket lookups and its neighbours), and per
+-- resource bucketed.
+local CLUSTER_COST, BUCKET_COST = 3, 0.5
 
+-- Assigns the next free letter of `alphabet` to a distinct name.
+local function letter_for(S, name, assigned, alphabet)
+  local legend = S.legend
+  local ch = assigned[name]
+  if ch then return ch end
+  for i = 1, #alphabet do
+    local cand = string.sub(alphabet, i, i)
+    if legend[cand] == nil then
+      assigned[name] = cand
+      legend[cand] = name
+      return cand
+    end
+  end
+  -- More than the alphabet can hold — extremely unlikely at radius <= 30.
+  assigned[name] = "?"
+  legend["?"] = "several different things (ran out of letters)"
+  return "?"
+end
+
+local function observe_start(params)
+  local c = companion.require_companion()
   local radius = math.floor(tonumber(params.radius) or SCAN_DEFAULT_RADIUS)
   radius = math.max(SCAN_MIN_RADIUS, math.min(radius, SCAN_MAX_RADIUS))
   local compact = params.detail ~= "full"
-  local entity_limit, ground_limit, patch_limit = compact and 12 or 256,
-    compact and 12 or 256, compact and 8 or 256
-
-  local center = c.position
-  local ox = math.floor(center.x) - radius
-  local oy = math.floor(center.y) - radius
+  local center = { x = c.position.x, y = c.position.y }
+  local ox, oy = math.floor(center.x) - radius, math.floor(center.y) - radius
   local size = radius * 2 + 1
+  local margin = max_footprint_extent()
+  local S = { radius = radius, compact = compact, center = center, ox = ox, oy = oy, size = size, margin = margin,
+    entity_limit = compact and 12 or 256, ground_limit = compact and 12 or 256, patch_limit = compact and 8 or 256,
+    stage = compact and "query" or "terrain", row = 1, band = 0, visible = {},
+    -- Fixed symbols are pre-registered so dynamically assigned letters can
+    -- never collide with them (T/R/P and lowercase c are reserved).
+    legend = {
+      ["."] = "buildable land",
+      ["~"] = "water",
+      ["c"] = "cliff",
+      ["T"] = "tree",
+      ["R"] = "rock",
+      ["@"] = "you",
+      ["P"] = "player",
+      ["*"] = "item stack on ground",
+    },
+    resource_letters = {}, building_letters = {}, resource_names = {}, building_names = {},
+    seen_resource = {}, seen_building = {},
+    details = {}, resources_by_name = {}, ground_items = {}, patches = {},
+    detail_total = 0, ground_total = 0, patch_total = 0 }
+  if not compact then S.chars, S.prio, S.paint_key = {}, {}, {} end
+  return S
+end
 
-  -- Fixed symbols are pre-registered so dynamically assigned letters can
-  -- never collide with them (T/R/P and lowercase c are reserved).
-  local legend = {
-    ["."] = "buildable land",
-    ["~"] = "water",
-    ["c"] = "cliff",
-    ["T"] = "tree",
-    ["R"] = "rock",
-    ["@"] = "you",
-    ["P"] = "player",
-    ["*"] = "item stack on ground",
-  }
-
-  -- Assign the next free letter of `alphabet` to each distinct name.
-  local function letter_for(name, assigned, alphabet)
-    local ch = assigned[name]
-    if ch then return ch end
-    for i = 1, #alphabet do
-      local cand = string.sub(alphabet, i, i)
-      if legend[cand] == nil then
-        assigned[name] = cand
-        legend[cand] = name
-        return cand
-      end
-    end
-    -- More than the alphabet can hold — extremely unlikely at radius <= 30.
-    assigned[name] = "?"
-    legend["?"] = "several different things (ran out of letters)"
-    return "?"
-  end
-  local resource_letters, building_letters = {}, {}
-
-  -- Terrain pass: land / water.
-  local chars, prio, paint_key = {}, {}, {}
-  for row = 1, size do
+-- Terrain pass: land / water, one row of tiles at a time.
+local function observe_terrain(S, budget, c)
+  local surface = c.surface
+  while S.row <= S.size do
+    if budget.left <= 0 then return false end
+    local row = S.row
     local crow, prow, krow = {}, {}, {}
-    chars[row], prio[row], paint_key[row] = crow, prow, krow
-    for col = 1, size do
-      if is_water_at(surface, ox + col - 1, oy + row - 1) then
+    S.chars[row], S.prio[row], S.paint_key[row] = crow, prow, krow
+    for col = 1, S.size do
+      if is_water_at(surface, S.ox + col - 1, S.oy + row - 1) then
         crow[col], prow[col], krow[col] = "~", PRIORITY.water, "water"
       else
         crow[col], prow[col], krow[col] = ".", PRIORITY.land, "land"
       end
     end
+    budget.left = budget.left - 2 * S.size
+    S.row = row + 1
   end
+  return true
+end
 
-  -- Entity pass: paint complete selection/collision footprints.
-  local query_margin = max_footprint_extent()
-  local entities = surface.find_entities_filtered({
-    area = { { ox - query_margin, oy - query_margin }, { ox + size + query_margin, oy + size + query_margin } },
-  })
-  -- Factorio does not promise entity iteration order. First retain everything
-  -- whose precise footprint intersects the grid, including centers outside it.
-  local visible = {}
-  for _, e in ipairs(entities) do
-    if e.valid then
-      local bounds = entity_bounds(e)
-      if bounds.right_bottom.x > ox and bounds.left_top.x < ox + size
-        and bounds.right_bottom.y > oy and bounds.left_top.y < oy + size then
-        visible[#visible + 1] = { entity = e, bounds = bounds }
+-- Entity pass: the query area (grid plus the largest footprint extent) in
+-- bands. Area queries are collision-based, while the observation reports the
+-- union of collision and selection footprints, so the area is widened and
+-- each returned entity is precisely intersected with the grid. Factorio does
+-- not promise entity iteration order: everything is sorted later.
+local function observe_query(S, budget, c)
+  local ox, oy, size, margin = S.ox, S.oy, S.size, S.margin
+  local top, bottom = oy - margin, oy + size + margin
+  while true do
+    if budget.left <= 0 then return false end
+    local found = S.found
+    if found and S.fi <= #found then
+      local e = found[S.fi]
+      S.fi = S.fi + 1
+      budget.left = budget.left - VISIBLE_COST
+      if e.valid then
+        -- Taken from the band holding its centre (the first and last bands
+        -- also take centres beyond the area), so once.
+        local y = e.position.y
+        if (S.band == 1 or y >= S.band_top) and (S.band_top + BAND_ROWS >= bottom or y < S.band_top + BAND_ROWS) then
+          local bounds = entity_bounds(e)
+          if bounds.right_bottom.x > ox and bounds.left_top.x < ox + size
+            and bounds.right_bottom.y > oy and bounds.left_top.y < oy + size then
+            S.visible[#S.visible + 1] = { entity = e, bounds = bounds }
+          end
+        end
       end
+    else
+      S.found = nil
+      local band_top = top + S.band * BAND_ROWS
+      if band_top >= bottom then return true end
+      S.band, S.band_top = S.band + 1, band_top
+      S.found, S.fi = c.surface.find_entities_filtered({
+        area = { { ox - margin, band_top }, { ox + size + margin, math.min(bottom, band_top + BAND_ROWS) } },
+      }), 1
+      budget.left = budget.left - QUERY_COST - math.ceil(#S.found / 8)
     end
   end
+end
 
-  -- Pre-assign dynamic glyphs from lexical entity names so shuffled engine
-  -- iteration cannot change the grid or legend.
-  local resource_names, building_names, seen_resource, seen_building = {}, {}, {}, {}
-  for _, entry in ipairs(visible) do
-    local e = entry.entity
-    if e.valid and e.type == "resource" and not seen_resource[e.name] then seen_resource[e.name] = true; resource_names[#resource_names + 1] = e.name
+-- Pre-assign dynamic glyphs from lexical entity names so shuffled engine
+-- iteration cannot change the grid or legend.
+local function observe_names(S, budget, c)
+  local visible = S.visible
+  while (S.ni or 1) <= #visible do
+    if budget.left <= 0 then return false end
+    local e = visible[S.ni or 1].entity
+    S.ni = (S.ni or 1) + 1
+    budget.left = budget.left - NAME_COST
+    if e.valid and e.type == "resource" and not S.seen_resource[e.name] then
+      S.seen_resource[e.name] = true; S.resource_names[#S.resource_names + 1] = e.name
     elseif e.valid and e.type == "item-entity" then
-    elseif e.valid and e.force == c.force and e ~= c and e.type ~= "character" and not seen_building[e.name] then seen_building[e.name] = true; building_names[#building_names + 1] = e.name end
-  end
-  table.sort(resource_names); table.sort(building_names)
-  for _, name in ipairs(resource_names) do letter_for(name, resource_letters, UPPER_LETTERS) end
-  for _, name in ipairs(building_names) do letter_for(name, building_letters, LOWER_LETTERS) end
-  local details, resources_by_name, ground_items = {}, {}, {}
-  for _, entry in ipairs(visible) do
-    local e, bounds = entry.entity, entry.bounds
-    if e.valid then
-        local ch, p
-        if e == c then
-          ch, p = "@", PRIORITY.companion
-        elseif e.type == "character" then
-          ch, p = "P", PRIORITY.player
-        elseif e.type == "item-entity" then
-          local stack = e.stack
-          if stack and stack.valid_for_read then
-            ch, p = "*", PRIORITY.ground_item
-            local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y
-            ground_items[#ground_items + 1] = {
-              item = stack.name, count = stack.count,
-              position = { x = e.position.x, y = e.position.y },
-              distance = math.sqrt(ddx * ddx + ddy * ddy),
-            }
-          end
-        elseif e.force == c.force then
-          ch, p = letter_for(e.name, building_letters, LOWER_LETTERS), PRIORITY.building
-        elseif e.type == "resource" then
-          ch, p = letter_for(e.name, resource_letters, UPPER_LETTERS), PRIORITY.resource
-        elseif e.type == "tree" then
-          ch, p = "T", PRIORITY.tree
-        elseif e.type == "simple-entity" then
-          ch, p = "R", PRIORITY.rock
-        elseif e.type == "cliff" then
-          ch, p = "c", PRIORITY.cliff
-        end
-        local x1, y1 = math.floor(bounds.left_top.x), math.floor(bounds.left_top.y)
-        local x2, y2 = math.ceil(bounds.right_bottom.x), math.ceil(bounds.right_bottom.y)
-        if ch then
-          local key = string.format("%s\0%s\0%.17g\0%.17g\0%d", e.name, e.type,
-            e.position.y, e.position.x, tonumber(e.unit_number) or -1)
-          for py = y1, y2 - 1 do for px = x1, x2 - 1 do
-            local rr, cc = py - oy + 1, px - ox + 1
-            if rr >= 1 and rr <= size and cc >= 1 and cc <= size
-              and (p > prio[rr][cc] or (p == prio[rr][cc] and key < paint_key[rr][cc])) then
-              chars[rr][cc], prio[rr][cc], paint_key[rr][cc] = ch, p, key
-            end
-          end end
-          if e.type == "resource" then
-            resources_by_name[e.name] = resources_by_name[e.name] or {}
-            resources_by_name[e.name][#resources_by_name[e.name] + 1] = e
-          elseif e.type ~= "item-entity" then
-            local ddx, ddy = e.position.x - c.position.x, e.position.y - c.position.y
-            details[#details + 1] = { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, status = entity_status(e), recipe = entity_recipe(e), bounds = bounds, selection_box = plain_box(e.selection_box), collision_box = plain_box(e.bounding_box), footprint = { width = bounds.right_bottom.x - bounds.left_top.x, height = bounds.right_bottom.y - bounds.left_top.y }, _distance = ddx * ddx + ddy * ddy, _unit = tonumber(e.unit_number) or -1 }
-          end
-        end
+    elseif e.valid and e.force == c.force and e ~= c and e.type ~= "character" and not S.seen_building[e.name] then
+      S.seen_building[e.name] = true; S.building_names[#S.building_names + 1] = e.name
     end
   end
+  table.sort(S.resource_names); table.sort(S.building_names)
+  for _, name in ipairs(S.resource_names) do letter_for(S, name, S.resource_letters, UPPER_LETTERS) end
+  for _, name in ipairs(S.building_names) do letter_for(S, name, S.building_letters, LOWER_LETTERS) end
+  return true
+end
 
-  local grid = {}
-  for row = 1, size do
-    grid[row] = table.concat(chars[row])
-  end
+-- Row orders: details and ground items nearest first (which the caps keep),
+-- then by position (how they are listed).
+local function detail_by_position(a, b)
+  if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+  if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+  if a.name ~= b.name then return a.name < b.name end
+  if a.type ~= b.type then return a.type < b.type end
+  return a._unit < b._unit
+end
+local function detail_nearer(a, b)
+  if a._distance ~= b._distance then return a._distance < b._distance end
+  return detail_by_position(a, b)
+end
+local function ground_by_position(a, b)
+  if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+  if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+  if a.item ~= b.item then return a.item < b.item end
+  return a.count < b.count
+end
+local function ground_nearer(a, b)
+  if a.distance ~= b.distance then return a.distance < b.distance end
+  return ground_by_position(a, b)
+end
 
-  table.sort(details, function(a, b)
-    if a._distance ~= b._distance then return a._distance < b._distance end
-    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
-    if a.name ~= b.name then return a.name < b.name end
-    if a.type ~= b.type then return a.type < b.type end
-    return a._unit < b._unit
-  end)
-  local omitted = math.max(0, #details - entity_limit); while #details > entity_limit do table.remove(details) end
-  table.sort(details, function(a, b)
-    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
-    if a.name ~= b.name then return a.name < b.name end
-    if a.type ~= b.type then return a.type < b.type end
-    return a._unit < b._unit
-  end)
-  for _, detail in ipairs(details) do
-    detail._distance, detail._unit = nil, nil
-    if compact then
-      detail.bounds, detail.selection_box, detail.collision_box, detail.footprint = nil, nil, nil, nil
+-- One visible entity: its glyph and footprint (full), and its detail,
+-- ground stack or resource position as plain data.
+local function observe_paint_one(S, entry, c, budget)
+  local e, bounds = entry.entity, entry.bounds
+  if not e.valid then return end
+  local center = S.center
+  local ch, p
+  if e == c then
+    ch, p = "@", PRIORITY.companion
+  elseif e.type == "character" then
+    ch, p = "P", PRIORITY.player
+  elseif e.type == "item-entity" then
+    local stack = e.stack
+    if stack and stack.valid_for_read then
+      ch, p = "*", PRIORITY.ground_item
+      local ddx, ddy = e.position.x - center.x, e.position.y - center.y
+      S.ground_total = S.ground_total + 1
+      jobs.keep_first(S.ground_items, S.ground_limit, {
+        item = stack.name, count = stack.count,
+        position = { x = e.position.x, y = e.position.y },
+        distance = math.sqrt(ddx * ddx + ddy * ddy),
+      }, ground_nearer)
     end
+  elseif e.force == c.force then
+    ch, p = letter_for(S, e.name, S.building_letters, LOWER_LETTERS), PRIORITY.building
+  elseif e.type == "resource" then
+    ch, p = letter_for(S, e.name, S.resource_letters, UPPER_LETTERS), PRIORITY.resource
+  elseif e.type == "tree" then
+    ch, p = "T", PRIORITY.tree
+  elseif e.type == "simple-entity" then
+    ch, p = "R", PRIORITY.rock
+  elseif e.type == "cliff" then
+    ch, p = "c", PRIORITY.cliff
   end
-  table.sort(ground_items, function(a, b)
-    if a.distance ~= b.distance then return a.distance < b.distance end
-    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
-    if a.item ~= b.item then return a.item < b.item end
-    return a.count < b.count
-  end)
-  local omitted_ground_items = math.max(0, #ground_items - ground_limit)
-  while #ground_items > ground_limit do table.remove(ground_items) end
-  table.sort(ground_items, function(a, b)
-    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
-    if a.item ~= b.item then return a.item < b.item end
-    return a.count < b.count
-  end)
-  local patches = {}
-  -- The exact member list is only the final sort tie-break; build it on demand.
-  local function patch_members_key(patch)
-    if type(patch._members) == "table" then
-      local parts = {}
-      for i, e in ipairs(patch._members) do parts[i] = string.format("%.17g,%.17g,%.17g,%d", e.x, e.y, e.amount, e.unit) end
-      patch._members = table.concat(parts, ";")
-    end
-    return patch._members
-  end
-  for name, entities_of_name in pairs(resources_by_name) do
-    -- Read each engine position and amount once; the clustering below runs
-    -- on plain tables (thousands of ore tiles made API reads the tick cost).
-    local resources = {}
-    for i, e in ipairs(entities_of_name) do
-      local pos = e.position
-      resources[i] = { x = pos.x, y = pos.y, amount = e.amount or 0, unit = tonumber(e.unit_number) or -1 }
-    end
-    table.sort(resources, function(a, b)
-      if a.y ~= b.y then return a.y < b.y end
-      if a.x ~= b.x then return a.x < b.x end
-      if a.amount ~= b.amount then return a.amount < b.amount end
-      return a.unit < b.unit
-    end)
-    -- Neighbours lie within 1.1 tiles on both axes, so they share a bucket
-    -- within two of each other; the exact distance test still decides.
-    local buckets = {}
-    for index, r in ipairs(resources) do
-      local bx, by = math.floor(r.x), math.floor(r.y)
-      local column = buckets[bx]
-      if not column then column = {}; buckets[bx] = column end
-      local bucket = column[by]
-      if not bucket then bucket = {}; column[by] = bucket end
-      bucket[#bucket + 1] = index
-    end
-    local visited = {}
-    for start = 1, #resources do if not visited[start] then
-      local queue, head, count, amount, sx, sy, members = { start }, 1, 0, 0, 0, 0, {}; visited[start] = true
-      local nearest, nearest_distance_sq
-      while head <= #queue do
-        local index = queue[head]; head = head + 1; local e = resources[index]
-        count, amount, sx, sy = count + 1, amount + e.amount, sx + e.x, sy + e.y
-        local ndx, ndy = e.x - c.position.x, e.y - c.position.y
-        local distance_sq = ndx * ndx + ndy * ndy
-        if not nearest or distance_sq < nearest_distance_sq
-          or (distance_sq == nearest_distance_sq and (e.y < nearest.y
-            or (e.y == nearest.y and (e.x < nearest.x
-              or (e.x == nearest.x and (e.amount < nearest.amount
-                or (e.amount == nearest.amount and e.unit < nearest.unit))))))) then
-          nearest, nearest_distance_sq = e, distance_sq
-        end
-        members[#members + 1] = e
-        local found, bx, by = {}, math.floor(e.x), math.floor(e.y)
-        for gx = bx - 2, bx + 2 do
-          local column = buckets[gx]
-          if column then for gy = by - 2, by + 2 do
-            local bucket = column[gy]
-            if bucket then for _, other in ipairs(bucket) do
-              local o = resources[other]
-              if not visited[other] and math.abs(e.x - o.x) <= 1.1 and math.abs(e.y - o.y) <= 1.1 then found[#found + 1] = other end
-            end end
-          end end
-        end
-        table.sort(found)
-        for _, other in ipairs(found) do visited[other] = true; queue[#queue + 1] = other end
+  if not ch then return end
+  if not S.compact then
+    local ox, oy, size = S.ox, S.oy, S.size
+    local chars, prio, paint_key = S.chars, S.prio, S.paint_key
+    local x1, y1 = math.floor(bounds.left_top.x), math.floor(bounds.left_top.y)
+    local x2, y2 = math.ceil(bounds.right_bottom.x), math.ceil(bounds.right_bottom.y)
+    local key = string.format("%s\0%s\0%.17g\0%.17g\0%d", e.name, e.type,
+      e.position.y, e.position.x, tonumber(e.unit_number) or -1)
+    for py = y1, y2 - 1 do for px = x1, x2 - 1 do
+      local rr, cc = py - oy + 1, px - ox + 1
+      if rr >= 1 and rr <= size and cc >= 1 and cc <= size
+        and (p > prio[rr][cc] or (p == prio[rr][cc] and key < paint_key[rr][cc])) then
+        chars[rr][cc], prio[rr][cc], paint_key[rr][cc] = ch, p, key
       end
-      local center = { x = sx / count, y = sy / count }; local dx, dy = center.x - c.position.x, center.y - c.position.y
-      patches[#patches + 1] = { name = name, entity_count = count, total_amount = amount, center = center, distance = math.sqrt(dx * dx + dy * dy), nearest_target = { x = nearest.x, y = nearest.y, amount = nearest.amount, distance = math.sqrt(nearest_distance_sq) }, _members = members }
+    end end
+    budget.left = budget.left - math.ceil((x2 - x1) * (y2 - y1) / 16)
+  end
+  if e.type == "resource" then
+    -- Each engine position and amount is read once; the clustering in
+    -- finish runs on plain tables.
+    local pos = e.position
+    local list = S.resources_by_name[e.name] or {}
+    S.resources_by_name[e.name] = list
+    list[#list + 1] = { x = pos.x, y = pos.y, amount = e.amount or 0, unit = tonumber(e.unit_number) or -1 }
+  elseif e.type ~= "item-entity" then
+    budget.left = budget.left - DETAIL_COST
+    local ddx, ddy = e.position.x - center.x, e.position.y - center.y
+    S.detail_total = S.detail_total + 1
+    jobs.keep_first(S.details, S.entity_limit, { symbol = ch, name = e.name, type = e.type, position = { x = e.position.x, y = e.position.y }, direction = e.direction, status = entity_status(e), recipe = entity_recipe(e), bounds = bounds, selection_box = plain_box(e.selection_box), collision_box = plain_box(e.bounding_box), footprint = { width = bounds.right_bottom.x - bounds.left_top.x, height = bounds.right_bottom.y - bounds.left_top.y }, _distance = ddx * ddx + ddy * ddy, _unit = tonumber(e.unit_number) or -1 }, detail_nearer)
+  end
+end
+
+local function observe_paint(S, budget, c)
+  local visible = S.visible
+  while (S.pi or 1) <= #visible do
+    if budget.left <= 0 then return false end
+    local entry = visible[S.pi or 1]
+    S.pi = (S.pi or 1) + 1
+    budget.left = budget.left - PAINT_COST
+    observe_paint_one(S, entry, c, budget)
+  end
+  S.visible = nil
+  return true
+end
+
+-- Resource patches: connected tiles of one name (within 1.1 on both axes),
+-- nearest first; the first patch_limit are kept as they are completed. The
+-- exact member list is only the final tie-break; it is built on demand.
+local function resource_order(a, b)
+  if a.y ~= b.y then return a.y < b.y end
+  if a.x ~= b.x then return a.x < b.x end
+  if a.amount ~= b.amount then return a.amount < b.amount end
+  return a.unit < b.unit
+end
+local function patch_members_key(patch)
+  if type(patch._members) == "table" then
+    local parts = {}
+    for i, e in ipairs(patch._members) do parts[i] = string.format("%.17g,%.17g,%.17g,%d", e.x, e.y, e.amount, e.unit) end
+    patch._members = table.concat(parts, ";")
+  end
+  return patch._members
+end
+local function patch_order(a, b)
+  if a.distance ~= b.distance then return a.distance < b.distance end
+  if a.name ~= b.name then return a.name < b.name end
+  if a.center.y ~= b.center.y then return a.center.y < b.center.y end
+  if a.center.x ~= b.center.x then return a.center.x < b.center.x end
+  if a.entity_count ~= b.entity_count then return a.entity_count < b.entity_count end
+  if a.total_amount ~= b.total_amount then return a.total_amount < b.total_amount end
+  return patch_members_key(a) < patch_members_key(b)
+end
+
+-- One resource of the patch being grown: its totals, the nearest target,
+-- and its unvisited neighbours queued in index order.
+local function cluster_visit(K, P, center)
+  local resources, buckets, visited = K.list, K.buckets, K.visited
+  local index = P.queue[P.head]
+  P.head = P.head + 1
+  local e = resources[index]
+  P.count, P.amount, P.sx, P.sy = P.count + 1, P.amount + e.amount, P.sx + e.x, P.sy + e.y
+  local ndx, ndy = e.x - center.x, e.y - center.y
+  local distance_sq = ndx * ndx + ndy * ndy
+  local nearest = P.nearest
+  if not nearest or distance_sq < P.nearest_distance_sq
+    or (distance_sq == P.nearest_distance_sq and (e.y < nearest.y
+      or (e.y == nearest.y and (e.x < nearest.x
+        or (e.x == nearest.x and (e.amount < nearest.amount
+          or (e.amount == nearest.amount and e.unit < nearest.unit))))))) then
+    P.nearest, P.nearest_distance_sq = e, distance_sq
+  end
+  P.members[#P.members + 1] = e
+  -- Neighbours lie within 1.1 tiles on both axes, so they share a bucket
+  -- within two of each other; the exact distance test still decides.
+  local found, bx, by = {}, math.floor(e.x), math.floor(e.y)
+  for gx = bx - 2, bx + 2 do
+    local column = buckets[gx]
+    if column then for gy = by - 2, by + 2 do
+      local bucket = column[gy]
+      if bucket then for _, other in ipairs(bucket) do
+        local o = resources[other]
+        if not visited[other] and math.abs(e.x - o.x) <= 1.1 and math.abs(e.y - o.y) <= 1.1 then found[#found + 1] = other end
+      end end
     end end
   end
-  table.sort(patches, function(a, b)
-    if a.distance ~= b.distance then return a.distance < b.distance end
-    if a.name ~= b.name then return a.name < b.name end
-    if a.center.y ~= b.center.y then return a.center.y < b.center.y end
-    if a.center.x ~= b.center.x then return a.center.x < b.center.x end
-    if a.entity_count ~= b.entity_count then return a.entity_count < b.entity_count end
-    if a.total_amount ~= b.total_amount then return a.total_amount < b.total_amount end
-    return patch_members_key(a) < patch_members_key(b)
-  end)
-  local omitted_resource_patches = math.max(0, #patches - patch_limit)
-  while #patches > patch_limit do table.remove(patches) end
-  for _, patch in ipairs(patches) do patch._members = nil end
+  table.sort(found)
+  for _, other in ipairs(found) do visited[other] = true; P.queue[#P.queue + 1] = other end
+end
+
+local function observe_cluster(S, budget)
+  local K = S.cluster
+  if not K then
+    local names = {}
+    for name in pairs(S.resources_by_name) do names[#names + 1] = name end
+    table.sort(names)
+    K = { names = names, n = 1, phase = "sort" }
+    S.cluster = K
+  end
+  while K.n <= #K.names do
+    local name = K.names[K.n]
+    if K.phase == "sort" then
+      local sorted = jobs.sort_step(K, "_sort", S.resources_by_name[name], resource_order, budget)
+      if not sorted then return false end
+      K.list, K.buckets, K.visited, K.bucketed, K.start, K.phase = sorted, {}, {}, 0, 1, "bucket"
+    end
+    if K.phase == "bucket" then
+      while K.bucketed < #K.list do
+        if budget.left <= 0 then return false end
+        budget.left = budget.left - BUCKET_COST
+        local index = K.bucketed + 1
+        local r = K.list[index]
+        local bx, by = math.floor(r.x), math.floor(r.y)
+        local column = K.buckets[bx]
+        if not column then column = {}; K.buckets[bx] = column end
+        local bucket = column[by]
+        if not bucket then bucket = {}; column[by] = bucket end
+        bucket[#bucket + 1] = index
+        K.bucketed = index
+      end
+      K.phase = "grow"
+    end
+    while true do
+      if budget.left <= 0 then return false end
+      local P = K.patch
+      if P and P.head <= #P.queue then
+        budget.left = budget.left - CLUSTER_COST
+        cluster_visit(K, P, S.center)
+      elseif P then
+        local center = { x = P.sx / P.count, y = P.sy / P.count }
+        local dx, dy = center.x - S.center.x, center.y - S.center.y
+        S.patch_total = S.patch_total + 1
+        jobs.keep_first(S.patches, S.patch_limit, { name = name, entity_count = P.count, total_amount = P.amount,
+          center = center, distance = math.sqrt(dx * dx + dy * dy),
+          nearest_target = { x = P.nearest.x, y = P.nearest.y, amount = P.nearest.amount,
+            distance = math.sqrt(P.nearest_distance_sq) }, _members = P.members }, patch_order)
+        K.patch = nil
+      else
+        while K.start <= #K.list and K.visited[K.start] do K.start = K.start + 1 end
+        if K.start > #K.list then break end
+        K.visited[K.start] = true
+        K.patch = { queue = { K.start }, head = 1, count = 0, amount = 0, sx = 0, sy = 0, members = {} }
+      end
+    end
+    K.n, K.phase, K.list, K.buckets, K.visited = K.n + 1, "sort", nil, nil, nil
+  end
+  S.cluster = nil
+  return true
+end
+
+-- The character's state, which every observation carries.
+local function character_state(c)
   local function inventory_contents(source)
     local contents = {}
     if not source then return contents end
@@ -444,26 +558,85 @@ function M.observe_local(params)
   local human_ok, human_control, human_idle_ticks = pcall(companion.human_control)
   human_control = human_ok and human_control == true
   if not human_ok then human_idle_ticks = nil end
+  return { position = { x = c.position.x, y = c.position.y }, health = c.health,
+    inventory = inventory, inventory_scope = "main", ammo_inventory = ammo_inventory,
+    active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
+    human_control = human_control, human_idle_ticks = human_idle_ticks,
+    crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance,
+    collision_box = plain_box(placement_geometry.character_box(c)),
+    path_start = path_start,
+    standing_on = conveyor and { name = conveyor.name, type = conveyor.type, direction = conveyor.direction,
+      position = { x = conveyor.position.x, y = conveyor.position.y } } or nil }
+end
+
+local function observe_finish(S, c)
+  -- Every list was kept to its cap as it was collected.
+  local details, ground_items, patches = S.details, S.ground_items, S.patches
+  table.sort(details, detail_by_position)
+  for _, detail in ipairs(details) do
+    detail._distance, detail._unit = nil, nil
+    if S.compact then
+      detail.bounds, detail.selection_box, detail.collision_box, detail.footprint = nil, nil, nil, nil
+    end
+  end
+  table.sort(ground_items, ground_by_position)
+  table.sort(patches, patch_order)
+  for _, patch in ipairs(patches) do patch._members = nil end
   local result = {
-    tick = game.tick, radius = radius, detail = params.detail == "full" and "full" or "compact",
-    character = { position = { x = c.position.x, y = c.position.y }, health = c.health,
-      inventory = inventory, inventory_scope = "main", ammo_inventory = ammo_inventory,
-      active_task = tasks.active_summary(), queue_depth = tasks.queue_length(),
-      human_control = human_control, human_idle_ticks = human_idle_ticks,
-      crafting = crafting, reach_distance = c.reach_distance, build_distance = c.build_distance,
-      collision_box = plain_box(placement_geometry.character_box(c)),
-      path_start = path_start,
-      standing_on = conveyor and { name = conveyor.name, type = conveyor.type, direction = conveyor.direction,
-        position = { x = conveyor.position.x, y = conveyor.position.y } } or nil },
+    tick = game.tick, radius = S.radius, detail = S.compact and "compact" or "full",
+    character = character_state(c),
     entities = details, resource_patches = patches, ground_items = ground_items,
-    omitted_entities = omitted, omitted_ground_items = omitted_ground_items,
-    omitted_resource_patches = omitted_resource_patches,
+    omitted_entities = S.detail_total - #details, omitted_ground_items = S.ground_total - #ground_items,
+    omitted_resource_patches = S.patch_total - #patches,
   }
-  if result.detail == "full" then
-    result.grid = { origin = { x = ox, y = oy }, width = size, height = size, rows = grid, legend = legend,
+  if not S.compact then
+    local grid = {}
+    for row = 1, S.size do grid[row] = table.concat(S.chars[row]) end
+    result.grid = { origin = { x = S.ox, y = S.oy }, width = S.size, height = S.size, rows = grid, legend = S.legend,
       coordinate_rule = "rows north-to-south; columns west-to-east; x=origin.x+column, y=origin.y+row" }
   end
   return result
+end
+
+-- What an observation stopped by its work ceiling (observe_compact) says:
+-- the character's state only.
+local function observe_truncated(S)
+  local c = companion.require_companion()
+  return { tick = game.tick, radius = S.radius, detail = "compact", character = character_state(c),
+    entities = {}, resource_patches = {}, ground_items = {},
+    truncated = "the area holds more than one tick may read: call observe_local for its entities and patches" }
+end
+
+local OBSERVE_NEXT = { terrain = "query", query = "names", names = "paint", paint = "cluster", cluster = "finish" }
+
+local function observe_step(S, budget)
+  local c = companion.require_companion()
+  while budget.left > 0 do
+    local stage, done = S.stage, nil
+    if stage == "terrain" then done = observe_terrain(S, budget, c)
+    elseif stage == "query" then done = observe_query(S, budget, c)
+    elseif stage == "names" then done = observe_names(S, budget, c)
+    elseif stage == "paint" then done = observe_paint(S, budget, c)
+    elseif stage == "cluster" then done = observe_cluster(S, budget)
+    else return observe_finish(S, c) end
+    if done then S.stage = OBSERVE_NEXT[stage] end
+  end
+  return nil
+end
+
+-- observe_local {radius? (5-30, default 15), detail? (compact | full)}: the
+-- job definition (jobs.lua registers it).
+M.observe_job = { start = observe_start, step = observe_step, truncated = observe_truncated }
+
+-- A compact observation at radius at most the default, within this call:
+-- what a plan's final observation and the run recorder take. It stops at
+-- COMPACT_MAX_WORK (an ore field or a dense factory can hold more) and then
+-- carries the character's state and says it was truncated.
+local COMPACT_MAX_WORK = 2 * jobs.WORK_PER_TICK
+M.COMPACT_MAX_WORK = COMPACT_MAX_WORK
+function M.observe_compact(params)
+  local radius = math.min(tonumber(params and params.radius) or SCAN_DEFAULT_RADIUS, SCAN_DEFAULT_RADIUS)
+  return (jobs.run_now(M.observe_job, { radius = radius, detail = "compact" }, nil, COMPACT_MAX_WORK))
 end
 
 -- --------------------------------------------------------------- can_place

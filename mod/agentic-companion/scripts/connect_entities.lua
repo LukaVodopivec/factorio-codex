@@ -1,11 +1,25 @@
--- Deterministic physical route planning between exact, already-charted endpoints.
+-- Deterministic physical route planning over charted ground: belts and pipes
+-- by a resumable A* search, poles by wire reach. Endpoints are an existing
+-- belt, pipe, pole or fluid/electric machine at an exact position, or a free
+-- tile (the route then covers it, e.g. a drill's drop tile). Belt and pipe
+-- routes hop obstacles with an underground belt or pipe-to-ground pair; a
+-- pipe route picks the machine ports whose fluid filter matches.
+--
+-- The connect_entities RPC is a job (jobs.lua): a route of up to 200 tiles
+-- is searched over ticks, a budget of work items per tick, never all of it
+-- inside the one tick of the command. build_layout drives the same search
+-- with its own placement checks.
 local companion = require("scripts.companion")
 local placement_geometry = require("scripts.placement_geometry")
 local fluid_connections = require("scripts.fluid_connections")
 
 local M = {}
+M.MAX_LENGTH = 200
 local BELT = { ["transport-belt"] = true }
 local PIPE = { pipe = true }
+-- Work items: a placement check is one can_place_entity pair plus the chunk
+-- reads around it; a node expansion is the heap and table work.
+local FIT_COST, NODE_COST, GAP_COST = 4, 1, 2
 
 local function position(value, label)
   if type(value) ~= "table" or tonumber(value.x) == nil or tonumber(value.y) == nil then error(label .. " must be {x, y}") end
@@ -16,6 +30,7 @@ local function charted(force, surface, pos)
   return force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) })
 end
 
+-- The entity standing exactly at pos (its centre within 0.2), or nil.
 local function locate(surface, pos)
   local found = {}
   for _, entity in ipairs(surface.find_entities_filtered({ position = pos, radius = 0.2 })) do
@@ -27,7 +42,6 @@ local function locate(surface, pos)
     if a.name ~= b.name then return a.name < b.name end
     return a.type < b.type
   end)
-  if not found[1] then error(string.format("no exact entity endpoint at (%.1f, %.1f)", pos.x, pos.y)) end
   return found[1]
 end
 
@@ -61,148 +75,412 @@ local function can_place(c, proto, pos, direction_value)
   return placement_geometry.can_place(c, proto, pos, direction_value or 0)
 end
 
--- fits(position, direction) says whether one route piece may stand there;
--- from_direction (belts) is the direction the first piece must leave in.
--- A shortest route by A* over tiles (Manhattan distance to the goal), so on
--- open ground the work follows the route's length, not the area within
--- max_length. Nodes keep parent pointers; fits is asked once per tile; ties
--- break by insertion order, so every peer finds the same route.
-local function grid_route(fits, item_name, from, to, max_length, kind, from_direction, include_from, include_to)
-  local dx, dy = to.x - from.x, to.y - from.y
-  if math.abs(dx - math.floor(dx + 0.5)) > 0.001 or math.abs(dy - math.floor(dy + 0.5)) > 0.001 then
-    error(kind .. " endpoints must lie on the same one-tile placement grid")
-  end
-  local function remaining(p) return math.floor(math.abs(p.x - to.x) + math.abs(p.y - to.y) + 0.5) end
-  local start = { position = from, length = 0 }
-  if include_from then
-    if not fits(from, 0) then error("physical " .. kind .. " route is blocked at its source connection") end
-    start.step, start.length = { name = item_name, x = from.x, y = from.y }, 1
-  end
-  if start.length > max_length then error(kind .. " route exceeds max_length at its source connection") end
-  local heap, order = {}, 0
-  local function before(a, b)
-    if a.f ~= b.f then return a.f < b.f end
-    if a.h ~= b.h then return a.h < b.h end
-    return a.order < b.order
-  end
-  local function push(node)
-    order = order + 1
-    node.order, node.h = order, node.goal and 0 or remaining(node.position)
-    node.f = node.length + node.h
-    heap[#heap + 1] = node
-    local i = #heap
-    while i > 1 do
-      local parent = math.floor(i / 2)
-      if not before(heap[i], heap[parent]) then break end
-      heap[i], heap[parent] = heap[parent], heap[i]
-      i = parent
+-- ------------------------------------------------------------ underground
+
+-- The underground item a belt or pipe route may hop with, its reach
+-- (entrance to exit, in tiles) and, for pipes, the direction its
+-- underground connection faces on a north-facing entity. requested is an
+-- item name, false (no hops) or nil (the belt's own tier, or pipe-to-ground,
+-- when the force can craft it or the body carries it).
+function M.underground(c, kind, proto, requested)
+  if requested == false or (kind ~= "belt" and kind ~= "pipe") then return nil end
+  local name = requested
+  if name == nil then
+    if kind == "belt" then
+      local ok, related = pcall(function() return proto.related_underground_belt end)
+      name = ok and related and related.name or nil
+    else
+      name = "pipe-to-ground"
     end
   end
-  local function pop()
-    local top = heap[1]
-    heap[1] = heap[#heap]
-    heap[#heap] = nil
-    local i = 1
-    while true do
-      local l, r, m = 2 * i, 2 * i + 1, i
-      if heap[l] and before(heap[l], heap[m]) then m = l end
-      if heap[r] and before(heap[r], heap[m]) then m = r end
-      if m == i then break end
-      heap[i], heap[m] = heap[m], heap[i]
-      i = m
-    end
-    return top
+  local item = type(name) == "string" and prototypes.item[name]
+  local under = item and item.place_result
+  local wanted = kind == "belt" and "underground-belt" or "pipe-to-ground"
+  if not under or under.type ~= wanted then
+    if requested then error(tostring(requested) .. " is not a " .. wanted .. " item for a " .. kind .. " route", 0) end
+    return nil
   end
-  -- The steps from the start up to node, in order.
-  local function path_to(node)
-    local reversed = {}
-    while node do
-      if node.step then reversed[#reversed + 1] = node.step end
-      node = node.parent
-    end
-    local path = {}
-    for i = #reversed, 1, -1 do path[#path + 1] = reversed[i] end
-    return path
+  if requested == nil then
+    local ok, usable = pcall(function()
+      local recipe = c.force.recipes[name]
+      return (recipe and recipe.enabled) or c.get_item_count(name) > 0
+    end)
+    if not (ok and usable) then return nil end
   end
-  local from_key = key(from)
-  local best = { [from_key] = start.length } -- shortest length reaching each tile
-  local fit = {}                              -- fits per tile (its direction depends only on the tile)
-  local goal_fits
-  local deltas = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
-  push(start)
-  while #heap > 0 do
-    local current = pop()
-    if current.goal then
-      local path = path_to(current.parent)
-      if include_to then path[#path + 1] = { name = item_name, x = to.x, y = to.y } end
-      for index, step in ipairs(path) do
-        local following = path[index + 1] and { x = path[index + 1].x, y = path[index + 1].y } or to
-        if kind == "belt" and following.x == step.x and following.y == step.y then
-          -- A belt on the goal tile keeps the heading it arrived with.
-          step.direction = index > 1 and path[index - 1].direction or direction(from, to)
-        else
-          step.direction = kind == "belt" and direction(step, following) or nil
+  local distance, faces = nil, nil
+  if kind == "belt" then
+    local ok, value = pcall(function() return under.max_underground_distance end)
+    distance = ok and tonumber(value) or nil
+  else
+    pcall(function()
+      for _, box in pairs(under.fluidbox_prototypes) do
+        for _, connection in ipairs(box.pipe_connections or {}) do
+          if connection.connection_type == "underground" then
+            distance = tonumber(connection.max_underground_distance) or distance
+            faces = tonumber(connection.direction) or faces
+          end
         end
       end
-      return path
+    end)
+    if not distance then
+      local ok, value = pcall(function() return under.max_underground_distance end)
+      distance = ok and tonumber(value) or nil
     end
-    if current.length == best[key(current.position)] then
-      for _, delta in ipairs(deltas) do
-        local first_direction = direction(from, { x = from.x + delta[1], y = from.y + delta[2] })
-        local allowed_first = current.length > 0 or kind ~= "belt" or from_direction == nil or from_direction == first_direction
-        local next_position = { x = current.position.x + delta[1], y = current.position.y + delta[2] }
-        local next_key = key(next_position)
-        if allowed_first and next_key ~= from_key then
-          if math.abs(next_position.x - to.x) < 0.001 and math.abs(next_position.y - to.y) < 0.001 then
-            local length = current.length + (include_to and 1 or 0)
-            if include_to and goal_fits == nil and length <= max_length then goal_fits = fits(to, 0) and true or false end
-            if length <= max_length and (not include_to or goal_fits == true) and (best[next_key] == nil or length < best[next_key]) then
-              best[next_key] = length
-              push({ goal = true, parent = current, length = length, position = next_position })
-            end
-          elseif current.length < max_length then
-            local length = current.length + 1
-            if best[next_key] == nil or length < best[next_key] then
-              local toward = direction(next_position, to)
-              if fit[next_key] == nil then fit[next_key] = fits(next_position, toward) and true or false end
-              if fit[next_key] then
-                best[next_key] = length
-                push({ position = next_position, parent = current, length = length,
-                  step = { name = item_name, x = next_position.x, y = next_position.y, direction = kind == "belt" and toward or nil } })
-              end
-            end
+  end
+  if not distance or distance < 2 then return nil end
+  -- Base 2.0: a north-facing pipe-to-ground connects normally north and
+  -- underground south.
+  return { item = name, proto = under, distance = math.floor(distance), faces = faces or 8 }
+end
+
+-- ------------------------------------------------------------ route search
+
+local DELTAS = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
+local HEADING = { 0, 4, 8, 12 }
+
+-- A resumable shortest route by A* over tiles (Manhattan distance to the
+-- nearest goal). spec = {kind = belt|pipe, item, max_length (tiles),
+-- under = M.underground(..) | nil, starts = {{position, include, only?}},
+-- goals = {{position, include}}}: an included endpoint gets a piece on its
+-- tile, an excluded one is an existing entity the route ends against; only
+-- is the one direction a belt may leave a start in. The state is plain data
+-- (parent pointers, no closures), so a job keeps it in storage between ticks.
+function M.new_search(spec)
+  local goals, goal_list = {}, {}
+  for _, goal in ipairs(spec.goals) do
+    local g = { x = goal.position.x, y = goal.position.y, include = goal.include }
+    goals[key(g)], goal_list[#goal_list + 1] = g, g
+  end
+  return { kind = spec.kind, item = spec.item, under = spec.under, max_length = spec.max_length,
+    starts = spec.starts, goals = goals, goal_list = goal_list,
+    max_nodes = math.max(2000, math.floor(spec.max_length * spec.max_length / 2)),
+    heap = {}, order = 0, best = {}, fit = {}, expanded = 0, started = false }
+end
+
+local function remaining(R, x, y)
+  local best
+  for _, g in ipairs(R.goal_list) do
+    local d = math.floor(math.abs(x - g.x) + math.abs(y - g.y) + 0.5)
+    if not best or d < best then best = d end
+  end
+  return best or 0
+end
+
+local function before(a, b)
+  if a.f ~= b.f then return a.f < b.f end
+  if a.h ~= b.h then return a.h < b.h end
+  return a.order < b.order
+end
+
+local function push(R, node)
+  R.order = R.order + 1
+  node.order, node.h = R.order, node.goal and 0 or remaining(R, node.x, node.y)
+  node.f = node.length + node.h
+  local heap = R.heap
+  heap[#heap + 1] = node
+  local i = #heap
+  while i > 1 do
+    local parent = math.floor(i / 2)
+    if not before(heap[i], heap[parent]) then break end
+    heap[i], heap[parent] = heap[parent], heap[i]
+    i = parent
+  end
+end
+
+local function pop(R)
+  local heap = R.heap
+  local top = heap[1]
+  heap[1] = heap[#heap]
+  heap[#heap] = nil
+  local i = 1
+  while true do
+    local l, r, m = 2 * i, 2 * i + 1, i
+    if heap[l] and before(heap[l], heap[m]) then m = l end
+    if heap[r] and before(heap[r], heap[m]) then m = r end
+    if m == i then break end
+    heap[i], heap[m] = heap[m], heap[i]
+    i = m
+  end
+  return top
+end
+
+-- Whether a node improves the best length known for its state: tile, the
+-- one direction it must leave in (if any) and, when hops are possible, the
+-- direction it arrived in (which decides whether its piece can become an
+-- underground entrance).
+local function improves(R, x, y, only, arrive, length)
+  local state = key({ x = x, y = y }) .. "|" .. tostring(only) .. "|" .. tostring(R.under and arrive or nil)
+  if R.best[state] ~= nil and R.best[state] <= length then return false end
+  R.best[state] = length
+  return true
+end
+
+-- Cached placement check of one piece (role "piece" or "under").
+local function fits(R, env, x, y, dir, role)
+  local k = string.format("%.3f,%.3f|%s|%d", x, y, role, role == "piece" and 0 or dir)
+  local value = R.fit[k]
+  if value == nil then
+    value = env.fits({ x = x, y = y }, dir, role) and true or false
+    R.fit[k] = value
+  end
+  return value
+end
+
+local function piece(R, x, y) return { name = R.item, x = x, y = y } end
+
+-- Entrance and exit of an underground pair heading d.
+local function hop_pieces(R, ex, ey, xx, xy, d)
+  local under = R.under
+  if R.kind == "belt" then
+    return { name = under.item, x = ex, y = ey, direction = d, belt_to_ground_type = "input", fixed = true },
+      { name = under.item, x = xx, y = xy, direction = d, belt_to_ground_type = "output", fixed = true }
+  end
+  -- The entrance's underground side faces d, the exit's faces back.
+  return { name = under.item, x = ex, y = ey, direction = (d - under.faces) % 16, fixed = true },
+    { name = under.item, x = xx, y = xy, direction = (d + 8 - under.faces) % 16, fixed = true }
+end
+
+-- The pieces from the first start to node, in order. A hop node turns its
+-- parent's piece into the entrance.
+local function path_to(node)
+  local reversed, entrance = {}, nil
+  while node do
+    if node.hop then
+      reversed[#reversed + 1] = node.hop.exit
+      entrance = node.hop.entrance
+    elseif node.piece then
+      reversed[#reversed + 1] = entrance or node.piece
+      entrance = nil
+    end
+    node = node.parent
+  end
+  local path = {}
+  for i = #reversed, 1, -1 do
+    local step = {}
+    for k, v in pairs(reversed[i]) do step[k] = v end
+    path[#path + 1] = step
+  end
+  return path
+end
+
+-- Belt pieces point at the next piece; one on the goal tile keeps the
+-- heading it arrived with. Underground ends keep their own.
+local function finish(R, goal_node)
+  local path = path_to(goal_node.parent)
+  if goal_node.hop then
+    path[#path] = nil -- re-added below as the pair
+    local entrance, exit = goal_node.hop.entrance, goal_node.hop.exit
+    local function copy(t) local o = {}; for k, v in pairs(t) do o[k] = v end; return o end
+    path[#path + 1] = copy(entrance)
+    path[#path + 1] = copy(exit)
+  elseif goal_node.goal.include then
+    path[#path + 1] = piece(R, goal_node.x, goal_node.y)
+  end
+  local to = { x = goal_node.x, y = goal_node.y }
+  local seen = {}
+  for index, step in ipairs(path) do
+    local tile = key(step)
+    if seen[tile] then error(R.kind .. " route crosses itself; move an endpoint", 0) end
+    seen[tile] = true
+    if not step.fixed then
+      local following = path[index + 1] and { x = path[index + 1].x, y = path[index + 1].y } or to
+      if R.kind ~= "belt" then
+        step.direction = nil
+      elseif following.x == step.x and following.y == step.y then
+        local previous = path[index - 1]
+        step.direction = previous and previous.direction or (R.starts[1].only or direction(R.starts[1].position, to))
+      else
+        step.direction = direction(step, following)
+      end
+    end
+    step.fixed = nil
+  end
+  return path
+end
+
+local function start_search(R, env)
+  R.started = true
+  local any = false
+  R.start_keys = {}
+  for _, start in ipairs(R.starts) do R.start_keys[key(start.position)] = true end
+  for _, start in ipairs(R.starts) do
+    local s = start.position
+    local goal = R.goals[key(s)]
+    if goal then
+      R.result = (start.include or goal.include) and { piece(R, s.x, s.y) } or {}
+      if R.kind == "belt" and R.result[1] then R.result[1].direction = start.only or 0 end
+      return
+    end
+    local length = start.include and 1 or 0
+    if (not start.include or fits(R, env, s.x, s.y, 0, "piece")) and length <= R.max_length then
+      any = true
+      if improves(R, s.x, s.y, start.only, nil, length) then
+        push(R, { x = s.x, y = s.y, length = length, only = start.only, start = true,
+          piece = start.include and piece(R, s.x, s.y) or nil })
+      end
+    end
+  end
+  if not any then error("physical " .. R.kind .. " route is blocked at its source connection", 0) end
+  -- A goal with no free tile beside it is walled in: say so now, not after
+  -- searching everything within max_length. (An underground belt exit may
+  -- land on a free goal tile itself.)
+  for _, g in ipairs(R.goal_list) do
+    if g.include and R.kind == "belt" and R.under then return end
+    if not g.include or fits(R, env, g.x, g.y, 0, "piece") then
+      for _, delta in ipairs(DELTAS) do
+        local nx, ny = g.x + delta[1], g.y + delta[2]
+        if R.start_keys[key({ x = nx, y = ny })] or fits(R, env, nx, ny, 0, "piece") then return end
+      end
+    end
+  end
+  local g = R.goal_list[1]
+  error(string.format("the %s route's end at (%.1f, %.1f) is walled in: no free tile beside it", R.kind, g.x, g.y), 0)
+end
+
+-- Expands one node: plain steps to the four neighbours, and where the next
+-- tile is blocked, underground hops from this node's own piece.
+local function expand(R, env, current)
+  for index, delta in ipairs(DELTAS) do
+    local d = HEADING[index]
+    if not current.only or current.only == d then
+      local nx, ny = current.x + delta[1], current.y + delta[2]
+      local goal = R.goals[key({ x = nx, y = ny })]
+      local blocked = false
+      if goal then
+        local length = current.length + (goal.include and 1 or 0)
+        if length <= R.max_length and (not goal.include or fits(R, env, nx, ny, d, "piece"))
+          and improves(R, nx, ny, "goal", nil, length) then
+          push(R, { x = nx, y = ny, length = length, parent = current, goal = goal })
+        end
+      elseif R.start_keys[key({ x = nx, y = ny })] then
+        -- A route never returns over its own start.
+      elseif current.length < R.max_length then
+        if fits(R, env, nx, ny, d, "piece") then
+          if improves(R, nx, ny, nil, d, current.length + 1) then
+            push(R, { x = nx, y = ny, length = current.length + 1, parent = current, arrive = d,
+              piece = piece(R, nx, ny) })
+          end
+        else
+          blocked = true
+        end
+      end
+      -- An underground pair: this node's plain piece becomes the entrance
+      -- (the route must arrive heading d), the exit lands past the obstacle.
+      local entrance_ok = current.piece ~= nil and not current.hop and (current.arrive == d
+        or (current.start and R.kind == "belt" and (current.only == nil or current.only == d)))
+      if blocked and R.under and entrance_ok then
+        for span = 2, R.under.distance do
+          local xx, xy = current.x + delta[1] * span, current.y + delta[2] * span
+          local length = current.length + span
+          if length > R.max_length then break end
+          local landing = R.goals[key({ x = xx, y = xy })]
+          if landing and not (landing.include and R.kind == "belt") then break end
+          if R.start_keys[key({ x = xx, y = xy })] then break end
+          local entrance, exit = hop_pieces(R, current.x, current.y, xx, xy, d)
+          if span == 2 and not fits(R, env, current.x, current.y, entrance.direction, "under") then break end
+          if fits(R, env, xx, xy, exit.direction, "under")
+            and (not env.gap_clear or env.gap_clear({ x = current.x, y = current.y }, { x = xx, y = xy }, d))
+            and improves(R, xx, xy, landing and "goal" or d, landing and nil or d, length) then
+            push(R, { x = xx, y = xy, length = length, parent = current, only = not landing and d or nil,
+              arrive = d, hop = { entrance = entrance, exit = exit }, goal = landing })
           end
         end
       end
     end
   end
-  error("no charted physical " .. kind .. " route fits max_length and current placement constraints")
 end
 
-local function pipe_terminals(entity)
-  if PIPE[entity.type] then return { { position = entity.position, existing = true } } end
-  local terminals = {}
-  for _, connection in ipairs(fluid_connections.live(entity)) do
-    terminals[#terminals + 1] = { position = connection.target_position, existing = false }
+-- Advances the search while env.more() allows. Returns the route's pieces
+-- once found; nil when the budget is spent first; raises when no route fits.
+-- env = {fits(pos, direction, role), gap_clear?(entrance, exit, d), more()}.
+function M.search_step(R, env)
+  if R.result then return R.result end
+  if not R.started then
+    start_search(R, env)
+    if R.result then return R.result end
   end
-  table.sort(terminals, function(a, b)
-    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-    return a.position.x < b.position.x
-  end)
+  while #R.heap > 0 do
+    if not env.more() then return nil end
+    local current = pop(R)
+    if current.goal then
+      R.result = finish(R, current)
+      R.heap, R.best, R.fit = {}, {}, {}
+      return R.result
+    end
+    R.expanded = R.expanded + 1
+    if R.expanded > R.max_nodes then
+      error(string.format("no %s route found within the search budget (%d tiles explored); move the endpoints closer or clear the way",
+        R.kind, R.expanded - 1), 0)
+    end
+    if env.spend then env.spend(NODE_COST) end
+    expand(R, env, current)
+  end
+  error("no charted physical " .. R.kind .. " route fits max_length and current placement constraints", 0)
+end
+
+-- ------------------------------------------------------------- endpoints
+
+-- A machine's free fluid ports, each with the fluid its box takes.
+local function free_ports(entity)
+  local rows, fluids = {}, {}
+  for _, connection in ipairs(fluid_connections.live(entity)) do
+    if not connection.connected_target then
+      local index = connection.fluidbox_index
+      if fluids[index] == nil then fluids[index] = fluid_connections.box_fluid(entity, index, connection.filter) or false end
+      rows[#rows + 1] = { position = connection.target_position, fluid = fluids[index] or nil }
+    end
+  end
+  return rows
+end
+
+-- Free fluid ports of a machine as route terminals on the tile outside each:
+-- those for fluid (or, when none takes it by name, those that take anything).
+local function machine_ports(entity, fluid)
+  local rows = free_ports(entity)
+  if fluid then
+    local exact, open = {}, {}
+    for _, row in ipairs(rows) do
+      if row.fluid == fluid then exact[#exact + 1] = row elseif row.fluid == nil then open[#open + 1] = row end
+    end
+    rows = #exact > 0 and exact or open
+  end
+  local terminals = {}
+  for _, row in ipairs(rows) do terminals[#terminals + 1] = { position = row.position, include = true } end
   return terminals
 end
 
-local function pipe_route(c, item_name, proto, from_entity, to_entity, max_length)
-  local best
-  for _, from_terminal in ipairs(pipe_terminals(from_entity)) do
-    for _, to_terminal in ipairs(pipe_terminals(to_entity)) do
-      local ok, route = pcall(grid_route, function(pos, d) return can_place(c, proto, pos, d) end, item_name,
-        from_terminal.position, to_terminal.position, max_length, "pipe", nil, not from_terminal.existing, not to_terminal.existing)
-      if ok and (not best or #route < #best) then best = route end
-    end
+local function port_filters(entity)
+  local set = {}
+  for _, row in ipairs(free_ports(entity)) do if row.fluid then set[row.fluid] = true end end
+  return set
+end
+
+local function names(set)
+  local out = {}
+  for name in pairs(set) do out[#out + 1] = name end
+  table.sort(out)
+  return out
+end
+
+-- The fluid a pipe route carries: given, or the one filter both ends share
+-- (or the only one one end has).
+local function route_fluid(fluid, from_entity, to_entity)
+  if fluid then return fluid end
+  local from = from_entity and not PIPE[from_entity.type] and port_filters(from_entity) or {}
+  local to = to_entity and not PIPE[to_entity.type] and port_filters(to_entity) or {}
+  local common = {}
+  for name in pairs(from) do if to[name] then common[name] = true end end
+  local list = names(common)
+  if #list == 1 then return list[1] end
+  if #list > 1 then error("the ends share ports for " .. table.concat(list, ", ") .. "; say which with fluid", 0) end
+  local a, b = names(from), names(to)
+  if #a > 0 and #b > 0 then
+    error(string.format("no matching ports: one end carries %s, the other %s", table.concat(a, ", "), table.concat(b, ", ")), 0)
   end
-  if not best then error("no charted physical pipe route fits endpoint connections, max_length, and current placement constraints") end
-  return best
+  local only = #a > 0 and a or b
+  if #only == 1 then return only[1] end
+  if #only > 1 then error("the machine has ports for " .. table.concat(only, ", ") .. "; say which with fluid", 0) end
+  return nil
 end
 
 local function entity_box(entity)
@@ -212,15 +490,21 @@ local function entity_box(entity)
   }
 end
 
-local function terminal_pole(c, item_name, proto, entity)
+local function terminal_pole(c, item_name, proto, entity, tile)
+  local reach_new = tonumber(proto.get_max_wire_distance("normal"))
+  if not entity then
+    if not can_place(c, proto, tile, 0) then
+      error(string.format("power route is blocked at (%.1f, %.1f)", tile.x, tile.y), 0)
+    end
+    return { position = tile, reach = reach_new, step = { name = item_name, x = tile.x, y = tile.y } }
+  end
   if entity.type == "electric-pole" then
     local reach = tonumber(entity.prototype.get_max_wire_distance(entity.quality))
     if not reach then error("power pole endpoint does not expose wire reach") end
     return { position = entity.position, reach = reach, step = nil }
   end
   local supply = tonumber(proto.get_supply_area_distance("normal"))
-  local reach = tonumber(proto.get_max_wire_distance("normal"))
-  if not supply or not reach then error("power route prototype must expose supply area and wire reach") end
+  if not supply or not reach_new then error("power route prototype must expose supply area and wire reach") end
   local box, candidates = entity_box(entity), {}
   local min_x, max_x = math.floor(box.left_top.x - supply), math.ceil(box.right_bottom.x + supply)
   local min_y, max_y = math.floor(box.left_top.y - supply), math.ceil(box.right_bottom.y + supply)
@@ -242,12 +526,12 @@ local function terminal_pole(c, item_name, proto, entity)
   end)
   if not candidates[1] then error("no charted physical pole placement covers an exact power endpoint") end
   local pos = candidates[1].position
-  return { position = pos, reach = reach, step = { name = item_name, x = pos.x, y = pos.y } }
+  return { position = pos, reach = reach_new, step = { name = item_name, x = pos.x, y = pos.y } }
 end
 
 -- Intermediate poles on the placement grid between two pole positions, so no
 -- wire span exceeds spacing and the last one fits final_reach.
-local function pole_span(fits, item_name, from, to, spacing, final_reach, budget)
+local function pole_span(fits_pole, item_name, from, to, spacing, final_reach, budget)
   local dx, dy = to.x - from.x, to.y - from.y
   local segments = math.ceil(math.sqrt(dx * dx + dy * dy) / spacing)
   local count = segments - 1
@@ -256,7 +540,7 @@ local function pole_span(fits, item_name, from, to, spacing, final_reach, budget
   for index = 1, count do
     local fraction = index / segments
     local pos = { x = math.floor(from.x + dx * fraction) + 0.5, y = math.floor(from.y + dy * fraction) + 0.5 }
-    if not fits(pos) then error(string.format("power route is blocked at (%.1f, %.1f)", pos.x, pos.y)) end
+    if not fits_pole(pos) then error(string.format("power route is blocked at (%.1f, %.1f)", pos.x, pos.y)) end
     local gap_x, gap_y = pos.x - previous.x, pos.y - previous.y
     if math.sqrt(gap_x * gap_x + gap_y * gap_y) > spacing then error("power route cannot satisfy physical wire reach on the placement grid") end
     steps[#steps + 1] = { name = item_name, x = pos.x, y = pos.y }
@@ -269,11 +553,13 @@ local function pole_span(fits, item_name, from, to, spacing, final_reach, budget
   return steps
 end
 
+-- Poles between two endpoints (entities or free tiles). Linear in the
+-- route's pole count, so it runs in one step.
 local function power_route(c, item_name, proto, from, to, from_entity, to_entity, max_length)
   local new_reach = tonumber(proto.get_max_wire_distance("normal"))
   if not new_reach then error("power route prototype must expose wire reach") end
-  local from_terminal = terminal_pole(c, item_name, proto, from_entity)
-  local to_terminal = terminal_pole(c, item_name, proto, to_entity)
+  local from_terminal = terminal_pole(c, item_name, proto, from_entity, from)
+  local to_terminal = terminal_pole(c, item_name, proto, to_entity, to)
   local from_reach, to_reach = from_terminal.reach, to_terminal.reach
   from, to = from_terminal.position, to_terminal.position
   local steps = {}
@@ -293,34 +579,21 @@ local function power_route(c, item_name, proto, from, to, from_entity, to_entity
   return steps
 end
 
--- Layout routes (build_layout), between planned endpoints that may not exist
--- yet. fits(position, direction) says whether one route piece may stand on
--- that tile; the caller folds in its planned footprints and charting.
--- Belts and pipes cover from..to inclusive, except an endpoint tile that is
--- not free (the entity there is the endpoint).
-function M.route_tiles(kind, item_name, from, to, max_length, fits)
-  local include_from, include_to = fits(from, 0), fits(to, 0)
-  if math.abs(from.x - to.x) < 0.001 and math.abs(from.y - to.y) < 0.001 then
-    if not include_from then return {} end
-    return { { name = item_name, x = from.x, y = from.y, direction = kind == "belt" and 0 or nil } }
-  end
-  return grid_route(fits, item_name, from, to, max_length, kind, nil, include_from, include_to)
-end
-
--- Poles at from and to (unless has_pole says one stands or is planned there)
--- and between them within wire reach.
-function M.route_poles(item_name, proto, from, to, max_length, fits, has_pole)
+-- Layout poles (build_layout), between planned endpoints that may not exist
+-- yet: poles at from and to (unless has_pole says one stands or is planned
+-- there) and between them within wire reach.
+function M.route_poles(item_name, proto, from, to, max_length, fits_pole, has_pole)
   local reach = tonumber(proto.get_max_wire_distance("normal"))
   if not reach then error("power route prototype must expose wire reach") end
   local function pole_at(endpoint)
     if has_pole(endpoint) then return nil end
-    if not fits(endpoint) then error(string.format("power route is blocked at (%.1f, %.1f)", endpoint.x, endpoint.y)) end
+    if not fits_pole(endpoint) then error(string.format("power route is blocked at (%.1f, %.1f)", endpoint.x, endpoint.y)) end
     return { name = item_name, x = endpoint.x, y = endpoint.y }
   end
   local head = pole_at(from)
   local tail = not (from.x == to.x and from.y == to.y) and pole_at(to) or nil
   local steps = { head }
-  for _, step in ipairs(pole_span(fits, item_name, from, to, reach, reach,
+  for _, step in ipairs(pole_span(fits_pole, item_name, from, to, reach, reach,
     max_length - (head and 1 or 0) - (tail and 1 or 0))) do
     steps[#steps + 1] = step
   end
@@ -328,31 +601,119 @@ function M.route_poles(item_name, proto, from, to, max_length, fits, has_pole)
   return steps
 end
 
-function M.connect_entities(params)
+-- ------------------------------------------------------------------- job
+
+-- connect_entities {kind, prototype, from, to, max_length? (1-200, default
+-- 25), fluid? (pipe), underground? (item name, or false for none)} ->
+-- {kind, prototype, from, to, length, steps, physical, ghosts}. Steps are
+-- build_plan placements; underground belt ends carry belt_to_ground_type.
+-- Nothing is built: the caller queues the steps.
+local function start(params)
   local c = companion.require_companion()
   local kind = params.kind
-  if kind ~= "belt" and kind ~= "pipe" and kind ~= "power" then error("connect_entities kind must be belt, pipe, or power") end
-  if type(params.prototype) ~= "string" then error("connect_entities prototype must be a placeable item name") end
+  if kind ~= "belt" and kind ~= "pipe" and kind ~= "power" then error("connect_entities kind must be belt, pipe, or power", 0) end
+  if type(params.prototype) ~= "string" then error("connect_entities prototype must be a placeable item name", 0) end
   local item = prototypes.item[params.prototype]
   local proto = item and item.place_result
-  if not proto then error(params.prototype .. " is not a placeable route prototype") end
+  if not proto then error(params.prototype .. " is not a placeable route prototype", 0) end
   if (kind == "belt" and proto.type ~= "transport-belt")
     or (kind == "pipe" and proto.type ~= "pipe")
     or (kind == "power" and proto.type ~= "electric-pole") then
-    error(params.prototype .. " is not a supported physical " .. kind .. " route prototype")
+    error(params.prototype .. " is not a supported physical " .. kind .. " route prototype", 0)
   end
   local from, to = position(params.from, "connect_entities from"), position(params.to, "connect_entities to")
-  local max_length = math.floor(tonumber(params.max_length) or 25)
-  if max_length < 1 or max_length > 25 then error("connect_entities max_length must be 1-25 for one physical build_plan") end
-  if not charted(c.force, c.surface, from) or not charted(c.force, c.surface, to) then error("connect_entities endpoints must both be force-charted") end
+  local max_length = math.floor(tonumber(params.max_length) or M.MAX_LENGTH)
+  if max_length < 1 or max_length > M.MAX_LENGTH then
+    error("connect_entities max_length must be 1-" .. M.MAX_LENGTH, 0)
+  end
+  if params.fluid ~= nil and (kind ~= "pipe" or type(params.fluid) ~= "string") then
+    error("connect_entities fluid names the fluid of a pipe route", 0)
+  end
+  if params.underground ~= nil and params.underground ~= false and type(params.underground) ~= "string" then
+    error("connect_entities underground is an underground item name, or false for none", 0)
+  end
+  if not charted(c.force, c.surface, from) or not charted(c.force, c.surface, to) then
+    error("connect_entities endpoints must both be force-charted", 0)
+  end
   local from_entity, to_entity = locate(c.surface, from), locate(c.surface, to)
-  if not supports(kind, from_entity) or not supports(kind, to_entity) then error("both exact endpoints must support " .. kind .. " connections") end
-  local steps
-  if kind == "power" then steps = power_route(c, params.prototype, proto, from, to, from_entity, to_entity, max_length)
-  elseif kind == "pipe" then steps = pipe_route(c, params.prototype, proto, from_entity, to_entity, max_length)
-  else steps = grid_route(function(pos, d) return can_place(c, proto, pos, d) end, params.prototype,
-    from, to, max_length, kind, from_entity.direction, false, false) end
-  return { kind = kind, prototype = params.prototype, from = from, to = to, length = #steps, steps = steps, physical = true, ghosts = false }
+  for _, pair in ipairs({ { from_entity, from }, { to_entity, to } }) do
+    local entity, at = pair[1], pair[2]
+    if entity and not supports(kind, entity) then
+      error(string.format("the endpoint at (%.1f, %.1f) is a %s, which takes no %s connection; give a free tile or a %s endpoint",
+        at.x, at.y, entity.name, kind, kind), 0)
+    end
+  end
+  local function tile(p) return { x = math.floor(p.x) + 0.5, y = math.floor(p.y) + 0.5 } end
+  local state = { kind = kind, prototype = params.prototype, proto = proto, from = from, to = to, max_length = max_length,
+    from_entity = from_entity, to_entity = to_entity }
+  if kind == "power" then
+    state.from, state.to = from_entity and from or tile(from), to_entity and to or tile(to)
+    return state
+  end
+  local starts, goals
+  local function exact(entity) local p = entity.position; return { x = p.x, y = p.y } end
+  if kind == "belt" then
+    starts = { from_entity and { position = exact(from_entity), include = false, only = from_entity.direction }
+      or { position = tile(from), include = true } }
+    goals = { to_entity and { position = exact(to_entity), include = false } or { position = tile(to), include = true } }
+  else
+    local fluid = route_fluid(params.fluid, from_entity, to_entity)
+    local function terminals(entity, at)
+      if not entity then return { { position = tile(at), include = true } } end
+      if PIPE[entity.type] then return { { position = exact(entity), include = false } } end
+      local ports = machine_ports(entity, fluid)
+      if #ports == 0 then
+        error(string.format("%s at (%.1f, %.1f) has no free %sport", entity.name, at.x, at.y, fluid and (fluid .. " ") or ""), 0)
+      end
+      return ports
+    end
+    starts, goals = terminals(from_entity, from), terminals(to_entity, to)
+    state.fluid = fluid
+  end
+  state.search = M.new_search({ kind = kind, item = params.prototype, max_length = max_length,
+    under = M.underground(c, kind, proto, params.underground), starts = starts, goals = goals })
+  return state
 end
+
+local function step(state, budget)
+  local c = companion.require_companion()
+  local steps
+  if state.kind == "power" then
+    -- The job may step on a later tick: an endpoint mined since is no route.
+    for _, pair in ipairs({ { state.from_entity, state.from }, { state.to_entity, state.to } }) do
+      if pair[1] and not pair[1].valid then
+        error(string.format("the power endpoint at (%.1f, %.1f) is gone; connect again", pair[2].x, pair[2].y), 0)
+      end
+    end
+    steps = power_route(c, state.prototype, state.proto, state.from, state.to, state.from_entity, state.to_entity,
+      state.max_length)
+    budget.left = budget.left - FIT_COST * (#steps + 2)
+  else
+    local under = state.search.under
+    local env = {
+      more = function() return budget.left > 0 end,
+      spend = function(n) budget.left = budget.left - n end,
+      fits = function(pos, dir, role)
+        budget.left = budget.left - FIT_COST
+        return can_place(c, role == "under" and under.proto or state.proto, pos, dir)
+      end,
+      -- Another underground of the same item on the axis between the ends
+      -- would pair with the entrance instead.
+      gap_clear = function(entrance, exit, d)
+        budget.left = budget.left - GAP_COST
+        local area = { left_top = { x = math.min(entrance.x, exit.x) - 0.4, y = math.min(entrance.y, exit.y) - 0.4 },
+          right_bottom = { x = math.max(entrance.x, exit.x) + 0.4, y = math.max(entrance.y, exit.y) + 0.4 } }
+        local ok, found = pcall(c.surface.find_entities_filtered, { area = area, name = under.proto.name })
+        return ok and type(found) == "table" and #found == 0
+      end,
+    }
+    steps = M.search_step(state.search, env)
+    if not steps then return nil end
+  end
+  return { kind = state.kind, prototype = state.prototype, from = state.from, to = state.to, fluid = state.fluid,
+    length = #steps, steps = steps, physical = true, ghosts = false }
+end
+
+M.job = { start = start, step = step }
 
 return M

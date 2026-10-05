@@ -263,6 +263,32 @@ describe("build packages the bridge queues", () => {
       && issue.includes("own mine step"))).toBe(true);
   });
 
+  it("accepts the 0.21.1 actions and leading blueprint captures, and rejects captures after other steps or bad areas", () => {
+    const capture = { action: "blueprint_capture", name: "smelter", center: { x: 40, y: -30 }, radius: 8 };
+    const steps = [capture,
+      { action: "blueprint_place", name: "smelter", position: { x: 80, y: -30 }, direction: 4 },
+      { action: "build_block", block: "blueprint", blueprint: "smelter", near: { x: 90, y: -30 } },
+      { action: "move_entity", from: { x: 1.5, y: 1.5 }, to: { x: 4.5, y: 1.5 } },
+      { action: "insert_items", targets: { name: "stone-furnace", near: { x: 80, y: -30 }, radius: 12 }, per_target: { coal: 5 } },
+      { action: "explore", resource: "crude-oil", max_distance: 600 },
+      { action: "deconstruct_area", area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 8, y: 8 } } },
+      { action: "upgrade_area", center: { x: 0, y: 0 }, radius: 8, from: "transport-belt", to: "fast-transport-belt" },
+      { action: "copy_settings", from: { x: 0.5, y: 0.5 }, to: [{ x: 2.5, y: 0.5 }] },
+      { action: "build_ghosts", center: { x: 0, y: 0 }, radius: 8 }];
+    expect(reduceLedger(ledger(), withPackages([{ ...drillPair(), steps }])).result).toMatchObject({ status: "applied", revision: 1 });
+    const cases: Array<[unknown[], string]> = [
+      [[steps[1], capture], "blueprint_capture steps come first"],
+      [[{ ...capture, radius: undefined }], "center and radius go together"],
+      [[{ action: "build_block", block: "blueprint" }], "names its blueprint"],
+      [[{ action: "insert_items", x: 1, y: 2, items: { coal: 1 }, per_target: { coal: 1 } }], "items or per_target"],
+    ];
+    for (const [bad, text] of cases) {
+      const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), steps: bad }])).result;
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(text)), text).toBe(true);
+    }
+  });
+
   it("rejects packages it could not execute as written, with the offending path", () => {
     const cases: Array<[unknown[], string]> = [
       [[drillPair("a"), drillPair("b"), drillPair("c")], "build_packages"],

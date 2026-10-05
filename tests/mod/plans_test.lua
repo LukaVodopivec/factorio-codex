@@ -87,7 +87,7 @@ local waiting = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, 
 game.tick = 10; tasks.on_tick(); game.tick = 39; tasks.on_tick(); game.tick = 40; tasks.on_tick()
 check(tasks.plan_status({ plan_id = waiting.plan_id }).status == "completed" and inspected == 2, "tick-side wait_for_item uses structured inventory")
 local interrupted = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 2 } } })
-game.tick = 41; tasks.on_tick(); tasks.cancel({ plan_id = interrupted.plan_id })
+game.tick = 41; tasks.on_tick(); tasks.cancel({ origin = "stop/supervisor", plan_id = interrupted.plan_id })
 local interrupted_status = tasks.plan_status({ plan_id = interrupted.plan_id })
 check(interrupted_status.status == "cancelled" and interrupted_status.outcomes[1].status == "cancelled",
   "active plan cancellation records the interrupted step")
@@ -113,7 +113,7 @@ check(tasks.plan_status({ plan_id = useful.plan_id }).status == "completed"
   and tasks.plan_status({ plan_id = parked.plan_id }).status == "waiting"
   and tasks.plan_status({ plan_id = dependent.plan_id }).status == "queued",
   "parked read-only wait does not monopolize the physical body while useful work exists")
-tasks.cancel({ plan_id = parked.plan_id })
+tasks.cancel({ origin = "stop/supervisor", plan_id = parked.plan_id })
 game.tick = 44; tasks.on_tick()
 check(tasks.plan_status({ plan_id = dependent.plan_id }).status == "cancelled",
   "dependent successor remains blocked and cancels when its parked predecessor is cancelled")
@@ -190,7 +190,7 @@ many[201] = { action = "walk_to", x = 201, y = 0 }
 local over_ok, over_error = pcall(tasks.queue_plan, { steps = many })
 check(limit_ok and not over_ok and tostring(over_error):match("1%-200 steps") ~= nil,
   "a plan takes up to 200 steps")
-tasks.cancel({ all = true })
+tasks.cancel({ origin = "stop/supervisor", all = true })
 check(not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 1 } }, source = "astra" })
   and not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 1 } }, source = "package:" }),
   "plan source is pilot, upkeep or package:<id>")
@@ -336,5 +336,128 @@ check(tasks.plan_status({ plan_id = overlap.plan_id }).status == "completed" and
 walk.start, place_runner.tick = walk_start, place_tick
 body.position = { x = 0, y = 0 }
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1
-check(tasks.cancel({ all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")
+check(tasks.cancel({ origin = "stop/supervisor", all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")
+
+-- Cancel provenance: every cancel names its origin and is kept in
+-- activity_log and the server log; a cancel without one is refused.
+local logged = {}
+_G.log = function(message) logged[#logged + 1] = message end
+local walk_tick = walk.tick
+walk.tick = function() return nil end
+local victim = tasks.queue_plan({ steps = { { action = "walk_to", x = 5, y = 5 } } })
+game.tick = 400; tasks.on_tick()
+check(not pcall(tasks.cancel, { plan_id = victim.plan_id }) and storage.tasks.active.id == victim.plan_id,
+  "a cancel without an origin is refused and cancels nothing")
+check(tasks.cancel({ plan_id = victim.plan_id, origin = "cancel/pilot" }).cancelled == 1, "a cancel with an origin cancels")
+local victim_status = tasks.plan_status({ plan_id = victim.plan_id })
+local rows = tasks.activity_log({ since_plan_id = victim.plan_id - 1 }).entries
+check(victim_status.status == "cancelled" and victim_status.outcomes[1].error == "CANCELLED by cancel/pilot"
+  and rows[#rows].kind == "cancel" and rows[#rows].origin == "cancel/pilot" and rows[#rows].plan_id == victim.plan_id
+  and rows[#rows].cancelled_count == 1 and rows[#rows].tick == 400 and rows[#rows - 1].plan_id == victim.plan_id
+  and rows[#rows - 1].summary:match("CANCELLED by cancel/pilot")
+  and logged[#logged]:match("cancel origin=cancel/pilot target=plan " .. victim.plan_id .. " cancelled=1 tick=400"),
+  "the cancelled plan, activity_log and the server log all name who cancelled it")
+tasks.queue_plan({ steps = { { action = "walk_to", x = 5, y = 5 } } })
+game.tick = 401; tasks.on_tick()
+check(tasks.cancel({ all = true, origin = "stop/supervisor" }).cancelled == 1 and storage.tasks.last_cancel_all_tick == 401,
+  "a cancel-all records its tick for the bridge's package latch")
+local stop_row = storage.activity_log[#storage.activity_log]
+check(stop_row.kind == "cancel" and stop_row.all and stop_row.after_plan_id == storage.tasks.next_id - 1
+  and stop_row.cancelled_count == 1 and logged[#logged]:match("target=all"),
+  "a cancel-all is one activity_log row naming the newest plan at the time")
+check(tasks.cancel({ plan_id = 9999, origin = "direct-task-timeout/pilot" }).cancelled == 0
+  and storage.activity_log[#storage.activity_log].cancelled_count == 0,
+  "even a cancel that finds nothing is logged")
+require("scripts.state").init()
+check(storage.tasks.last_cancel_all_tick == 401, "the last cancel-all survives a reload")
+_G.log = nil
+
+-- Plans belong to the surface the body stood on when they were queued: off
+-- that surface they wait, and their step starts over once it is back.
+body.surface.name = "nauvis"
+local surface_starts = 0
+local walk_start_fn = walk.start
+walk.start = function() surface_starts = surface_starts + 1 end
+local home = tasks.queue_plan({ steps = { { action = "walk_to", x = 5, y = 5 } } })
+game.tick = 410; tasks.on_tick()
+check(storage.tasks.active and storage.tasks.active.id == home.plan_id and storage.tasks.active.surface == "nauvis",
+  "a plan is tagged with the body's surface")
+body.surface.name = "platform-1"
+game.tick = 411; tasks.on_tick()
+check(storage.tasks.active == nil and tasks.plan_status({ plan_id = home.plan_id }).status == "waiting"
+  and storage.tasks.queue[1].id == home.plan_id and body.walking_state.walking == false,
+  "on another surface the plan stops its body and waits in the FIFO")
+local away = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } } })
+walk.tick = function() return { status = "done", detail = "arrived" } end
+for tick = 412, 414 do game.tick = tick; tasks.on_tick() end
+check(tasks.plan_status({ plan_id = away.plan_id }).status == "completed"
+  and tasks.plan_status({ plan_id = home.plan_id }).status == "waiting",
+  "work queued on the new surface runs while the parked plan waits")
+body.surface.name = "nauvis"
+for tick = 415, 417 do game.tick = tick; tasks.on_tick() end
+check(tasks.plan_status({ plan_id = home.plan_id }).status == "completed" and surface_starts == 3,
+  "back on its surface the plan starts its step over and completes")
+walk.start, walk.tick = walk_start_fn, walk_tick
+
+-- A successor whose predecessor failed is cancelled once, even while it is
+-- parked off its surface: it leaves the queue and is logged once.
+body.surface.name = "platform-1"
+local lost = tasks.queue_plan({ steps = { { action = "mine", x = 1, y = 4, count = 1 } } })
+body.surface.name = "nauvis"
+local orphan = tasks.queue_plan({ steps = { { action = "walk_to", x = 2, y = 2 } }, after_plan_id = lost.plan_id })
+body.surface.name = "platform-1"
+for tick = 418, 419 do game.tick = tick; tasks.on_tick() end
+local orphan_rows = 0
+for _, entry in ipairs(storage.activity_log) do if entry.plan_id == orphan.plan_id then orphan_rows = orphan_rows + 1 end end
+check(tasks.plan_status({ plan_id = lost.plan_id }).status == "failed"
+  and tasks.plan_status({ plan_id = orphan.plan_id }).status == "cancelled" and #storage.tasks.queue == 0
+  and orphan_rows == 1, "an off-surface successor of a failed plan is cancelled once and leaves the queue")
+body.surface.name = "nauvis"
+
+-- Step fields reach their runners: place_entity's insert map, insert_items'
+-- targets (per_target or items), and the explore action.
+local place_start = place_runner.start
+local seen_place
+place_runner.start = function(task) seen_place = task end
+local insert_runner = package.loaded["scripts.actions.transfer"].insert
+local insert_start = insert_runner.start
+local seen_insert
+insert_runner.start = function(task) seen_insert = task end
+tasks.queue_plan({ steps = {
+  { action = "place_entity", name = "stone-furnace", x = 1, y = 1, insert = { coal = 5 } },
+  { action = "insert_items", targets = { { x = 1, y = 1 }, { x = 3, y = 1 } }, per_target = { coal = 2 } } } })
+for tick = 420, 423 do game.tick = tick; tasks.on_tick() end
+check(seen_place and seen_place.insert.coal == 5, "place_entity's insert map reaches the place runner")
+check(seen_insert and #seen_insert.targets == 2 and seen_insert.items.coal == 2 and seen_insert.target == nil,
+  "insert_items' targets and per_target counts reach the insert runner")
+place_runner.start, insert_runner.start = place_start, insert_start
+check(not pcall(tasks.queue_plan, { steps = { { action = "insert_items", targets = { { x = 1, y = 1 } },
+  per_target = { coal = 1 }, items = { coal = 1 } } } }),
+  "insert_items takes per_target or items, not both")
+check(not pcall(tasks.queue_plan, { steps = { { action = "explore", max_distance = 5 } } })
+  and pcall(tasks.queue_plan, { steps = { { action = "explore", max_distance = 200 } } }),
+  "explore is a plan action with its own validation")
+-- Blueprint and area actions are plan actions with their own validation.
+check(pcall(tasks.queue_plan, { steps = {
+  { action = "move_entity", from = { x = 1, y = 1 }, to = { x = 4, y = 1 } },
+  { action = "blueprint_place", name = "gears", position = { x = 10, y = 10 }, direction = 4, mode = "hand" },
+  { action = "build_ghosts", center = { x = 10, y = 10 }, radius = 8 },
+  { action = "deconstruct_area", area = { left_top = { x = 0, y = 0 }, right_bottom = { x = 8, y = 8 } }, mode = "robots" },
+  { action = "upgrade_area", center = { x = 0, y = 0 }, radius = 4, from = "transport-belt", to = "fast-transport-belt" },
+  { action = "copy_settings", from = { x = 1, y = 1 }, to = { { x = 5, y = 1 } } } } }),
+  "move_entity, blueprint_place, build_ghosts, deconstruct_area, upgrade_area and copy_settings queue as plan steps")
+check(not pcall(tasks.queue_plan, { steps = { { action = "move_entity", from = { x = 1, y = 1 } } } })
+  and not pcall(tasks.queue_plan, { steps = { { action = "deconstruct_area", center = { x = 0, y = 0 }, radius = 2, mode = "fire" } } })
+  and not pcall(tasks.queue_plan, { steps = { { action = "copy_settings", from = { x = 1, y = 1 }, to = {} } } }),
+  "their steps are validated when queued")
+tasks.cancel({ all = true, origin = "stop/supervisor" })
+-- Rows that are not plan outcomes (a blueprint stored) name the newest plan,
+-- so since_plan_id reads them like cancel rows.
+local newest = storage.tasks.next_id - 1
+tasks.log_event({ kind = "blueprint", action = "capture", name = "gears", tick = game.tick })
+local rows = tasks.activity_log({ since_plan_id = newest - 1 }).entries
+local later = tasks.activity_log({ since_plan_id = newest }).entries
+check(rows[#rows].kind == "blueprint" and rows[#rows].after_plan_id == newest and later[#later].kind ~= "blueprint",
+  "a blueprint row in activity_log carries the newest plan ID for since_plan_id")
+tasks.cancel({ all = true, origin = "stop/supervisor" })
 os.exit(failures == 0 and 0 or 1)

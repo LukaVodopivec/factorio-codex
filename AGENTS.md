@@ -59,8 +59,8 @@ local state. It waits on `next_event` and handles failed packages, an empty
 queue, and local judgment with goal-level actions; it sends no reports. The
 persistent `gpt-6-astra` strategist uses `medium` reasoning at normal speed,
 owns coordinate-free NOW/NEXT/LATER priorities and the architecture, designs
-every coupled layout as a build package of whole blocks (dry-run with
-`build_block`/`build_layout` `check_only`), and may call only the mechanically
+every coupled layout as a build package of whole blocks or this run's
+blueprints (dry-run with `check_only`), and may call only the mechanically
 read-only MCP surface. Its reads never enter or delay the physical lane.
 
 **Ledger and packages.** Keep one compact `operations.json`. Astra is its sole
@@ -70,10 +70,12 @@ channel to the pilot: supervisor assignments never ask Astra to message the
 pilot. The pilot's full-surface bridge queues each new package into the FIFO by
 itself, in ledger order, as a plan with source `package:<id>` after the mod's
 placement check, and records outcomes in `<run_dir>/package-queue.json`; a
-failed package surfaces through `next_event` and `activity_log`. It queues
-nothing until a plan has run since load or the last `stop`; any plan opens
-that latch, the pre-`GO` takeover rehearsal's included, so Astra writes no
-build package before `GO` (every pre-`GO` ledger write has
+failed package surfaces through `next_event` and `activity_log`. It never
+waits for a pilot plan: it holds packages only during a human hold and while
+the ledger is older than the last `stop` (packages written before a stop stay
+held until Astra rewrites the ledger). A package may start with
+`blueprint_capture` steps, which the bridge makes before queuing the rest.
+Astra writes no build package before `GO` (every pre-`GO` ledger write has
 `build_packages: []`). A reused package id is rejected by `ledger-apply`. Tool results
 carry Astra's orders whenever the ledger revision changes. There are no pilot
 reports, ledger reads by shell, revision checks, or package revalidation. Do not
@@ -88,8 +90,10 @@ recorder's samples (`~/.local/share/factorio-codex/runs/run-<id>/thoughts.jsonl`
 each line with `said_at`, when the game showed it). The feed is output only: game chat never controls
 the bot, and the panel never triggers a takeover hold.
 
-**Upkeep.** While the FIFO is empty and no hold is active, the mod refuels dry
-burner machines from own stock as a plan with source `upkeep`; any queued plan
+**Upkeep.** While the FIFO is empty, no hold is active, and some plan has
+finished since the last emergency stop (a stop is never undone by upkeep), the
+mod refuels dry burner machines and brings science packs to waiting labs from
+own stock as a plan with source `upkeep`; any queued plan
 takes the body at the next step boundary. Upkeep is the mod's work, not pilot
 activity.
 
@@ -191,8 +195,9 @@ Before `GO` of a fresh run, archive the previous run's `operations.json` and
 `package-queue.json` into that run's directory and have Astra initialise the new
 ledger; a ledger from another run is archival evidence only. Before `GO` on any
 resumed save or after a mod upgrade, reconcile retained work: call `stop`
-once even when idle (it also closes the package latch, so no package moves the
-body before `GO`) and re-observe until idle.
+once even when idle (packages written before it stay held, so no old package
+moves the body before `GO`) and re-observe until idle. Every cancel names its
+`origin` (tool and bridge role) in `activity_log` and the server log.
 
 **Notebook.** Each run has a markdown notebook in `<run_dir>/notebook/`, created
 at deploy with empty `astra/` and `luna/` folders. Each role writes only its own

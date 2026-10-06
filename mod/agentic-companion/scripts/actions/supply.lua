@@ -11,7 +11,10 @@
 -- it waits for it (craft.awaits).
 --
 -- A supply task is { items = {{name, count}, ...} } where count is the total
--- the body should carry; exclude = {x, y} is never taken from (an insert's
+-- the body should carry. An item several frames need (plates both directly
+-- and through gears or pipes) is claimed by each of them: the body carries
+-- what all open claims total, and a craft or furnace load releases the claims
+-- of the ingredients it consumed. exclude = {x, y} is never taken from (an insert's
 -- own target); bulk = true takes up to a stack of a placeable item from a
 -- source, so a plan placing many of one item fetches them once.
 local companion = require("scripts.companion")
@@ -353,14 +356,47 @@ end
 
 -- ------------------------------------------------------------------ runner
 
-local function push(task, name, count, depth)
+-- A frame claims count of its item for its consumer (parent); the item's
+-- frames fetch until the body carries what all open claims total. path holds
+-- the frame's own and its ancestors' items (a recipe cycle).
+local function push(task, name, count, depth, parent)
+  local path = { [name] = true }
+  for item in pairs(parent and parent.path or {}) do path[item] = true end
   task._stack[#task._stack + 1] = { name = name, count = count, depth = depth, phase = "take",
-    tried = {}, takes = 0, gathers = 0 }
+    tried = {}, takes = 0, gathers = 0, path = path }
+  if parent and task._claims then
+    task._claims[name] = (task._claims[name] or 0) + count
+    parent.claimed = parent.claimed or {}
+    parent.claimed[name] = (parent.claimed[name] or 0) + count
+  end
 end
 
-local function in_stack(task, name)
-  for _, frame in ipairs(task._stack) do if frame.name == name then return true end end
+-- The frame's ingredients were consumed (or never will be): their claims end.
+local function release(task, frame)
+  for name, count in pairs(frame.claimed or {}) do
+    task._claims[name] = math.max(0, (task._claims[name] or 0) - count)
+  end
+  frame.claimed = nil
+end
+
+local function pop(task)
+  local frame = table.remove(task._stack)
+  if frame and task._claims then release(task, frame) end
+end
+
+-- Whether supplying name for frame would recurse into an item being supplied
+-- further up the same chain. A frame from a supply begun before paths
+-- existed checks the whole stack.
+local function cycles(task, frame, name)
+  if frame.path then return frame.path[name] == true end
+  for _, other in ipairs(task._stack) do if other.name == name then return true end end
   return false
+end
+
+-- What the body should carry of the frame's item: every open claim on it
+-- (a supply begun before claims existed counts the frame alone).
+local function wanted(task, frame)
+  return task._claims and task._claims[frame.name] or frame.count
 end
 
 local function note(task, kind, item, count)
@@ -381,7 +417,7 @@ end
 function M.start(task)
   local c = companion.require_companion()
   if type(task.items) ~= "table" or #task.items == 0 then error("get_items requires an item and a count") end
-  task._before, task._stack, task._shortfall = {}, {}, {}
+  task._before, task._stack, task._shortfall, task._claims = {}, {}, {}, {}
   task._report = { taken = {}, crafted = {}, smelted = {}, gathered = {} }
   for index = #task.items, 1, -1 do
     local want = task.items[index]
@@ -392,6 +428,8 @@ function M.start(task)
     if not count or count % 1 ~= 0 or count < 1 then error("get_items count must be a positive integer") end
     want.count = count
     task._before[want.name] = have(c, want.name)
+    -- Each wanted count is a total to carry, never added to another.
+    task._claims[want.name] = math.max(task._claims[want.name] or 0, count)
     push(task, want.name, count, 0)
   end
 end
@@ -409,10 +447,10 @@ end
 -- One frame step. Returns true when a nested action started or this tick's
 -- scan is spent (either ends the tick).
 local function advance(task, c, frame)
-  local need = frame.count - carried(c, frame.name)
+  local need = wanted(task, frame) - carried(c, frame.name)
   -- Output still in the crafting queue is on its way: never made twice.
   if need > 0 then need = need - craft.queued(c, frame.name) end
-  if need <= 0 then table.remove(task._stack); return false end
+  if need <= 0 then pop(task); return false end
 
   -- The body cannot leave where it stands (a nested walk ended with
   -- START_COLLISION): no other source is walked to in this supply.
@@ -474,12 +512,12 @@ local function advance(task, c, frame)
     local crafts = math.min(math.ceil(need / per_craft), MAX_CRAFTS)
     frame.phase, frame.recipe, frame.per_craft = "craft_start", recipe.name, per_craft
     -- Ingredients first (the first is fetched first); an ingredient already
-    -- being supplied further up is a cycle and is left to the craft.
+    -- being supplied further up this chain is a cycle and is left to the craft.
     local ingredients = recipe.ingredients or {}
     for index = #ingredients, 1, -1 do
       local ingredient = ingredients[index]
-      if ingredient.type ~= "fluid" and not in_stack(task, ingredient.name) then
-        push(task, ingredient.name, math.ceil((tonumber(ingredient.amount) or 1) * crafts), frame.depth + 1)
+      if ingredient.type ~= "fluid" and not cycles(task, frame, ingredient.name) then
+        push(task, ingredient.name, math.ceil((tonumber(ingredient.amount) or 1) * crafts), frame.depth + 1, frame)
       end
     end
     return false
@@ -487,6 +525,7 @@ local function advance(task, c, frame)
 
   if frame.phase == "craft_start" then
     frame.phase = "end"
+    if task._claims then release(task, frame) end
     local crafts = math.min(math.ceil(need / frame.per_craft), MAX_CRAFTS)
     frame.before = have(c, frame.name)
     local ok, err = pcall(M.begin, task, "_sub", { type = "craft", recipe = frame.recipe, count = crafts })
@@ -519,13 +558,16 @@ local function advance(task, c, frame)
       ore = ingredient.name, ore_count = crafts * amount, fuel = fuel }
     frame.phase = "smelt_load"
     -- The ore and fuel are supplied first, like a recipe's ingredients.
-    if fuel and not in_stack(task, fuel) then push(task, fuel, SMELT_FUEL, frame.depth + 1) end
-    if not in_stack(task, ingredient.name) then push(task, ingredient.name, crafts * amount, frame.depth + 1) end
+    if fuel and not cycles(task, frame, fuel) then push(task, fuel, SMELT_FUEL, frame.depth + 1, frame) end
+    if not cycles(task, frame, ingredient.name) then
+      push(task, ingredient.name, crafts * amount, frame.depth + 1, frame)
+    end
     return false
   end
 
   if frame.phase == "smelt_load" then
     local s = frame.smelt
+    if task._claims then release(task, frame) end
     local ore = math.min(carried(c, s.ore), s.ore_count)
     if ore <= 0 or not s.furnace.valid then
       frame.error, frame.phase = ore <= 0 and ("no " .. s.ore .. " to smelt") or "the furnace is gone", "gather"
@@ -606,7 +648,7 @@ local function advance(task, c, frame)
     reason = #parts > 0 and table.concat(parts, "; ") or "every source ran dry"
   end
   shortfall(task, frame, need, reason)
-  table.remove(task._stack)
+  pop(task)
   return false
 end
 

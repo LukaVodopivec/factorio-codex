@@ -42,10 +42,19 @@ package.loaded["scripts.registry"] = { stock_totals = function(names)
   return totals
 end }
 local queued = {}
-package.loaded["scripts.tasks"] = { queue_plan = function(params, selection)
+-- tasks.upkeep_room owns when upkeep may take the body (plans_test covers it).
+local room = "idle"
+package.loaded["scripts.tasks"] = { upkeep_room = function() return room end, queue_plan = function(params, selection)
   params.selection = selection; queued[#queued + 1] = params; return { plan_id = #queued } end }
+-- The queued plan's first `count` steps ran to their end (tasks' upkeep
+-- listener); the plan ID is its place in `queued`.
+local chores_ref
+local function steps_ended(plan_id, count, status)
+  for index = 1, count do chores_ref.on_upkeep_step({ id = plan_id }, index, status or "completed") end
+end
 
 local chores = require("scripts.chores")
+chores_ref = chores
 require("scripts.state").init()
 check(type(storage.chores.refueled) == "table" and type(storage.chores.fed_labs) == "table",
   "state.init creates the chores storage")
@@ -63,9 +72,11 @@ local function sampled(machines)
   local waiting = {}
   for unit, rec in pairs(machines) do
     local surface = rec.entity.surface_index
-    waiting[rec.raw] = waiting[rec.raw] or {}
-    waiting[rec.raw][surface] = waiting[rec.raw][surface] or {}
-    waiting[rec.raw][surface][unit] = true
+    for _, set in ipairs({ rec.raw, rec.low_fuel and "low_fuel" or nil }) do
+      waiting[set] = waiting[set] or {}
+      waiting[set][surface] = waiting[set][surface] or {}
+      waiting[set][surface][unit] = true
+    end
   end
   storage.autonomy = { machines = machines, waiting = waiting }
 end
@@ -79,23 +90,47 @@ check(plan and plan.source == "upkeep" and #plan.steps == 2 and plan.steps[1].ac
 check(#stock_passes == 1 and stock_passes[1] == "coal,wood" and #filter_calls == 1 and filter_calls[1] == "chemical",
   "the fuel stock is one registry pass for the burner's fuel category, found through the item filter")
 
+check(next(storage.chores.refueled) == nil, "selecting a machine does not start its refuel cooldown")
+game.tick = 1100
+steps_ended(1, 1)
+check(storage.chores.refueled[2] == 1100 and storage.chores.refueled[1] == nil,
+  "a refuel step that ended starts its machine's cooldown; the step not reached yet does not")
 game.tick = 1300
 chores.upkeep(game.tick)
-check(#queued == 1, "a machine refuelled in the last minute is not refuelled again")
+check(#queued == 2 and #queued[2].steps == 1 and queued[2].steps[1].x == 20,
+  "a machine a pre-empted plan never reached is chosen again at the next pass, the refuelled one is not")
+steps_ended(2, 1, "failed")
+game.tick = 1600
+chores.upkeep(game.tick)
+check(#queued == 2 and storage.chores.refueled[1] == 1300,
+  "a failed refuel attempt also waits out the cooldown, so one unreachable machine never holds up the rest")
+steps_ended(1, 2)
+check(storage.chores.refueled[1] == 1300, "only the newest upkeep plan's steps stamp a cooldown")
+queued[3] = nil
 
 game.tick = 5000
-storage.tasks.active = { id = 9 }
+room = nil
 chores.upkeep(game.tick)
-check(#queued == 1, "upkeep waits while the FIFO has work")
-storage.tasks.active = nil
+check(#queued == 2, "upkeep waits while tasks.upkeep_room gives it no room")
+room = "idle"
 holding = true
 chores.upkeep(game.tick)
-check(#queued == 1, "upkeep never starts while the owner holds the body")
+check(#queued == 2, "upkeep never starts while the owner holds the body")
 holding = false
-storage.tasks.last_finished_tick = nil
+-- Beside pending work (parked waits, a running craft) the plan ends with a
+-- walk back to where the body stood.
+body.position = { x = 1, y = -2 }
+room = "busy"
 chores.upkeep(game.tick)
-check(#queued == 1, "upkeep does not undo an emergency stop")
-storage.tasks.last_finished_tick = 4900
+local busy = queued[3]
+check(busy and #busy.steps == 3 and busy.steps[1].action == "insert_items" and busy.steps[2].action == "insert_items"
+  and busy.steps[3].action == "walk_to" and busy.steps[3].x == 1 and busy.steps[3].y == -2
+  and busy.steps[3].arrival_mode == "vicinity" and storage.chores.last_selection.room == "busy",
+  "beside pending work upkeep refuels, then walks back to where the body stood")
+steps_ended(3, 3, "cancelled")
+check(next(storage.chores.refueled) == nil, "a cancelled refuel step starts no cooldown")
+queued[2], queued[3] = nil, nil
+room, body.position = "idle", { x = 0, y = 0 }
 
 stocked.coal = 3
 chores.upkeep(game.tick)
@@ -132,6 +167,32 @@ local count_before = #queued
 chores.upkeep(16000)
 check(#queued == count_before, "with no fuel of the burner's category nothing is queued")
 
+-- A working burner on its last fuel item is refuelled before it runs dry,
+-- after the dry ones; at most 8 machines a pass, the low ones left out first.
+local function low(unit, x)
+  local rec = machine(unit, x, "working")
+  rec.low_fuel = true
+  return rec
+end
+local mix = { [31] = low(31, 2), [32] = machine(32, 9, "no_fuel"), [33] = machine(33, 4, "working") }
+sampled(mix)
+storage.chores.refueled, carried, stocked = {}, { coal = 0 }, { coal = 100 }
+game.tick, count_before = 17000, #queued
+chores.upkeep(game.tick)
+local topped = queued[#queued]
+check(#queued == count_before + 1 and #topped.steps == 2 and topped.steps[1].x == 2 and topped.steps[1].items.coal == 10
+  and topped.steps[2].x == 9, "a working burner low on fuel is refuelled with the dry ones, nearest first")
+check(storage.chores.last_selection.refuel.candidates[2].low_fuel == true,
+  "the selection readback names the low-fuel candidate")
+for unit = 41, 50 do mix[unit] = (unit <= 46) and machine(unit, unit, "no_fuel") or low(unit, unit - 40) end
+sampled(mix)
+storage.chores.refueled = {}
+chores.upkeep(17100)
+local capped_mix, lows = queued[#queued], 0
+for _, step in ipairs(capped_mix.steps) do if step.x < 10 and step.x ~= 9 then lows = lows + 1 end end
+check(#capped_mix.steps == 8 and lows == 1,
+  "with more than 8 to serve, the 7 dry machines come first and one low one fills the last place")
+
 -- Labs missing the current research's packs get the packs each lab takes
 -- (its inputs, room in its input inventory) from carried or stored packs, in
 -- the same upkeep plan as refuelling. A lab that would take nothing is
@@ -160,6 +221,7 @@ game.tick = 12000
 local before = #queued
 chores.upkeep(game.tick)
 local fed = queued[#queued]
+steps_ended(#queued, 1)
 check(#queued == before + 1 and #fed.steps == 3 and fed.steps[1].x == 2 and fed.steps[1].items.coal == 10
   and fed.steps[2].x == 3 and fed.steps[2].items["automation-science-pack"] == 10 and fed.steps[2].items["logistic-science-pack"] == 3
   and fed.steps[3].x == 9 and fed.steps[3].items["automation-science-pack"] == 10 and fed.steps[3].items["logistic-science-pack"] == nil,

@@ -1,16 +1,24 @@
 -- Chores the mod does without any bot:
--- * Upkeep: while the FIFO is empty (and not after an emergency stop), the owner
---   is not holding the body and the body stands on a surface (nothing aboard
---   or in transit), the body refuels own burner machines on its surface that
---   ran dry, with a fuel their burner takes (by fuel category: biochambers
---   nutrients, heating towers chemical fuel), and brings the current
---   research's science packs to own labs on its surface that take them, from
---   what it carries or own stock (insert's auto-supply walks to it). A lab
+-- * Upkeep: while nothing queued takes the body (the FIFO is empty or holds
+--   only parked waits or plans whose predecessor is pending, or the running
+--   plan's step only waits on hand-crafting: tasks.upkeep_room), never after
+--   an emergency stop before a plan has finished, while the owner is not holding
+--   the body and the body stands on a surface (nothing aboard or in
+--   transit), the body refuels own burner machines on its surface that ran
+--   dry or are working on their last fuel item, with a fuel their burner
+--   takes (by fuel category: biochambers nutrients, heating towers chemical
+--   fuel), and brings the current research's science packs to own labs on
+--   its surface that take them, from what it carries or own stock (insert's
+--   auto-supply walks to it). A machine's refuel cooldown starts when its
+--   refuel step ends (fuel inserted, or the attempt failed), so a machine a
+--   pre-empted plan never reached is chosen again at the next pass. A lab
 --   gets only the packs it accepts and has room for; one that would take
 --   nothing is skipped, and the same lab and pack are never tried again
 --   within LAB_RETRY_TICKS. With no research active no lab is fed. It is an
---   ordinary plan with source "upkeep", so activity_log shows it and any
---   queued plan takes the body at the next step boundary.
+--   ordinary plan with source "upkeep", so activity_log shows it, and any
+--   queued plan that takes the body takes it at the next step boundary.
+--   Beside pending work the plan ends with a walk back to where the body
+--   stood, so a parked wait still reads its target from there.
 -- * Charting: every minute the force charts the chunks around the body that
 --   it has not charted yet, on planet surfaces only, and once when the body
 --   arrives on a planet, so patches and water appear without scouting.
@@ -29,6 +37,7 @@ local CHART_RADIUS_CHUNKS = 5        -- 11 x 11 chunks: about 350 tiles across
 local REFUEL_COOLDOWN_TICKS = 3600   -- one refuel attempt per machine a minute
 M.LAB_RETRY_TICKS = 600              -- one try per lab and pack in ten seconds
 local MAX_REFUELS = 8
+local RETURN_RADIUS = 2               -- the walk back beside pending work
 local FUEL_PER_MACHINE = 10
 local MAX_LABS = 8
 local PACKS_PER_LAB = 10
@@ -46,21 +55,15 @@ local function held()
   return ok and value == true
 end
 
--- Empty, and some plan has finished since load or the last emergency stop
--- (cancel all clears last_finished_tick): a stop is never undone by upkeep.
-local function fifo_empty()
-  local t = storage.tasks
-  return t and not t.active and #t.queue == 0 and t.last_finished_tick ~= nil
-end
-
--- Own machines on the body's surface in a raw sampler state (of one type
--- when given), not skipped by `skip(unit)` (a pure Lua test), nearest
--- first: from the sampler's set of that state on that surface, at most
--- MAX_CANDIDATES of them looked at (machines elsewhere are never counted).
+-- Own machines on the body's surface in a raw sampler state, or in the
+-- sampler's "low_fuel" set (of one type when given), not skipped by
+-- `skip(unit)` (a pure Lua test), nearest first: from the sampler's set on
+-- that surface, at most MAX_CANDIDATES of them looked at (machines elsewhere
+-- are never counted). An audit records at most MAX_CANDIDATES rows in all.
 local function machines_in(c, raw, kind, skip, audit)
   local a = storage.autonomy
   local rows, seen = {}, 0
-  local audit_left = MAX_CANDIDATES
+  local audit_left = audit and MAX_CANDIDATES - audit.observed_candidates or 0
   local function nearer(x, y)
     if x.distance ~= y.distance then return x.distance < y.distance end
     return x.unit < y.unit
@@ -69,14 +72,15 @@ local function machines_in(c, raw, kind, skip, audit)
   for unit in pairs(by_surface and by_surface[c.surface_index] or {}) do
     if seen >= MAX_CANDIDATES then if audit then audit.scan_complete = false end; break end
     local rec = a.machines[unit]
-    local matches = rec and rec.raw == raw and (kind == nil or rec.type == kind)
+    local matches = rec and (raw == "low_fuel" and rec.low_fuel == true or rec.raw == raw)
+      and (kind == nil or rec.type == kind)
     local skipped = matches and skip and skip(unit)
     local evidence
     if audit and matches and audit_left > 0 then
       audit_left = audit_left - 1
       audit.observed_candidates = audit.observed_candidates + 1
       local at = storage.chores.refueled[unit]
-      evidence = { unit = unit, position = rec.position, raw = rec.raw,
+      evidence = { unit = unit, position = rec.position, raw = rec.raw, low_fuel = rec.low_fuel or nil,
         decision = skipped and "cooldown" or "candidate", last_attempt_tick = at,
         retry_tick = at and at + REFUEL_COOLDOWN_TICKS or nil }
       audit.candidates[#audit.candidates + 1] = evidence
@@ -149,13 +153,16 @@ local function fuel_for(c, entity, known)
   return known[key] or nil
 end
 
--- Insert steps that refuel own burner machines out of fuel: the machines
--- sharing a fuel share what there is of it.
-local function refuel_steps(c, tick, steps, audit)
+-- Insert steps that refuel own burner machines out of fuel, then those
+-- working on their last fuel item: the machines sharing a fuel share what
+-- there is of it. Each step's machine is kept in `units` by the step.
+local function refuel_steps(c, tick, steps, audit, units)
   local refueled = storage.chores.refueled
-  local machines = machines_in(c, "no_fuel", nil, function(unit)
+  local function cooling(unit)
     return refueled[unit] ~= nil and tick - refueled[unit] < REFUEL_COOLDOWN_TICKS
-  end, audit)
+  end
+  local machines = machines_in(c, "no_fuel", nil, cooling, audit)
+  for _, machine in ipairs(machines_in(c, "low_fuel", nil, cooling, audit)) do machines[#machines + 1] = machine end
   while #machines > MAX_REFUELS do
     local excluded = table.remove(machines)
     if excluded.evidence then excluded.evidence.decision = "selection_limit" end
@@ -186,12 +193,11 @@ local function refuel_steps(c, tick, steps, audit)
     end
     if each >= 1 then
       for _, machine in ipairs(list) do
-        steps[#steps + 1] = { action = "insert_items", x = machine.position.x, y = machine.position.y, items = { [name] = each } }
-        storage.chores.refueled[machine.unit] = tick
+        local step = { action = "insert_items", x = machine.position.x, y = machine.position.y, items = { [name] = each } }
+        steps[#steps + 1], units[step] = step, machine.unit
         if machine.evidence then machine.evidence.decision = "selected" end
         audit.selected[#audit.selected + 1] = { unit = machine.unit, position = machine.position,
-          item = name, count = each, available_snapshot = available, attempt_tick = tick,
-          retry_tick = tick + REFUEL_COOLDOWN_TICKS }
+          item = name, count = each, available_snapshot = available }
       end
     end
   end
@@ -280,28 +286,47 @@ end
 
 function M.upkeep(tick)
   local c = companion.get()
-  if not (c and c.valid and storage.chores) or not fifo_empty() or held() then return end
+  if not (c and c.valid and storage.chores) or held() then return end
+  local room = tasks.upkeep_room()
+  if not room then return end
   for unit, at in pairs(storage.chores.refueled) do
     if tick - at >= REFUEL_COOLDOWN_TICKS then storage.chores.refueled[unit] = nil end
   end
   for key, at in pairs(storage.chores.fed_labs) do
     if tick - at >= M.LAB_RETRY_TICKS then storage.chores.fed_labs[key] = nil end
   end
-  local steps = {}
-  local selection = { tick = tick, surface_index = c.surface_index,
+  local steps, units = {}, {}
+  local selection = { tick = tick, surface_index = c.surface_index, room = room,
     refuel = { candidate_limit = MAX_CANDIDATES, selected_limit = MAX_REFUELS,
       retry_ticks = REFUEL_COOLDOWN_TICKS, candidates = {}, selected = {},
       observed_candidates = 0, scan_complete = true } }
-  refuel_steps(c, tick, steps, selection.refuel)
+  refuel_steps(c, tick, steps, selection.refuel, units)
   lab_steps(c, tick, steps)
   selection.step_count = #steps
+  if #steps > 0 and room == "busy" then
+    steps[#steps + 1] = { action = "walk_to", x = c.position.x, y = c.position.y,
+      arrival_mode = "vicinity", arrival_radius = RETURN_RADIUS }
+  end
   if #steps > 0 then
     local ok, result = pcall(tasks.queue_plan, { steps = steps, source = "upkeep" }, selection)
     selection.queue_status = ok and "queued" or "rejected"
     selection.plan_id = ok and result.plan_id or nil
     if not ok then selection.queue_error = tostring(result):sub(1, 240) end
+    -- The machine each refuel step serves, by step index, for the cooldown.
+    local by_index = {}
+    for index, step in ipairs(steps) do by_index[index] = units[step] end
+    storage.chores.refuel_plan = ok and { plan_id = result.plan_id, units = by_index } or nil
   else selection.queue_status = "no_steps" end
   storage.chores.last_selection = selection
+end
+
+-- A step of an upkeep plan ended (tasks' upkeep listener): a refuel step's
+-- machine starts its cooldown now, whether the fuel went in or the attempt
+-- failed, so one unreachable machine never holds up the rest.
+function M.on_upkeep_step(plan, index, status)
+  local pending = storage.chores and storage.chores.refuel_plan
+  local unit = status ~= "cancelled" and pending and pending.plan_id == plan.id and pending.units[index]
+  if unit then storage.chores.refueled[unit] = game.tick end
 end
 
 -- Chart the uncharted chunks around the body, on a planet's surface only;

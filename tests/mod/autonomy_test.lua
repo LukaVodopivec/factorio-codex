@@ -662,5 +662,29 @@ for _, line in ipairs(autonomy.lines()) do if line.entity == "rocket-silo" then 
 check(silo_line and silo_line.state == "idle" and silo_line.cause == "rocket_ready",
   "a silo waiting to launch is idle with cause rocket_ready")
 
+-- Low fuel: a working burner machine with fewer than 2 fuel items left joins
+-- the sampler's low_fuel set (upkeep refuels it before it runs dry) and
+-- leaves it once topped up; a dry or electric machine is never low.
+local fuel_left = 1
+local low_drill = machine("mining-drill", "burner-mining-drill", 400, 0, { mining_progress = 0, mining_target = ore,
+  burner = { inventory = mock.inventory({ get_item_count = function() return fuel_left end }) } })
+autonomy.refresh()
+sample_silo(1)
+local function low_set()
+  local units = storage.autonomy.waiting.low_fuel and storage.autonomy.waiting.low_fuel[1]
+  return units ~= nil and units[low_drill.unit_number] == true
+end
+check(low_set(), "a working burner on its last fuel item joins the low_fuel set")
+autonomy.refresh()
+check(low_set(), "a refresh keeps the low_fuel set")
+fuel_left = 5
+sample_silo(1)
+check(not low_set(), "a burner topped up leaves the low_fuel set")
+fuel_left = 0
+mock.state(low_drill).status = RAW.no_fuel
+sample_silo(1)
+check(not low_set() and storage.autonomy.waiting.no_fuel[1][low_drill.unit_number] == true,
+  "a dry burner is in the no_fuel set, not the low_fuel one")
+
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

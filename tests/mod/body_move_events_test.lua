@@ -37,7 +37,7 @@ stub("scripts.state", { init = function() end })
 local flags, queued = {}, {}
 local fail_flag = false
 local bound_for
-stub("scripts.tasks", { set_observer = function() end, on_tick = function() end, resume_active = function() end,
+stub("scripts.tasks", { set_observer = function() end, set_upkeep_listener = function() end, on_tick = function() end, resume_active = function() end,
   bound_for = function() return bound_for end,
   on_body_surface_changed = function(change)
     if fail_flag then error("broken") end

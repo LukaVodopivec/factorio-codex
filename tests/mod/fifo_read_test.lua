@@ -33,7 +33,7 @@ end
 local function job_reader(name)
   return { start = function() return {} end, step = reader(name) }
 end
-stub("scripts.tasks", { set_observer = function() end, on_tick = function() end, bound_for = function() return nil end,
+stub("scripts.tasks", { set_observer = function() end, set_upkeep_listener = function() end, on_tick = function() end, bound_for = function() return nil end,
   plan_status = reader("plan_status"), enqueue = reader("enqueue"), get = reader("get_task"),
   queue_plan = reader("queue_plan"), cancel = reader("cancel") })
 stub("scripts.inspect", { job = job_reader("inspect") })

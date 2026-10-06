@@ -45,6 +45,10 @@ local runners = {
 }
 local observer
 function M.set_observer(fn) observer = fn end
+-- Called as listener(plan, step_index, status) when a step of an upkeep plan
+-- ends with an outcome (chores.lua starts a refuel cooldown there).
+local upkeep_listener
+function M.set_upkeep_listener(fn) upkeep_listener = fn end
 -- Plan actions other modules add (get_items, build_layout, ...): spec is
 -- { runner = {start, tick, resume?}, make_task = function(step) -> task,
 -- validate = function(step, index) (optional, raises on a bad step),
@@ -696,6 +700,7 @@ local function finish_step(plan, result)
       fix_error = recovery.fix_error } or nil,
   }
   plan.current_task = nil
+  if plan.source == "upkeep" and upkeep_listener then pcall(upkeep_listener, plan, plan.current_step, status) end
   if status ~= "completed" then finish(plan, status, result.detail); return end
   plan.completed_steps = plan.current_step
   if plan.completed_steps == #plan.steps then finish(plan, "done", "") end
@@ -784,9 +789,10 @@ local function expire_parked_waits(tasks)
     local step = plan.type == "plan" and plan.status == "waiting" and plan.steps[plan.current_step] or nil
     local due = step and (step.action == "wait_for_item" or step.action == "wait_for_research") and plan.wait_started_tick
       and game.tick - plan.wait_started_tick >= wait_timeout_ticks(step)
-    if due and not tasks.active then
-      -- The body is free: the dispatcher reads the condition once more this
-      -- tick before the deadline is applied, so a met wait never expires.
+    if due and (not tasks.active or tasks.active.source == "upkeep") then
+      -- The body is free, or upkeep holds it and gives way at its next step
+      -- boundary: the dispatcher reads the condition once more before the
+      -- deadline is applied, so a met wait never expires.
       plan.next_check_tick = nil
     elseif due then
       table.remove(tasks.queue, index)
@@ -895,6 +901,64 @@ local function step_recovery(plan)
   recovery.phase = "retrying"
   return false
 end
+local function predecessor_status(id)
+  local record = storage.tasks.records[id]
+  if record and record.plan then return record.plan.status end
+  if storage.tasks.active and storage.tasks.active.id == id then return storage.tasks.active.status end
+  for _, queued in ipairs(storage.tasks.queue) do if queued.id == id then return queued.status end end
+end
+-- Upkeep beside pending work. The mod's upkeep (chores.lua) takes the body
+-- while nothing queued would: with the FIFO empty, while it holds only
+-- parked waits or plans whose predecessor is pending, and while the running
+-- plan's step only waits on hand-crafting (a craft_items step). Such a plan
+-- lends the body: it goes back to the queue head (still running, its step
+-- kept) and only upkeep runs before it, and only while the crafting does.
+-- Upkeep gives way at its next step boundary to work that takes the body.
+local function crafting_busy()
+  local c = companion.get()
+  return c ~= nil and c.valid and (c.crafting_queue_size or 0) > 0
+end
+local function lends_body(plan)
+  return plan.type == "plan" and plan.source ~= "upkeep" and plan.current_task ~= nil
+    and plan.current_task.type == "craft" and crafting_busy()
+end
+local function upkeep_queued()
+  for _, queued in ipairs(storage.tasks.queue) do
+    if queued.type == "plan" and queued.source == "upkeep" then return true end
+  end
+  return false
+end
+-- A queued plan that would take the body now: not upkeep, not a parked wait
+-- (but one due for its last read), not waiting on a pending predecessor.
+local function takes_body(queued)
+  if queued.source == "upkeep" then return false end
+  if queued.status == "waiting" then return queued.next_check_tick == nil end
+  return not queued.after_plan_id or predecessor_status(queued.after_plan_id) == "completed"
+end
+-- Queued work that would take the body from upkeep now. Behind a lending
+-- plan nothing else does: that plan takes it back once its crafting ends.
+local function work_waiting()
+  local queue = storage.tasks.queue
+  if queue[1] and queue[1].lent then return not crafting_busy() end
+  for _, queued in ipairs(queue) do
+    if queued.type == "plan" and takes_body(queued) then return true end
+  end
+  return false
+end
+-- Whether upkeep may queue a plan now: "idle" with the FIFO empty, "busy"
+-- beside pending work as above, else nil. Never while an upkeep plan is
+-- pending, nor after an emergency stop before some plan has finished.
+function M.upkeep_room()
+  local tasks = storage.tasks
+  if not tasks or tasks.last_finished_tick == nil or upkeep_queued() then return nil end
+  local active = tasks.active
+  -- Queued work waits behind a running plan anyway.
+  if active then return lends_body(active) and "busy" or nil end
+  for _, queued in ipairs(tasks.queue) do
+    if queued.type ~= "plan" or queued.lent or takes_body(queued) then return nil end
+  end
+  return #tasks.queue > 0 and "busy" or "idle"
+end
 local function tick_plan(plan)
   local budget = math.max(PLAN_BUDGET_TICKS, (plan.budget_steps or #plan.steps) * STEP_BUDGET_TICKS)
   if game.tick - plan.started_tick >= budget then
@@ -907,14 +971,13 @@ local function tick_plan(plan)
   end
   if plan._recovery and plan._recovery.phase == "fixing" and step_recovery(plan) then return end
   if not plan.current_task then
-    -- The mod's own upkeep gives way to any queued plan at a step boundary.
+    -- The mod's own upkeep gives way at a step boundary to queued work that
+    -- would take the body now (not a parked wait or a blocked plan).
     if plan.source == "upkeep" and plan.completed_steps > 0 then
-      for _, queued in ipairs(storage.tasks.queue) do
-        if queued.type == "plan" and queued.source ~= "upkeep" then
-          plan.preempted = true
-          finish(plan, "cancelled", "PREEMPTED: queued work takes the body")
-          return
-        end
+      if work_waiting() then
+        plan.preempted = true
+        finish(plan, "cancelled", "PREEMPTED: queued work takes the body")
+        return
       end
     end
     plan.current_step = plan.completed_steps + 1
@@ -991,20 +1054,29 @@ local function tick_plan(plan)
     stop_body()
     return
   end
+  if ok and result == nil and lends_body(plan) and upkeep_queued() then
+    plan.lent = true
+    storage.tasks.active = nil
+    table.insert(storage.tasks.queue, 1, plan)
+    return
+  end
   if not ok then result = { status = "failed", detail = tostring(result) } end
   if result and not try_recover(plan, step, result) then finish_step(plan, result) end
-end
-local function predecessor_status(id)
-  local record = storage.tasks.records[id]
-  if record and record.plan then return record.plan.status end
-  if storage.tasks.active and storage.tasks.active.id == id then return storage.tasks.active.status end
-  for _, queued in ipairs(storage.tasks.queue) do if queued.id == id then return queued.status end end
 end
 local function dispatch(tasks)
   local task = tasks.active
   if not task then
     if #tasks.queue == 0 then return end
-    local attempts = #tasks.queue
+    local head = tasks.queue[1]
+    -- A plan lending the body keeps its place: only upkeep goes first.
+    local guest
+    if head.lent and crafting_busy() then
+      for index, queued in ipairs(tasks.queue) do
+        if queued.type == "plan" and queued.source == "upkeep" then guest = index; break end
+      end
+    end
+    if head.lent then task = table.remove(tasks.queue, guest or 1) end
+    local attempts = task and 0 or #tasks.queue
     for _ = 1, attempts do
       local candidate = table.remove(tasks.queue, 1)
       local parked = candidate.type == "plan" and candidate.status == "waiting"
@@ -1027,6 +1099,7 @@ local function dispatch(tasks)
       else task = candidate; break end
     end
     if not task then return end
+    task.lent = nil
     if task.type == "plan" then set_plan_status(task, "running") else task.status = "running" end
     task.started_tick, tasks.active = task.started_tick or game.tick, task
     if task.type == "plan" and task.start_inventory == nil then task.start_inventory = inventory_snapshot() end

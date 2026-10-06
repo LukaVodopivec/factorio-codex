@@ -728,6 +728,45 @@ check(smelted and smelted.status == "done" and inventory["iron-plate"] == 5 and 
 check(table.concat(kinds, ",") == "extract,extract,insert,extract" and calls[3].task.items["iron-ore"] == 5
   and calls[3].task.items.coal == 5 and calls[3].task.target.x == 6 and calls[4].task.items["iron-plate"] == 5,
   "the body fetches the ore and fuel, loads the furnace, waits, then takes the plates")
+-- The deadline starts once the load is in: a long walk to the furnace is
+-- not smelting time.
+reset()
+chest({ x = 3.5, y = 0.5 }, { ["iron-ore"] = 20, coal = 10 })
+local far = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = {},
+  prototype = { crafting_categories = { smelting = true } } })
+local far_source, far_fuel = {}, 0
+far.get_inventory = function(id)
+  if id == defines.inventory.furnace_source then return { get_item_count = count_of(far_source) } end
+  return { get_item_count = count_of(far.items) }
+end
+far.get_output_inventory = function() return holder(far.items) end
+far.get_fuel_inventory = function() return { is_empty = function() return far_fuel == 0 end } end
+far.is_crafting = function() return (far_source["iron-ore"] or 0) > 0 and far_fuel > 0 end
+local walked = 0
+supply.register_runner("insert", stub("insert", function(task)
+  walked = walked + 1
+  if walked < 3000 then return nil end
+  for name, count in pairs(task.items) do
+    if name == "coal" then far_fuel = far_fuel + count else far_source[name] = (far_source[name] or 0) + count end
+    inventory[name] = inventory[name] - count
+  end
+  return { status = "done", detail = "inserted", outcome = { transfers = {} } }
+end))
+local far_task = { items = { { name = "iron-plate", count = 2 } } }
+supply.start(far_task)
+local far_result
+for _ = 1, 8000 do
+  far_result = supply.tick(far_task)
+  if far_result then break end
+  game.tick = game.tick + 1
+  if far.is_crafting() and game.tick % 10 == 0 then
+    far_source["iron-ore"] = far_source["iron-ore"] - 1
+    far.items["iron-plate"] = (far.items["iron-plate"] or 0) + 1
+  end
+end
+check(far_result and far_result.status == "done" and walked >= 3000,
+  "a long walk to the furnace does not use up the smelt wait")
+
 -- The wait ends by its deadline even while the furnace's counts keep moving
 -- (a line's inserter started taking from it after the body loaded it).
 reset()

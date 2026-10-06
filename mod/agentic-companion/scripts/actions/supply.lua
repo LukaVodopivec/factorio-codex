@@ -510,6 +510,14 @@ end
 -- walk, no surface query). Returns
 -- {item, missing, short?, reason} rows for what could not be had; short
 -- names the ingredient that blocked a craft.
+-- A furnace free for the body's own smelting: not crafting and its source
+-- empty. A furnace a line feeds and empties never shows what the body's own
+-- ore made. (Its result must also hold nothing but the item: smelter.)
+local function idle_furnace(e)
+  local ok, source = pcall(e.get_inventory, defines.inventory.furnace_source)
+  return ok and source ~= nil and not e.is_crafting() and source.get_item_count() == 0
+end
+
 local UNOBTAINABLE_SMELT_SECONDS = 180
 function M.unobtainable(c, wants)
   local pool, furnaces, smelt_seconds = {}, nil, 0
@@ -526,7 +534,7 @@ function M.unobtainable(c, wants)
       local ok, list = pcall(registry.machines, { "furnace" })
       for _, entry in ipairs(ok and type(list) == "table" and list or {}) do
         pcall(function()
-          if entry.entity.valid then
+          if entry.entity.valid and idle_furnace(entry.entity) then
             local ok_speed, speed = pcall(function() return entry.entity.prototype.get_crafting_speed() end)
             speed = ok_speed and tonumber(speed) or 1
             for name in pairs(entry.entity.prototype.crafting_categories) do
@@ -582,7 +590,7 @@ function M.unobtainable(c, wants)
           end
           reasons[#reasons + 1] = "not smelted: short of " .. ore.name
         else
-          reasons[#reasons + 1] = "no own furnace smelts it (" .. tostring(smelt.category) .. ")"
+          reasons[#reasons + 1] = "no idle own furnace smelts it (" .. tostring(smelt.category) .. ")"
         end
       end
     end
@@ -607,10 +615,10 @@ local function inventory_of(entity, id)
   return ok and inventory or nil
 end
 
--- Nearest own furnace that smelts the recipe's category and is idle: not
--- crafting, its source empty, its result nothing or the item. A furnace a
--- line feeds and empties never shows what the body's own ore made.
-local function smelter(c, recipe, ore, item)
+-- Nearest own furnace that smelts the recipe's category, is idle
+-- (idle_furnace) and whose result holds nothing or the item; or `own`, the
+-- furnace the frame loaded last, while its source holds only that ore.
+local function smelter(c, recipe, ore, item, own)
   local ok, furnaces = pcall(registry.machines, { "furnace" })
   local best, best_d
   for _, entry in ipairs(ok and type(furnaces) == "table" and furnaces or {}) do
@@ -619,8 +627,9 @@ local function smelter(c, recipe, ore, item)
       if not (e and e.valid and e.prototype.crafting_categories[recipe.category]) then return false end
       local source, result = inventory_of(e, "furnace_source"), inventory_of(e, "furnace_result")
       if not (source and result) then return false end
-      return not e.is_crafting() and source.get_item_count() == 0
-        and result.get_item_count() == result.get_item_count(item)
+      if result.get_item_count() ~= result.get_item_count(item) then return false end
+      if own and e == own then return source.get_item_count() == source.get_item_count(ore) end
+      return idle_furnace(e)
     end)
     if ok_fit and fits then
       local d = dist_sq(c.position, e.position)
@@ -827,7 +836,7 @@ local function advance(task, c, frame)
       return false
     end
     if not scan(task) then return true end
-    local furnace = smelter(c, recipe, ingredient.name, frame.name)
+    local furnace = smelter(c, recipe, ingredient.name, frame.name, frame.smelt and frame.smelt.furnace)
     if not furnace then
       frame.smelt_error = "no own furnace is free to smelt it (" .. recipe.category .. ")"
       frame.phase = "gather"
@@ -866,7 +875,6 @@ local function advance(task, c, frame)
     local items = { [s.ore] = ore }
     if s.fuel and carried(c, s.fuel) > 0 then items[s.fuel] = math.min(SMELT_FUEL, carried(c, s.fuel)) end
     frame.phase = "smelt_wait"
-    s.deadline = game.tick + s.wait_ticks
     local ok, err = pcall(M.begin, task, "_sub", { type = "insert", target = s.position, items = items, auto_supply = false })
     if ok then return true end
     frame.error, frame.phase = tostring(err), "gather"
@@ -879,6 +887,8 @@ local function advance(task, c, frame)
       frame.error, frame.phase = s.failed or "the furnace is gone", "gather"
       return false
     end
+    -- The clock starts once the load is in (the walk there is not smelting).
+    s.deadline = s.deadline or game.tick + (s.wait_ticks or 4 * SMELT_STALL_TICKS)
     if s.next_poll and game.tick < s.next_poll then return true end
     s.next_poll = game.tick + SMELT_POLL_TICKS
     local source, result = inventory_of(s.furnace, "furnace_source"), inventory_of(s.furnace, "furnace_result")
@@ -890,7 +900,9 @@ local function advance(task, c, frame)
     frame.smelt_rounds = (frame.smelt_rounds or 0) + 1
     frame.phase = "smelt"
     if made <= 0 then
-      frame.smelt_error, frame.phase = "the furnace smelted nothing (out of fuel or power?)", "gather"
+      frame.smelt_error, frame.phase = game.tick >= s.deadline and left > 0
+        and "the furnace made none of this load in time (a line may feed or empty it)"
+        or "the furnace smelted nothing (out of fuel or power?)", "gather"
       return false
     end
     frame.source_kind, frame.before = "smelt", have(c, frame.name)

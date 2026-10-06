@@ -494,7 +494,7 @@ describe("package auto-queue", () => {
     const place = { ...furnaces("bp-arm"), steps: [{ action: "blueprint_place", name: "smelter", position: { x: 4, y: 4 } }] };
     const opening = { ...furnaces("opening"), steps: [{ action: "build_block", block: "mining", count: 2, near: { x: 0, y: 0 } }] };
     writeLedger(dir, 1, [opening, place]);
-    const reason = "burner-mining-drill can't be carried now (needs 1 more iron-plate): no own furnace smelts it (smelting)";
+    const reason = "burner-mining-drill can't be carried now (needs 1 more iron-plate): no idle own furnace smelts it (smelting)";
     const { call, bridge } = fakeBridge({
       build_block: () => ({ ok: false, placed: [{ name: "burner-mining-drill" }],
         failed: [{ code: "ITEM_UNOBTAINABLE", item: "burner-mining-drill", reason }] }),

@@ -997,7 +997,7 @@ local two = check_block({ block = "mining", count = 2, resource = "iron-ore", ne
 local short_drill = two.failed[1]
 check(not two.ok and short_drill and short_drill.code == "ITEM_UNOBTAINABLE" and short_drill.item == "burner-mining-drill"
   and short_drill.missing == 1 and short_drill.short.item == "iron-plate" and short_drill.short.missing == 1
-  and short_drill.reason:match("needs 1 more iron%-plate") and short_drill.reason:match("no own furnace"),
+  and short_drill.reason:match("needs 1 more iron%-plate") and short_drill.reason:match("no idle own furnace"),
   "a two-drill opening block with one drill and 8 of the 9 plates the second needs fails, naming the drill and the plate")
 inventory["iron-plate"] = 9
 check(check_block({ block = "mining", count = 2, resource = "iron-ore", near = { x = 50.5, y = 50.5 }, check_only = true }).ok,
@@ -1005,7 +1005,8 @@ check(check_block({ block = "mining", count = 2, resource = "iron-ore", near = {
 inventory["iron-plate"] = 8
 -- A furnace of its own lets the body smelt the ninth plate from gatherable ore.
 prototypes.entity["iron-ore"].mineable_properties = { minable = true, products = { { name = "iron-ore" } } }
-storage.registry.entries[901] = { entity = { valid = true, prototype = { crafting_categories = { smelting = true } } },
+storage.registry.entries[901] = { entity = { valid = true, prototype = { crafting_categories = { smelting = true } },
+  is_crafting = function() return false end, get_inventory = function() return { get_item_count = function() return 0 end } end },
   unit = 901, name = "stone-furnace", type = "furnace", position = { x = 0, y = 0 } }
 storage.registry.machines.furnace = { [901] = true }
 local supply = require("scripts.actions.supply")

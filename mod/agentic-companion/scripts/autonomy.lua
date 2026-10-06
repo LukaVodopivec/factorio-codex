@@ -98,8 +98,12 @@ local PROBLEM_TICKS = {
 }
 -- Problem rows that carry a fixed cause.
 local PROBLEM_CAUSE = { no_modules_to_transmit = "module", no_research_in_progress = "research_idle" }
--- Statuses upkeep serves (chores.lua): kept per status as unit sets.
+-- Statuses upkeep serves (chores.lua): kept per status as unit sets, with
+-- the "low_fuel" set: working burner machines with fewer than
+-- LOW_FUEL_ITEMS fuel items left beside what burns, refuelled before they
+-- run dry.
 local CHORE_STATUSES = { no_fuel = true, missing_science_packs = true }
+local LOW_FUEL_ITEMS = 2
 -- How long a computed line cause is trusted while its machine and status
 -- stay the same.
 local CAUSE_TICKS = 600
@@ -227,12 +231,13 @@ local function refresh_identify(a, count)
   return job.index > #units
 end
 
--- The chore status sets: waiting[raw][surface index][unit] = true, so
--- upkeep reads only the machines on the body's surface.
-local function add_waiting(waiting, rec)
+-- The chore status sets: waiting[raw or "low_fuel"][surface index][unit] =
+-- true, so upkeep reads only the machines on the body's surface.
+local function add_waiting(waiting, rec, set)
   local surface = rec.surface or 0
-  local by_surface = waiting[rec.raw] or {}
-  waiting[rec.raw] = by_surface
+  set = set or rec.raw
+  local by_surface = waiting[set] or {}
+  waiting[set] = by_surface
   by_surface[surface] = by_surface[surface] or {}
   by_surface[surface][rec.unit] = true
 end
@@ -250,6 +255,7 @@ local function refresh_finish(a)
     if rec then
       machines[unit] = rec
       if CHORE_STATUSES[rec.raw] then add_waiting(waiting, rec) end
+      if rec.low_fuel then add_waiting(waiting, rec, "low_fuel") end
       if PROBLEM_ONLY_TYPES[rec.type] then
         problem_only[#problem_only + 1] = unit
       else
@@ -374,6 +380,26 @@ local function set_raw(a, rec, raw)
   if CHORE_STATUSES[raw] then add_waiting(a.waiting, rec) end
 end
 
+-- Keeps the low_fuel set as a burner machine's fuel runs low or is topped
+-- up: low only while working with fewer than LOW_FUEL_ITEMS fuel items (a
+-- failed read is not low).
+local function set_low_fuel(a, rec, entity, raw)
+  if rec.burner == nil then
+    local ok, burner = pcall(function() return entity.burner end)
+    rec.burner = ok and burner ~= nil
+  end
+  local low = false
+  if rec.burner and raw == "working" then
+    local ok, count = pcall(function() return entity.burner.inventory.get_item_count() end)
+    low = ok and type(count) == "number" and count < LOW_FUEL_ITEMS
+  end
+  if (rec.low_fuel == true) == low then return end
+  rec.low_fuel = low or nil
+  if low then add_waiting(a.waiting, rec, "low_fuel") return end
+  local units = a.waiting.low_fuel and a.waiting.low_fuel[rec.surface or 0]
+  if units then units[rec.unit] = nil end
+end
+
 local function sample(a, rec, tick)
   local entity = rec.entity
   if not (entity and entity.valid) then a.dirty_tick = a.dirty_tick or tick; return end
@@ -412,6 +438,7 @@ local function sample(a, rec, tick)
     if line then add_output(line, tick, produced * rec.yield) end
   end
   set_raw(a, rec, raw)
+  set_low_fuel(a, rec, entity, raw)
   if PROBLEM_TICKS[raw] then
     -- The same problem returning inside the recovery window is the old
     -- episode: it keeps its start and is not announced again.

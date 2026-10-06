@@ -221,6 +221,7 @@ local function initialize()
   thoughts.init()
 end
 tasks.set_observer(spatial.observe_compact)
+tasks.set_upkeep_listener(chores.on_upkeep_step)
 
 script.on_init(initialize)
 script.on_configuration_changed(initialize)

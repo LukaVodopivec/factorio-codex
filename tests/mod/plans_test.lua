@@ -629,4 +629,141 @@ local rows=tasks.activity_log({limit=64}).entries;local saved
 for _,row in ipairs(rows) do if row.plan_id==upkeep.plan_id then saved=row end end
 check(saved.upkeep.unfinished_targets[1].position.x==20 and saved.upkeep.selection_tick==selection.tick,
   "bounded activity history retains unfinished upkeep target identity after preemption")
+
+-- Upkeep beside pending work: tasks.upkeep_room says when it may take the
+-- body, and it gives way only to work that would take the body now.
+for tick = 40004, 40010 do game.tick = tick; tasks.on_tick() end
+check(not storage.tasks.active and #storage.tasks.queue == 0 and tasks.upkeep_room() == "idle",
+  "upkeep has room on an idle FIFO")
+local finished_tick = storage.tasks.last_finished_tick
+storage.tasks.last_finished_tick = nil
+check(tasks.upkeep_room() == nil, "after an emergency stop upkeep has no room until a plan finishes")
+storage.tasks.last_finished_tick = finished_tick
+local ended_steps = {}
+tasks.set_upkeep_listener(function(plan, index, status) ended_steps[#ended_steps + 1] = plan.id .. ":" .. index .. ":" .. status end)
+inspected = 0
+local parked_wait = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output",
+  item = "iron-plate", count = 99 } } })
+game.tick = 40011; tasks.on_tick()
+check(tasks.plan_status({ plan_id = parked_wait.plan_id }).status == "waiting" and tasks.upkeep_room() == "busy",
+  "upkeep has room while the FIFO holds only a parked wait")
+local blocked = tasks.queue_plan({ steps = { { action = "walk_to", x = 4, y = 4 } }, after_plan_id = parked_wait.plan_id })
+check(tasks.upkeep_room() == "busy", "a plan waiting on its pending predecessor leaves upkeep room")
+local ready = tasks.queue_plan({ steps = { { action = "walk_to", x = 4, y = 4 } } })
+check(tasks.upkeep_room() == nil, "a queued plan that would take the body leaves upkeep no room")
+tasks.cancel({ origin = "test/plans", plan_id = ready.plan_id })
+local beside = tasks.queue_plan({ source = "upkeep", steps = { { action = "walk_to", x = 1, y = 1 },
+  { action = "walk_to", x = 2, y = 1 } } })
+check(tasks.upkeep_room() == nil, "never a second upkeep plan while one is pending")
+for tick = 40012, 40016 do game.tick = tick; tasks.on_tick() end
+local beside_status = tasks.plan_status({ plan_id = beside.plan_id })
+check(beside_status.status == "completed" and beside_status.completed_steps == 2
+  and tasks.plan_status({ plan_id = blocked.plan_id }).status == "queued",
+  "upkeep runs past a parked wait and a blocked plan, and they never pre-empt it")
+check(table.concat(ended_steps, ",") == beside.plan_id .. ":1:completed," .. beside.plan_id .. ":2:completed",
+  "each upkeep step's end reaches the upkeep listener with its index and status")
+-- A wait whose deadline passes while upkeep holds the body gets its last
+-- read once upkeep gives way at its next step boundary.
+tasks.cancel({ origin = "test/plans", plan_id = blocked.plan_id })
+tasks.cancel({ origin = "test/plans", plan_id = parked_wait.plan_id })
+inspected = 0
+local short_wait = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output",
+  item = "iron-plate", count = 1, timeout_seconds = 1 } } })
+game.tick = 40020; tasks.on_tick()
+check(tasks.plan_status({ plan_id = short_wait.plan_id }).status == "waiting", "the short wait parks")
+local holder = tasks.queue_plan({ source = "upkeep", steps = { { action = "walk_to", x = 1, y = 1 },
+  { action = "walk_to", x = 2, y = 1 }, { action = "walk_to", x = 3, y = 1 } } })
+game.tick = 40021; tasks.on_tick()
+check(storage.tasks.active and storage.tasks.active.id == holder.plan_id, "upkeep holds the body")
+game.tick = 40200; tasks.on_tick()
+local holder_status, wait_status = tasks.plan_status({ plan_id = holder.plan_id }), tasks.plan_status({ plan_id = short_wait.plan_id })
+check(holder_status.status == "cancelled" and holder_status.completed_steps == 1 and wait_status.status ~= "failed",
+  "a wait due for its last read pre-empts upkeep instead of expiring under it")
+game.tick = 40201; tasks.on_tick()
+check(tasks.plan_status({ plan_id = short_wait.plan_id }).status == "completed",
+  "the met wait completes on its last read")
+
+-- A plan whose craft step waits on hand-crafting lends the body to upkeep:
+-- it keeps its place ahead of later work and takes the body back at the
+-- upkeep's next step boundary once the crafting ends.
+local craft_tick = craft.tick
+craft.tick = function() if body.crafting_queue_size > 0 then return nil end return { status = "done", detail = "crafted" } end
+body.crafting_queue_size = 2
+starts = {}
+body.force = { recipes = { gear = { products = { { type = "item", name = "gear", amount = 1 } },
+  ingredients = { { type = "item", name = "iron-plate", amount = 2 }, { type = "fluid", name = "water", amount = 1 } } } } }
+local host = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 2, wait_for_completion = true },
+  { action = "walk_to", x = 5, y = 5 } } })
+local later = tasks.queue_plan({ steps = { { action = "walk_to", x = 6, y = 6 } } })
+game.tick = 40300; tasks.on_tick()
+check(storage.tasks.active and storage.tasks.active.id == host.plan_id and tasks.upkeep_room() == "busy",
+  "a running craft step that waits on hand-crafting leaves upkeep room, whatever is queued behind it")
+local _, craft_reserved = tasks.upkeep_room()
+check(craft_reserved and craft_reserved.gear and craft_reserved["iron-plate"] and not craft_reserved.water,
+  "beside a lending craft upkeep is told the items that craft makes or uses, so it never takes the craft's products")
+local guest = tasks.queue_plan({ source = "upkeep", steps = { { action = "walk_to", x = 1, y = 1 },
+  { action = "walk_to", x = 2, y = 1 }, { action = "walk_to", x = 3, y = 1 } } })
+game.tick = 40301; tasks.on_tick()
+check(storage.tasks.active == nil and storage.tasks.queue[1].id == host.plan_id and storage.tasks.queue[1].lent
+  and tasks.plan_status({ plan_id = host.plan_id }).status == "running",
+  "the crafting plan lends the body and keeps its place at the queue head, still running")
+game.tick = 40302; tasks.on_tick()
+check(storage.tasks.active and storage.tasks.active.id == guest.plan_id
+  and tasks.plan_status({ plan_id = guest.plan_id }).completed_steps == 1
+  and tasks.plan_status({ plan_id = later.plan_id }).status == "queued",
+  "only upkeep runs before the lending plan, and later work does not pre-empt it")
+body.crafting_queue_size = 0
+game.tick = 40303; tasks.on_tick()
+local guest_status = tasks.plan_status({ plan_id = guest.plan_id })
+check(guest_status.status == "cancelled" and guest_status.completed_steps == 1,
+  "upkeep gives way at its next step boundary once the crafting ends")
+for tick = 40305, 40310 do game.tick = tick; tasks.on_tick() end
+local host_status = tasks.plan_status({ plan_id = host.plan_id })
+check(host_status.status == "completed" and tasks.plan_status({ plan_id = later.plan_id }).status == "completed"
+  and storage.tasks.records[host.plan_id].plan.finished_tick <= storage.tasks.records[later.plan_id].plan.started_tick,
+  "the lending plan finishes before the work queued after it starts")
+craft.tick = craft_tick
+body.force = nil
+
+-- Upkeep beside a parked wait walks back to where the body stood even when
+-- it ends early, pre-empted or on a failed step, so the wait still reads its
+-- target from there instead of failing out of range.
+local walk_tick = walk.tick
+walk.tick = function(task) body.position = { x = task.target.x, y = task.target.y }; return { status = "done", detail = "walked" } end
+body.position = { x = 0, y = 0 }
+local function far_upkeep(second)
+  return tasks.queue_plan({ source = "upkeep", steps = { { action = "walk_to", x = 60, y = 0 }, second,
+    { action = "walk_to", x = 0, y = 0, arrival_mode = "vicinity", arrival_radius = 2, upkeep_return = true } } })
+end
+game.tick = 41000
+local far_wait = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output",
+  item = "iron-plate", count = 99 } } })
+tasks.on_tick()
+local far = far_upkeep({ action = "walk_to", x = 61, y = 0 })
+game.tick = 41001; tasks.on_tick()
+check(storage.tasks.active and storage.tasks.active.id == far.plan_id and body.position.x == 60,
+  "upkeep beside the parked wait has walked 60 tiles from it")
+local pilot = tasks.queue_plan({ steps = { { action = "walk_to", x = 5, y = 5 } } })
+game.tick = 41002; tasks.on_tick()
+local far_status = tasks.plan_status({ plan_id = far.plan_id })
+check(far_status.status == "cancelled" and far_status.upkeep.preempted and far_status.completed_steps == 1
+  and far_status.outcomes[2].step == 3 and far_status.outcomes[2].status == "completed"
+  and far_status.upkeep.unfinished_targets[1].step == 2 and far_status.upkeep.unfinished_targets[1].state == "not_started"
+  and body.position.x == 0 and body.position.y == 0,
+  "pre-empted upkeep skips its remaining work but walks back before giving way")
+for tick = 41003, 41031 do game.tick = tick; tasks.on_tick() end
+check(tasks.plan_status({ plan_id = pilot.plan_id }).status == "completed"
+  and tasks.plan_status({ plan_id = far_wait.plan_id }).status == "waiting",
+  "the parked wait keeps reading its target after the pre-empted upkeep")
+body.position = { x = 0, y = 0 }
+local failing = far_upkeep({ action = "mine", x = 1, y = 1 })
+for tick = 41032, 41036 do game.tick = tick; tasks.on_tick() end
+local failing_status = tasks.plan_status({ plan_id = failing.plan_id })
+check(failing_status.status == "failed" and failing_status.completed_steps == 1
+  and failing_status.outcomes[2].status == "failed" and failing_status.outcomes[3].step == 3
+  and failing_status.outcomes[3].status == "completed" and body.position.x == 0
+  and tasks.plan_status({ plan_id = far_wait.plan_id }).status == "waiting",
+  "upkeep whose step fails still walks back, ends failed, and the parked wait keeps reading")
+tasks.cancel({ origin = "test/plans", plan_id = far_wait.plan_id })
+walk.tick = walk_tick
 os.exit(failures == 0 and 0 or 1)

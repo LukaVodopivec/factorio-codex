@@ -67,9 +67,11 @@ function M.init()
   if not activity.hand_crafted then
     activity.hand_crafted, activity.hand_crafted_since_tick = {}, game and game.tick or 0
   end
-  -- Upkeep (chores.lua): unit_number -> tick of the last refuel attempt,
-  -- and "<unit>:<pack>" -> tick of the last delivery of that pack to a lab
-  -- (0.22.2 keyed labs by unit alone; those keys expire like the others).
+  -- Upkeep (chores.lua): unit_number -> tick the last refuel step for it
+  -- ended, and "<unit>:<pack>" -> tick of the last delivery of that pack to
+  -- a lab (0.22.2 keyed labs by unit alone; those keys expire like the
+  -- others); refuel_plan (absent until the first) maps the newest upkeep
+  -- plan's refuel steps to their machines.
   storage.chores = storage.chores or {}
   storage.chores.refueled = storage.chores.refueled or {}
   storage.chores.fed_labs = storage.chores.fed_labs or {}

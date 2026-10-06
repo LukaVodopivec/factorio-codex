@@ -238,7 +238,7 @@ package.loaded["scripts.research"] = { research_trigger = function() return nil 
 force.technologies = {}
 local queued = {}
 package.loaded["scripts.tasks"] = { queue_length = function() return 0 end, active_summary = function() return nil end,
-  queue_plan = function(params) queued[#queued + 1] = params; return { plan_id = #queued } end }
+  upkeep_room = function() return "idle" end, queue_plan = function(params) queued[#queued + 1] = params; return { plan_id = #queued } end }
 storage.tasks.last_finished_tick = 1
 local autonomy = require("scripts.autonomy")
 local chores = require("scripts.chores")

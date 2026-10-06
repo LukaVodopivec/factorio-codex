@@ -94,4 +94,65 @@ check(ok and legacy_result and legacy_result.status == "failed" and legacy_resul
   and legacy._short ~= nil and legacy.auto_supply == false,
   "a build_plan started by 0.20 is upgraded in place and fails a missing item as a step, not a Lua error")
 
+-- A step whose approach failed for where the body stood (BODY_ON_CONVEYOR,
+-- START_COLLISION) is tried once more after the last step, if the body
+-- stands elsewhere by then; other failures and stop_on_error plans are not
+-- retried. A successful approach walks the body to the step.
+local approach_mock = package.loaded["scripts.actions.approach"]
+local attempts, refuse = {}, nil
+approach_mock.ensure = function(_, _, position)
+  local key = position.x .. ":" .. position.y
+  attempts[key] = (attempts[key] or 0) + 1
+  local answer = refuse(key, attempts[key])
+  if answer == "ok" then character.position = { x = position.x, y = position.y } end
+  return answer
+end
+local function three_step_plan(id, stop_on_error)
+  attempts, created = {}, 0
+  character.position = { x = -6, y = 0 }
+  inventory["stone-furnace"] = 3
+  local p = { id = id, auto_supply = false, stop_on_error = stop_on_error, steps = {
+    { item = "stone-furnace", position = { x = 0, y = 0 } },
+    { item = "stone-furnace", position = { x = 4, y = 0 } },
+    { item = "stone-furnace", position = { x = 8, y = 0 } } } }
+  build_plan.start(p)
+  local result
+  for _ = 1, 20 do
+    result = build_plan.tick(p)
+    if result then break end
+  end
+  return p, result
+end
+local on_belt = { status = "failed", detail = "couldn't get in range: BODY_ON_CONVEYOR: the body stands on transport-belt",
+  outcome = { code = "BODY_ON_CONVEYOR" } }
+refuse = function(key, n) if key == "0:0" and n == 1 then return on_belt end return "ok" end
+local retried, retried_result = three_step_plan(45, false)
+check(retried_result and retried_result.status == "done" and created == 3 and attempts["0:0"] == 2
+  and retried._results[1].ok and #retried._failures == 0 and retried_result.detail:match("^placed 3/3"),
+  "a BODY_ON_CONVEYOR step is retried once after the last step and placed")
+
+refuse = function(key) if key == "4:0" then return on_belt end return "ok" end
+local twice, twice_result = three_step_plan(46, false)
+check(twice_result and twice_result.status == "done" and created == 2 and attempts["4:0"] == 2
+  and #twice._failures == 1 and twice._failures[1].index == 2
+  and twice._failures[1].why:match("BODY_ON_CONVEYOR.*retried once after the last step%)$"),
+  "a step failing again on its retry is listed once, saying it was retried")
+
+refuse = function(key) if key == "0:0" then return { status = "failed",
+  detail = "couldn't get in range: PATH_NOT_FOUND", outcome = { code = "PATH_NOT_FOUND" } } end return "ok" end
+local unreachable = three_step_plan(47, false)
+check(attempts["0:0"] == 1 and #unreachable._failures == 1, "a failure unrelated to where the body stood is not retried")
+
+refuse = function(key) if key == "8:0" then return on_belt end return "ok" end
+local unmoved, unmoved_result = three_step_plan(49, false)
+check(unmoved_result and attempts["8:0"] == 1 and #unmoved._failures == 1
+  and not unmoved._failures[1].why:match("retried"),
+  "a step that failed where the body still stands is not retried")
+
+refuse = function(key) if key == "0:0" then return on_belt end return "ok" end
+local _, stopped = three_step_plan(48, true)
+check(stopped and stopped.status == "failed" and attempts["0:0"] == 1 and created == 0,
+  "a stop_on_error plan stops at the failure instead of retrying it")
+approach_mock.ensure = function() return "ok" end
+
 os.exit(failures == 0 and 0 or 1)

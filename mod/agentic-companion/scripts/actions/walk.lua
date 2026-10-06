@@ -32,9 +32,12 @@ local MAX_ESCAPES = 2 -- escapes one walk may begin (typically its start and its
 local FRONTIER_RADIUS = 0.5 -- each probe must reach its own frontier point
 local MAX_FRONTIER_PROBES = 16
 -- Off-belt tiles within 2 tiles of the body's tile, then (a belt crossing
--- or a wide splitter) within 4.
+-- or a wide splitter) within 4. An approach, whose tile must stay within
+-- reach of its target, also tries the ring out to 8 (a wide belt bundle):
+-- each ring checks only its own cells, at most about 150 in one tick.
 local SETTLE_RADII = { 2, 4 }
-local SETTLE_TICKS = 60
+local SETTLE_WIDE_RADIUS = 8
+local SETTLE_TICKS = 60 -- per 4 tiles to the off-belt tile
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
 local OCTANT_RATIO = 0.41421356
@@ -589,15 +592,18 @@ end
 
 -- Nearest charted tile centre within `radius` tiles whose body box touches no
 -- conveyor and no character collider, optionally within `limit` of `anchor`.
+-- `inner` (optional) skips the cells an earlier, smaller radius checked.
 -- `accept` (optional) sees each such centre, nearest first, and ends the
 -- search by returning true.
-function settle_cell(c, anchor, limit, radius, accept)
+function settle_cell(c, anchor, limit, radius, accept, inner)
   local pos = c.position
   local tx, ty = math.floor(pos.x), math.floor(pos.y)
   local cells = {}
+  local skip = inner and inner * inner or -1
   for dy = -radius, radius do
     for dx = -radius, radius do
-      if dx * dx + dy * dy <= radius * radius then
+      local d2 = dx * dx + dy * dy
+      if d2 <= radius * radius and d2 > skip then
         local cell = { x = tx + dx + 0.5, y = ty + dy + 0.5 }
         cells[#cells + 1] = { position = cell, distance = dist_sq(pos, cell) }
       end
@@ -640,15 +646,24 @@ function M.begin_settle(state, c, anchor, limit)
   state.settle_anchor = anchor and { x = anchor.x, y = anchor.y } or nil
   state.settle_limit = limit
   state.settle_attempted = true
-  local cell, rejected
-  for _, radius in ipairs(SETTLE_RADII) do
-    cell, rejected = settle_cell(c, state.settle_anchor, limit, radius)
+  local radii = {}
+  for i, radius in ipairs(SETTLE_RADII) do radii[i] = radius end
+  if state.settle_anchor and limit and limit > radii[#radii] then
+    radii[#radii + 1] = math.min(SETTLE_WIDE_RADIUS, math.floor(limit))
+  end
+  local cell, inner
+  local rejected = { out_of_range = 0, uncharted = 0, conveyor = 0, collision = 0 }
+  for _, radius in ipairs(radii) do
+    local ring_rejected
+    cell, ring_rejected = settle_cell(c, state.settle_anchor, limit, radius, nil, inner)
+    for key, count in pairs(ring_rejected) do rejected[key] = rejected[key] + count end
+    inner = radius
     if cell then break end
   end
   if not cell then
     return fail(c, "BODY_ON_CONVEYOR", string.format(
       "the body stands on %s at (%.1f, %.1f) and no charted clear off-belt tile lies within %d tiles%s",
-      conveyor.name, conveyor.position.x, conveyor.position.y, SETTLE_RADII[#SETTLE_RADII],
+      conveyor.name, conveyor.position.x, conveyor.position.y, inner,
       anchor and " and within reach of the target" or ""),
       { code = "BODY_ON_CONVEYOR", diagnostics = { path = { evidence_scope = "charted_visible_only",
         start = { x = c.position.x, y = c.position.y }, conveyor = conveyor_label(conveyor),
@@ -656,7 +671,8 @@ function M.begin_settle(state, c, anchor, limit)
   end
   state.phase = "settling"
   state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
-    conveyor = conveyor_label(conveyor), started_tick = game.tick }
+    conveyor = conveyor_label(conveyor), started_tick = game.tick,
+    ticks_allowed = SETTLE_TICKS * math.max(1, math.ceil(math.sqrt(dist_sq(c.position, cell)) / 4)) }
   set_walking(c, { walking = true, direction = direction_toward(c.position, cell) })
   return nil
 end
@@ -671,10 +687,12 @@ local function step_settle(state, c)
     settle.ticks = game.tick - settle.started_tick
     return "arrived"
   end
-  if game.tick - settle.started_tick >= SETTLE_TICKS then
+  -- A settle begun by 0.27.0 has no allowance of its own.
+  local allowed = settle.ticks_allowed or SETTLE_TICKS
+  if game.tick - settle.started_tick >= allowed then
     return fail(c, "BODY_ON_CONVEYOR", string.format(
       "ordinary walking did not leave %s toward (%.1f, %.1f) within %d ticks",
-      settle.conveyor.name, settle.to.x, settle.to.y, SETTLE_TICKS),
+      settle.conveyor.name, settle.to.x, settle.to.y, allowed),
       { code = "BODY_ON_CONVEYOR", diagnostics = { path = { evidence_scope = "charted_visible_only",
         start = { x = pos.x, y = pos.y }, settle = settle } } })
   end

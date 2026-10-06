@@ -120,12 +120,24 @@ function M.display()
   if not b then return nil end
   local metrics = b.status == "frozen" and b.metrics or measured(b)
   local remaining = b.status == "prepared" and b.duration_seconds
-    or math.max(0, math.ceil((b.deadline_tick - game.tick) / 60))
+    or math.max(0, math.ceil((b.deadline_tick - (b.frozen_tick or game.tick)) / 60))
   local elapsed = b.status == "prepared" and 0 or math.max(0, ((b.frozen_tick or game.tick) - b.start_tick) / 60)
   local s = score(metrics)
-  return { label = b.label, status = b.status, remaining_seconds = remaining, metrics = metrics,
-    research = s.research, made = s.made, raw = s.raw,
+  return { label = b.label, status = b.status, remaining_seconds = remaining, elapsed_seconds = elapsed,
+    metrics = metrics, research = s.research, made = s.made, raw = s.raw,
     made_per_minute = elapsed > 0 and s.made * 60 / elapsed or 0 }
+end
+
+-- factory_status's compact trial clock for both roles (nil without a
+-- benchmark): the panel's numbers, plus the seconds until the scored final
+-- five minutes begin (0 once inside them).
+function M.trial()
+  local d = M.display()
+  if not d then return nil end
+  return { status = d.status, remaining_seconds = d.remaining_seconds, elapsed_seconds = math.floor(d.elapsed_seconds),
+    final_window_in_seconds = math.max(0, d.remaining_seconds - 300),
+    score = { research = d.research, made = d.made, raw_since_go = d.raw },
+    made_per_minute = math.floor(d.made_per_minute * 10 + 0.5) / 10 }
 end
 
 return M

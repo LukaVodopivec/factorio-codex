@@ -59,4 +59,28 @@ assert(game.tick_paused and b.display().remaining_seconds == 0 and b.display().m
 storage.benchmark.metrics = { ["iron-ore"] = 3, ["copper-ore"] = 0, coal = 0, stone = 0, ["iron-plate"] = 2, ["copper-plate"] = 0 }
 local old = b.display()
 assert(old.research == 0 and old.made == 2 and old.raw == 3)
-print("ok benchmark preparation, admission, native cutoff, automation score without hand-crafts, bounded statistics and idempotent freeze")
+-- factory_status's trial clock: absent, prepared, running, frozen.
+storage.benchmark = nil
+assert(b.trial() == nil)
+for key in pairs(values) do values[key] = 0 end
+for key in pairs(hand) do hand[key] = 0 end
+for key in pairs(consumed) do consumed[key] = 0 end
+game.tick, game.tick_paused = 1000, nil
+b.control({ action = "prepare", run_id = "clock", duration_seconds = 600 })
+local t = b.trial()
+assert(t.status == "prepared" and t.remaining_seconds == 600 and t.elapsed_seconds == 0
+  and t.final_window_in_seconds == 300 and t.score.made == 0 and t.made_per_minute == 0)
+b.control({ action = "begin", run_id = "clock" })
+values["iron-plate"], values["iron-ore"], game.tick = 20, 30, 1000 + 120 * 60 + 30
+t = b.trial()
+assert(t.status == "running" and t.remaining_seconds == 480 and t.elapsed_seconds == 120
+  and t.final_window_in_seconds == 180 and t.score.made == 20 and t.score.raw_since_go == 30 and t.score.research == 0
+  and t.made_per_minute == 10, t.remaining_seconds .. " " .. t.elapsed_seconds .. " " .. t.made_per_minute)
+game.tick = 1000 + 400 * 60
+assert(b.trial().final_window_in_seconds == 0 and b.trial().remaining_seconds == 200)
+b.control({ action = "freeze", run_id = "clock" })
+values["iron-plate"], game.tick = 99, game.tick + 600
+t = b.trial()
+assert(t.status == "frozen" and t.remaining_seconds == 200 and t.elapsed_seconds == 400
+  and t.final_window_in_seconds == 0 and t.score.made == 20 and t.made_per_minute == 3)
+print("ok benchmark preparation, admission, native cutoff, automation score without hand-crafts, bounded statistics, idempotent freeze and the trial clock")

@@ -402,6 +402,15 @@ for _, row in ipairs(after_news.elsewhere) do
   if row.problems ~= 0 or #row.top_problems ~= 0 then no_news = false end
 end
 check(no_news, "an elsewhere cursor after all announcements has no repeated problem rows")
+
+-- The benchmark clock rides along only while a trial exists, whatever the sections.
+check(status.trial == nil and after_news.trial == nil, "no trial field without a benchmark")
+local benchmark = require("scripts.benchmark")
+local real_trial = benchmark.trial
+benchmark.trial = function() return { status = "running", remaining_seconds = 900 } end
+local timed = factory_status.factory_status({ sections = { "elsewhere" } })
+check(timed.trial and timed.trial.remaining_seconds == 900, "factory_status carries the benchmark trial")
+benchmark.trial = real_trial
 local current = factory_status.factory_status({ sections = { "elsewhere" } })
 local current_platform
 for _, row in ipairs(current.elsewhere) do if row.surface == "platform:1" then current_platform = row end end

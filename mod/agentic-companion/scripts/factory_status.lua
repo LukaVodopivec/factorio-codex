@@ -22,7 +22,8 @@
 -- three worst problems and its lowest power satisfaction), all from the same
 -- aggregates; the header lists the unlocked space locations. Labs with no
 -- research active are a problem row (no_research_in_progress, cause
--- research_idle): research stands still.
+-- research_idle): research stands still. `trial` (benchmark.lua) is the
+-- benchmark clock and live score, present only while a benchmark exists.
 local companion = require("scripts.companion")
 local surfaces = require("scripts.surfaces")
 local items = require("scripts.items")
@@ -34,6 +35,7 @@ local tasks = require("scripts.tasks")
 local logistics = require("scripts.logistics")
 local platforms = require("scripts.platforms")
 local jobs = require("scripts.jobs")
+local benchmark = require("scripts.benchmark")
 
 local M = {}
 
@@ -301,7 +303,7 @@ function M.factory_status(params)
   local target = surfaces.target(params and params.surface)
   local index, body = target.surface.index, target.body
   local result = { tick = game.tick, since_tick = since, registry_ready = registry.ready(), surface = target.ref,
-    unlocked_locations = unlocked_locations(target.force) }
+    unlocked_locations = unlocked_locations(target.force), trial = benchmark.trial() }
   if want.lines then
     result.lines = autonomy.lines(since, index)
     table.sort(result.lines, function(x, y)

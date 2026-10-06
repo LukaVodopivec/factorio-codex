@@ -293,6 +293,47 @@ local from_belt = run({ items = { { name = "coal", count = 4 } } })
 check(from_belt.status == "done" and calls[1].kind == "pickup" and calls[1].task.count == 4 and inventory.coal == 4,
   "with no chest holding it, get_items picks the item up from an own belt")
 
+-- More belts near the body than one query reads (the engine returns them in
+-- chunk order up to the limit, like this mock's insertion order): the search
+-- goes on cell by cell, nearest first, one query per tick.
+reset()
+for x = -5, 4 do for y = -5, 4 do belt({ x = x + 0.5, y = y + 0.5 }, {}) end end
+belt({ x = 20.5, y = 0.5 }, { coal = 6 })
+local dense_task, dense, most_belt_queries = { items = { { name = "coal", count = 4 } } }, nil, 0
+supply.start(dense_task)
+for _ = 1, 200 do
+  local queries_before = #queries
+  dense = supply.tick(dense_task)
+  local belt_queries = 0
+  for index = queries_before + 1, #queries do
+    local query = queries[index]
+    if query.type == "transport-belt" then
+      belt_queries = belt_queries + 1
+      most_belt_queries = math.max(most_belt_queries, query.limit <= 64 and query.radius <= 48 and belt_queries or 99)
+    end
+  end
+  if dense then break end
+end
+check(dense and dense.status == "done" and calls[1].kind == "pickup" and calls[1].task.target.x == 20.5 and inventory.coal == 4,
+  "with more belts near the body than one query reads, get_items still finds the belt that holds the item")
+check(most_belt_queries == 1, "the belt search runs at most one bounded belt query per tick")
+
+-- Every cell read in full: no belt within reach holds it.
+reset()
+for x = -5, 4 do for y = -5, 4 do belt({ x = x + 0.5, y = y + 0.5 }, {}) end end
+local read_all = run({ items = { { name = "coal", count = 4 } } })
+check(read_all.status == "failed" and read_all.detail:match("or belt holds it"),
+  "a belt search that read every belt near the body says no belt holds the item")
+
+-- Nothing found where a cell held more belts than one query reads: the
+-- reason says belts were left unread.
+reset()
+for x = -8, 7 do for y = -8, 7 do belt({ x = x + 0.5, y = y + 0.5 }, {}) end end
+local unread = run({ items = { { name = "coal", count = 4 } } })
+check(unread.status == "failed" and unread.detail:match("nor any belt read within 48 tiles")
+  and not unread.detail:match("or belt holds it"),
+  "a belt search that left belts unread never claims no belt holds the item")
+
 -- An insert never takes from its own target.
 reset()
 chest({ x = 2.5, y = 0.5 }, { coal = 20 })

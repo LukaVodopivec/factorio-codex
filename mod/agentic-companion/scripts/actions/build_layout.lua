@@ -1507,14 +1507,16 @@ end
 -- ------------------------------------------------------- dry-run survey
 
 -- What a decided dry run adds as data, never as a failure: what each
--- inserter picks from and drops into (inserters), what the last belt of each
--- run faces (belt_ends), the electric machines no pole's supply area covers
--- (unpowered), and the planned poles no wire reaches from an existing pole
--- or a planned generator (isolated_poles). Pickup and drop points are
--- output_target's arithmetic (find_placement's), tested against the planned
--- footprints by tile; what no planned entity answers takes one small query,
--- charged to the dry run's work (SURVEY_QUERY plus what it reads) and
--- spread over ticks.
+-- inserter picks from and drops into (inserters), what each belt whose next
+-- tile takes nothing from it faces (belt_ends: a run's last belt, a belt
+-- facing a reversed one, an underground entrance with no exit), the
+-- electric machines no pole's supply area covers (unpowered), and the
+-- planned poles no wire reaches from an existing pole or a planned generator
+-- (isolated_poles). Pickup and drop points are output_target's arithmetic
+-- (find_placement's), tested against the planned footprints by tile; what
+-- no planned entity answers takes one small query, charged to the dry run's
+-- work (SURVEY_QUERY plus what it reads) and spread over ticks. A query
+-- counts only what stands on charted chunks.
 local SURVEY_QUERY = 2
 local BELT_FLOW = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true }
 local AHEAD = { [0] = { 0, -1 }, [4] = { 1, 0 }, [8] = { 0, 1 }, [12] = { -1, 0 } }
@@ -1588,6 +1590,16 @@ local function ahead(p)
   return { x = p.position.x + step[1], y = p.position.y + step[2] }
 end
 
+-- Whether planned belt q takes what a belt heading d puts on its tile: none
+-- takes it head-on, an underground exit's back is closed and a splitter
+-- takes it only from behind.
+local function takes(q, d)
+  local kind = q.proto.type
+  if not BELT_FLOW[kind] or q.direction == (d + 8) % 16 then return false end
+  if kind == "splitter" then return q.direction == d end
+  return not (kind == "underground-belt" and q.under == "output" and q.direction == d)
+end
+
 -- A planned pole's group (union-find over plain indexes).
 local function root(V, i)
   while V.group[i] ~= i do i = V.group[i] end
@@ -1636,9 +1648,11 @@ local function survey_start(result)
     if front then
       local flows = false
       for _, j in ipairs(planned_at(V, front.x, front.y)) do
-        if BELT_FLOW[planned[j].proto.type] then flows = true end
+        if takes(planned[j], p.direction) then flows = true end
       end
       if not flows then V.items[#V.items + 1] = { kind = "belt", i = i, front = front } end
+    elseif kind == "underground-belt" and p.under ~= "output" and AHEAD[p.direction] then
+      V.items[#V.items + 1] = { kind = "entrance", i = i }
     end
     if power_role(p.proto) == "draws" then
       local covered = false
@@ -1652,10 +1666,15 @@ local function survey_start(result)
   return V
 end
 
+-- Whether the chunk under a point is charted.
+local function charted_at(ctx, point)
+  return charted(ctx, { left_top = point, right_bottom = { x = point.x + 0.001, y = point.y + 0.001 } })
+end
+
 -- The own entity a small query finds (the first by position that accepts
--- takes), nil past the chart or when nothing does.
+-- takes and that stands on a charted chunk), nil when nothing does. A
+-- query reaching past the chart still finds what stands inside it.
 local function survey_query(ctx, filter, accepts)
-  if filter.area and not charted(ctx, filter.area) then return nil end
   local surface, force = where(ctx)
   filter.force = force
   ctx.calls = ctx.calls + SURVEY_QUERY
@@ -1664,8 +1683,9 @@ local function survey_query(ctx, filter, accepts)
   ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
   local best
   for _, entity in ipairs(found) do
-    if entity.valid and entity.type ~= "character" and accepts(entity) and (not best
-      or entity.position.y < best.position.y or entity.position.y == best.position.y and entity.position.x < best.position.x) then
+    if entity.valid and entity.type ~= "character" and (not best
+      or entity.position.y < best.position.y or entity.position.y == best.position.y and entity.position.x < best.position.x)
+      and accepts(entity) and charted_at(ctx, entity.position) then
       best = entity
     end
   end
@@ -1705,6 +1725,36 @@ local function survey_item(ctx, V, item)
     end
     rows.belt_ends[#rows.belt_ends + 1] = { name = p.name, x = p.position.x, y = p.position.y, direction = p.direction,
       faces = faces or "nothing" }
+  elseif item.kind == "entrance" then
+    -- An underground entrance whose nearest same-axis underground of its
+    -- name within reach is no exit heading its way (planned, else an own
+    -- exit there) ends its run underground.
+    local step, d = AHEAD[p.direction], p.direction
+    local reach = math.floor(read_number(function() return p.proto.max_underground_distance end) or 0)
+    ctx.calls = ctx.calls + math.ceil(reach / LOAD_PER_ITEM)
+    local nearest
+    for k = 1, reach do
+      for _, j in ipairs(planned_at(V, p.position.x + step[1] * k, p.position.y + step[2] * k)) do
+        local q = V.planned[j]
+        if q.name == p.name and (q.direction == d or q.direction == (d + 8) % 16) then nearest = nearest or q end
+      end
+      if nearest then break end
+    end
+    local paired = nearest and nearest.under == "output" and nearest.direction == d
+    if not nearest and reach > 0 then
+      local x1, y1 = p.position.x + step[1] * reach, p.position.y + step[2] * reach
+      local x0, y0 = p.position.x + step[1], p.position.y + step[2]
+      paired = survey_query(ctx, { name = p.name, area = {
+        left_top = { x = math.min(x0, x1) - 0.4, y = math.min(y0, y1) - 0.4 },
+        right_bottom = { x = math.max(x0, x1) + 0.4, y = math.max(y0, y1) + 0.4 } } }, function(entity)
+        local ok, kind = pcall(function() return entity.belt_to_ground_type end)
+        return ok and kind == "output" and entity.direction == d
+      end) ~= nil
+    end
+    if not paired then
+      rows.belt_ends[#rows.belt_ends + 1] = { name = p.name, x = p.position.x, y = p.position.y, direction = d,
+        faces = "nothing" }
+    end
   elseif item.kind == "power" then
     local a = p.area
     local d = V.widest

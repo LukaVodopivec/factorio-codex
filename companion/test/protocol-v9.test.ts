@@ -519,7 +519,7 @@ describe("protocol v28 DTO and tool registry", () => {
     expect(described.build_layout).toMatch(/near_liquid picks water, lava, heavy-oil or ammoniacal-solution; a dry run may name surface/);
     expect(described.build_block).toMatch(/A dry run may name surface/);
     for (const tool of ["build_layout", "build_block"]) {
-      expect(described[tool]).toMatch(/inserters \(picks_from, drops_into[^)]*\), belt_ends .*unpowered .*isolated_poles/);
+      expect(described[tool]).toMatch(/inserters \(picks_from, drops_into[^)]*\), belt_ends .*facing a reversed belt.*unpowered .*isolated_poles/);
     }
   });
 

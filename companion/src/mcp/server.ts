@@ -260,7 +260,8 @@ export function registerMcpTools(
   const dryRun = surface === "full" ? " check_only: true is a dry run that builds nothing." : " Dry run only: checks without building.";
   // What a layout or block dry run reports as data, never as a failure.
   const dryReport = " Its report also lists inserters (picks_from, drops_into: a planned or existing entity, or nothing), belt_ends"
-    + " (what each belt run's last belt faces), unpowered machines no pole covers and isolated_poles no wire reaches.";
+    + " (each belt nothing ahead takes from: a run's end, one facing a reversed belt or an underground exit's back, an"
+    + " entrance with no exit; with what it faces), unpowered machines no pole covers and isolated_poles no wire reaches.";
   // connect_entities plans the route as a read; the build is a direct
   // build_plan task, and a power route is then checked for continuity.
   const connectRoute = async ({ check_only, ...p }: z.infer<typeof routeSchema>, signal?: AbortSignal) => {

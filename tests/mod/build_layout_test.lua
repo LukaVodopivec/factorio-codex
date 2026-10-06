@@ -497,8 +497,9 @@ check(order_ok, "poles are placed last")
 -- The dry run reports, as data, what each inserter picks from and drops
 -- into, what each belt run's last belt faces, unpowered machines and
 -- planned poles no wire reaches.
+local existing, belt_run
 do
-  local function existing(name, kind, x, y, w, extra)
+  function existing(name, kind, x, y, w, extra)
     local e = { valid = true, name = name, type = kind, position = { x = x, y = y },
       bounding_box = { left_top = { x = x - w / 2, y = y - w / 2 }, right_bottom = { x = x + w / 2, y = y + w / 2 } } }
     for k, v in pairs(extra or {}) do e[k] = v end
@@ -527,6 +528,26 @@ do
   for _, row in ipairs(routed.belt_ends or {}) do if row.faces == "wooden-chest" then routed_end = row end end
   check(routed_end ~= nil, "a routed belt's last belt faces the chest it was routed to")
 
+  -- A belt reversed in the middle of a run: the belt running head-on into
+  -- it and the reversed belt itself are both ends, beside the run's last.
+  function belt_run(...)
+    local list = {}
+    for i, e in ipairs({ ... }) do
+      list[i] = { name = e[1], dx = i - 0.5, dy = 0.5, direction = e[2], belt_to_ground_type = e[3] }
+    end
+    local out = dry({ anchor = { x = 900, y = 930 }, entities = list })
+    local ends = {}
+    for _, row in ipairs(out.belt_ends or {}) do ends[#ends + 1] = string.format("%g:%s", row.x, row.faces) end
+    table.sort(ends)
+    return out.ok and table.concat(ends, " ") or "failed"
+  end
+  local belt = "transport-belt"
+  local reversed = belt_run({ belt, 4 }, { belt, 4 }, { belt, 12 }, { belt, 4 }, { belt, 4 })
+  check(reversed == "901.5:transport-belt 902.5:transport-belt 904.5:nothing",
+    "a belt facing a reversed belt and the reversed belt are belt ends (" .. reversed .. ")")
+  local sideload = belt_run({ belt, 4 }, { belt, 0 })
+  check(sideload == "901.5:nothing", "a belt side-loading onto another is no end (" .. sideload .. ")")
+
   local assembler = { name = "assembling-machine-1", dx = 0.5, dy = 0.5, recipe = "iron-gear-wheel" }
   local bare = dry({ anchor = { x = 950, y = 950 }, entities = { assembler } })
   check(bare.ok and bare.unpowered and bare.unpowered[1].name == "assembling-machine-1" and bare.isolated_poles == nil,
@@ -541,6 +562,17 @@ do
   pole.position, pole.bounding_box = { x = 953.5, y = 950.5 }, nil
   local existing_supply = dry({ anchor = { x = 950, y = 950 }, entities = { assembler } })
   check(existing_supply.ok and existing_supply.unpowered == nil, "an existing pole whose supply area covers the machine powers it")
+  -- The pole query reaches past the chart: what stands on charted chunks
+  -- still counts; a pole on an uncharted chunk never does.
+  local is_charted = character.force.is_chunk_charted
+  character.force.is_chunk_charted = function(_, chunk) return chunk.x < 30 end
+  pole.position = { x = 959.5, y = 950.5 }
+  local edge = dry({ anchor = { x = 956, y = 950 }, entities = { assembler } })
+  check(edge.ok and edge.unpowered == nil, "a charted pole covers a machine whose pole query reaches an uncharted chunk")
+  pole.position = { x = 960.5, y = 950.5 }
+  local beyond = dry({ anchor = { x = 957, y = 950 }, entities = { assembler } })
+  check(beyond.ok and beyond.unpowered and beyond.unpowered[1].x == 957.5, "a pole on an uncharted chunk powers nothing in the report")
+  character.force.is_chunk_charted = is_charted
   blockers = {}
   -- The survey is spread over ticks within the job's budget.
   local row = {}
@@ -688,6 +720,25 @@ local hopped = check_layout({ check_only = true, anchor = { x = 700, y = 700 }, 
 local unders = 0
 for _, row in ipairs(hopped.placed) do if row.name == "underground-belt" then unders = unders + 1 end end
 check(hopped.ok and unders == 2, "a layout belt hops a planned wall of chests with one underground pair")
+local hop_ends = {}
+for _, row in ipairs(hopped.belt_ends or {}) do hop_ends[#hop_ends + 1] = row.name end
+check(table.concat(hop_ends, " ") == "transport-belt", "a routed underground pair ends no belt run in the dry run")
+-- Underground ends in a dry run's belt_ends: an exit's back is closed, and
+-- an entrance with no exit in reach (planned, else an own exit) ends its run.
+do
+  local belt, under = "transport-belt", "underground-belt"
+  local closed_back = belt_run({ belt, 4 }, { under, 4, "output" }, { belt, 4 })
+  check(closed_back == "900.5:underground-belt 902.5:nothing",
+    "a belt facing an underground exit's closed back is an end (" .. closed_back .. ")")
+  local dangling = belt_run({ belt, 4 }, { under, 4, "input" })
+  check(dangling == "901.5:nothing", "an underground entrance with no exit is its run's end (" .. dangling .. ")")
+  local paired = belt_run({ belt, 4 }, { under, 4, "input" }, { "wooden-chest" }, { under, 4, "output" }, { belt, 4 })
+  check(paired == "904.5:nothing", "an underground entrance with its exit in reach is no end (" .. paired .. ")")
+  blockers = { existing(under, "underground-belt", 903.5, 930.5, 0.8, { direction = 4, belt_to_ground_type = "output" }) }
+  local existing_exit = belt_run({ belt, 4 }, { under, 4, "input" })
+  check(existing_exit == "", "an underground entrance whose own exit already stands in reach is no end (" .. existing_exit .. ")")
+  blockers = {}
+end
 local walled_off = check_layout({ check_only = true, anchor = { x = 800, y = 800 }, entities = wall,
   connections = { { kind = "belt", prototype = "transport-belt", underground = false,
     from = { dx = 0.5, dy = 0.5 }, to = { dx = 20.5, dy = 0.5 } } } })

@@ -180,7 +180,7 @@ replacement.
   result, and one retry of a partial insert happen inside the action.
 - **Upkeep.** While no queued plan would take the body, no hold is active, and some plan has
   finished since the last emergency stop (a stop is never undone by upkeep),
-  the body refuels dry or low burner machines within 96 tiles of it (with any fuel of the machine's fuel
+  the body, within 96 tiles of it, refuels dry or low burner machines (with any fuel of the machine's fuel
   category, such as nutrients for a biochamber) and brings the current
   research's science packs to labs that accept them and have room, from own
   stock, as a plan with source `upkeep`; any queued plan takes the body at the

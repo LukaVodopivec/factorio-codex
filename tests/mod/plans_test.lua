@@ -800,4 +800,23 @@ check(failing_row and failing_row.summary:match("^failed at step 2/3 mine"),
   "the activity_log row names the failed step, not the walk back after it")
 tasks.cancel({ origin = "test/plans", plan_id = far_wait.plan_id })
 walk.tick = walk_tick
+-- Hand service is charged to the machines an insert actually served,
+-- shared among them (factory_status hand_seconds).
+local autonomy_mod = require("scripts.autonomy")
+local charged, on_body_time = {}, autonomy_mod.on_body_time
+autonomy_mod.on_body_time = function(at, ticks) charged[#charged + 1] = { x = at.x, ticks = ticks } end
+local insert_runner = package.loaded["scripts.actions.transfer"].insert
+local insert_tick, insert_ticks = insert_runner.tick, 0
+insert_runner.tick = function()
+  insert_ticks = insert_ticks + 1
+  if insert_ticks < 40 then return nil end
+  return { status = "done", detail = "done", outcome = { targets = { { x = 7, y = 1 }, { x = 8, y = 1 } } } }
+end
+game.tick = 50000
+tasks.queue_plan({ steps = { { action = "insert_items", targets = { { x = 7, y = 1 }, { x = 8, y = 1 } }, items = { coal = 1 } } } })
+for tick = 50001, 50060 do game.tick = tick; tasks.on_tick() end
+check(#charged == 2 and charged[1].x == 7 and charged[2].x == 8 and charged[1].ticks == charged[2].ticks
+  and charged[1].ticks >= 15 and charged[1].ticks <= 25,
+  "a multi-target insert charges its body time to each machine it served, shared")
+insert_runner.tick, autonomy_mod.on_body_time = insert_tick, on_body_time
 os.exit(failures == 0 and 0 or 1)

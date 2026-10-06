@@ -53,6 +53,9 @@ local MAX_CANDIDATES = 64
 -- is not worth a round trip each time it runs dry; factory_status shows it
 -- no_fuel, and supplying or retiring it is the bots' call.
 local UPKEEP_RADIUS = 96
+-- Matching machines one pass may look at in all, far ones included, so a
+-- dry outpost never hides the machines beside the body.
+local MAX_LOOKED = 4 * MAX_CANDIDATES
 
 local function read(fn)
   local ok, value = pcall(fn)
@@ -67,11 +70,11 @@ end
 -- Own machines on the body's surface in a raw sampler state, or in the
 -- sampler's "low_fuel" set (of one type when given), not skipped by
 -- `skip(unit)` (a pure Lua test), within UPKEEP_RADIUS, nearest first: from the sampler's set on
--- that surface, at most MAX_CANDIDATES of them looked at (machines elsewhere
--- are never counted). An audit records at most MAX_CANDIDATES rows in all.
+-- that surface, at most MAX_CANDIDATES of them taken and MAX_LOOKED looked at
+-- (machines elsewhere are never counted). An audit records at most MAX_CANDIDATES rows in all.
 local function machines_in(c, raw, kind, skip, audit)
   local a = storage.autonomy
-  local rows, seen = {}, 0
+  local rows, seen, looked = {}, 0, 0
   local audit_left = audit and MAX_CANDIDATES - audit.observed_candidates or 0
   local function nearer(x, y)
     if x.distance ~= y.distance then return x.distance < y.distance end
@@ -79,7 +82,10 @@ local function machines_in(c, raw, kind, skip, audit)
   end
   local by_surface = a and a.waiting and a.waiting[raw]
   for unit in pairs(by_surface and by_surface[c.surface_index] or {}) do
-    if seen >= MAX_CANDIDATES then if audit then audit.scan_complete = false end; break end
+    if seen >= MAX_CANDIDATES or looked >= MAX_LOOKED then
+      if audit then audit.scan_complete = false end
+      break
+    end
     local rec = a.machines[unit]
     local matches = rec and (raw == "low_fuel" and rec.low_fuel == true or rec.raw == raw)
       and (kind == nil or rec.type == kind)
@@ -98,13 +104,14 @@ local function machines_in(c, raw, kind, skip, audit)
       if audit_left == 0 then audit.candidates_capped = true end
     end
     if matches and not skipped then
-      seen = seen + 1
+      looked = looked + 1
       local entity = rec.entity
       local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
       local distance = dx * dx + dy * dy
       if distance > UPKEEP_RADIUS * UPKEEP_RADIUS then
         if evidence then evidence.decision = "too_far" end
       elseif entity and entity.valid then
+        seen = seen + 1
         rows[#rows + 1] = { unit = unit, position = rec.position, entity = entity, distance = distance,
           evidence = evidence }
       end

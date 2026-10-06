@@ -715,10 +715,20 @@ local function finish_step(plan, result)
   factory_activity.record(kind, result.outcome)
   if kind and (TOPOLOGY_TASKS[kind] or extensions[kind]) then autonomy.mark_dirty() end
   local step = plan.steps[plan.current_step]
-  -- Hand service a line cost the body (factory_status hand_seconds).
-  local started = plan.current_task and plan.current_task.started_tick
-  if started and step.x and (step.action == "insert_items" or step.action == "extract_items") then
-    autonomy.on_body_time({ x = step.x, y = step.y }, game.tick - started)
+  -- Hand service a line cost the body (factory_status hand_seconds): the
+  -- step's time from its first attempt, shared by the machines it served.
+  local recovering = plan._recovery and plan._recovery.step == plan.current_step and plan._recovery
+  local started = plan.current_task and plan.current_task.started_tick or recovering and recovering.started_tick
+  if started and (step.action == "insert_items" or step.action == "extract_items") then
+    local outcome, spots = type(result.outcome) == "table" and result.outcome or {}, {}
+    if type(outcome.target) == "table" and type(outcome.target.position) == "table" then
+      spots[1] = outcome.target.position
+    else
+      for _, row in ipairs(type(outcome.targets) == "table" and outcome.targets or {}) do
+        if row.x then spots[#spots + 1] = { x = row.x, y = row.y } end
+      end
+    end
+    for _, at in ipairs(spots) do autonomy.on_body_time(at, math.floor((game.tick - started) / #spots)) end
   end
   local status = result.status == "done" and "completed" or result.status
   local recovery = plan._recovery
@@ -905,7 +915,7 @@ end
 local function try_recover(plan, step, result)
   if result.status == "done" or plan._recovery and plan._recovery.step == plan.current_step then return false end
   local failed, code = plan.current_task, result_code(result)
-  local recovery = { step = plan.current_step, code = code, first = result }
+  local recovery = { step = plan.current_step, code = code, first = result, started_tick = failed and failed.started_tick }
   if code == "BODY_ENCLOSED" then
     local ok, suggested = pcall(function() return result.outcome.diagnostics.path.suggested_recovery end)
     if not ok or type(suggested) ~= "table" then return false end
@@ -1101,7 +1111,9 @@ local function tick_plan(plan)
     if not PARKED_ACTIONS[step.action] and step.action ~= "inspect_entities" then
       -- Async action events are delivered to the one active queue entry. Give
       -- the nested runner its owning plan ID so it uses that same mailbox.
-      plan.current_task.id, plan.current_task.started_tick = plan.id, game.tick
+      plan.current_task.id = plan.id
+      plan.current_task.started_tick = recovery and recovery.step == plan.current_step and recovery.started_tick
+        or game.tick
       local ok, err = pcall(runners[plan.current_task.type].start, plan.current_task)
       if not ok then finish_step(plan, { status = "failed", detail = tostring(err) }); return end
     end
@@ -1343,6 +1355,10 @@ local function release_plan(plan, held_ticks)
   -- A running step's own deadline (a travel phase's).
   local current = plan.current_task
   if current._deadline_tick then current._deadline_tick = current._deadline_tick + held_ticks end
+  -- A hold is the owner's time, never a line's hand service.
+  if current.started_tick then current.started_tick = current.started_tick + held_ticks end
+  local recovery = plan._recovery
+  if recovery and recovery.started_tick then recovery.started_tick = recovery.started_tick + held_ticks end
 end
 -- The active step re-plans from where the body stands (after a hold, and
 -- after a load whose state.init dropped the pending path request).

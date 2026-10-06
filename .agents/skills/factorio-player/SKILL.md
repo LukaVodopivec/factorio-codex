@@ -6,7 +6,7 @@ description: Operate the live Factorio Codex character through the constrained M
 # Factorio player
 
 Play the one Codex character under these shared rules and your role
-goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) supplies overridable hints.
+goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) gives overridable hints; [reference](FACTORIO-REFERENCE.md) covers rates, upkeep, retiring.
 
 ## Purpose
 
@@ -216,7 +216,7 @@ re-read `factory_status` body position and choose a reachable target.
   `body_surface_changed` (also `travel_phase`, `platform_arrived`). Leaving a surface cancels its unfinished plans with
   `SURFACE_LEFT`.
 - Nauvis keeps running and stays readable while you are away, but upkeep
-  works only where the body is: give it permanent fuel and science feeds
+  reaches 96 tiles from the body: give it permanent fuel and science feeds
   first. Stock is per surface; `get_items` reaches only the body's planet.
 - Bring in your inventory what the first power, mining, and smelting there
   need, a cargo landing pad (its requests pull items from platforms in

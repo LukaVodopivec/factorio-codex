@@ -447,4 +447,12 @@ for _, row in ipairs(storage.chores.last_selection.refuel.candidates) do if row.
 check(#queued == far_count + 1 and #queued[#queued].steps == 1 and queued[#queued].steps[1].x == 90
   and far_row and far_row.decision == "too_far",
   "upkeep never walks to a machine more than 96 tiles from the body; the readback says it was too far")
+local outpost = {}
+for unit = 100, 199 do outpost[unit] = machine(unit, 500 + unit, "no_fuel") end
+outpost[500] = machine(500, 12, "no_fuel")
+sampled(outpost)
+storage.chores.refueled = {}
+game.tick = game.tick + 100000
+chores.upkeep(game.tick)
+check(queued[#queued].steps[1].x == 12, "a hundred dry machines far away never hide the dry one beside the body")
 os.exit(failures == 0 and 0 or 1)

@@ -822,4 +822,24 @@ tick()
 check(task._deadline_tick==deadline+299 and tasks.plan_status({plan_id=moving.plan_id}).status=="running",
  "the native relocation deadline excludes the human hold and retains FIFO ownership")
 tasks.cancel({all=true,origin="test/robots"})
+
+-- A hold during an insert step is the owner's time, never the line's hand service.
+reset()
+local autonomy = require("scripts.autonomy")
+local charged, on_body_time = {}, autonomy.on_body_time
+autonomy.on_body_time = function(_, ticks) charged[#charged + 1] = ticks end
+local inert_tick, insert_done = inert.tick, false
+inert.tick = function()
+  if insert_done then return { status = "done", detail = "done", outcome = { target = { position = { x = 3, y = 3 } } } } end
+end
+tasks.queue_plan({ steps = { { action = "insert_items", x = 3, y = 3, items = { coal = 1 } } } })
+for _ = 1, 10 do tick() end
+press(); tick()
+for _ = 1, 298 do tick() end
+tick()
+insert_done = true
+tick()
+check(#charged == 1 and charged[1] < 60, "a human hold during an insert step is not charged as hand service")
+inert.tick, autonomy.on_body_time = inert_tick, on_body_time
+tasks.cancel({ all = true, origin = "test/hand-time" })
 os.exit(failures == 0 and 0 or 1)

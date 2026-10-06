@@ -315,7 +315,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/`set_platform_route` sets a platform's stops \(unlocked locations, each with the game's wait conditions\) at once, without the body/);
     expect(flatSkill).toMatch(/`travel \{to: "platform:<n>"\}` rides the next ready rocket[\s\S]*`travel \{to: "<planet>"\}` waits aboard until the platform reaches the planet, then lands you by pod/);
     expect(flatSkill).toMatch(/Queue the destination's work in the same plan after the `travel` step/);
-    expect(flatSkill).toMatch(/Nauvis keeps running and stays readable while you are away, but upkeep works only where the body is/);
+    expect(flatSkill).toMatch(/Nauvis keeps running and stays readable while you are away, but upkeep reaches 96 tiles from the body/);
     expect(flatSkill).toMatch(/Bring in your inventory[\s\S]*leaving a planet takes a rocket from a silo there/);
     expect(flatSkill).toMatch(/The game is won when any of our platforms reaches the solar system edge; the body need not be aboard/);
     expect(flatSkill).toMatch(/Each package names its `surface` \(a planet\) and queues only while the body is there[\s\S]*`waiting_surface`, which is not a failure\. Only the pilot travels: a package never holds `travel`/);

@@ -9,6 +9,9 @@
 -- build's own search would take, so it returns the site or a definite
 -- SITE_NOT_FOUND; it may name another planet's `surface` to check a layout
 -- there while the body is away (nothing counts as the body in the way).
+-- A hand-built dry run on the body's surface also fails ITEM_UNOBTAINABLE,
+-- naming each item the body neither carries nor can obtain now; a block
+-- build checks the same before fetching anything and is all or nothing.
 -- An entity or recipe whose surface conditions the surface breaks fails
 -- SURFACE_CONDITION before any site is searched. build_block expands a parametric block
 -- (scripts/blocks.lua) into a layout and may turn it to fit the site.
@@ -48,6 +51,7 @@ local jobs = require("scripts.jobs")
 local blueprints = require("scripts.blueprints")
 local platforms = require("scripts.platforms")
 local surfaces = require("scripts.surfaces")
+local supply = require("scripts.actions.supply")
 
 -- The liquids a site may be near (site.near_liquid); near_water is water.
 local LIQUIDS = { water = true, lava = true, ["heavy-oil"] = true, ["ammoniacal-solution"] = true }
@@ -1564,6 +1568,35 @@ local function ghost_report(ctx, result, extra)
   return out
 end
 
+-- What the steps need (each placed item and starter item) that the body
+-- neither carries nor can obtain now (supply.unobtainable), as failure rows
+-- with code ITEM_UNOBTAINABLE; nil when all can be had. A viewpoint on
+-- another surface carries and fetches nothing there: it is not checked.
+local function unobtainable(c, steps)
+  if not c.get_item_count then return nil end
+  local counts, names = {}, {}
+  local function add(name, n)
+    if not counts[name] then names[#names + 1] = name end
+    counts[name] = (counts[name] or 0) + n
+  end
+  for _, step in ipairs(steps) do
+    add(step.item, 1)
+    for name, n in pairs(step.insert or {}) do add(name, n) end
+  end
+  table.sort(names)
+  local wants = {}
+  for i, name in ipairs(names) do wants[i] = { name = name, count = counts[name] } end
+  local rows = {}
+  for _, row in ipairs(supply.unobtainable(c, wants)) do
+    local via = row.short and string.format(" (needs %d more %s)", row.short.missing, row.short.item) or ""
+    rows[#rows + 1] = { code = "ITEM_UNOBTAINABLE", item = row.item, missing = row.missing, short = row.short,
+      reason = string.format("%s can't be carried now%s: %s", row.item, via, row.reason) }
+  end
+  return #rows > 0 and rows or nil
+end
+
+-- The check_only answer of a hand-built layout; unobtainable lists what the
+-- body cannot get now (ok stays the geometry's answer: the caller decides).
 local function report(c, result, extra, s)
   if s and s.ctx.ghosts then return ghost_report(s.ctx, result, extra) end
   local steps = result.placements and #result.failed == 0 and plan_steps(result) or {}
@@ -1571,7 +1604,7 @@ local function report(c, result, extra, s)
   for i, step in ipairs(steps) do placed[i] = placed_row(step) end
   local out = { check_only = true, ok = #result.failed == 0, anchor = result.anchor, rotation = result.rotation,
     placed = placed, failed = result.failed, materials = materials(c, steps),
-    clears = result.clears and result.clears > 0 and result.clears or nil }
+    clears = result.clears and result.clears > 0 and result.clears or nil, unobtainable = unobtainable(c, steps) }
   for k, v in pairs(extra or {}) do out[k] = v end
   return out
 end
@@ -1623,7 +1656,13 @@ local function check_job(label, make_request)
       budget.left = budget.left - (s.ctx.calls - before)
       if not result then return nil end
       result.given_anchor = s.given_anchor
-      return report(c, result, state.extra, s)
+      local out = report(c, result, state.extra, s)
+      -- A build whose items cannot be had now is no answer to build.
+      if out.unobtainable then
+        out.ok = false
+        for _, row in ipairs(out.unobtainable) do out.failed[#out.failed + 1] = row end
+      end
+      return out
     end,
   }
 end
@@ -1659,8 +1698,15 @@ local function search(task, c, budget)
     return
   end
   local steps = plan_steps(result)
-  if task.block then build_plan.fuel_burners(c, steps) end
-  task._plan = { id = task.id, steps = steps, stop_on_error = false }
+  -- A block is all or nothing: nothing is fetched when an item cannot be had
+  -- now, every item is carried before the first placement, and the first
+  -- failed placement stops it (outlets come before the drills that fill them).
+  if task.block then
+    build_plan.fuel_burners(c, steps)
+    task._check_failed = unobtainable(c, steps)
+    if task._check_failed then return end
+  end
+  task._plan = { id = task.id, steps = steps, stop_on_error = task.block ~= nil, supply_all = task.block ~= nil }
   build_plan.start(task._plan)
 end
 
@@ -1721,9 +1767,11 @@ function Runner.tick(task)
     if (r and r.ok) or (step._placed_entity and step._placed_entity.valid) then
       placed[#placed + 1] = placed_row(step)
     end
+    -- A step the build stopped before (a block's stop or shortfall) is
+    -- listed without repeating why the build stopped.
     if not (r and r.ok) then
       failed[#failed + 1] = { index = step._source.index, connection = step._source.connection,
-        code = "PLACE_FAILED", reason = r and r.why or done.detail }
+        code = r and "PLACE_FAILED" or "NOT_ATTEMPTED", reason = r and r.why or nil }
     end
   end
   local shortfall
@@ -1736,7 +1784,7 @@ function Runner.tick(task)
   local code = status == "done" and "LAYOUT_BUILT" or status == "partial" and "LAYOUT_PARTIAL" or "LAYOUT_FAILED"
   local detail = string.format("%s: placed %d/%d at anchor (%s, %s)", label, #placed, #plan.steps,
     tostring(task._anchor and task._anchor.x), tostring(task._anchor and task._anchor.y))
-  if #failed > 0 then detail = detail .. " — first failure: " .. tostring(failed[1].reason) end
+  if #failed > 0 then detail = detail .. " — first failure: " .. tostring(failed[1].reason or done.detail) end
   if shortfall then
     local items = {}
     for _, row in ipairs(shortfall) do items[#items + 1] = row.item end

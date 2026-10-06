@@ -194,6 +194,12 @@ inventory["assembling-machine-1"], inventory.inserter = 2, 2
 local check_ok = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true })
 check(check_ok.ok and #check_ok.collisions == 0 and #check_ok.missing == 0 and check_ok.tool_unlock.tool == "blueprint",
   "the dry run on free ground reports no collisions and nothing missing")
+inventory.inserter = 0
+local no_arm = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true })
+inventory.inserter = 2
+check(not no_arm.ok and #no_arm.collisions == 0 and no_arm.unobtainable and no_arm.unobtainable[1].item == "inserter"
+  and no_arm.unobtainable[1].code == "ITEM_UNOBTAINABLE",
+  "a hand dry run is not ok when an item is neither carried nor craftable now, and names it")
 spawn("wooden-chest", { x = 9.5, y = 10.5 })
 local blocked = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true })
 check(not blocked.ok and blocked.collisions[1] and blocked.collisions[1].reason:match("wooden%-chest")

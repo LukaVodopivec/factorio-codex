@@ -324,6 +324,90 @@ local function smelt_recipe(c, item)
   end
 end
 
+-- Whether a supply could have wants ({{name, count}}) now, by its own
+-- sources in its own order, without moving: what is carried, queued or
+-- stored is one shared pool; then a hand recipe (MAX_DEPTH levels) whose
+-- ingredients come the same way; else a smelt, which needs an own furnace
+-- of the recipe's category; else hand-gathering, which anything natural
+-- yields always allows. Prototype, recipe and registry reads only (no
+-- entity query, no walk). Returns {item, missing, short?, reason} rows for
+-- what could not be had; short names the ingredient that blocked a craft.
+function M.unobtainable(c, wants)
+  local pool, furnaces = {}, nil
+  local function stocked(name)
+    if pool[name] == nil then
+      local ok, totals = pcall(registry.stock_totals, { name })
+      pool[name] = have(c, name) + (ok and totals[name] or 0)
+    end
+    return pool[name]
+  end
+  local function furnace_for(category)
+    if not furnaces then
+      furnaces = {}
+      local ok, list = pcall(registry.machines, { "furnace" })
+      for _, entry in ipairs(ok and type(list) == "table" and list or {}) do
+        pcall(function()
+          if entry.entity.valid then
+            for name in pairs(entry.entity.prototype.crafting_categories) do furnaces[name] = true end
+          end
+        end)
+      end
+    end
+    return furnaces[category] == true
+  end
+  -- nil when count of name can be had, else the item that blocks it, how
+  -- many of that item and why.
+  local function obtain(name, count, depth, path)
+    local take = math.min(stocked(name), count)
+    pool[name] = pool[name] - take
+    local need = count - take
+    if need <= 0 then return nil end
+    if path[name] then return name, need, "its recipe needs itself" end
+    local reasons = { "not carried or stored" }
+    local recipe, per_craft = hand_recipe(c, name)
+    if recipe and depth < MAX_DEPTH then
+      local crafts = math.ceil(need / per_craft)
+      path[name] = true
+      for _, ingredient in ipairs(recipe.ingredients or {}) do
+        local short, missing, why = obtain(ingredient.name, math.ceil((tonumber(ingredient.amount) or 1) * crafts),
+          depth + 1, path)
+        if short then path[name] = nil; return short, missing, why end
+      end
+      path[name] = nil
+      pool[name] = pool[name] + crafts * per_craft - need
+      return nil
+    end
+    if recipe then
+      reasons[#reasons + 1] = "too many recipe levels to hand-craft it"
+    else
+      reasons[#reasons + 1] = "not hand-craftable: " .. tostring(per_craft)
+      local smelt, ore = smelt_recipe(c, name)
+      if smelt and depth < MAX_DEPTH then
+        if furnace_for(smelt.category) then
+          local crafts = math.ceil(need / (M.output_per_craft(smelt, name) or 1))
+          if not obtain(ore.name, crafts * (tonumber(ore.amount) or 1), depth + 1, path) then return nil end
+          reasons[#reasons + 1] = "not smelted: short of " .. ore.name
+        else
+          reasons[#reasons + 1] = "no own furnace smelts it (" .. tostring(smelt.category) .. ")"
+        end
+      end
+    end
+    if #natural_names(name) > 0 then return nil end
+    reasons[#reasons + 1] = "nothing natural yields it"
+    return name, need, table.concat(reasons, "; ")
+  end
+  local rows = {}
+  for _, want in ipairs(wants) do
+    local before = stocked(want.name)
+    local short, missing, why = obtain(want.name, want.count, 0, {})
+    if short then
+      rows[#rows + 1] = { item = want.name, missing = math.max(1, want.count - before),
+        short = short ~= want.name and { item = short, missing = missing } or nil, reason = why }
+    end
+  end
+  return rows
+end
+
 local function inventory_of(entity, id)
   local ok, inventory = pcall(entity.get_inventory, defines.inventory[id])
   return ok and inventory or nil

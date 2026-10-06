@@ -452,6 +452,25 @@ describe("package auto-queue", () => {
       reason: "check failed: blueprint_place smelter at (4, 4): the position is blocked; the nearest free position is (9, 4)" });
   });
 
+  it("fails a package whose block or blueprint needs an item the body cannot obtain now, naming it", async () => {
+    const dir = runDir();
+    const place = { ...furnaces("bp-arm"), steps: [{ action: "blueprint_place", name: "smelter", position: { x: 4, y: 4 } }] };
+    writeLedger(dir, 1, [furnaces("opening"), place]);
+    const reason = "burner-mining-drill can't be carried now (needs 1 more iron-plate): no own furnace smelts it (smelting)";
+    const { call, bridge } = fakeBridge({
+      build_block: () => ({ ok: false, placed: [{ name: "burner-mining-drill" }],
+        failed: [{ code: "ITEM_UNOBTAINABLE", item: "burner-mining-drill", reason }] }),
+      blueprint_place: () => ({ ok: false, collisions: {}, free_position: { x: 4, y: 4 },
+        unobtainable: [{ code: "ITEM_UNOBTAINABLE", item: "inserter", reason: "inserter can't be carried now: not researched" }] }),
+    });
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(queuedPlans(call)).toEqual([]);
+    expect(packageFailures(dir).map((failure) => [failure.package_id, failure.reason])).toEqual([
+      ["opening", `check failed: build_block: ITEM_UNOBTAINABLE ${reason}`],
+      ["bp-arm", "check failed: blueprint_place smelter: ITEM_UNOBTAINABLE inserter can't be carried now: not researched"],
+    ]);
+  });
+
   it("makes a package's leading blueprint captures before its steps, after its predecessor's plan has ended", async () => {
     const dir = runDir();
     const capture = { action: "blueprint_capture", name: "smelter", center: { x: 0, y: 0 }, radius: 6 };

@@ -176,7 +176,9 @@ function hardRejection(entry: any): string | null {
  *  does not have yet. */
 const laysTiles = (entry: BuildPackage | undefined) => entry?.steps.some((step) => step.action === "place_tiles") === true;
 
-/** The mod's own placement check for one package; a reason when it fails.
+/** The mod's own placement check for one package; a reason when it fails,
+ *  also when a block, layout or blueprint needs an item the body can neither
+ *  carry nor obtain now (ITEM_UNOBTAINABLE, before anything is spent).
  *  Only steps before the first place_tiles are checked against the map: a
  *  landfill makes the ground the later ones need, and the mod checks them when
  *  they run. */
@@ -198,7 +200,12 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage): Promise
     for (const step of checked) {
       if (step.action === "blueprint_place") {
         const { action, ...params } = step;
-        const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number } }>(action, { ...params, check_only: true });
+        const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number }; unobtainable?: unknown }>(
+          action, { ...params, check_only: true });
+        const unobtainable = luaArray(checked?.unobtainable ?? []) as Array<{ code?: string; reason?: string }>;
+        if (unobtainable.length > 0) {
+          return `blueprint_place ${step.name}: ${[unobtainable[0]?.code, unobtainable[0]?.reason].filter(Boolean).join(" ")}`;
+        }
         if (checked?.ok === false) {
           const free = checked.free_position ? `; the nearest free position is (${checked.free_position.x}, ${checked.free_position.y})` : "";
           return `blueprint_place ${step.name} at (${step.position.x}, ${step.position.y}): the position is blocked${free}`;

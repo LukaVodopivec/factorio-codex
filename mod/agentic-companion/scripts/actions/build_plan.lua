@@ -267,6 +267,25 @@ local function step_needs(task, c, step)
   return needs
 end
 
+-- supply_all: everything the whole plan places or inserts, for each item the
+-- body carries too few of, fetched before the first placement.
+local function plan_needs(c, task)
+  local totals, names = {}, {}
+  local function add(name, n)
+    if not totals[name] then names[#names + 1] = name end
+    totals[name] = (totals[name] or 0) + n
+  end
+  for _, step in ipairs(task.steps) do
+    add(step.item, 1)
+    for _, it in ipairs(step._insert or {}) do add(it.name, it.count) end
+  end
+  local needs = {}
+  for _, name in ipairs(names) do
+    if c.get_item_count(name) < totals[name] then needs[#needs + 1] = { name = name, count = totals[name] } end
+  end
+  return needs
+end
+
 -- ------------------------------------------------------------ step pieces
 
 -- Why can_place_entity said no: build.lua's own answer.
@@ -544,6 +563,20 @@ function M.tick(task)
 
   local step = task.steps[task._index]
   if not step then return finished(task) end
+  -- All or nothing (supply_all): a shortfall fails the plan with nothing placed.
+  if task.supply_all and task.auto_supply and not task._supplied_all then
+    local needs = task._supply == nil and plan_needs(c, task) or nil
+    if needs == nil or #needs > 0 then
+      local result = supply.ensure(task, needs)
+      if not result then return nil end
+      if result.status ~= "done" then
+        for _, row in ipairs(result.outcome and result.outcome.missing or {}) do task._short[row.item] = result.detail end
+        task._supplied_all = true
+        return failure(task, "placed nothing: " .. tostring(result.detail))
+      end
+    end
+    task._supplied_all = true
+  end
   if task._built then return finish_placed_step(task, c, step, task._built) end
   if task._exit then
     local walked = supply.step(task, "_exit")

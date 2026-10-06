@@ -298,7 +298,8 @@ M.place_action = {
 
 -- blueprint_place {.., check_only = true} over RPC: the placement at the
 -- position (collisions), else the first free position near it, and the
--- materials against what the body carries. A job: the same search and
+-- materials against what the body carries; in hand mode an item the body
+-- cannot obtain now (unobtainable) makes it not ok. A job: the same search and
 -- per-tick budget as build_layout's dry run.
 M.place_check_job = {
   start = function(params)
@@ -353,8 +354,12 @@ M.place_check_job = {
     end
     local collisions = {}
     for i = 1, math.min(MAX_ROWS, #(job.collisions or {})) do collisions[i] = job.collisions[i] end
+    -- Hand mode needs every item from the body; robots take ghosts' items
+    -- from the logistic network.
+    local unobtainable = job.mode ~= "ghosts" and report.unobtainable or nil
     local out = { check_only = true, blueprint = job.name, mode = job.mode, position = job.anchor,
-      ok = job.phase == "at", collisions = collisions, materials = report.materials, missing = missing,
+      ok = job.phase == "at" and unobtainable == nil, collisions = collisions, materials = report.materials,
+      missing = missing, unobtainable = unobtainable,
       free_position = report.ok and report.anchor or nil,
       free_reason = not report.ok and report.failed[1] and report.failed[1].reason or nil,
       tool_unlock = blueprints.tool_unlock(c, "blueprint") }

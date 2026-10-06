@@ -14,9 +14,11 @@
 -- footprint are mined first.
 -- Bounded recoveries, once per step: walk out of a footprint the body
 -- overlaps, re-approach a placed entity out of reach, retry a partial
--- starter insert after a second. Placement is idempotent: the same entity
--- already standing there counts as placed (turned when it faces another
--- way), and its recipe and starter items are still applied.
+-- starter insert after a second, and (without stop_on_error) retry after the
+-- last step a step whose approach failed for where the body stood.
+-- Placement is idempotent: the same entity already standing there counts as
+-- placed (turned when it faces another way), and its recipe and starter items
+-- are still applied.
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
@@ -35,6 +37,16 @@ local MAX_STEPS = 200
 local INSERT_RETRY_TICKS = 60
 local MAX_FAILURES_LISTED = 5
 local FUEL_PER_BURNER = 5
+-- Approach failures that belong to where the body stood, not to the step: a
+-- plan that goes on past failures tries such a step once more after its last
+-- step, if the body stands elsewhere by then.
+local RETRY_CODES = { BODY_ON_CONVEYOR = true, START_COLLISION = true }
+local RETRY_MOVED_SQ = 0.25 -- the body has moved more than half a tile
+
+local function dist_sq(a, b)
+  local dx, dy = a.x - b.x, a.y - b.y
+  return dx * dx + dy * dy
+end
 
 -- Burner machines among steps (by their placed entity) that name no starter
 -- items get fuel: the first fuel the body carries or the force stores, else
@@ -250,17 +262,20 @@ function M.start(task)
 end
 
 -- What the rest of the plan needs of this step's item and starter items,
--- for each one the body carries too few of: fetched in one trip.
+-- for each one the body carries too few of: fetched in one trip. In the
+-- retry pass the rest is the steps still to be retried.
 local function step_needs(task, c, step)
   local names = { step.item }
   for _, it in ipairs(step._insert or {}) do names[#names + 1] = it.name end
   local needs, seen = {}, {}
+  local first, last = task._index, #task.steps
+  if task._retry_pass then first, last = task._retry_pass, #task._deferred end
   for _, name in ipairs(names) do
     if not seen[name] and not task._short[name] then
       seen[name] = true
       local total = 0
-      for index = task._index, #task.steps do
-        local later = task.steps[index]
+      for n = first, last do
+        local later = task.steps[task._retry_pass and task._deferred[n].index or n]
         if later.item == name then total = total + 1 end
         for _, it in ipairs(later._insert or {}) do if it.name == name then total = total + it.count end end
       end
@@ -390,9 +405,18 @@ local function finished(task)
 end
 
 -- Record the current step's outcome and move to the next. Returns the task
--- result when the plan is over (or stop_on_error tripped), else nil.
+-- result when the plan is over (or stop_on_error tripped), else nil. A
+-- deferred step (task._deferred) is listed as failed and, once the last step
+-- is done, visited again (task._retry_pass walks task._deferred) if the body
+-- has moved since it failed; its new outcome replaces the first.
 local function advance(task, ok, why)
   local i = task._index
+  if task._retry_pass then
+    for n = #task._failures, 1, -1 do
+      if task._failures[n].index == i then table.remove(task._failures, n) end
+    end
+    if not ok then why = why .. " (retried once after the last step)" end
+  end
   task._results[i] = ok and { ok = true, detail = why } or { ok = false, why = why }
   if not ok then
     task._failures[#task._failures + 1] = { index = i, why = why }
@@ -404,6 +428,16 @@ local function advance(task, ok, why)
   task._index = i + 1
   if not ok and task.stop_on_error then
     return failure(task, summary(task) .. " — stopped at the first failure (stop_on_error)")
+  end
+  if task._retry_pass or (task._index > #task.steps and task._deferred) then
+    local c, deferred = companion.get()
+    repeat
+      task._retry_pass = (task._retry_pass or 0) + 1
+      deferred = task._deferred[task._retry_pass]
+    until not deferred or (c and dist_sq(c.position, deferred.from) > RETRY_MOVED_SQ)
+    -- A revisited step starts over: its once-per-step markers name it again.
+    task._existing_index, task._supplied_index, task._exit_index, task._reach_index = nil, nil, nil, nil
+    task._index = deferred and deferred.index or #task.steps + 1
   end
   if task._index > #task.steps then
     return finished(task)
@@ -653,6 +687,10 @@ function M.tick(task)
   end
   local reached = approach.ensure(task, c, step.position, c.build_distance)
   if type(reached) == "table" then
+    if RETRY_CODES[reached.outcome and reached.outcome.code] and not task.stop_on_error and not task._retry_pass then
+      task._deferred = task._deferred or {}
+      task._deferred[#task._deferred + 1] = { index = task._index, from = { x = c.position.x, y = c.position.y } }
+    end
     return advance(task, false, reached.detail)
   end
   if reached ~= "ok" then return nil end

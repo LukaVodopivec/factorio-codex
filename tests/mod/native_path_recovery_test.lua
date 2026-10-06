@@ -589,6 +589,33 @@ check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, 2.5) == nil and task._a
 body.position = { x = 10.5, y = -0.5 }
 check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, 2.5) == "ok" and task._approach == nil,
   "the approach succeeds once the body is off the belt and in reach")
+
+-- A wide belt bundle: the nearest off-belt tile is 6 tiles away and within
+-- build reach of the target. The approach's ring out to 8 finds it, checking
+-- only cells the rings within 4 did not, and allows the longer walk its time.
+belts = { belt(5, -5, 12, 12) }
+task = reset({ x = 10.5, y = 0.5 })
+body.position = { x = 10.5, y = 0.5 }
+local belt_queries = 0
+body.surface.find_entities_filtered = function(filter)
+  if filter.type then belt_queries = belt_queries + 1; return belts end
+  return {}
+end
+check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == nil and task._approach
+  and task._approach.walk.phase == "settling" and task._approach.walk.settle.to.y == -5.5
+  and task._approach.walk.settle.to.x == 10.5 and belt_queries < 130, -- 112; 174 rechecking the inner rings
+  "an approach on a wide belt bundle settles to the off-belt tile 6 tiles away, still within reach")
+game.tick = 60
+body.position = { x = 10.5, y = -3.5 }
+check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == nil and task._approach.walk.phase == "settling",
+  "a longer settle step keeps walking past the 4-tile allowance")
+body.position = { x = 10.5, y = -5.5 }
+check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == "ok" and task._approach == nil,
+  "the approach succeeds once the body has left the bundle")
+body.surface.find_entities_filtered = function(filter)
+  if filter.type then return belts end
+  return {}
+end
 belts = {}
 
 -- Frontier probes: each records why it failed, one transient reply is

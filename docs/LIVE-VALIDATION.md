@@ -186,7 +186,10 @@ turning them into a fixed opening or map-specific sequence:
   owned blocker (on the line toward the target first); recover only by
   extracting and mining it, never by teleport.
 - A successful walk or approach never leaves the body on a belt: it steps once
-  to a clear off-belt tile (reported as `settle`). `BODY_ON_CONVEYOR` leaves
+  to a clear off-belt tile (reported as `settle`), within 4 tiles, or for an
+  approach within 8 tiles and still in reach of its target. A layout retries
+  once, after its last step, a placement whose approach failed
+  `BODY_ON_CONVEYOR` or `START_COLLISION`. `BODY_ON_CONVEYOR` leaves
   the body on the belt, where it drifts until the next `walk_to` off it; after
   any other plan the idle body shows no belt drift and
   `observe_local.character.standing_on` is absent.

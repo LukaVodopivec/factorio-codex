@@ -7,8 +7,18 @@ local to_entity = { valid = true, name = "belt-b", type = "transport-belt", posi
 local charted = true
 local blocked_position
 local force = { is_chunk_charted = function() return charted end }
+-- Ore under a point sorts before poles and belts by name; locate must look past it.
+local ores = {}
 local surface = {
   find_entities_filtered = function(filter)
+    local ore = ores[filter.position.x]
+    if ore then
+      local found = { ore }
+      for _, entity in ipairs({ from_entity, to_entity }) do
+        if math.abs(filter.position.x - entity.position.x) < 0.01 then found[#found + 1] = entity end
+      end
+      return found
+    end
     if math.abs(filter.position.x - from_entity.position.x) < 0.01 then return { from_entity } end
     if math.abs(filter.position.x - to_entity.position.x) < 0.01 then return { to_entity } end
     return {}
@@ -41,6 +51,11 @@ for _, step in ipairs(route.steps) do
   check(step.name == "transport-belt" and step.x ~= nil and step.y ~= nil, "route steps are public build_plan DTOs")
 end
 check(uses_detour, "belt route obeys authoritative placement rejection and finds a charted detour")
+ores[6.5] = { valid = true, name = "copper-ore", type = "resource", position = { x = 6.5, y = 0.5 } }
+local onto_ore = connect_entities({ kind = "belt", prototype = "transport-belt", from = { x = 0.5, y = 0.5 }, to = { x = 6.5, y = 0.5 }, max_length = 10 })
+local last_belt = onto_ore.steps[#onto_ore.steps]
+check(last_belt.x == 6.5 and last_belt.y == 0.5, "a belt endpoint on a bare ore tile routes onto it as a free tile")
+ores[6.5] = nil
 from_entity.type, to_entity.type = "pipe", "pipe"
 _G.prototypes.item.pipe = { place_result = { name = "pipe", type = "pipe" } }
 local pipe = connect_entities({ kind = "pipe", prototype = "pipe", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 }, max_length = 10 })
@@ -109,6 +124,13 @@ to_entity.position.x = 10.5
 local power = power_route()
 check(power.length == 1 and power.steps[1].x == 5.5 and power.steps[1].y == 0.5
   and within_wire_reach(power, 5, 5), "power routes respect endpoint and prototype wire reach")
+from_entity.name = "small-electric-pole"
+ores[from_entity.position.x] = { valid = true, name = "iron-ore", type = "resource", position = { x = 0.5, y = 0.5 } }
+local pole_on_ore = power_route()
+check(pole_on_ore.length == 1 and pole_on_ore.steps[1].x == 5.5 and within_wire_reach(pole_on_ore, 5, 5),
+  "a pole standing on ore is the power endpoint, not the ore under it")
+ores[from_entity.position.x] = nil
+from_entity.name = "boiler"
 
 from_entity.quality, to_entity.quality = { name = "rare" }, { name = "epic" }
 from_entity.prototype = pole_prototype(from_entity.quality, 5)
@@ -166,4 +188,30 @@ check(connect.job.start({ kind = "power", prototype = "small-electric-pole", fro
 charted = false
 local uncharted, uncharted_error = pcall(connect_entities, { kind = "power", prototype = "small-electric-pole", from = { x = 0.5, y = 0.5 }, to = { x = 10.5, y = 0.5 }, max_length = 10 })
 check(not uncharted and tostring(uncharted_error):match("force%-charted") ~= nil, "uncharted exact endpoints are refused")
+
+-- Snapping poles to tile centres can stretch a span past wire reach (16 even
+-- segments over 115 tiles snap to some 8-tile spans); the span adds a pole.
+local small_pole = { get_max_wire_distance = function(quality) assert(quality == "normal"); return 7.5 end }
+local long_from, long_to = { x = -48.5, y = -10.5 }, { x = 66.5, y = -10.5 }
+local long_ok, long_poles = pcall(connect.route_poles, "small-electric-pole", small_pole, long_from, long_to, 200,
+  function() return true end, function() return false end)
+local spans_fit = long_ok and #long_poles >= 2
+local previous = long_from
+for index = 2, long_ok and #long_poles or 0 do
+  local pole = long_poles[index]
+  if (pole.x - previous.x)^2 + (pole.y - previous.y)^2 > 7.5 * 7.5 then spans_fit = false end
+  previous = pole
+end
+check(spans_fit and long_poles[1].x == long_from.x and long_poles[#long_poles].x == long_to.x,
+  "a straight 115-tile pole route adds poles until every snapped span fits wire reach")
+local diagonal_ok, diagonal = pcall(connect.route_poles, "small-electric-pole", small_pole, { x = 0.5, y = 0.5 },
+  { x = 90.5, y = 47.5 }, 200, function() return true end, function() return false end)
+local diagonal_fits = diagonal_ok
+for index = 2, diagonal_ok and #diagonal or 0 do
+  local a, b = diagonal[index - 1], diagonal[index]
+  if (b.x - a.x)^2 + (b.y - a.y)^2 > 7.5 * 7.5 then diagonal_fits = false end
+end
+check(diagonal_fits, "a diagonal pole route keeps every snapped span within wire reach")
+check(not pcall(connect.route_poles, "small-electric-pole", small_pole, long_from, long_to, 16,
+  function() return true end, function() return false end), "a pole route that needs more poles than max_length fails")
 os.exit(failures == 0 and 0 or 1)

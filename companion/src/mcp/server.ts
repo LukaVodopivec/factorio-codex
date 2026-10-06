@@ -438,7 +438,7 @@ export function registerMcpTools(
     try { return await step("build_block")(blockSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile. Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun}`, inputSchema: routeSchema }, async (p, extra) => {
+  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun}`, inputSchema: routeSchema }, async (p, extra) => {
     try { return await connectRoute(routeSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });

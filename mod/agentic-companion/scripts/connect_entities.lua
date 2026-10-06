@@ -30,11 +30,13 @@ local function charted(force, surface, pos)
   return force.is_chunk_charted(surface, { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) })
 end
 
--- The entity standing exactly at pos (its centre within 0.2), or nil.
+-- The entity standing exactly at pos (its centre within 0.2), or nil. Ore is
+-- ground, not an endpoint: a pole or belt on it is found, and a bare ore tile
+-- is a free tile.
 local function locate(surface, pos)
   local found = {}
   for _, entity in ipairs(surface.find_entities_filtered({ position = pos, radius = 0.2 })) do
-    if entity.valid and math.abs(entity.position.x - pos.x) <= 0.2 and math.abs(entity.position.y - pos.y) <= 0.2 then found[#found + 1] = entity end
+    if entity.valid and entity.type ~= "resource" and math.abs(entity.position.x - pos.x) <= 0.2 and math.abs(entity.position.y - pos.y) <= 0.2 then found[#found + 1] = entity end
   end
   table.sort(found, function(a, b)
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
@@ -529,26 +531,46 @@ local function terminal_pole(c, item_name, proto, entity, tile)
   return { position = pos, reach = reach_new, step = { name = item_name, x = pos.x, y = pos.y } }
 end
 
--- Intermediate poles on the placement grid between two pole positions, so no
--- wire span exceeds spacing and the last one fits final_reach.
-local function pole_span(fits_pole, item_name, from, to, spacing, final_reach, budget)
+-- Intermediate poles on the placement grid for one segment count, or nil
+-- when a snapped span exceeds spacing or the last one final_reach.
+local function snapped_span(from, to, segments, spacing, final_reach)
   local dx, dy = to.x - from.x, to.y - from.y
-  local segments = math.ceil(math.sqrt(dx * dx + dy * dy) / spacing)
-  local count = segments - 1
-  if count > budget then error("power route needs " .. count .. " intermediate poles, beyond max_length") end
-  local steps, previous = {}, from
-  for index = 1, count do
+  local positions, previous = {}, from
+  for index = 1, segments - 1 do
     local fraction = index / segments
     local pos = { x = math.floor(from.x + dx * fraction) + 0.5, y = math.floor(from.y + dy * fraction) + 0.5 }
-    if not fits_pole(pos) then error(string.format("power route is blocked at (%.1f, %.1f)", pos.x, pos.y)) end
     local gap_x, gap_y = pos.x - previous.x, pos.y - previous.y
-    if math.sqrt(gap_x * gap_x + gap_y * gap_y) > spacing then error("power route cannot satisfy physical wire reach on the placement grid") end
-    steps[#steps + 1] = { name = item_name, x = pos.x, y = pos.y }
+    if math.sqrt(gap_x * gap_x + gap_y * gap_y) > spacing then return nil end
+    positions[#positions + 1] = pos
     previous = pos
   end
   local last_dx, last_dy = to.x - previous.x, to.y - previous.y
-  if math.sqrt(last_dx * last_dx + last_dy * last_dy) > final_reach then
-    error("power route cannot satisfy final physical wire reach")
+  if math.sqrt(last_dx * last_dx + last_dy * last_dy) > final_reach then return nil end
+  return positions
+end
+
+-- Intermediate poles on the placement grid between two pole positions, so no
+-- wire span exceeds spacing and the last one fits final_reach. Snapping a pole
+-- to a tile centre moves it up to half a tile per axis, so a span may grow by
+-- up to about 1.5 tiles; then one more pole shortens every span. Spans of
+-- spacing - 1.5 always fit, so this is arithmetic over a few counts.
+local function pole_span(fits_pole, item_name, from, to, spacing, final_reach, budget)
+  local dx, dy = to.x - from.x, to.y - from.y
+  local segments = math.ceil(math.sqrt(dx * dx + dy * dy) / spacing)
+  if segments - 1 > budget then error("power route needs " .. (segments - 1) .. " intermediate poles, beyond max_length") end
+  local positions
+  while true do
+    positions = snapped_span(from, to, segments, spacing, final_reach)
+    if positions then break end
+    segments = segments + 1
+    if segments - 1 > budget then
+      error("power route cannot satisfy physical wire reach on the placement grid within max_length")
+    end
+  end
+  local steps = {}
+  for _, pos in ipairs(positions) do
+    if not fits_pole(pos) then error(string.format("power route is blocked at (%.1f, %.1f)", pos.x, pos.y)) end
+    steps[#steps + 1] = { name = item_name, x = pos.x, y = pos.y }
   end
   return steps
 end

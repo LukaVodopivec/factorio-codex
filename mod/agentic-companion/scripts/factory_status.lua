@@ -6,8 +6,9 @@
 -- cursor; stock_power_tick is when its last full pass ended) with one
 -- statistics read per power row shown, patches from map_summary's per-chunk
 -- cache, research from a set of available technologies kept by the research
--- events (live current/progress/queue). The only scan is rebuilding that set
--- once after a load, an upgrade or a reversed research.
+-- events (live current/progress/queue) and labs from the registry's lab
+-- aggregate and the line sampler's lab lines. The only scan is rebuilding
+-- that set once after a load, an upgrade or a reversed research.
 -- registry_ready, stock_power_ready and patches_ready are false while an
 -- upgraded save's bootstrap or first pass still runs. The default read
 -- stays under about 6 KB: one RCON chunk pair, not a multi-part answer.
@@ -252,6 +253,45 @@ local function rebuild_available(force)
   return storage.research_cache
 end
 
+local function round(value, places)
+  local scale = 10 ^ places
+  return math.floor(value * scale + 0.5) / scale
+end
+
+-- Labs on every surface (absent until the force has one): count, working
+-- (progressed in the last 10 s) and speed (summed research speed, force
+-- bonus, modules and beacons included).
+-- With speed, what the current research needs to keep them all busy: packs
+-- a minute (pack_rate x 60 / unit_time_s x amount: a biolab drains half a
+-- pack a unit, productivity does not change consumption) and eta_seconds
+-- (remaining units at full speed, each lab's productivity counted). A few
+-- reads of the current technology.
+local function labs_section(force, out)
+  local labs = registry.labs()
+  if labs.count > 0 then
+    out.labs = { count = labs.count, working = autonomy.labs_working(), speed = round(labs.speed, 3) }
+  end
+  local current = force.current_research
+  if not current then return end
+  local unit_time_s = research.unit_time_s(current)
+  out.unit_time_s = unit_time_s
+  if not (unit_time_s and unit_time_s > 0 and labs.speed > 0) then return end
+  local per_minute = labs.pack_rate * 60 / unit_time_s
+  local needed = {}
+  local ok, ingredients = pcall(function() return current.research_unit_ingredients end)
+  for _, ingredient in ipairs(ok and ingredients or {}) do
+    needed[ingredient.name] = round(per_minute * (ingredient.amount or 1), 2)
+  end
+  if next(needed) then out.packs_per_minute_needed = needed end
+  local count_ok, count = pcall(function() return current.research_unit_count end)
+  if count_ok and type(count) == "number" and labs.progress_rate > 0 then
+    local remaining = count * (1 - (force.research_progress or 0))
+    -- The sums drift by float rounding as labs come and go; a whole second
+    -- must not round up to the next.
+    out.eta_seconds = math.ceil(remaining * unit_time_s / labs.progress_rate - 1e-6)
+  end
+end
+
 -- Current research, progress and queue are cheap live reads; available is
 -- the kept set, sorted.
 local function research_section(force)
@@ -262,9 +302,11 @@ local function research_section(force)
   local available = {}
   for name in pairs(cache.available) do available[#available + 1] = name end
   table.sort(available)
-  return { current = force.current_research and force.current_research.name or nil,
+  local out = { current = force.current_research and force.current_research.name or nil,
     progress = force.research_progress or 0, queue = queue, available = available,
     omitted_available = cap(available, MAX_AVAILABLE) }
+  labs_section(force, out)
+  return out
 end
 
 -- A finished research leaves the available set and adds those of its

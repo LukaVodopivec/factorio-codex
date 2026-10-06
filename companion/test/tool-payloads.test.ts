@@ -165,6 +165,10 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(descriptions.map_summary).toMatch(/problems_by_status counts every problem machine by status/);
     expect(descriptions.mine).toMatch(/drill_produced/);
     expect(descriptions.inspect_entity).toMatch(/remote: true/);
+    expect(descriptions.progression_status).toMatch(/unit_time_s seconds/);
+    expect(descriptions.progression_status).not.toMatch(/science_time/);
+    expect(descriptions.factory_status).toMatch(/packs_per_minute_needed/);
+    expect(descriptions.factory_status).toMatch(/eta_seconds/);
     for (const section of MAP_SUMMARY_SECTIONS) expect(descriptions.map_summary, section).toContain(section);
   });
 

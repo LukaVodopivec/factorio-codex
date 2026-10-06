@@ -22,7 +22,7 @@ local add_research_calls = 0
 local prerequisite = { name = "electronics", researched = true }
 local technology = { name = "automation", researched = false, enabled = true,
   prerequisites = { electronics = prerequisite },
-  prototype = { research_unit_ingredients = { { name = "logistic-science-pack", amount = 1 }, { name = "automation-science-pack", amount = 2 } }, research_unit_count = 10, research_unit_energy = 30,
+  prototype = { research_unit_ingredients = { { name = "logistic-science-pack", amount = 1 }, { name = "automation-science-pack", amount = 2 } }, research_unit_count = 10, research_unit_energy = 600,
     effects = { { type = "unlock-recipe", recipe = "long-handed-inserter" },
       { type = "laboratory-speed", modifier = 0.1, recipe = "ignored-ordinary" },
       { type = "unlock-recipe", recipe = "assembling-machine-1" } } } }
@@ -104,7 +104,8 @@ check(progression.force == "codex-force" and progression.current_research == "au
   and progression.available[1].prerequisites[1] == "electronics"
   and progression.available[1].science_requirements[1].name == "automation-science-pack"
   and progression.available[1].science_requirements[2].name == "logistic-science-pack"
-  and progression.available[1].science_count == 10 and progression.available[1].science_time == 30
+  and progression.available[1].science_count == 10 and progression.available[1].unit_time_s == 10
+  and progression.available[1].science_time == nil
   and progression.available[1].unlocks[1] == "assembling-machine-1"
   and progression.available[1].unlocks[2] == "long-handed-inserter"
   and #progression.available[1].unlocks == 2

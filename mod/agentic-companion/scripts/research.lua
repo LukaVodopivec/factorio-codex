@@ -94,6 +94,14 @@ end
 
 M.trigger_action = trigger_action
 
+-- Seconds one research unit takes a lab of speed 1: research_unit_energy is
+-- in ticks (automation's 600 is 10 s). nil when the technology has none.
+function M.unit_time_s(technology)
+  local ok, ticks = pcall(function() return technology.research_unit_energy end)
+  if not ok or type(ticks) ~= "number" then return nil end
+  return ticks / 60
+end
+
 -- start_research {technology} or {technologies = [...]}: a list is queued
 -- in its order, each name checked as a single one would be; it stops at the
 -- first the game refuses and says which were queued.
@@ -204,8 +212,7 @@ function M.progression_status()
     local record = { name = name, prerequisites = prerequisites, science_requirements = science, unlocks = unlocks }
     ok, record.science_count = pcall(function() return technology.prototype.research_unit_count end)
     if not ok or type(record.science_count) ~= "number" then record.science_count = nil end
-    ok, record.science_time = pcall(function() return technology.prototype.research_unit_energy end)
-    if not ok or type(record.science_time) ~= "number" then record.science_time = nil end
+    record.unit_time_s = M.unit_time_s(technology.prototype)
     return ready, record
   end
   for name, technology in pairs(force.technologies) do

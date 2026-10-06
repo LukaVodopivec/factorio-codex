@@ -150,10 +150,12 @@ replacement.
   connection, not another trip. There are no proofs or validation windows.
 - **Auto-supply.** `get_items`, `place_entity`, `insert_items`, `build_plan`,
   `build_layout` and `build_block` fetch what they lack: from the nearest own
-  chest or machine output (belts only when nothing else holds it), else by
-  smelting ore in an own furnace or hand-crafting with intermediates up to
-  four levels deep (queued crafts count, so nothing is crafted twice), else by
-  hand-gathering a raw resource no own drill produces. A shortfall is reported
+  chest or machine output, then loose items at an own drill's drop position
+  (belts only when nothing else holds it), else by smelting ore in an own
+  furnace or hand-crafting with intermediates up to four levels deep (queued
+  crafts count, so nothing is crafted twice), else by hand-gathering a raw
+  resource from a tile no own building covers, also ore own drills mine when
+  none of their output can be taken now. A shortfall is reported
   as `SUPPLY_SHORTFALL` with each missing item and why; what exists is
   carried, and own lines that make a missing item add their `rate_per_min`
   and `expected_minutes` for the rest.

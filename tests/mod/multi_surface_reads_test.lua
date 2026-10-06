@@ -341,6 +341,12 @@ body.surface, body.surface_index = nauvis, 1
 
 -- Patch caches: one per planet surface, made by the force's chart; a
 -- platform gets none; one cache works a tick.
+local kept_caches = storage.patch_caches
+storage.patch_caches = {}
+map_summary.patch_tick(1999)
+check(storage.patch_caches[1] ~= nil and storage.patch_caches[2] == nil,
+  "the body's planet gets its patch cache with no chart event (a loaded save already charted)")
+storage.patch_caches = kept_caches
 map_summary.on_chunk_charted({ force = force, surface_index = 1, position = { x = 0, y = 0 } })
 map_summary.on_chunk_charted({ force = force, surface_index = 2, position = { x = 0, y = 0 } })
 map_summary.on_chunk_charted({ force = force, surface_index = 3, position = { x = 0, y = 0 } })

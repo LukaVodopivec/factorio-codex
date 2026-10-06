@@ -2721,7 +2721,8 @@ end
 -- ------------------------------------------------------------ patch cache
 -- Resource patches from a per-chunk cache per planet surface
 -- (storage.patch_caches[surface index], made when the force first charts a
--- chunk there, as it does around the body on arrival; a 0.22.2 save's
+-- chunk there, as it does around the body on arrival, or for the body's
+-- planet by patch_tick; a 0.22.2 save's
 -- single cache becomes Nauvis's in state.init). A chunk is read when it is first
 -- charted (radars and the body re-chart chunks all the time; a re-chart is
 -- ignored), again when a resource in it is depleted, and, while nothing else
@@ -2958,10 +2959,18 @@ local function patch_step(cache, surface, tick)
 end
 
 -- One cache works a tick: the caches in turn (by surface index). A failing
--- step never stops the game; its error is kept on its cache.
+-- step never stops the game; its error is kept on its cache. The body's
+-- planet gets its cache here too: a loaded save whose chunks are all
+-- charted raises no chart event, and its patches would stay unknown until
+-- the body charted new land.
 function M.patch_tick(tick)
   local caches = storage.patch_caches
   if not caches then return end
+  local anchor = registry.anchor_index()
+  if anchor and not caches[anchor] then
+    local surface = surfaces.by_index(anchor)
+    if surface then cache_for(surface, true) end
+  end
   local order = {}
   for index in pairs(caches) do order[#order + 1] = index end
   if #order == 0 then return end

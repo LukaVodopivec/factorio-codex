@@ -136,7 +136,7 @@ function M.trial()
   if not d then return nil end
   return { status = d.status, remaining_seconds = d.remaining_seconds, elapsed_seconds = math.floor(d.elapsed_seconds),
     final_window_in_seconds = math.max(0, d.remaining_seconds - 300),
-    score = { research = d.research, made = d.made, raw = d.raw },
+    score = { research = d.research, made = d.made, raw_since_go = d.raw },
     made_per_minute = math.floor(d.made_per_minute * 10 + 0.5) / 10 }
 end
 

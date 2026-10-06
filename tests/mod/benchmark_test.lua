@@ -74,7 +74,7 @@ b.control({ action = "begin", run_id = "clock" })
 values["iron-plate"], values["iron-ore"], game.tick = 20, 30, 1000 + 120 * 60 + 30
 t = b.trial()
 assert(t.status == "running" and t.remaining_seconds == 480 and t.elapsed_seconds == 120
-  and t.final_window_in_seconds == 180 and t.score.made == 20 and t.score.raw == 30 and t.score.research == 0
+  and t.final_window_in_seconds == 180 and t.score.made == 20 and t.score.raw_since_go == 30 and t.score.research == 0
   and t.made_per_minute == 10, t.remaining_seconds .. " " .. t.elapsed_seconds .. " " .. t.made_per_minute)
 game.tick = 1000 + 400 * 60
 assert(b.trial().final_window_in_seconds == 0 and b.trial().remaining_seconds == 200)

@@ -147,11 +147,13 @@ replacement.
   product, near each other) on build, removal and recipe events, and samples
   each machine every 30 ticks through stored references. Each line has a
   `state` (`running`, `starved` with the missing item or fluid as `cause`,
-  `output_full`, `no_fuel`, `no_power`, `no_heat`, `disabled`, `idle` with
-  `no_recipe` or `recipe_not_researched`), the position that causes a
-  problem, `rate_per_min`, `hand_fed` (a character transfer in the last
-  minute), `self_sustaining` (a minute of running with no character
-  transfer and no stall) and, from the second hand transfer into or out of
+  `output_full` (`outlet_no_fuel` when a dry burner inserter takes from it),
+  `depleted` with the ore a drill ran out of, `no_fuel`, `no_power`,
+  `no_heat`, `disabled`, `idle` with `no_recipe` or `recipe_not_researched`),
+  the position that causes a problem, on a running line `degraded` (its
+  worst member problem and where), `rate_per_min`, `hand_fed` (a character
+  transfer in the last minute), `self_sustaining` (a minute of running with
+  no character transfer, no stall and no member out of fuel or power) and, from the second hand transfer into or out of
   its machines within ten minutes, `hand_transfers`: such a line needs a
   connection, not another trip. There are no proofs or validation windows.
 - **Auto-supply.** `get_items`, `place_entity`, `insert_items`, `build_plan`,

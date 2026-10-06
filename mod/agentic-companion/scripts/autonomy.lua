@@ -18,16 +18,20 @@
 -- Per line the mod keeps:
 --   state           running (some machine progressed in the last 10 s, or a
 --                   farm waits for its plants to grow) | starved |
---                   output_full | no_fuel | no_power | frozen | no_heat |
---                   disabled | idle (the worst state among the machines that
---                   are not progressing)
+--                   output_full | depleted (a drill's resource ran out) |
+--                   no_fuel | no_power | frozen | no_heat | disabled | idle
+--                   (the worst state among the machines that are not
+--                   progressing)
 --   cause           why the worst machine stalls: the item or fluid a starved
 --                   one lacks ("seed" for an agricultural tower with no spot
 --                   its seeds take), no_recipe / recipe_not_researched /
 --                   not_connected_to_hub_or_pad / no_research (labs while no
 --                   research is active) for an idle one (rocket_ready for a
 --                   silo whose rocket waits for its launch), burnt_result for
---                   spent fuel that has nowhere to go;
+--                   spent fuel that has nowhere to go, outlet_no_fuel for a
+--                   full machine whose burner inserter taking from it ran
+--                   dry (cause_position is that inserter), the resource a
+--                   depleted drill last mined;
 --                   worked out when the cause machine or its status changes
 --                   (and every 10 s while it lasts), never by a read
 --   temperature     (power lines with a reactor or heat exchanger) the lowest
@@ -35,7 +39,11 @@
 --   working         machines that progressed in the last 10 s
 --   rate_per_min    products finished over the last minute (items, or crafts)
 --   hand_fed        a character transfer into one of its machines in the last 60 s
---   self_sustaining 60 s running with no character transfer and no stall
+--   degraded        (running lines) {state, cause_position}: the worst
+--                   member problem past its threshold (a dry boiler beside
+--                   working engines)
+--   self_sustaining 60 s running with no character transfer, no stall and
+--                   no member out of fuel or power past its threshold
 --   hand_transfers  character transfers into or out of its machines in the
 --                   last 10 minutes, shown from the second on: a line served
 --                   by hand again needs a connection (belt, inserter, chest)
@@ -60,8 +68,10 @@ local LINK_TILES = 6
 local REPEAT_WINDOW_TICKS, MAX_REPEAT_TICKS = 10 * MINUTE_TICKS, 8
 
 local MACHINE_TYPES = registry.MACHINE_TYPES
--- Beacons and roboports make nothing: sampled for problems, never a line.
+-- Beacons, roboports and burner inserters make nothing: sampled for
+-- problems, never a line.
 local PROBLEM_ONLY_TYPES = registry.PROBLEM_ONLY_TYPES
+local BURNER_ONLY_TYPES = registry.BURNER_ONLY_TYPES
 local CRAFTING_TYPES = { furnace = true, ["assembling-machine"] = true, ["rocket-silo"] = true }
 -- Steam, nuclear and fusion power is one line: pumps, boilers, heat
 -- exchangers, reactors (and heating towers) and engines feed each other;
@@ -76,7 +86,7 @@ local STATUS_CLASS = {
   full_output = "output_full", waiting_for_space_in_destination = "output_full",
   full_burnt_result_output = "output_full", waiting_for_space_in_platform_hub = "output_full",
   no_ingredients = "starved", item_ingredient_shortage = "starved", fluid_ingredient_shortage = "starved",
-  waiting_for_source_items = "starved", missing_science_packs = "starved", no_minable_resources = "starved",
+  waiting_for_source_items = "starved", missing_science_packs = "starved", no_minable_resources = "depleted",
   missing_required_fluid = "starved", no_input_fluid = "starved", low_input_fluid = "starved",
   pipeline_overextended = "starved", no_spot_seedable_by_inputs = "starved",
   disabled_by_control_behavior = "disabled", disabled_by_script = "disabled",
@@ -89,7 +99,13 @@ local PROGRESS_STATUS = { working = true, waiting_for_plants_to_grow = true }
 local FLUID_STATUS = { missing_required_fluid = true, no_input_fluid = true, low_input_fluid = true,
   pipeline_overextended = true }
 -- The worst present state names the line when it is not running.
-local STATE_PRIORITY = { "no_power", "frozen", "no_heat", "no_fuel", "output_full", "starved", "disabled", "idle" }
+local STATE_PRIORITY = { "no_power", "frozen", "no_heat", "no_fuel", "output_full", "depleted", "starved", "disabled",
+  "idle" }
+local STATE_RANK = {}
+for rank, name in ipairs(STATE_PRIORITY) do STATE_RANK[name] = rank end
+-- A member out of fuel or power past its threshold: the line is not
+-- self-sustaining even while other members still run.
+local DEAD_CLASSES = { no_fuel = true, no_power = true }
 -- Statuses that are problems once they last this many ticks. Output full
 -- is ordinary backpressure for a while; dead machines are not. Labs with no
 -- research active say research is idle (the strategist's cue).
@@ -99,6 +115,9 @@ local PROBLEM_TICKS = {
   low_temperature = 600, no_modules_to_transmit = 600, pipeline_overextended = 600,
   frozen = 60, no_research_in_progress = 600,
 }
+-- A burner inserter waiting on its source or target is ordinary: only fuel
+-- is its problem.
+local FUEL_PROBLEM_TICKS = { no_fuel = PROBLEM_TICKS.no_fuel }
 -- Problem rows that carry a fixed cause.
 local PROBLEM_CAUSE = { no_modules_to_transmit = "module", no_research_in_progress = "research_idle" }
 -- Statuses upkeep serves (chores.lua): kept per status as unit sets, with
@@ -176,11 +195,18 @@ function M.mark_dirty()
   if a and not a.dirty_tick then a.dirty_tick = game.tick end
 end
 
--- Build/remove events: only machines change lines.
+-- Build/remove events: only machines change lines (an inserter only with a
+-- burner: one more read, for inserters alone).
 function M.on_entity_changed(event)
   local entity = event and (event.entity or event.created_entity)
   local ok, kind = pcall(function() return entity and entity.valid and entity.type end)
-  if ok and kind and MACHINE_TYPES[kind] then M.mark_dirty() end
+  if not (ok and kind and MACHINE_TYPES[kind]) then return end
+  local burner = false
+  if BURNER_ONLY_TYPES[kind] then
+    local read, value = pcall(function() return entity.burner end)
+    burner = read and value ~= nil
+  end
+  if registry.is_machine(kind, burner) then M.mark_dirty() end
 end
 
 local function new_line(a, key, product)
@@ -225,6 +251,8 @@ local function refresh_identify(a, count)
         local ok, key, product, yield, recipe = pcall(identity, entity)
         if ok then rec.key, rec.product, rec.yield, rec.recipe = key, product, yield, recipe
         else rec.key, rec.product, rec.yield, rec.recipe = entry.type .. ":" .. entry.name, nil, 0, nil end
+        -- A drill keeps the resource it last mined: once depleted it has none.
+        if entry.type == "mining-drill" and rec.product then rec.resource = rec.product end
         if rec.heat == nil then rec.heat = heat_powered(entity) end
       end
       job.recs[unit] = rec
@@ -385,14 +413,15 @@ end
 
 -- Keeps the low_fuel set as a burner machine's fuel runs low or is topped
 -- up: low only while working with fewer than LOW_FUEL_ITEMS fuel items (a
--- failed read is not low).
+-- failed read is not low). A burner inserter is never low: one moving coal
+-- fuels itself from its hand an item at a time, so only no_fuel needs upkeep.
 local function set_low_fuel(a, rec, entity, raw)
   if rec.burner == nil then
     local ok, burner = pcall(function() return entity.burner end)
     rec.burner = ok and burner ~= nil
   end
   local low = false
-  if rec.burner and raw == "working" then
+  if rec.burner and raw == "working" and not BURNER_ONLY_TYPES[rec.type] then
     local ok, count = pcall(function() return entity.burner.inventory.get_item_count() end)
     low = ok and type(count) == "number" and count < LOW_FUEL_ITEMS
   end
@@ -440,16 +469,28 @@ local function sample(a, rec, tick)
     local line = a.lines[rec.line_id]
     if line then add_output(line, tick, produced * rec.yield) end
   end
+  if BURNER_ONLY_TYPES[rec.type] then
+    -- A dry inserter marks the machine it takes from (its pickup target,
+    -- read once per dry episode), so a full machine names its dry outlet.
+    if raw ~= "no_fuel" then rec.pickup_unit = nil
+    elseif rec.raw ~= "no_fuel" then
+      local ok, unit = pcall(function() local target = entity.pickup_target; return target and target.unit_number end)
+      rec.pickup_unit = ok and unit or nil
+    end
+    local target = rec.pickup_unit and a.machines[rec.pickup_unit]
+    if target then target.dry_picker = rec.unit end
+  end
   set_raw(a, rec, raw)
   set_low_fuel(a, rec, entity, raw)
-  if PROBLEM_TICKS[raw] then
+  local threshold = (BURNER_ONLY_TYPES[rec.type] and FUEL_PROBLEM_TICKS or PROBLEM_TICKS)[raw]
+  if threshold then
     -- The same problem returning inside the recovery window is the old
     -- episode: it keeps its start and is not announced again.
     rec.clear_since = nil
     if rec.problem ~= raw then
       rec.problem, rec.problem_since, rec.problem_counted, rec.problem_announced_tick = raw, tick, nil, nil
     end
-    if not rec.problem_counted and tick - rec.problem_since >= PROBLEM_TICKS[raw] then
+    if not rec.problem_counted and tick - rec.problem_since >= threshold then
       rec.problem_counted, rec.problem_announced_tick = true, tick
       a.last_problem_tick = tick
     end
@@ -464,12 +505,11 @@ local function sample(a, rec, tick)
 end
 
 -- The item a starved machine lacks: its first recipe ingredient below one
--- craft's need, a lab's missing pack, or the resource a drill ran out of.
+-- craft's need, or a lab's missing pack.
 local INPUT_INVENTORY = { furnace = "crafter_input", ["assembling-machine"] = "crafter_input",
   ["rocket-silo"] = "crafter_input", lab = "lab_input" }
 local function missing_input(rec)
   local entity = rec.entity
-  if rec.raw == "no_minable_resources" then return rec.product end
   local inventory_id = INPUT_INVENTORY[rec.type] and defines.inventory[INPUT_INVENTORY[rec.type]]
   local inventory = inventory_id and entity.get_inventory(inventory_id)
   local ingredients
@@ -523,7 +563,20 @@ local function cause_of(rec, state)
     return "rocket_ready"
   elseif state == "output_full" and raw == "full_burnt_result_output" then
     return "burnt_result"
+  elseif state == "output_full" and raw == "no_fuel" then
+    -- The cause is the full machine's dry outlet inserter (dry_outlet).
+    return "outlet_no_fuel"
+  elseif state == "depleted" then
+    return rec.product or rec.resource
   end
+end
+
+-- The dry burner inserter taking from a full machine (its unit), if one
+-- still is: a pure Lua check of the mark the inserter's sample left.
+local function dry_outlet(a, unit, rec)
+  local picker = rec.dry_picker and a.machines[rec.dry_picker]
+  if picker and picker.raw == "no_fuel" and picker.pickup_unit == unit then return rec.dry_picker end
+  rec.dry_picker = nil
 end
 
 local function evaluate(a, tick)
@@ -542,18 +595,33 @@ local function evaluate(a, tick)
     local id = order[index]
     local line = a.lines[id]
     local count, productive, worst, worst_rank, worst_unit, temperature = 0, 0, nil, nil, nil, nil
+    -- The worst member problem past its threshold, productive or not, and
+    -- whether a member is out of fuel or power.
+    local degraded, degraded_rank, degraded_unit, dead, worst_outlet = nil, nil, nil, false, nil
     for _, unit in ipairs(line.machines) do
       local rec = a.machines[unit]
       if rec then
         count = count + 1
-        if rec.problem_counted then problems = problems + 1 end
         if rec.temperature and (not temperature or rec.temperature < temperature) then temperature = rec.temperature end
+        if rec.problem_counted then
+          problems = problems + 1
+          local class = STATUS_CLASS[rec.problem] or "idle"
+          local rank = STATE_RANK[class]
+          if not degraded_rank or rank < degraded_rank then
+            degraded, degraded_rank = class, rank
+            degraded_unit = class == "output_full" and dry_outlet(a, unit, rec) or unit
+          end
+          if DEAD_CLASSES[class] then dead = true end
+        end
         if rec.productive_tick and tick - rec.productive_tick <= PRODUCTIVE_TICKS then
           productive = productive + 1
         else
           local class = STATUS_CLASS[rec.raw] or "idle"
-          for rank, name in ipairs(STATE_PRIORITY) do
-            if name == class and (not worst_rank or rank < worst_rank) then worst, worst_rank, worst_unit = class, rank, unit end
+          local rank = STATE_RANK[class]
+          local outlet = class == "output_full" and dry_outlet(a, unit, rec) or nil
+          -- Among full machines, one whose outlet ran dry names that inserter.
+          if not worst_rank or rank < worst_rank or rank == worst_rank and outlet and not worst_outlet then
+            worst, worst_rank, worst_unit, worst_outlet = class, rank, outlet or unit, outlet
           end
         end
       end
@@ -563,12 +631,15 @@ local function evaluate(a, tick)
     if state == "running" then line.running_since = line.running_since or tick else line.running_since = nil end
     local hand_fed = line.last_transfer_tick ~= nil and tick - line.last_transfer_tick < MINUTE_TICKS
     local self_sustaining = line.running_since ~= nil and tick - line.running_since >= MINUTE_TICKS and not hand_fed
+      and not dead
     local cause_unit = state ~= "running" and worst_unit or nil
+    if state ~= "running" then degraded, degraded_unit = nil, nil end
     if state ~= line.state or hand_fed ~= line.hand_fed or self_sustaining ~= line.self_sustaining
-      or cause_unit ~= line.cause_unit then
+      or cause_unit ~= line.cause_unit or degraded ~= line.degraded or degraded_unit ~= line.degraded_unit then
       line.changed_tick = tick
     end
     line.state, line.hand_fed, line.self_sustaining, line.cause_unit = state, hand_fed, self_sustaining, cause_unit
+    line.degraded, line.degraded_unit = degraded, degraded_unit
     line.working, line.temperature = productive, temperature
     local cause_rec = cause_unit and a.machines[cause_unit]
     if not cause_rec then
@@ -754,6 +825,10 @@ function M.lines(since_tick, surface)
         row.cause_position = { x = rec.position.x, y = rec.position.y }
         row.cause = line.cause
       end
+      local member = line.degraded_unit and a.machines[line.degraded_unit]
+      if line.state == "running" and line.degraded and member then
+        row.degraded = { state = line.degraded, cause_position = { x = member.position.x, y = member.position.y } }
+      end
       if line.temperature then row.temperature = math.floor(line.temperature * 10 + 0.5) / 10 end
       if not line.product then
         local first = a.machines[line.machines[1]]
@@ -768,8 +843,8 @@ end
 -- Machines on one surface (an index; nil or "all": every surface) whose
 -- problem status has
 -- lasted past its threshold, grouped by status and entity name per line
--- (beacons and roboports, which have no line, after them); since_tick keeps
--- rows that began since.
+-- (beacons, roboports and burner inserters, which have no line, after
+-- them); since_tick keeps rows that began since.
 -- Adds a problem machine to its row (by line, status and entity name).
 local function add_problem(rows, by_key, id, rec)
   local key = tostring(id) .. "\0" .. rec.problem .. "\0" .. rec.name

@@ -98,9 +98,9 @@ and a live read disagree, the live read wins.
   the body time spent serving that line by hand in the last ten minutes),
   and the materials and space it ties up. What it gives back is the flow it
   adds where something uses it.
-- Mod upkeep refuels burners and feeds labs only within 96 tiles of the
-  body (while it is idle, also of recent work sites). A part further away runs dry unless it is connected or the body
-  goes there.
+- Mod upkeep refuels burners (burner inserters too) and feeds labs only
+  within 96 tiles of the body (while it is idle, also of recent work sites).
+  A part further away runs dry unless it is connected or the body goes there.
 - Judge older parts again as the factory grows. Building something is not a
   reason to keep it; only what it does for the factory now is. A part that
   costs more than it gives (a far outpost the body keeps walking to, a line
@@ -150,8 +150,12 @@ and a live read disagree, the live read wins.
   does the rate arithmetic above for you: machines per tier, fuel or power,
   drills per raw resource and belt capacity for a target rate.
 - `factory_status` gives each production line one `state`: `running`,
-  `starved` (input missing; `cause` names it), `output_full`, `no_fuel`,
-  `no_power`, `frozen`, `no_heat`, `disabled` or `idle`; its problem rows name
-  the machine's own status. Starved and output_full are the flow problems
-  above; no_fuel and no_power are energy problems. During a benchmark its
+  `starved` (input missing; `cause` names it), `output_full`, `depleted` (a
+  drill's ore ran out; `cause` names the ore), `no_fuel`, `no_power`,
+  `frozen`, `no_heat`, `disabled` or `idle`; its problem rows name the
+  machine's own status. A full line with `cause` `outlet_no_fuel` has a dry
+  burner inserter taking from it, at `cause_position`. A running line's
+  `degraded` names its worst member problem and where (a dry boiler beside
+  working engines) before the line stops. Starved and output_full are the
+  flow problems above; no_fuel and no_power are energy problems. During a benchmark its
   `trial` shows the time left and the score so far.

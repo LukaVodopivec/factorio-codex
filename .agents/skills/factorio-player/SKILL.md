@@ -89,7 +89,7 @@ retried after the hold.
 **Reads (both roles).**
 
 - `factory_status` is the single routine read. Line `state` is `running`,
-  `starved`, `output_full`, `no_fuel`, `no_power`, `no_heat`, `frozen`,
+  `starved`, `output_full`, `depleted`, `no_fuel`, `no_power`, `no_heat`, `frozen`,
   `disabled`, or `idle`, with its cause (a fluid, no recipe, spent fuel full);
   rows past a cap are counted in `omitted_*`. A `research_idle` problem means
   no research runs and labs are idle. It details the body's surface; `elsewhere`

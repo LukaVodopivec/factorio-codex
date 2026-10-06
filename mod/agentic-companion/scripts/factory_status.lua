@@ -52,9 +52,11 @@ local MAX_PATCHES, MAX_AVAILABLE, MAX_INVENTORY = 4, 6, 8
 -- Other factory surfaces summed up, and the worst problems each names.
 local MAX_ELSEWHERE, MAX_ELSEWHERE_PROBLEMS = 8, 3
 -- Lines that need attention survive the cap first: a starved line with a
--- high id is never hidden behind running ones.
-local LINE_RANK = { no_power = 1, frozen = 2, no_heat = 3, no_fuel = 4, starved = 5, output_full = 6, disabled = 7,
-  idle = 8, running = 9 }
+-- high id is never hidden behind running ones, nor a degraded running line
+-- behind healthy ones.
+local LINE_RANK = { no_power = 1, frozen = 2, no_heat = 3, no_fuel = 4, starved = 5, depleted = 6, output_full = 7,
+  disabled = 8, idle = 9, running = 10 }
+local function line_rank(row) return (LINE_RANK[row.state] or 9) - (row.degraded and 0.5 or 0) end
 -- Dead machines first, then blocked output.
 local PROBLEM_RANK = { no_power = 1, not_plugged_in_electric_network = 1, no_fuel = 1, frozen = 1,
   no_minable_resources = 2, low_temperature = 2, pipeline_overextended = 2, no_modules_to_transmit = 2,
@@ -350,7 +352,7 @@ function M.factory_status(params)
   if want.lines then
     result.lines = autonomy.lines(since, index)
     table.sort(result.lines, function(x, y)
-      local rx, ry = LINE_RANK[x.state] or 8, LINE_RANK[y.state] or 8
+      local rx, ry = line_rank(x), line_rank(y)
       if rx ~= ry then return rx < ry end
       return x.id < y.id
     end)

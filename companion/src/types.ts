@@ -76,12 +76,15 @@ export interface PowerRow {
   /** Only while sustained_w < demand_w. */
   add_to_cover?: { steam_engine?: number; solar_panel?: number; accumulator?: number };
 }
-export type LineState = "running" | "starved" | "output_full" | "no_fuel" | "no_power" | "no_heat" | "disabled" | "idle";
+export type LineState = "running" | "starved" | "output_full" | "depleted" | "no_fuel" | "no_power" | "no_heat" | "frozen" | "disabled" | "idle";
 export interface FactoryLine {
   id: number | string; product?: string; entity?: string; machines: number; working: number; state: LineState;
   rate_per_min?: number; hand_fed: boolean; self_sustaining: boolean; position: Position; hand_transfers?: number; hand_seconds?: number;
-  /** Why the worst machine stops: a fluid name, no_recipe, recipe_not_researched, burnt_result, an item. */
+  /** Why the worst machine stops: a fluid name, no_recipe, recipe_not_researched, burnt_result, an item,
+   *  outlet_no_fuel (cause_position is the dry burner inserter taking from it), a depleted drill's ore. */
   cause?: string; cause_position?: Position;
+  /** Running lines only: the worst member problem past its threshold. */
+  degraded?: { state: LineState; cause_position: Position };
   /** Lowest heat-source temperature on a line with a reactor or heat exchanger. */
   temperature?: number;
 }

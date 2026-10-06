@@ -4,12 +4,17 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobBusyError, ModError, type Bridge } from "../src/bridge.js";
 import { createOrdersTracker, createPackageQueue, holdLock, packageFailures, readPackageQueue } from "../src/coordination/orders.js";
-import { result } from "../src/mcp/server.js";
+import { result, runMcpServer, type McpSurface, type SessionRole } from "../src/mcp/server.js";
+import * as coordination from "../src/coordination/orders.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { currentRunDir, currentRunPointer, runPaths } from "../src/server/server.js";
 
 const dirs: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   dirs.splice(0).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true }));
 });
 const runDir = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-orders-")); dirs.push(dir); return dir; };
@@ -522,5 +527,35 @@ describe("current run directory", () => {
     fs.writeFileSync(runPaths(dir).pid, "4242\n");
     expect(currentRunDir(() => ({ exe: "/opt/factorio/bin/x64/factorio", cwd: dir }))).toBe(path.resolve(dir));
     expect(currentRunDir(() => { throw new Error("gone"); })).toBeNull();
+  });
+});
+
+// Exercise the actual runtime startup and timer, not a separately exported
+// policy predicate. No connection, live bridge, ledger or listeners are used.
+describe("MCP package pump ownership", () => {
+  it.each([
+    ["full", "pilot", true], ["full", "supervisor", false],
+    ["full", "strategist", false], ["full", "unknown", false],
+    ["read-only", "pilot", false],
+  ] as [McpSurface, SessionRole, boolean][])("%s/%s starts package pumping: %s", async (surface, role, enabled) => {
+    vi.useFakeTimers();
+    vi.spyOn(McpServer.prototype, "connect").mockResolvedValue();
+    const tick = vi.fn(async () => undefined);
+    const queue = vi.spyOn(coordination, "createPackageQueue").mockReturnValue({ tick });
+    await runMcpServer(surface, undefined, role);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(queue).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(tick).toHaveBeenCalledTimes(enabled ? 3 : 0);
+  });
+
+  it("leaves a default unlabelled full-surface session without a package pump", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(McpServer.prototype, "connect").mockResolvedValue();
+    const tick = vi.fn(async () => undefined);
+    const queue = vi.spyOn(coordination, "createPackageQueue").mockReturnValue({ tick });
+    await runMcpServer();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(queue).not.toHaveBeenCalled();
+    expect(tick).not.toHaveBeenCalled();
   });
 });

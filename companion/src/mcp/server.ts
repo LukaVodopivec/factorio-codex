@@ -16,7 +16,7 @@ import { areaFields, areaIssue, blockFields, blockIssue, blueprintName, blueprin
 import { normalizeActivityLog, normalizeCanPlace, normalizeConfigured, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, normalizeRequests, normalizeRoute, luaArray, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.22.6";
+export const MCP_SERVER_VERSION = "0.22.7";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();
@@ -633,8 +633,9 @@ export async function runMcpServer(
   const server = new McpServer({ name: "factorio-codex", version: MCP_SERVER_VERSION }, { instructions });
   const bridge = createBridgeProvider(configDiagnostic);
   registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface, currentRunDir, role);
-  if (surface === "full") {
-    // Astra's packages start without a pilot turn; one full-surface process per run queues them.
+  if (surface === "full" && role === "pilot") {
+    // Only the explicitly labelled pilot bridge queues Astra's packages.
+    // Supervisor and unlabelled full-surface sessions may read or stop.
     const packages = createPackageQueue(currentRunDir, bridge);
     setInterval(() => { void packages.tick(); }, 1_000).unref();
   }

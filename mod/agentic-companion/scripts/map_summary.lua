@@ -1697,14 +1697,25 @@ local function power_environment(surface)
 end
 
 -- Production watts per power kind from the network's statistics (read
--- through its pole), or nil when no live pole of the network is known; and
+-- through its pole, or a platform surface's global network), or nil when
+-- native statistics are unavailable; and
 -- the engine reads it made.
-local function production_by_kind(net)
+local function production_by_kind(net, surface)
   local pole = net.pole
   local reads = 3
   local ok, by_kind = pcall(function()
-    if not (pole and pole.valid and pole.electric_network_id == net.id) then return nil end
-    local statistics = pole.electric_network_statistics
+    local statistics
+    if pole and pole.valid and pole.electric_network_id == net.id then
+      statistics = pole.electric_network_statistics
+    else
+      surface = surface or game.get_surface(net.surface)
+      reads = reads + 3
+      -- Only platforms share one global electric network. A planet's
+      -- surface-wide statistics must never be attributed to one network.
+      if not (surface and surface.platform) then return nil end
+      statistics = surface.global_electric_network_statistics
+    end
+    if not statistics then return nil end
     local precision = defines.flow_precision_index.five_seconds
     local out = {}
     for name in pairs(statistics.output_counts) do
@@ -1782,10 +1793,16 @@ function M.build_power(surface, limit)
   for _, row in ipairs(rows) do
     local net, solar_w, other_w = row._net, row._solar_w, row._other_w
     row._net, row._solar_w, row._other_w = nil, nil, nil
-    local by_kind = production_by_kind(net)
+    local by_kind = production_by_kind(net, surface)
     if by_kind then
       row.production_w = watts(total_of(by_kind))
       if env.platform then row.capacity_w = watts(other_w + (by_kind.solar or 0)) end
+    end
+    if env.platform then
+      row.capacity_basis = "measured_solar_production"
+      -- A missing measurement is not zero generation. Installed nameplate
+      -- remains available separately; this is not unused peak capacity.
+      if not by_kind and solar_w > 0 then row.capacity_w = nil end
     end
     row.satisfaction = satisfaction_of(net, row.production_w)
     local sources = {}

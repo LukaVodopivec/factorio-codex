@@ -261,7 +261,36 @@ surface_values.platform = {}
 local platform = row_for(3)
 check(platform.capacity_w == 600000 and platform.sustained_w == nil and platform.add_to_cover == nil
   and platform.night_s == nil, "on a platform solar capacity is what it produces and there is no day average")
+-- Reproduce the poleless platform: its paid solar network has native
+-- global statistics, not an electric pole to read through.
+net.pole = nil
+mock.read(surface, "global_electric_network_statistics", function() return statistics end)
+local poleless = row_for(3)
+check(poleless.capacity_w == 600000 and poleless.production_w == 600000
+  and poleless.capacity_basis == "measured_solar_production" and poleless.sources[1].production_w == 600000,
+  "a poleless platform reads its global native generation, not a fabricated zero")
+local old_get_surface, old_starved = game.get_surface, net.starved
+game.get_surface = function(index) assert(index == surface.index); return surface end
+net.starved = 1
+local minimum = map_summary.power_min_satisfaction({ net })
+check(minimum == 0.5, "elsewhere power satisfaction also reuses a poleless platform's global native statistics")
+net.starved, game.get_surface = old_starved, old_get_surface
+mock.read(surface, "global_electric_network_statistics", function() return mock.flow_statistics({ output_counts = {} }) end)
+local zero = row_for(3)
+check(zero.capacity_w == 0 and zero.production_w == 0,
+  "available native statistics with zero measured output remain a truthful measured zero")
+mock.read(surface, "global_electric_network_statistics", function() error("native statistics unavailable") end)
+local unknown = row_for(3)
+check(unknown.capacity_w == nil and unknown.production_w == nil and unknown.sources[1].production_w == nil
+  and unknown.sources[1].nameplate_w == 1200000 and unknown.satisfaction == 1,
+  "missing native platform statistics remain unknown without inventing generation or changing consumer status")
 surface_values.platform = nil
+surface_values.daytime = 0
+mock.read(surface, "global_electric_network_statistics", function() error("planet global statistics must not be read") end)
+local no_pole_planet = row_for(3)
+check(no_pole_planet.capacity_w == 1200000 and no_pole_planet.production_w == nil,
+  "a poleless planetary network keeps calculated capacity and never borrows other networks' global production")
+net.pole = pole
 
 -- ----------------------------------------------------------- logistics
 local logistics = require("scripts.logistics")

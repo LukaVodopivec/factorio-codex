@@ -63,8 +63,11 @@ export interface MapSummary {
 /** One electric network (factory_status power, map_summary include power). */
 export interface PowerRow {
   network_id: number; satisfaction: number; production_w?: number; demand_w: number;
-  /** Available now: steam/burner nameplate plus solar at the light now. */
-  capacity_w: number;
+  /** Planets: nameplate with current light. Platforms: non-solar nameplate
+   * plus measured solar production; absent when that measurement is unknown. */
+  capacity_w?: number;
+  /** Platform solar is a five-second measured output, not unused peak capacity. */
+  capacity_basis?: "measured_solar_production";
   /** Day average with solar at its average light (planets only). */
   sustained_w?: number; headroom_w?: number;
   sources: Array<{ kind: "steam" | "solar" | "burner" | "nuclear" | "other"; count: number; nameplate_w: number; production_w?: number }>;

@@ -110,6 +110,24 @@ describe("public MCP to Lua DTO mappings", () => {
     const plain = (await handlers.map_summary({})).structuredContent;
     for (const key of ["stockpiles", "sites", "patches", "power", "problems", "force_flows_all"]) expect(plain, key).not.toHaveProperty(key);
   });
+
+  it("factory_status passes the benchmark trial clock through and names it in the summary", async () => {
+    const descriptions: Record<string, string> = {};
+    const handlers: Record<string, any> = {};
+    const trial = { status: "running", remaining_seconds: 480, elapsed_seconds: 120, final_window_in_seconds: 180,
+      score: { research: 0, made: 20, raw: 30 }, made_per_minute: 10 };
+    const call = vi.fn(async () => ({ tick: 9, surface: "nauvis", lines: {}, trial }));
+    registerMcpTools({ registerTool(name, config: any, handler) { descriptions[name] = config.description; handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig);
+    const output = await handlers.factory_status({ sections: ["lines"] });
+    expect(output.structuredContent.trial).toEqual(trial);
+    expect(output.structuredContent.summary).toContain("trial running, 480 s left");
+    call.mockResolvedValueOnce({ tick: 9, surface: "nauvis", lines: {} } as never);
+    const plain = (await handlers.factory_status({})).structuredContent;
+    expect(plain).not.toHaveProperty("trial");
+    expect(plain.summary).not.toContain("trial");
+    expect(descriptions.factory_status).toMatch(/trial gives the clock .*final_window_in_seconds.* live score/);
+  });
   it("passes the remote marker of a charted own-force inspection through unchanged", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const call = vi.fn(async () => ({ tick: 9, entities: [

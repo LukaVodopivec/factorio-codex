@@ -607,8 +607,9 @@ local function inventory_of(entity, id)
   return ok and inventory or nil
 end
 
--- Nearest own furnace that smelts the recipe's category and is free for it:
--- its source holds nothing or the same ore, its result nothing or the item.
+-- Nearest own furnace that smelts the recipe's category and is idle: not
+-- crafting, its source empty, its result nothing or the item. A furnace a
+-- line feeds and empties never shows what the body's own ore made.
 local function smelter(c, recipe, ore, item)
   local ok, furnaces = pcall(registry.machines, { "furnace" })
   local best, best_d
@@ -618,7 +619,7 @@ local function smelter(c, recipe, ore, item)
       if not (e and e.valid and e.prototype.crafting_categories[recipe.category]) then return false end
       local source, result = inventory_of(e, "furnace_source"), inventory_of(e, "furnace_result")
       if not (source and result) then return false end
-      return source.get_item_count() == source.get_item_count(ore)
+      return not e.is_crafting() and source.get_item_count() == 0
         and result.get_item_count() == result.get_item_count(item)
     end)
     if ok_fit and fits then
@@ -839,8 +840,12 @@ local function advance(task, c, frame)
     local fuel
     local fuel_inventory = furnace.get_fuel_inventory()
     if fuel_inventory and fuel_inventory.is_empty() then fuel = M.fuel_item(c) or "coal" end
+    -- The wait ends by this tick however the furnace's counts move: twice
+    -- the smelting time at the furnace's speed, plus the stall allowance.
+    local ok_speed, speed = pcall(function() return furnace.crafting_speed end)
+    local seconds = crafts * (tonumber(recipe.energy) or 1) / math.max(ok_speed and tonumber(speed) or 1, 0.01)
     frame.smelt = { furnace = furnace, position = { x = furnace.position.x, y = furnace.position.y },
-      ore = ingredient.name, ore_count = crafts * amount, fuel = fuel }
+      ore = ingredient.name, ore_count = crafts * amount, fuel = fuel, wait_ticks = math.ceil(seconds * 120) + SMELT_STALL_TICKS }
     frame.phase = "smelt_load"
     -- The ore and fuel are supplied first, like a recipe's ingredients.
     if fuel and not cycles(task, frame, fuel) then push(task, fuel, SMELT_FUEL, frame.depth + 1, frame) end
@@ -861,6 +866,7 @@ local function advance(task, c, frame)
     local items = { [s.ore] = ore }
     if s.fuel and carried(c, s.fuel) > 0 then items[s.fuel] = math.min(SMELT_FUEL, carried(c, s.fuel)) end
     frame.phase = "smelt_wait"
+    s.deadline = game.tick + s.wait_ticks
     local ok, err = pcall(M.begin, task, "_sub", { type = "insert", target = s.position, items = items, auto_supply = false })
     if ok then return true end
     frame.error, frame.phase = tostring(err), "gather"
@@ -879,7 +885,8 @@ local function advance(task, c, frame)
     local left, made = source and source.get_item_count(s.ore) or 0, result and result.get_item_count(frame.name) or 0
     if left ~= s.left or made ~= s.made then s.left, s.made, s.progress_tick = left, made, game.tick end
     local finished = left == 0 and not s.furnace.is_crafting()
-    if made < need and not finished and game.tick - s.progress_tick < SMELT_STALL_TICKS then return true end
+    if made < need and not finished and game.tick - s.progress_tick < SMELT_STALL_TICKS
+      and game.tick < (s.deadline or math.huge) then return true end
     frame.smelt_rounds = (frame.smelt_rounds or 0) + 1
     frame.phase = "smelt"
     if made <= 0 then

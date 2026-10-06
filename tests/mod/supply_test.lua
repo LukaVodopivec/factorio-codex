@@ -728,6 +728,54 @@ check(smelted and smelted.status == "done" and inventory["iron-plate"] == 5 and 
 check(table.concat(kinds, ",") == "extract,extract,insert,extract" and calls[3].task.items["iron-ore"] == 5
   and calls[3].task.items.coal == 5 and calls[3].task.target.x == 6 and calls[4].task.items["iron-plate"] == 5,
   "the body fetches the ore and fuel, loads the furnace, waits, then takes the plates")
+-- The wait ends by its deadline even while the furnace's counts keep moving
+-- (a line's inserter started taking from it after the body loaded it).
+reset()
+chest({ x = 3.5, y = 0.5 }, { ["iron-ore"] = 20, coal = 10 })
+local churn = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = {},
+  prototype = { crafting_categories = { smelting = true } } })
+local churn_source, loaded = {}, false
+churn.get_inventory = function(id)
+  if id == defines.inventory.furnace_source then return { get_item_count = count_of(churn_source) } end
+  return { get_item_count = count_of(churn.items) }
+end
+churn.get_output_inventory = function() return holder(churn.items) end
+churn.get_fuel_inventory = function() return { is_empty = function() return loaded end } end
+churn.is_crafting = function() return loaded end
+supply.register_runner("insert", stub("insert", function(task)
+  for name, count in pairs(task.items) do
+    if name ~= "coal" then churn_source[name] = (churn_source[name] or 0) + count end
+    inventory[name] = inventory[name] - count
+  end
+  return { status = "done", detail = "inserted", outcome = { transfers = {} } }
+end))
+local churn_task = { items = { { name = "iron-plate", count = 5 } } }
+supply.start(churn_task)
+local churned, waited = nil, 0
+for _ = 1, 40000 do
+  churned = supply.tick(churn_task)
+  if churned then break end
+  game.tick, waited = game.tick + 1, waited + 1
+  if (churn_source["iron-ore"] or 0) > 0 then loaded = true end
+  if loaded then churn_source["iron-ore"] = 1 + math.floor(game.tick / 30) % 2 end
+end
+check(churned and churned.status ~= "done" and waited > 700 and waited < 20000,
+  "a smelt wait whose counts keep moving ends by its deadline (" .. waited .. " ticks)")
+
+-- A furnace a line feeds and empties (crafting, ore in its source) is never
+-- picked: its counts keep moving while the body's own plates never show.
+reset()
+local line_furnace = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = {},
+  prototype = { crafting_categories = { smelting = true } } })
+line_furnace.get_inventory = function(id)
+  if id == defines.inventory.furnace_source then return { get_item_count = count_of({ ["iron-ore"] = 3 }) } end
+  return { get_item_count = count_of(line_furnace.items) }
+end
+line_furnace.get_output_inventory = function() return holder(line_furnace.items) end
+line_furnace.is_crafting = function() return true end
+local fed = run({ items = { { name = "iron-plate", count = 5 } } })
+check(fed.status == "failed" and fed.detail:match("no own furnace is free to smelt it"),
+  "a furnace a line keeps feeding is not free to smelt the body's ore")
 reset()
 local busy = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = { ["copper-plate"] = 3 },
   prototype = { crafting_categories = { smelting = true } } })

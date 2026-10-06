@@ -1,11 +1,11 @@
 # Factorio Codex
 
-Current release: **0.26.1**.
+Current release: **0.26.2**.
 
 Factorio Codex shows how Codex bots think about and architect a Factorio
 factory. Two reasoning sessions plan and direct one physical character named
 Codex through text-only tools; the mod does every deterministic chore, and the
-bots' thinking appears in the game chat and on a panel on the Codex screen.
+strategist's thinking appears on a panel on the Codex screen.
 The only active path is the project MCP server → serialized RCON bridge →
 Factorio mod. Movement, reach, inventory, crafting, placement, research and
 elapsed game time remain real.
@@ -121,9 +121,10 @@ movement never park it. `next_event` reports `human_hold_started` and
 **Thought feed.** Spawn both roles with `-c model_reasoning_summary=detailed`.
 The run recorder tails both role rollout files (`--pilot-rollout`,
 `--strategist-rollout`) and forwards each reasoning summary and assistant
-message, never tool calls or outputs, through the mod's `say` RPC at most one
-line per second per role, split into lines of at most 600 characters. The mod
-prints them to chat as `[The strategist]` and `[The pilot]` in role colours and keeps the
+message, never tool calls or outputs, to `thoughts.jsonl`, and the ledger
+writer's (the strategist; the pilot in a solo trial) through the mod's `say` RPC
+at most one line per second, split into lines of at most 600 characters. The mod
+shows them in the role's colour, never in game chat, and keeps the
 last 8 lines in an always-visible left-side panel under the strategist's NOW line,
 which the recorder sends through `say_now` whenever the ledger's NOW objective
 changes. The text is also saved to the recorder's

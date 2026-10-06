@@ -93,6 +93,23 @@ describe("thought feed", () => {
     for (const secret of ["SECRET", "gAAAA", "history before start"]) expect(all).not.toContain(secret);
   });
 
+  it("shows only the shown roles in the game and still saves every role's thoughts", async () => {
+    const dir = tmp(), pilot = path.join(dir, "pilot.jsonl"), strategist = path.join(dir, "strategist.jsonl"), out = path.join(dir, "thoughts.jsonl");
+    fs.writeFileSync(pilot, ""); fs.writeFileSync(strategist, "");
+    const said: Array<[string, string]> = [];
+    const feed = createThoughtFeed({ sources: [{ role: "pilot", file: () => pilot }, { role: "strategist", file: () => strategist }], out, intervalMs: 3_600_000,
+      shown: role => role === "strategist", say: async (role, text) => { said.push([role, text]); } });
+    feeds.push(feed);
+    fs.appendFileSync(pilot, [reasoning("Walking to iron"), assistant("Placed the drill.")].join("\n") + "\n");
+    fs.appendFileSync(strategist, `${reasoning("Iron first, then coal")}\n`);
+    await feed.tick();
+    expect(said).toEqual([["strategist", "Iron first, then coal"]]);
+    const recorded = fs.readFileSync(out, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(recorded.filter(row => row.role === "pilot").map(row => [row.text, row.said_at]))
+      .toEqual([["Walking to iron", null], ["Placed the drill.", null]]);
+    expect(recorded.find(row => row.role === "strategist")?.said_at).toEqual(expect.any(String));
+  });
+
   it("follows a replacement session's new rollout file from its start once the resolved path changes", async () => {
     const dir = tmp(), old = path.join(dir, "old.jsonl"), fresh = path.join(dir, "new.jsonl"), out = path.join(dir, "thoughts.jsonl");
     fs.writeFileSync(old, "");

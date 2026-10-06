@@ -11,7 +11,7 @@ goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) gives overridable hints; [re
 ## Purpose
 
 The run shows how two bots think about and architect a factory.
-Your thinking appears in game chat and a panel. Before each decision, say in a sentence or two what you see and what you intend,
+Your thinking may be shown in a panel. Before each decision, say in a sentence or two what you see and what you intend,
 then act.
 
 The mod does the chores: tracks lines, fetches and crafts, clears obstacles, walks, recovers,

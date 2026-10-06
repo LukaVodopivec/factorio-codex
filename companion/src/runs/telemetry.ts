@@ -265,7 +265,9 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     const pointer = path.join(path.dirname(options.ledger), "rollouts.json");
     const sources = profiles.map(p => ({ role: p.id as ThoughtRole,
       file: rolloutResolver(pointer, p.id, p.id === "pilot" ? options.pilotRollout : p.id === "strategist" ? options.strategistRollout : undefined) }));
+    // The game shows only the ledger writer's thinking (the strategist; the pilot in a solo trial).
     feed = createThoughtFeed({ sources, out: files.thoughts, say: (role, text) => bridge.call("say", { role, text }),
+      shown: role => profiles.some(p => p.id === role && p.ledger_writer),
       now: { read: () => {
         try { return operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8"))).task_list.NOW.objective; }
         catch { return null; }

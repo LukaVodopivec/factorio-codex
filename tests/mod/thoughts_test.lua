@@ -1,4 +1,4 @@
--- Thought feed: say prints a coloured chat line and keeps the last 8 lines,
+-- Thought feed: say adds a coloured panel line (never chat) and keeps the last 8 lines,
 -- say_now sets the strategist's NOW line, and only the connected Codex player gets the
 -- left-side panel. The panel is never player.opened, so the human-hold
 -- detector stays released. Offline: the real thoughts and companion modules
@@ -20,22 +20,35 @@ _G.defines = {
 }
 
 -- A GUI element: add/clear/destroy, children by name, and a style table.
+-- caption_writes counts every caption change, to show a refresh with nothing
+-- new rewrites nothing (that rebuild made the panel flicker).
+local caption_writes = 0
 local function element(spec, parent)
-  local el = { valid = true, type = spec.type, name = spec.name, caption = spec.caption, style = {}, children = {} }
-  function el.add(child_spec)
+  local fields = { valid = true, type = spec.type, name = spec.name, caption = spec.caption, style = {}, children = {} }
+  local el = setmetatable({}, { __index = fields, __newindex = function(_, key, value)
+    if key == "caption" then caption_writes = caption_writes + 1 end
+    fields[key] = value
+  end })
+  function fields.add(child_spec)
     local child = element(child_spec, el)
-    el.children[#el.children + 1] = child
-    if child_spec.name then el[child_spec.name] = child end
+    fields.children[#fields.children + 1] = child
+    if child_spec.name then fields[child_spec.name] = child end
     return child
   end
-  function el.clear()
-    for _, child in ipairs(el.children) do
+  function fields.clear()
+    for _, child in ipairs(fields.children) do
       child.valid = false
-      if child.name then el[child.name] = nil end
+      if child.name then fields[child.name] = nil end
     end
-    el.children = {}
+    fields.children = {}
   end
   return el
+end
+-- The panel's visible captions, top to bottom.
+local function shown(panel)
+  local rows = {}
+  for _, child in ipairs(panel.children) do if child.visible ~= false then rows[#rows + 1] = child.caption end end
+  return rows
 end
 
 local opened_writes = 0
@@ -77,27 +90,31 @@ check(registered.say == thoughts.say and registered.say_now == thoughts.say_now,
 -- Lazy storage: say works before init created it.
 local result = thoughts.say({ role = "pilot", text = "walking to the iron patch" })
 check(storage.thoughts and #storage.thoughts.lines == 1 and result.lines == 1, "say creates storage lazily")
-check(printed[1].message == "[Pilot] walking to the iron patch", "say prints the role-prefixed line")
-check(printed[1].settings.color.b == 1.00 and printed[1].settings.sound == defines.print_sound.never,
-  "chat line is coloured per role and silent")
+check(#printed == 0, "say prints nothing to chat: the panel alone shows the line")
 
 local panel = codex.gui.left[PANEL]
 check(panel and panel.valid and panel.type == "frame", "Codex gets a left-side frame")
 check(viewer.gui.left[PANEL] == nil, "other players get no panel")
-check(panel.children[1].caption == "NOW: -" and panel.children[2].caption == "[Pilot] walking to the iron patch",
-  "panel shows the NOW line then the recent lines")
+local rows = shown(panel)
+check(#rows == 2 and rows[1] == "NOW: -" and rows[2] == "[Pilot] walking to the iron patch"
+  and panel.children[6].style.font_color.b == 1.00,
+  "panel shows the NOW line then the recent lines, coloured per role")
+local writes = caption_writes
+thoughts.refresh()
+check(caption_writes == writes and codex.gui.left[PANEL] == panel and panel.children[1].valid,
+  "a refresh with nothing new rewrites no label and keeps the panel's elements")
 
 thoughts.say_now({ text = "smelt iron plates" })
 panel = codex.gui.left[PANEL]
-check(storage.thoughts.now == "smelt iron plates" and panel.children[1].caption == "NOW: smelt iron plates",
+check(storage.thoughts.now == "smelt iron plates" and shown(panel)[1] == "NOW: smelt iron plates",
   "say_now sets the strategist's NOW line on top")
-check(printed[#printed].message == "[Strategist] NOW: smelt iron plates", "say_now prints the NOW line as the strategist")
+check(#printed == 0, "say_now prints nothing to chat")
 
 for i = 1, 10 do thoughts.say({ role = "strategist", text = "thought " .. i }) end
 panel = codex.gui.left[PANEL]
 check(#storage.thoughts.lines == 8 and storage.thoughts.lines[1].text == "thought 3"
   and storage.thoughts.lines[8].text == "thought 10", "storage keeps the last 8 lines")
-check(#panel.children == 9 and panel.children[9].caption == "[Strategist] thought 10", "panel shows NOW plus 8 lines")
+check(#shown(panel) == 9 and shown(panel)[9] == "[Strategist] thought 10", "panel shows NOW plus 8 lines")
 
 -- Validation.
 check(not pcall(thoughts.say, { role = "bob", text = "x" }), "unknown role is rejected")
@@ -105,7 +122,7 @@ check(not pcall(thoughts.say, { role = "pilot", text = "" }), "empty text is rej
 check(not pcall(thoughts.say, { role = "pilot", text = string.rep("a", 601) }), "text over 600 characters is rejected")
 check(pcall(thoughts.say, { role = "pilot", text = string.rep("\195\169", 600) }),
   "600 multibyte characters are accepted")
-local long_line = panel and codex.gui.left[PANEL].children[9].caption
+local long_line = panel and shown(codex.gui.left[PANEL])[9]
 check(long_line and #long_line < 600 and long_line:sub(-3) == "...", "panel truncates long lines on a character boundary")
 thoughts.say({ role = "supervisor", text = "line one\nline two" })
 check(storage.thoughts.lines[8].text == "line one line two", "newlines become spaces")
@@ -116,11 +133,11 @@ check(storage.thoughts.now == nil, "empty say_now clears the NOW line")
 codex.gui.left[PANEL].valid = false
 codex.gui.left[PANEL] = nil
 thoughts.init()
-check(codex.gui.left[PANEL] and #codex.gui.left[PANEL].children == 9, "init rebuilds the panel from storage")
+check(codex.gui.left[PANEL] and #shown(codex.gui.left[PANEL]) == 9, "init rebuilds the panel from storage")
 local joiner = make_player(3, "Codex", true)
 players[3] = joiner
 thoughts.on_player_joined({ player_index = 3 })
-check(joiner.gui.left[PANEL] and #joiner.gui.left[PANEL].children == 9, "player join rebuilds the panel")
+check(joiner.gui.left[PANEL] and #shown(joiner.gui.left[PANEL]) == 9, "player join rebuilds the panel")
 players[3] = nil
 thoughts.on_player_joined({ player_index = 2 })
 check(viewer.gui.left[PANEL] == nil, "a joining viewer gets no panel")

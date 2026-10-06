@@ -12,7 +12,7 @@
 - Project goal: Show how Codex bots think about and architect a Factorio
   factory: two reasoning sessions plan and direct one physically embodied
   character through text-only tools, the mod does every deterministic chore,
-  and the bots' thinking is shown in the game.
+  and the strategist's thinking is shown in the game.
 - Non-goals: Image perception, agent-facing Lua or console execution, built-in
   model loops, game-chat control, multiple controllable bodies or gameplay
   writers, agent-owned orchestration services, hosted services, teleportation
@@ -123,12 +123,13 @@ reports, ledger reads by shell, revision checks, or package revalidation. Do not
 add another writer, body, lane, ledger, broker, daemon, or control channel.
 
 **Thought feed.** The run recorder tails both role rollout files
-(`--pilot-rollout`, `--strategist-rollout`) and forwards each reasoning summary
-and assistant message, never tool calls or outputs, to the mod's `say` RPC. The
-mod prints it to the game chat coloured per role and keeps the last lines in an
-always-visible panel on the Codex screen; the text is also saved beside the
-recorder's samples (`~/.local/share/factorio-codex/runs/run-<id>/thoughts.jsonl`,
-each line with `said_at`, when the game showed it). The feed is output only: game chat never controls
+(`--pilot-rollout`, `--strategist-rollout`) and saves each reasoning summary
+and assistant message, never tool calls or outputs, beside the recorder's
+samples (`~/.local/share/factorio-codex/runs/run-<id>/thoughts.jsonl`, each
+line with `said_at`, when the game showed it, else null). Only the ledger
+writer's lines (the strategist; the pilot in a solo trial) go to the mod's
+`say` RPC, which keeps the last lines in an always-visible panel on the Codex
+screen, never in game chat. The feed is output only: game chat never controls
 the bot, and the panel never triggers a takeover hold.
 
 **Upkeep.** While no queued plan would take the body (the FIFO is empty or

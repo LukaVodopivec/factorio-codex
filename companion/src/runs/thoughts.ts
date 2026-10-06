@@ -1,12 +1,13 @@
 import fs from "node:fs";
 
-// Thought feed: tails the two role Codex rollout files and shows their
-// reasoning summaries and assistant messages in the game. Output only; tool
-// calls, tool outputs and encrypted reasoning are never read out.
+// Thought feed: tails the role Codex rollout files, saves every role's
+// reasoning summaries and assistant messages, and shows the shown roles' in
+// the game. Output only; tool calls, tool outputs and encrypted reasoning are
+// never read out.
 export type ThoughtRole = "pilot" | "strategist" | "mining" | "logistics";
 export type ThoughtKind = "reasoning" | "message";
 export interface Thought { ts: string; role: ThoughtRole; kind: ThoughtKind; text: string }
-/** One thoughts.jsonl row: ts is the rollout time, said_at when the game showed it (null when the say failed). */
+/** One thoughts.jsonl row: ts is the rollout time, said_at when the game showed it (null when the say failed or the role is not shown). */
 export interface ThoughtRecord extends Thought { said_at: string | null }
 
 export const THOUGHT_LINE_MAX = 600;
@@ -81,6 +82,8 @@ export interface ThoughtFeedOptions {
    *  writes a new file, which is then followed from its start. */
   sources: Array<{ role: ThoughtRole; file: () => string | null }>;
   say: (role: ThoughtRole, text: string) => Promise<unknown>;
+  /** Roles shown in the game (default all); the others are only saved. */
+  shown?: (role: ThoughtRole) => boolean;
   out: string;
   /** The strategist's current NOW objective for the panel's top line, sent through say_now when it changes. */
   now?: { read: () => string | null; say: (text: string) => Promise<unknown> };
@@ -113,6 +116,11 @@ export function createThoughtFeed(options: ThoughtFeedOptions): ThoughtFeed {
         }
       }
       if (source.queue.length > QUEUE_MAX) source.queue.splice(0, source.queue.length - QUEUE_MAX);
+      if (options.shown && !options.shown(source.role)) {
+        const rows = source.queue.splice(0).map(thought => `${JSON.stringify({ ...thought, said_at: null })}\n`);
+        try { if (rows.length) fs.appendFileSync(options.out, rows.join(""), { encoding: "utf8", mode: 0o600 }); } catch { /* evidence only */ }
+        return;
+      }
       if (source.busy) return;
       const next = source.queue.shift();
       if (!next) return;

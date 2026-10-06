@@ -1,6 +1,6 @@
--- Thought feed: the roles' reasoning shown in game. Output only: it prints to
--- chat and fills a small left-side panel on the Codex client, and nothing here
--- reads chat or controls the body. The panel lives in player.gui.left and is
+-- Thought feed: the roles' reasoning shown in game. Output only: it fills a
+-- small left-side panel on the Codex client (never chat, which would show
+-- every line twice), and nothing here reads chat or controls the body. The panel lives in player.gui.left and is
 -- never assigned to player.opened, so opened_gui_type stays none and it raises
 -- no on_gui_opened: it cannot start a human hold (companion.human_control).
 local benchmark = require("scripts.benchmark")
@@ -56,49 +56,65 @@ local function clean_text(params, allow_empty)
   return text
 end
 
-local function print_line(role, text)
-  local settings = { color = role.color }
-  if defines.print_sound then settings.sound = defines.print_sound.never end
-  if defines.print_skip then settings.skip = defines.print_skip.never end
-  game.print("[" .. role.label .. "] " .. text, settings)
-end
+-- The panel's labels, built once in this order: four trial lines, NOW, then
+-- the recent thought lines. A refresh only rewrites captions that changed and
+-- hides empty slots; clearing and re-adding every label each second made the
+-- panel flicker while the trial counters moved.
+local TRIAL_SLOTS = 4
+local SLOTS = TRIAL_SLOTS + 1 + MAX_LINES
+local function slot_name(index) return "slot_" .. index end
 
-local function add_label(frame, caption, color)
-  local label = frame.add({ type = "label", caption = caption })
-  label.style.single_line = false
-  label.style.maximal_width = PANEL_WIDTH
+-- caption "" hides the slot. The role label is part of the caption, so an
+-- unchanged caption keeps its colour.
+local function set_slot(frame, index, caption, color)
+  local label = frame[slot_name(index)]
+  if label.caption == caption then return end
+  label.caption = caption
+  label.visible = caption ~= ""
   if color then label.style.font_color = color end
-  return label
 end
 
--- Rebuilds the panel for one player; only the connected player named Codex
--- has one.
+-- Builds or updates the panel for one player; only the connected player named
+-- Codex (or a spectator) has one.
 local function render(player)
   if not (player and player.valid and player.connected
     and (player.name == CODEX_NAME or player.controller_type == defines.controllers.spectator)) then return end
   local left = player.gui.left
   local frame = left[PANEL]
-  if frame and frame.valid then
-    frame.clear()
-  else
+  if not (frame and frame.valid) then
     frame = left.add({ type = "frame", name = PANEL, caption = "Codex thinking", direction = "vertical" })
+  end
+  if not frame[slot_name(SLOTS)] then
+    -- New, or built by an older version: lay out the slots once.
+    frame.clear()
+    frame.style.width = PANEL_WIDTH + 24
+    for index = 1, SLOTS do
+      local label = frame.add({ type = "label", name = slot_name(index), caption = "" })
+      label.style.single_line = false
+      label.style.maximal_width = PANEL_WIDTH
+      label.visible = false
+    end
   end
   local t = data()
   local trial = benchmark.display()
+  local rows = {}
   if trial then
-    add_label(frame, head(trial.label, PANEL_LINE_CHARS) .. " | " .. trial.status .. " | "
-      .. math.floor(trial.remaining_seconds / 60) .. ":" .. string.format("%02d", trial.remaining_seconds % 60))
+    rows[1] = head(trial.label, PANEL_LINE_CHARS) .. " | " .. trial.status .. " | "
+      .. math.floor(trial.remaining_seconds / 60) .. ":" .. string.format("%02d", trial.remaining_seconds % 60)
     local m = setmetatable({}, { __index = function(_, key) return trial.metrics[key] or 0 end })
-    add_label(frame, "Research: " .. trial.research .. " packs | machine-made " .. trial.made
-      .. " (" .. string.format("%.1f", trial.made_per_minute) .. "/min) | raw " .. trial.raw)
-    add_label(frame, "Plates: Fe " .. m["iron-plate"] .. ", Cu " .. m["copper-plate"] .. ", steel " .. m["steel-plate"]
-      .. " | gears " .. m["iron-gear-wheel"] .. ", circuits " .. m["electronic-circuit"])
-    if storage.benchmark.summary then add_label(frame, head(storage.benchmark.summary, PANEL_LINE_CHARS)) end
+    rows[2] = "Research: " .. trial.research .. " packs | machine-made " .. trial.made
+      .. " (" .. string.format("%.1f", trial.made_per_minute) .. "/min) | raw " .. trial.raw
+    rows[3] = "Plates: Fe " .. m["iron-plate"] .. ", Cu " .. m["copper-plate"] .. ", steel " .. m["steel-plate"]
+      .. " | gears " .. m["iron-gear-wheel"] .. ", circuits " .. m["electronic-circuit"]
+    rows[4] = storage.benchmark.summary and head(storage.benchmark.summary, PANEL_LINE_CHARS) or nil
   end
-  add_label(frame, "NOW: " .. head(t.now or "-", PANEL_LINE_CHARS), ROLES.strategist.color)
-  for _, line in ipairs(t.lines) do
-    local role = ROLES[line.role]
-    add_label(frame, "[" .. role.label .. "] " .. head(line.text, PANEL_LINE_CHARS), role.color)
+  for index = 1, TRIAL_SLOTS do set_slot(frame, index, rows[index] or "") end
+  set_slot(frame, TRIAL_SLOTS + 1, "NOW: " .. head(t.now or "-", PANEL_LINE_CHARS), ROLES.strategist.color)
+  for index = 1, MAX_LINES do
+    local line = t.lines[index]
+    local role = line and ROLES[line.role]
+    set_slot(frame, TRIAL_SLOTS + 1 + index,
+      line and ("[" .. role.label .. "] " .. head(line.text, PANEL_LINE_CHARS)) or "", role and role.color)
   end
 end
 
@@ -107,7 +123,7 @@ local function render_all()
 end
 M.refresh = render_all
 
--- say {role, text}: one chat line and one panel line.
+-- say {role, text}: one panel line.
 function M.say(params)
   local role = ROLES[params.role]
   if not role then error("role must be strategist, pilot, mining, logistics or supervisor") end
@@ -115,7 +131,6 @@ function M.say(params)
   local lines = data().lines
   lines[#lines + 1] = { role = params.role, text = text, tick = game.tick }
   while #lines > MAX_LINES do table.remove(lines, 1) end
-  print_line(role, text)
   render_all()
   return { tick = game.tick, lines = #lines }
 end
@@ -125,7 +140,6 @@ end
 function M.say_now(params)
   local text = clean_text(params, true)
   data().now = text ~= "" and text or nil
-  if text ~= "" then print_line(ROLES.strategist, "NOW: " .. text) end
   render_all()
   return { tick = game.tick }
 end

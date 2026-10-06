@@ -746,8 +746,8 @@ end
 
 -- Every surface at once, in one pass over the lines and the problem-only
 -- machines: {[surface index] = {line_count, running_line_count, problems =
--- rows as M.problems gives them}}.
-function M.by_surface()
+-- rows as M.problems gives them, with the same announcement cursor}}.
+function M.by_surface(since_tick)
   local a = data()
   local out, keys = {}, {}
   if not a then return out end
@@ -762,7 +762,7 @@ function M.by_surface()
   end
   local function add(id, unit)
     local rec = a.machines[unit]
-    if rec and rec.problem_counted then
+    if rec and rec.problem_counted and (not since_tick or (rec.problem_announced_tick or rec.problem_since) >= since_tick) then
       local row, by_key = of(rec_surface(rec))
       add_problem(row.problems, by_key, id, rec)
     end

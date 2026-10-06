@@ -182,17 +182,17 @@ local function problem_before(x, y)
 end
 
 -- One row per other factory surface (at most MAX_ELSEWHERE, by index): its
--- line and problem counts, worst problems and lowest power satisfaction,
+-- current line counts, cursor-filtered problems and lowest power satisfaction,
 -- from one pass over the line sampler's lines and one over the registry's
 -- networks (a statistics read for at most one network a surface, the
 -- neediest whose consumers are short of power).
-local function elsewhere_section(here_index)
+local function elsewhere_section(here_index, since_tick)
   local rows, others = {}, {}
   for _, index in ipairs(registry.surfaces()) do
     if index ~= here_index then others[#others + 1] = index end
   end
   if #others == 0 then return rows, 0 end
-  local overview, networks = autonomy.by_surface(), registry.networks_by_surface()
+  local overview, networks = autonomy.by_surface(since_tick), registry.networks_by_surface()
   local reads = 0
   for _, index in ipairs(others) do
     if #rows >= MAX_ELSEWHERE then break end
@@ -346,7 +346,7 @@ function M.factory_status(params)
     if #rows > 0 then result.platforms, result.omitted_platforms = rows, omitted > 0 and omitted or nil end
   end
   if want.elsewhere then
-    local rows, omitted = elsewhere_section(index)
+    local rows, omitted = elsewhere_section(index, since)
     -- Absent while the factory stands on one surface.
     if #rows > 0 then result.elsewhere, result.omitted_elsewhere = rows, omitted > 0 and omitted or nil end
   end

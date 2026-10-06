@@ -13,7 +13,7 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
 local RAW = { working = 1, no_power = 2, frozen = 3, no_research_in_progress = 4, waiting_for_plants_to_grow = 5,
-  waiting_for_space_in_platform_hub = 6, no_spot_seedable_by_inputs = 7, normal = 8 }
+  waiting_for_space_in_platform_hub = 6, no_spot_seedable_by_inputs = 7, normal = 8, full_output = 9 }
 _G.defines = { entity_status = RAW, inventory = { chest = 1, crafter_input = 2, lab_input = 3 },
   target_type = { entity = 7 }, flow_precision_index = { five_seconds = 0, one_minute = 1 },
   rocket_silo_status = { rocket_ready = 10 } }
@@ -126,7 +126,7 @@ local vulcanus_furnaces = { furnace(2, 0, 0), furnace(2, 0, 2) }
 local lab = machine(1, "lab", "lab", 10, 0, "no_research_in_progress")
 machine(2, "assembling-machine", "foundry", 20, 0, "frozen", { products_finished = 0, get_recipe = function() return nil end })
 machine(2, "agricultural-tower", "agricultural-tower", 30, 0, "waiting_for_plants_to_grow")
-machine(3, "asteroid-collector", "asteroid-collector", 0, -4, "waiting_for_space_in_platform_hub")
+machine(3, "asteroid-collector", "asteroid-collector", 0, -4, "full_output")
 local function chest(on, x, y, contents)
   return machine(on, "container", "iron-chest", x, y, "normal", { get_inventory = function()
     return mock.inventory({ get_contents = function() return contents end })
@@ -358,6 +358,55 @@ check(most <= 2 and storage.patch_caches[1].seeded and storage.patch_caches[2].s
   "patch caches take turns: at most two chunk reads a tick across the planets (" .. table.concat(per_tick, ",") .. ")")
 check(select(1, map_summary.patches(2)) ~= nil and map_summary.patches(3) ~= nil,
   "patches are read per surface")
+
+-- A fresh planet problem must not relabel an old platform problem as news.
+-- Use the native sampler/debounce rather than fabricating announcement state.
+local problem_cursor = game.tick
+mock.state(vulcanus_furnaces[1]).status = RAW.frozen
+for tick = problem_cursor + 1, problem_cursor + 150 do
+  game.tick = tick
+  autonomy.on_tick(tick)
+end
+local changed = factory_status.factory_status({ sections = { "problems", "elsewhere" }, since_tick = problem_cursor })
+local changed_elsewhere = {}
+for _, row in ipairs(changed.elsewhere or {}) do changed_elsewhere[row.surface] = row end
+check(changed_elsewhere.vulcanus and changed_elsewhere.vulcanus.problems == 1
+  and #changed_elsewhere.vulcanus.top_problems == 1
+  and changed_elsewhere.vulcanus.top_problems[1].name == "stone-furnace"
+  and changed_elsewhere["platform:1"].problems == 0
+  and #changed_elsewhere["platform:1"].top_problems == 0,
+  "since_tick elsewhere reports the newly matured planet problem without repeating old platform backpressure")
+local fresh_overview = autonomy.by_surface(problem_cursor)
+local consistent = true
+for index = 1, 3 do
+  if #fresh_overview[index].problems ~= #autonomy.problems(problem_cursor, index) then consistent = false end
+end
+check(consistent and fresh_overview[2].line_count == autonomy.counts(2).line_count,
+  "cursor-filtered all-surface problems match per-surface reads while line counts remain current")
+local fresh_record = storage.autonomy.machines[vulcanus_furnaces[1].unit_number]
+local announced = fresh_record.problem_announced_tick
+check(#autonomy.by_surface(announced)[2].problems == #autonomy.problems(announced, 2)
+  and #autonomy.by_surface(announced)[2].problems > 0,
+  "all-surface readback preserves the existing inclusive announcement boundary")
+-- Saves made before announcement ticks were stored use the episode start.
+fresh_record.problem_announced_tick = nil
+check(#autonomy.by_surface(fresh_record.problem_since)[2].problems
+    == #autonomy.problems(fresh_record.problem_since, 2)
+  and #autonomy.by_surface(fresh_record.problem_since + 1)[2].problems
+    == #autonomy.problems(fresh_record.problem_since + 1, 2),
+  "legacy problem records use the same episode-start cursor fallback on every surface")
+fresh_record.problem_announced_tick = announced
+local after_news = factory_status.factory_status({ sections = { "elsewhere" }, since_tick = game.tick + 1 })
+local no_news = true
+for _, row in ipairs(after_news.elsewhere) do
+  if row.problems ~= 0 or #row.top_problems ~= 0 then no_news = false end
+end
+check(no_news, "an elsewhere cursor after all announcements has no repeated problem rows")
+local current = factory_status.factory_status({ sections = { "elsewhere" } })
+local current_platform
+for _, row in ipairs(current.elsewhere) do if row.surface == "platform:1" then current_platform = row end end
+check(current_platform and current_platform.problems > 0 and #current_platform.top_problems > 0,
+  "an unfiltered current-state read still exposes persistent platform problems")
 
 -- A deleted surface (a platform removed) leaves the factory surfaces.
 registry.on_surface_deleted({ surface_index = 3 })

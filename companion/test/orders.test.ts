@@ -219,7 +219,11 @@ describe("package auto-queue", () => {
     await queue.tick();
     writeLedger(dir, 2, [removing, { ...furnaces("underground", "remove-belt"), steps: [layout] }]);
     await queue.tick();
-    expect(readPackageQueue(dir)?.packages.underground).toBeUndefined();
+    expect(readPackageQueue(dir)?.packages.underground).toBeUndefined();    // The strategist drops the queued removal from the ledger: its successor still waits.
+    expect(readPackageQueue(dir)?.packages["remove-belt"]).toMatchObject({ status: "queued", changes_ground: true });
+    writeLedger(dir, 3, [{ ...furnaces("underground-2", "remove-belt"), steps: [layout] }]);
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages["underground-2"]).toBeUndefined();
   });
 
   it("rejects a package over lava or an ocean, or one whose building the planet's conditions forbid", async () => {

@@ -22,6 +22,8 @@ export interface PackageRecord {
   tick?: number; plan_id?: number; reason?: string;
   /** Blueprints captured for the package; a package of captures only has no plan. */
   captured?: string[];
+  /** Its steps lay tiles or remove entities: a successor waits for its end even after the ledger drops it. */
+  changes_ground?: boolean;
 }
 /** The outcome of the ledger's research for one revision: queued (the
  *  technologies the game added; skipped: already researched or queued) or
@@ -403,7 +405,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
             // the ground its landfill makes or its removals clear, so either
             // waits for its end.
             const predecessor = ledger.build_packages.find((other) => other.package_id === entry.after_package_id);
-            if (captures.length > 0 || changesGroundIn(predecessor)) continue;
+            if (captures.length > 0 || changesGroundIn(predecessor) || before.changes_ground === true) continue;
             afterPlanId = before.plan_id;
           } else if (status !== undefined && status !== "completed") {
             record(id, { status: "failed", reason: `after_package_id ${entry.after_package_id} ended ${status}` });
@@ -434,7 +436,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       if (!retry) record(id, { status: "queuing", ...captured });
       try {
         const queued = await b.call<{ plan_id: number }>("queue_plan", { ...plan.data, source: `package:${id}` });
-        record(id, { status: "queued", plan_id: queued.plan_id, ...captured });
+        record(id, { status: "queued", plan_id: queued.plan_id, ...(changesGroundIn(entry) ? { changes_ground: true } : {}), ...captured });
       } catch (error) {
         // Only the mod's own refusal is a failure; a lost answer stays queuing.
         if (!(error instanceof ModError)) throw error;

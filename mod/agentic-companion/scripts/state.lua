@@ -14,7 +14,7 @@ M.STORE_TYPES_0_22_2 = { "cargo-landing-pad" }
 M.MACHINE_TYPES_0_22_3 = { ["fusion-reactor"] = true, ["fusion-generator"] = true, ["lightning-attractor"] = true,
   ["agricultural-tower"] = true, ["asteroid-collector"] = true }
 -- Machine types the registry keeps only with a burner (burner inserters),
--- gained after 0.27.1: an older registry holds them in its burner set.
+-- gained after 0.26.2: an older registry holds them in its burner set.
 M.BURNER_MACHINE_TYPES = { inserter = true }
 -- Blueprint slots (blueprints.lua): 32 named blueprints and a scratch slot.
 M.BLUEPRINT_SLOTS = 33

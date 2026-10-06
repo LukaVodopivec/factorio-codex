@@ -120,7 +120,7 @@ storage.registry.machines["asteroid-collector"] = nil
 state.init()
 check(storage.registry.machines["asteroid-collector"] == nil, "the planet machine pass runs once")
 
--- A 0.27.1 registry: a burner inserter held in the burner set joins the
+-- A 0.26.2 registry: a burner inserter held in the burner set joins the
 -- machine sets (sampled for problems only); an electric inserter does not.
 storage.registry = { version = state.REGISTRY_VERSION, ready = true, force = "player", planet_machines = true,
   entries = { [51] = { unit = 51, name = "burner-inserter", type = "inserter", position = { x = 0, y = 0 }, surface = 1 },
@@ -133,7 +133,7 @@ state.init()
 local inserters = storage.registry.machines.inserter or {}
 check(inserters[51] and not inserters[52] and storage.registry.entries[51].burner and storage.registry.burner_inserters
   and storage.autonomy.dirty_tick == game.tick,
-  "a 0.27.1 registry's burner inserters join the machine sets and the lines regroup")
+  "a 0.26.2 registry's burner inserters join the machine sets and the lines regroup")
 
 print(failures == 0 and "\nALL STATE UPGRADE TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

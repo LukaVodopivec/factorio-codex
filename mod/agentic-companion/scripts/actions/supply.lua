@@ -926,6 +926,13 @@ local function advance(task, c, frame)
   end
 
   if frame.phase == "gather" then
+    -- A full inventory ends the frame as full, as the take phase does, so a
+    -- layout's steps_when_full carries on instead of retrying the same tile.
+    local inventory = c.get_main_inventory()
+    if inventory and inventory.get_insertable_count(frame.name) <= 0 then
+      frame.error, frame.phase, frame.full = "my inventory is full", "end", true
+      return false
+    end
     if frame.gathers < MAX_GATHERS then
       if frame.drills == nil then
         if #natural_names(frame.name) > 0 and not scan(task) then return true end

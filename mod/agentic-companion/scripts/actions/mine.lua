@@ -7,6 +7,7 @@
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local walk = require("scripts.actions.walk")
+local craft = require("scripts.actions.craft")
 -- Optional: the charted-stock reader may be absent or fail to load.
 local registry = require("scripts.registry")
 local M = {}
@@ -446,7 +447,7 @@ function M.tick(task)
     end
     -- Hand-crafting changes the inventory the gain is measured on: an owned
     -- entity is mined once the crafting queue is done.
-    if task._target_kind == "owned" and crafting then return nil end
+    if task._target_kind == "owned" and crafting then craft.mark_wait(); return nil end
     local inv = c.get_main_inventory()
     if not inv then return { status = "failed", detail = "the Codex character has no inventory" } end
     local contents = task._target_kind == "owned" and entity_contents(e) or nil

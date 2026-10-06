@@ -50,6 +50,8 @@ end
 -- hand-crafting as progress only for such a step, so background crafts never
 -- keep a step that waits on something else from stalling.
 local function mark_wait() storage.craft_wait_tick = game.tick end
+-- A step that waits on the crafting queue tells the watchdog (tasks.lua).
+M.mark_wait = mark_wait
 
 -- A step about to consume `count` of `name` waits while it carries fewer
 -- and the crafting queue still makes some.

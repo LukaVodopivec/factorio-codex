@@ -287,10 +287,13 @@ body.resource_reach_distance = 8
 engine_gain = 1
 configure_capacity(2)
 body.crafting_queue_size = 1
+_G.storage = _G.storage or {}
 local crafting_recovery = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(crafting_recovery)
 check(mine.tick(crafting_recovery) == nil and mine.tick(crafting_recovery) == nil and not body.mining_state.mining
   and machine.valid and covered_resource.amount == 100,
   "owned recovery waits at the entity while background hand-crafting runs")
+check(storage.craft_wait_tick == game.tick,
+  "waiting on the crafting queue tells the watchdog the step waits on crafting")
 body.crafting_queue_size = 0
 check(mine.tick(crafting_recovery) == nil and body.mining_state.mining, "and mines it once the crafting queue is done")
 body.mining_state, body.selected = { mining = false }, nil

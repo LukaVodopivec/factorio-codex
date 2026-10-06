@@ -93,6 +93,21 @@ check(missing.status == "failed" and missing.outcome.code == "INVENTORY_NOT_PRES
 check(not pcall(transfer.extract.start, { target = { x = 0, y = 0 }, all = true, inventory = "furnace_source" }),
   "an unknown role is refused at start")
 
+-- A burner drill: its output getter returns the fuel inventory, which is fuel
+-- only, so an output extraction never takes the drill's reserve fuel.
+local drill_fuel, drill_fuel_held = inventory({ wood = 4 })
+local drill = mock.entity({ valid = true, name = "burner-mining-drill", type = "mining-drill", force = own,
+  position = { x = 9, y = 9 }, get_fuel_inventory = function() return drill_fuel end,
+  get_output_inventory = function() return drill_fuel end, get_burnt_result_inventory = function() return nil end,
+  get_module_inventory = function() return nil end, get_inventory = function() return nil end })
+local roles = require("scripts.inventory_roles")
+check(table.concat(roles.present(drill), ",") == "fuel" and #roles.get(drill, "output") == 0,
+  "a burner drill's fuel inventory is listed once, as fuel, never as output")
+target = drill
+local wrong = run(transfer.extract, { target = { x = 9, y = 9 }, all = true, inventory = "output" })
+check(wrong.status == "failed" and wrong.outcome.code == "INVENTORY_NOT_PRESENT" and drill_fuel_held.wood == 4,
+  "extracting a burner drill's output leaves its reserve fuel in place")
+
 -- An assembler: modules by role; insert into the module inventory; trash is two.
 local modules, modules_held = inventory({ ["speed-module"] = 2 })
 local trash, trash_held = inventory({ coal = 1 })

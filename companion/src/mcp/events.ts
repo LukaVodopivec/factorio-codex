@@ -52,7 +52,7 @@ export interface EventSources {
 
 /** Said wherever research stands still: after a research_finished with
  *  nothing queued, and with a research_idle problem. */
-export const RESEARCH_IDLE = "no research is running and labs are idle; the strategist picks research in the ledger";
+export const RESEARCH_IDLE = "no research is running and labs are idle; the ledger writer picks research in the ledger";
 const idleResearch = (state: EventState) => state.research_idle === true ? { research_idle: true } : {};
 /** Whether problem rows include labs standing still with no research. */
 export const researchIdleProblem = (problems: unknown): boolean =>

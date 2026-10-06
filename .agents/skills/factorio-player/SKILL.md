@@ -255,7 +255,7 @@ in ledger order, after the mod's placement check, with no pilot turn. Each
 package names its `surface` (a planet) and queues only while the body is
 there; until then `orders` shows it `waiting_surface`, which is not a failure. Only the
 pilot travels: a package never holds `travel`.
-The strategist picks research: the bridge queues the ledger's `research` list
+The ledger writer picks research: the bridge queues the ledger's `research` list
 once per revision (`activity_log` shows it).
 Results carry `orders` once per ledger change. A failed package appears as
 `package_failed` and in `activity_log`; the strategist alone redesigns it. There are no

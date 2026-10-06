@@ -133,10 +133,15 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/use `explore`[\s\S]*Never scout with chains of walks/);
     expect(flatSkill).toMatch(/`connect_entities` lays one belt, pipe, or pole route of up to 200 pieces[\s\S]*a long route is one call/);
     expect(flatSkill).toMatch(/Crafting runs in the background: `craft_items` returns at once/);
-    expect(flatSkill).toMatch(/The strategist picks research: the bridge queues the ledger's `research` list once per revision \(`activity_log` shows it\)/);
+    expect(flatSkill).toMatch(/The ledger writer picks research: the bridge queues the ledger's `research` list once per revision \(`activity_log` shows it\)/);
     expect(flatSkill).not.toMatch(/`start_research` takes a list/);
     expect(flat(strategist)).toMatch(/After `GO`, list up to seven technologies in queue order as the ledger's `research`/);
     expect(flat(strategist)).toMatch(/When `research_finished` or `research_idle` says labs are idle, write the next list/);
+    // Benchmark roles read GOAL-BENCHMARK instead: its ledger writer, solo pilot or strategist, lists research.
+    const benchmark = flat(read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md"));
+    const research = "After GO, keep labs busy by listing research (up to seven technologies in queue order) as the ledger's `research`; the bridge queues it.";
+    expect(benchmark).toContain(`queue your plans directly, so nothing is queued twice. ${research}`);
+    expect(benchmark).toContain(`build packages with their surface. ${research}`);
     expect(flatSkill).toMatch(/`plan_ended` carries each step's outcome and the inventory change/);
     expect(flatSkill).toMatch(/Any item may be used anywhere, crafted or machine-made/);
     expect(skill).not.toMatch(/at most 25 pieces/);

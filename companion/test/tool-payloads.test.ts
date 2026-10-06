@@ -134,7 +134,7 @@ describe("public MCP to Lua DTO mappings", () => {
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
       async () => ({ call } as unknown as Bridge), validConfig);
     expect((await handlers.factory_status({ sections: ["research"] })).structuredContent.summary)
-      .toContain("no research is running and labs are idle; the strategist picks research in the ledger");
+      .toContain("no research is running and labs are idle; the ledger writer picks research in the ledger");
     call.mockResolvedValueOnce({ tick: 9, problems: [{ status: "no_research_in_progress", cause: "research_idle", name: "lab", count: 4 }] } as never);
     expect((await handlers.factory_status({ sections: ["problems"] })).structuredContent.summary).toContain("no research is running and labs are idle");
     call.mockResolvedValueOnce({ tick: 9, research: { current: "automation", labs: { count: 4, working: 4, speed: 4 } }, problems: [] } as never);

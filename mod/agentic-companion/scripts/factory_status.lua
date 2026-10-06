@@ -412,11 +412,12 @@ function M.event_state()
   local queued = 0
   for _, task in ipairs(t.queue) do if pilot_work(task) then queued = queued + 1 end end
   local space_tick, space_events = platforms.event_state()
-  -- Whether the body's force has no research running (labs then stand
-  -- idle); nil while there is no body to name the force.
+  -- Whether the force's labs stand idle: it has labs (the registry's cached
+  -- count; trigger technologies finish before any lab exists) and no
+  -- research running. nil while there is no body to name the force.
   local research_ok, idle = pcall(function()
     local anchor = companion.anchor()
-    if anchor and anchor.force then return anchor.force.current_research == nil end
+    if anchor and anchor.force then return anchor.force.current_research == nil and registry.labs().count > 0 end
   end)
   local research_idle = nil
   if research_ok and type(idle) == "boolean" then research_idle = idle end

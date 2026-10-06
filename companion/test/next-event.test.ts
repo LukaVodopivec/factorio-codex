@@ -132,7 +132,7 @@ describe("next_event research beside a plan end", () => {
     const finished = await waitForEvent(game([busy, { ...running, research_idle: true }]).bridge, input(), quiet(), undefined, fakeClock());
     expect(finished).toMatchObject({ event: "research_finished", technology: "automation", research_idle: true });
     expect(eventSummary(finished)).toBe(`research automation finished: ${RESEARCH_IDLE}`);
-    expect(RESEARCH_IDLE).toBe("no research is running and labs are idle; the strategist picks research in the ledger");
+    expect(RESEARCH_IDLE).toBe("no research is running and labs are idle; the ledger writer picks research in the ledger");
   });
 
   it("says plainly that labs are idle when a new problem is a research_idle one", () => {

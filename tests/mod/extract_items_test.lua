@@ -46,7 +46,7 @@ function inventory.insert(stack)
   return stack.count
 end
 
-local entity = { valid = true, name = "wooden-chest" }
+local entity = { valid = true, name = "wooden-chest", type = "container" }
 function entity.get_output_inventory() return nil end
 function entity.get_inventory() return inventory end
 function entity.remove_item(stack) return inventory.remove(stack) end

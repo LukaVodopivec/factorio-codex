@@ -107,6 +107,14 @@ target = drill
 local wrong = run(transfer.extract, { target = { x = 9, y = 9 }, all = true, inventory = "output" })
 check(wrong.status == "failed" and wrong.outcome.code == "INVENTORY_NOT_PRESENT" and drill_fuel_held.wood == 4,
   "extracting a burner drill's output leaves its reserve fuel in place")
+local plain = run(transfer.extract, { target = { x = 9, y = 9 }, all = true })
+check(plain.status == "failed" and drill_fuel_held.wood == 4,
+  "a default extract from a burner drill takes nothing, never its fuel")
+drill.get_output_inventory = function() return nil end
+drill.get_inventory = function(id) return id == 1 and drill_fuel or nil end
+local by_index = run(transfer.extract, { target = { x = 9, y = 9 }, all = true })
+check(by_index.status == "failed" and drill_fuel_held.wood == 4,
+  "a default extract never reads fuel through the shared chest/fuel inventory index")
 
 -- An assembler: modules by role; insert into the module inventory; trash is two.
 local modules, modules_held = inventory({ ["speed-module"] = 2 })

@@ -402,10 +402,11 @@ local function pull(c, source, is_inventory, name, count)
 end
 
 -- The inventories an extract takes from: the named role's, else the output
--- (or a chest's contents).
+-- role (or a container's contents), never a raw inventory index: index 1 is
+-- a chest's contents but also every burner's fuel.
 local function sources(task, e)
   if task.inventory then return role_inventories(e, task.inventory) end
-  local inv = e.get_output_inventory() or e.get_inventory(defines.inventory.chest)
+  local inv = inventory_roles.get(e, "output")[1] or inventory_roles.get(e, "main")[1]
   if not inv then
     return nil, { status = "failed", detail = "the " .. e.name .. " has no output inventory I can empty" }
   end

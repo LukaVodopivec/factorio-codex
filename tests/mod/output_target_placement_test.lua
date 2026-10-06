@@ -250,6 +250,32 @@ check(planned_wrong_flow_result and planned_wrong_flow_result.status == "failed"
 check(activity.snapshot(insertion_tick).transfer_actions == 2,
   "later binding failure retains its earlier starter transfer")
 
+-- A fuelled drill that never outputs (a backed-up belt, a full or refusing
+-- recipient) is placed provisionally after two of its live mining cycles.
+local function silent_drill(mining_target)
+  created, inserted, drop_target, target_matches = 0, 0, nil, { recipient }
+  local task = { steps = { { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 },
+    insert = { wood = 1 }, output_target = { x = 2.5, y = 0.5 } } } }
+  build_plan.start(task)
+  check(build_plan.tick(task) == nil and created == 1 and inserted == 1, "the silent drill is placed and fuelled")
+  last_built.mining_target = mining_target
+  local fuelled, result = game.tick, nil
+  while not result and game.tick < fuelled + 600 do
+    game.tick = game.tick + 1
+    result = build_plan.tick(task)
+  end
+  return result, game.tick - fuelled - 1 -- binding is first read the tick after placement
+end
+prototypes.item["burner-mining-drill"].place_result.mining_speed = 0.25
+local ore = { prototype = { mineable_properties = { mining_time = 1 } } }
+local silent, waited = silent_drill(ore)
+check(silent and silent.status == "done" and silent.detail:match("pending first output") and waited == 540 and inserted == 1,
+  "a fuelled drill with no first output is placed provisionally after two live mining cycles plus a second: " .. tostring(waited))
+local bare_silent, bare_waited = silent_drill(nil)
+check(bare_silent and bare_silent.status == "done" and bare_silent.detail:match("pending first output") and bare_waited == 300,
+  "a drill whose mining cycle is unreadable waits a bounded 300 ticks: " .. tostring(bare_waited))
+prototypes.item["burner-mining-drill"].place_result.mining_speed = nil
+
 created, removed, drop_target, target_matches = 0, 0, nil, { recipient }
 local planned_mismatch = { steps = { { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
   output_target = { x = 2.5, y = 0.5 } } } }

@@ -6,7 +6,9 @@
 -- (scripts/actions/build.lua, scripts/actions/transfer.lua). A failed step is
 -- recorded and skipped unless stop_on_error. Output-target verification keeps
 -- the exact placed entity. Mining-drill starter insertion happens once before
--- waiting for first output to expose Factorio's authoritative runtime target.
+-- waiting for first output to expose Factorio's authoritative runtime target;
+-- a drill that has not output within two of its mining cycles (a backed-up
+-- belt, a full or refusing recipient) is placed with its target provisional.
 -- Auto-supply (default on) fetches what the rest of the plan needs of a
 -- step's items in one trip (supply_all: the whole plan's bill in one supply
 -- before the first placement; with steps_when_full, a bill the inventory has
@@ -37,6 +39,7 @@ local MAX_STEPS = 200
 local INSERT_RETRY_TICKS = 60
 local MAX_FAILURES_LISTED = 5
 local FUEL_PER_BURNER = 5
+local OUTPUT_WAIT_TICKS = 300 -- when the drill's mining cycle is unreadable
 -- Approach failures that belong to where the body stood, not to the step: a
 -- plan that goes on past failures tries such a step once more after its last
 -- step, if the body stands elsewhere by then.
@@ -425,6 +428,7 @@ local function advance(task, ok, why)
   task._settings_applied = nil
   task._insert_remainder, task._insert_first, task._retry_tick = nil, nil, nil
   task._expected_input, task._expected_output, task._output_verification_tick = nil, nil, nil
+  task._output_wait_until = nil
   task._index = i + 1
   if not ok and task.stop_on_error then
     return failure(task, summary(task) .. " — stopped at the first failure (stop_on_error)")
@@ -443,6 +447,19 @@ local function advance(task, ok, why)
     return finished(task)
   end
   return nil
+end
+
+-- How long a fuelled drill may take to make its first output: two mining
+-- cycles of the live drill on the resource under it, plus a second.
+local function first_output_wait(built)
+  local ok, cycle = pcall(function()
+    local resource = built.mining_target
+    return resource and resource.prototype.mineable_properties.mining_time / built.prototype.mining_speed * 60
+  end)
+  if ok and type(cycle) == "number" and cycle > 0 and cycle < math.huge then
+    return math.ceil(cycle) * 2 + 60
+  end
+  return OUTPUT_WAIT_TICKS
 end
 
 -- Finish optional interactions on an entity that was already placed. Building
@@ -567,8 +584,14 @@ local function finish_placed_step(task, c, step, built)
 
   if task._expected_input or task._expected_output then
     if input_binding == "pending" or output_binding == "pending" then return nil end
-    if output_binding == "pending-output" and built.type == "mining-drill" and step._insert then return nil end
+    if output_binding == "pending-output" and built.type == "mining-drill" and step._insert then
+      -- Wait from the fuelling, not the placement; past the deadline the
+      -- step is placed with its runtime target provisional.
+      task._output_wait_until = task._output_wait_until or (game.tick + first_output_wait(built))
+      if game.tick < task._output_wait_until then return nil end
+    end
     task._expected_input, task._expected_output, task._output_verification_tick = nil, nil, nil
+    task._output_wait_until = nil
   end
   task._built, task._interactions_applied = nil, nil
   local detail = output_binding == "pending-output"

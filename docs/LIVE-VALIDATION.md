@@ -62,7 +62,10 @@ not provide a Linux visual client launcher.
    `drop_target` before first output must remain explicitly pending, not fail or
    claim binding; a non-nil different target must fail. For a mining drill,
    include legitimate starter fuel in the same build-plan step and confirm the
-   plan waits until actual output flow exposes the exact runtime recipient.
+   plan waits until actual output flow exposes the exact runtime recipient, or,
+   when the drill has not output within two of its mining cycles plus a second
+   (a backed-up belt, a full or refusing recipient), places the step with its
+   runtime target explicitly pending first output instead of stalling.
    Inspect the placed inserter's `pickup_target` to
    falsify an incorrect source binding. Confirm an output-capable candidate always
    reports `output_position` and reports its recipient or explicit `null`; a

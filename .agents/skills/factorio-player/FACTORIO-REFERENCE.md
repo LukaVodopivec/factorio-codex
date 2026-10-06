@@ -99,7 +99,7 @@ and a live read disagree, the live read wins.
   and the materials and space it ties up. What it gives back is the flow it
   adds where something uses it.
 - Mod upkeep refuels burners and feeds labs only within 96 tiles of the
-  body. A part further away runs dry unless it is connected or the body
+  body (while it is idle, also of recent work sites). A part further away runs dry unless it is connected or the body
   goes there.
 - Judge older parts again as the factory grows. Building something is not a
   reason to keep it; only what it does for the factory now is. A part that

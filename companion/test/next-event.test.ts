@@ -239,6 +239,15 @@ describe("next_event", () => {
     expect(clock.slept).toBe(5_000);
   });
 
+  it("says on queue_empty that upkeep is off after an emergency stop until a plan finishes", async () => {
+    const stopped = await waitForEvent(game([{ ...idle, upkeep_off_since_tick: 90 }]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(stopped).toMatchObject({ event: "queue_empty", upkeep_off_since_tick: 90 });
+    expect(eventSummary(stopped)).toBe(`${IDLE_NOW}; upkeep off since stop at tick 90 until a plan finishes`);
+    const on = await waitForEvent(game([idle]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(on).not.toHaveProperty("upkeep_off_since_tick");
+    expect(eventSummary(on)).toBe(IDLE_NOW);
+  });
+
   it("tells the pilot to queue work when the last plan ends with the FIFO empty, and not during a human hold", async () => {
     const ended = { ...idle, tick: 160, last_plan_ended: { plan_id: 5, status: "completed", tick: 150 } };
     const last = await waitForEvent(game([busy, ended]).bridge, input(), quiet(), undefined, fakeClock());

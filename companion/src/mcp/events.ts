@@ -33,6 +33,8 @@ export interface EventState {
   /** True while the body's force has no research running; absent from older mods. */
   research_idle?: boolean;
   last_cancel_all_tick?: number;
+  /** The emergency stop's tick while it keeps upkeep off (until a plan finishes). */
+  upkeep_off_since_tick?: number;
   /** The newest space event's tick and the last few entries, oldest first. */
   last_space_event_tick?: number; space_events?: SpaceEvent[];
 }
@@ -146,7 +148,10 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   const failedEarlier = undelivered(previous);
   if (failedEarlier) return failedEarlier;
   if (sources.ordersChanged()) return done("orders_changed", previous);
-  if (since === undefined && previous.fifo_empty && !previous.human_hold) return done("queue_empty", previous);
+  // An empty queue says when upkeep is off, so nobody counts on it.
+  const empty = (state: EventState) => done("queue_empty", state,
+    typeof state.upkeep_off_since_tick === "number" ? { upkeep_off_since_tick: state.upkeep_off_since_tick } : {});
+  if (since === undefined && previous.fifo_empty && !previous.human_hold) return empty(previous);
 
   const deadline = started + input.timeout_seconds * 1_000;
   while (clock.now() < deadline) {
@@ -167,7 +172,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     const failed = undelivered(state);
     if (failed) return failed;
     if (sources.ordersChanged()) return done("orders_changed", state);
-    if (state.fifo_empty && !previous.fifo_empty && !state.human_hold) return done("queue_empty", state);
+    if (state.fifo_empty && !previous.fifo_empty && !state.human_hold) return empty(state);
     previous = state;
   }
   return done("timeout", previous, { waited_seconds: input.timeout_seconds });
@@ -189,7 +194,8 @@ function eventText(value: Record<string, unknown>): string {
     case "package_failed": return `package ${value.package_id} was not queued: ${value.reason ?? "unknown reason"}`;
     case "new_problem": return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`
       + (researchIdleProblem(value.problems) ? `; ${RESEARCH_IDLE}` : "");
-    case "queue_empty": return IDLE_NOW;
+    case "queue_empty": return typeof value.upkeep_off_since_tick === "number"
+      ? `${IDLE_NOW}; upkeep off since stop at tick ${value.upkeep_off_since_tick} until a plan finishes` : IDLE_NOW;
     case "orders_changed": return "the strategist's orders changed";
     case "human_hold_started": return "a human took the body; plans stay queued";
     case "human_hold_ended": return "the human hold ended; queued plans resume";

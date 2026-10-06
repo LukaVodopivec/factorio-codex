@@ -319,6 +319,9 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
         async () => ({ call, enqueueAndWaitResult } as unknown as Bridge), validConfig, "full", () => null, role);
       await handlers.stop!({});
       expect(call).toHaveBeenLastCalledWith("cancel", { all: true, origin: `stop/${role}` }, undefined);
+      // The supervisor's retained-work reconciliation leaves upkeep on.
+      await handlers.stop!({ keep_upkeep: true });
+      expect(call).toHaveBeenLastCalledWith("cancel", { all: true, origin: `stop/${role}`, keep_upkeep: true }, undefined);
       await handlers.walk_to!({ x: 1, y: 2 });
       expect((enqueueAndWaitResult.mock.calls.at(-1) as any[])[1]).toMatchObject({ tool: "walk_to", role });
     }
@@ -508,6 +511,7 @@ describe("read-only FIFO state", () => {
     expect(normalizeFifo({ queue_depth: 0, idle_seconds: 30 })).toEqual({ active_plan_id: null, queue_depth: 0, idle_seconds: 30 });
     expect(normalizeFifo({ queue_depth: 0, idle_seconds: 31 })?.hint).toBe(FIFO_IDLE_HINT);
     expect(normalizeFifo(undefined)).toBeUndefined();
+    expect(normalizeFifo({ queue_depth: 0, upkeep_off_since_tick: 900 })?.upkeep_off_since_tick).toBe(900);
   });
 
   it("reports a human hold on every read-only tool, replacing the idle hint", async () => {

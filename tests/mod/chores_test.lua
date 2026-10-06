@@ -45,7 +45,8 @@ end }
 local queued = {}
 -- tasks.upkeep_room owns when upkeep may take the body (plans_test covers it).
 local room, reserved = "idle", nil
-package.loaded["scripts.tasks"] = { upkeep_room = function() return room, reserved end, queue_plan = function(params, selection)
+local boundary_asked
+package.loaded["scripts.tasks"] = { upkeep_room = function(boundary) boundary_asked = boundary; return room, reserved end, queue_plan = function(params, selection)
   params.selection = selection; queued[#queued + 1] = params; return { plan_id = #queued } end }
 -- The queued plan's first `count` steps ran to their end (tasks' upkeep
 -- listener); the plan ID is its place in `queued`.
@@ -456,4 +457,69 @@ storage.chores.refueled = {}
 game.tick = game.tick + 100000
 chores.upkeep(game.tick)
 check(queued[#queued].steps[1].x == 12, "a hundred dry machines far away never hide the dry one beside the body")
+
+-- While idle, upkeep also serves machines within 96 tiles of the work sites
+-- where recent pilot or package plans began (tasks' work_sites, on the
+-- body's surface): an idle body at a far site never leaves the base dry,
+-- even after several plans began there. Beside pending work only the body's
+-- own 96 tiles count.
+sampled({ [6] = machine(6, 120, "no_fuel") })
+storage.chores.refueled = {}
+storage.tasks.work_sites = { { surface_index = 1, x = 400, y = 0 }, { surface_index = 1, x = 110, y = 0 } }
+game.tick = game.tick + 100000
+local anchor_count = #queued
+room = "busy"
+chores.upkeep(game.tick)
+check(#queued == anchor_count and storage.chores.last_selection.refuel.candidates[1].decision == "too_far",
+  "beside pending work a machine 120 tiles away stays too far, wherever plans began")
+room = "idle"
+chores.upkeep(game.tick)
+check(#queued == anchor_count + 1 and queued[#queued].steps[1].x == 120 and #queued[#queued].steps == 1
+  and #storage.chores.last_selection.sites == 2 and storage.chores.last_selection.sites[2].x == 110,
+  "an idle body serves a dry machine 120 tiles away near an older work site after later plans began far off")
+storage.tasks.work_sites[2].surface_index = 2
+storage.chores.refueled = {}
+chores.upkeep(game.tick)
+check(#queued == anchor_count + 1 and #storage.chores.last_selection.sites == 1,
+  "a work site on another surface widens nothing")
+storage.tasks.work_sites = nil
+
+-- The plan-boundary pass (tasks' dispatcher calls it just before a queued
+-- pilot or package plan starts): a machine near the body dry for a minute
+-- gets one ordinary pass, with the walk back, whatever is queued.
+local function dry(unit, x, since)
+  local rec = machine(unit, x, "no_fuel")
+  rec.problem, rec.problem_since = "no_fuel", since
+  return rec
+end
+game.tick = game.tick + 100000
+sampled({ [7] = dry(7, 50, game.tick - 1800) })
+storage.chores.refueled, storage.chores.step_tick, storage.chores.boundary_tick = {}, nil, nil
+room, body.position = "boundary", { x = 0, y = 0 }
+local boundary_count = #queued
+check(chores.boundary_upkeep(game.tick) == nil and #queued == boundary_count and storage.chores.boundary_tick == nil,
+  "a machine dry for only 30 s calls no boundary pass")
+sampled({ [7] = dry(7, 50, game.tick - 3600) })
+local boundary_id = chores.boundary_upkeep(game.tick)
+local edge = queued[#queued]
+check(boundary_id == #queued and #queued == boundary_count + 1 and boundary_asked == true
+  and #edge.steps == 2 and edge.steps[1].x == 50 and edge.steps[2].upkeep_return == true
+  and edge.steps[2].x == 0 and edge.selection.room == "boundary",
+  "a machine dry for a minute calls one boundary pass: refuel, then the walk back")
+sampled({ [8] = dry(8, 40, game.tick - 3600) })
+game.tick = game.tick + 600
+check(chores.boundary_upkeep(game.tick) == nil and #queued == boundary_count + 1,
+  "the boundary pass looks at most once in two minutes")
+storage.chores.boundary_tick = nil
+steps_ended(boundary_id, 1)
+game.tick = game.tick + 600
+check(chores.boundary_upkeep(game.tick) == nil and #queued == boundary_count + 1,
+  "nor within two minutes after an upkeep step ended")
+game.tick = game.tick + 7200
+check(chores.boundary_upkeep(game.tick) ~= nil and queued[#queued].steps[1].x == 40,
+  "after two minutes the next long-dry machine gets its boundary pass")
+sampled({ [9] = dry(9, 120, game.tick - 3600) })
+storage.chores.boundary_tick = nil
+game.tick = game.tick + 7200
+check(chores.boundary_upkeep(game.tick) == nil, "a long-dry machine beyond 96 tiles of the body calls no boundary pass")
 os.exit(failures == 0 and 0 or 1)

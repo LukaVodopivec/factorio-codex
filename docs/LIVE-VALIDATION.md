@@ -271,7 +271,17 @@ turning them into a fixed opening or map-specific sequence:
   stock, and a queued plan takes over at the next step boundary. Beside a
   parked wait the upkeep plan ends with a walk back to where the body stood,
   taken before a queued plan gets the body.
-  Right after the rehearsal stop, upkeep waits for the first plan to finish.
+  Right after the rehearsal stop, upkeep waits for the first plan to finish,
+  and the fifo block and `queue_empty` say `upkeep_off_since_tick`; after a
+  `stop` with `keep_upkeep: true` it does not wait.
+- Between back-to-back plans, a burner within 96 tiles of the body that has
+  been dry for a minute gets one upkeep plan (`upkeep_selection.room`
+  `boundary`) before the next plan starts; it moves no item the next plan
+  names, runs to its end, walks back, and the next plan starts after it. With
+  the FIFO empty, a dry machine within 96 tiles of one of the last four sites
+  where pilot or package plans began (`upkeep_selection.sites`) is served even
+  when the body stands further away, also after several plans began at a far
+  site.
 - The ledger writer's (the strategist; the pilot in a solo trial) reasoning
   summaries and messages appear in the panel within about 10 s, never in chat;
   every role's lines are in `thoughts.jsonl`; the panel does not start a
@@ -482,7 +492,9 @@ Rehearse the stop sequence below on the live role sessions without stopping the
 server; a role turn must end within about five seconds of pause plus
 interrupt. Then resume both role goals through the native procedure below,
 pass the notebook check above and the takeover rehearsal below or its recorded
-skip, and only then start the recorder; an active goal plus an idle thread
+skip, on a resumed save repeat the retained-work reconciliation (`stop` with
+`keep_upkeep: true`, step 3 below) so the last `stop` before `GO` leaves
+upkeep on, and only then start the recorder; an active goal plus an idle thread
 does not prove that queued `GO` will start a turn. At `GO+20m` record the GO+20
 recorder checkpoint as the run's comparison snapshot without stopping
 anything; assisted debug progress is still not benchmark evidence. Continue
@@ -512,8 +524,11 @@ To continue a run's factory with a new release instead of a fresh map:
    Confirm `connect_status` versions and that `observe_local` shows an idle
    body. A plan step saved by an older release that no longer exists completes
    as a no-op with code `REMOVED_ACTION`; treat every pre-upgrade plan ID as
-   invalid for `after_plan_id`. If an active task or queue depth remains, call
-   `stop` and re-observe until idle.
+   invalid for `after_plan_id`. Reconcile retained work: call `stop` with
+   `keep_upkeep: true` once even when idle (upkeep stays on) and re-observe
+   until idle. Repeat that call after the stop and takeover rehearsals, whose
+   plain `stop` turns upkeep off until a plan finishes, so it is the last
+   `stop` before `GO`.
 4. The old run's `operations.json` and `package-queue.json` stay archived in
    its directory. The strategist initialises the new run's ledger from fresh reads
    (packages from the old ledger are not queued again); the copied notebook

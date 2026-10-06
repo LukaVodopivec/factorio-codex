@@ -50,6 +50,11 @@ function M.set_observer(fn) observer = fn end
 -- ends with an outcome (chores.lua starts a refuel cooldown there).
 local upkeep_listener
 function M.set_upkeep_listener(fn) upkeep_listener = fn end
+-- Called as boundary(tick) -> plan_id or nil when the dispatcher is about to
+-- start a queued pilot or package plan (chores.lua may queue one upkeep plan
+-- that runs first: the plan-boundary pass).
+local boundary_upkeep
+function M.set_boundary_upkeep(fn) boundary_upkeep = fn end
 -- Plan actions other modules add (get_items, build_layout, ...): spec is
 -- { runner = {start, tick, resume?}, make_task = function(step) -> task,
 -- validate = function(step, index) (optional, raises on a bad step),
@@ -639,8 +644,10 @@ function M.cancel(params)
       finish(tasks.active, "cancelled", detail); n = n + 1
     end
     cancel_crafting()
-    -- Emergency cancellation is not the next plan's idle time.
-    tasks.last_finished_tick = nil
+    -- Emergency cancellation is not the next plan's idle time, and upkeep
+    -- stays off until a plan finishes. keep_upkeep (the supervisor's
+    -- retained-work reconciliation) leaves upkeep on, idle from now.
+    tasks.last_finished_tick = params.keep_upkeep == true and game.tick or nil
     tasks.last_cancel_all_tick = game.tick
     log_cancel(origin, nil, n)
     return { cancelled = n }
@@ -1044,28 +1051,59 @@ local function upkeep_spares(reserved)
   end
   return false
 end
+-- The items a plan step names, added to the set `items`: its items,
+-- per_target and insert maps, its item, each entity's starter items, and
+-- what a craft makes or uses.
+local function step_items(step, items)
+  local function add(map)
+    for name, value in pairs(type(map) == "table" and map or {}) do
+      local item = type(name) == "string" and name or type(value) == "table" and value.name
+      if type(item) == "string" then items[item] = true end
+    end
+  end
+  add(step.items); add(step.per_target); add(step.insert)
+  if type(step.item) == "string" then items[step.item] = true end
+  for _, entity in ipairs(type(step.entities) == "table" and step.entities or {}) do
+    if type(entity) == "table" then add(entity.insert) end
+  end
+  if step.action == "craft_items" then add(craft_items(step)) end
+end
 -- Whether upkeep may queue a plan now: "idle" with the FIFO empty, "busy"
 -- beside pending work as above, else nil; with it, the items upkeep must
 -- spare: what a lending craft makes or uses (`true`: never moved) and what
 -- parked wait_for_item steps count ("carried": only what the body carries,
 -- so no holder the wait reads is emptied). Never while an upkeep plan is
 -- pending, nor after an emergency stop before some plan has finished.
-function M.upkeep_room()
+-- `boundary` asks for the plan-boundary pass (dispatch, nothing active): queued
+-- work that takes the body does not refuse it, the room is "boundary", and
+-- every item the plan about to start (the queue head) names is spared `true`.
+function M.upkeep_room(boundary)
   local tasks = storage.tasks
   if not tasks or tasks.last_finished_tick == nil or upkeep_queued() then return nil end
   local active = tasks.active
   local reserved = {}
+  if boundary and active then return nil end
   -- Queued work waits behind a running plan anyway.
   if active then
     if not lends_body(active) then return nil end
     reserved = craft_items(active.current_task)
   end
   for _, queued in ipairs(tasks.queue) do
-    if not active and (queued.type ~= "plan" or queued.lent or takes_body(queued)) then return nil end
+    if not (active or boundary) and (queued.type ~= "plan" or queued.lent or takes_body(queued)) then return nil end
     local step = queued.type == "plan" and queued.status == "waiting" and queued.steps[queued.current_step]
     if step and step.action == "wait_for_item" and step.item then reserved[step.item] = reserved[step.item] or "carried" end
   end
+  if boundary then
+    local head = tasks.queue[1]
+    for _, step in ipairs(head and head.type == "plan" and head.steps or {}) do step_items(step, reserved) end
+    return "boundary", reserved
+  end
   return (active or #tasks.queue > 0) and "busy" or "idle", reserved
+end
+-- An upkeep plan the plan-boundary pass queued: it runs to its end (it went
+-- ahead of the plan that takes the body next), walk back included.
+local function boundary_plan(plan)
+  return plan.upkeep_selection ~= nil and plan.upkeep_selection.room == "boundary"
 end
 local function tick_plan(plan)
   local budget = math.max(PLAN_BUDGET_TICKS, (plan.budget_steps or #plan.steps) * STEP_BUDGET_TICKS)
@@ -1082,7 +1120,7 @@ local function tick_plan(plan)
     -- The mod's own upkeep gives way at a step boundary to queued work that
     -- would take the body now (not a parked wait or a blocked plan), after
     -- its walk back when it has one.
-    if plan.source == "upkeep" and plan.completed_steps > 0 and not plan.ending
+    if plan.source == "upkeep" and plan.completed_steps > 0 and not plan.ending and not boundary_plan(plan)
       and plan.completed_steps + 1 ~= return_step(plan) and work_waiting() then
       plan.preempted = true
       local detail = "PREEMPTED: queued work takes the body"
@@ -1173,6 +1211,25 @@ local function tick_plan(plan)
   if not ok then result = { status = "failed", detail = tostring(result) } end
   if result and not try_recover(plan, step, result) then finish_step(plan, result) end
 end
+-- The work sites, newest first, at most WORK_SITES: a start within
+-- WORK_SITE_RADIUS (upkeep's radius) of a kept site on its surface moves
+-- that site to the front instead, so work at one outpost never pushes the
+-- base out of the list.
+local WORK_SITES = 4
+local WORK_SITE_RADIUS = 96
+local function note_work_site(tasks, c)
+  local x, y = c.position.x, c.position.y
+  local sites, near = {}, nil
+  for _, site in ipairs(tasks.work_sites or {}) do
+    local dx, dy = site.x - x, site.y - y
+    if not near and site.surface_index == c.surface_index and dx * dx + dy * dy <= WORK_SITE_RADIUS * WORK_SITE_RADIUS then
+      near = site
+    else sites[#sites + 1] = site end
+  end
+  table.insert(sites, 1, near or { surface_index = c.surface_index, x = x, y = y })
+  sites[WORK_SITES + 1] = nil
+  tasks.work_sites = sites
+end
 local function dispatch(tasks)
   local task = tasks.active
   if not task then
@@ -1209,7 +1266,22 @@ local function dispatch(tasks)
       else task = candidate; break end
     end
     if not task then return end
+    -- The plan-boundary upkeep pass: before a pilot or package plan starts,
+    -- chores.lua may queue one upkeep plan (at the tail), which runs first;
+    -- back-to-back plans never starve a long-dry burner.
+    if boundary_upkeep and task.type == "plan" and task.source ~= "upkeep" and task.status == "queued" then
+      table.insert(tasks.queue, 1, task)
+      local ok, id = pcall(boundary_upkeep, game.tick)
+      local tail = tasks.queue[#tasks.queue]
+      task = table.remove(tasks.queue, ok and id and tail.id == id and #tasks.queue or 1)
+    end
     task.lent = nil
+    -- Where the body stands as a pilot or package plan begins: idle upkeep
+    -- also serves machines near these work sites (chores.lua).
+    if task.type == "plan" and task.source ~= "upkeep" and not task.started_tick then
+      local c = companion.get()
+      if c and c.valid then note_work_site(tasks, c) end
+    end
     if task.type == "plan" then set_plan_status(task, "running") else task.status = "running" end
     task.started_tick, tasks.active = task.started_tick or game.tick, task
     if task.type == "plan" and task.start_inventory == nil then task.start_inventory = inventory_snapshot() end

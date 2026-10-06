@@ -46,7 +46,8 @@ end
 -- read, so a reader sees an idle body without another round trip.
 -- idle_seconds is 0 while work or hand-crafting runs, counts from when the
 -- last of either ended, and is absent when no physical task has finished
--- since load or the last emergency stop.
+-- since load or the last emergency stop (one with keep_upkeep starts it).
+-- upkeep_off_since_tick is that stop's tick while it keeps upkeep off.
 local function fifo_state()
   local t = storage.tasks
   if not t then return nil end
@@ -67,6 +68,7 @@ local function fifo_state()
   if not ok then human_idle_ticks = nil end
   return { active_plan_id = active and active.type == "plan" and active.id or nil,
     queue_depth = depth, idle_seconds = idle_seconds,
+    upkeep_off_since_tick = not t.last_finished_tick and t.last_cancel_all_tick or nil,
     human_control = human_control, human_idle_ticks = human_idle_ticks,
     -- Where the body is (body_summary).
     body = body_summary() }
@@ -223,6 +225,7 @@ local function initialize()
 end
 tasks.set_observer(spatial.observe_compact)
 tasks.set_upkeep_listener(chores.on_upkeep_step)
+tasks.set_boundary_upkeep(chores.boundary_upkeep)
 
 script.on_init(initialize)
 script.on_configuration_changed(initialize)

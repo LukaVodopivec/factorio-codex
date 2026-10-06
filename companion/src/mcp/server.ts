@@ -589,7 +589,7 @@ export function registerMcpTools(
     try { return await rpc("start_research", researchInput.parse(p)); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("stop", { description: "Emergency stop: cancels the active and queued plans and hand-crafting. Supervisor only, never for gameplay or routine recovery.", inputSchema: z.object({}) }, async () => rpc("cancel", { all: true, origin: `stop/${role}` }));
+  tools.registerTool("stop", { description: "Emergency stop: cancels the active and queued plans and hand-crafting; upkeep stays off until a plan finishes, unless keep_upkeep is true (retained-work reconciliation). Supervisor only, never for gameplay or routine recovery.", inputSchema: z.object({ keep_upkeep: z.boolean().optional() }) }, async (p) => rpc("cancel", { all: true, origin: `stop/${role}`, ...(p.keep_upkeep === true ? { keep_upkeep: true } : {}) }));
 }
 
 type Connection = { rcon: RconClient; bridge: Bridge };

@@ -73,7 +73,8 @@ end
 
 -- -------------------------------------------------------- burner inserters
 -- A furnace whose only outlet is a burner inserter that ran dry; another
--- burner inserter waiting for room in its target; an electric inserter.
+-- burner inserter waiting for room in its target; a self-fuelling one
+-- swinging coal with an empty fuel slot; an electric inserter.
 local furnace = machine("furnace", "stone-furnace", 10, 0, "full_output", { products_finished = 0,
   get_recipe = function() return PLATE end })
 local outlet_fuel = 0
@@ -82,6 +83,7 @@ local pickup_reads = 0
 mock.read(outlet, "pickup_target", function() pickup_reads = pickup_reads + 1; return furnace end)
 local waiting = machine("inserter", "burner-inserter", 30.5, 0.5, "waiting_for_space_in_destination",
   { burner = burner(function() return 5 end) })
+local feeder = machine("inserter", "burner-inserter", 20.5, 0.5, "working", { burner = burner(function() return 0 end) })
 local electric = machine("inserter", "inserter", 40.5, 0.5, "no_fuel",
   { prototype = mock.entity_prototype({ electric_energy_source_prototype = {} }) })
 local machines = storage.registry.machines.inserter or {}
@@ -102,6 +104,9 @@ check(fuel_set and fuel_set[outlet.unit_number] == true, "a dry burner inserter 
 local dry = problem("burner-inserter", "no_fuel")
 check(dry and dry.line == nil and dry.position.x == 10.5 and dry.position.y == 1.5,
   "a dry burner inserter is a no_fuel problem row with its position and no line")
+local low_set = storage.autonomy.waiting.low_fuel and storage.autonomy.waiting.low_fuel[1]
+check(not (low_set and low_set[feeder.unit_number]),
+  "a working burner inserter with an empty fuel slot (fuelling itself from its hand) is not low on fuel")
 check(problem("burner-inserter", "waiting_for_space_in_destination") == nil,
   "a burner inserter waiting for room in its target is no problem")
 local inserter_line = false
@@ -116,7 +121,7 @@ check(pickup_reads == 1, "the dry inserter's pickup target is read once per dry 
 chores.upkeep(game.tick)
 local step = queued[1] and queued[1].steps[1]
 check(step and step.action == "insert_items" and step.x == 10.5 and step.y == 1.5 and step.items.coal == 10
-  and #queued[1].steps == 1, "upkeep refuels the dry burner inserter")
+  and #queued == 1 and #queued[1].steps == 1, "upkeep refuels the dry burner inserter and not the self-fuelling one")
 
 -- Refuelled, the inserter leaves the set and the furnace runs again.
 outlet_fuel = 10

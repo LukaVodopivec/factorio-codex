@@ -413,14 +413,15 @@ end
 
 -- Keeps the low_fuel set as a burner machine's fuel runs low or is topped
 -- up: low only while working with fewer than LOW_FUEL_ITEMS fuel items (a
--- failed read is not low).
+-- failed read is not low). A burner inserter is never low: one moving coal
+-- fuels itself from its hand an item at a time, so only no_fuel needs upkeep.
 local function set_low_fuel(a, rec, entity, raw)
   if rec.burner == nil then
     local ok, burner = pcall(function() return entity.burner end)
     rec.burner = ok and burner ~= nil
   end
   local low = false
-  if rec.burner and raw == "working" then
+  if rec.burner and raw == "working" and not BURNER_ONLY_TYPES[rec.type] then
     local ok, count = pcall(function() return entity.burner.inventory.get_item_count() end)
     low = ok and type(count) == "number" and count < LOW_FUEL_ITEMS
   end
@@ -842,8 +843,8 @@ end
 -- Machines on one surface (an index; nil or "all": every surface) whose
 -- problem status has
 -- lasted past its threshold, grouped by status and entity name per line
--- (beacons and roboports, which have no line, after them); since_tick keeps
--- rows that began since.
+-- (beacons, roboports and burner inserters, which have no line, after
+-- them); since_tick keeps rows that began since.
 -- Adds a problem machine to its row (by line, status and entity name).
 local function add_problem(rows, by_key, id, rec)
   local key = tostring(id) .. "\0" .. rec.problem .. "\0" .. rec.name

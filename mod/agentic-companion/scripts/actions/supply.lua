@@ -329,11 +329,27 @@ end
 -- stored is one shared pool; then a hand recipe (MAX_DEPTH levels) whose
 -- ingredients come the same way; else a smelt, which needs an own furnace
 -- of the recipe's category; else hand-gathering, which anything natural
--- yields always allows. Prototype, recipe and registry reads only (no
--- entity query, no walk). Returns {item, missing, short?, reason} rows for
--- what could not be had; short names the ingredient that blocked a craft.
+-- yields allows unless an own drill mines it: then only own belts near the
+-- body (supply's belt source) can make up the rest. Prototype, recipe and
+-- registry reads plus at most one bounded belt query (no walk). Returns
+-- {item, missing, short?, reason} rows for what could not be had; short
+-- names the ingredient that blocked a craft.
 function M.unobtainable(c, wants)
-  local pool, furnaces = {}, nil
+  local pool, furnaces, drills, belts, on_belts = {}, nil, {}, nil, {}
+  -- What own belts near the body carry of a drilled item, read once a call.
+  local function belted(name)
+    if on_belts[name] == nil then
+      if not belts then
+        local ok, found = pcall(c.surface.find_entities_filtered, { position = c.position,
+          radius = BELT_SEARCH_RADIUS, force = c.force, type = "transport-belt", limit = BELT_SEARCH_LIMIT })
+        belts = ok and type(found) == "table" and found or {}
+      end
+      local n = 0
+      for _, belt in ipairs(belts) do if belt.valid then n = n + held(belt, name) end end
+      on_belts[name] = n
+    end
+    return on_belts[name]
+  end
   local function stocked(name)
     if pool[name] == nil then
       local ok, totals = pcall(registry.stock_totals, { name })
@@ -392,7 +408,17 @@ function M.unobtainable(c, wants)
         end
       end
     end
-    if #natural_names(name) > 0 then return nil end
+    if #natural_names(name) > 0 then
+      -- Supply never hand-gathers what own drills mine (drills_producing).
+      if drills[name] == nil then drills[name] = drills_producing(c, name) end
+      if drills[name] == 0 then return nil end
+      local take = math.min(belted(name), need)
+      on_belts[name] = on_belts[name] - take
+      if take >= need then return nil end
+      reasons[#reasons + 1] = string.format(
+        "%d own mining drill(s) produce it but none is stored where Codex can take it", drills[name])
+      return name, need - take, table.concat(reasons, "; ")
+    end
     reasons[#reasons + 1] = "nothing natural yields it"
     return name, need, table.concat(reasons, "; ")
   end

@@ -394,7 +394,8 @@ end
 
 -- The enabled recipe an own furnace would smelt the item with: one item
 -- ingredient, a category the character cannot hand-craft. Recipes come from
--- the engine's product filter, worked out once per item.
+-- the engine's product filter (a LuaCustomTable, so userdata: no type
+-- check), worked out once per item.
 local smelt_recipes_cache = {}
 local function smelt_recipe(c, item)
   local names = smelt_recipes_cache[item]
@@ -402,7 +403,7 @@ local function smelt_recipe(c, item)
     names = {}
     local ok, found = pcall(prototypes.get_recipe_filtered,
       { { filter = "has-product-item", elem_filters = { { filter = "name", name = item } } } })
-    for name in pairs(ok and type(found) == "table" and found or {}) do names[#names + 1] = name end
+    for name in pairs(ok and found or {}) do names[#names + 1] = name end
     table.sort(names)
     smelt_recipes_cache[item] = names
   end

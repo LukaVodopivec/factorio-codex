@@ -3,6 +3,7 @@
 -- order, and how a shortfall is named. Nested physical actions are stubs that
 -- move items in a small simulated world.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
 local failures = 0
@@ -20,10 +21,11 @@ _G.prototypes = { item = {
     collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } } },
 } }
 
--- The engine's recipe filter: which recipes make an item (supply caches it).
+-- The engine's recipe filter: which recipes make an item (supply caches it),
+-- as a LuaCustomTable, which is userdata like the engine's.
 prototypes.get_recipe_filtered = function(filters)
   local wanted = filters[1].elem_filters[1].name
-  return wanted == "iron-plate" and { ["iron-plate"] = {} } or {}
+  return mock.custom_table(wanted == "iron-plate" and { ["iron-plate"] = {} } or {})
 end
 
 local inventory = {}
@@ -84,7 +86,7 @@ prototypes.get_entity_filtered = function(filters)
   for name, proto in pairs(natural_protos) do
     for _, kind in ipairs(filters[1].type) do if proto.type == kind then out[name] = proto end end
   end
-  return out
+  return mock.custom_table(out)
 end
 local function natural(kind, name, position, products)
   return add({ type = kind, name = name, position = position, force = neutral,

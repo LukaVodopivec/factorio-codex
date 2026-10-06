@@ -25,7 +25,7 @@ _G.defines = { entity_status = RAW, inventory = { chest = 1, fuel = 2, furnace_s
 _G.prototypes = { item = { coal = { stack_size = 50 }, wood = { stack_size = 100 }, ["iron-plate"] = { stack_size = 100 },
   ["iron-gear-wheel"] = { stack_size = 100 } }, recipe = {}, entity = { ["steam-engine"] = { type = "generator" } },
   -- Upkeep's fuels by category (0.22.3) through the engine's item filter.
-  get_item_filtered = function() return { coal = {}, wood = {} } end }
+  get_item_filtered = function() return mock.custom_table({ coal = {}, wood = {} }) end }
 _G.game = { tick = 0 }
 _G.storage = {}
 _G.script = { register_on_object_destroyed = function(entity) return entity.unit_number, entity.unit_number, 7 end }

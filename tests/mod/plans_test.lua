@@ -425,6 +425,9 @@ check(steps[1]._surface == "nauvis" and steps[2]._surface == nil and steps[3]._s
   "positional steps carry the body's surface, steps after a travel its destination; remote, crafting and travel none")
 local behind = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } } })
 check(queued_plan(behind.plan_id).steps[1]._surface == "vulcanus", "a plan queued behind a pending travel is for its destination")
+local upkeep_behind = tasks.queue_plan({ source = "upkeep", steps = { { action = "walk_to", x = 1, y = 1 } } })
+check(queued_plan(upkeep_behind.plan_id).steps[1]._surface == "nauvis",
+  "upkeep beside a pending travel serves the body's surface, not the travel's destination")
 local named = tasks.queue_plan({ surface = "nauvis", steps = { { action = "walk_to", x = 1, y = 1 } } })
 local bad_ok, bad = pcall(tasks.queue_plan, { surface = "mars", steps = { { action = "walk_to", x = 1, y = 1 } } })
 check(queued_plan(named.plan_id).steps[1]._surface == "nauvis" and not bad_ok and tostring(bad):match("^SURFACE_UNKNOWN"),
@@ -656,6 +659,8 @@ local parked_wait = tasks.queue_plan({ steps = { { action = "wait_for_item", x =
 game.tick = 40011; tasks.on_tick()
 check(tasks.plan_status({ plan_id = parked_wait.plan_id }).status == "waiting" and tasks.upkeep_room() == "busy",
   "upkeep has room while the FIFO holds only a parked wait")
+local _, wait_reserved = tasks.upkeep_room()
+check(wait_reserved and wait_reserved["iron-plate"], "upkeep beside a parked wait never moves the item it counts")
 local blocked = tasks.queue_plan({ steps = { { action = "walk_to", x = 4, y = 4 } }, after_plan_id = parked_wait.plan_id })
 check(tasks.upkeep_room() == "busy", "a plan waiting on its pending predecessor leaves upkeep room")
 local ready = tasks.queue_plan({ steps = { { action = "walk_to", x = 4, y = 4 } } })
@@ -731,6 +736,17 @@ local host_status = tasks.plan_status({ plan_id = host.plan_id })
 check(host_status.status == "completed" and tasks.plan_status({ plan_id = later.plan_id }).status == "completed"
   and storage.tasks.records[host.plan_id].plan.finished_tick <= storage.tasks.records[later.plan_id].plan.started_tick,
   "the lending plan finishes before the work queued after it starts")
+-- A craft never lends the body to upkeep that would move its items.
+body.crafting_queue_size = 2
+local keeper = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 2, wait_for_completion = true } } })
+game.tick = 40320; tasks.on_tick()
+local taker = tasks.queue_plan({ source = "upkeep", steps = { { action = "insert_items", x = 1, y = 1, items = { ["iron-plate"] = 1 } } } })
+game.tick = 40321; tasks.on_tick()
+check(storage.tasks.active and storage.tasks.active.id == keeper.plan_id and not storage.tasks.active.lent,
+  "a craft keeps the body from an upkeep plan that would move what it makes or uses")
+tasks.cancel({ origin = "test/plans", plan_id = taker.plan_id })
+body.crafting_queue_size = 0
+for tick = 40322, 40326 do game.tick = tick; tasks.on_tick() end
 craft.tick = craft_tick
 body.force = nil
 
@@ -773,6 +789,10 @@ check(failing_status.status == "failed" and failing_status.completed_steps == 1
   and failing_status.outcomes[3].status == "completed" and body.position.x == 0
   and tasks.plan_status({ plan_id = far_wait.plan_id }).status == "waiting",
   "upkeep whose step fails still walks back, ends failed, and the parked wait keeps reading")
+local failing_row
+for _, row in ipairs(storage.activity_log) do if row.plan_id == failing.plan_id then failing_row = row end end
+check(failing_row and failing_row.summary:match("^failed at step 2/3 mine"),
+  "the activity_log row names the failed step, not the walk back after it")
 tasks.cancel({ origin = "test/plans", plan_id = far_wait.plan_id })
 walk.tick = walk_tick
 os.exit(failures == 0 and 0 or 1)

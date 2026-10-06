@@ -46,7 +46,8 @@ const packageSurface = z.string().regex(/^(?:[a-z][a-z0-9-]{0,39}|platform:[1-9]
 // surface; one stored before protocol 28 (no surface) was for nauvis.
 /** What after_package_id means, for the schema and the ledger-apply help. */
 export const AFTER_PACKAGE_ID_RULE = "after_package_id: set it only when a package really needs its predecessor's result"
-  + " (a capture of it, its landfill, its machines to connect); the FIFO already runs packages in ledger order,"
+  + " (a capture of it, its landfill, its machines to connect, or items it makes that this package's first step needs:"
+  + " only then is that first step's ITEM_UNOBTAINABLE left to run time); the FIFO already runs packages in ledger order,"
   + " and a package whose predecessor ends partial, failed or cancelled is cancelled, never run";
 const packageFields = z.object({
   package_id: packageId,

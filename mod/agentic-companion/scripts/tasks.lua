@@ -223,7 +223,10 @@ local function upkeep_readback(plan)
     active = plan.current_task and { step = plan.current_step, context = supply.diagnostics(plan.current_task) } or nil }
 end
 local function log_plan(plan, detail)
-  local last = plan.outcomes[#plan.outcomes]
+  -- After a walk back the last outcome is the walk's: report what ended it.
+  local ending = plan.ending
+  local last = ending and ending.outcome_index and plan.outcomes[ending.outcome_index]
+    or not ending and plan.outcomes[#plan.outcomes] or nil
   local result = last and type(last.result) == "table" and last.result or nil
   local reason = last and last.error or detail
   local code = result and type(result.code) == "string" and result.code
@@ -233,7 +236,8 @@ local function log_plan(plan, detail)
   if plan.status == "completed" then
     summary = string.format("completed %d/%d steps", plan.completed_steps, #plan.steps)
   else
-    summary = string.format("%s at step %d/%d%s%s", plan.status, last and last.step or plan.current_step, #plan.steps,
+    summary = string.format("%s at step %d/%d%s%s", plan.status,
+      last and last.step or ending and ending.step or plan.current_step, #plan.steps,
       last and last.action and (" " .. last.action) or "",
       type(reason) == "string" and reason ~= "" and (": " .. reason:sub(1, 160)) or "")
   end
@@ -429,7 +433,8 @@ function M.queue_plan(params, upkeep_selection)
   end
   -- The surface the positional steps belong to: the one named, else the
   -- destination of the last travel step already pending in the FIFO, else
-  -- the body's own; a travel step hands its destination to the steps after it.
+  -- the body's own (always for upkeep, which serves the body's surface beside
+  -- pending work); a travel step hands its destination to the steps after it.
   local current
   if params.surface ~= nil then
     local ref, code, why = platforms.canonical_ref(present.force, params.surface)
@@ -437,7 +442,7 @@ function M.queue_plan(params, upkeep_selection)
     current = ref
   else
     local pending = fifo_travel()
-    current = pending[#pending] or body_surface()
+    current = source ~= "upkeep" and pending[#pending] or body_surface()
   end
   local first_tag
   for _, step in ipairs(params.steps) do
@@ -694,10 +699,12 @@ local function return_step(plan)
   local index = #plan.steps
   return plan.source == "upkeep" and plan.steps[index].upkeep_return == true and index or nil
 end
-local function walk_back(plan, status, detail)
+local function walk_back(plan, status, detail, outcome_index)
   local back = return_step(plan)
   if not back or plan.ending or plan.current_step >= back then return false end
-  plan.ending = { status = status, detail = detail, completed_steps = plan.completed_steps }
+  -- outcome_index: the step outcome that ended it (a pre-emption has none).
+  plan.ending = { status = status, detail = detail, completed_steps = plan.completed_steps,
+    step = plan.current_step, outcome_index = outcome_index }
   return true
 end
 local function finish_step(plan, result)
@@ -727,7 +734,7 @@ local function finish_step(plan, result)
     return
   end
   if status ~= "completed" then
-    if not walk_back(plan, status, result.detail) then finish(plan, status, result.detail) end
+    if not walk_back(plan, status, result.detail, #plan.outcomes) then finish(plan, status, result.detail) end
     return
   end
   plan.completed_steps = plan.current_step
@@ -1001,23 +1008,42 @@ local function craft_items(task)
   end
   return items
 end
+-- A craft lends the body only to a queued upkeep plan that moves none of
+-- its items (one queued at a time: upkeep_room).
+local function upkeep_spares(reserved)
+  for _, queued in ipairs(storage.tasks.queue) do
+    if queued.type == "plan" and queued.source == "upkeep" then
+      for _, step in ipairs(queued.steps) do
+        for name in pairs(step.action == "insert_items" and step.items or {}) do
+          if reserved[name] then return false end
+        end
+      end
+      return true
+    end
+  end
+  return false
+end
 -- Whether upkeep may queue a plan now: "idle" with the FIFO empty, "busy"
--- beside pending work as above, else nil; with "busy" beside a lending
--- craft, also the set of items upkeep must not move. Never while an upkeep
--- plan is pending, nor after an emergency stop before some plan has finished.
+-- beside pending work as above, else nil; with it, the set of items upkeep
+-- must not move: what a lending craft makes or uses and what parked
+-- wait_for_item steps count. Never while an upkeep plan is pending, nor after
+-- an emergency stop before some plan has finished.
 function M.upkeep_room()
   local tasks = storage.tasks
   if not tasks or tasks.last_finished_tick == nil or upkeep_queued() then return nil end
   local active = tasks.active
+  local reserved = {}
   -- Queued work waits behind a running plan anyway.
   if active then
-    if lends_body(active) then return "busy", craft_items(active.current_task) end
-    return nil
+    if not lends_body(active) then return nil end
+    reserved = craft_items(active.current_task)
   end
   for _, queued in ipairs(tasks.queue) do
-    if queued.type ~= "plan" or queued.lent or takes_body(queued) then return nil end
+    if not active and (queued.type ~= "plan" or queued.lent or takes_body(queued)) then return nil end
+    local step = queued.type == "plan" and queued.status == "waiting" and queued.steps[queued.current_step]
+    if step and step.action == "wait_for_item" and step.item then reserved[step.item] = true end
   end
-  return #tasks.queue > 0 and "busy" or "idle"
+  return (active or #tasks.queue > 0) and "busy" or "idle", reserved
 end
 local function tick_plan(plan)
   local budget = math.max(PLAN_BUDGET_TICKS, (plan.budget_steps or #plan.steps) * STEP_BUDGET_TICKS)
@@ -1114,7 +1140,7 @@ local function tick_plan(plan)
     stop_body()
     return
   end
-  if ok and result == nil and lends_body(plan) and upkeep_queued() then
+  if ok and result == nil and lends_body(plan) and upkeep_spares(craft_items(plan.current_task)) then
     plan.lent = true
     storage.tasks.active = nil
     table.insert(storage.tasks.queue, 1, plan)

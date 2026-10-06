@@ -856,29 +856,17 @@ check(#smeltable == 0, "an own furnace and gatherable ore make the missing plate
 check(#supply.unobtainable(character, { { name = "iron-ore", count = 500 } }) == 0
   and supply.unobtainable(character, { { name = "iron-plate", count = 9 } })[1].missing == 1,
   "anything natural can be gathered; a plate without a furnace is short by what is not carried")
--- Supply never hand-gathers what an own drill mines: only belts near the body can supply it.
+-- Ore an own drill mines is hand-gathered like any natural item, as supply
+-- does while the drill's output cannot be taken (it feeds a furnace).
 storage.registry.entries[902] = { entity = { valid = true, mining_target = { valid = true,
   prototype = prototypes.entity["iron-ore"] } }, unit = 902, name = "burner-mining-drill", type = "mining-drill",
   position = { x = 0, y = 0 } }
 storage.registry.machines["mining-drill"] = { [902] = true }
-local drilled = supply.unobtainable(character, { { name = "iron-ore", count = 5 } })[1]
-check(drilled and drilled.item == "iron-ore" and drilled.missing == 5
-  and drilled.reason:match("1 own mining drill%(s%) produce it but none is stored"),
-  "an item an own drill mines is not hand-gathered: the dry run is short of it, like supply")
 local find_entities = surface.find_entities_filtered
-local belt_reads = 0
-surface.find_entities_filtered = function(filter)
-  if filter.type ~= "transport-belt" then return find_entities(filter) end
-  assert(filter.position and filter.radius and filter.limit, "the belt read is bounded around the body")
-  belt_reads = belt_reads + 1
-  local line = { get_item_count = function(item) return item == "iron-ore" and 3 or 0 end }
-  return { { valid = true, type = "transport-belt", position = { x = 1, y = 1 },
-    get_transport_line = function() return line end } }
-end
-check(#supply.unobtainable(character, { { name = "iron-ore", count = 4 }, { name = "iron-ore", count = 2 } }) == 0
-  and belt_reads == 1, "ore on own belts near the body supplies what the drills mine, with one bounded belt read")
-local over = supply.unobtainable(character, { { name = "iron-ore", count = 7 } })[1]
-check(over and over.item == "iron-ore" and over.reason:match("own mining drill"), "more than the belts carry is short")
+local surface_reads = 0
+surface.find_entities_filtered = function(filter) surface_reads = surface_reads + 1; return find_entities(filter) end
+check(#supply.unobtainable(character, { { name = "iron-ore", count = 5 } }) == 0 and surface_reads == 0,
+  "ore an own drill mines stays obtainable in the dry run, with no surface read")
 surface.find_entities_filtered = find_entities
 storage.registry.entries[902], storage.registry.machines["mining-drill"] = nil, nil
 prototypes.entity["iron-ore"].mineable_properties = nil

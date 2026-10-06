@@ -390,6 +390,7 @@ describe("build packages the bridge queues", () => {
     expect(AFTER_PACKAGE_ID_RULE).toMatch(/only when a package really needs its predecessor's result/);
     expect(AFTER_PACKAGE_ID_RULE).toMatch(/the FIFO already runs packages in ledger order/);
     expect(AFTER_PACKAGE_ID_RULE).toMatch(/predecessor ends partial, failed or cancelled is cancelled/);
+    expect(AFTER_PACKAGE_ID_RULE).toMatch(/items it makes that this package's first step needs/);
     const schema = z.toJSONSchema(operationsLedgerSchema, { io: "input" }) as {
       properties: { build_packages: { items: { properties: { after_package_id: { description?: string } } } } } };
     expect(schema.properties.build_packages.items.properties.after_package_id.description).toBe(AFTER_PACKAGE_ID_RULE);

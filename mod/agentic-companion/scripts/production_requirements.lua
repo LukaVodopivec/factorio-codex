@@ -316,7 +316,8 @@ local function expand_targets(force, targets, choices, options)
   -- locked handling. No location gives no roots.
   local resource_products = options.location and roots().at[options.location] or {}
 
-  local function choose(product)
+  local chosen = {}
+  local function choose_uncached(product)
     local choice = choices[product]
     if choice == nil and resource_products[product] then return nil end
     local candidates, locked = candidate_recipes(force, product, options.permitted_locked, options.filter_location)
@@ -336,6 +337,12 @@ local function expand_targets(force, targets, choices, options)
     if #candidates == 1 then return candidates[1] end
     if #locked > 0 and not options.partial then error("no progression route for " .. product .. ": producing recipes are not unlocked") end
     return nil
+  end
+
+  -- One recipe search per product per expansion (the search reads every force recipe).
+  local function choose(product)
+    if chosen[product] == nil then chosen[product] = { choose_uncached(product) } end
+    return chosen[product][1]
   end
 
   local function require_item(product, count)
@@ -540,9 +547,11 @@ local function energy_row(row, proto, count, fuel)
   local burner = read(function() return proto.burner_prototype end)
   if burner then
     local effectivity = read(function() return burner.effectivity end) or 1
+    local categories = read(function() return burner.fuel_categories end) or {}
     row.energy = "burner"
     row.fuel_mw = round(count * usage * 60 / effectivity / 1e6)
-    if fuel then row.fuel_per_minute = round(count * usage * 3600 / effectivity / fuel.joules) end
+    if fuel and categories[fuel.category] then row.fuel_per_minute = round(count * usage * 3600 / effectivity / fuel.joules)
+    else row.fuel_categories = sorted_keys(categories) end
   elseif read(function() return proto.electric_energy_source_prototype end) then
     row.energy = "electric"
     row.power_kw = round(count * usage * 60 / 1000)
@@ -557,13 +566,16 @@ local function unlocked(force, proto)
   return recipe ~= nil and recipe.enabled == true
 end
 
--- Rows for every prototype that can do the work, sorted by name.
+-- Rows for every buildable prototype that can do the work, sorted by name;
+-- a machine's built-in productivity (foundry, biochamber) shares the work.
 local function tier_rows(force, protos, speed_of, work, fuel)
   local rows = {}
   for name, proto in pairs(protos) do
     local speed = speed_of(proto)
-    if speed and speed > 0 then
-      local count = work / speed
+    local placed = read(function() return proto.items_to_place_this end)
+    if speed and speed > 0 and placed and placed[1] then
+      local productivity = read(function() return proto.effect_receiver.base_effect.productivity end) or 0
+      local count = work / speed / (1 + productivity)
       rows[#rows + 1] = energy_row({ entity = name, speed = speed, machines = round(count),
         machines_to_build = math.ceil(count - 1e-9), unlocked = unlocked(force, proto) }, proto, count, fuel)
     end
@@ -574,15 +586,16 @@ end
 
 local function rate_plan(force, expanded, fuel_name)
   local fuel_proto = prototypes.item[fuel_name]
-  local joules = fuel_proto and read(function() return fuel_proto.fuel_value end)
-  local fuel = joules and joules > 0 and { name = fuel_name, joules = joules } or nil
-  local crafters = prototypes.get_entity_filtered({ { filter = "type", type = { "assembling-machine", "furnace" } } })
+  local fuel = { name = fuel_name, joules = fuel_proto.fuel_value, category = read(function() return fuel_proto.fuel_category end) }
+  local crafters = {}
+  for name, proto in pairs(prototypes.get_entity_filtered({ { filter = "type", type = { "assembling-machine", "furnace", "rocket-silo" } } })) do
+    crafters[name] = { proto = proto, categories = read(function() return proto.crafting_categories end) or {} }
+  end
   local stages = {}
   for _, node in ipairs(expanded.nodes) do
     local able = {}
-    for name, proto in pairs(crafters) do
-      local categories = read(function() return proto.crafting_categories end) or {}
-      if categories[node.category] then able[name] = proto end
+    for name, crafter in pairs(crafters) do
+      if crafter.categories[node.category] then able[name] = crafter.proto end
     end
     -- Crafting work per second at speed 1, shared out by machine speed.
     local work = node.recipe_executions / 60 * node.craft_time_seconds_per_execution
@@ -592,11 +605,11 @@ local function rate_plan(force, expanded, fuel_name)
   end
   local resources = prototypes.get_entity_filtered({ { filter = "type", type = "resource" } })
   local drills = prototypes.get_entity_filtered({ { filter = "type", type = "mining-drill" } })
-  local raw = {}
+  local raw, resource_names = {}, sorted_keys(resources)
   for _, item in ipairs(sorted_keys(expanded.raw)) do
     local per_minute = expanded.raw[item]
     local row = { item = item, units_per_minute = round(per_minute), drills = {} }
-    for _, resource_name in ipairs(sorted_keys(resources)) do
+    for _, resource_name in ipairs(resource_names) do
       local mining = read(function() return resources[resource_name].mineable_properties end)
       local amount = 0
       for _, product in ipairs(mining and mining.products or {}) do
@@ -615,6 +628,7 @@ local function rate_plan(force, expanded, fuel_name)
           per_minute / 60 * time / amount, fuel)
       end
     end
+    if #row.drills == 0 then row.note = "no drill mines it: a fluid, a hand-gathered or asteroid product, or another planet's resource" end
     raw[#raw + 1] = row
   end
   local belts = {}
@@ -624,8 +638,9 @@ local function rate_plan(force, expanded, fuel_name)
     if speed and speed > 0 then belts[#belts + 1] = { entity = name, items_per_minute = round(speed * 480 * 60), unlocked = unlocked(force, proto) } end
   end
   table.sort(belts, function(a, b) return a.items_per_minute < b.items_per_minute end)
-  return { units = "per_minute", basis = "nominal full-duty capacity, normal quality, no modules or mining productivity",
-    reference_fuel = fuel and { item = fuel.name, megajoules = round(fuel.joules / 1e6) } or nil,
+  return { units = "per_minute",
+    basis = "nominal full-duty capacity at normal quality with built-in productivity; no modules, beacons or researched productivity",
+    reference_fuel = { item = fuel.name, megajoules = round(fuel.joules / 1e6), category = fuel.category },
     stages = stages, raw = raw, belts = belts }
 end
 
@@ -646,17 +661,22 @@ function M.production_requirements(params)
     if not item and not fluid then error("no item or fluid called '" .. tostring(target) .. "'") end
     local count = tonumber(raw_count)
     if not count or count <= 0 or count ~= count or count == math.huge then error("production_requirements target counts must be positive finite numbers") end
-    if item and count % 1 ~= 0 and not params.per_minute then error("item target counts must be positive integers") end
+    if item and count % 1 ~= 0 and params.per_minute ~= true then error("item target counts must be positive integers") end
     target_names[#target_names + 1] = target
   end
   if #target_names < 1 or #target_names > 16 then error("production_requirements targets must contain 1-16 entries") end
   local choices = params.recipe_choices or {}
   if type(choices) ~= "table" then error("production_requirements recipe_choices must map product names to recipe names") end
+  local fuel = params.fuel or "coal"
+  if params.per_minute == true then
+    local fuel_proto = type(fuel) == "string" and prototypes.item[fuel]
+    if not (fuel_proto and (tonumber(read(function() return fuel_proto.fuel_value end)) or 0) > 0) then
+      error("fuel must name a fuel item, such as coal")
+    end
+  end
   local expanded = expand_targets(force, targets, choices,
     { partial = false, location = location, filter_location = params.planet, rate = params.per_minute == true })
-  if params.per_minute then
-    local fuel = params.fuel or "coal"
-    if type(fuel) ~= "string" or not prototypes.item[fuel] then error("fuel must name an item, such as coal") end
+  if params.per_minute == true then
     return annotate({ planet = location, targets_per_minute = targets, rates = rate_plan(force, expanded, fuel) }, expanded, force)
   end
   return annotate({ units = { targets = "item_or_fluid_units", raw = "item_or_fluid_units",

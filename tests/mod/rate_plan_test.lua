@@ -18,6 +18,8 @@ local force = { recipes = {
   ["electric-mining-drill"] = recipe("electric-mining-drill", {}, { { name = "electric-mining-drill", amount = 1 } }, false, 2, "crafting"),
   ["assembling-machine-1"] = recipe("assembling-machine-1", {}, { { name = "assembling-machine-1", amount = 1 } }, false, 0.5, "crafting"),
   ["transport-belt"] = recipe("transport-belt", {}, { { name = "transport-belt", amount = 2 } }, true, 0.5, "crafting"),
+  mash = recipe("mash", { { name = "iron-plate", amount = 1 } }, { { name = "mash", amount = 1 } }, true, 2, "organic"),
+  biochamber = recipe("biochamber", {}, { { name = "biochamber", amount = 1 } }, true, 10, "crafting"),
 } }
 character.force = force
 character.get_main_inventory = function() return { get_item_count = function() return 0 end } end
@@ -30,9 +32,10 @@ local function machine(kind, name, fields)
   for key, value in pairs(fields) do proto[key] = value end
   return proto
 end
-local burner = { effectivity = 1 }
+local burner = { effectivity = 1, fuel_categories = { chemical = true } }
 _G.prototypes = {
-  item = { ["iron-ore"] = {}, ["iron-plate"] = {}, ["iron-gear-wheel"] = {}, coal = { fuel_value = 4e6 }, wood = { fuel_value = 2e6 } },
+  item = { ["iron-ore"] = {}, ["iron-plate"] = {}, ["iron-gear-wheel"] = {}, coal = { fuel_value = 4e6, fuel_category = "chemical" }, wood = { fuel_value = 2e6, fuel_category = "chemical" },
+    ["iron-plate-fuel"] = {}, bioflux = { fuel_value = 6e6, fuel_category = "food" }, mash = {} },
   fluid = {},
   space_location = { nauvis = { name = "nauvis", map_gen_settings = { autoplace_settings = {
     entity = { settings = { ["iron-ore"] = {} } }, tile = { settings = {} } } } } },
@@ -50,6 +53,12 @@ _G.prototypes = {
     ["electric-mining-drill"] = machine("mining-drill", "electric-mining-drill", { resource_categories = { ["basic-solid"] = true },
       mining_speed = 0.5, electric_energy_source_prototype = {}, get_max_energy_usage = function() return 1500 end }),
     ["transport-belt"] = machine("transport-belt", "transport-belt", { belt_speed = 0.03125 }),
+    -- A nutrient-burning machine with +50% built-in productivity (like a biochamber).
+    biochamber = machine("assembling-machine", "biochamber", { crafting_categories = { organic = true },
+      burner_prototype = { effectivity = 1, fuel_categories = { nutrients = true } }, effect_receiver = { base_effect = { productivity = 0.5 } },
+      get_crafting_speed = function() return 2 end, get_max_energy_usage = function() return 8000 end }),
+    ["crash-site-assembler"] = { type = "assembling-machine", name = "crash-site-assembler", crafting_categories = { crafting = true },
+      get_crafting_speed = function() return 1 end, get_max_energy_usage = function() return 0 end },
   },
 }
 function prototypes.get_entity_filtered(filters)
@@ -89,8 +98,16 @@ for _, stage in ipairs(gears.stages) do by_item[stage.item] = stage end
 check(close(by_item["iron-gear-wheel"].machines[1].machines, 0.25) and close(by_item["iron-gear-wheel"].machines[1].power_kw, 18.75)
   and close(by_item["iron-plate"].units_per_minute, 30) and close(by_item["iron-plate"].machines[1].fuel_per_minute, 4.32),
   "15 gears per minute chain to 30 plates per minute; fuel is priced in the chosen fuel")
-check(not pcall(production.production_requirements, { targets = { ["iron-plate"] = 30 }, per_minute = true, fuel = "nothing" }),
-  "an unknown fuel is refused")
+check(not pcall(production.production_requirements, { targets = { ["iron-plate"] = 30 }, per_minute = true, fuel = "nothing" })
+  and not pcall(production.production_requirements, { targets = { ["iron-plate"] = 30 }, per_minute = true, fuel = "iron-plate-fuel" }),
+  "an unknown fuel or an item with no fuel value is refused")
+local mash = production.production_requirements({ targets = { mash = 60 }, per_minute = true }).rates
+local organic
+for _, stage in ipairs(mash.stages) do if stage.item == "mash" then organic = stage.machines end end
+check(#organic == 1 and close(organic[1].machines, 0.67) and organic[1].fuel_per_minute == nil
+  and organic[1].fuel_categories[1] == "nutrients",
+  "built-in productivity shares the work, and coal is never priced for a machine that cannot burn it")
+check(#gears.stages[1].machines == 1, "machines with no placing item (crash-site wrecks) are not listed")
 check(close(production.production_requirements({ targets = { ["iron-plate"] = 7.5 }, per_minute = true }).rates.stages[1].machines[1].machines, 0.4),
   "fractional rates are accepted and planned exactly")
 os.exit(failures == 0 and 0 or 1)

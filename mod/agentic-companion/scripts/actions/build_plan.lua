@@ -8,7 +8,8 @@
 -- the exact placed entity. Mining-drill starter insertion happens once before
 -- waiting for first output to expose Factorio's authoritative runtime target.
 -- Auto-supply (default on) fetches what the rest of the plan needs of a
--- step's items in one trip; trees and rocks in a footprint are mined first.
+-- step's items in one trip (supply_all: the whole plan's bill in one supply
+-- before the first placement); trees and rocks in a footprint are mined first.
 -- Bounded recoveries, once per step: walk out of a footprint the body
 -- overlaps, re-approach a placed entity out of reach, retry a partial
 -- starter insert after a second. Placement is idempotent: the same entity

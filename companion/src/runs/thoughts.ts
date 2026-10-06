@@ -115,12 +115,13 @@ export function createThoughtFeed(options: ThoughtFeedOptions): ThoughtFeed {
           for (const text of splitThought(item.text)) source.queue.push({ ts: item.ts, role: source.role, kind: item.kind, text });
         }
       }
-      if (source.queue.length > QUEUE_MAX) source.queue.splice(0, source.queue.length - QUEUE_MAX);
+      // A hidden role is only saved, all of it: the cap paces what the game shows.
       if (options.shown && !options.shown(source.role)) {
         const rows = source.queue.splice(0).map(thought => `${JSON.stringify({ ...thought, said_at: null })}\n`);
         try { if (rows.length) fs.appendFileSync(options.out, rows.join(""), { encoding: "utf8", mode: 0o600 }); } catch { /* evidence only */ }
         return;
       }
+      if (source.queue.length > QUEUE_MAX) source.queue.splice(0, source.queue.length - QUEUE_MAX);
       if (source.busy) return;
       const next = source.queue.shift();
       if (!next) return;

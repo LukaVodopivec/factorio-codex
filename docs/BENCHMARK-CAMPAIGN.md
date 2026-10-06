@@ -101,8 +101,8 @@ verify changes between trials. After ten unsuccessful screens switch variable
 family. Keep the best confirmed configuration as incumbent while searching
 indefinitely. Periodically summarize scores, exclusions, bottlenecks, settings
 and next hypothesis in the campaign evidence. The in-game panel displays the
-profile, remaining time, research, machine-made and raw totals and the incumbent reference; coloured
-thoughts show each role's current reasoning.
+profile, remaining time, research, machine-made and raw totals and the incumbent reference; the
+panel shows the ledger writer's reasoning, and every role's lines are saved to `thoughts.jsonl`.
 
 An explicit the owner stop pauses the campaign and follows LIVE-VALIDATION.md's
 recorded stop procedure: stop FIFO, pause/interrupt roles, settle in-flight

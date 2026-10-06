@@ -272,8 +272,10 @@ turning them into a fixed opening or map-specific sequence:
   parked wait the upkeep plan ends with a walk back to where the body stood,
   taken before a queued plan gets the body.
   Right after the rehearsal stop, upkeep waits for the first plan to finish.
-- Both roles' reasoning summaries and messages appear in chat and in the panel
-  within about 10 s, and the panel does not start a takeover hold.
+- The ledger writer's (the strategist; the pilot in a solo trial) reasoning
+  summaries and messages appear in the panel within about 10 s, never in chat;
+  every role's lines are in `thoughts.jsonl`; the panel does not start a
+  takeover hold.
 - `map_summary` `include` sections (`stockpiles`, `sites`, `patches`, `power`,
   `problems`, `flows_all`) name a site and its stock beyond 30 tiles from the
   body and nothing in an uncharted chunk; `inspect_entity` there returns

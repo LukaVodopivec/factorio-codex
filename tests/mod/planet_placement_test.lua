@@ -58,6 +58,9 @@ local entities = {
   ["offshore-pump"] = pump,
   ["iron-chest"] = mock.entity_prototype({ name = "iron-chest", type = "container", tile_width = 1, tile_height = 1,
     collision_box = box(1) }),
+  ["wooden-chest"] = mock.entity_prototype({ name = "wooden-chest", type = "container", tile_width = 1, tile_height = 1,
+    collision_box = box(1) }),
+  ["iron-ore"] = mock.entity_prototype({ name = "iron-ore", type = "resource", resource_category = "basic-solid" }),
   ["big-mining-drill"] = mock.entity_prototype({ name = "big-mining-drill", type = "mining-drill", tile_width = 5,
     tile_height = 5, collision_box = box(5), surface_conditions = PRESSURE_4000,
     resource_categories = { ["basic-solid"] = true, ["hard-solid"] = true },
@@ -70,7 +73,7 @@ local entities = {
     tile_height = 1, collision_box = box(1) }),
 }
 local items = {}
-for _, name in ipairs({ "offshore-pump", "iron-chest", "big-mining-drill", "burner-mining-drill", "small-electric-pole" }) do
+for _, name in ipairs({ "offshore-pump", "iron-chest", "wooden-chest", "big-mining-drill", "burner-mining-drill", "small-electric-pole" }) do
   items[name] = { name = name, place_result = entities[name] }
 end
 items["transport-belt"] = { name = "transport-belt" }
@@ -168,6 +171,15 @@ end
 check(big.tiers.drill == "big-mining-drill" and #drills == 2 and drills[2].dx - drills[1].dx == 6 and #poles == 1
   and poles[1].dx == drills[1].dx + 3 and #chests == 2 and chests[1].dx == drills[1].dx and chests[1].dy == -0.5,
   "big drills pair around a pole, each emptying into a chest above its middle")
+-- A burner block's chests: the cheap wooden chest unless the body carries iron ones.
+recipes["wooden-chest"] = { enabled = true }
+local opening = blocks.expand(body, { block = "mining", count = 2, resource = "iron-ore" })
+check(opening.tiers.drill == "burner-mining-drill" and opening.tiers.output == "wooden-chest",
+  "with no chest carried a burner block outputs into wooden chests, not iron chests the opening cannot afford")
+carried["iron-chest"] = 2
+check(blocks.expand(body, { block = "mining", count = 2, resource = "iron-ore" }).tiers.output == "iron-chest",
+  "carried iron chests are used before crafting wooden ones")
+carried["iron-chest"], recipes["wooden-chest"] = nil, nil
 local dry, dry_why = pcall(blocks.expand, body, { block = "power", count = 1 })
 check(not dry and tostring(dry_why):match("^NO_WATER_ON_SURFACE: vulcanus .*acid neutralisation") ~= nil,
   "a steam power block on Vulcanus is NO_WATER_ON_SURFACE with Vulcanus's usual power")

@@ -119,6 +119,18 @@ local function drills_for(c, category)
   return drills
 end
 
+-- A drill's output chest: one the body carries, else one it can craft. A
+-- burner opening takes the wooden chest (two wood, not eight iron plates the
+-- opening lacks; it holds more than a burner drill mines in a trial);
+-- electric drills, which fill it faster, take the iron chest first.
+local function chest(c, electric)
+  local order = electric and { "iron-chest", "wooden-chest" } or { "wooden-chest", "iron-chest" }
+  for _, name in ipairs(order) do
+    if prototypes.item[name] and c.get_item_count and c.get_item_count(name) > 0 then return name end
+  end
+  return need(first(c, order), "no chest the body can carry or craft")
+end
+
 -- Drills in a row facing north onto a belt flowing west (3 or more drills)
 -- or one chest each. Electric drills come in pairs around a pole.
 local function mining(c, params, tiers)
@@ -133,13 +145,13 @@ local function mining(c, params, tiers)
       resource, tostring(category), #candidates > 0 and table.concat(candidates, ", ") or "none"), 0)
   end
   local width = size(drill, 0)
-  local belt = params.count >= 3
-  local out = belt and need(first(c, { "transport-belt" }), "no transport belt the body can carry or craft")
-    or need(first(c, { "iron-chest", "wooden-chest" }), "no chest the body can carry or craft")
-  local l = layout()
   -- Every drill but a burner drill runs on electricity: pairs around a pole
   -- in the middle row, output above the middle column.
   local electric = prototypes.item[drill].place_result.burner_prototype == nil
+  local belt = params.count >= 3
+  local out = belt and need(first(c, { "transport-belt" }), "no transport belt the body can carry or craft")
+    or chest(c, electric)
+  local l = layout()
   local pole_name = electric and pole(c) or nil
   local middle = math.floor(width / 2)
   local right = 0

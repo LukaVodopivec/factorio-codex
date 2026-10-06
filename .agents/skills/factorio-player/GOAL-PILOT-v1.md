@@ -27,7 +27,7 @@ Say in a sentence or two what you see and what you will do before you act.
 
 **Recovery.** After a failed, interrupted, or partial result, read fresh state, and use `plan_status` only with an exact known plan ID. A partial `get_items` says when machines make the rest: never retry it at once. A wait that timed out leaves the plan pending. Retain completed physical effects; there is no rollback. Continue through the existing FIFO without duplicating committed or pending steps or blanket-cancelling queued work.
 
-**Upkeep.** When no plan needs the body and one has finished since any stop, the mod (source `upkeep`) refuels burners and feeds labs from stock within 96 tiles (idle: also of recent work sites); your plans take over at a step boundary, except one run for a burner dry a minute. Build fuel feeds instead.
+**Upkeep.** When no plan needs the body and one has finished since any stop, the mod (source `upkeep`) refuels burners and feeds labs from stock within 96 tiles (idle 2 min: also recent work sites); your plans take over at a step boundary, except one run for a burner dry a minute. Build fuel feeds instead.
 
 **Notes.** Keep `notebook/pilot/` under SKILL.md's notebook rules: sites, stock, patches, and what worked or failed.
 

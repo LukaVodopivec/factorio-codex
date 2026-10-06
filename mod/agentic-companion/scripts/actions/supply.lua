@@ -427,12 +427,16 @@ end
 -- ingredients come the same way; else a smelt, which needs an own furnace
 -- of the recipe's category; else hand-gathering, which anything natural
 -- yields allows, also ore own drills mine (supply gathers it while their
--- output cannot be taken). Prototype, recipe and registry reads only (no
+-- output cannot be taken). Smelting counts only while all it would smelt
+-- fits UNOBTAINABLE_SMELT_SECONDS at the fastest own furnace: supply smelts
+-- one furnace load at a time, inside one plan's time budget. Prototype,
+-- recipe and registry reads only (no
 -- walk, no surface query). Returns
 -- {item, missing, short?, reason} rows for what could not be had; short
 -- names the ingredient that blocked a craft.
+local UNOBTAINABLE_SMELT_SECONDS = 180
 function M.unobtainable(c, wants)
-  local pool, furnaces = {}, nil
+  local pool, furnaces, smelt_seconds = {}, nil, 0
   local function stocked(name)
     if pool[name] == nil then
       local ok, totals = pcall(registry.stock_totals, { name })
@@ -447,12 +451,16 @@ function M.unobtainable(c, wants)
       for _, entry in ipairs(ok and type(list) == "table" and list or {}) do
         pcall(function()
           if entry.entity.valid then
-            for name in pairs(entry.entity.prototype.crafting_categories) do furnaces[name] = true end
+            local ok_speed, speed = pcall(function() return entry.entity.prototype.get_crafting_speed() end)
+            speed = ok_speed and tonumber(speed) or 1
+            for name in pairs(entry.entity.prototype.crafting_categories) do
+              furnaces[name] = math.max(furnaces[name] or 0, speed)
+            end
           end
         end)
       end
     end
-    return furnaces[category] == true
+    return furnaces[category]
   end
   -- nil when count of name can be had, else the item that blocks it, how
   -- many of that item and why.
@@ -482,9 +490,20 @@ function M.unobtainable(c, wants)
       reasons[#reasons + 1] = "not hand-craftable: " .. tostring(per_craft)
       local smelt, ore = smelt_recipe(c, name)
       if smelt and depth < MAX_DEPTH then
-        if furnace_for(smelt.category) then
+        local speed = furnace_for(smelt.category)
+        if speed then
           local crafts = math.ceil(need / (M.output_per_craft(smelt, name) or 1))
-          if not obtain(ore.name, crafts * (tonumber(ore.amount) or 1), depth + 1, path) then return nil end
+          local seconds = crafts * (tonumber(smelt.energy) or 1) / math.max(speed, 0.01)
+          if smelt_seconds + seconds > UNOBTAINABLE_SMELT_SECONDS then
+            reasons[#reasons + 1] = string.format(
+              "would smelt %d first (about %d s in own furnaces): get_items it or build smelting before this", need,
+              math.ceil(smelt_seconds + seconds))
+            return name, need, table.concat(reasons, "; ")
+          end
+          if not obtain(ore.name, crafts * (tonumber(ore.amount) or 1), depth + 1, path) then
+            smelt_seconds = smelt_seconds + seconds
+            return nil
+          end
           reasons[#reasons + 1] = "not smelted: short of " .. ore.name
         else
           reasons[#reasons + 1] = "no own furnace smelts it (" .. tostring(smelt.category) .. ")"

@@ -139,7 +139,7 @@ and some plan has finished since the last emergency stop (a stop is never
 undone by upkeep; a reconciliation `stop` with `keep_upkeep` leaves it on),
 the mod refuels dry or low-fuel burner machines and brings
 the current research's science packs to labs that accept them, within 96 tiles
-of the body (with the FIFO empty, also of the last four sites where pilot or
+of the body (after two minutes with the FIFO empty, also of the last four sites where pilot or
 package plans began), from own stock, as a plan with source `upkeep`, on the body's
 planet surface only; beside pending work it walks back to where the body
 stood, even when it ends early, never moves what a lending craft makes or

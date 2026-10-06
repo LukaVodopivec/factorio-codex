@@ -189,7 +189,7 @@ replacement.
 - **Upkeep.** While no queued plan would take the body, no hold is active, and some plan has
   finished since the last emergency stop (a stop is never undone by upkeep;
   one with `keep_upkeep` leaves it on),
-  the body, within 96 tiles of it (with the FIFO empty, also of the last four
+  the body, within 96 tiles of it (after two minutes with the FIFO empty, also of the last four
   sites where pilot or package plans began), refuels dry or low burner machines (with any fuel of the machine's fuel
   category, such as nutrients for a biochamber) and brings the current
   research's science packs to labs that accept them and have room, from own

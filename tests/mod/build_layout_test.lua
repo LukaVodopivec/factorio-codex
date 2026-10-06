@@ -876,7 +876,10 @@ storage.registry.entries[901] = { entity = { valid = true, prototype = { craftin
 storage.registry.machines.furnace = { [901] = true }
 local supply = require("scripts.actions.supply")
 local smeltable = supply.unobtainable(character, { { name = "burner-mining-drill", count = 2 } })
+local too_long = supply.unobtainable(character, { { name = "iron-plate", count = 1000 } })[1]
 storage.registry.entries[901], storage.registry.machines.furnace = nil, nil
+check(too_long and too_long.item == "iron-plate" and too_long.reason:match("would smelt %d+ first"),
+  "smelting more than one plan can wait for is short, with a reason that says to get it first")
 check(#smeltable == 0, "an own furnace and gatherable ore make the missing plate obtainable")
 check(#supply.unobtainable(character, { { name = "iron-ore", count = 500 } }) == 0
   and supply.unobtainable(character, { { name = "iron-plate", count = 9 } })[1].missing == 1,

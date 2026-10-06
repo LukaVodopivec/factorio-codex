@@ -6,7 +6,7 @@
 --   the supervisor's reconciliation, leaves upkeep on), while the owner is not holding
 --   the body and the body stands on a surface (nothing aboard or in
 --   transit), the body refuels own burner machines on its surface within
---   96 tiles of it (UPKEEP_RADIUS; while the FIFO is empty, also within 96
+--   96 tiles of it (UPKEEP_RADIUS; after two idle minutes, also within 96
 --   tiles of the work sites where recent pilot or package plans began) that ran
 --   dry or are working on their last fuel item, with a fuel their burner
 --   takes (by fuel category: biochambers nutrients, heating towers chemical
@@ -58,8 +58,8 @@ local PACKS_PER_LAB = 10
 -- Machines one upkeep pass looks at per status: the line sampler keeps the
 -- units in each chore status, so a pass never walks every machine.
 local MAX_CANDIDATES = 64
--- Upkeep serves machines within this many tiles of the body (and, while
--- idle, of the work sites): a far outpost
+-- Upkeep serves machines within this many tiles of the body (and, after
+-- two idle minutes, of the work sites): a far outpost
 -- is not worth a round trip each time it runs dry; factory_status shows it
 -- no_fuel, and supplying or retiring it is the bots' call.
 local UPKEEP_RADIUS = 96
@@ -69,6 +69,7 @@ local DRY_TICKS = 3600
 local BOUNDARY_GAP_TICKS = 7200
 -- Matching machines one pass may look at in all, far ones included, so a
 -- dry outpost never hides the machines beside the body.
+local SITE_IDLE_TICKS = 2 * 3600       -- idle this long before upkeep reaches the work sites
 local MAX_LOOKED = 4 * MAX_CANDIDATES
 
 local function read(fn)
@@ -365,10 +366,13 @@ local function pass(c, tick, room, reserved)
   for key, at in pairs(storage.chores.fed_labs) do
     if tick - at >= M.LAB_RETRY_TICKS then storage.chores.fed_labs[key] = nil end
   end
-  -- While idle, also near the work sites on this surface: an idle body at
-  -- a far site never leaves the base dry.
+  -- After SITE_IDLE_TICKS idle, also near the work sites on this surface: an
+  -- idle body at a far site never leaves the base dry, yet a short pause
+  -- between the pilot's plans never sends it on a long walk.
   local sites
-  for _, site in ipairs(room == "idle" and storage.tasks and storage.tasks.work_sites or {}) do
+  local idle_long = room == "idle" and storage.tasks and storage.tasks.last_finished_tick ~= nil
+    and tick - storage.tasks.last_finished_tick >= SITE_IDLE_TICKS
+  for _, site in ipairs(idle_long and storage.tasks.work_sites or {}) do
     if site.surface_index == c.surface_index then
       sites = sites or {}
       sites[#sites + 1] = site

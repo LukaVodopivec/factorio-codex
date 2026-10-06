@@ -473,6 +473,11 @@ chores.upkeep(game.tick)
 check(#queued == anchor_count and storage.chores.last_selection.refuel.candidates[1].decision == "too_far",
   "beside pending work a machine 120 tiles away stays too far, wherever plans began")
 room = "idle"
+storage.tasks.last_finished_tick = game.tick - 600
+chores.upkeep(game.tick)
+check(#queued == anchor_count and storage.chores.last_selection.sites == nil,
+  "a short pause between plans never reaches the work sites")
+storage.tasks.last_finished_tick = game.tick - 2 * 3600
 chores.upkeep(game.tick)
 check(#queued == anchor_count + 1 and queued[#queued].steps[1].x == 120 and #queued[#queued].steps == 1
   and #storage.chores.last_selection.sites == 2 and storage.chores.last_selection.sites[2].x == 110,

@@ -269,7 +269,8 @@ turning them into a fixed opening or map-specific sequence:
   since the last stop, a dry burner machine, or a working one on its last
   fuel item, is refuelled by `upkeep` within about 60 s while coal is in
   stock, and a queued plan takes over at the next step boundary. Beside a
-  parked wait the upkeep plan ends with a walk back to where the body stood.
+  parked wait the upkeep plan ends with a walk back to where the body stood,
+  taken before a queued plan gets the body.
   Right after the rehearsal stop, upkeep waits for the first plan to finish.
 - Both roles' reasoning summaries and messages appear in chat and in the panel
   within about 10 s, and the panel does not start a takeover hold.

@@ -43,8 +43,8 @@ package.loaded["scripts.registry"] = { stock_totals = function(names)
 end }
 local queued = {}
 -- tasks.upkeep_room owns when upkeep may take the body (plans_test covers it).
-local room = "idle"
-package.loaded["scripts.tasks"] = { upkeep_room = function() return room end, queue_plan = function(params, selection)
+local room, reserved = "idle", nil
+package.loaded["scripts.tasks"] = { upkeep_room = function() return room, reserved end, queue_plan = function(params, selection)
   params.selection = selection; queued[#queued + 1] = params; return { plan_id = #queued } end }
 -- The queued plan's first `count` steps ran to their end (tasks' upkeep
 -- listener); the plan ID is its place in `queued`.
@@ -125,7 +125,8 @@ chores.upkeep(game.tick)
 local busy = queued[3]
 check(busy and #busy.steps == 3 and busy.steps[1].action == "insert_items" and busy.steps[2].action == "insert_items"
   and busy.steps[3].action == "walk_to" and busy.steps[3].x == 1 and busy.steps[3].y == -2
-  and busy.steps[3].arrival_mode == "vicinity" and storage.chores.last_selection.room == "busy",
+  and busy.steps[3].arrival_mode == "vicinity" and busy.steps[3].upkeep_return == true
+  and storage.chores.last_selection.room == "busy",
   "beside pending work upkeep refuels, then walks back to where the body stood")
 steps_ended(3, 3, "cancelled")
 check(next(storage.chores.refueled) == nil, "a cancelled refuel step starts no cooldown")
@@ -193,6 +194,39 @@ for _, step in ipairs(capped_mix.steps) do if step.x < 10 and step.x ~= 9 then l
 check(#capped_mix.steps == 8 and lows == 1,
   "with more than 8 to serve, the 7 dry machines come first and one low one fills the last place")
 
+-- A burner still burning keeps its fuel: its single fuel slot holds wood and
+-- takes no coal, so it gets more wood, or nothing when there is none.
+local function holding_slot(name)
+  return { fuel_categories = { chemical = true }, inventory = {
+    can_insert = function(item) return item.name == name end,
+    get_contents = function() return { { name = name, count = 1, quality = "normal" } } end } }
+end
+local wooded = machine(51, 3, "working", holding_slot("wood"))
+wooded.low_fuel = true
+sampled({ [51] = wooded, [52] = machine(52, 7, "no_fuel") })
+storage.chores.refueled, carried, stocked = {}, { coal = 0 }, { coal = 100, wood = 20 }
+game.tick, count_before = 17200, #queued
+chores.upkeep(game.tick)
+local kept = queued[#queued]
+check(#queued == count_before + 1 and #kept.steps == 2 and kept.steps[1].x == 3 and kept.steps[1].items.wood == 10
+  and kept.steps[1].items.coal == nil and kept.steps[2].x == 7 and kept.steps[2].items.coal == 10,
+  "a low burner whose slot holds wood gets wood, not the coal a dry one gets")
+stocked.wood, storage.chores.refueled = 0, {}
+chores.upkeep(17300)
+local without = queued[#queued]
+local wooded_row
+for _, row in ipairs(storage.chores.last_selection.refuel.candidates) do if row.unit == 51 then wooded_row = row end end
+check(#without.steps == 1 and without.steps[1].x == 7 and wooded_row.decision == "no_fuel_selected",
+  "with none of its slot's fuel at hand the low burner is skipped and the dry one is still refuelled")
+-- Beside a lending craft, what it makes or uses is never moved: with coal
+-- reserved the dry burner gets wood.
+room, reserved, stocked, storage.chores.refueled = "busy", { coal = true }, { coal = 100, wood = 20 }, {}
+sampled({ [52] = machine(52, 7, "no_fuel") })
+chores.upkeep(17400)
+check(queued[#queued].steps[1].items.wood == 10 and queued[#queued].steps[1].items.coal == nil,
+  "upkeep beside a lending craft never takes an item that craft makes or uses as fuel")
+room, reserved = "idle", nil
+
 -- Labs missing the current research's packs get the packs each lab takes
 -- (its inputs, room in its input inventory) from carried or stored packs, in
 -- the same upkeep plan as refuelling. A lab that would take nothing is
@@ -236,6 +270,13 @@ game.tick = 12600
 chores.upkeep(game.tick)
 check(#queued == before + 2 and #queued[#queued].steps == 2 and queued[#queued].steps[1].x == 3,
   "after 600 ticks the labs that still miss packs are tried again")
+room, reserved, storage.chores.fed_labs = "busy", { ["automation-science-pack"] = true }, {}
+chores.upkeep(13300)
+local beside_craft = queued[#queued]
+check(#queued == before + 3 and beside_craft.steps[1].x == 3 and beside_craft.steps[1].items["logistic-science-pack"] == 3
+  and beside_craft.steps[1].items["automation-science-pack"] == nil and storage.chores.fed_labs["7:automation-science-pack"] == nil,
+  "beside a craft making automation packs, labs get only the other packs")
+room, reserved = "idle", nil
 body.force.current_research = nil
 
 

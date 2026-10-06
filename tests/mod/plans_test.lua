@@ -690,12 +690,17 @@ local craft_tick = craft.tick
 craft.tick = function() if body.crafting_queue_size > 0 then return nil end return { status = "done", detail = "crafted" } end
 body.crafting_queue_size = 2
 starts = {}
+body.force = { recipes = { gear = { products = { { type = "item", name = "gear", amount = 1 } },
+  ingredients = { { type = "item", name = "iron-plate", amount = 2 }, { type = "fluid", name = "water", amount = 1 } } } } }
 local host = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "gear", crafts = 2, wait_for_completion = true },
   { action = "walk_to", x = 5, y = 5 } } })
 local later = tasks.queue_plan({ steps = { { action = "walk_to", x = 6, y = 6 } } })
 game.tick = 40300; tasks.on_tick()
 check(storage.tasks.active and storage.tasks.active.id == host.plan_id and tasks.upkeep_room() == "busy",
   "a running craft step that waits on hand-crafting leaves upkeep room, whatever is queued behind it")
+local _, craft_reserved = tasks.upkeep_room()
+check(craft_reserved and craft_reserved.gear and craft_reserved["iron-plate"] and not craft_reserved.water,
+  "beside a lending craft upkeep is told the items that craft makes or uses, so it never takes the craft's products")
 local guest = tasks.queue_plan({ source = "upkeep", steps = { { action = "walk_to", x = 1, y = 1 },
   { action = "walk_to", x = 2, y = 1 }, { action = "walk_to", x = 3, y = 1 } } })
 game.tick = 40301; tasks.on_tick()
@@ -718,4 +723,47 @@ check(host_status.status == "completed" and tasks.plan_status({ plan_id = later.
   and storage.tasks.records[host.plan_id].plan.finished_tick <= storage.tasks.records[later.plan_id].plan.started_tick,
   "the lending plan finishes before the work queued after it starts")
 craft.tick = craft_tick
+body.force = nil
+
+-- Upkeep beside a parked wait walks back to where the body stood even when
+-- it ends early, pre-empted or on a failed step, so the wait still reads its
+-- target from there instead of failing out of range.
+local walk_tick = walk.tick
+walk.tick = function(task) body.position = { x = task.target.x, y = task.target.y }; return { status = "done", detail = "walked" } end
+body.position = { x = 0, y = 0 }
+local function far_upkeep(second)
+  return tasks.queue_plan({ source = "upkeep", steps = { { action = "walk_to", x = 60, y = 0 }, second,
+    { action = "walk_to", x = 0, y = 0, arrival_mode = "vicinity", arrival_radius = 2, upkeep_return = true } } })
+end
+game.tick = 41000
+local far_wait = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output",
+  item = "iron-plate", count = 99 } } })
+tasks.on_tick()
+local far = far_upkeep({ action = "walk_to", x = 61, y = 0 })
+game.tick = 41001; tasks.on_tick()
+check(storage.tasks.active and storage.tasks.active.id == far.plan_id and body.position.x == 60,
+  "upkeep beside the parked wait has walked 60 tiles from it")
+local pilot = tasks.queue_plan({ steps = { { action = "walk_to", x = 5, y = 5 } } })
+game.tick = 41002; tasks.on_tick()
+local far_status = tasks.plan_status({ plan_id = far.plan_id })
+check(far_status.status == "cancelled" and far_status.upkeep.preempted and far_status.completed_steps == 1
+  and far_status.outcomes[2].step == 3 and far_status.outcomes[2].status == "completed"
+  and far_status.upkeep.unfinished_targets[1].step == 2 and far_status.upkeep.unfinished_targets[1].state == "not_started"
+  and body.position.x == 0 and body.position.y == 0,
+  "pre-empted upkeep skips its remaining work but walks back before giving way")
+for tick = 41003, 41031 do game.tick = tick; tasks.on_tick() end
+check(tasks.plan_status({ plan_id = pilot.plan_id }).status == "completed"
+  and tasks.plan_status({ plan_id = far_wait.plan_id }).status == "waiting",
+  "the parked wait keeps reading its target after the pre-empted upkeep")
+body.position = { x = 0, y = 0 }
+local failing = far_upkeep({ action = "mine", x = 1, y = 1 })
+for tick = 41032, 41036 do game.tick = tick; tasks.on_tick() end
+local failing_status = tasks.plan_status({ plan_id = failing.plan_id })
+check(failing_status.status == "failed" and failing_status.completed_steps == 1
+  and failing_status.outcomes[2].status == "failed" and failing_status.outcomes[3].step == 3
+  and failing_status.outcomes[3].status == "completed" and body.position.x == 0
+  and tasks.plan_status({ plan_id = far_wait.plan_id }).status == "waiting",
+  "upkeep whose step fails still walks back, ends failed, and the parked wait keeps reading")
+tasks.cancel({ origin = "test/plans", plan_id = far_wait.plan_id })
+walk.tick = walk_tick
 os.exit(failures == 0 and 0 or 1)

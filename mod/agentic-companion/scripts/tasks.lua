@@ -198,7 +198,9 @@ end
 -- what the body did without polling each plan.
 local function upkeep_readback(plan)
   if plan.source ~= "upkeep" then return nil end
-  local targets = {}
+  local targets, by_step = {}, {}
+  -- Outcomes by step: a walk back after an early end skips steps.
+  for _, outcome in ipairs(plan.outcomes) do by_step[outcome.step] = outcome end
   local first = plan.completed_steps + 1
   local stop = math.min(#plan.steps, first + 15)
   for index = first, stop do
@@ -207,7 +209,7 @@ local function upkeep_readback(plan)
       if count >= 8 then capped = true; break end
       requested[name], count = amount, count + 1
     end
-    local outcome = plan.outcomes[index]
+    local outcome = by_step[index]
     targets[#targets + 1] = { step = index, action = step.action, surface = step_surface(plan, index),
       position = step.x and { x = step.x, y = step.y } or nil,
       requested_items = requested, items_capped = capped or nil,
@@ -683,6 +685,20 @@ function M.queue_length() return #storage.tasks.queue end
 -- Steps that can add, remove or reconfigure machines refresh the factory
 -- lines (script-created entities raise no player build event).
 local TOPOLOGY_TASKS = { place = true, mine = true, set_recipe = true, rotate = true, build_plan = true }
+-- An upkeep plan run beside pending work ends with a walk back to where the
+-- body stood (chores.lua marks that step upkeep_return), so a parked wait
+-- still reads its target from there. Ended early (pre-empted, or a step
+-- failed), the plan still takes that walk, then ends as it would have.
+local function return_step(plan)
+  local index = #plan.steps
+  return plan.source == "upkeep" and plan.steps[index].upkeep_return == true and index or nil
+end
+local function walk_back(plan, status, detail)
+  local back = return_step(plan)
+  if not back or plan.ending or plan.current_step >= back then return false end
+  plan.ending = { status = status, detail = detail, completed_steps = plan.completed_steps }
+  return true
+end
 local function finish_step(plan, result)
   local kind = plan.current_task and plan.current_task.type
   factory_activity.record(kind, result.outcome)
@@ -701,7 +717,18 @@ local function finish_step(plan, result)
   }
   plan.current_task = nil
   if plan.source == "upkeep" and upkeep_listener then pcall(upkeep_listener, plan, plan.current_step, status) end
-  if status ~= "completed" then finish(plan, status, result.detail); return end
+  local ending = plan.ending
+  if ending then
+    -- The walk back after an early end has ended: the plan ends as it would
+    -- have, its contiguous steps unchanged.
+    plan.completed_steps = ending.completed_steps
+    finish(plan, ending.status, ending.detail)
+    return
+  end
+  if status ~= "completed" then
+    if not walk_back(plan, status, result.detail) then finish(plan, status, result.detail) end
+    return
+  end
   plan.completed_steps = plan.current_step
   if plan.completed_steps == #plan.steps then finish(plan, "done", "") end
 end
@@ -791,8 +818,8 @@ local function expire_parked_waits(tasks)
       and game.tick - plan.wait_started_tick >= wait_timeout_ticks(step)
     if due and (not tasks.active or tasks.active.source == "upkeep") then
       -- The body is free, or upkeep holds it and gives way at its next step
-      -- boundary: the dispatcher reads the condition once more before the
-      -- deadline is applied, so a met wait never expires.
+      -- boundary (after its walk back): the dispatcher reads the condition
+      -- once more before the deadline is applied, so a met wait never expires.
       plan.next_check_tick = nil
     elseif due then
       table.remove(tasks.queue, index)
@@ -913,7 +940,8 @@ end
 -- plan's step only waits on hand-crafting (a craft_items step). Such a plan
 -- lends the body: it goes back to the queue head (still running, its step
 -- kept) and only upkeep runs before it, and only while the crafting does.
--- Upkeep gives way at its next step boundary to work that takes the body.
+-- Upkeep gives way at its next step boundary to work that takes the body,
+-- and never moves what the lending craft makes or uses (upkeep_room).
 local function crafting_busy()
   local c = companion.get()
   return c ~= nil and c.valid and (c.crafting_queue_size or 0) > 0
@@ -945,15 +973,34 @@ local function work_waiting()
   end
   return false
 end
+-- The items a craft step's recipe makes or uses, as a set: the craft counts
+-- its products as carried, so upkeep beside it must leave them alone.
+local function craft_items(task)
+  local items = {}
+  local c = companion.get()
+  local ok, recipe = pcall(function() return c.force.recipes[task.recipe] end)
+  if not (ok and recipe) then return items end
+  for _, key in ipairs({ "products", "ingredients" }) do
+    local read_ok, list = pcall(function() return recipe[key] end)
+    for _, row in ipairs(read_ok and list or {}) do
+      if row.type == "item" then items[row.name] = true end
+    end
+  end
+  return items
+end
 -- Whether upkeep may queue a plan now: "idle" with the FIFO empty, "busy"
--- beside pending work as above, else nil. Never while an upkeep plan is
--- pending, nor after an emergency stop before some plan has finished.
+-- beside pending work as above, else nil; with "busy" beside a lending
+-- craft, also the set of items upkeep must not move. Never while an upkeep
+-- plan is pending, nor after an emergency stop before some plan has finished.
 function M.upkeep_room()
   local tasks = storage.tasks
   if not tasks or tasks.last_finished_tick == nil or upkeep_queued() then return nil end
   local active = tasks.active
   -- Queued work waits behind a running plan anyway.
-  if active then return lends_body(active) and "busy" or nil end
+  if active then
+    if lends_body(active) then return "busy", craft_items(active.current_task) end
+    return nil
+  end
   for _, queued in ipairs(tasks.queue) do
     if queued.type ~= "plan" or queued.lent or takes_body(queued) then return nil end
   end
@@ -972,15 +1019,15 @@ local function tick_plan(plan)
   if plan._recovery and plan._recovery.phase == "fixing" and step_recovery(plan) then return end
   if not plan.current_task then
     -- The mod's own upkeep gives way at a step boundary to queued work that
-    -- would take the body now (not a parked wait or a blocked plan).
-    if plan.source == "upkeep" and plan.completed_steps > 0 then
-      if work_waiting() then
-        plan.preempted = true
-        finish(plan, "cancelled", "PREEMPTED: queued work takes the body")
-        return
-      end
+    -- would take the body now (not a parked wait or a blocked plan), after
+    -- its walk back when it has one.
+    if plan.source == "upkeep" and plan.completed_steps > 0 and not plan.ending
+      and plan.completed_steps + 1 ~= return_step(plan) and work_waiting() then
+      plan.preempted = true
+      local detail = "PREEMPTED: queued work takes the body"
+      if not walk_back(plan, "cancelled", detail) then finish(plan, "cancelled", detail); return end
     end
-    plan.current_step = plan.completed_steps + 1
+    plan.current_step = plan.ending and return_step(plan) or plan.completed_steps + 1
     local step = plan.steps[plan.current_step]
     if REMOVED_ACTIONS[step.action] then
       -- A step saved by an older version: complete it as a no-op.

@@ -18,7 +18,10 @@
 --   ordinary plan with source "upkeep", so activity_log shows it, and any
 --   queued plan that takes the body takes it at the next step boundary.
 --   Beside pending work the plan ends with a walk back to where the body
---   stood, so a parked wait still reads its target from there.
+--   stood, taken even when the plan ends early, so a parked wait still reads
+--   its target from there; beside a running craft it never moves what that
+--   craft makes or uses. A burner still burning gets only a fuel its fuel
+--   slot takes beside what is there.
 -- * Charting: every minute the force charts the chunks around the body that
 --   it has not charted yet, on planet surfaces only, and once when the body
 --   arrives on a planet, so patches and water appear without scouting.
@@ -123,8 +126,9 @@ end
 -- when there is none. The body's own fuel order comes first (coal, wood,
 -- solid fuel: never rocket or nuclear fuel while one of those is at hand);
 -- a burner that takes none of them (nutrients, ...) gets what the body has
--- most of. `known` keeps each answer for the pass, by category list.
-local function fuel_for(c, entity, known)
+-- most of. `known` keeps each answer for the pass, by category list. Items
+-- in `reserved` (what a lending craft makes or uses) are never chosen.
+local function fuel_for(c, entity, known, reserved)
   local categories = {}
   for category in pairs(read(function() return entity.burner.fuel_categories end) or {}) do
     categories[#categories + 1] = category
@@ -138,7 +142,9 @@ local function fuel_for(c, entity, known)
     end
     local stored = #names > 0 and registry.stock_totals(names) or {}
     local totals = {}
-    for _, name in ipairs(names) do totals[name] = c.get_item_count(name) + (stored[name] or 0) end
+    for _, name in ipairs(names) do
+      totals[name] = not reserved[name] and c.get_item_count(name) + (stored[name] or 0) or 0
+    end
     local best, most = false, 0
     for _, name in ipairs(supply.FUELS) do
       if (totals[name] or 0) > 0 then best, most = name, totals[name]; break end
@@ -153,16 +159,41 @@ local function fuel_for(c, entity, known)
   return known[key] or nil
 end
 
+-- The fuel for a burner still burning: its fuel inventory holds what it
+-- burns, and one fuel slot takes only more of the same item. The chosen fuel
+-- when it fits beside what is there, else more of the fuel already in it
+-- when the body has some, else nil.
+local function low_fuel_for(c, entity, fuel, known, reserved)
+  local inventory = read(function() return entity.burner.inventory end)
+  if not inventory then return fuel end
+  if fuel and read(function() return inventory.can_insert({ name = fuel.name, quality = "normal" }) end) ~= false then
+    return fuel
+  end
+  for _, item in ipairs(read(function() return inventory.get_contents() end) or {}) do
+    local name, key = item.name, "item:" .. tostring(item.name)
+    if (item.quality or "normal") == "normal" and not reserved[name] then
+      if known[key] == nil then
+        local total = c.get_item_count(name) + (registry.stock_totals({ name })[name] or 0)
+        known[key] = total > 0 and { name = name, available = total } or false
+      end
+      if known[key] then return known[key] end
+    end
+  end
+end
+
 -- Insert steps that refuel own burner machines out of fuel, then those
 -- working on their last fuel item: the machines sharing a fuel share what
 -- there is of it. Each step's machine is kept in `units` by the step.
-local function refuel_steps(c, tick, steps, audit, units)
+local function refuel_steps(c, tick, steps, audit, units, reserved)
   local refueled = storage.chores.refueled
   local function cooling(unit)
     return refueled[unit] ~= nil and tick - refueled[unit] < REFUEL_COOLDOWN_TICKS
   end
   local machines = machines_in(c, "no_fuel", nil, cooling, audit)
-  for _, machine in ipairs(machines_in(c, "low_fuel", nil, cooling, audit)) do machines[#machines + 1] = machine end
+  for _, machine in ipairs(machines_in(c, "low_fuel", nil, cooling, audit)) do
+    machine.low = true
+    machines[#machines + 1] = machine
+  end
   while #machines > MAX_REFUELS do
     local excluded = table.remove(machines)
     if excluded.evidence then excluded.evidence.decision = "selection_limit" end
@@ -170,7 +201,8 @@ local function refuel_steps(c, tick, steps, audit, units)
   if #machines == 0 then return end
   local known, groups, order = {}, {}, {}
   for _, machine in ipairs(machines) do
-    local fuel = fuel_for(c, machine.entity, known)
+    local fuel = fuel_for(c, machine.entity, known, reserved)
+    if machine.low then fuel = low_fuel_for(c, machine.entity, fuel, known, reserved) end
     if fuel then
       local group = groups[fuel.name]
       if not group then
@@ -230,13 +262,14 @@ end
 -- carries or own stock holds (one registry pass), to labs on its surface
 -- that take them: the nearest labs that would take some pack not tried
 -- within LAB_RETRY_TICKS, at most MAX_LABS. A pack short for every lab that
--- takes it goes to the nearest ones first (as fuel does).
-local function lab_steps(c, tick, steps)
+-- takes it goes to the nearest ones first (as fuel does). Packs in
+-- `reserved` are left alone.
+local function lab_steps(c, tick, steps, reserved)
   local research = c.force.current_research
   if not research then return end
   local names = {}
   for _, ingredient in ipairs(research.research_unit_ingredients or {}) do
-    if ingredient.type ~= "fluid" then names[#names + 1] = ingredient.name end
+    if ingredient.type ~= "fluid" and not reserved[ingredient.name] then names[#names + 1] = ingredient.name end
   end
   if #names == 0 then return end
   local fed = storage.chores.fed_labs
@@ -287,8 +320,9 @@ end
 function M.upkeep(tick)
   local c = companion.get()
   if not (c and c.valid and storage.chores) or held() then return end
-  local room = tasks.upkeep_room()
+  local room, reserved = tasks.upkeep_room()
   if not room then return end
+  reserved = reserved or {}
   for unit, at in pairs(storage.chores.refueled) do
     if tick - at >= REFUEL_COOLDOWN_TICKS then storage.chores.refueled[unit] = nil end
   end
@@ -300,12 +334,12 @@ function M.upkeep(tick)
     refuel = { candidate_limit = MAX_CANDIDATES, selected_limit = MAX_REFUELS,
       retry_ticks = REFUEL_COOLDOWN_TICKS, candidates = {}, selected = {},
       observed_candidates = 0, scan_complete = true } }
-  refuel_steps(c, tick, steps, selection.refuel, units)
-  lab_steps(c, tick, steps)
+  refuel_steps(c, tick, steps, selection.refuel, units, reserved)
+  lab_steps(c, tick, steps, reserved)
   selection.step_count = #steps
   if #steps > 0 and room == "busy" then
     steps[#steps + 1] = { action = "walk_to", x = c.position.x, y = c.position.y,
-      arrival_mode = "vicinity", arrival_radius = RETURN_RADIUS }
+      arrival_mode = "vicinity", arrival_radius = RETURN_RADIUS, upkeep_return = true }
   end
   if #steps > 0 then
     local ok, result = pcall(tasks.queue_plan, { steps = steps, source = "upkeep" }, selection)

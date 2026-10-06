@@ -131,9 +131,10 @@ and some plan has finished since the last emergency stop (a stop is never
 undone by upkeep), the mod refuels dry or low-fuel burner machines and brings
 the current research's science packs to labs that accept them, from own
 stock, as a plan with source `upkeep`, on the body's planet surface only;
-beside pending work it walks back to where the body stood. Queued work that
-would take the body takes it at the next step boundary. Upkeep is the mod's
-work, not pilot activity.
+beside pending work it walks back to where the body stood, even when it ends
+early, and never moves what a lending craft makes or uses. Queued work that
+would take the body takes it at the next step boundary, after that walk back.
+Upkeep is the mod's work, not pilot activity.
 
 **Idleness.** The supervisor proves pilot idleness only while milestone goals
 remain open and a fresh, valid `observe_local.character` reports

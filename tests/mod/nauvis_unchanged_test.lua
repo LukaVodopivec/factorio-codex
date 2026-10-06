@@ -251,6 +251,17 @@ check(upkeep_selection and upkeep_selection.tick == game.tick
   and upkeep_selection.queue_status == "queued" and upkeep_selection.refuel.selected[1].count == 10,
   "the additive body readback retains exact bounded upkeep selection without extra native reads")
 if status.body then status.body.upkeep_selection = nil end
+-- Additive: a running line names its dry member (the furnace out of fuel).
+local degraded_rows = 0
+for _, row in ipairs(status.lines or {}) do
+  if row.degraded then
+    degraded_rows = degraded_rows + 1
+    check(row.state == "running" and row.degraded.state == "no_fuel" and row.degraded.cause_position.x == 1.5
+      and not row.self_sustaining, "a running line with a dry member is degraded no_fuel at that member")
+    row.degraded = nil
+  end
+end
+check(degraded_rows == 1, "exactly one line is degraded")
 measured.status = text(status)
 -- 7. map_summary with every section, as one job.
 before = snapshot()

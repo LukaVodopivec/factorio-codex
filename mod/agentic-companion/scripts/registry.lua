@@ -6,8 +6,8 @@
 -- Kept per entity (by unit_number, own force only, on every surface; each
 -- entry names its surface index):
 --   machines  by type (the line sampler's machine types, the planet machines
---             among them, plus beacons and roboports, which it samples for
---             problems only)
+--             among them, plus beacons, roboports and burner inserters,
+--             which it samples for problems only)
 --   holders   chests, cargo landing pads and crafting-machine outputs (stock)
 --   burners   entities with a burner (fuel)
 --   electric  poles, producers, accumulators and electric consumers (power)
@@ -58,12 +58,21 @@ local PRODUCTIVE_TYPES = {
   reactor = true, ["fusion-reactor"] = true, ["fusion-generator"] = true, ["lightning-attractor"] = true,
   ["agricultural-tower"] = true, ["asteroid-collector"] = true,
 }
--- Sampled for problems only: no product, never a line.
-local PROBLEM_ONLY_TYPES = { beacon = true, roboport = true }
+-- Sampled for problems only: no product, never a line. Inserters only with
+-- a burner (BURNER_ONLY_TYPES): a dry one strands what it should move, and
+-- upkeep refuels it; electric inserters are no machine.
+local PROBLEM_ONLY_TYPES = { beacon = true, roboport = true, inserter = true }
+local BURNER_ONLY_TYPES = { inserter = true }
 local MACHINE_TYPES = {}
 for kind in pairs(PRODUCTIVE_TYPES) do MACHINE_TYPES[kind] = true end
 for kind in pairs(PROBLEM_ONLY_TYPES) do MACHINE_TYPES[kind] = true end
 M.MACHINE_TYPES, M.PRODUCTIVE_TYPES, M.PROBLEM_ONLY_TYPES = MACHINE_TYPES, PRODUCTIVE_TYPES, PROBLEM_ONLY_TYPES
+M.BURNER_ONLY_TYPES = BURNER_ONLY_TYPES
+
+-- Whether an entity of this type, with a burner or not, is a machine.
+function M.is_machine(kind, burner)
+  return MACHINE_TYPES[kind] == true and (not BURNER_ONLY_TYPES[kind] or burner == true)
+end
 local CHEST_TYPES = { container = true, ["logistic-container"] = true }
 -- Stores whose items the body takes: their inventory by type (a crafting
 -- machine's is its output).
@@ -414,13 +423,14 @@ function M.add(entity)
       electric = electric(entity) or nil,
       poles = kind == "electric-pole" or nil,
     }
-    if not (MACHINE_TYPES[kind] or flags.holders or flags.burners or flags.electric) then return false end
+    if not (M.is_machine(kind, flags.burners) or flags.holders or flags.burners or flags.electric) then return false end
     local position = entity.position
     local ok_surface, surface = pcall(function() return entity.surface.index end)
     local entry = { entity = entity, unit = unit, name = entity.name, type = kind,
-      position = { x = position.x, y = position.y }, surface = ok_surface and surface or nil }
+      position = { x = position.x, y = position.y }, surface = ok_surface and surface or nil,
+      burner = BURNER_ONLY_TYPES[kind] and flags.burners or nil }
     r.entries[unit] = entry
-    if MACHINE_TYPES[kind] then
+    if M.is_machine(kind, flags.burners) then
       r.machines[kind] = r.machines[kind] or {}
       r.machines[kind][unit] = true
     end

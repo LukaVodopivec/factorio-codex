@@ -297,7 +297,7 @@ end
 -- without raise): every registered entity reports here.
 script.on_event(defines.events.on_object_destroyed, function(event)
   local removed = registry.on_object_destroyed(event)
-  if type(removed) == "table" and registry.MACHINE_TYPES[removed.type] then autonomy.mark_dirty() end
+  if type(removed) == "table" and registry.is_machine(removed.type, removed.burner) then autonomy.mark_dirty() end
 end)
 -- factory_status keeps the available technologies until research changes.
 for _, name in ipairs(factory_status.RESEARCH_EVENTS) do

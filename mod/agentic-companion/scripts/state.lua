@@ -13,6 +13,9 @@ M.STORE_TYPES_0_22_2 = { "cargo-landing-pad" }
 -- electric set: they only join the machine sets.
 M.MACHINE_TYPES_0_22_3 = { ["fusion-reactor"] = true, ["fusion-generator"] = true, ["lightning-attractor"] = true,
   ["agricultural-tower"] = true, ["asteroid-collector"] = true }
+-- Machine types the registry keeps only with a burner (burner inserters),
+-- gained after 0.26.2: an older registry holds them in its burner set.
+M.BURNER_MACHINE_TYPES = { inserter = true }
 -- Blueprint slots (blueprints.lua): 32 named blueprints and a scratch slot.
 M.BLUEPRINT_SLOTS = 33
 
@@ -167,6 +170,19 @@ function M.init()
     r.planet_machines = true
     for unit, entry in pairs(r.entries) do
       if M.MACHINE_TYPES_0_22_3[entry.type] then
+        r.machines[entry.type] = r.machines[entry.type] or {}
+        r.machines[entry.type][unit] = true
+      end
+    end
+    storage.autonomy.dirty_tick = storage.autonomy.dirty_tick or (game and game.tick or 0)
+  end
+  -- Burner inserters join the machine sets (sampled for problems only): an
+  -- older registry holds them in its burner set (a pure Lua pass, once).
+  if not r.burner_inserters then
+    r.burner_inserters = true
+    for unit, entry in pairs(r.entries) do
+      if M.BURNER_MACHINE_TYPES[entry.type] and r.burners[unit] then
+        entry.burner = true
         r.machines[entry.type] = r.machines[entry.type] or {}
         r.machines[entry.type][unit] = true
       end

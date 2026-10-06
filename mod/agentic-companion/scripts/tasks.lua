@@ -1410,6 +1410,7 @@ local function watchdog(tasks)
   if beyond(stall.anchor) then stall.previous, stall.anchor = stall.anchor, { x = p.x, y = p.y } end
   if moved or signature ~= stall.signature or not stall.since then
     stall.since, stall.signature = game.tick, signature
+    stall.deadline = game.tick + STALL_TICKS -- walk.lua ends its diagnosis before it
     return false
   end
   if game.tick - stall.since < STALL_TICKS then return false end

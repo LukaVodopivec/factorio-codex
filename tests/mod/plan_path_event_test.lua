@@ -99,12 +99,12 @@ reset()
 plan_id = queue_walk()
 game.tick = 1
 tasks.on_tick()
-game.tick = 92
+game.tick = 602
 tasks.on_tick()
 local timed_out = tasks.plan_status({ plan_id = plan_id })
 check(timed_out.status == "failed" and timed_out.outcomes[1].error:match("^PATH_TIMEOUT:"),
   "nested walk retains deterministic missing-event timeout coverage")
-check(timed_out.observation and timed_out.observation.tick == 92,
+check(timed_out.observation and timed_out.observation.tick == 602,
   "timed-out plan still exposes its terminal observation")
 
 reset()

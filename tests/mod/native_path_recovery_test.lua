@@ -337,9 +337,11 @@ check(transient_result and transient_result.failed:match("^PATH_TRANSIENT:")
 
 task = reset()
 walk.step(task._walk, body, task.id)
-game.tick = 91
+game.tick = 300
+check(walk.step(task._walk, body, task.id) == nil, "a slow native search still has seconds to answer")
+game.tick = 601
 result = walk.step(task._walk, body, task.id)
-check(result and result.failed == "PATH_TIMEOUT: no native path result arrived within 90 ticks",
+check(result and result.failed == "PATH_TIMEOUT: no native path result arrived within 600 ticks",
   "missing native result times out deterministically")
 
 task = reset()

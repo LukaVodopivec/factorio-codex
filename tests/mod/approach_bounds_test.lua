@@ -342,16 +342,90 @@ inventory = { coal = 5 }
 plan = tasks.queue_plan({ steps = { { action = "insert_items", x = 20.5, y = -2.5, items = { coal = 5 },
   auto_supply = false } } }).plan_id
 local function silent_pathfinder() surface_request = nil end
-for _ = 1, 200 do
+for _ = 1, 700 do
   silent_pathfinder()
   tick()
   if storage.tasks.records[plan] then break end
 end
 record = storage.tasks.records[plan]
 outcome = record and last_outcome(record)
-check(record ~= nil and record.status == "failed" and game.tick <= 120 and outcome.result.code == "PATH_TIMEOUT"
+check(record ~= nil and record.status == "failed" and game.tick <= 620 and outcome.result.code == "PATH_TIMEOUT"
   and outcome.error:match("couldn't get in range: PATH_TIMEOUT"),
-  "a path request nobody answers fails the step with PATH_TIMEOUT in under two seconds")
+  "a path request nobody answers fails the step with PATH_TIMEOUT in about ten seconds")
+
+-- A slow native search that fails, then frontier probes nobody answers: the
+-- probes share one deadline, so the step ends with its PATH_NOT_FOUND
+-- diagnosis well before the 60 s stall watchdog would call it STEP_STALLED.
+reset(0.5, 0.1)
+machine = furnace(20.5, -2.5)
+entities = { machine }
+inventory = { coal = 5 }
+plan = tasks.queue_plan({ steps = { { action = "insert_items", x = 20.5, y = -2.5, items = { coal = 5 },
+  auto_supply = false } } }).plan_id
+local asked = {}
+for _ = 1, 4000 do
+  local request = surface_request
+  local active = storage.tasks.active
+  local a = active and active.current_task and active.current_task._approach
+  local phase = a and a.walk and a.walk.phase
+  if request and phase == "frontier_waiting" then
+    surface_request = nil -- probes never answer
+  elseif request then
+    asked[request.id] = asked[request.id] or game.tick
+    if game.tick - asked[request.id] >= 500 then -- a slow search that fails
+      surface_request = nil
+      walk.on_path_finished({ id = request.id })
+    end
+  end
+  game.tick = game.tick + 1
+  tasks.on_tick()
+  physics()
+  if storage.tasks.records[plan] then break end
+end
+record = storage.tasks.records[plan]
+outcome = record and last_outcome(record)
+check(record ~= nil and record.status == "failed" and game.tick < 3600
+  and outcome.error:match("PATH_NOT_FOUND") ~= nil and not outcome.error:match("STEP_STALLED"),
+  string.format("silent frontier probes end in PATH_NOT_FOUND by tick %d, not STEP_STALLED: %s", game.tick, tostring(outcome and outcome.error)))
+
+-- Worse: each walk's first slow path is found but the body cannot follow
+-- it, its re-plan fails slowly, then the probes stay silent, and the
+-- approach walks twice. The probes stop short of the stall watchdog's own
+-- deadline, so the diagnosis still survives.
+reset(0.5, 0.1)
+machine = furnace(20.5, -2.5)
+entities = { machine }
+inventory = { coal = 5 }
+plan = tasks.queue_plan({ steps = { { action = "insert_items", x = 20.5, y = -2.5, items = { coal = 5 },
+  auto_supply = false } } }).plan_id
+asked = {}
+for _ = 1, 4000 do
+  local request = surface_request
+  local active = storage.tasks.active
+  local a = active and active.current_task and active.current_task._approach
+  local w = a and a.walk
+  pinned = w ~= nil and w.phase == "following"
+  if request and w and w.phase == "frontier_waiting" then
+    surface_request = nil
+  elseif request then
+    asked[request.id] = asked[request.id] or game.tick
+    if game.tick - asked[request.id] >= 500 then
+      surface_request = nil
+      local found = w and (w.recoveries or 0) == 0
+      walk.on_path_finished({ id = request.id, path = found and { { position = { x = 20.5, y = -2.5 } } } or nil })
+    end
+  end
+  game.tick = game.tick + 1
+  tasks.on_tick()
+  physics()
+  if storage.tasks.records[plan] then break end
+end
+pinned = false
+record = storage.tasks.records[plan]
+outcome = record and last_outcome(record)
+check(record ~= nil and record.status == "failed" and not outcome.error:match("STEP_STALLED"),
+  string.format("a stuck path, slow re-plan and silent probes still end in a diagnosis by tick %d: %s",
+    game.tick, tostring(outcome and outcome.error):sub(1, 60)))
 
 -- ------------------------------------------------- approach escape budget
 -- One approach never renews its escape allowance: the start may clear and

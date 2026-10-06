@@ -19,7 +19,15 @@ local M = {}
 local WAYPOINT_RADIUS_SQ = 0.25 -- advance to the next waypoint within 0.5 tiles
 local STUCK_CHECK_TICKS = 60
 local STUCK_EPSILON_SQ = 0.01 -- moved less than 0.1 tiles in a check window = stuck
-local PATH_WAIT_TICKS = 90
+-- The native pathfinder spreads a search over ticks (1,000 steps a tick by
+-- default); a hard search, as into a forest around a tree being cleared,
+-- takes seconds. Answers normally come in a few ticks: this is a backstop.
+local PATH_WAIT_TICKS = 600
+-- All frontier probes together get at most this long, and never past two
+-- seconds before the plan's stall watchdog fires (storage.tasks.stall
+-- .deadline), so a slow forest search ends in its PATH_NOT_FOUND diagnosis
+-- rather than STEP_STALLED.
+local FRONTIER_WAIT_TICKS = 900
 local RETRY_DELAY_TICKS = 30
 local MAX_RETRIES = 3
 local MAX_RECOVERIES = 1
@@ -478,6 +486,9 @@ end
 local function begin_frontier_diagnostics(state, c, task_id)
   state.frontier_candidates, state.frontier_paths, state.frontier_index = {}, {}, 0
   state.frontier_probes, state.frontier_candidate_probes, state.frontier_ring = {}, {}, 1
+  local stall = storage.tasks and storage.tasks.stall
+  state.frontier_deadline = math.min(game.tick + FRONTIER_WAIT_TICKS,
+    stall and stall.deadline and stall.deadline - 120 or math.huge)
   add_frontier_ring(state, c, 1)
   return request_next_frontier(state, c, task_id)
 end
@@ -972,8 +983,14 @@ function M.step(state, c, task_id)
       end
       if not request_next_frontier(state, c, task_id) then return resolve_frontiers(state, c) end
       return nil
-    elseif game.tick - state.request_tick > PATH_WAIT_TICKS then
+    elseif game.tick - state.request_tick > PATH_WAIT_TICKS
+      or game.tick > (state.frontier_deadline or math.huge) then
       probe.reason = "timeout"
+      if game.tick > (state.frontier_deadline or math.huge) then
+        local pending = storage.path_request
+        if pending and pending.id == state.request_id then storage.path_request = nil end
+        return resolve_frontiers(state, c)
+      end
       if not request_next_frontier(state, c, task_id) then return resolve_frontiers(state, c) end
       return nil
     end

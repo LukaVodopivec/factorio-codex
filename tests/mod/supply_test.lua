@@ -854,6 +854,57 @@ check(fed_result and fed_result.status ~= "done" and fed_loads == 1 and inventor
   "a furnace a line starts feeding or emptying ends the smelt wait and is not loaded again ("
     .. tostring(fed_result and fed_result.detail) .. ")")
 
+-- A line that only empties the furnace (an output inserter, no feed) ends
+-- the wait at the first poll that sees fewer plates, though its ore keeps
+-- going down the way the body's own load would.
+reset()
+chest({ x = 3.5, y = 0.5 }, { ["iron-ore"] = 60, coal = 10 })
+local emptied = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = {},
+  unit_number = 42, prototype = { crafting_categories = { smelting = true } } })
+local emptied_source, emptied_loaded, emptied_loads, emptied_drop = {}, nil, 0, nil
+emptied.get_inventory = function(id)
+  if id == defines.inventory.furnace_source then return { get_item_count = count_of(emptied_source) } end
+  return { get_item_count = count_of(emptied.items) }
+end
+emptied.get_output_inventory = function() return holder(emptied.items) end
+emptied.get_fuel_inventory = function() return { is_empty = function() return emptied_loaded == nil end } end
+emptied.is_crafting = function() return emptied_loaded ~= nil and (emptied_source["iron-ore"] or 0) > 0 end
+supply.register_runner("insert", stub("insert", function(task)
+  if task.target.x == 6 then emptied_loads = emptied_loads + 1 end
+  for name, count in pairs(task.items) do
+    if name ~= "coal" then emptied_source[name] = (emptied_source[name] or 0) + count end
+    inventory[name] = inventory[name] - count
+  end
+  emptied_loaded = emptied_loaded or game.tick
+  return { status = "done", detail = "inserted", outcome = { transfers = {} } }
+end))
+local emptied_task = { items = { { name = "iron-plate", count = 50 } } }
+supply.start(emptied_task)
+local emptied_result
+for _ = 1, 8000 do
+  emptied_result = supply.tick(emptied_task)
+  if emptied_result then break end
+  game.tick = game.tick + 1
+  if emptied_loaded then
+    -- A plate every 96 ticks; from 400 ticks on the output inserter takes
+    -- every plate each second.
+    local since = game.tick - emptied_loaded
+    if since % 96 == 0 and emptied_source["iron-ore"] > 0 then
+      emptied_source["iron-ore"] = emptied_source["iron-ore"] - 1
+      emptied.items["iron-plate"] = (emptied.items["iron-plate"] or 0) + 1
+    end
+    if since >= 400 and since % 60 == 0 and (emptied.items["iron-plate"] or 0) > 0 then
+      emptied.items["iron-plate"] = 0
+      emptied_drop = emptied_drop or game.tick
+    end
+  end
+end
+local emptied_after = emptied_drop and game.tick - emptied_drop
+check(emptied_result and emptied_result.status ~= "done" and emptied_loads == 1 and emptied_after
+  and emptied_after <= 30 and emptied_result.detail:match("a line feeds or empties"),
+  "a furnace a line only empties ends the smelt wait at the next poll (" .. tostring(emptied_after) .. " ticks after: "
+    .. tostring(emptied_result and emptied_result.detail) .. ")")
+
 -- A furnace a line feeds and empties (crafting, ore in its source) is never
 -- picked: its counts keep moving while the body's own plates never show.
 reset()

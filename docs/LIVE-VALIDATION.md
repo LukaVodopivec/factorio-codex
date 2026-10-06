@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.24.1**. Prior live evidence remains historical
-until the 0.24.1 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.25.0**. Prior live evidence remains historical
+until the 0.25.0 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.

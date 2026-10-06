@@ -19,7 +19,10 @@ local surface = { find_entities_filtered = function(filter)
   return { entity }
 end }
 local technology = { name = "automation", researched = false }
-local force = { technologies = { automation = technology }, current_research = technology, research_queue = {} }
+local charted = true
+local force = { technologies = { automation = technology }, current_research = technology, research_queue = {},
+  is_chunk_charted = function() return charted end }
+entity.force = force
 local body = { valid = true, position = { x = 0, y = 0 }, surface = surface, force = force,
   walking_state = {}, mining_state = {}, crafting_queue = {} }
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
@@ -203,4 +206,48 @@ local most_ok = pcall(tasks.queue_plan, { steps = { { action = "inspect_entities
 local over_ok, over_err = pcall(tasks.queue_plan, { steps = { { action = "inspect_entities", positions = positions(65) } } })
 check(most_ok and not over_ok and tostring(over_err):find("requires 1-64 positions", 1, true),
   "an inspect_entities step takes 1-64 positions")
+-- A parked wait resumes after another plan took the body more than 30 tiles
+-- away. Its own charted machine is read from afar, as inspect_entity reads
+-- it; the body is not walked back.
+storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+body.position, body.walking_state, output_count, physical_starts, charted = { x = 0, y = 0 }, {}, 0, 0, true
+local away = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2,
+  inventory = "output", item = "iron-plate", count = 2, timeout_seconds = 60 } } })
+game.tick = 2000; tasks.on_tick()
+check(tasks.plan_status({ plan_id = away.plan_id }).status == "waiting", "the wait parks after reading its target nearby")
+body.position, output_count = { x = 200, y = 200 }, 2
+game.tick = 2030; tasks.on_tick()
+local away_status = tasks.plan_status({ plan_id = away.plan_id })
+check(away_status.status == "completed" and away_status.outcomes[1].result:match("output has 2 iron%-plate") ~= nil
+  and physical_starts == 0,
+  "a resumed wait 200 tiles from its charted machine reads it remotely and completes without walking")
+
+-- An uncharted target is not readable from afar: the resumed wait walks back
+-- within reach of its target once, then reads it locally under its deadline.
+storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+body.position, body.walking_state, output_count, physical_starts, charted = { x = 0, y = 0 }, {}, 0, 0, false
+local walked
+local walk_start, walk_tick = physical_runner.start, physical_runner.tick
+physical_runner.start = function(task) walked = task; physical_starts = physical_starts + 1 end
+physical_runner.tick = function() body.position = { x = 5, y = 2 }; return { status = "done" } end
+local back = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2,
+  inventory = "output", item = "iron-plate", count = 2, timeout_seconds = 60 } } })
+game.tick = 3000; tasks.on_tick()
+body.position = { x = 200, y = 200 }
+game.tick = 3030; tasks.on_tick()
+check(physical_starts == 1 and walked and walked.target.x == 2 and walked.target.y == 2
+  and walked.arrival_mode == "vicinity" and walked.arrival_radius == 6
+  and tasks.plan_status({ plan_id = back.plan_id }).status == "running",
+  "a resumed wait that cannot read its target from afar walks back to it")
+game.tick = 3031; tasks.on_tick()
+check(body.position.x == 5 and tasks.plan_status({ plan_id = back.plan_id }).status == "waiting",
+  "after walking back the wait reads its target locally and parks again")
+output_count = 2
+game.tick = 3061; tasks.on_tick()
+local back_status = tasks.plan_status({ plan_id = back.plan_id })
+check(back_status.status == "completed" and back_status.outcomes[1].status == "completed"
+  and back_status.outcomes[1].recovery and back_status.outcomes[1].recovery.code == "TARGET_OUT_OF_OBSERVATION_RANGE"
+  and back_status.outcomes[1].recovery.fix == "walk_to",
+  "the walked-back wait completes and records its walk-back recovery")
+physical_runner.start, physical_runner.tick = walk_start, walk_tick
 os.exit(failures == 0 and 0 or 1)

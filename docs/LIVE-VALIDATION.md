@@ -332,8 +332,11 @@ turning them into a fixed opening or map-specific sequence:
   earlier placement in the same build plan. Wrong endpoint geometry fails
   before mutation, while runtime binding remains exact and pending until first
   output when appropriate.
-- An out-of-range `wait_for_item` fails immediately with the physical-distance
-  correction instead of consuming its timeout. An insertion that accepts only
+- A `wait_for_item` beyond 30 tiles reads its target remotely when it is an
+  own-force machine in charted land. Otherwise a wait that has read its target
+  before (another plan then moved the body) walks back to it once; a wait that
+  never read it fails immediately with the physical-distance correction instead
+  of consuming its timeout. An insertion that accepts only
   part of a request terminates as `partial`, reports requested/inserted/remainder
   counts, preserves the useful accepted amount, and does not execute dependent
   steps.

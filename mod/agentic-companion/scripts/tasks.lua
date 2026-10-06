@@ -748,22 +748,26 @@ local function wait_for_item(plan, step)
   -- The condition is read before the deadline is applied: a wait whose items
   -- are present never times out on stale evidence.
   local timed_out = game.tick - plan.wait_started_tick >= wait_timeout_ticks(step)
+  -- The read is inspect_entity's: within 30 tiles of the body, or beyond
+  -- them an own-force entity the force has charted (a parked wait the body
+  -- left for other work keeps reading its machine from afar).
+  local response = inspect.inspect({ targets = { { x = step.x, y = step.y } } })
+  local entity = response.entities and response.entities[1]
   local c = companion.require_companion()
   local dx, dy = c.position.x - step.x, c.position.y - step.y
-  if dx * dx + dy * dy > 900 and timed_out then
-    plan.wait_started_tick, plan.next_check_tick = nil, nil
-    return { status = "failed", detail = wait_timeout_detail(step) }
-  end
-  if dx * dx + dy * dy > 900 then
+  if (not entity or entity.error) and dx * dx + dy * dy > 900 then
+    if timed_out then
+      plan.wait_started_tick, plan.next_check_tick = nil, nil
+      return { status = "failed", detail = wait_timeout_detail(step) }
+    end
+    -- The deadline stays: a wait that walks back to its target keeps it.
     local distance = math.sqrt(dx * dx + dy * dy)
-    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    plan.next_check_tick = nil
     return { status = "failed",
-      detail = string.format("TARGET_OUT_OF_OBSERVATION_RANGE: wait target is %.1f tiles away; maximum is 30", distance),
+      detail = string.format("TARGET_OUT_OF_OBSERVATION_RANGE: wait target is %.1f tiles away and not readable from here; maximum is 30", distance),
       outcome = { code = "TARGET_OUT_OF_OBSERVATION_RANGE", distance = distance,
         max_distance = 30, corrective_hint = "Physically approach with walk_to, or put this wait after a movement predecessor." } }
   end
-  local response = inspect.inspect({ targets = { { x = step.x, y = step.y } } })
-  local entity = response.entities and response.entities[1]
   if not entity or entity.error then return { status = "failed", detail = entity and entity.error or "inspect returned no entity" } end
   local found = entity.inventories and entity.inventories[step.inventory] and entity.inventories[step.inventory][step.item] or 0
   if step._starting_count == nil then step._starting_count = found end
@@ -853,6 +857,10 @@ local function try_recover(plan, step, result)
     local ok, exit = pcall(footprint_exit, failed)
     if not ok or not exit then return false end
     recovery.fix = { type = "walk_to", target = exit, arrival_mode = "exact", arrival_radius = 1 }
+  elseif code == "TARGET_OUT_OF_OBSERVATION_RANGE" and step.action == "wait_for_item" and step._starting_count ~= nil then
+    -- A wait that has read its target before (another plan then moved the
+    -- body away) walks back to it once and reads it again.
+    recovery.fix = { type = "walk_to", target = { x = step.x, y = step.y }, arrival_mode = "vicinity", arrival_radius = 6 }
   elseif code == "TARGET_OUT_OF_REACH" and failed and runners[failed.type] then
     recovery.resume_tick = game.tick
   elseif code == "PARTIAL_INSERT" and step.action == "insert_items" then

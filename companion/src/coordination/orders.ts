@@ -181,22 +181,27 @@ function hardRejection(entry: any): string | null {
   return null;
 }
 
-/** Whether a package lays tiles: what follows them stands on ground the map
- *  does not have yet. */
-const laysTiles = (entry: BuildPackage | undefined) => entry?.steps.some((step) => step.action === "place_tiles") === true;
+/** Whether a step changes the ground the steps after it stand on: landfill
+ *  makes it, and mining, deconstruction or a move clears it, so the map does
+ *  not have it yet. */
+const changesGround = (step: { action: string }) =>
+  ["place_tiles", "mine", "deconstruct_area", "move_entity"].includes(step.action);
+const changesGroundIn = (entry: BuildPackage | undefined) => entry?.steps.some(changesGround) === true;
 
 /** The mod's own placement check for one package; a reason when it fails,
  *  also when its first step is a block, layout or blueprint that needs an
  *  item the body can neither carry nor obtain now (ITEM_UNOBTAINABLE).
- *  Only steps before the first place_tiles are checked against the map: a
- *  landfill makes the ground the later ones need, and the mod checks them when
- *  they run. Items are like ground: a later step, or any step while a
- *  predecessor's plan is still pending (afterPending), may use what runs
- *  before it builds or carries, so the mod checks those when they run. */
+ *  Only steps before the first one that changes the ground (place_tiles,
+ *  mine, deconstruct_area, move_entity) are checked against the map: a
+ *  landfill makes the ground the later ones need and a removal clears it, and
+ *  the mod checks them when they run. Items are like ground: a later step, or
+ *  any step while a predecessor's plan is still pending (afterPending), may
+ *  use what runs before it builds or carries, so the mod checks those when
+ *  they run. */
 export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPending = false): Promise<string | null> {
   try {
-    const tiles = entry.steps.findIndex((step) => step.action === "place_tiles");
-    const checked = tiles < 0 ? entry.steps : entry.steps.slice(0, tiles);
+    const cut = entry.steps.findIndex(changesGround);
+    const checked = cut < 0 ? entry.steps : entry.steps.slice(0, cut);
     // The only step whose items are checked now.
     const first = afterPending ? undefined : entry.steps.find((step) => step.action !== "blueprint_capture");
     const places = checked.flatMap((step) => step.action === "place_entity" ? [step] : []);
@@ -395,9 +400,10 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
           }
           if (status === "queued" || status === "running" || status === "waiting") {
             // A capture records what the predecessor built, and a check needs
-            // the ground its landfill makes, so either waits for its end.
+            // the ground its landfill makes or its removals clear, so either
+            // waits for its end.
             const predecessor = ledger.build_packages.find((other) => other.package_id === entry.after_package_id);
-            if (captures.length > 0 || laysTiles(predecessor)) continue;
+            if (captures.length > 0 || changesGroundIn(predecessor)) continue;
             afterPlanId = before.plan_id;
           } else if (status !== undefined && status !== "completed") {
             record(id, { status: "failed", reason: `after_package_id ${entry.after_package_id} ended ${status}` });

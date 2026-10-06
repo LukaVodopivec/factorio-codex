@@ -282,7 +282,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/Plan steps only: `equip` wears armor[\s\S]*`flush_fluid` empties a pipe or tank system/);
     for (const tool of ["configure_entity", "place_tiles", "set_requests"]) expect(registered).toContain(tool);
     for (const step of ["equip", "flush_fluid"]) expect(registered).not.toContain(step);
-    expect(flat(strategist)).toMatch(/a site cut off by water starts with a `place_tiles` landfill step \(steps after it, and a successor package, are checked only when they run, so they need no dry run on the water\)\. Give layout entities their `settings`/);
+    expect(flat(strategist)).toMatch(/a site cut off by water starts with a `place_tiles` landfill step; steps after it or after a removal \(mine, deconstruct, move\), and a successor package, are checked only when they run\. Give layout entities their `settings`/);
     expect(flat(knowledge)).toMatch(/solar panels with accumulators are an option that needs no fuel/);
     expect(flat(knowledge)).toMatch(/Filter inserters and filtered splitters sort mixed belts, such as Fulgora's scrap/);
     expect(flat(knowledge)).toMatch(/Landfill joins a site across water; Aquilo's ocean takes ice platform/);

@@ -768,7 +768,7 @@ check(far_result and far_result.status == "done" and walked >= 3000,
   "a long walk to the furnace does not use up the smelt wait")
 
 -- The wait ends by its deadline even while the furnace's counts keep moving
--- (a line's inserter started taking from it after the body loaded it).
+-- the way the body's own load would (the ore slowly goes, no plate shows).
 reset()
 chest({ x = 3.5, y = 0.5 }, { ["iron-ore"] = 20, coal = 10 })
 local churn = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = {},
@@ -796,10 +796,63 @@ for _ = 1, 40000 do
   if churned then break end
   game.tick, waited = game.tick + 1, waited + 1
   if (churn_source["iron-ore"] or 0) > 0 then loaded = true end
-  if loaded then churn_source["iron-ore"] = 1 + math.floor(game.tick / 30) % 2 end
+  if loaded and game.tick % 500 == 0 and churn_source["iron-ore"] > 0 then
+    churn_source["iron-ore"] = churn_source["iron-ore"] - 1
+  end
 end
-check(churned and churned.status ~= "done" and waited > 700 and waited < 20000,
+check(churned and churned.status ~= "done" and waited > 700 and waited < 20000
+  and churned.detail:match("made none of this load in time"),
   "a smelt wait whose counts keep moving ends by its deadline (" .. waited .. " ticks)")
+
+-- A line that starts feeding or emptying the furnace after the body loaded
+-- it ends the wait at once (its counts move against the body's load): the
+-- plates made so far are taken and the furnace is never loaded again.
+reset()
+chest({ x = 3.5, y = 0.5 }, { ["iron-ore"] = 60, coal = 10 })
+local fed_line = add({ type = "furnace", name = "stone-furnace", position = { x = 6, y = 0 }, items = {},
+  unit_number = 41, prototype = { crafting_categories = { smelting = true } } })
+local fed_source, fed_loaded, fed_loads = {}, nil, 0
+fed_line.get_inventory = function(id)
+  if id == defines.inventory.furnace_source then return { get_item_count = count_of(fed_source) } end
+  return { get_item_count = count_of(fed_line.items) }
+end
+fed_line.get_output_inventory = function() return holder(fed_line.items) end
+fed_line.get_fuel_inventory = function() return { is_empty = function() return fed_loaded == nil end } end
+fed_line.is_crafting = function() return fed_loaded ~= nil end
+supply.register_runner("insert", stub("insert", function(task)
+  if task.target.x == 6 then fed_loads = fed_loads + 1 end
+  for name, count in pairs(task.items) do
+    if name ~= "coal" then fed_source[name] = (fed_source[name] or 0) + count end
+    inventory[name] = inventory[name] - count
+  end
+  fed_loaded = fed_loaded or game.tick
+  return { status = "done", detail = "inserted", outcome = { transfers = {} } }
+end))
+local fed_task = { items = { { name = "iron-plate", count = 50 } } }
+supply.start(fed_task)
+local fed_result
+for _ = 1, 4000 do
+  fed_result = supply.tick(fed_task)
+  if fed_result or (fed_loaded and game.tick - fed_loaded >= 3000) then break end
+  game.tick = game.tick + 1
+  if fed_loaded then
+    -- A plate every 96 ticks. From ten seconds on the line's input inserter
+    -- tops the source up, and soon after its output inserter takes every
+    -- plate, so the counts keep moving and the load never visibly finishes.
+    local since = game.tick - fed_loaded
+    if since >= 600 and since % 30 == 0 then fed_source["iron-ore"] = (fed_source["iron-ore"] or 0) + 1 end
+    if since % 96 == 0 and fed_source["iron-ore"] > 0 then
+      fed_source["iron-ore"] = fed_source["iron-ore"] - 1
+      fed_line.items["iron-plate"] = (fed_line.items["iron-plate"] or 0) + 1
+    end
+    if since >= 700 and since % 60 == 0 then fed_line.items["iron-plate"] = 0 end
+  end
+end
+check(fed_result and fed_result.status ~= "done" and fed_loads == 1 and inventory["iron-plate"] == 6
+  and fed_result.detail:match("missing 44 iron%-plate")
+  and fed_result.detail:match("no own furnace is free to smelt it %(smelting%); a line feeds or empties the one it loaded"),
+  "a furnace a line starts feeding or emptying ends the smelt wait and is not loaded again ("
+    .. tostring(fed_result and fed_result.detail) .. ")")
 
 -- A furnace a line feeds and empties (crafting, ore in its source) is never
 -- picked: its counts keep moving while the body's own plates never show.

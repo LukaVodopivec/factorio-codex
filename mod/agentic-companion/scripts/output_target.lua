@@ -46,10 +46,12 @@ local function identity(entity)
     position = { x = entity.position.x, y = entity.position.y } }
 end
 
-function M.resolve(c, requested, label, kind)
+-- before_walk: a placement that will first walk to its position checks the
+-- 30-tile reach after that walk (its re-resolve), not from where it starts.
+function M.resolve(c, requested, label, kind, before_walk)
   local target = position(requested, label or "output_target")
   local dx, dy = c.position.x - target.x, c.position.y - target.y
-  if dx * dx + dy * dy > 900 then error((label or "output_target") .. " must be within 30 tiles of Codex") end
+  if not before_walk and dx * dx + dy * dy > 900 then error((label or "output_target") .. " must be within 30 tiles of Codex") end
   if not c.force.is_chunk_charted(c.surface, { x = math.floor(target.x / 32), y = math.floor(target.y / 32) }) then
     error((label or "output_target") .. " must be force-charted")
   end
@@ -187,19 +189,19 @@ function M.planned_recipient_positions(proto, point, producer_position, producer
 end
 
 -- Geometry is provisional; later-tick pickup_target/drop_target is authoritative.
-function M.recipient_at(c, point, kind, producer_type)
+function M.recipient_at(c, point, kind, producer_type, before_walk)
   if not point then return nil, nil, "no-endpoint" end
   if not c.force.is_chunk_charted(c.surface,
     { x = math.floor(point.x / 32), y = math.floor(point.y / 32) }) then return nil, nil, "uncharted" end
   local dx, dy = point.x - c.position.x, point.y - c.position.y
-  if dx * dx + dy * dy > 900 then return nil, nil, "out_of_range" end
+  if not before_walk and dx * dx + dy * dy > 900 then return nil, nil, "out_of_range" end
   local area = M.endpoint_area(point, producer_type, kind)
   local matches = {}
   local found = c.surface.find_entities_filtered({ area = area })
   for _, entity in ipairs(found) do
     if entity.valid then
       local dx, dy = entity.position.x - c.position.x, entity.position.y - c.position.y
-      if entity.force == c.force and dx * dx + dy * dy <= 900
+      if entity.force == c.force and (before_walk or dx * dx + dy * dy <= 900)
         and c.force.is_chunk_charted(c.surface, { x = math.floor(entity.position.x / 32), y = math.floor(entity.position.y / 32) })
         and M.can_target_type(entity.type, kind)
         and M.recipient_contains(entity.bounding_box, point, producer_type, kind) then
@@ -219,17 +221,17 @@ function M.recipient_at(c, point, kind, producer_type)
   return matches[1], identity(matches[1]), "bound", #found
 end
 
-function M.geometry_matches(c, proto, position, direction, expected)
+function M.geometry_matches(c, proto, position, direction, expected, before_walk)
   local point = M.output_position(proto, position, direction)
   if not point then return false, nil end
-  local recipient = M.recipient_at(c, point, "output", proto.type)
+  local recipient = M.recipient_at(c, point, "output", proto.type, before_walk)
   return recipient == expected, point
 end
 
-function M.input_geometry_matches(c, proto, position, direction, expected)
+function M.input_geometry_matches(c, proto, position, direction, expected, before_walk)
   local point = M.input_position(proto, position, direction)
   if not point then return false, nil end
-  local source = M.recipient_at(c, point, "input", proto.type)
+  local source = M.recipient_at(c, point, "input", proto.type, before_walk)
   return source == expected, point
 end
 

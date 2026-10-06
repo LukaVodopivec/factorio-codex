@@ -602,4 +602,44 @@ local wrong_bounded_plan = pcall(build_plan.start, { steps = {
 check(not wrong_bounded_plan and created == 0 and removed == 0,
   "a different bounded recipient cannot admit the exact out-of-range planned target")
 
+
+-- Target reach is a physical-act limit: it holds after place's approach walk,
+-- not from wherever the body stood when the place step began.
+local approach_stub = package.loaded["scripts.actions.approach"]
+local walked_to
+approach_stub.ensure = function() body.position = walked_to; return "ok" end
+prototypes.item["burner-inserter"].place_result = { name = "burner-inserter", type = "inserter",
+  inserter_pickup_position = { x = 0, y = -1 }, inserter_drop_position = { x = 1, y = 0 } }
+recipient.valid, game.tick = true, game.tick + 1
+for _, case in ipairs({
+  { name = "drill output_target", task = { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 },
+    output_target = { x = 2.5, y = 0.5 } }, pickup = nil, drop = nil, matches = { recipient } },
+  { name = "inserter input_target and output_target", task = { item = "burner-inserter", position = { x = 1.5, y = 0.5 },
+    input_target = { x = 1.5, y = -0.5 }, output_target = { x = 2.5, y = 0.5 } },
+    pickup = source, drop = recipient, matches = { source, recipient } },
+}) do
+  created, removed, pickup_target, drop_target, target_matches = 0, 0, case.pickup, case.drop, case.matches
+  body.position, walked_to = { x = 100.5, y = 0.5 }, { x = 0.5, y = 0.5 }
+  local far_ok, far_error = pcall(place.start, case.task)
+  check(far_ok, case.name .. " beyond 30 tiles of the starting body is accepted before the walk: " .. tostring(far_error))
+  local far_pending = far_ok and place.tick(case.task)
+  check(far_ok and far_pending == nil and created == 1 and removed == 1,
+    case.name .. " is placed once the approach walk brings it within reach")
+  game.tick = game.tick + 1
+  local far_result = far_ok and place.tick(case.task)
+  check(far_result and far_result.status == "done", case.name .. " completes after the walk")
+  created, removed, target_matches = 0, 0, case.matches
+  body.position, walked_to = { x = 100.5, y = 0.5 }, { x = 100.5, y = 0.5 }
+  local stuck = {}
+  for key, value in pairs(case.task) do stuck[key] = value end
+  stuck._existing, stuck._supplied, stuck._input_target, stuck._output_target = nil, nil, nil, nil
+  local stuck_started = pcall(place.start, stuck)
+  local stuck_ok, stuck_error = pcall(place.tick, stuck)
+  check(stuck_started and not stuck_ok and tostring(stuck_error):match("within 30 tiles of Codex") and created == 0 and removed == 0,
+    case.name .. " still out of reach after the walk is refused before placement")
+end
+body.position = { x = 0.5, y = 0.5 }
+approach_stub.ensure = function() return "ok" end
+prototypes.item["burner-inserter"].place_result = narrow
+
 os.exit(failures == 0 and 0 or 1)

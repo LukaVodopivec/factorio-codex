@@ -72,9 +72,19 @@ check(build.place.tick(place) == nil and captured_reach == body.build_distance,
   "placement waits for physical build reach instead of acting remotely")
 approach_result = "ok"
 local blocked = build.place.tick(place)
-check(blocked.status == "failed" and blocked.detail:match("rock%-huge is in the way") ~= nil
+check(blocked.status == "failed" and blocked.detail:match("rock%-huge at %(4%.0, 0%.0%) is in the way") ~= nil
   and inventory["stone-furnace"] == 1,
   "blocked placement fails without consuming inventory or creating an entity")
+-- A neighbour within a tile is named only when nothing touches the footprint.
+local search = surface.find_entities_filtered
+local neighbour = { valid = true, name = "pipe", type = "pipe", position = { x = 5, y = 0 } }
+local touching = { valid = true, name = "tree-01", type = "tree", position = { x = 4.6, y = 0.7 } }
+surface.find_entities_filtered = function(filter) return { filter.area and touching or neighbour } end
+build.place.start(place)
+local named = build.place.tick(place)
+check(named.status == "failed" and named.detail:match("tree%-01 at %(4%.6, 0%.7%) is in the way") ~= nil,
+  "a blocked placement names what touches its footprint, not a neighbour")
+surface.find_entities_filtered = search
 
 local explicit = { target = { x = 1, y = 0 }, direction = 12 }
 build.rotate.start(explicit)

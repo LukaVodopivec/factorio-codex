@@ -505,7 +505,7 @@ local function ground(ctx, proto, pos, direction)
     if placeable_now or why == "CODEX_BODY_OVERLAP" then
       ok = true
     else
-      local found_ok, found = pcall(c.surface.find_entities_filtered, { area = area, limit = 33 })
+      local found_ok, found = pcall(c.surface.find_entities_filtered, { area = placement_geometry.touching(area), limit = 33 })
       local blocker
       for _, e in ipairs(found_ok and found or {}) do
         if e.valid and e ~= c and not placement_geometry.NON_BLOCKING_TYPES[e.type] then

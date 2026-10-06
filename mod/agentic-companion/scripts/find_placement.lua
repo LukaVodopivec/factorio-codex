@@ -581,7 +581,7 @@ local function search_result(S, X, c)
   local input_target, output_target = S.input_target, S.output_target
   local blocker
   if closest_rejected and closest_rejected.reason == "blocked" and closest_rejected.area then
-    for _, entity in ipairs(c.surface.find_entities_filtered({ area = closest_rejected.area })) do
+    for _, entity in ipairs(c.surface.find_entities_filtered({ area = placement_geometry.touching(closest_rejected.area) })) do
       if entity.valid and not placement_geometry.NON_BLOCKING_TYPES[entity.type] then
         blocker = { name = entity.name, position = { x = entity.position.x, y = entity.position.y } }
         break

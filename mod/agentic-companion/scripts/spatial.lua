@@ -741,7 +741,7 @@ local function can_place_one(c, surface, item, position, direction)
   -- Best-effort explanation: name whatever occupies the would-be footprint.
   local area = placement_geometry.footprint(entity_proto, pos, direction)
   local blocker, companion_in_way, only_natural = nil, nil, true
-  for _, e in ipairs(surface.find_entities_filtered({ area = area, limit = 65 })) do
+  for _, e in ipairs(surface.find_entities_filtered({ area = placement_geometry.touching(area), limit = 65 })) do
     if e.valid then
       if e == c then
         companion_in_way = true

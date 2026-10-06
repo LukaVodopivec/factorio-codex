@@ -51,6 +51,14 @@ function M.overlaps(a, b)
     and a.left_top.y < b.right_bottom.y and a.right_bottom.y > b.left_top.y
 end
 
+-- Factorio refuses a placement whose box only touches another box, edge on
+-- edge; a strict overlap misses those, so blocker searches grow by a hair.
+function M.touching(area)
+  local m = 0.005
+  return { left_top = { x = area.left_top.x - m, y = area.left_top.y - m },
+    right_bottom = { x = area.right_bottom.x + m, y = area.right_bottom.y + m } }
+end
+
 function M.character_box(c)
   if c.bounding_box and c.bounding_box.left_top then return c.bounding_box end
   local proto = c.prototype or (prototypes and prototypes.entity and prototypes.entity[c.name or "character"])

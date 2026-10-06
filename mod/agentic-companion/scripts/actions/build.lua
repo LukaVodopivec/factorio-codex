@@ -34,11 +34,19 @@ end
 
 -- ------------------------------------------------------------------ place
 
--- Why can_place_entity said no: name the blocker if we can find one.
-local function blocked_reason(c, pos)
-  for _, e in ipairs(c.surface.find_entities_filtered({ position = pos, radius = 1.0 })) do
-    if e.valid and e ~= c and e.type ~= "resource" then
-      return string.format("%s is in the way — pick a clear spot or remove it first", e.name)
+-- Why can_place_entity said no: name the blocker if we can find one, first
+-- what touches the footprint itself, then anything within a tile.
+local function blocked_reason(c, pos, proto, direction)
+  local searches = { { position = pos, radius = 1.0 } }
+  if proto then
+    table.insert(searches, 1, { area = placement_geometry.touching(placement_geometry.footprint(proto, pos, direction)) })
+  end
+  for _, search in ipairs(searches) do
+    for _, e in ipairs(c.surface.find_entities_filtered(search)) do
+      if e.valid and e ~= c and e.type ~= "resource" then
+        return string.format("%s at (%.1f, %.1f) is in the way — pick a clear spot or remove it first",
+          e.name, e.position.x, e.position.y)
+      end
     end
   end
   -- A liquid other than water names itself (lava, an oil or ammoniacal ocean).
@@ -115,6 +123,7 @@ end
 local MAX_CLEARS = 16
 local NATURAL_BLOCKERS = { "simple-entity", "tree", "plant" }
 local function natural_blocker(c, area)
+  area = placement_geometry.touching(area)
   local ok, found = pcall(c.surface.find_entities_filtered, { area = area, type = NATURAL_BLOCKERS })
   if not ok or type(found) ~= "table" then return nil end
   for _, e in ipairs(found) do
@@ -494,7 +503,7 @@ function M.place.tick(task)
       status = "failed",
       detail = string.format("can't place %s at (%.1f, %.1f) — %s",
         task.item, task.position.x, task.position.y,
-        placement_reason == "CODEX_BODY_OVERLAP" and "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint" or blocked_reason(c, task.position)),
+        placement_reason == "CODEX_BODY_OVERLAP" and "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint" or blocked_reason(c, task.position, prototypes.item[task.item].place_result, task.direction)),
     }
   end
 

@@ -959,6 +959,13 @@ check(build.clear_footprint(place, body, proto, place.position, 0) == "ok" and n
   and inventory.wood == 4, "once the footprint is clear, placement goes on; trees outside it stay")
 local kept = { id = 8, item = "stone-furnace", position = { x = 14, y = 11 }, auto_clear = false }
 check(build.clear_footprint(kept, body, proto, kept.position, 0) == "ok" and far_tree.valid, "auto_clear=false leaves trees")
+-- The game refuses a placement whose box only touches a tree's box edge on
+-- edge, so such a tree is cleared too.
+local touching = natural("tree", "tree-02", { x = 22.3, y = 11 }, { { name = "wood", amount = 4 } })
+touching.bounding_box = { left_top = { x = 21.9, y = 10.6 }, right_bottom = { x = 22.7, y = 11.4 } }
+local edge = { id = 10, item = "stone-furnace", position = { x = 21, y = 11 } }
+check(build.clear_footprint(edge, body, proto, edge.position, 0) == nil and edge._clear and edge._clear.entity == touching,
+  "a tree whose box touches the footprint edge is mined before placement")
 
 -- Embedded auto-supply runs once and reports.
 reset()

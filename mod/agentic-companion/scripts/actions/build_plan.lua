@@ -770,7 +770,7 @@ function M.tick(task)
   if not can_place then
     return advance(task, false, string.format("can't place %s at (%.1f, %.1f) — %s",
       step.item, step.position.x, step.position.y,
-      placement_reason == "CODEX_BODY_OVERLAP" and "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint" or blocked_reason(c, step.position)))
+      placement_reason == "CODEX_BODY_OVERLAP" and "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint" or blocked_reason(c, step.position, place_result, step.direction)))
   end
 
   local built = c.surface.create_entity({

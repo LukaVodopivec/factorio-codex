@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyLedgerFile, operationsLedgerSchema, reduceLedger } from "../src/coordination/ledger.js";
+import { z } from "zod";
+import { AFTER_PACKAGE_ID_RULE, applyLedgerFile, operationsLedgerSchema, reduceLedger } from "../src/coordination/ledger.js";
 
 const temporary: string[] = [];
 afterEach(() => {
@@ -382,6 +384,19 @@ describe("build packages the bridge queues", () => {
     const result = reduceLedger(ledger(), { ...envelope(101), update }).result;
     expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("update.build_packages"))).toBe(true);
+  });
+
+  it("tells the strategist in the schema and the ledger-apply help that chaining cancels after a partial predecessor", () => {
+    expect(AFTER_PACKAGE_ID_RULE).toMatch(/only when a package really needs its predecessor's result/);
+    expect(AFTER_PACKAGE_ID_RULE).toMatch(/the FIFO already runs packages in ledger order/);
+    expect(AFTER_PACKAGE_ID_RULE).toMatch(/predecessor ends partial, failed or cancelled is cancelled/);
+    const schema = z.toJSONSchema(operationsLedgerSchema, { io: "input" }) as {
+      properties: { build_packages: { items: { properties: { after_package_id: { description?: string } } } } } };
+    expect(schema.properties.build_packages.items.properties.after_package_id.description).toBe(AFTER_PACKAGE_ID_RULE);
+    const root = path.resolve(import.meta.dirname, "../..");
+    const help = execFileSync(path.join(root, "node_modules/.bin/tsx"), [path.join(root, "companion/src/cli.ts"), "--help"], { encoding: "utf8" });
+    const ledgerApply = help.split("\n").findIndex((line) => line.includes("factorio-codex ledger-apply"));
+    expect(help.split("\n")[ledgerApply + 1]?.trim()).toBe(AFTER_PACKAGE_ID_RULE);
   });
 
   it("reads a 0.21.1 ledger whose layout entities kept free-form blueprint settings, and applies updates to it", () => {

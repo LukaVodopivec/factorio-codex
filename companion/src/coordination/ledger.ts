@@ -44,11 +44,15 @@ const packageSurface = z.string().regex(/^(?:[a-z][a-z0-9-]{0,39}|platform:[1-9]
 // (coordination/orders.ts). Leading blueprint_capture steps are made by the
 // bridge before the rest is queued. Every package an update writes names its
 // surface; one stored before protocol 28 (no surface) was for nauvis.
+/** What after_package_id means, for the schema and the ledger-apply help. */
+export const AFTER_PACKAGE_ID_RULE = "after_package_id: set it only when a package really needs its predecessor's result"
+  + " (a capture of it, its landfill, its machines to connect); the FIFO already runs packages in ledger order,"
+  + " and a package whose predecessor ends partial, failed or cancelled is cancelled, never run";
 const packageFields = z.object({
   package_id: packageId,
   serves: z.enum(["NOW", "NEXT"]),
   intent: text(240),
-  after_package_id: packageId.nullable().default(null),
+  after_package_id: packageId.nullable().default(null).describe(AFTER_PACKAGE_ID_RULE),
   source_tick: z.number().int().nonnegative(),
   anchor: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
   required_items: z.record(z.string().min(1), z.number().int().positive())

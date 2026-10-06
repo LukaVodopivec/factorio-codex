@@ -12,7 +12,7 @@ const pilot = read(".agents/skills/factorio-player/GOAL-PILOT-v1.md");
 const strategist = read(".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md");
 const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md");
 const reference = read(".agents/skills/factorio-player/FACTORIO-REFERENCE.md");
-const benchmark = read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md");
+const benchmark = flat(read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md"));
 const agents = flat(read("AGENTS.md"));
 const live = flat(read("docs/LIVE-VALIDATION.md"));
 const readme = flat(read("README.md"));
@@ -34,6 +34,11 @@ describe("persistent two-brain coordination contract", () => {
     expect(size).toBeLessThan(34_700);
     expect(skill).not.toMatch(/## Engineering reuse/);
     for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
+  });
+
+  it("tells the benchmark strategist that ledger order needs no chaining and a partial predecessor cancels its successor", () => {
+    expect(benchmark).toMatch(/The FIFO already runs packages in ledger order, so set after_package_id only for a real dependency/);
+    expect(benchmark).toMatch(/a package whose predecessor ends partial, failed or cancelled is cancelled/);
   });
 
   it("states the showcase purpose and asks each role to say what it intends", () => {

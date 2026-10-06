@@ -99,6 +99,7 @@ check(tasks.plan_status({ plan_id = pickup_plan.plan_id }).observation == nil
 check(a.observation and a.observation.detail == "compact", "terminal plan includes selected observation")
 local bad = tasks.queue_plan({ steps = { { action = "mine", x = 1, y = 1 } } })
 local blocked = tasks.queue_plan({ steps = { { action = "walk_to", x = 9, y = 9 } }, after_plan_id = bad.plan_id, observation_detail = "compact" })
+check(bad.tick == game.tick and blocked.tick == game.tick, "queue_plan returns the queuing tick that anchors the caller's next_event")
 for tick = 6, 9 do game.tick = tick; tasks.on_tick() end
 check(tasks.plan_status({ plan_id = bad.plan_id }).status == "failed", "plan failure is observable")
 local blocked_status = tasks.plan_status({ plan_id = blocked.plan_id })

@@ -347,6 +347,9 @@ turning them into a fixed opening or map-specific sequence:
   steps.
 - Queue and plan responses carry a self-describing `terminal` state and exact
   `next_action`; a terminal continuation handle is never waited a second time.
+  A queued or running plan's `next_action` is a `next_event` whose `since_tick`
+  is one tick before the queue or read, so a plan that ends before the wait
+  starts still returns `plan_ended`, not `queue_empty`.
 - A plan with `observation_detail=none` returns compact outcomes, execution
   metadata, and inventory deltas without an embedded observation. An explicit
   compact request retains bounded detail and omission counts; a terminal

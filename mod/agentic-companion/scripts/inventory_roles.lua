@@ -35,7 +35,14 @@ function M.get(entity, role)
   elseif role == "rocket" then defines_of = ROCKET[kind]
   elseif GETTERS[role] and not (role == "output" and (MAIN[kind] or kind == "roboport")) then
     local ok, inventory = pcall(function() return entity[GETTERS[role]]() end)
-    return ok and inventory and { inventory } or {}
+    if not (ok and inventory) then return {} end
+    -- A burner drill's output getter returns its fuel inventory: that is fuel
+    -- only, so output reads and extractions never take its reserve fuel.
+    if role == "output" and kind == "mining-drill" then
+      local has_fuel, fuel = pcall(function() return entity.get_fuel_inventory() end)
+      if has_fuel and fuel and (fuel == inventory or (inventory.index ~= nil and inventory.index == fuel.index)) then return {} end
+    end
+    return { inventory }
   end
   local found = {}
   for _, name in ipairs(defines_of or {}) do

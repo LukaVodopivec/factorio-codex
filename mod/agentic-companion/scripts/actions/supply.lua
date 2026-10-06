@@ -40,13 +40,16 @@ local GATHER_RADII = { 8, 16, 32, 48, 64 }
 local GATHER_LIMIT = 100     -- natural entities read per query
 -- Belts are not listed by the registry: only belts this near the body are
 -- searched (an area query of bounded size and count, never the whole force),
--- one query per supply tick. The engine returns belts in chunk order, not
--- nearest first, so a query at its limit may leave out the belt that holds
--- the item: the search then goes on in square cells, nearest first.
+-- at most a few queries per supply tick. The engine returns belts in chunk
+-- order, not nearest first, so a query at its limit may leave out the belt
+-- that holds the item: the search then goes on in square cells, nearest
+-- first, and a cell at the limit is split into four until a cell's disk
+-- spans fewer tiles than the limit (one belt per tile: none is left unread).
 local BELT_SEARCH_RADIUS = 48
 local BELT_SEARCH_LIMIT = 64
+local BELT_QUERIES_PER_TICK = 4
 local BELT_CELL = 16
-local BELT_CELL_RADIUS = BELT_CELL * math.sqrt(2) / 2 + 0.5
+local BELT_CELL_MIN = 4
 -- A drill with no drop target leaves its output on the ground at its drop
 -- position: only the nearest few such drills are read, one point query each.
 local DROPS_READ = 4
@@ -179,51 +182,78 @@ local function nearest_holder(c, task, item, tried)
   return nearest_of(c, task, item, tried, holders, true)
 end
 
--- The cells tiling BELT_SEARCH_RADIUS around the body: centre offsets and
--- the squared distance to each cell's nearest point, nearest first.
-local BELT_CELLS = {}
-do
-  local n = math.ceil(BELT_SEARCH_RADIUS / BELT_CELL)
-  local function near(i) return (i >= 0 and i or -i - 1) * BELT_CELL end
-  for i = -n, n - 1 do
-    for j = -n, n - 1 do
-      local near_sq = near(i) ^ 2 + near(j) ^ 2
-      if near_sq < BELT_SEARCH_RADIUS ^ 2 then
-        BELT_CELLS[#BELT_CELLS + 1] = { x = (i + 0.5) * BELT_CELL, y = (j + 0.5) * BELT_CELL, near_sq = near_sq }
-      end
-    end
-  end
-  table.sort(BELT_CELLS, function(a, b)
+-- A square cell at offset (x, y) from the body: its side and the squared
+-- distance from the body to its nearest point.
+local function belt_cell(x, y, size)
+  local dx, dy = math.max(math.abs(x) - size / 2, 0), math.max(math.abs(y) - size / 2, 0)
+  return { x = x, y = y, size = size, near_sq = dx * dx + dy * dy }
+end
+
+-- Inserts a cell that reaches into BELT_SEARCH_RADIUS into the queue, which
+-- stays nearest first (ties by y, then x, the same on every peer).
+local function queue_belt_cell(queue, cell)
+  if cell.near_sq >= BELT_SEARCH_RADIUS ^ 2 then return end
+  local function before(a, b)
     if a.near_sq ~= b.near_sq then return a.near_sq < b.near_sq end
     if a.y ~= b.y then return a.y < b.y end
     return a.x < b.x
-  end)
+  end
+  local at = #queue + 1
+  while at > 1 and before(cell, queue[at - 1]) do at = at - 1 end
+  table.insert(queue, at, cell)
 end
 
--- One belt query: frame.belts 0 reads the whole radius, which suffices when
--- under the limit; past it, cell frame.belts. The nearest holding belt once
--- no cell left can hold a nearer one; else nil and true (next tick goes on).
+-- The cells tiling BELT_SEARCH_RADIUS around the body, nearest first.
+local function belt_cells()
+  local queue, n = {}, math.ceil(BELT_SEARCH_RADIUS / BELT_CELL)
+  for i = -n, n - 1 do
+    for j = -n, n - 1 do
+      queue_belt_cell(queue, belt_cell((i + 0.5) * BELT_CELL, (j + 0.5) * BELT_CELL, BELT_CELL))
+    end
+  end
+  return queue
+end
+
+-- Up to BELT_QUERIES_PER_TICK belt queries: the first reads the whole
+-- radius, which suffices when under the limit; past it, frame.belt_cells
+-- are read nearest first. The nearest holding belt within the radius once no
+-- cell left can hold a nearer one; else nil and true (next tick goes on).
 local function nearest_belt(c, task, frame)
-  local index, center, radius = frame.belts, c.position, BELT_SEARCH_RADIUS
-  if index > 0 then
-    local cell = BELT_CELLS[index]
-    center, radius = { x = c.position.x + cell.x, y = c.position.y + cell.y }, BELT_CELL_RADIUS
+  local best = frame.belt_best
+  for _ = 1, BELT_QUERIES_PER_TICK do
+    local cell, center, radius = nil, c.position, BELT_SEARCH_RADIUS
+    if frame.belt_cells then
+      cell = table.remove(frame.belt_cells, 1)
+      center = { x = c.position.x + cell.x, y = c.position.y + cell.y }
+      radius = cell.size * math.sqrt(2) / 2 + 0.5
+    end
+    local ok, belts = pcall(c.surface.find_entities_filtered, { position = center, radius = radius,
+      force = c.force, type = "transport-belt", limit = BELT_SEARCH_LIMIT })
+    belts = ok and type(belts) == "table" and belts or {}
+    local found = nearest_of(c, task, frame.name, frame.tried, belts, true)
+    if found and found.distance <= BELT_SEARCH_RADIUS ^ 2 and (not best or found.distance < best.distance) then
+      best = found
+    end
+    if #belts >= BELT_SEARCH_LIMIT then
+      if not cell then
+        frame.belt_cells = belt_cells()
+      elseif cell.size > BELT_CELL_MIN then
+        local half, quarter = cell.size / 2, cell.size / 4
+        for _, dx in ipairs({ -quarter, quarter }) do
+          for _, dy in ipairs({ -quarter, quarter }) do
+            queue_belt_cell(frame.belt_cells, belt_cell(cell.x + dx, cell.y + dy, half))
+          end
+        end
+      end
+    end
+    local after = frame.belt_cells and frame.belt_cells[1]
+    if not after or (best and best.distance <= after.near_sq) then
+      frame.belt_cells, frame.belt_best = nil, nil
+      return best
+    end
   end
-  local ok, belts = pcall(c.surface.find_entities_filtered, { position = center, radius = radius,
-    force = c.force, type = "transport-belt", limit = BELT_SEARCH_LIMIT })
-  belts = ok and type(belts) == "table" and belts or {}
-  local capped = #belts >= BELT_SEARCH_LIMIT
-  local best, found = frame.belt_best, nearest_of(c, task, frame.name, frame.tried, belts, true)
-  if found and (not best or found.distance < best.distance) then best = found end
-  if index == 0 and not capped then return best end
-  -- A cell at the limit left belts unread: the end reason says so.
-  if index > 0 and capped then frame.belts_capped = true end
-  local after = BELT_CELLS[index + 1]
-  if after and not (best and best.distance <= after.near_sq) then
-    frame.belts, frame.belt_best = index + 1, best
-    return nil, true
-  end
-  return best
+  frame.belt_best = best
+  return nil, true
 end
 
 -- Items of `item` one craft of `recipe` yields, counting an uncertain matching
@@ -702,10 +732,9 @@ local function advance(task, c, frame)
         local more
         source, more = nearest_belt(c, task, frame)
         if more then return false end
-        frame.belt_best = nil
       elseif frame.drops then
         source = nearest_drop(c, task, frame.name, frame.tried)
-        if not source then frame.drops, frame.belts = nil, 0; return false end
+        if not source then frame.drops, frame.belts = nil, true; return false end
       else
         source = nearest_holder(c, task, frame.name, frame.tried)
         if not source then frame.drops = true; return false end
@@ -878,10 +907,6 @@ local function advance(task, c, frame)
   local parts = {}
   if frame.drills and frame.drills > 0 then
     parts[#parts + 1] = string.format("%d own mining drill(s) produce it but none of their output can be taken now", frame.drills)
-  elseif frame.takes == 0 and frame.belts_capped then
-    parts[#parts + 1] = string.format("no own chest, landing pad or machine output holds it, nor any belt read"
-      .. " within %d tiles (where more than %d belts lie close together, the rest were not read)",
-      BELT_SEARCH_RADIUS, BELT_SEARCH_LIMIT)
   elseif frame.takes == 0 then
     parts[#parts + 1] = "no own chest, landing pad, machine output or belt holds it"
   end

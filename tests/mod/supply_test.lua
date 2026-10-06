@@ -293,46 +293,68 @@ local from_belt = run({ items = { { name = "coal", count = 4 } } })
 check(from_belt.status == "done" and calls[1].kind == "pickup" and calls[1].task.count == 4 and inventory.coal == 4,
   "with no chest holding it, get_items picks the item up from an own belt")
 
+-- Runs a supply task to its end and counts the ticks that read belts and
+-- the most belt queries in one tick (each must stay a bounded query).
+local function run_belts(task)
+  local belt_ticks, most = 0, 0
+  supply.start(task)
+  for _ = 1, 400 do
+    local queries_before = #queries
+    local result = supply.tick(task)
+    local in_tick = 0
+    for index = queries_before + 1, #queries do
+      local query = queries[index]
+      if query.type == "transport-belt" then
+        in_tick = in_tick + 1
+        if not (query.limit <= 64 and query.radius <= 48) then in_tick = 99 end
+      end
+    end
+    if in_tick > 0 then belt_ticks = belt_ticks + 1 end
+    most = math.max(most, in_tick)
+    if result then return result, belt_ticks, most end
+  end
+  error("supply did not finish")
+end
+
 -- More belts near the body than one query reads (the engine returns them in
 -- chunk order up to the limit, like this mock's insertion order): the search
--- goes on cell by cell, nearest first, one query per tick.
+-- goes on cell by cell, nearest first, a few bounded queries per tick.
 reset()
 for x = -5, 4 do for y = -5, 4 do belt({ x = x + 0.5, y = y + 0.5 }, {}) end end
 belt({ x = 20.5, y = 0.5 }, { coal = 6 })
-local dense_task, dense, most_belt_queries = { items = { { name = "coal", count = 4 } } }, nil, 0
-supply.start(dense_task)
-for _ = 1, 200 do
-  local queries_before = #queries
-  dense = supply.tick(dense_task)
-  local belt_queries = 0
-  for index = queries_before + 1, #queries do
-    local query = queries[index]
-    if query.type == "transport-belt" then
-      belt_queries = belt_queries + 1
-      most_belt_queries = math.max(most_belt_queries, query.limit <= 64 and query.radius <= 48 and belt_queries or 99)
-    end
-  end
-  if dense then break end
-end
-check(dense and dense.status == "done" and calls[1].kind == "pickup" and calls[1].task.target.x == 20.5 and inventory.coal == 4,
+local dense, _, dense_most = run_belts({ items = { { name = "coal", count = 4 } } })
+check(dense.status == "done" and calls[1].kind == "pickup" and calls[1].task.target.x == 20.5 and inventory.coal == 4,
   "with more belts near the body than one query reads, get_items still finds the belt that holds the item")
-check(most_belt_queries == 1, "the belt search runs at most one bounded belt query per tick")
+check(dense_most <= 4, "the belt search runs at most four bounded belt queries per tick")
 
--- Every cell read in full: no belt within reach holds it.
+-- Every cell read in full: no belt within reach holds it, and reading every
+-- cell takes a few ticks, not one per cell.
 reset()
 for x = -5, 4 do for y = -5, 4 do belt({ x = x + 0.5, y = y + 0.5 }, {}) end end
-local read_all = run({ items = { { name = "coal", count = 4 } } })
+local read_all, read_all_ticks = run_belts({ items = { { name = "coal", count = 4 } } })
 check(read_all.status == "failed" and read_all.detail:match("or belt holds it"),
   "a belt search that read every belt near the body says no belt holds the item")
+check(read_all_ticks <= 10, "a belt search that finds nothing in a dense area takes a few ticks, not one per cell")
 
--- Nothing found where a cell held more belts than one query reads: the
--- reason says belts were left unread.
+-- One 16-tile cell holds more belts than one query reads (a bus), and the
+-- holding belt comes last in chunk order: the cell is split until it is read.
 reset()
-for x = -8, 7 do for y = -8, 7 do belt({ x = x + 0.5, y = y + 0.5 }, {}) end end
-local unread = run({ items = { { name = "coal", count = 4 } } })
-check(unread.status == "failed" and unread.detail:match("nor any belt read within 48 tiles")
-  and not unread.detail:match("or belt holds it"),
-  "a belt search that left belts unread never claims no belt holds the item")
+for x = 16, 31 do for y = 0, 15 do
+  if not (x == 28 and y == 12) then belt({ x = x + 0.5, y = y + 0.5 }, {}) end
+end end
+belt({ x = 28.5, y = 12.5 }, { coal = 6 })
+local bus, _, bus_most = run_belts({ items = { { name = "coal", count = 4 } } })
+check(bus.status == "done" and calls[1].kind == "pickup" and calls[1].task.target.x == 28.5 and inventory.coal == 4,
+  "a cell holding more belts than one query reads is split until the belt that holds the item is read")
+check(bus_most <= 4, "splitting dense cells keeps at most four bounded belt queries per tick")
+
+-- The same bus with no holding belt: every belt is read, so the reason may
+-- say no belt holds it.
+reset()
+for x = 16, 31 do for y = 0, 15 do belt({ x = x + 0.5, y = y + 0.5 }, {}) end end
+local bus_empty = run_belts({ items = { { name = "coal", count = 4 } } })
+check(bus_empty.status == "failed" and bus_empty.detail:match("or belt holds it"),
+  "a belt search that split every dense cell says no belt holds the item")
 
 -- An insert never takes from its own target.
 reset()

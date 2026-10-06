@@ -9,7 +9,8 @@
 -- the values this same scenario gave on 0.22.2 (recorded by running this
 -- file against the 0.22.2 mod). The only result differences allowed are the
 -- fields 0.22.3 adds, which the comparison names and drops: factory_status
--- `surface`, map_summary `surface` and `factory.surface`.
+-- `surface`, map_summary `surface` and `factory.surface`. The additive
+-- upkeep selection is asserted separately before comparing retained fields.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
@@ -245,6 +246,11 @@ local status = factory_status.factory_status({})
 measured.status_cost = spent(before)
 local dropped = { "factory_status.surface", "map_summary.surface and factory.surface" }
 status.surface = nil
+local upkeep_selection = status.body and status.body.upkeep_selection
+check(upkeep_selection and upkeep_selection.tick == game.tick
+  and upkeep_selection.queue_status == "queued" and upkeep_selection.refuel.selected[1].count == 10,
+  "the additive body readback retains exact bounded upkeep selection without extra native reads")
+if status.body then status.body.upkeep_selection = nil end
 measured.status = text(status)
 -- 7. map_summary with every section, as one job.
 before = snapshot()
@@ -272,7 +278,7 @@ local EXPECTED = dofile(here .. "/fixtures/nauvis-0.22.2.lua")
 for _, name in ipairs({ "bootstrap", "sampler", "maintenance", "patches", "upkeep", "status_cost", "summary_cost" }) do
   check(measured[name] == EXPECTED[name], name .. " costs what it did on 0.22.2 (" .. measured[name] .. ")")
 end
-check(measured.status == EXPECTED.status, "the default factory_status is 0.22.2's, but for " .. dropped[1])
+check(measured.status == EXPECTED.status, "the retained factory_status fields match 0.22.2, apart from surface and additive upkeep evidence")
 check(measured.summary == EXPECTED.summary, "map_summary with every section is 0.22.2's, but for " .. dropped[2])
 if measured.status ~= EXPECTED.status then print(measured.status); print(EXPECTED.status) end
 if measured.summary ~= EXPECTED.summary then print(measured.summary); print(EXPECTED.summary) end

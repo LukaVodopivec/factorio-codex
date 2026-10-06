@@ -99,6 +99,8 @@ local function body_section(body, read_surface)
     queue_depth = tasks.queue_length(), active_step = tasks.active_summary() }
   local ok, held = pcall(companion.human_control)
   out.human_control = ok and held == true
+  -- A bounded queue-time snapshot, not a fresh stock/reach or success claim.
+  out.upkeep_selection = storage.chores and storage.chores.last_selection or nil
   if not (c and c.valid) then return out end
   local ok_ratio, ratio = pcall(function() return c.get_health_ratio() end)
   if ok_ratio and type(ratio) == "number" and ratio < 1 then out.health_ratio = math.floor(ratio * 1000 + 0.5) / 1000 end

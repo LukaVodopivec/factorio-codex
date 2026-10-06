@@ -662,8 +662,12 @@ function M.tick(task)
   if not c then return { status = "failed", detail = "the companion character is gone" } end
   if task._sub then
     local kind = task._sub.type
+    local target = task._sub.target
     local result = M.step(task, "_sub")
     if not result then return nil end
+    task.last_action = { action = kind, target = target and { x = target.x, y = target.y } or nil,
+      status = result.status, code = result.outcome and result.outcome.code,
+      detail = type(result.detail) == "string" and result.detail:sub(1, 240) or nil }
     -- Taking from a chest or machine (or loading a furnace) is a character
     -- transfer like any other.
     if kind == "extract" or kind == "insert" then factory_activity.record(kind, result.outcome) end
@@ -703,8 +707,44 @@ function M.ensure(owner, needs, options)
   end
   local ok, result = pcall(M.tick, owner._supply)
   if not ok then result = { status = "failed", detail = tostring(result) } end
-  if result then owner._supply = nil end
+  if result then
+    owner._supply_result = { status = result.status,
+      code = result.outcome and result.outcome.code,
+      detail = type(result.detail) == "string" and result.detail:sub(1, 240) or nil,
+      last_action = owner._supply.last_action }
+    owner._supply = nil
+  end
   return result
+end
+
+-- Pure, bounded state read: no stock/entity scan or native action. Nested
+-- supply movement and final target approach are separate evidence.
+function M.diagnostics(owner)
+  if not owner then return nil end
+  local s = owner._supply
+  local frame = s and s._stack and s._stack[#s._stack]
+  local sub = s and s._sub
+  local walker = sub or owner
+  local depth, seen = 0, {}
+  while walker and not seen[walker] and depth < 8 do
+    seen[walker], depth = true, depth + 1
+    local next_walk = walker._walk or walker._approach and walker._approach.walk or walker.walker
+    if not next_walk then break end
+    walker = next_walk
+  end
+  local target = owner.target
+  return { stage = s and "auto_supply" or (owner._supplied or owner.auto_supply == false) and "target" or "before_supply",
+    target = target and { x = target.x, y = target.y } or nil,
+    supply = s and { phase = frame and frame.phase, item = frame and frame.name,
+      wanted = frame and frame.count, takes = frame and frame.takes,
+      action = sub and sub.type, target = sub and sub.target,
+      last_action = s.last_action } or nil,
+    supply_result = owner._supply_result,
+    shortfall = type(owner._shortfall) == "string" and owner._shortfall:sub(1, 240) or nil,
+    route = walker and walker.phase and { phase = walker.phase, request_tick = walker.request_tick,
+      requested_goal = walker.requested_goal, resolved_goal = walker.target,
+      failure = walker.failure } or nil,
+    route_depth_capped = depth == 8 or nil }
 end
 
 -- The get_items plan action {item, count}: carry at least count of item.

@@ -162,6 +162,15 @@ function powerRows(value: unknown): unknown {
     ...(row.add_to_cover === undefined ? {} : { add_to_cover: record(row.add_to_cover) }) } : row) : rows;
 }
 
+function upkeepSelection(value: any): any {
+  if (!value || typeof value !== "object" || !value.refuel) return value;
+  return { ...value, refuel: { ...value.refuel,
+    candidates: luaArray(value.refuel.candidates), selected: luaArray(value.refuel.selected) } };
+}
+function upkeepReadback(value: any): any {
+  return value && typeof value === "object"
+    ? { ...value, unfinished_targets: luaArray(value.unfinished_targets) } : value;
+}
 export function normalizeFactoryStatus(value: any): any {
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = { ...value };
@@ -175,7 +184,8 @@ export function normalizeFactoryStatus(value: any): any {
   if (value.research && typeof value.research === "object") out.research = { ...value.research,
     available: luaArray(value.research.available),
     ...(value.research.queue === undefined ? {} : { queue: luaArray(value.research.queue) }) };
-  if (value.body && typeof value.body === "object") out.body = { ...value.body, inventory_summary: record(value.body.inventory_summary) };
+  if (value.body && typeof value.body === "object") out.body = { ...value.body, inventory_summary: record(value.body.inventory_summary),
+    ...(value.body.upkeep_selection === undefined ? {} : { upkeep_selection: upkeepSelection(value.body.upkeep_selection) }) };
   if (value.platforms !== undefined) out.platforms = platformRows(value.platforms);
   if (value.elsewhere !== undefined) out.elsewhere = luaArray(value.elsewhere).map((row: any) =>
     row && typeof row === "object" ? { ...row, top_problems: luaArray(row.top_problems ?? []) } : row);
@@ -241,7 +251,8 @@ export function normalizePlatformStatus(value: any): any {
 }
 
 export function normalizeActivityLog(value: any): any {
-  return value && typeof value === "object" ? { ...value, entries: luaArray(value.entries) } : value;
+  return value && typeof value === "object" ? { ...value, entries: luaArray(value.entries ?? []).map((row: any) =>
+    row?.upkeep === undefined ? row : { ...row, upkeep: upkeepReadback(row.upkeep) }) } : value;
 }
 
 /** Where each raw material is gathered, per planet, what nothing gathers and
@@ -353,6 +364,8 @@ export function normalizePlanDiagnostics(value: any): any {
   } : undefined;
   return {
     ...value,
+    ...(value.upkeep === undefined ? {} : { upkeep: upkeepReadback(value.upkeep) }),
+    ...(value.upkeep_selection === undefined ? {} : { upkeep_selection: upkeepSelection(value.upkeep_selection) }),
     ...(value.transitions === undefined ? {} : { transitions: luaArray(value.transitions) }),
     diagnostics: { route, machines },
     ...(physicalAudit ? { physical_audit: physicalAudit } : {}),

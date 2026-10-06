@@ -57,23 +57,40 @@ end
 -- when given), not skipped by `skip(unit)` (a pure Lua test), nearest
 -- first: from the sampler's set of that state on that surface, at most
 -- MAX_CANDIDATES of them looked at (machines elsewhere are never counted).
-local function machines_in(c, raw, kind, skip)
+local function machines_in(c, raw, kind, skip, audit)
   local a = storage.autonomy
   local rows, seen = {}, 0
+  local audit_left = MAX_CANDIDATES
   local function nearer(x, y)
     if x.distance ~= y.distance then return x.distance < y.distance end
     return x.unit < y.unit
   end
   local by_surface = a and a.waiting and a.waiting[raw]
   for unit in pairs(by_surface and by_surface[c.surface_index] or {}) do
-    if seen >= MAX_CANDIDATES then break end
+    if seen >= MAX_CANDIDATES then if audit then audit.scan_complete = false end; break end
     local rec = a.machines[unit]
-    if rec and rec.raw == raw and (kind == nil or rec.type == kind) and not (skip and skip(unit)) then
+    local matches = rec and rec.raw == raw and (kind == nil or rec.type == kind)
+    local skipped = matches and skip and skip(unit)
+    local evidence
+    if audit and matches and audit_left > 0 then
+      audit_left = audit_left - 1
+      audit.observed_candidates = audit.observed_candidates + 1
+      local at = storage.chores.refueled[unit]
+      evidence = { unit = unit, position = rec.position, raw = rec.raw,
+        decision = skipped and "cooldown" or "candidate", last_attempt_tick = at,
+        retry_tick = at and at + REFUEL_COOLDOWN_TICKS or nil }
+      audit.candidates[#audit.candidates + 1] = evidence
+      -- Stop diagnostic bookkeeping independently of the existing selector.
+      -- At saturation the count is a lower bound, never a population count.
+      if audit_left == 0 then audit.candidates_capped = true end
+    end
+    if matches and not skipped then
       seen = seen + 1
       local entity = rec.entity
       if entity and entity.valid then
         local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
-        rows[#rows + 1] = { unit = unit, position = rec.position, entity = entity, distance = dx * dx + dy * dy }
+        rows[#rows + 1] = { unit = unit, position = rec.position, entity = entity, distance = dx * dx + dy * dy,
+          evidence = evidence }
       end
     end
   end
@@ -134,12 +151,15 @@ end
 
 -- Insert steps that refuel own burner machines out of fuel: the machines
 -- sharing a fuel share what there is of it.
-local function refuel_steps(c, tick, steps)
+local function refuel_steps(c, tick, steps, audit)
   local refueled = storage.chores.refueled
   local machines = machines_in(c, "no_fuel", nil, function(unit)
     return refueled[unit] ~= nil and tick - refueled[unit] < REFUEL_COOLDOWN_TICKS
-  end)
-  while #machines > MAX_REFUELS do table.remove(machines) end
+  end, audit)
+  while #machines > MAX_REFUELS do
+    local excluded = table.remove(machines)
+    if excluded.evidence then excluded.evidence.decision = "selection_limit" end
+  end
   if #machines == 0 then return end
   local known, groups, order = {}, {}, {}
   for _, machine in ipairs(machines) do
@@ -151,6 +171,8 @@ local function refuel_steps(c, tick, steps)
         groups[fuel.name], order[#order + 1] = group, fuel.name
       end
       group.machines[#group.machines + 1] = machine
+    elseif machine.evidence then
+      machine.evidence.decision = "no_fuel_selected"
     end
   end
   for _, name in ipairs(order) do
@@ -158,13 +180,18 @@ local function refuel_steps(c, tick, steps)
     local list, available = group.machines, group.fuel.available
     local each = math.min(FUEL_PER_MACHINE, math.floor(available / #list))
     while each < 1 and #list > 1 do
-      table.remove(list)
+      local excluded = table.remove(list)
+      if excluded.evidence then excluded.evidence.decision = "insufficient_share" end
       each = math.min(FUEL_PER_MACHINE, math.floor(available / #list))
     end
     if each >= 1 then
       for _, machine in ipairs(list) do
         steps[#steps + 1] = { action = "insert_items", x = machine.position.x, y = machine.position.y, items = { [name] = each } }
         storage.chores.refueled[machine.unit] = tick
+        if machine.evidence then machine.evidence.decision = "selected" end
+        audit.selected[#audit.selected + 1] = { unit = machine.unit, position = machine.position,
+          item = name, count = each, available_snapshot = available, attempt_tick = tick,
+          retry_tick = tick + REFUEL_COOLDOWN_TICKS }
       end
     end
   end
@@ -261,9 +288,20 @@ function M.upkeep(tick)
     if tick - at >= M.LAB_RETRY_TICKS then storage.chores.fed_labs[key] = nil end
   end
   local steps = {}
-  refuel_steps(c, tick, steps)
+  local selection = { tick = tick, surface_index = c.surface_index,
+    refuel = { candidate_limit = MAX_CANDIDATES, selected_limit = MAX_REFUELS,
+      retry_ticks = REFUEL_COOLDOWN_TICKS, candidates = {}, selected = {},
+      observed_candidates = 0, scan_complete = true } }
+  refuel_steps(c, tick, steps, selection.refuel)
   lab_steps(c, tick, steps)
-  if #steps > 0 then pcall(tasks.queue_plan, { steps = steps, source = "upkeep" }) end
+  selection.step_count = #steps
+  if #steps > 0 then
+    local ok, result = pcall(tasks.queue_plan, { steps = steps, source = "upkeep" }, selection)
+    selection.queue_status = ok and "queued" or "rejected"
+    selection.plan_id = ok and result.plan_id or nil
+    if not ok then selection.queue_error = tostring(result):sub(1, 240) end
+  else selection.queue_status = "no_steps" end
+  storage.chores.last_selection = selection
 end
 
 -- Chart the uncharted chunks around the body, on a planet's surface only;

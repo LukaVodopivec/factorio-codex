@@ -605,4 +605,28 @@ tasks.on_tick();anchor_ref="vulcanus";tasks.on_body_surface_changed({});game.tic
 local left=tasks.plan_status({plan_id=offsurface.plan_id}).outcomes[1].result
 check(left.code=="SURFACE_LEFT" and left.relocation.source_removed and robot_cancelled==3,
  "leaving the planet cancels native pending ownership and retains partial state")
+-- Upkeep pending targets survive queued reads and preemption without
+-- claiming that an unfinished transfer happened.
+anchor_ref=nil
+local selection={tick=game.tick,refuel={selected={{unit=10,position={x=10,y=2},item="coal",count=10}}}}
+local upkeep=tasks.queue_plan({source="upkeep",steps={{action="insert_items",x=10,y=2,items={coal=10}},
+  {action="insert_items",x=20,y=2,items={coal=10}}}},selection)
+local pending=tasks.plan_status({plan_id=upkeep.plan_id})
+check(pending.upkeep_selection==selection and #pending.upkeep.unfinished_targets==2
+  and pending.upkeep.unfinished_targets[2].position.x==20
+  and pending.upkeep.unfinished_targets[2].requested_items.coal==10
+  and pending.upkeep.unfinished_targets[2].state=="not_started" and #pending.outcomes==0,
+  "queued upkeep exposes exact pending targets and requested amounts independently of outcomes")
+local next_work=tasks.queue_plan({steps={{action="walk_to",x=2,y=2}}})
+game.tick=40002;tasks.on_tick();game.tick=40003;tasks.on_tick()
+local ended=tasks.plan_status({plan_id=upkeep.plan_id})
+check(ended.status=="cancelled" and ended.upkeep.preempted and ended.completed_steps==1
+  and #ended.upkeep.unfinished_targets==1 and ended.upkeep.unfinished_targets[1].step==2
+  and ended.upkeep.unfinished_targets[1].position.x==20
+  and ended.upkeep.unfinished_targets[1].state=="not_started",
+  "preemption retains the exact unattempted target while preserving the completed first step")
+local rows=tasks.activity_log({limit=64}).entries;local saved
+for _,row in ipairs(rows) do if row.plan_id==upkeep.plan_id then saved=row end end
+check(saved.upkeep.unfinished_targets[1].position.x==20 and saved.upkeep.selection_tick==selection.tick,
+  "bounded activity history retains unfinished upkeep target identity after preemption")
 os.exit(failures == 0 and 0 or 1)

@@ -16,7 +16,7 @@ import { areaFields, areaIssue, blockFields, blockIssue, blueprintName, blueprin
 import { normalizeActivityLog, normalizeCanPlace, normalizeConfigured, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, normalizeRequests, normalizeRoute, luaArray, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
-export const MCP_SERVER_VERSION = "0.22.5";
+export const MCP_SERVER_VERSION = "0.22.6";
 
 const position = z.object({ x: z.number(), y: z.number() });
 const beltToGroundType = z.enum(["input", "output"]).optional();

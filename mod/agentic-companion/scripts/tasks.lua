@@ -192,6 +192,29 @@ local function inventory_delta(plan)
 end
 -- activity_log: the last ACTIVITY_LOG_SIZE plan outcomes, so a reader sees
 -- what the body did without polling each plan.
+local function upkeep_readback(plan)
+  if plan.source ~= "upkeep" then return nil end
+  local targets = {}
+  local first = plan.completed_steps + 1
+  local stop = math.min(#plan.steps, first + 15)
+  for index = first, stop do
+    local step, requested, count, capped = plan.steps[index], {}, 0, false
+    for name, amount in pairs(step.items or {}) do
+      if count >= 8 then capped = true; break end
+      requested[name], count = amount, count + 1
+    end
+    local outcome = plan.outcomes[index]
+    targets[#targets + 1] = { step = index, action = step.action, surface = step_surface(plan, index),
+      position = step.x and { x = step.x, y = step.y } or nil,
+      requested_items = requested, items_capped = capped or nil,
+      state = outcome and outcome.status or plan.current_task and index == plan.current_step and "running" or "not_started",
+      outcome = outcome }
+  end
+  return { selection_tick = plan.upkeep_selection and plan.upkeep_selection.tick,
+    completed_steps = plan.completed_steps, unfinished_targets = targets,
+    omitted_targets = math.max(0, #plan.steps - stop), preempted = plan.preempted or nil,
+    active = plan.current_task and { step = plan.current_step, context = supply.diagnostics(plan.current_task) } or nil }
+end
 local function log_plan(plan, detail)
   local last = plan.outcomes[#plan.outcomes]
   local result = last and type(last.result) == "table" and last.result or nil
@@ -211,7 +234,7 @@ local function log_plan(plan, detail)
   storage.activity_log = log
   log[#log + 1] = { plan_id = plan.id, source = plan.source or "pilot", steps = #plan.steps,
     status = plan.status, code = code, summary = summary, start_tick = plan.started_tick, end_tick = game.tick,
-    surface = plan.surface }
+    surface = plan.surface, upkeep = upkeep_readback(plan) }
   while #log > ACTIVITY_LOG_SIZE do table.remove(log, 1) end
   -- next_event wakes the pilot on this: the mod's own upkeep (often
   -- pre-empted) is in activity_log only.
@@ -322,7 +345,7 @@ local function make_step_task(step)
   if kind == "rotate" then task.target, task.direction = { x = step.x, y = step.y }, step.direction end
   return task
 end
-function M.queue_plan(params)
+function M.queue_plan(params, upkeep_selection)
   -- Plans may be queued in every body state but absent (aboard, for the
   -- planet the body is about to land on); their steps check the body.
   local present = companion.require_present()
@@ -441,6 +464,8 @@ function M.queue_plan(params)
     final_observation_radius = tonumber(params.final_observation_radius) or 15,
     observation_detail = params.observation_detail == "compact" and "compact" or "none",
     after_plan_id = predecessor, source = source, budget_steps = budget_steps,
+    -- Second argument is internal only; RPC callers supply only params.
+    upkeep_selection = source == "upkeep" and upkeep_selection or nil,
     -- The first step tag; each positional step carries its own.
     surface = first_tag, step_tags = true,
   }
@@ -504,6 +529,7 @@ local function plan_payload(plan)
     transitions = plan.transitions,
     inventory_delta = inventory_delta(plan),
     observation = plan.observation, observation_error = plan.observation_error,
+    upkeep = upkeep_readback(plan), upkeep_selection = plan.upkeep_selection,
     execution = { mode = "sequential_nontransactional", rollback = "none",
       committed_steps = committed_steps, incomplete_step = incomplete_step },
     diagnostics = diagnostics,
@@ -578,6 +604,7 @@ function M.cancel(params)
       plan.outcomes[#plan.outcomes + 1] = {
         step = plan.current_step, action = step.action,
         status = "cancelled", error = detail, result = step_cancelled(plan),
+        upkeep_context = plan.source == "upkeep" and supply.diagnostics(plan.current_task) or nil,
       }
       plan.current_task = nil
     end
@@ -661,6 +688,7 @@ local function finish_step(plan, result)
   local recovery = plan._recovery
   plan.outcomes[#plan.outcomes + 1] = {
     step = plan.current_step, action = step.action, status = status,
+    upkeep_context = plan.source == "upkeep" and supply.diagnostics(plan.current_task) or nil,
     result = result.outcome or ((status == "completed" or status == "partial") and (result.detail or status) or nil),
     error = (status == "failed" or status == "cancelled") and (result.detail or status) or nil,
     recovery = recovery and recovery.step == plan.current_step and { code = recovery.code,

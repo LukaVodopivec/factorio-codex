@@ -671,4 +671,25 @@ check(not pcall(transfer.insert.start, { targets = { name = "stone-furnace", nea
   and not pcall(transfer.insert.start, { targets = {}, items = { coal = 1 } }),
   "a target search is bounded in radius and a target list is never empty")
 
+local walk_state={phase="waiting",request_tick=123,requested_goal={x=4,y=5},target={x=4.5,y=5.5}}
+local observed={target={x=30,y=40},_supply={_stack={{name="coal",count=10,phase="take",takes=1}},
+  _sub={type="extract",target={x=4,y=5},_approach={walk=walk_state}}}}
+local before_phase=walk_state.phase
+local pending=supply.diagnostics(observed)
+check(pending.stage=="auto_supply" and pending.target.x==30 and pending.supply.target.x==4
+  and pending.supply.item=="coal" and pending.route.requested_goal.x==4
+  and pending.route.resolved_goal.x==4.5 and walk_state.phase==before_phase,
+  "readback separates nested stock-holder approach from final insertion target without advancing work")
+check(owner._supply_result and owner._supply_result.status=="failed"
+  and supply.diagnostics(owner).supply_result.status=="failed",
+  "a completed embedded supply failure remains evidence after its nested owner is cleared")
+observed._supply=nil;observed._supplied=true;observed._approach={walk=walk_state}
+observed._supply_result={status="partial",code="SUPPLY_SHORTFALL"}
+check(supply.diagnostics(observed).stage=="target"
+  and supply.diagnostics(observed).supply_result.code=="SUPPLY_SHORTFALL",
+  "final target approach retains the actual earlier supply result without implying insertion")
+local cycle={phase="following"};cycle.walker=cycle
+observed._approach={walk=cycle}
+check(supply.diagnostics(observed).route.phase=="following",
+  "readback terminates on a cyclic nested walker without advancing or scanning native state")
 os.exit(failures == 0 and 0 or 1)

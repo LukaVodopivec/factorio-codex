@@ -10,7 +10,7 @@ const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", r
 describe("protocol v28 DTO and tool registry", () => {
   it("declares v28 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(28);
-    expect(MCP_SERVER_VERSION).toBe("0.22.5");
+    expect(MCP_SERVER_VERSION).toBe("0.22.6");
     expect(RPC_METHODS).toHaveLength(42);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
       "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now", "get_job",
@@ -524,7 +524,7 @@ describe("protocol v28 DTO and tool registry", () => {
     const aboard = { state: "aboard_platform", surface_ref: "platform:3", platform_name: "Orbit" };
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { protocol_version: 28, mod_version: "0.22.5", factorio_version: "2.0.77", tick: 5, companion_exists: true,
+      ? { protocol_version: 28, mod_version: "0.22.6", factorio_version: "2.0.77", tick: 5, companion_exists: true,
         companion_ever_created: true, companion_dead: false, body: aboard }
       : { tick: 5, lines: [], fifo: { active_plan_id: 12, queue_depth: 1, idle_seconds: 0, body: aboard } });
     registerMcpTools({ registerTool(name: string, _config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; } },
@@ -538,7 +538,7 @@ describe("protocol v28 DTO and tool registry", () => {
     // Riding up, the pod is still over the planet it left; the trip's destination is bound_for.
     const riding = { state: "in_transit", surface_ref: "nauvis", bound_for: "platform:3" };
     call.mockImplementation(async (method: string) => method === "ping"
-      ? { protocol_version: 28, mod_version: "0.22.5", factorio_version: "2.0.77", tick: 6, companion_exists: true,
+      ? { protocol_version: 28, mod_version: "0.22.6", factorio_version: "2.0.77", tick: 6, companion_exists: true,
         companion_ever_created: true, companion_dead: false, body: riding } : {});
     expect((await handlers.connect_status({})).content[0].text)
       .toBe("Connected; the body is in a cargo pod (now over nauvis), bound for platform:3");
@@ -657,6 +657,14 @@ describe("protocol v28 DTO and tool registry", () => {
     expect(diagnostics.diagnostics.route[0]).toMatchObject({ step: 2, detail: "blocked" });
     expect(diagnostics.diagnostics.machines[0]).toMatchObject({ entity: "assembler", status: "no_power" });
     expect(normalizePlanDiagnostics({ transitions: {} }).transitions).toEqual([]);
+    const selection = { tick: 10, refuel: { candidates: {}, selected: {} } };
+    const upkeep = { selection_tick: 10, unfinished_targets: [{ step: 2, position: { x: 20, y: 2 },
+      requested_items: { coal: 10 }, state: "not_started" }], preempted: true };
+    expect(normalizePlanDiagnostics({ upkeep, upkeep_selection: selection }).upkeep).toEqual(upkeep);
+    expect(normalizePlanDiagnostics({ upkeep_selection: selection }).upkeep_selection.refuel.selected).toEqual([]);
+    expect(normalizeActivityLog({ entries: [{ source: "upkeep", upkeep: { unfinished_targets: {} } }] })
+      .entries[0].upkeep.unfinished_targets).toEqual([]);
+    expect(normalizeFactoryStatus({ body: { upkeep_selection: selection } }).body.upkeep_selection.refuel.candidates).toEqual([]);
     const audit = normalizePlanDiagnostics({ plan_id: 9, status: "completed", outcomes: [
       { step: 2, action: "inspect_entities", result: { tick: 100, entities: [{ name: "furnace" }], omitted_entities: 0 } },
       { step: 4, action: "inspect_entities", result: { tick: 145, entities: [{ name: "lab" }], omitted_entities: 0 } },

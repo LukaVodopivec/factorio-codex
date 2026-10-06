@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.22.5**.
+Current release: **0.22.6**.
 
 Factorio Codex shows how Codex bots think about and architect a Factorio
 factory. Two reasoning sessions plan and direct one physical character named

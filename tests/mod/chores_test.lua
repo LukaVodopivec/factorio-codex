@@ -42,7 +42,8 @@ package.loaded["scripts.registry"] = { stock_totals = function(names)
   return totals
 end }
 local queued = {}
-package.loaded["scripts.tasks"] = { queue_plan = function(params) queued[#queued + 1] = params; return { plan_id = #queued } end }
+package.loaded["scripts.tasks"] = { queue_plan = function(params, selection)
+  params.selection = selection; queued[#queued + 1] = params; return { plan_id = #queued } end }
 
 local chores = require("scripts.chores")
 require("scripts.state").init()
@@ -174,9 +175,8 @@ chores.upkeep(game.tick)
 check(#queued == before + 2 and #queued[#queued].steps == 2 and queued[#queued].steps[1].x == 3,
   "after 600 ticks the labs that still miss packs are tried again")
 body.force.current_research = nil
-game.tick = 13300
-storage.chores.fed_labs = {}
-sampled({ [7] = lab(7, 3, "missing_science_packs", { ["automation-science-pack"] = 200 }) })
+
+
 before = #queued
 chores.upkeep(game.tick)
 check(#queued == before, "with no research active no lab is fed")
@@ -254,6 +254,47 @@ local turn = queued[#queued]
 check(#queued == before + 1 and #turn.steps == 8 and turn.steps[1].x == 9 and turn.steps[8].x == 16,
   "labs tried within the retry time are skipped before the nearest 8 are taken")
 body.force.current_research = nil
+
+-- Selection is queue-time evidence, including a skipped cooldown target;
+-- observing it must not claim that a queued transfer already happened.
+sampled({ [901] = machine(901, 1, "no_fuel"), [902] = machine(902, 2, "no_fuel") })
+storage.chores.refueled, stocked = { [901] = 36000 }, { coal = 30 }
+game.tick, before = 36100, #queued
+chores.upkeep(game.tick)
+local evidence = storage.chores.last_selection
+local skipped
+for _, row in ipairs(evidence.refuel.candidates) do if row.unit == 901 then skipped = row end end
+check(evidence.plan_id == #queued and queued[#queued].selection == evidence and evidence.tick == 36100
+  and evidence.queue_status == "queued" and evidence.surface_index == 1,
+  "upkeep retains the same exact queue-time selection on its plan and last-pass readback")
+check(skipped.decision == "cooldown" and skipped.last_attempt_tick == 36000 and skipped.retry_tick == 39600
+  and evidence.refuel.selected[1].unit == 902 and evidence.refuel.selected[1].count == 10
+  and evidence.refuel.selected[1].available_snapshot == 30,
+  "cooldown attempt timing and selected indexed fuel are evidence, not successful refuelling")
+sampled({ [903] = machine(903, 3, "no_fuel") })
+storage.chores.refueled, carried, stocked = {}, {}, {}
+chores.upkeep(36200)
+check(storage.chores.last_selection.queue_status == "no_steps"
+  and storage.chores.last_selection.refuel.candidates[1].decision == "no_fuel_selected"
+  and #queued == before + 1, "a no-fuel-selection pass remains visible without fabricating a plan")
+sampled(many)
+storage.chores.refueled, stocked = {}, { coal = 1000 }
+chores.upkeep(36300)
+check(#storage.chores.last_selection.refuel.candidates == 64
+  and #storage.chores.last_selection.refuel.selected == 8
+  and storage.chores.last_selection.refuel.scan_complete == false,
+  "selection readback explicitly caps candidates and does not claim a complete whole-factory scan")
+sampled(many)
+storage.chores.refueled = {}
+for unit=1,300 do storage.chores.refueled[unit]=36300 end
+chores.upkeep(36400)
+local capped=storage.chores.last_selection.refuel
+check(capped.observed_candidates==64 and #capped.candidates==64 and capped.candidates_capped
+  and #capped.selected==0 and capped.scan_complete,
+  "new audit bookkeeping stops at64 cooldown observations while the existing selector finishes its traversal")
+game.tick = 13300
+storage.chores.fed_labs = {}
+sampled({ [7] = lab(7, 3, "missing_science_packs", { ["automation-science-pack"] = 200 }) })
 
 local ok = pcall(chores.on_nth[300], { tick = 9300 })
 check(ok and chores.on_nth[3600] ~= nil, "chores run on their periods")

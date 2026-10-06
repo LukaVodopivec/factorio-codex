@@ -32,12 +32,13 @@ export const toolPayloads = {
     ...(output_recipient_item ? { output_recipient_item } : {}),
     ...(belt_to_ground_type === undefined ? {} : { belt_to_ground_type }),
     ...(fluid === undefined ? {} : { fluid }), ...onSurface(surface) }),
-  productionRequirements: ({ targets, technology, location, recipe_choices, flow_precision, planet }: {
+  productionRequirements: ({ targets, technology, location, recipe_choices, flow_precision, planet, per_minute, fuel }: {
     targets?: Record<string, number>; technology?: string; location?: string;
-    recipe_choices?: Record<string, string>; flow_precision?: string; planet?: string;
+    recipe_choices?: Record<string, string>; flow_precision?: string; planet?: string; per_minute?: boolean; fuel?: string;
   }) => ({ ...(targets ? { targets } : {}), ...(technology ? { technology } : {}),
     ...(location ? { location } : {}), ...(recipe_choices ? { recipe_choices } : {}),
-    ...(flow_precision ? { flow_precision } : {}), ...(planet ? { planet } : {}) }),
+    ...(flow_precision ? { flow_precision } : {}), ...(planet ? { planet } : {}),
+    ...(per_minute ? { per_minute } : {}), ...(fuel ? { fuel } : {}) }),
   connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }) }),
 };
 
@@ -277,7 +278,12 @@ export function normalizeProductionRequirements(value: any): any {
       variable_operating_requirements: luaArray(value.deterministic_requirements.variable_operating_requirements),
       ...rootFields(value.deterministic_requirements) }
     : undefined;
-  return { ...value, nodes: luaArray(value.nodes),
+  const rates = value.rates && typeof value.rates === "object"
+    ? { ...value.rates, stages: luaArray(value.rates.stages).map((stage: any) => ({ ...stage, machines: luaArray(stage.machines) })),
+      raw: luaArray(value.rates.raw).map((row: any) => ({ ...row, drills: luaArray(row.drills) })), belts: luaArray(value.rates.belts) }
+    : undefined;
+  return { ...value, ...(value.nodes === undefined && rates ? {} : { nodes: luaArray(value.nodes) }),
+    ...(rates ? { rates } : {}),
     ...(deterministic ? { deterministic_requirements: deterministic } : {}),
     missing_technologies: luaArray(value.missing_technologies),
     trigger_conditions: luaArray(value.trigger_conditions),

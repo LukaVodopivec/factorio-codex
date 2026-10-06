@@ -149,4 +149,24 @@ check(walk.tick(stuck) == nil and stuck._walk.clear_attempted and stuck._walk.ph
   "a tree that cannot be mined is tried once, then the body escapes it")
 walk.start_clearer = nil
 
+-- Steering holds its direction while the bearing stays near it: a leg
+-- between two of the eight directions becomes one straight run and one
+-- diagonal run instead of a per-tick zig-zag.
+do
+  local unit = {}
+  for name, angle in pairs({ north = 0, northeast = 45, east = 90, southeast = 135, south = 180, southwest = 225, west = 270, northwest = 315 }) do
+    unit[defines.direction[name]] = { x = math.sin(math.rad(angle)), y = -math.cos(math.rad(angle)) }
+  end
+  for _, goal in ipairs({ { x = 10, y = 3 }, { x = 6, y = 2.5 }, { x = 3, y = 10 }, { x = -7, y = -4 } }) do
+    local state, pos, last, changes, ticks = {}, { x = 0, y = 0 }, nil, 0, 0
+    while (pos.x - goal.x) ^ 2 + (pos.y - goal.y) ^ 2 > 0.25 and ticks < 400 do
+      local d = walk.steer(state, pos, goal)
+      if last and d ~= last then changes = changes + 1 end
+      last, ticks = d, ticks + 1
+      pos = { x = pos.x + unit[d].x * 0.15, y = pos.y + unit[d].y * 0.15 }
+    end
+    check(changes <= 2 and ticks < 400, string.format(
+      "steering to (%g, %g) arrives with %d direction changes in %d ticks", goal.x, goal.y, changes, ticks))
+  end
+end
 os.exit(failures == 0 and 0 or 1)

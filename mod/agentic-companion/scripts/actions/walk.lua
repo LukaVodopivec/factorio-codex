@@ -59,6 +59,27 @@ local function direction_toward(from, to)
 end
 M.direction_toward = direction_toward
 
+-- The walking direction toward `to`, kept from the last tick while the
+-- bearing stays within STEER_HOLD_DEG of it. Rounding the bearing afresh
+-- each tick flips between two neighbouring directions on any leg that lies
+-- between them (the body zig-zags and its sprite flickers); holding turns
+-- such a leg into one straight run and one diagonal run.
+local STEER_HOLD_DEG = 40
+local atan2 = math.atan2 or math.atan -- Factorio's Lua 5.2 has atan2; 5.3+ takes two arguments
+local function steer(state, from, to)
+  local dx, dy = to.x - from.x, to.y - from.y
+  local held = state.walk_dir
+  if held and (dx ~= 0 or dy ~= 0) then
+    local bearing = math.deg(atan2(dx, -dy)) -- clockwise from north
+    local off = (bearing - held * 22.5) % 360
+    if off > 180 then off = 360 - off end
+    if off <= STEER_HOLD_DEG then return held end
+  end
+  state.walk_dir = direction_toward(from, to)
+  return state.walk_dir
+end
+M.steer = steer
+
 local function dist_sq(a, b)
   local dx, dy = a.x - b.x, a.y - b.y
   return dx * dx + dy * dy
@@ -72,6 +93,7 @@ end
 
 local function request_path(state, c, task_id, target, phase, radius)
   target = target or state.target
+  state.walk_dir = nil
   local id = c.surface.request_path({
     bounding_box = { { -0.2, -0.2 }, { 0.2, 0.2 } },
     collision_mask = prototypes.entity["character"].collision_mask,
@@ -673,7 +695,8 @@ function M.begin_settle(state, c, anchor, limit)
   state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
     conveyor = conveyor_label(conveyor), started_tick = game.tick,
     ticks_allowed = SETTLE_TICKS * math.max(1, math.ceil(math.sqrt(dist_sq(c.position, cell)) / 4)) }
-  set_walking(c, { walking = true, direction = direction_toward(c.position, cell) })
+  state.walk_dir = nil
+  set_walking(c, { walking = true, direction = steer(state, c.position, cell) })
   return nil
 end
 
@@ -696,7 +719,7 @@ local function step_settle(state, c)
       { code = "BODY_ON_CONVEYOR", diagnostics = { path = { evidence_scope = "charted_visible_only",
         start = { x = pos.x, y = pos.y }, settle = settle } } })
   end
-  set_walking(c, { walking = true, direction = direction_toward(pos, settle.to) })
+  set_walking(c, { walking = true, direction = steer(state, pos, settle.to) })
   return nil
 end
 
@@ -822,7 +845,7 @@ function M.step(state, c, task_id)
     end
     local failure = step_escape(state, c, evidence)
     if failure then return failure end
-    set_walking(c, { walking = true, direction = direction_toward(pos, state.escape_target) })
+    set_walking(c, { walking = true, direction = steer(state, pos, state.escape_target) })
     return nil
   end
 
@@ -992,7 +1015,7 @@ function M.step(state, c, task_id)
   end
 
   -- walking_state only lasts one tick, so it must be re-set every tick
-  set_walking(c, { walking = true, direction = direction_toward(pos, goal) })
+  set_walking(c, { walking = true, direction = steer(state, pos, goal) })
   return nil
 end
 

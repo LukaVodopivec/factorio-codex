@@ -10,7 +10,7 @@
 - a problem that needs judgment (a starved line, a full output, power short). A machine starved or full a second time needs a connection (belt, inserter, or chest), not another hand transfer; so does a line with `hand_transfers`.
 Say in a sentence or two what you see and what you will do before you act.
 
-**The loop.** Call `next_event` (up to 120 s) with the last `tick` you saw as `since_tick`, act on what it returns, and wait again. A `timeout` with work queued means the body is busy: wait again. Any result with `body.fifo_empty` true (and no human hold) means the body is idle: queue work before waiting again. Never poll `plan_status`, `factory_status`, or any read in a loop.
+**The loop.** Call `next_event` (up to 120 s) with the last `tick` you saw as `since_tick`, act on what it returns, and wait again. A `timeout` with work queued means the body is busy: wait again. Any result with `body.fifo_empty` true (and no human hold) means the body is idle: queue work before waiting again. Empty FIFO is not success: check a plan's outcome (`plan_ended`, else one exact `plan_status`) before using it. Never poll `plan_status`, `factory_status`, or any read in a loop.
 
 **Continuation is the default.** A plan result, a batch, or a progress report is not a completion or pause boundary; keep going whenever productive work or a bounded recovery exists, and choose the highest-payback expansion of the measured bottleneck before another manual deficit batch. Exactly one physical MCP call may be in flight. Ending a turn never calls `update_goal`.
 

@@ -22,10 +22,12 @@ _G.prototypes = { item = {
 } }
 
 -- The engine's recipe filter: which recipes make an item (supply caches it),
--- as a LuaCustomTable, which is userdata like the engine's.
+-- as a LuaCustomTable, which is userdata like the engine's. Quality's hidden
+-- recycling recipe also makes iron-plate and sorts before the smelting one.
 prototypes.get_recipe_filtered = function(filters)
   local wanted = filters[1].elem_filters[1].name
-  return mock.custom_table(wanted == "iron-plate" and { ["iron-plate"] = {} } or {})
+  return mock.custom_table(wanted == "iron-plate"
+    and { ["iron-chest-recycling"] = {}, ["iron-plate"] = {} } or {})
 end
 
 local inventory = {}
@@ -38,6 +40,9 @@ local recipes = {
   ["iron-plate"] = { name = "iron-plate", enabled = true, category = "smelting",
     ingredients = { { type = "item", name = "iron-ore", amount = 1 } },
     products = { { type = "item", name = "iron-plate", amount = 1 } } },
+  ["iron-chest-recycling"] = { name = "iron-chest-recycling", enabled = true, hidden = true,
+    category = "recycling", ingredients = { { type = "item", name = "iron-chest", amount = 1 } },
+    products = { { type = "item", name = "iron-plate", amount = 2 } } },
 }
 local body
 body = {

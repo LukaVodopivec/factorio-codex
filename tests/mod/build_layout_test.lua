@@ -812,6 +812,10 @@ permissive, crowded, blockers = false, false, {}
 local plate = { type = "item", name = "iron-plate", amount = 1 }
 recipes["iron-plate"] = { name = "iron-plate", enabled = true, category = "smelting",
   ingredients = { { type = "item", name = "iron-ore", amount = 1 } }, products = { plate } }
+-- Quality's hidden recycling recipe also makes plates and sorts first.
+recipes["iron-chest-recycling"] = { name = "iron-chest-recycling", enabled = true, hidden = true,
+  category = "recycling", ingredients = { { type = "item", name = "iron-chest", amount = 1 } },
+  products = { { type = "item", name = "iron-plate", amount = 4 } } }
 recipes["burner-mining-drill"] = { name = "burner-mining-drill", enabled = true, category = "crafting",
   ingredients = { { type = "item", name = "iron-plate", amount = 9 } },
   products = { { type = "item", name = "burner-mining-drill", amount = 1 } } }

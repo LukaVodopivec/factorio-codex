@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Bridge, ModError } from "../src/bridge.js";
-import { configPath, diagnoseConfig, saveConfig } from "../src/config.js";
-import { createBridgeProvider } from "../src/mcp/server.js";
+import { companionVersion, configPath, diagnoseConfig, saveConfig } from "../src/config.js";
+import { createBridgeProvider, MCP_SERVER_VERSION } from "../src/mcp/server.js";
 import type { RconClient } from "../src/rcon.js";
 
 const settings = { host: "127.0.0.1", port: 19015, password: "secret" };
@@ -32,6 +32,38 @@ afterEach(() => {
 });
 
 describe("lazy MCP bridge connection", () => {
+  it("rejects an upgraded mod on reconnect even when package metadata on disk changed", async () => {
+    const loadedVersion = companionVersion();
+    const first = new FakeRcon();
+    const upgraded = new FakeRcon();
+    const retry = new FakeRcon();
+    const factory = vi.fn()
+      .mockReturnValueOnce(first as unknown as RconClient)
+      .mockReturnValueOnce(upgraded as unknown as RconClient)
+      .mockReturnValueOnce(retry as unknown as RconClient);
+    vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
+    const ping = vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: loadedVersion });
+    const getBridge = createBridgeProvider(settings, factory);
+    await expect(getBridge()).resolves.toBeInstanceOf(Bridge);
+    first.close();
+
+    // Simulate an in-place checkout/package upgrade after these modules loaded.
+    const readFile = fs.readFileSync;
+    vi.spyOn(fs, "readFileSync").mockImplementation(((file: any, ...args: any[]) =>
+      String(file).endsWith("/package.json")
+        ? JSON.stringify({ name: "factorio-codex", version: "99.0.0" })
+        : (readFile as any)(file, ...args)) as any);
+    ping.mockResolvedValue({ protocol_version: 28, mod_version: "99.0.0" });
+    await expect(getBridge()).rejects.toThrow(`mod v99.0.0, app v${loadedVersion}`);
+    expect(upgraded.close).toHaveBeenCalledOnce();
+    expect(companionVersion()).toBe(loadedVersion);
+    expect(MCP_SERVER_VERSION).toBe(loadedVersion);
+
+    ping.mockResolvedValue({ protocol_version: 28, mod_version: loadedVersion });
+    await expect(getBridge()).resolves.toBeInstanceOf(Bridge);
+    retry.close();
+  });
+
   it("recovers in-process when setup creates a valid config after offline startup", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-lazy-config-test-"));
     homes.push(home);
@@ -39,7 +71,7 @@ describe("lazy MCP bridge connection", () => {
     const rcon = new FakeRcon();
     const factory = vi.fn(() => rcon as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.22.7" });
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.22.8" });
     const getBridge = createBridgeProvider(diagnoseConfig, factory);
 
     await expect(getBridge()).rejects.toThrow("configuration is missing");
@@ -61,7 +93,7 @@ describe("lazy MCP bridge connection", () => {
     rcon.connect.mockImplementation(async () => { await ready.promise; rcon.connected = true; });
     const factory = vi.fn(() => rcon as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.22.7" });
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.22.8" });
     const getBridge = createBridgeProvider(settings, factory);
 
     const first = getBridge();
@@ -79,7 +111,7 @@ describe("lazy MCP bridge connection", () => {
     const unlock = vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
     const call = vi.spyOn(Bridge.prototype, "call").mockResolvedValue({
       protocol_version: 28,
-      mod_version: "0.22.7",
+      mod_version: "0.22.8",
     });
     const getBridge = createBridgeProvider(settings, factory);
 
@@ -104,7 +136,7 @@ describe("lazy MCP bridge connection", () => {
       .mockReturnValueOnce(first as unknown as RconClient)
       .mockReturnValueOnce(second as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.22.7" });
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.22.8" });
     const getBridge = createBridgeProvider(settings, factory);
 
     await getBridge();
@@ -126,9 +158,9 @@ describe("lazy MCP bridge connection", () => {
       if (stage === "unlock" && (this as any).rcon === failed) throw new ModError("unlock failed");
     });
     vi.spyOn(Bridge.prototype, "call").mockImplementation(async function () {
-      if (stage === "protocol" && (this as any).rcon === failed) return { protocol_version: 6, mod_version: "0.22.7" };
+      if (stage === "protocol" && (this as any).rcon === failed) return { protocol_version: 6, mod_version: "0.22.8" };
       if (stage === "mod" && (this as any).rcon === failed) return { protocol_version: 28, mod_version: "0.6.0" };
-      return { protocol_version: 28, mod_version: "0.22.7" };
+      return { protocol_version: 28, mod_version: "0.22.8" };
     });
     const getBridge = createBridgeProvider(settings, factory);
 

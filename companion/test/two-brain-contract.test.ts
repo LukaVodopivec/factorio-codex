@@ -19,6 +19,14 @@ const normalized = flat(active).toLowerCase();
 const registered = new Set([...read("companion/src/mcp/server.ts").matchAll(/registerTool\("([a-z_]+)"/g)].map((match) => match[1]));
 
 describe("persistent two-brain coordination contract", () => {
+  it("uses complete role-labelled MCP tables in pilot and supervisor launch examples", () => {
+    for (const role of ["pilot", "supervisor"]) {
+      expect(live).toContain(`mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","${role}"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}`);
+      expect(live).not.toContain(`mcp_servers.factorio.args=["--role","${role}"]`);
+    }
+    expect(live).not.toContain("The pilot needs no MCP override");
+  });
+
   it("keeps the instructions short, with shared rules only in SKILL.md", () => {
     const size = [skill, pilot, strategist, knowledge].reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
     expect(size).toBeLessThan(34_500);

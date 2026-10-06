@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.22.7**. Prior live evidence remains historical
-until the 0.22.7 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.22.8**. Prior live evidence remains historical
+until the 0.22.8 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -401,8 +401,8 @@ in existing run evidence. A failed write or read holds `GO`.
 
 Launch the two connected sessions from the repository with `session-launcher`,
 each with `-c model_reasoning_summary=detailed` so its reasoning summaries are
-readable for the thought feed. The pilot needs no MCP override: the project
-`.codex/config.toml` defaults are already its surface. Connected (`--remote`)
+readable for the thought feed. The pilot explicitly selects its bridge role,
+which enables automatic package queuing. Connected (`--remote`)
 clients validate `-c` overrides before the project layer loads, so a role
 override must name a complete server table; a partial
 `mcp_servers.<name>.enabled` override fails with `invalid transport`.
@@ -410,7 +410,7 @@ override must name a complete server table; a partial
 ```sh
 session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on \
   -c model_reasoning_summary=detailed \
-  -c 'mcp_servers.factorio.args=["--role","pilot"]'
+  -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","pilot"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'
 session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effort medium --fast off \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
@@ -419,7 +419,7 @@ session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effo
 
 `--role` names the session in the `origin` of every cancel its MCP process
 makes. The supervisor starts its own factorio server with
-`-c 'mcp_servers.factorio.args=["--role","supervisor"]'` before it rehearses
+`-c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","supervisor"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'` before it rehearses
 `stop`; a server started without one reports `unknown`.
 
 Before relying on the feed, confirm on a throwaway session that `gpt-6-luna`

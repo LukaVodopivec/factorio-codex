@@ -40,4 +40,6 @@ export function existingRconPassword(): string | undefined { const value = readR
 export function saveConfig(config: AppConfig): void { fs.mkdirSync(configDir(), { recursive: true }); atomicWriteFile(configPath(), `${JSON.stringify(config, null, 2)}\n`, 0o600); }
 export function resolveSettings(): Settings { const cfg = loadConfig(); return { rcon: cfg?.rcon ?? { host: "127.0.0.1", port: 19015, password: "" } }; }
 export function packageRoot(): string { let dir = path.dirname(fileURLToPath(import.meta.url)); for (let i = 0; i < 6; i++) { const pkg = path.join(dir, "package.json"); try { if (JSON.parse(fs.readFileSync(pkg, "utf8")).name === "factorio-codex") return dir; } catch {} const parent = path.dirname(dir); if (parent === dir) break; dir = parent; } return path.dirname(path.dirname(fileURLToPath(import.meta.url))); }
-export function companionVersion(): string { try { return JSON.parse(fs.readFileSync(path.join(packageRoot(), "package.json"), "utf8")).version ?? "0.0.0"; } catch { return "0.0.0"; } }
+// Identify loaded code: an in-place upgrade must not let an old bridge
+// authenticate as the new release when its RCON connection is recreated.
+export function companionVersion(): string { return "0.22.8"; }

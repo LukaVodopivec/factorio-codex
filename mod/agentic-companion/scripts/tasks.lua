@@ -490,8 +490,10 @@ function M.queue_plan(params, upkeep_selection)
   local crafting = body and body.valid and (body.crafting_queue_size or 0) > 0
   local body_idle_ticks = (not tasks.active and #tasks.queue == 0 and not crafting and tasks.last_finished_tick)
     and math.max(0, game.tick - tasks.last_finished_tick) or 0
+  -- tick anchors the caller's next_event: a plan that ends before that wait
+  -- starts still returns plan_ended, not an empty queue.
   return { plan_id = assign(plan), after_plan_id = predecessor, body_idle_ticks = body_idle_ticks,
-    human_control = plan.human_control }
+    human_control = plan.human_control, tick = game.tick }
 end
 local function plan_payload(plan)
   local c = companion.get()

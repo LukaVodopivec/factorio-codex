@@ -71,7 +71,7 @@ describe("persistent two-brain coordination contract", () => {
     for (const state of ["running", "starved", "output_full", "no_fuel", "no_power", "no_heat", "disabled", "idle"]) expect(skill).toContain(`\`${state}\``);
     for (const event of ["plan_ended", "queue_empty", "new_problem", "package_failed", "orders_changed", "human_hold_started", "human_hold_ended"])
       expect(skill).toContain(`\`${event}\``);
-    expect(flat(pilot)).toMatch(/Call `next_event` \(up to 120 s\) with the last `tick` you saw as `since_tick`/);
+    expect(flat(pilot)).toMatch(/Call `next_event` \(up to 120 s\) with `next_action`'s `since_tick` or the last `tick` seen/);
     expect(flat(pilot)).toMatch(/Never poll `plan_status`, `factory_status`, or any read in a loop/);
     expect(flat(strategist)).toMatch(/Never poll in a loop/);
   });

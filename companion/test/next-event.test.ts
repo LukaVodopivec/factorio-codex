@@ -208,6 +208,27 @@ describe("next_event rocket and platform events", () => {
   });
 });
 
+describe("next_event after a queued plan", () => {
+  it("follows queue_plan, travel and plan_status with a since_tick that still reports a plan that ended before the wait", async () => {
+    // Plan 1 is queued at tick 2733 and fails in that tick; the wait starts with the FIFO already empty.
+    const failed: EventState = { ...idle, tick: 2951, last_plan_ended: { plan_id: 1, status: "failed", tick: 2733 } };
+    const call = vi.fn(async (method: string) => {
+      if (method === "queue_plan" || method === "travel") return { plan_id: 1, body_idle_ticks: 0, tick: 2733 };
+      if (method === "plan_status") return { plan_id: 1, status: "running", source_tick: 2733, outcomes: [] };
+      return failed;
+    });
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    registerMcpTools({ registerTool(name, _config, run) { handlers[name] = run; } }, async () => ({ call } as unknown as Bridge),
+      () => ({ ok: false, error: "offline fixture" }), "full", () => null, "pilot");
+    for (const [tool, args] of [["queue_plan", { steps: [{ action: "walk_to", x: 1, y: 2 }] }], ["travel", { to: "vulcanus" }],
+      ["plan_status", { plan_id: 1 }]] as const) {
+      const next = (await handlers[tool]!(args)).structuredContent.next_action;
+      expect(next).toEqual({ tool: "next_event", arguments: { timeout_seconds: 60, since_tick: 2732 } });
+      expect((await handlers.next_event!(next.arguments)).structuredContent).toMatchObject({ event: "plan_ended", plan_id: 1, status: "failed" });
+    }
+  });
+});
+
 describe("next_event", () => {
   it("returns queue_empty at once for an idle body, but waits when since_tick says it was already idle", async () => {
     expect(await waitForEvent(game([idle]).bridge, input(), quiet(), undefined, fakeClock()))

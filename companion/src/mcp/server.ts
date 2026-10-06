@@ -25,6 +25,13 @@ const walkInput = position.extend({ arrival_mode: z.enum(["exact", "vicinity"]).
   arrival_radius: z.number().min(0.5).max(6).default(1) }).strict()
   .refine((p) => p.arrival_mode === "vicinity" || p.arrival_radius === 1,
     { message: "exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius", path: ["arrival_radius"] });
+// The wait that follows a queued or running plan, anchored one tick before the
+// mod's tick: a plan that ends before the wait starts (even in that tick)
+// returns plan_ended instead of queue_empty.
+function nextEventAfter(tick: unknown) {
+  const since = typeof tick === "number" && Number.isInteger(tick) ? { since_tick: Math.max(0, tick - 1) } : {};
+  return { tool: "next_event", arguments: { timeout_seconds: 60, ...since } };
+}
 export function result(value: unknown, isError = false) {
   const raw = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -211,7 +218,7 @@ export function registerMcpTools(
       const outcome = await executeRunPlan(await bridge(), parsed, signal, undefined, tool);
       const terminal = ["completed", "partial", "failed", "cancelled"].includes(outcome.status);
       return result(normalizePlanDiagnostics({ ...outcome, terminal, next_action: terminal ? null
-        : { tool: "next_event", arguments: { timeout_seconds: 60 } } }),
+        : nextEventAfter(outcome.source_tick) }),
       outcome.status === "failed" || outcome.status === "cancelled");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -374,7 +381,7 @@ export function registerMcpTools(
       if (value.observation) value.observation = normalizeObservation(value.observation);
       const terminal = ["completed", "partial", "failed", "cancelled"].includes(value.status);
       return result(normalizePlanDiagnostics({ ...value, terminal, summary: planStatusSummary(value, terminal),
-        next_action: terminal ? null : { tool: "next_event", arguments: { timeout_seconds: 60 } },
+        next_action: terminal ? null : nextEventAfter(value.source_tick),
       }), value.status === "failed" || value.status === "cancelled");
     } catch (error) { return failure(error); }
   });
@@ -524,12 +531,12 @@ export function registerMcpTools(
     } catch (error) { return failure(error); }
   });
   const travelInput = z.object(travelFields).strict();
-  tools.registerTool("travel", { description: "Go to another surface as a player does: by rocket from a planet up to a platform in orbit (it waits for a ready rocket; via_silo picks the silo), or from aboard down to a planet: it waits aboard until the platform reaches that planet (max_wait_minutes, default 60; NO_ROUTE when the platform's schedule has no stop there). Queues one plan and returns; follow it with next_event. Route the platform first with set_platform_route.", inputSchema: travelInput }, async (p) => {
+  tools.registerTool("travel", { description: "Go to another surface as a player does: by rocket from a planet up to a platform in orbit (it waits for a ready rocket; via_silo picks the silo), or from aboard down to a planet: it waits aboard until the platform reaches that planet (max_wait_minutes, default 60; NO_ROUTE when the platform's schedule has no stop there). Queues one plan and returns; follow it with next_action's next_event. Route the platform first with set_platform_route.", inputSchema: travelInput }, async (p) => {
     try {
       const queued: any = await (await bridge()).call("travel", travelInput.parse(p));
       return result({ ...queued, status: "queued", terminal: false,
         summary: `${queuedPlanSummary(queued)}; travel to ${queued.to ?? JSON.stringify(p.to)}`,
-        next_action: { tool: "next_event", arguments: { timeout_seconds: 60 } } });
+        next_action: nextEventAfter(queued.tick) });
     } catch (error) { return failure(error); }
   });
   tools.registerTool("rotate_entity", { description: "Rotate the entity at a position once, or set its direction 0-15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate_entity", "rotate", toolPayloads.rotate(p), extra?.signal));
@@ -568,11 +575,11 @@ export function registerMcpTools(
   const copyInput = z.object(copySettingsFields).strict();
   tools.registerTool("copy_settings", { description: "Copy the recipe, filters and limits of one building onto up to 32 others of the same kind; the body walks within reach of each.", inputSchema: copyInput }, async (p, extra) =>
     step("copy_settings")(copyInput.parse(p), extra?.signal));
-  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, build_block, blueprint_place. equip and flush_fluid are plan steps only. Steps on a space platform (platform set) need no body. Positions are on the body's surface, or after a travel step on its destination; surface names another. A plan for a surface the body leaves is cancelled (SURFACE_LEFT). after_plan_id runs it only after that plan completes. Wait with next_event.", inputSchema: queuePlanSchema }, async (input) => {
+  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, build_block, blueprint_place. equip and flush_fluid are plan steps only. Steps on a space platform (platform set) need no body. Positions are on the body's surface, or after a travel step on its destination; surface names another. A plan for a surface the body leaves is cancelled (SURFACE_LEFT). after_plan_id runs it only after that plan completes. Wait with next_action's next_event: its since_tick still catches a plan that already ended.", inputSchema: queuePlanSchema }, async (input) => {
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
       return result({ ...queued, status: "queued", terminal: false, summary: queuedPlanSummary(queued),
-        next_action: { tool: "next_event", arguments: { timeout_seconds: 60 } } });
+        next_action: nextEventAfter(queued.tick) });
     } catch (error) { return failure(error); }
   });
   tools.registerTool("run_plan", { description: "Run 1-200 steps and block until the plan is terminal (up to 570 s, then it returns the plan still running and never cancels it); the queue stays empty while you then think, so prefer queue_plan.", inputSchema: runPlanSchema }, async (input, extra) => runPlan(input, extra?.signal));

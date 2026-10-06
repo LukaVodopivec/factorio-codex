@@ -260,9 +260,10 @@ end
 -- (progressed in the last 10 s) and speed (summed research speed, force
 -- bonus, modules and beacons included).
 -- With speed, what the current research needs to keep them all busy: packs
--- a minute (speed x 60 / unit_time_s x amount; productivity does not change
--- consumption) and eta_seconds (remaining units at full speed, productivity's
--- free units counted). A few reads of the current technology.
+-- a minute (pack_rate x 60 / unit_time_s x amount: a biolab drains half a
+-- pack a unit, productivity does not change consumption) and eta_seconds
+-- (remaining units at full speed, each lab's productivity counted). A few
+-- reads of the current technology.
 local function labs_section(force, out)
   local labs = registry.labs()
   if labs.count > 0 then
@@ -273,7 +274,7 @@ local function labs_section(force, out)
   local unit_time_s = research.unit_time_s(current)
   out.unit_time_s = unit_time_s
   if not (unit_time_s and unit_time_s > 0 and labs.speed > 0) then return end
-  local per_minute = labs.speed * 60 / unit_time_s
+  local per_minute = labs.pack_rate * 60 / unit_time_s
   local needed = {}
   local ok, ingredients = pcall(function() return current.research_unit_ingredients end)
   for _, ingredient in ipairs(ok and ingredients or {}) do
@@ -281,10 +282,11 @@ local function labs_section(force, out)
   end
   if next(needed) then out.packs_per_minute_needed = needed end
   local count_ok, count = pcall(function() return current.research_unit_count end)
-  if count_ok and type(count) == "number" then
+  if count_ok and type(count) == "number" and labs.progress_rate > 0 then
     local remaining = count * (1 - (force.research_progress or 0))
-    local productivity = tonumber(force.laboratory_productivity_bonus) or 0
-    out.eta_seconds = math.ceil(remaining * unit_time_s / (labs.speed * (1 + productivity)))
+    -- The sums drift by float rounding as labs come and go; a whole second
+    -- must not round up to the next.
+    out.eta_seconds = math.ceil(remaining * unit_time_s / labs.progress_rate - 1e-6)
   end
 end
 

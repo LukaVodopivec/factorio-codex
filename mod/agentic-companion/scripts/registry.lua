@@ -176,6 +176,22 @@ local function lab_base(entity)
   return speed
 end
 
+-- The share of a pack a lab drains per unit (the biolab's is 0.5), cached
+-- per name.
+local lab_drains = {}
+local function lab_drain(entity)
+  local drain = lab_drains[entity.name]
+  if drain == nil then
+    drain = (number(function() return entity.prototype.science_pack_drain_rate_percent end) or 100) / 100
+    lab_drains[entity.name] = drain
+  end
+  return drain
+end
+
+-- A lab's sums in its surface's lab row: research speed, packs drained (speed
+-- x drain) and research progress (speed x (1 + productivity)).
+local LAB_SUMS = { "research_speed", "pack_rate", "progress_rate" }
+
 -- ------------------------------------------------------------- aggregates
 
 local function type_row(r, surface, kind)
@@ -345,13 +361,20 @@ local function visit(r, entry)
     join_network(r, entry, id)
   end
   if entry.type == "lab" then
-    -- speed_bonus sums the force's lab research bonus, modules and beacons.
+    -- speed_bonus and productivity_bonus each sum the force's lab research
+    -- bonus, modules and beacons.
     entry.lab_base = entry.lab_base or lab_base(entity)
+    entry.lab_drain = entry.lab_drain or lab_drain(entity)
     local speed = entry.lab_base * (1 + (number(function() return entity.speed_bonus end) or 0))
+    local productivity = number(function() return entity.productivity_bonus end) or 0
+    local sums = { research_speed = speed, pack_rate = speed * entry.lab_drain,
+      progress_rate = speed * (1 + productivity) }
     local row = type_row(r, entry.surface, "lab")
-    row.research_speed = (row.research_speed or 0) + speed - (entry.research_speed or 0)
-    entry.research_speed = speed
-    cost = cost + 2
+    for _, key in ipairs(LAB_SUMS) do
+      row[key] = (row[key] or 0) + sums[key] - (entry[key] or 0)
+      entry[key] = sums[key]
+    end
+    cost = cost + 3
   end
   if r.holders[entry.unit] then
     local contents = {}
@@ -427,10 +450,16 @@ function M.remove(unit)
   if r.machines[entry.type] then r.machines[entry.type][unit] = nil end
   leave_network(r, entry)
   if entry.stock then restock(r, entry, {}) end
-  local row = type_row(r, entry.surface, entry.type)
-  row.count = math.max(0, row.count - 1)
-  if entry.role == "source" then row.nameplate_w = row.nameplate_w - (entry.nominal_w or 0) end
-  if entry.research_speed then row.research_speed = (row.research_speed or 0) - entry.research_speed end
+  -- A deleted surface's aggregates went with it; never recreate its row.
+  local by_type = r.types[entry.surface or 0]
+  local row = by_type and by_type[entry.type]
+  if row then
+    row.count = math.max(0, row.count - 1)
+    if entry.role == "source" then row.nameplate_w = row.nameplate_w - (entry.nominal_w or 0) end
+    for _, key in ipairs(LAB_SUMS) do
+      if entry[key] then row[key] = (row[key] or 0) - entry[key] end
+    end
+  end
   for _, set in ipairs(SETS) do r[set][unit] = nil end
   return entry
 end
@@ -875,17 +904,21 @@ function M.aggregate(surface)
   return out
 end
 
--- Own labs on every surface (research is the force's): {count, speed}, the
--- speed summed as the maintenance cursor last read each lab. Pure Lua over
--- the type aggregates.
+-- Own labs on every surface (research is the force's): {count, speed,
+-- pack_rate, progress_rate}, each summed as the maintenance cursor last read
+-- each lab (see LAB_SUMS). Pure Lua over the type aggregates.
 function M.labs()
   local r = data()
-  local count, speed = 0, 0
+  local count, speed, pack_rate, progress_rate = 0, 0, 0, 0
   for _, by_type in pairs(r and r.types or {}) do
     local row = by_type.lab
-    if row then count, speed = count + row.count, speed + (row.research_speed or 0) end
+    if row then
+      count, speed = count + row.count, speed + (row.research_speed or 0)
+      pack_rate, progress_rate = pack_rate + (row.pack_rate or 0), progress_rate + (row.progress_rate or 0)
+    end
   end
-  return { count = count, speed = math.max(0, speed) }
+  return { count = count, speed = math.max(0, speed), pack_rate = math.max(0, pack_rate),
+    progress_rate = math.max(0, progress_rate) }
 end
 
 -- {ready, pass_tick}: whether the aggregates have had one full pass.

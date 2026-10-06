@@ -41,14 +41,20 @@ storage.registry.ready, storage.registry.force = true, "player"
 
 local base_reads = 0
 local next_unit = 0
-local function lab(x, quality, bonus)
+-- A lab (base speed 1, 1.3 at uncommon) or another lab prototype: name,
+-- base speed and science_pack_drain_rate_percent, on nauvis or a surface.
+local function lab(x, quality, bonus, kind, surface)
+  kind = kind or { name = "lab", base = 1 }
+  surface = surface or nauvis
   next_unit = next_unit + 1
-  local e = mock.entity({ valid = true, name = "lab", type = "lab", position = { x = x, y = 0 }, unit_number = next_unit,
-    force = force, surface = nauvis, surface_index = 1, quality = { name = quality }, speed_bonus = bonus,
-    prototype = mock.entity_prototype({ name = "lab", electric_energy_source_prototype = nil,
+  local e = mock.entity({ valid = true, name = kind.name, type = "lab", position = { x = x, y = 0 }, unit_number = next_unit,
+    force = force, surface = surface, surface_index = surface.index, quality = { name = quality }, speed_bonus = bonus,
+    productivity_bonus = 0,
+    prototype = mock.entity_prototype({ name = kind.name, electric_energy_source_prototype = nil,
+      science_pack_drain_rate_percent = kind.drain or 100,
       get_researching_speed = function(q)
         base_reads = base_reads + 1
-        return q == "normal" and 1 or 1.3
+        return q == "normal" and kind.base or kind.base * 1.3
       end }) })
   registry.add(e)
   return e
@@ -84,13 +90,18 @@ check(two.labs.count == 2 and math.abs(two.labs.speed - 3.6) < 1e-9
   and two.eta_seconds == math.ceil(70 / 3.6),
   "quality and speed_bonus count: speed 3.6, 21.6 packs a minute, eta ceil(70 / 3.6)")
 
--- Productivity adds free units: packs a minute stay, the eta shortens.
+-- Productivity adds free units: packs a minute stay, the eta shortens. Each
+-- lab's productivity_bonus already holds the force's research bonus plus its
+-- modules and beacons, so the force bonus is not applied a second time.
 force.laboratory_productivity_bonus = 0.2
+first.productivity_bonus, second.productivity_bonus = 0.2, 0.6
+pass()
 local productive = read()
 check(math.abs(productive.packs_per_minute_needed["automation-science-pack"] - 21.6) < 1e-9
-  and productive.eta_seconds == math.ceil(70 / (3.6 * 1.2)),
-  "lab productivity leaves pack consumption alone and shortens eta_seconds")
+  and productive.eta_seconds == math.ceil(70 / (1 * 1.2 + 2.6 * 1.6)),
+  "each lab's productivity leaves pack consumption alone and shortens eta_seconds")
 force.laboratory_productivity_bonus = 0
+first.productivity_bonus, second.productivity_bonus = 0, 0
 
 -- A changed speed bonus is picked up by the maintenance cursor; the base
 -- speed is read once per lab name and quality.
@@ -109,6 +120,30 @@ storage.autonomy = nil
 registry.remove(second.unit_number)
 local after = read()
 check(after.labs.count == 1 and math.abs(after.labs.speed - 1.5) < 1e-9, "a removed lab leaves count and speed")
+
+-- A biolab (base 2, drains half a pack a unit) researches twice as fast as a
+-- lab on the same packs: 1.5 + 2 speed, (1.5 + 1) x 6 packs a minute.
+local biolab = lab(10, "normal", 0, { name = "biolab", base = 2, drain = 50 })
+local bio = read()
+check(math.abs(bio.labs.speed - 3.5) < 1e-9
+  and math.abs(bio.packs_per_minute_needed["automation-science-pack"] - 15) < 1e-9
+  and bio.eta_seconds == 20,
+  "a biolab counts its full speed for eta_seconds and half its packs: 15 a minute, eta 20 s")
+registry.remove(biolab.unit_number)
+
+-- Labs on a deleted surface leave the force-wide sums when their entries go
+-- after the surface's aggregates; no negative row is left behind.
+local platform = mock.surface({ index = 3, name = "platform-1", valid = true })
+local aboard = lab(0, "normal", 1, nil, platform)
+check(math.abs(read().labs.speed - 3.5) < 1e-9, "a lab on another surface adds to the speed")
+registry.on_surface_deleted({ surface_index = 3 })
+aboard.valid = false
+registry.remove(aboard.unit_number)
+local survived = read()
+check(survived.labs.count == 1 and math.abs(survived.labs.speed - 1.5) < 1e-9
+  and math.abs(survived.packs_per_minute_needed["automation-science-pack"] - 9) < 1e-9
+  and storage.registry.types[3] == nil,
+  "removing a deleted surface's lab keeps the remaining speed 1.5 and recreates no row")
 
 -- No current research: labs only.
 force.current_research = nil

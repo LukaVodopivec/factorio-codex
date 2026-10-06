@@ -3,6 +3,7 @@
 local companion = require("scripts.companion")
 local items = require("scripts.items")
 local inspect = require("scripts.inspect")
+local surfaces = require("scripts.surfaces")
 local walk = require("scripts.actions.walk")
 local mine = require("scripts.actions.mine")
 local pickup = require("scripts.actions.pickup")
@@ -760,9 +761,17 @@ local function wait_for_item(plan, step)
       plan.wait_started_tick, plan.next_check_tick = nil, nil
       return { status = "failed", detail = wait_timeout_detail(step) }
     end
-    -- The deadline stays: a wait that walks back to its target keeps it.
     local distance = math.sqrt(dx * dx + dy * dy)
-    plan.next_check_tick = nil
+    plan.wait_started_tick, plan.next_check_tick = nil, nil
+    -- A target read before lies in charted land, which stays charted: the
+    -- refusal there means no own machine is left at it, which walking back
+    -- cannot fix.
+    if step._starting_count ~= nil and surfaces.charted(c.force, c.surface, math.floor(step.x / 32), math.floor(step.y / 32)) then
+      return { status = "failed",
+        detail = string.format("WAIT_TARGET_GONE: no own machine is left at (%.1f, %.1f), %.1f tiles away", step.x, step.y, distance),
+        outcome = { code = "WAIT_TARGET_GONE", distance = distance,
+          corrective_hint = "The machine was removed or replaced: inspect the spot before waiting on it again." } }
+    end
     return { status = "failed",
       detail = string.format("TARGET_OUT_OF_OBSERVATION_RANGE: wait target is %.1f tiles away and not readable from here; maximum is 30", distance),
       outcome = { code = "TARGET_OUT_OF_OBSERVATION_RANGE", distance = distance,
@@ -857,10 +866,6 @@ local function try_recover(plan, step, result)
     local ok, exit = pcall(footprint_exit, failed)
     if not ok or not exit then return false end
     recovery.fix = { type = "walk_to", target = exit, arrival_mode = "exact", arrival_radius = 1 }
-  elseif code == "TARGET_OUT_OF_OBSERVATION_RANGE" and step.action == "wait_for_item" and step._starting_count ~= nil then
-    -- A wait that has read its target before (another plan then moved the
-    -- body away) walks back to it once and reads it again.
-    recovery.fix = { type = "walk_to", target = { x = step.x, y = step.y }, arrival_mode = "vicinity", arrival_radius = 6 }
   elseif code == "TARGET_OUT_OF_REACH" and failed and runners[failed.type] then
     recovery.resume_tick = game.tick
   elseif code == "PARTIAL_INSERT" and step.action == "insert_items" then

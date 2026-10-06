@@ -333,10 +333,10 @@ turning them into a fixed opening or map-specific sequence:
   before mutation, while runtime binding remains exact and pending until first
   output when appropriate.
 - A `wait_for_item` beyond 30 tiles reads its target remotely when it is an
-  own-force machine in charted land. Otherwise a wait that has read its target
-  before (another plan then moved the body) walks back to it once; a wait that
-  never read it fails immediately with the physical-distance correction instead
-  of consuming its timeout. An insertion that accepts only
+  own-force machine in charted land. Otherwise it fails immediately instead of
+  consuming its timeout and never walks: `WAIT_TARGET_GONE` when it read its
+  target before and the charted spot holds no own machine any more, else the
+  physical-distance correction. An insertion that accepts only
   part of a request terminates as `partial`, reports requested/inserted/remainder
   counts, preserves the useful accepted amount, and does not execute dependent
   steps.

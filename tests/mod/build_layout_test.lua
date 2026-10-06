@@ -595,7 +595,8 @@ items["underground-belt"] = { name = "underground-belt", stack_size = 50,
   place_result = entity("underground-belt", "underground-belt", 1, 1, { max_underground_distance = 5 }) }
 entities["underground-belt"] = items["underground-belt"].place_result
 entities["transport-belt"].related_underground_belt = entities["underground-belt"]
-recipes["underground-belt"] = { name = "underground-belt", enabled = true }
+recipes["underground-belt"] = { name = "underground-belt", enabled = true,
+  products = { { type = "item", name = "underground-belt", amount = 2 } }, ingredients = {} }
 local wall = { { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 20.5, dy = 0.5 } }
 for dy = -40, 40 do wall[#wall + 1] = { name = "iron-chest", dx = 10.5, dy = dy + 0.5 } end
 local hopped = check_layout({ check_only = true, anchor = { x = 700, y = 700 }, entities = wall,
@@ -800,6 +801,141 @@ check(remote.ok and vulcanus_checks > 0 and engine.can_place == before_nauvis an
   "a dry run on another planet checks that planet's ground and conditions; the body there carries nothing")
 check(not pcall(jobs.run_now, layout.layout_check_job, { check_only = true, surface = "vulcanus", platform = 1,
   anchor = { x = 0, y = 0 }, entities = {} }), "a dry run names a platform or a surface, not both")
+
+-- Feasibility (fix 6): a dry run on the body's surface is not ok when an
+-- item is neither carried nor obtainable now, and names it; a block build
+-- checks the same before spending anything and is all or nothing.
+surface.get_property = nil
+set_powered(false)
+permissive, crowded, blockers = false, false, {}
+local plate = { type = "item", name = "iron-plate", amount = 1 }
+recipes["iron-plate"] = { name = "iron-plate", enabled = true, category = "smelting",
+  ingredients = { { type = "item", name = "iron-ore", amount = 1 } }, products = { plate } }
+recipes["burner-mining-drill"] = { name = "burner-mining-drill", enabled = true, category = "crafting",
+  ingredients = { { type = "item", name = "iron-plate", amount = 9 } },
+  products = { { type = "item", name = "burner-mining-drill", amount = 1 } } }
+character.prototype = { crafting_categories = { crafting = true } }
+-- The engine's product filter, as supply reads it for smelting recipes.
+function prototypes.get_recipe_filtered(filters)
+  local wanted, found = filters[1].elem_filters[1].name, {}
+  for name, recipe in pairs(recipes) do
+    for _, product in ipairs(recipe.products or {}) do if product.name == wanted then found[name] = recipe end end
+  end
+  return found
+end
+recipes.lab.enabled = false
+inventory = { ["burner-mining-drill"] = 1, ["iron-plate"] = 8, ["wooden-chest"] = 2, coal = 10 }
+created, crafted = {}, 0
+local lab_dry = dry({ anchor = { x = 100, y = 100 }, entities = { { name = "lab", dx = 1.5, dy = 1.5 } } })
+check(not lab_dry.ok and lab_dry.failed[1].code == "ITEM_UNOBTAINABLE" and lab_dry.failed[1].item == "lab"
+  and lab_dry.failed[1].reason:match("^lab can't be carried now") and lab_dry.failed[1].reason:match("not researched")
+  and #lab_dry.placed == 1, "a layout dry run naming a locked item nobody carries fails ITEM_UNOBTAINABLE naming it")
+inventory.lab = 1
+check(dry({ anchor = { x = 100, y = 100 }, entities = { { name = "lab", dx = 1.5, dy = 1.5 } } }).ok,
+  "the same layout is ok once the body carries the item")
+inventory.lab = nil
+local two = check_block({ block = "mining", count = 2, resource = "iron-ore", near = { x = 50.5, y = 50.5 }, check_only = true })
+local short_drill = two.failed[1]
+check(not two.ok and short_drill and short_drill.code == "ITEM_UNOBTAINABLE" and short_drill.item == "burner-mining-drill"
+  and short_drill.missing == 1 and short_drill.short.item == "iron-plate" and short_drill.short.missing == 1
+  and short_drill.reason:match("needs 1 more iron%-plate") and short_drill.reason:match("no own furnace"),
+  "a two-drill opening block with one drill and 8 of the 9 plates the second needs fails, naming the drill and the plate")
+inventory["iron-plate"] = 9
+check(check_block({ block = "mining", count = 2, resource = "iron-ore", near = { x = 50.5, y = 50.5 }, check_only = true }).ok,
+  "with the ninth plate the second drill can be crafted: the dry run is ok")
+inventory["iron-plate"] = 8
+-- A furnace of its own lets the body smelt the ninth plate from gatherable ore.
+prototypes.entity["iron-ore"].mineable_properties = { minable = true, products = { { name = "iron-ore" } } }
+storage.registry.entries[901] = { entity = { valid = true, prototype = { crafting_categories = { smelting = true } } },
+  unit = 901, name = "stone-furnace", type = "furnace", position = { x = 0, y = 0 } }
+storage.registry.machines.furnace = { [901] = true }
+local supply = require("scripts.actions.supply")
+local smeltable = supply.unobtainable(character, { { name = "burner-mining-drill", count = 2 } })
+storage.registry.entries[901], storage.registry.machines.furnace = nil, nil
+check(#smeltable == 0, "an own furnace and gatherable ore make the missing plate obtainable")
+check(#supply.unobtainable(character, { { name = "iron-ore", count = 500 } }) == 0
+  and supply.unobtainable(character, { { name = "iron-plate", count = 9 } })[1].missing == 1,
+  "anything natural can be gathered; a plate without a furnace is short by what is not carried")
+-- Supply never hand-gathers what an own drill mines: only belts near the body can supply it.
+storage.registry.entries[902] = { entity = { valid = true, mining_target = { valid = true,
+  prototype = prototypes.entity["iron-ore"] } }, unit = 902, name = "burner-mining-drill", type = "mining-drill",
+  position = { x = 0, y = 0 } }
+storage.registry.machines["mining-drill"] = { [902] = true }
+local drilled = supply.unobtainable(character, { { name = "iron-ore", count = 5 } })[1]
+check(drilled and drilled.item == "iron-ore" and drilled.missing == 5
+  and drilled.reason:match("1 own mining drill%(s%) produce it but none is stored"),
+  "an item an own drill mines is not hand-gathered: the dry run is short of it, like supply")
+local find_entities = surface.find_entities_filtered
+local belt_reads = 0
+surface.find_entities_filtered = function(filter)
+  if filter.type ~= "transport-belt" then return find_entities(filter) end
+  assert(filter.position and filter.radius and filter.limit, "the belt read is bounded around the body")
+  belt_reads = belt_reads + 1
+  local line = { get_item_count = function(item) return item == "iron-ore" and 3 or 0 end }
+  return { { valid = true, type = "transport-belt", position = { x = 1, y = 1 },
+    get_transport_line = function() return line end } }
+end
+check(#supply.unobtainable(character, { { name = "iron-ore", count = 4 }, { name = "iron-ore", count = 2 } }) == 0
+  and belt_reads == 1, "ore on own belts near the body supplies what the drills mine, with one bounded belt read")
+local over = supply.unobtainable(character, { { name = "iron-ore", count = 7 } })[1]
+check(over and over.item == "iron-ore" and over.reason:match("own mining drill"), "more than the belts carry is short")
+surface.find_entities_filtered = find_entities
+storage.registry.entries[902], storage.registry.machines["mining-drill"] = nil, nil
+prototypes.entity["iron-ore"].mineable_properties = nil
+-- The blueprint dry run (hand mode) says the same.
+local blueprint_report = layout.check_report(character, layout._resolve(character,
+  { anchor = { x = 100, y = 100 }, layouts = { { entities = { { name = "lab", dx = 1.5, dy = 1.5 } }, connections = {} } } }))
+check(blueprint_report.ok and blueprint_report.unobtainable and blueprint_report.unobtainable[1].item == "lab",
+  "check_report keeps the geometry's ok and carries the unobtainable rows to blueprint_place")
+-- The block build: nothing fetched, crafted or placed when the block cannot be had.
+local infeasible = { id = 14, block = "mining", count = 2, resource = "iron-ore", near = { x = 50.5, y = 50.5 } }
+layout.block_action.runner.start(infeasible)
+for _ = 1, 60 do
+  result = layout.block_action.runner.tick(infeasible)
+  if result then break end
+end
+check(result and result.status == "failed" and result.outcome.code == "LAYOUT_CHECK_FAILED"
+  and result.outcome.failed[1].code == "ITEM_UNOBTAINABLE" and result.outcome.failed[1].item == "burner-mining-drill"
+  and #created == 0 and crafted == 0 and inventory["iron-plate"] == 8 and inventory["burner-mining-drill"] == 1,
+  "an infeasible block build fails before spending the starting kit")
+-- A block whose outlet cannot be placed stops there: its drill is never placed.
+inventory = { ["burner-mining-drill"] = 1, ["wooden-chest"] = 1, coal = 10 }
+created = {}
+local outlet = { id = 15, block = "mining", count = 1, resource = "iron-ore", near = { x = 50.5, y = 50.5 } }
+layout.block_action.runner.start(outlet)
+for _ = 1, 20 do
+  result = layout.block_action.runner.tick(outlet)
+  if result or outlet._plan then break end
+end
+local chest_step = outlet._plan and outlet._plan.steps[1]
+check(chest_step and chest_step.item == "wooden-chest", "a mining block places its outlet chest first")
+blockers = { { valid = true, name = "stone-wall", type = "wall", position = { x = chest_step.position.x, y = chest_step.position.y } } }
+for _ = 1, 60 do
+  result = layout.block_action.runner.tick(outlet)
+  if result then break end
+end
+blockers = {}
+local drills_built = 0
+for _, args in ipairs(created) do if args.name == "burner-mining-drill" then drills_built = drills_built + 1 end end
+check(result and result.status == "failed" and drills_built == 0 and inventory["burner-mining-drill"] == 1
+  and result.outcome.failed[1].code == "PLACE_FAILED" and result.outcome.failed[2].code == "NOT_ATTEMPTED",
+  "a block stops at its failed outlet and never places the drill")
+-- supply_all: a plan that cannot carry everything places nothing, not its first steps.
+inventory = { ["wooden-chest"] = 1 }
+created = {}
+local build_plan = require("scripts.actions.build_plan")
+local all = { id = 16, supply_all = true, stop_on_error = true, steps = {
+  { item = "wooden-chest", position = { x = 300.5, y = 300.5 } }, { item = "lab", position = { x = 303.5, y = 301.5 } } } }
+build_plan.start(all)
+for _ = 1, 60 do
+  result = build_plan.tick(all)
+  if result then break end
+end
+check(result and result.status == "failed" and #created == 0 and inventory["wooden-chest"] == 1
+  and result.detail:match("^placed nothing: SUPPLY_SHORTFALL") and all._short.lab,
+  "a supply_all plan short of an item fails before its first placement")
+recipes.lab.enabled = true
+character.prototype = nil
 
 print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

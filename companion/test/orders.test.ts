@@ -452,6 +452,46 @@ describe("package auto-queue", () => {
       reason: "check failed: blueprint_place smelter at (4, 4): the position is blocked; the nearest free position is (9, 4)" });
   });
 
+  it("fails a package whose block or blueprint needs an item the body cannot obtain now, naming it", async () => {
+    const dir = runDir();
+    const place = { ...furnaces("bp-arm"), steps: [{ action: "blueprint_place", name: "smelter", position: { x: 4, y: 4 } }] };
+    const opening = { ...furnaces("opening"), steps: [{ action: "build_block", block: "mining", count: 2, near: { x: 0, y: 0 } }] };
+    writeLedger(dir, 1, [opening, place]);
+    const reason = "burner-mining-drill can't be carried now (needs 1 more iron-plate): no own furnace smelts it (smelting)";
+    const { call, bridge } = fakeBridge({
+      build_block: () => ({ ok: false, placed: [{ name: "burner-mining-drill" }],
+        failed: [{ code: "ITEM_UNOBTAINABLE", item: "burner-mining-drill", reason }] }),
+      blueprint_place: () => ({ ok: false, collisions: {}, free_position: { x: 4, y: 4 },
+        unobtainable: [{ code: "ITEM_UNOBTAINABLE", item: "inserter", reason: "inserter can't be carried now: not researched" }] }),
+    });
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(queuedPlans(call)).toEqual([]);
+    expect(packageFailures(dir).map((failure) => [failure.package_id, failure.reason])).toEqual([
+      ["opening", `check failed: build_block: ITEM_UNOBTAINABLE ${reason}`],
+      ["bp-arm", "check failed: blueprint_place smelter: ITEM_UNOBTAINABLE inserter can't be carried now: not researched"],
+    ]);
+  });
+
+  it("checks items only for a package's first step, and for no step while its predecessor's plan is pending", async () => {
+    const dir = runDir();
+    // The furnace the first step places smelts the plates the later steps need.
+    const smelter = { ...furnaces("smelter"), steps: [...furnaces("smelter").steps,
+      { action: "blueprint_place", name: "arm", position: { x: 4, y: 4 } }] };
+    const mining = { ...furnaces("mining", "smelter"), steps: [{ action: "build_block", block: "mining", count: 2, near: { x: 0, y: 0 } }] };
+    writeLedger(dir, 1, [smelter, mining]);
+    const short = [{ code: "ITEM_UNOBTAINABLE", item: "burner-mining-drill", reason: "burner-mining-drill can't be carried now" }];
+    const { call, bridge } = fakeBridge({
+      build_block: () => ({ ok: false, placed: {}, failed: short }),
+      blueprint_place: () => ({ ok: false, collisions: {}, unobtainable: short }),
+    });
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    await queue.tick();
+    expect(packageFailures(dir)).toEqual([]);
+    expect(queuedPlans(call).map((plan: any) => [plan.source, plan.after_plan_id])).toEqual([
+      ["package:smelter", undefined], ["package:mining", 41]]);
+  });
+
   it("makes a package's leading blueprint captures before its steps, after its predecessor's plan has ended", async () => {
     const dir = runDir();
     const capture = { action: "blueprint_capture", name: "smelter", center: { x: 0, y: 0 }, radius: 6 };

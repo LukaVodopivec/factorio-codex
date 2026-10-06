@@ -185,14 +185,20 @@ function hardRejection(entry: any): string | null {
  *  does not have yet. */
 const laysTiles = (entry: BuildPackage | undefined) => entry?.steps.some((step) => step.action === "place_tiles") === true;
 
-/** The mod's own placement check for one package; a reason when it fails.
+/** The mod's own placement check for one package; a reason when it fails,
+ *  also when its first step is a block, layout or blueprint that needs an
+ *  item the body can neither carry nor obtain now (ITEM_UNOBTAINABLE).
  *  Only steps before the first place_tiles are checked against the map: a
  *  landfill makes the ground the later ones need, and the mod checks them when
- *  they run. */
-export async function checkPackage(bridge: Bridge, entry: BuildPackage): Promise<string | null> {
+ *  they run. Items are like ground: a later step, or any step while a
+ *  predecessor's plan is still pending (afterPending), may use what runs
+ *  before it builds or carries, so the mod checks those when they run. */
+export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPending = false): Promise<string | null> {
   try {
     const tiles = entry.steps.findIndex((step) => step.action === "place_tiles");
     const checked = tiles < 0 ? entry.steps : entry.steps.slice(0, tiles);
+    // The only step whose items are checked now.
+    const first = afterPending ? undefined : entry.steps.find((step) => step.action !== "blueprint_capture");
     const places = checked.flatMap((step) => step.action === "place_entity" ? [step] : []);
     for (let start = 0; start < places.length; start += 24) {
       const batch = places.slice(start, start + 24);
@@ -207,8 +213,14 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage): Promise
     for (const step of checked) {
       if (step.action === "blueprint_place") {
         const { action, ...params } = step;
-        const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number } }>(action, { ...params, check_only: true });
-        if (checked?.ok === false) {
+        const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number };
+          collisions?: unknown; unobtainable?: unknown }>(action, { ...params, check_only: true });
+        const short = luaArray(checked?.unobtainable ?? []) as Array<{ code?: string; reason?: string }>;
+        if (short.length > 0 && step === first) {
+          return `blueprint_place ${step.name}: ${[short[0]?.code, short[0]?.reason].filter(Boolean).join(" ")}`;
+        }
+        // Short items alone make hand mode not ok too; the position is blocked when it collides.
+        if (checked?.ok === false && (short.length === 0 || luaArray(checked.collisions ?? []).length > 0)) {
           const free = checked.free_position ? `; the nearest free position is (${checked.free_position.x}, ${checked.free_position.y})` : "";
           return `blueprint_place ${step.name} at (${step.position.x}, ${step.position.y}): the position is blocked${free}`;
         }
@@ -217,7 +229,8 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage): Promise
       if (step.action !== "build_layout" && step.action !== "build_block") continue;
       const { action, ...params } = step;
       const checked = await bridge.call<{ failed?: unknown }>(action, { ...params, check_only: true });
-      const failed = luaArray(checked?.failed ?? []) as Array<{ code?: string; reason?: string }>;
+      const failed = (luaArray(checked?.failed ?? []) as Array<{ code?: string; reason?: string }>)
+        .filter((row) => row?.code !== "ITEM_UNOBTAINABLE" || step === first);
       if (failed.length > 0) return `${action}: ${[failed[0]?.code, failed[0]?.reason].filter(Boolean).join(" ")}`;
     }
     return null;
@@ -401,7 +414,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
           record(id, { status: "failed", reason: `capture failed: ${message(error)}` });
           continue;
         }
-        const problem = await checkPackage(b, entry);
+        const problem = await checkPackage(b, entry, afterPlanId !== undefined);
         if (problem) { record(id, { status: "failed", reason: `check failed: ${problem}` }); continue; }
       }
       const captured = captures.length > 0 ? { captured: captures.map((step) => step.name) } : {};

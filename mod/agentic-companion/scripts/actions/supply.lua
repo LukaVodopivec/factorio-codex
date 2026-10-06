@@ -417,6 +417,116 @@ local function smelt_recipe(c, item)
   end
 end
 
+-- Whether a supply could have wants ({{name, count}}) now, by its own
+-- sources in its own order, without moving: what is carried, queued or
+-- stored is one shared pool; then a hand recipe (MAX_DEPTH levels) whose
+-- ingredients come the same way; else a smelt, which needs an own furnace
+-- of the recipe's category; else hand-gathering, which anything natural
+-- yields allows unless an own drill mines it: then only own belts near the
+-- body (supply's belt source) can make up the rest. Prototype, recipe and
+-- registry reads plus at most one bounded belt query (no walk). Returns
+-- {item, missing, short?, reason} rows for what could not be had; short
+-- names the ingredient that blocked a craft.
+function M.unobtainable(c, wants)
+  local pool, furnaces, drills, belts, on_belts = {}, nil, {}, nil, {}
+  -- What own belts near the body carry of a drilled item, read once a call.
+  local function belted(name)
+    if on_belts[name] == nil then
+      if not belts then
+        local ok, found = pcall(c.surface.find_entities_filtered, { position = c.position,
+          radius = BELT_SEARCH_RADIUS, force = c.force, type = "transport-belt", limit = BELT_SEARCH_LIMIT })
+        belts = ok and type(found) == "table" and found or {}
+      end
+      local n = 0
+      for _, belt in ipairs(belts) do if belt.valid then n = n + held(belt, name) end end
+      on_belts[name] = n
+    end
+    return on_belts[name]
+  end
+  local function stocked(name)
+    if pool[name] == nil then
+      local ok, totals = pcall(registry.stock_totals, { name })
+      pool[name] = have(c, name) + (ok and totals[name] or 0)
+    end
+    return pool[name]
+  end
+  local function furnace_for(category)
+    if not furnaces then
+      furnaces = {}
+      local ok, list = pcall(registry.machines, { "furnace" })
+      for _, entry in ipairs(ok and type(list) == "table" and list or {}) do
+        pcall(function()
+          if entry.entity.valid then
+            for name in pairs(entry.entity.prototype.crafting_categories) do furnaces[name] = true end
+          end
+        end)
+      end
+    end
+    return furnaces[category] == true
+  end
+  -- nil when count of name can be had, else the item that blocks it, how
+  -- many of that item and why.
+  local function obtain(name, count, depth, path)
+    local take = math.min(stocked(name), count)
+    pool[name] = pool[name] - take
+    local need = count - take
+    if need <= 0 then return nil end
+    if path[name] then return name, need, "its recipe needs itself" end
+    local reasons = { "not carried or stored" }
+    local recipe, per_craft = hand_recipe(c, name)
+    if recipe and depth < MAX_DEPTH then
+      local crafts = math.ceil(need / per_craft)
+      path[name] = true
+      for _, ingredient in ipairs(recipe.ingredients or {}) do
+        local short, missing, why = obtain(ingredient.name, math.ceil((tonumber(ingredient.amount) or 1) * crafts),
+          depth + 1, path)
+        if short then path[name] = nil; return short, missing, why end
+      end
+      path[name] = nil
+      pool[name] = pool[name] + crafts * per_craft - need
+      return nil
+    end
+    if recipe then
+      reasons[#reasons + 1] = "too many recipe levels to hand-craft it"
+    else
+      reasons[#reasons + 1] = "not hand-craftable: " .. tostring(per_craft)
+      local smelt, ore = smelt_recipe(c, name)
+      if smelt and depth < MAX_DEPTH then
+        if furnace_for(smelt.category) then
+          local crafts = math.ceil(need / (M.output_per_craft(smelt, name) or 1))
+          if not obtain(ore.name, crafts * (tonumber(ore.amount) or 1), depth + 1, path) then return nil end
+          reasons[#reasons + 1] = "not smelted: short of " .. ore.name
+        else
+          reasons[#reasons + 1] = "no own furnace smelts it (" .. tostring(smelt.category) .. ")"
+        end
+      end
+    end
+    if #natural_names(name) > 0 then
+      -- Supply never hand-gathers what own drills mine (drills_producing).
+      if drills[name] == nil then drills[name] = drills_producing(c, name) end
+      if drills[name] == 0 then return nil end
+      local take = math.min(belted(name), need)
+      on_belts[name] = on_belts[name] - take
+      if take >= need then return nil end
+      reasons[#reasons + 1] = string.format(
+        "%d own mining drill(s) produce it but none is stored where Codex can take it", drills[name])
+      return name, need - take, table.concat(reasons, "; ")
+    end
+    reasons[#reasons + 1] = "nothing natural yields it"
+    return name, need, table.concat(reasons, "; ")
+  end
+  local rows = {}
+  for _, want in ipairs(wants) do
+    local before = stocked(want.name)
+    local short, missing, why = obtain(want.name, want.count, 0, {})
+    if short then
+      rows[#rows + 1] = { item = want.name, missing = math.max(1, want.count - before),
+        short = short ~= want.name and { item = short, missing = missing } or nil, reason = why }
+    end
+  end
+  return rows
+end
+
 local function inventory_of(entity, id)
   local ok, inventory = pcall(entity.get_inventory, defines.inventory[id])
   return ok and inventory or nil

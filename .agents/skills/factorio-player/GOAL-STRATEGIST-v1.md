@@ -14,8 +14,8 @@
 
 **Build packages.** You choose what, where, and how many.
 - Size packages as whole blocks: `build_block`, `build_layout`, or `blueprint_place` steps, never single placements (all listed packages together at most 8 KB; drop a package from the list once `activity_log` shows it queued).
-- Dry-run each block, layout, route, or blueprint placement with `check_only: true` and fix what it reports; it returns the site or a definite no-site answer.
-- When a block works, capture it once and stamp it again: a package may start with `blueprint_capture` steps (made after its `after_package_id` package ends), then `blueprint_place` or `build_block` with `block: "blueprint"`. Check `blueprint_list` before designing what already exists.
+- Dry-run each block, layout, route, or blueprint placement with `check_only: true` and fix what it reports, except `ITEM_UNOBTAINABLE` for what earlier steps or the `after_package_id` package make (checked when they run).
+- When a block works, capture it once and stamp it again: a package may start with `blueprint_capture` steps (made after its `after_package_id` package ends). Check `blueprint_list` before designing what already exists.
 - Join distant machines with a `build_layout` step of `connections` from its `anchor` (up to 200 pieces; `entities` may be empty); packages have no `connect_entities` step. Package steps walk to their own targets: never add walk steps. A misplaced building is a `move_entity` step; a missing resource is an `explore` step; a site cut off by water starts with a `place_tiles` landfill step (steps after it, and a successor package, are checked only when they run, so they need no dry run on the water). Give layout entities their `settings` (inserter filters, splitter priorities, chest slot limits) so blocks are built configured.
 - A platform package holds `create_platform` and the starter-pack `launch_rocket`; its `build_layout` or `blueprint_place` package with `platform` comes once `platform_status` shows a hub, with rockets for its `ghosts.missing`.
 - Keep at least one package queued ahead so the body never waits for a design.

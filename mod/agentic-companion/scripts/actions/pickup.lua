@@ -5,6 +5,7 @@
 -- leaves the belt.
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
+local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
 local TARGET_RADIUS = 0.01
@@ -120,7 +121,7 @@ end
 -- stack was already taken, with exactly its count gained, is left to finish.
 function M.resume(task)
   if task._belt then
-    task._picking_started, task._wait_tick, task._progress_tick = false, game.tick, nil
+    task._picking_started, task._wait_tick, task._progress_tick, task._idle = false, game.tick, nil, nil
     return
   end
   if task._picking_started and not stack_snapshot(task._entity) then
@@ -178,7 +179,7 @@ local function other_lane(task)
   local other = 3 - task._lane
   if task._lane_retried or lane_count(task._belt, other, task.item) < 1 then return false end
   task._lane_retried = { lane = task._lane }
-  task._lane, task._picking_started, task._approach, task._progress_tick = other, false, nil, nil
+  task._lane, task._picking_started, task._approach, task._progress_tick, task._idle = other, false, nil, nil, nil
   return true
 end
 
@@ -193,8 +194,15 @@ local function belt_tick(task, c)
   -- also while still approaching or while standing on a belt in a dense area.
   if not task._picking_started and within(c.position, belt.position, distance) then
     task._lane = task._lane or (lane_count(belt, 1, task.item) >= lane_count(belt, 2, task.item) and 1 or 2)
-    -- Re-approaching (a belt can carry the body out of reach) is no progress.
-    task._picking_started, task._progress_tick = true, task._progress_tick or game.tick
+    if task._approach then
+      c.walking_state = { walking = false, direction = defines.direction.north }
+      task._approach = nil
+    end
+    -- The no-progress clock pauses while out of reach: re-approaching is
+    -- neither progress nor idle time.
+    task._picking_started = true
+    task._progress_tick = task._idle and game.tick - task._idle or task._progress_tick or game.tick
+    task._idle = nil
   end
   if not task._picking_started then
     if inventory.get_insertable_count(task.item) < task.count - task._picked then
@@ -227,15 +235,25 @@ local function belt_tick(task, c)
       return belt_stopped(c, task, string.format("%s; the %s carries no %s on this tile - try another plain belt tile of the run",
         blocked, lane_label(belt, 3 - task._lane), task.item))
     end
-    -- Re-approaching (a belt can carry the body out of reach) is no progress.
-    task._picking_started, task._progress_tick = true, task._progress_tick or game.tick
+    -- The no-progress clock pauses while out of reach: re-approaching is
+    -- neither progress nor idle time.
+    task._picking_started = true
+    task._progress_tick = task._idle and game.tick - task._idle or task._progress_tick or game.tick
+    task._idle = nil
   end
 
   -- Acting needs reach, measured before anything is removed: the belt's centre
   -- must be within pickup distance of the body, or the body approaches again.
   if not within(c.position, belt.position, distance) then
     task._picking_started = false
+    task._idle = task._progress_tick and game.tick - task._progress_tick or nil
     return nil
+  end
+  -- A belt under the body carries it out of reach: step off beside the lane
+  -- while taking what is in reach (once a step-off failed, stay: a dense area).
+  if not task._settle_failed and placement_geometry.conveyor_under(c) then
+    local settled = approach.ensure(task, c, lane_point(belt, task._lane), math.max(distance - LANE_OFFSET, 0.1))
+    if type(settled) == "table" then task._settle_failed = true end
   end
   if inventory.get_insertable_count(task.item) < task.count - task._picked then
     return belt_stopped(c, task, string.format("Codex inventory can no longer hold the %d %s still requested",

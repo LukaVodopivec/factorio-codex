@@ -456,4 +456,29 @@ for _ = 1, 3000 do
 end
 check(drift_result and drift_result.status == "failed" and drift_task._picked == 1 and drift_ticks < 600,
   "a body the belt keeps carrying away stops once nothing more comes along (" .. drift_ticks .. " ticks)")
+-- A body standing on the belt it picks from steps off beside the lane while
+-- it takes what is in reach; where no step-off can settle (a dense area) it
+-- tries once and keeps picking where it stands.
+local geometry = require("scripts.placement_geometry")
+local conveyor_under = geometry.conveyor_under
+geometry.conveyor_under = function(c) return c.position.x == 5.5 and {} or nil end
+local onbelt = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 5 })
+reset(onbelt)
+body.position = { x = 5.5, y = 0.6 }
+approach_result = "ok"
+local step_task = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 3 }
+pickup.start(step_task)
+local stepped = run(step_task, 20)
+check(stepped and stepped.status == "done" and approaches >= 1 and body.position.x ~= 5.5,
+  "a body standing on the belt it picks from steps off beside the lane")
+local dense_belt = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 5 })
+reset(dense_belt)
+body.position = { x = 5.5, y = 0.6 }
+approach_result = { status = "failed", detail = "couldn't get in range: BODY_ON_CONVEYOR" }
+local dense_task = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 3 }
+pickup.start(dense_task)
+local dense = run(dense_task, 20)
+check(dense and dense.status == "done" and approaches == 1,
+  "where no step-off settles, the body tries once and picks where it stands")
+geometry.conveyor_under = conveyor_under
 os.exit(failures == 0 and 0 or 1)

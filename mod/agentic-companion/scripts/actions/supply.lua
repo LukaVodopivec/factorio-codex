@@ -393,8 +393,10 @@ function M.fuel_item(c)
 end
 
 -- The enabled recipe an own furnace would smelt the item with: one item
--- ingredient, a category the character cannot hand-craft. Recipes come from
--- the engine's product filter, worked out once per item.
+-- ingredient, a category the character cannot hand-craft, not hidden (quality
+-- recycling recipes also make plates and sort first). Recipes come from the
+-- engine's product filter (a LuaCustomTable, so userdata: no type check),
+-- worked out once per item.
 local smelt_recipes_cache = {}
 local function smelt_recipe(c, item)
   local names = smelt_recipes_cache[item]
@@ -402,15 +404,17 @@ local function smelt_recipe(c, item)
     names = {}
     local ok, found = pcall(prototypes.get_recipe_filtered,
       { { filter = "has-product-item", elem_filters = { { filter = "name", name = item } } } })
-    for name in pairs(ok and type(found) == "table" and found or {}) do names[#names + 1] = name end
+    for name in pairs(ok and found or {}) do names[#names + 1] = name end
     table.sort(names)
     smelt_recipes_cache[item] = names
   end
   local ok_categories, categories = pcall(function() return c.prototype.crafting_categories end)
   for _, name in ipairs(names) do
     local recipe = c.force.recipes[name]
+    local hidden_ok, hidden = pcall(function() return recipe.hidden end)
     local ingredients = recipe and recipe.ingredients or {}
-    if recipe and recipe.enabled and #ingredients == 1 and ingredients[1].type == "item"
+    if recipe and recipe.enabled and not (hidden_ok and hidden)
+      and #ingredients == 1 and ingredients[1].type == "item"
       and not (ok_categories and type(categories) == "table" and categories[recipe.category]) then
       return recipe, ingredients[1]
     end

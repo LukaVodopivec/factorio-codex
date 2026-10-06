@@ -1,4 +1,5 @@
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
@@ -27,7 +28,7 @@ function prototypes.get_entity_filtered(filters)
   for _, kind in ipairs(type(filters[1].type) == "table" and filters[1].type or { filters[1].type }) do wanted[kind] = true end
   local found = {}
   for name, proto in pairs(prototypes.entity or {}) do if wanted[proto.type] then found[name] = proto end end
-  return found
+  return mock.custom_table(found)
 end
 -- Roots are built once per load (prototypes never change at runtime): a
 -- test that changes prototype data loads the module again.

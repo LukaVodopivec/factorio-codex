@@ -121,6 +121,15 @@ function M.length(object, reader)
   -- The proxy metatable remains protected; only the native length behavior changes.
   objects[object].length = reader
 end
+-- A LuaCustomTable (prototype dictionaries, get_*_filtered results,
+-- force.recipes, game.surfaces): userdata with indexing, pairs and #, never
+-- type() == "table" and never next(). A temporary file lends the userdata.
+function M.custom_table(values)
+  local handle = assert(io.tmpfile())
+  debug.setmetatable(handle, { __index = values, __pairs = function() return next, values, nil end,
+    __len = function() local n = 0; for _ in pairs(values) do n = n + 1 end; return n end })
+  return handle
+end
 function M.assert_clean()
   assert(#M.violations == 0, table.concat(M.violations, "\n"))
 end

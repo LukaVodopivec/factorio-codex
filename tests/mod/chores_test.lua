@@ -3,6 +3,7 @@
 -- lab feeding that asks the lab first, and charting around the body on
 -- planets.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
 local failures = 0
@@ -16,7 +17,7 @@ _G.prototypes = { item = { coal = { stack_size = 50 }, wood = { stack_size = 100
   get_item_filtered = function(filters)
     filter_calls[#filter_calls + 1] = filters[1]["fuel-category"]
     assert(filters[1].filter == "fuel-category")
-    return FUELS[filters[1]["fuel-category"]] or {}
+    return mock.custom_table(FUELS[filters[1]["fuel-category"]] or {})
   end }
 _G.defines = { inventory = { lab_input = 2 } }
 _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil, last_finished_tick = 900 } }

@@ -87,7 +87,7 @@ _G.prototypes = { item = items, entity = entities, tile = { water = TILES.water.
   get_entity_filtered = function(filters)
     local found = {}
     for name, proto in pairs(entities) do if proto.type == filters[1].type then found[name] = proto end end
-    return found
+    return mock.custom_table(found)
   end }
 
 -- The body stands on Vulcanus at (5, 5).

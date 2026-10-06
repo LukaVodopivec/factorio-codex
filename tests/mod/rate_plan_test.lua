@@ -2,6 +2,7 @@
 -- machines per tier, fuel and power, drills per resource and belt capacity,
 -- all from prototype data with Factorio 2.0 base values.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
@@ -66,7 +67,7 @@ function prototypes.get_entity_filtered(filters)
   for _, kind in ipairs(type(filters[1].type) == "table" and filters[1].type or { filters[1].type }) do wanted[kind] = true end
   local found = {}
   for name, proto in pairs(prototypes.entity) do if wanted[proto.type] then found[name] = proto end end
-  return found
+  return mock.custom_table(found)
 end
 _G.game = { tick = 1 }
 _G.defines = { flow_precision_index = { five_seconds = 1, one_minute = 2, ten_minutes = 3, one_hour = 4 } }

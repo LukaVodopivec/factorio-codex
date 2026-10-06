@@ -3,6 +3,7 @@
 -- resource patch and at a shore; check_only has no side effects; a build
 -- places recipients first and reports {anchor, placed, failed}.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
+local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
 local failures = 0
@@ -62,7 +63,7 @@ function prototypes.get_entity_filtered(filters)
   for _, kind in ipairs(type(filters[1].type) == "table" and filters[1].type or { filters[1].type }) do wanted[kind] = true end
   local found = {}
   for name, proto in pairs(prototypes.entity) do if wanted[proto.type] then found[name] = proto end end
-  return found
+  return mock.custom_table(found)
 end
 
 -- The world: a resource patch, a lake west of x = 0, and a body far away.
@@ -811,17 +812,22 @@ permissive, crowded, blockers = false, false, {}
 local plate = { type = "item", name = "iron-plate", amount = 1 }
 recipes["iron-plate"] = { name = "iron-plate", enabled = true, category = "smelting",
   ingredients = { { type = "item", name = "iron-ore", amount = 1 } }, products = { plate } }
+-- Quality's hidden recycling recipe also makes plates and sorts first.
+recipes["iron-chest-recycling"] = { name = "iron-chest-recycling", enabled = true, hidden = true,
+  category = "recycling", ingredients = { { type = "item", name = "iron-chest", amount = 1 } },
+  products = { { type = "item", name = "iron-plate", amount = 4 } } }
 recipes["burner-mining-drill"] = { name = "burner-mining-drill", enabled = true, category = "crafting",
   ingredients = { { type = "item", name = "iron-plate", amount = 9 } },
   products = { { type = "item", name = "burner-mining-drill", amount = 1 } } }
 character.prototype = { crafting_categories = { crafting = true } }
--- The engine's product filter, as supply reads it for smelting recipes.
+-- The engine's product filter, as supply reads it for smelting recipes: a
+-- LuaCustomTable, which is userdata like the engine's.
 function prototypes.get_recipe_filtered(filters)
   local wanted, found = filters[1].elem_filters[1].name, {}
   for name, recipe in pairs(recipes) do
     for _, product in ipairs(recipe.products or {}) do if product.name == wanted then found[name] = recipe end end
   end
-  return found
+  return mock.custom_table(found)
 end
 recipes.lab.enabled = false
 inventory = { ["burner-mining-drill"] = 1, ["iron-plate"] = 8, ["wooden-chest"] = 2, coal = 10 }

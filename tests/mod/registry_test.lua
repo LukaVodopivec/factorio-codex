@@ -16,7 +16,7 @@ _G.prototypes = { item = { coal = { stack_size = 50 }, wood = { stack_size = 100
   -- Upkeep finds fuels by category through the engine's item filter.
   get_item_filtered = function(filters)
     assert(filters[1].filter == "fuel-category" and filters[1]["fuel-category"] == "chemical")
-    return { coal = {}, wood = {} }
+    return mock.custom_table({ coal = {}, wood = {} })
   end }
 _G.game = { tick = 0 }
 _G.storage = {}

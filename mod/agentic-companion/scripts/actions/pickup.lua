@@ -10,6 +10,12 @@ local placement_geometry = require("scripts.placement_geometry")
 local M = {}
 local TARGET_RADIUS = 0.01
 local PICKUP_TIMEOUT_TICKS = 120
+-- A belt pickup ends after this many ticks within reach, however steadily
+-- single items keep arriving, and after this many drifts out of reach where
+-- the body could not step off the belt: the step reports what it picked and
+-- the caller takes the rest elsewhere.
+local PICK_TOTAL_TICKS = 1800
+local MAX_DRIFTS = 3
 
 local function stop(c)
   c.picking_state = false
@@ -245,10 +251,18 @@ local function belt_tick(task, c)
   -- Acting needs reach, measured before anything is removed: the belt's centre
   -- must be within pickup distance of the body, or the body approaches again.
   if not within(c.position, belt.position, distance) then
+    if task._settle_failed then
+      task._drifts = (task._drifts or 0) + 1
+      if task._drifts >= MAX_DRIFTS then
+        return belt_stopped(c, task, string.format("the belt under the body carried it out of reach %d times and no step-off settled", task._drifts))
+      end
+    end
     task._picking_started = false
     task._idle = task._progress_tick and game.tick - task._progress_tick or nil
     return nil
   end
+  -- Only ticks in reach count toward the total, as for the no-progress clock.
+  task._reach_ticks = (task._reach_ticks or 0) + 1
   -- A belt under the body carries it out of reach: step off beside the lane
   -- while taking what is in reach (once a step-off failed, stay: a dense area).
   if not task._settle_failed and placement_geometry.conveyor_under(c) then
@@ -276,6 +290,9 @@ local function belt_tick(task, c)
         task._picked, task.item, belt.name, belt.position.x, belt.position.y, lane_label(belt, task._lane),
         task._picked, task._picked, task.count),
       outcome = belt_outcome(task, belt) }
+  end
+  if task._reach_ticks >= PICK_TOTAL_TICKS then
+    return belt_stopped(c, task, string.format("the belt delivered too slowly: %d ticks within pickup distance", task._reach_ticks))
   end
   if game.tick - task._progress_tick >= PICKUP_TIMEOUT_TICKS then
     local dry = lane_label(belt, task._lane)

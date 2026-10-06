@@ -303,7 +303,9 @@ turning them into a fixed opening or map-specific sequence:
   `item_pickup_distance` of the belt's centre, exactly the requested count
   leaves that tile's lines and the same count enters the main inventory; a
   count that cannot fit, a body out of distance, or any other belt type is
-  refused before removal, with no spill. Ground stacks use native picking.
+  refused before removal, with no spill. A belt that is still short after
+  30 s in reach (or that carries a body unable to step off out of reach three
+  times) ends the step with the count picked. Ground stacks use native picking.
 - Hand-mining a resource that an own drill mines returns `drill_produced: true`
   with `drills` and, when available, `stockpile_total`.
 - An underground belt pair placed with `belt_to_ground_type` `input` then

@@ -175,7 +175,7 @@ describe("public MCP to Lua DTO mappings", () => {
       belt: { name: "transport-belt", position: { x: 5.5, y: 6.5 } } });
     expect(descriptions.pickup_items).toMatch(/plain belt tile/);
     expect(descriptions.pickup_items).toMatch(/whole count must fit in the inventory or nothing is taken; nothing is created/);
-    expect(descriptions.pickup_items).toMatch(/runs dry ends the step with the count actually picked up/);
+    expect(descriptions.pickup_items).toMatch(/runs dry, or is still short after 30 s in reach, ends the step with the count actually picked up/);
     expect(descriptions.map_summary).toMatch(/problems_by_status counts every problem machine by status/);
     expect(descriptions.mine).toMatch(/drill_produced/);
     expect(descriptions.mine).toMatch(/hand-mining still helps while they do not meet demand/);

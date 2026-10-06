@@ -134,7 +134,9 @@ output only: game chat never controls the bot, and the panel never triggers a
 takeover hold.
 
 **Stop.** `stop` takes `{}` and cancels the active plan, queued plans and
-character crafting; committed physical effects remain. Neither role calls it.
+character crafting; committed physical effects remain. Upkeep then stays off
+until a plan finishes, unless the call passes `keep_upkeep: true` (the
+retained-work reconciliation does). Neither role calls it.
 Under `AGENTS.md` the supervisor alone uses it for an explicit the owner stop,
 retained-work reconciliation, or recorded emergency quiescence during
 replacement.
@@ -180,15 +182,19 @@ replacement.
   owned blocker that encloses the body, one re-approach after an out-of-reach
   result, and one retry of a partial insert happen inside the action.
 - **Upkeep.** While no queued plan would take the body, no hold is active, and some plan has
-  finished since the last emergency stop (a stop is never undone by upkeep),
-  the body, within 96 tiles of it, refuels dry or low burner machines (with any fuel of the machine's fuel
+  finished since the last emergency stop (a stop is never undone by upkeep;
+  one with `keep_upkeep` leaves it on),
+  the body, within 96 tiles of it (with the FIFO empty, also of where the last
+  pilot or package plan began), refuels dry or low burner machines (with any fuel of the machine's fuel
   category, such as nutrients for a biochamber) and brings the current
   research's science packs to labs that accept them and have room, from own
   stock, as a plan with source `upkeep`; any queued plan takes the body at the
   next step boundary. A lab and pack that took nothing are not tried again
   for 600 ticks; with no research active no lab is fed, and `factory_status`
   shows a `research_idle` problem. Upkeep works only on the body's planet
-  surface, never aboard or in transit.
+  surface, never aboard or in transit. Just before a queued plan starts, a
+  machine within 96 tiles of the body dry for a minute gets one upkeep plan
+  first (at most once in two minutes), so back-to-back plans never starve it.
 - **Several surfaces.** Lines, stock, flows and problems are kept per surface.
   `factory_status` details the body's surface (or the one named in `surface`)
   and summarises every other one with buildings in `elsewhere`, so the Nauvis

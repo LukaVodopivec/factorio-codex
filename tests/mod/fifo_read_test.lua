@@ -33,7 +33,7 @@ end
 local function job_reader(name)
   return { start = function() return {} end, step = reader(name) }
 end
-stub("scripts.tasks", { set_observer = function() end, set_upkeep_listener = function() end, on_tick = function() end, bound_for = function() return nil end,
+stub("scripts.tasks", { set_observer = function() end, set_upkeep_listener = function() end, set_boundary_upkeep = function() end, on_tick = function() end, bound_for = function() return nil end,
   plan_status = reader("plan_status"), enqueue = reader("enqueue"), get = reader("get_task"),
   queue_plan = reader("queue_plan"), cancel = reader("cancel") })
 stub("scripts.inspect", { job = job_reader("inspect") })
@@ -117,6 +117,12 @@ body.crafting_queue_size = 0
 storage.tasks = { queue = {}, records = {} }
 fifo = call("plan_status").fifo
 check(fifo.queue_depth == 0 and fifo.idle_seconds == nil, "unknown idle time stays absent after load or emergency stop")
+check(fifo.upkeep_off_since_tick == nil, "without a stop upkeep is not reported off")
+storage.tasks = { queue = {}, records = {}, last_cancel_all_tick = game.tick - 60 }
+check(call("observe_local").fifo.upkeep_off_since_tick == game.tick - 60,
+  "after an emergency stop the fifo block says upkeep is off since that stop")
+storage.tasks = { queue = {}, records = {}, last_cancel_all_tick = game.tick - 60, last_finished_tick = game.tick - 30 }
+check(call("observe_local").fifo.upkeep_off_since_tick == nil, "once a plan finishes (or keep_upkeep) upkeep is not reported off")
 
 storage.tasks = nil
 check(call("ping").fifo == nil, "a read before storage init carries no fifo")

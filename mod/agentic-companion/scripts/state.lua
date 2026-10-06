@@ -47,6 +47,9 @@ function M.init()
     -- The body changed surface and the dispatcher has not applied the
     -- surface cancel rule yet (tasks.on_body_surface_changed): the change.
     surface_changed = tasks.surface_changed,
+    -- Where the body stood as the last pilot or package plan began:
+    -- {surface_index, x, y}, absent before one (idle upkeep serves near it).
+    work_anchor = tasks.work_anchor,
   }
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}
@@ -71,7 +74,9 @@ function M.init()
   -- ended, and "<unit>:<pack>" -> tick of the last delivery of that pack to
   -- a lab (0.22.2 keyed labs by unit alone; those keys expire like the
   -- others); refuel_plan (absent until the first) maps the newest upkeep
-  -- plan's refuel steps to their machines.
+  -- plan's refuel steps to their machines; step_tick (absent until the
+  -- first) is when an upkeep step last ended and boundary_tick when the
+  -- plan-boundary pass last looked (each gates that pass).
   storage.chores = storage.chores or {}
   storage.chores.refueled = storage.chores.refueled or {}
   storage.chores.fed_labs = storage.chores.fed_labs or {}

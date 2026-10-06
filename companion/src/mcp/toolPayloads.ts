@@ -383,6 +383,8 @@ export const FIFO_IDLE_HINT_SECONDS = 30;
 export const FIFO_HUMAN_HINT = "human control: the body is held and plans stay queued in order; this is neither idleness nor failure";
 export interface FifoState { active_plan_id: number | null; queue_depth: number | null; idle_seconds: number | null;
   human_control?: boolean; human_idle_ticks?: number; hint?: string;
+  /** The emergency stop's tick while it keeps upkeep off (until a plan finishes). */
+  upkeep_off_since_tick?: number;
   /** Where the body is: {state, surface_ref, platform_name?}. */
   body?: { state: string; surface_ref?: string; platform_name?: string } }
 
@@ -395,9 +397,11 @@ export function normalizeFifo(value: unknown): FifoState | undefined {
   const idle = number(fifo.idle_seconds);
   const held = fifo.human_control === true;
   const humanIdle = number(fifo.human_idle_ticks);
+  const upkeepOff = number(fifo.upkeep_off_since_tick);
   return { active_plan_id: number(fifo.active_plan_id), queue_depth: number(fifo.queue_depth), idle_seconds: idle,
     ...(typeof fifo.human_control === "boolean" ? { human_control: held } : {}),
     ...(humanIdle !== null ? { human_idle_ticks: humanIdle } : {}),
+    ...(upkeepOff !== null ? { upkeep_off_since_tick: upkeepOff } : {}),
     ...(fifo.body && typeof fifo.body === "object" && !Array.isArray(fifo.body) ? { body: fifo.body as FifoState["body"] } : {}),
     ...(held ? { hint: FIFO_HUMAN_HINT } : idle !== null && idle > FIFO_IDLE_HINT_SECONDS ? { hint: FIFO_IDLE_HINT } : {}) };
 }

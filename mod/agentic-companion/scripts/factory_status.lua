@@ -434,6 +434,8 @@ function M.event_state()
     last_research_finished = storage.last_research_finished,
     research_idle = research_idle,
     last_cancel_all_tick = t.last_cancel_all_tick,
+    -- Upkeep stays off after an emergency stop until a plan finishes.
+    upkeep_off_since_tick = not t.last_finished_tick and t.last_cancel_all_tick or nil,
     -- The space event ring (platforms.lua): the newest entry's tick and the
     -- last few (rocket_launched, platform_state_changed, cargo_delivered,
     -- rocket_ready).

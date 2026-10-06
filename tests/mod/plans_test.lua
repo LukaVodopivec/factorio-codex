@@ -819,4 +819,47 @@ check(#charged == 2 and charged[1].x == 7 and charged[2].x == 8 and charged[1].t
   and charged[1].ticks >= 15 and charged[1].ticks <= 25,
   "a multi-target insert charges its body time to each machine it served, shared")
 insert_runner.tick, autonomy_mod.on_body_time = insert_tick, on_body_time
+
+-- The plan-boundary upkeep pass: just before a queued pilot or package plan
+-- starts, the boundary hook (chores.boundary_upkeep) may queue one upkeep
+-- plan; it runs first, the plan it went ahead of never pre-empts it, and it
+-- walks back before that plan starts.
+walk.tick = function(task) body.position = { x = task.target.x, y = task.target.y }; return { status = "done", detail = "walked" } end
+body.position = { x = 0, y = 0 }
+local boundary_rooms, boundary = {}, nil
+tasks.set_boundary_upkeep(function(tick)
+  boundary_rooms[#boundary_rooms + 1] = tasks.upkeep_room(true) or "none"
+  if #boundary_rooms ~= 2 then return nil end
+  boundary = tasks.queue_plan({ source = "upkeep", steps = { { action = "walk_to", x = 30, y = 0 },
+    { action = "walk_to", x = 31, y = 0 }, { action = "walk_to", x = body.position.x, y = body.position.y,
+      arrival_mode = "vicinity", arrival_radius = 2, upkeep_return = true } } }, { room = "boundary", tick = tick })
+  return boundary.plan_id
+end)
+game.tick = 60000
+local plan_a = tasks.queue_plan({ steps = { { action = "walk_to", x = 10, y = 0 } } })
+local plan_b = tasks.queue_plan({ steps = { { action = "walk_to", x = 12, y = 0 } } })
+for tick = 60000, 60012 do game.tick = tick; tasks.on_tick() end
+local boundary_status = boundary and tasks.plan_status({ plan_id = boundary.plan_id })
+local b_record = storage.tasks.records[plan_b.plan_id]
+check(boundary_rooms[1] == "boundary" and boundary_rooms[2] == "boundary" and boundary_status
+  and boundary_status.status == "completed" and boundary_status.completed_steps == 3
+  and storage.tasks.records[plan_a.plan_id].plan.finished_tick <= storage.tasks.records[boundary.plan_id].plan.started_tick
+  and b_record and b_record.plan.status == "completed"
+  and storage.tasks.records[boundary.plan_id].plan.finished_tick <= b_record.plan.started_tick,
+  "between back-to-back plans the boundary upkeep plan runs first, to its end, and the next plan starts after it")
+check(body.position.x == 12 and storage.tasks.work_anchor and storage.tasks.work_anchor.x == 10,
+  "the next plan starts where the body stood (the walk back) and marks where the last plan began")
+tasks.set_boundary_upkeep(nil)
+walk.tick = walk_tick
+
+-- A stop silences upkeep until a plan finishes; one with keep_upkeep (the
+-- supervisor's retained-work reconciliation) leaves it on, idle from then.
+game.tick = 60100
+tasks.cancel({ all = true, origin = "stop/supervisor" })
+check(tasks.upkeep_room() == nil and storage.tasks.last_finished_tick == nil, "an emergency stop leaves upkeep no room")
+game.tick = 60101
+tasks.cancel({ all = true, origin = "stop/supervisor", keep_upkeep = true })
+check(tasks.upkeep_room() == "idle" and storage.tasks.last_finished_tick == 60101
+  and storage.tasks.last_cancel_all_tick == 60101,
+  "a stop with keep_upkeep cancels like any stop but leaves upkeep its room")
 os.exit(failures == 0 and 0 or 1)

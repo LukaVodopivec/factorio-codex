@@ -271,7 +271,15 @@ turning them into a fixed opening or map-specific sequence:
   stock, and a queued plan takes over at the next step boundary. Beside a
   parked wait the upkeep plan ends with a walk back to where the body stood,
   taken before a queued plan gets the body.
-  Right after the rehearsal stop, upkeep waits for the first plan to finish.
+  Right after the rehearsal stop, upkeep waits for the first plan to finish,
+  and the fifo block and `queue_empty` say `upkeep_off_since_tick`; after a
+  `stop` with `keep_upkeep: true` it does not wait.
+- Between back-to-back plans, a burner within 96 tiles of the body that has
+  been dry for a minute gets one upkeep plan (`upkeep_selection.room`
+  `boundary`) before the next plan starts; it runs to its end, walks back,
+  and the next plan starts after it. With the FIFO empty, a dry machine within
+  96 tiles of where the last pilot or package plan began is served even when
+  the body stands further away.
 - The ledger writer's (the strategist; the pilot in a solo trial) reasoning
   summaries and messages appear in the panel within about 10 s, never in chat;
   every role's lines are in `thoughts.jsonl`; the panel does not start a
@@ -510,7 +518,7 @@ To continue a run's factory with a new release instead of a fresh map:
    body. A plan step saved by an older release that no longer exists completes
    as a no-op with code `REMOVED_ACTION`; treat every pre-upgrade plan ID as
    invalid for `after_plan_id`. If an active task or queue depth remains, call
-   `stop` and re-observe until idle.
+   `stop` with `keep_upkeep: true` (upkeep stays on) and re-observe until idle.
 4. The old run's `operations.json` and `package-queue.json` stay archived in
    its directory. The strategist initialises the new run's ledger from fresh reads
    (packages from the old ledger are not queued again); the copied notebook

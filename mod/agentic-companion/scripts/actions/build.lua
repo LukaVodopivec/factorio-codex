@@ -37,6 +37,8 @@ end
 -- Why can_place_entity said no: name the blocker if we can find one, first
 -- what touches the footprint itself, then anything within a tile.
 local function blocked_reason(c, pos, proto, direction)
+  local mix = placement_geometry.fluid_mix(c.surface, proto, pos, direction)
+  if mix then return placement_geometry.fluid_mix_reason(mix) end
   local searches = { { position = pos, radius = 1.0 } }
   if proto then
     table.insert(searches, 1, { area = placement_geometry.touching(placement_geometry.footprint(proto, pos, direction)) })

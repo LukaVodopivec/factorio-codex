@@ -59,6 +59,48 @@ function M.touching(area)
     right_bottom = { x = area.right_bottom.x + m, y = area.right_bottom.y + m } }
 end
 
+-- The fluids a plain pipe would join: the game refuses a pipe that free
+-- neighbouring pipe connections of different fluids point into (a pipe
+-- connects on all four sides; other fluid entities only where their own
+-- connections are, so they are left out). Returns two or more sorted fluid
+-- names, or nil. Reads at most 16 non-ore entities within a tile and a half.
+local PLAIN_PIPES = { pipe = true, ["infinity-pipe"] = true }
+function M.fluid_mix(surface, proto, position, direction)
+  if not (proto and PLAIN_PIPES[proto.type]) then return nil end
+  local area = M.footprint(proto, position, direction)
+  local lt, rb = area.left_top, area.right_bottom
+  local ok, found = pcall(surface.find_entities_filtered, { area = { left_top = { x = lt.x - 1.5, y = lt.y - 1.5 },
+    right_bottom = { x = rb.x + 1.5, y = rb.y + 1.5 } }, type = "resource", invert = true, limit = 16 })
+  if not ok then return nil end
+  local fluids, names = {}, {}
+  for _, e in ipairs(found) do
+    local fb = e.valid and e.fluidbox
+    for i = 1, (fb and #fb or 0) do
+      local fluid = fb[i] and fb[i].name
+      local got, connections = pcall(fb.get_pipe_connections, i)
+      if fluid and not fluids[fluid] and got then
+        for _, connection in ipairs(connections) do
+          local t = connection.target_position
+          if connection.connection_type == "normal" and connection.target == nil
+            and t and t.x > lt.x and t.x < rb.x and t.y > lt.y and t.y < rb.y then
+            fluids[fluid] = true
+            names[#names + 1] = fluid
+            break
+          end
+        end
+      end
+    end
+  end
+  if #names < 2 then return nil end
+  table.sort(names)
+  return names
+end
+
+function M.fluid_mix_reason(fluids)
+  return string.format("it would join %s pipes, and fluids never mix — route around them or pass under with pipe-to-ground",
+    table.concat(fluids, " and "))
+end
+
 function M.character_box(c)
   if c.bounding_box and c.bounding_box.left_top then return c.bounding_box end
   local proto = c.prototype or (prototypes and prototypes.entity and prototypes.entity[c.name or "character"])

@@ -754,7 +754,10 @@ local function can_place_one(c, surface, item, position, direction)
 
   local reason
   local liquid = footprint_liquid(surface, area)
-  if blocker then
+  local mix = placement_geometry.fluid_mix(surface, entity_proto, pos, direction)
+  if mix then
+    reason = placement_geometry.fluid_mix_reason(mix)
+  elseif blocker then
     reason = string.format("blocked by %s at (%.1f, %.1f)",
       blocker.name, blocker.position.x, blocker.position.y)
     if only_natural and not liquid then

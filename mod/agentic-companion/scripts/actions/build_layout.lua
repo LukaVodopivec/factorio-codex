@@ -492,7 +492,7 @@ local function ground(ctx, proto, pos, direction)
   local key = string.format("%s|%.2f|%.2f|%d", proto.name, pos.x, pos.y, direction)
   local hit = ctx.cache[key]
   if hit then return hit[1], hit[2], hit[3], hit[4] end
-  if not spend(ctx, 3) then return false, BUDGET_SPENT end
+  if not spend(ctx, 4) then return false, BUDGET_SPENT end -- 2 placement checks, the blocker and fluid reads
   local c = ctx.c
   local area = placement_geometry.footprint(proto, pos, direction)
   local ok, reason, clears, note
@@ -512,7 +512,10 @@ local function ground(ctx, proto, pos, direction)
           if NATURAL[e.type] then clears = true else blocker = blocker or e end
         end
       end
-      if blocker then
+      local mix = placement_geometry.fluid_mix(c.surface, proto, pos, direction)
+      if mix then
+        ok, clears, reason = false, nil, placement_geometry.fluid_mix_reason(mix)
+      elseif blocker then
         ok, clears, reason = false, nil, string.format("blocked by %s at (%.1f, %.1f)", blocker.name, blocker.position.x, blocker.position.y)
       elseif clears then
         ok = true

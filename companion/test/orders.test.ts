@@ -189,6 +189,39 @@ describe("package auto-queue", () => {
     expect(readPackageQueue(dir)?.packages["on-land"]).toBeUndefined();
   });
 
+  it("checks only the steps before a removal against the map, and holds a successor of a removing package", async () => {
+    // The belt still stands where the underground replaces it: anything checked there would fail.
+    const { call } = fakeBridge({
+      can_place: (params) => ({ results: params.placements.map(() => ({ can_place: false, reason: "blocked by transport-belt at (60.5, -42.5)" })) }),
+      build_layout: () => ({ placed: {}, failed: [{ index: 0, code: "BLOCKED", reason: "underground-belt at (60.5, -42.5): blocked by transport-belt at (60.5, -42.5)" }] }),
+    });
+    const bridge = { call } as unknown as Bridge;
+    const layout = { action: "build_layout", anchor: { x: 60, y: -43 }, entities: [{ name: "underground-belt", dx: 0, dy: 0 }] };
+    const area = { left_top: { x: 60, y: -43 }, right_bottom: { x: 61, y: -42 } };
+    for (const removal of [
+      { action: "mine", x: 60.5, y: -42.5, expected_name: "transport-belt" },
+      { action: "deconstruct_area", area },
+      { action: "move_entity", from: { x: 60.5, y: -42.5 }, to: { x: 64.5, y: -42.5 } },
+    ]) {
+      const steps = [{ action: "get_items", item: "underground-belt", count: 2 }, removal, layout,
+        { action: "place_entity", x: 60.5, y: -42.5, name: "underground-belt" }];
+      expect(await coordination.checkPackage(bridge, { ...furnaces("replace"), steps } as any)).toBeNull();
+    }
+    expect(call.mock.calls.some(([method]) => method === "build_layout" || method === "can_place")).toBe(false);
+    // Before the removal the map is still checked.
+    expect(await coordination.checkPackage(bridge, { ...furnaces("replace"), steps: [layout, { action: "mine", x: 60.5, y: -42.5 }] } as any))
+      .toContain("blocked by transport-belt");
+
+    const dir = runDir();
+    const removing = { ...furnaces("remove-belt"), steps: [{ action: "mine", x: 60.5, y: -42.5, expected_name: "transport-belt" }] };
+    writeLedger(dir, 1, [removing]);
+    const queue = createPackageQueue(() => dir, fakeBridge().bridge);
+    await queue.tick();
+    writeLedger(dir, 2, [removing, { ...furnaces("underground", "remove-belt"), steps: [layout] }]);
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages.underground).toBeUndefined();
+  });
+
   it("rejects a package over lava or an ocean, or one whose building the planet's conditions forbid", async () => {
     for (const [result, text] of [
       [{ can_place: false, reason: "the footprint touches lava — pick dry land or cover it with place_tiles first" }, "touches lava"],

@@ -95,6 +95,10 @@ and a live read disagree, the live read wins.
   consume them. A science chain is: plates and gears (red science), then
   inserters and belts (green science), each made by assemblers and carried to
   labs, all powered.
+- Assemblers are locked until the Automation research completes, and its
+  packs exist before any assembler can make them: those few packs are
+  hand-crafted. They do not score, but every machine-made pack depends on
+  them, so they are worth their crafting time early.
 - Some technologies unlock by a trigger, such as crafting a first item,
   rather than by packs; `progression_status` names the trigger.
 - `production_requirements` with a technology lists the packs it still needs;

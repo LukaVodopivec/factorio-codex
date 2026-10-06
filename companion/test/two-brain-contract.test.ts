@@ -119,8 +119,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/Queue multi-step, goal-level work[\s\S]*?Never queue single-step or walk-only plans/);
     expect(flat(skill)).toMatch(/These actions walk to their own targets: never queue a `walk_to` before them\. `wait_for_item` does not walk and observes only within 30 tiles/);
     expect(flat(pilot)).toMatch(/Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet/);
-    expect(pilot).toMatch(/Never hand-craft science to push research; machines make it/);
-    expect(strategist).toMatch(/Never plan hand-crafted science\./);
+    expect(pilot).toMatch(/Hand-craft only the science that unlocks assemblers\./);
+    expect(strategist).toMatch(/Hand-craft only the science that unlocks assemblers\./);
     expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);
     for (const action of ["get_items", "build_layout", "build_block"]) expect(skill).toContain(`\`${action}\``);
   });
@@ -155,7 +155,7 @@ describe("persistent two-brain coordination contract", () => {
   it("keeps the opening, automation-first, and power hints", () => {
     const flatKnowledge = flat(knowledge);
     expect(flatKnowledge).toMatch(/Automate iron and coal together in the first ten minutes: the first iron drill and furnace come before a second coal drill\. Never open fuel-first/);
-    expect(flat(strategist)).toMatch(/Judge progress by what machines make and by research on machine-made science, not by ore piled up/);
+    expect(flat(strategist)).toMatch(/Judge progress by what machines make and by research on machine-made science, not by ore piles/);
     expect(flatKnowledge).toMatch(/Ore or plates piling up in chests should feed more machines .* a pile is not progress/);
     expect(flat(strategist)).toMatch(/This is a principle, not a build or technology order/);
     expect(flat(strategist)).toMatch(/power shows satisfaction below 100% or production at capacity, more generation is NOW/);

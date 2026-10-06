@@ -136,10 +136,11 @@ holds only parked waits or predecessor-blocked plans, or the running plan's
 craft step only waits on hand-crafting and lends the body), no hold is active,
 and some plan has finished since the last emergency stop (a stop is never
 undone by upkeep), the mod refuels dry or low-fuel burner machines and brings
-the current research's science packs to labs that accept them, from own
-stock, as a plan with source `upkeep`, on the body's planet surface only;
-beside pending work it walks back to where the body stood, even when it ends
-early, and never moves what a lending craft makes or uses. Queued work that
+the current research's science packs to labs that accept them, within 96 tiles
+of the body, from own stock, as a plan with source `upkeep`, on the body's
+planet surface only; beside pending work it walks back to where the body
+stood, even when it ends early, never moves what a lending craft makes or
+uses, and uses only carried items of what a parked wait counts. Queued work that
 would take the body takes it at the next step boundary, after that walk back.
 Upkeep is the mod's work, not pilot activity.
 

@@ -141,7 +141,7 @@ package.loaded["scripts.companion"] = {
   poll_human_activity = function() end,
 }
 package.loaded["scripts.factory_activity"] = { record = function() end }
-package.loaded["scripts.autonomy"] = { mark_dirty = function() end, producing = function() return 0 end }
+package.loaded["scripts.autonomy"] = { mark_dirty = function() end, on_body_time = function() end, producing = function() return 0 end }
 package.loaded["scripts.registry"] = { add = function() end, machines = function() return {} end,
   stock_totals = function() return {} end, holders_with = function() return {} end }
 local inspect_count = 0

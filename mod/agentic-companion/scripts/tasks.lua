@@ -223,22 +223,25 @@ local function upkeep_readback(plan)
     active = plan.current_task and { step = plan.current_step, context = supply.diagnostics(plan.current_task) } or nil }
 end
 local function log_plan(plan, detail)
-  -- After a walk back the last outcome is the walk's: report what ended it.
-  local ending = plan.ending
+  -- After a walk back the last outcome is the walk's: report what ended the
+  -- plan early (a pre-emption has no outcome). A cancel during the walk is
+  -- its own last outcome.
+  local ending = plan.ending and plan.ending.walked and plan.ending
   local last = ending and ending.outcome_index and plan.outcomes[ending.outcome_index]
     or not ending and plan.outcomes[#plan.outcomes] or nil
   local result = last and type(last.result) == "table" and last.result or nil
   local reason = last and last.error or detail
   local code = result and type(result.code) == "string" and result.code
-    or plan.preempted and "PREEMPTED"
+    or plan.preempted and (ending or not plan.ending) and "PREEMPTED"
     or type(reason) == "string" and reason:match("^([A-Z][A-Z0-9_]+[A-Z0-9])") or nil
   local summary
   if plan.status == "completed" then
     summary = string.format("completed %d/%d steps", plan.completed_steps, #plan.steps)
   else
-    summary = string.format("%s at step %d/%d%s%s", plan.status,
-      last and last.step or ending and ending.step or plan.current_step, #plan.steps,
-      last and last.action and (" " .. last.action) or "",
+    local step = last and last.step or ending and ending.step or plan.current_step
+    local action = last and last.action or plan.steps[step] and plan.steps[step].action
+    summary = string.format("%s at step %d/%d%s%s", plan.status, step, #plan.steps,
+      action and (" " .. action) or "",
       type(reason) == "string" and reason ~= "" and (": " .. reason:sub(1, 160)) or "")
   end
   local log = storage.activity_log or {}
@@ -704,7 +707,7 @@ local function walk_back(plan, status, detail, outcome_index)
   if not back or plan.ending or plan.current_step >= back then return false end
   -- outcome_index: the step outcome that ended it (a pre-emption has none).
   plan.ending = { status = status, detail = detail, completed_steps = plan.completed_steps,
-    step = plan.current_step, outcome_index = outcome_index }
+    step = outcome_index and plan.current_step or plan.completed_steps + 1, outcome_index = outcome_index }
   return true
 end
 local function finish_step(plan, result)
@@ -712,6 +715,11 @@ local function finish_step(plan, result)
   factory_activity.record(kind, result.outcome)
   if kind and (TOPOLOGY_TASKS[kind] or extensions[kind]) then autonomy.mark_dirty() end
   local step = plan.steps[plan.current_step]
+  -- Hand service a line cost the body (factory_status hand_seconds).
+  local started = plan.current_task and plan.current_task.started_tick
+  if started and step.x and (step.action == "insert_items" or step.action == "extract_items") then
+    autonomy.on_body_time({ x = step.x, y = step.y }, game.tick - started)
+  end
   local status = result.status == "done" and "completed" or result.status
   local recovery = plan._recovery
   plan.outcomes[#plan.outcomes + 1] = {
@@ -730,6 +738,7 @@ local function finish_step(plan, result)
     -- The walk back after an early end has ended: the plan ends as it would
     -- have, its contiguous steps unchanged.
     plan.completed_steps = ending.completed_steps
+    ending.walked = true
     finish(plan, ending.status, ending.detail)
     return
   end
@@ -1024,10 +1033,11 @@ local function upkeep_spares(reserved)
   return false
 end
 -- Whether upkeep may queue a plan now: "idle" with the FIFO empty, "busy"
--- beside pending work as above, else nil; with it, the set of items upkeep
--- must not move: what a lending craft makes or uses and what parked
--- wait_for_item steps count. Never while an upkeep plan is pending, nor after
--- an emergency stop before some plan has finished.
+-- beside pending work as above, else nil; with it, the items upkeep must
+-- spare: what a lending craft makes or uses (`true`: never moved) and what
+-- parked wait_for_item steps count ("carried": only what the body carries,
+-- so no holder the wait reads is emptied). Never while an upkeep plan is
+-- pending, nor after an emergency stop before some plan has finished.
 function M.upkeep_room()
   local tasks = storage.tasks
   if not tasks or tasks.last_finished_tick == nil or upkeep_queued() then return nil end
@@ -1041,7 +1051,7 @@ function M.upkeep_room()
   for _, queued in ipairs(tasks.queue) do
     if not active and (queued.type ~= "plan" or queued.lent or takes_body(queued)) then return nil end
     local step = queued.type == "plan" and queued.status == "waiting" and queued.steps[queued.current_step]
-    if step and step.action == "wait_for_item" and step.item then reserved[step.item] = true end
+    if step and step.action == "wait_for_item" and step.item then reserved[step.item] = reserved[step.item] or "carried" end
   end
   return (active or #tasks.queue > 0) and "busy" or "idle", reserved
 end
@@ -1091,7 +1101,7 @@ local function tick_plan(plan)
     if not PARKED_ACTIONS[step.action] and step.action ~= "inspect_entities" then
       -- Async action events are delivered to the one active queue entry. Give
       -- the nested runner its owning plan ID so it uses that same mailbox.
-      plan.current_task.id = plan.id
+      plan.current_task.id, plan.current_task.started_tick = plan.id, game.tick
       local ok, err = pcall(runners[plan.current_task.type].start, plan.current_task)
       if not ok then finish_step(plan, { status = "failed", detail = tostring(err) }); return end
     end

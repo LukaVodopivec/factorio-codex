@@ -39,6 +39,9 @@
 --   hand_transfers  character transfers into or out of its machines in the
 --                   last 10 minutes, shown from the second on: a line served
 --                   by hand again needs a connection (belt, inserter, chest)
+--   hand_seconds    body time those insert/extract steps took in the last 10
+--                   minutes (walking and fetching included), shown from 10 s:
+--                   what keeping the line running by hand costs
 local registry = require("scripts.registry")
 local platforms = require("scripts.platforms")
 
@@ -629,6 +632,31 @@ end
 -- The body's anchor surface index (its physical surface, the hub aboard).
 local function body_surface() return registry.anchor_index() end
 
+-- Body ticks a line's hand service took in the last 10 minutes.
+local MAX_HAND_TIMES = 16
+local function hand_ticks(line, tick)
+  local kept, total = {}, 0
+  for _, row in ipairs(line.hand_times or {}) do
+    if tick - row.at < REPEAT_WINDOW_TICKS then kept[#kept + 1] = row; total = total + row.ticks end
+  end
+  return kept, total
+end
+
+-- An insert or extract step at this position on the body's surface took
+-- `ticks` of body time (its walk and fetch included).
+function M.on_body_time(position, ticks)
+  local a = data()
+  if not a or type(position) ~= "table" or not (ticks and ticks > 0) then return end
+  local unit = a.machine_at and a.machine_at[position_key(body_surface(), position)]
+  local rec = unit and a.machines[unit]
+  local line = rec and a.lines[rec.line_id]
+  if not line then return end
+  local kept = hand_ticks(line, game.tick)
+  kept[#kept + 1] = { at = game.tick, ticks = ticks }
+  while #kept > MAX_HAND_TIMES do table.remove(kept, 1) end
+  line.hand_times = kept
+end
+
 -- A character transfer into (insert) or out of (extract) the entity at this
 -- position on the body's surface. Only an insert feeds the machine; both
 -- count as hand transfers.
@@ -719,6 +747,8 @@ function M.lines(since_tick, surface)
         self_sustaining = line.self_sustaining == true, position = line.position }
       local repeats = #recent_transfers(line, game.tick)
       if repeats >= 2 then row.hand_transfers = repeats end
+      local _, spent = hand_ticks(line, game.tick)
+      if spent >= 600 then row.hand_seconds = math.floor(spent / 60) end
       local rec = line.cause_unit and a.machines[line.cause_unit]
       if rec then
         row.cause_position = { x = rec.position.x, y = rec.position.y }

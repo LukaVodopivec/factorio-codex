@@ -4,7 +4,8 @@
 --   plan's step only waits on hand-crafting: tasks.upkeep_room), never after
 --   an emergency stop before a plan has finished, while the owner is not holding
 --   the body and the body stands on a surface (nothing aboard or in
---   transit), the body refuels own burner machines on its surface that ran
+--   transit), the body refuels own burner machines on its surface within
+--   96 tiles of it (UPKEEP_RADIUS) that ran
 --   dry or are working on their last fuel item, with a fuel their burner
 --   takes (by fuel category: biochambers nutrients, heating towers chemical
 --   fuel), and brings the current research's science packs to own labs on
@@ -20,7 +21,8 @@
 --   Beside pending work the plan ends with a walk back to where the body
 --   stood, taken even when the plan ends early, so a parked wait still reads
 --   its target from there; beside a running craft it never moves what that
---   craft makes or uses. A burner still burning gets only a fuel its fuel
+--   craft makes or uses, and beside a parked wait_for_item it uses only what
+--   the body carries of the item the wait counts (tasks.upkeep_room). A burner still burning gets only a fuel its fuel
 --   slot takes beside what is there.
 -- * Charting: every minute the force charts the chunks around the body that
 --   it has not charted yet, on planet surfaces only, and once when the body
@@ -47,6 +49,10 @@ local PACKS_PER_LAB = 10
 -- Machines one upkeep pass looks at per status: the line sampler keeps the
 -- units in each chore status, so a pass never walks every machine.
 local MAX_CANDIDATES = 64
+-- Upkeep serves machines within this many tiles of the body: a far outpost
+-- is not worth a round trip each time it runs dry; factory_status shows it
+-- no_fuel, and supplying or retiring it is the bots' call.
+local UPKEEP_RADIUS = 96
 
 local function read(fn)
   local ok, value = pcall(fn)
@@ -60,7 +66,7 @@ end
 
 -- Own machines on the body's surface in a raw sampler state, or in the
 -- sampler's "low_fuel" set (of one type when given), not skipped by
--- `skip(unit)` (a pure Lua test), nearest first: from the sampler's set on
+-- `skip(unit)` (a pure Lua test), within UPKEEP_RADIUS, nearest first: from the sampler's set on
 -- that surface, at most MAX_CANDIDATES of them looked at (machines elsewhere
 -- are never counted). An audit records at most MAX_CANDIDATES rows in all.
 local function machines_in(c, raw, kind, skip, audit)
@@ -94,9 +100,12 @@ local function machines_in(c, raw, kind, skip, audit)
     if matches and not skipped then
       seen = seen + 1
       local entity = rec.entity
-      if entity and entity.valid then
-        local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
-        rows[#rows + 1] = { unit = unit, position = rec.position, entity = entity, distance = dx * dx + dy * dy,
+      local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
+      local distance = dx * dx + dy * dy
+      if distance > UPKEEP_RADIUS * UPKEEP_RADIUS then
+        if evidence then evidence.decision = "too_far" end
+      elseif entity and entity.valid then
+        rows[#rows + 1] = { unit = unit, position = rec.position, entity = entity, distance = distance,
           evidence = evidence }
       end
     end
@@ -127,7 +136,8 @@ end
 -- solid fuel: never rocket or nuclear fuel while one of those is at hand);
 -- a burner that takes none of them (nutrients, ...) gets what the body has
 -- most of. `known` keeps each answer for the pass, by category list. Items
--- in `reserved` (what a lending craft makes or uses) are never chosen.
+-- reserved `true` (what a lending craft makes or uses) are never chosen;
+-- reserved "carried" (what a parked wait counts) only from what the body carries.
 local function fuel_for(c, entity, known, reserved)
   local categories = {}
   for category in pairs(read(function() return entity.burner.fuel_categories end) or {}) do
@@ -143,7 +153,7 @@ local function fuel_for(c, entity, known, reserved)
     local stored = #names > 0 and registry.stock_totals(names) or {}
     local totals = {}
     for _, name in ipairs(names) do
-      totals[name] = not reserved[name] and c.get_item_count(name) + (stored[name] or 0) or 0
+      totals[name] = reserved[name] ~= true and c.get_item_count(name) + (not reserved[name] and stored[name] or 0) or 0
     end
     local best, most = false, 0
     for _, name in ipairs(supply.FUELS) do
@@ -171,9 +181,9 @@ local function low_fuel_for(c, entity, fuel, known, reserved)
   end
   for _, item in ipairs(read(function() return inventory.get_contents() end) or {}) do
     local name, key = item.name, "item:" .. tostring(item.name)
-    if (item.quality or "normal") == "normal" and not reserved[name] then
+    if (item.quality or "normal") == "normal" and reserved[name] ~= true then
       if known[key] == nil then
-        local total = c.get_item_count(name) + (registry.stock_totals({ name })[name] or 0)
+        local total = c.get_item_count(name) + (not reserved[name] and registry.stock_totals({ name })[name] or 0)
         known[key] = total > 0 and { name = name, available = total } or false
       end
       if known[key] then return known[key] end
@@ -263,13 +273,14 @@ end
 -- that take them: the nearest labs that would take some pack not tried
 -- within LAB_RETRY_TICKS, at most MAX_LABS. A pack short for every lab that
 -- takes it goes to the nearest ones first (as fuel does). Packs in
--- `reserved` are left alone.
+-- reserved `true` are left alone; reserved "carried" come only from what the
+-- body carries.
 local function lab_steps(c, tick, steps, reserved)
   local research = c.force.current_research
   if not research then return end
   local names = {}
   for _, ingredient in ipairs(research.research_unit_ingredients or {}) do
-    if ingredient.type ~= "fluid" and not reserved[ingredient.name] then names[#names + 1] = ingredient.name end
+    if ingredient.type ~= "fluid" and reserved[ingredient.name] ~= true then names[#names + 1] = ingredient.name end
   end
   if #names == 0 then return end
   local fed = storage.chores.fed_labs
@@ -302,7 +313,7 @@ local function lab_steps(c, tick, steps, reserved)
   local stored = registry.stock_totals(names)
   for _, name in ipairs(names) do
     local list = takers[name]
-    local available = list and c.get_item_count(name) + (stored[name] or 0) or 0
+    local available = list and c.get_item_count(name) + (not reserved[name] and stored[name] or 0) or 0
     local kept = list and math.min(#list, available) or 0
     for i = 1, kept do
       local row = labs[list[i]]

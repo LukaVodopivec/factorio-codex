@@ -225,6 +225,18 @@ sampled({ [52] = machine(52, 7, "no_fuel") })
 chores.upkeep(17400)
 check(queued[#queued].steps[1].items.wood == 10 and queued[#queued].steps[1].items.coal == nil,
   "upkeep beside a lending craft never takes an item that craft makes or uses as fuel")
+-- Beside a parked wait counting coal, upkeep refuels only from the coal the
+-- body carries, never from a holder the wait may read.
+room, reserved, carried, stocked, storage.chores.refueled = "busy", { coal = "carried" }, { coal = 6 }, { coal = 100 }, {}
+sampled({ [53] = machine(53, 7, "no_fuel") })
+chores.upkeep(17500)
+check(queued[#queued].steps[1].items.coal == 6,
+  "beside a parked coal wait the dry burner gets the carried coal, none from stock")
+carried, storage.chores.refueled = { coal = 0 }, {}
+local before_wait = #queued
+chores.upkeep(17600)
+check(#queued == before_wait or queued[#queued].steps[1].items.coal == nil,
+  "with no coal carried, a parked coal wait's stock is left alone")
 room, reserved = "idle", nil
 
 -- Labs missing the current research's packs get the packs each lab takes
@@ -423,4 +435,16 @@ charts = {}
 chores.on_arrival({ state = "aboard_platform" })
 check(#charts == 0, "arriving aboard a platform charts nothing")
 
+-- A far outpost is not upkeep's: only machines within 96 tiles of the body.
+sampled({ [4] = machine(4, 200, "no_fuel"), [5] = machine(5, 90, "no_fuel") })
+room, reserved, carried, stocked, storage.chores.refueled = "idle", nil, { coal = 50 }, {}, {}
+body.get_item_count = function(name) return carried[name] or 0 end
+local far_count = #queued
+game.tick = game.tick + 100000
+chores.upkeep(game.tick)
+local far_row
+for _, row in ipairs(storage.chores.last_selection.refuel.candidates) do if row.unit == 4 then far_row = row end end
+check(#queued == far_count + 1 and #queued[#queued].steps == 1 and queued[#queued].steps[1].x == 90
+  and far_row and far_row.decision == "too_far",
+  "upkeep never walks to a machine more than 96 tiles from the body; the readback says it was too far")
 os.exit(failures == 0 and 0 or 1)

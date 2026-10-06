@@ -79,7 +79,7 @@ export interface PowerRow {
 export type LineState = "running" | "starved" | "output_full" | "no_fuel" | "no_power" | "no_heat" | "disabled" | "idle";
 export interface FactoryLine {
   id: number | string; product?: string; entity?: string; machines: number; working: number; state: LineState;
-  rate_per_min?: number; hand_fed: boolean; self_sustaining: boolean; position: Position; hand_transfers?: number;
+  rate_per_min?: number; hand_fed: boolean; self_sustaining: boolean; position: Position; hand_transfers?: number; hand_seconds?: number;
   /** Why the worst machine stops: a fluid name, no_recipe, recipe_not_researched, burnt_result, an item. */
   cause?: string; cause_position?: Position;
   /** Lowest heat-source temperature on a line with a reactor or heat exchanger. */

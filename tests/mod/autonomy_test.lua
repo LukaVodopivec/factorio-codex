@@ -167,12 +167,18 @@ changed = autonomy.lines(since)
 check(#changed == 1 and changed[1].id == plate_line.id and not changed[1].hand_fed and changed[1].self_sustaining
   and changed[1].hand_transfers == 2,
   "a second hand transfer within ten minutes flags the line, and taking output does not make it hand-fed")
+autonomy.on_body_time({ x = 0, y = 2 }, 300)
+local function plate_row() for _, line in ipairs(autonomy.lines()) do if line.id == plate_line.id then return line end end end
+check(plate_row().hand_seconds == nil, "five seconds of hand service is not yet reported")
+autonomy.on_body_time({ x = 0, y = 2 }, 1500)
+autonomy.on_body_time({ x = 900, y = 900 }, 6000)
+check(plate_row().hand_seconds == 30, "the body time spent serving a line by hand is reported in seconds (and only its own)")
 local rate, making = autonomy.producing("iron-plate")
 check(making == 2 and rate >= plate_line.rate_per_min and select(2, autonomy.producing("copper-plate")) == 0,
   "producing sums the rate of every own line making an item (" .. rate .. "/min)")
 run(10 * 3600, smelt)
 for _, line in ipairs(autonomy.lines()) do if line.id == plate_line.id then plate_line = line end end
-check(plate_line.hand_transfers == nil, "hand transfers older than ten minutes no longer count")
+check(plate_line.hand_transfers == nil and plate_line.hand_seconds == nil, "hand transfers and hand time older than ten minutes no longer count")
 
 -- Starved furnaces name the missing input and where.
 for _, f in ipairs({ f1, f2, f3 }) do mock.state(f).status = RAW.no_ingredients end

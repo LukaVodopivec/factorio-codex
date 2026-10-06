@@ -72,6 +72,23 @@ and a live read disagree, the live read wins.
   if its fuel flow exceeds what all its machines burn; otherwise it slowly
   runs dry and stops.
 
+## Keep, rebuild or retire
+
+- Every building has a running cost: its fuel, the body's trips to feed or
+  empty it (`factory_status` lines show `hand_transfers` and `hand_seconds`,
+  the body time spent serving that line by hand in the last ten minutes),
+  and the materials and space it ties up. What it gives back is the flow it
+  adds where something uses it.
+- Mod upkeep refuels burners and feeds labs only within 96 tiles of the
+  body. A part further away runs dry unless it is connected or the body
+  goes there.
+- Judge older parts again as the factory grows. Building something is not a
+  reason to keep it; only what it does for the factory now is. A part that
+  costs more than it gives (a far outpost the body keeps walking to, a line
+  whose output nothing uses, a burner stage a newer line replaced) is worth
+  connecting, rebuilding where it is needed, or removing. Mining it returns
+  its items for reuse.
+
 ## Bootstrap dependencies
 
 - Many buildings need items made by buildings of the same kind: drills need

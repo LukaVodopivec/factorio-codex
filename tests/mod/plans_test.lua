@@ -660,7 +660,8 @@ game.tick = 40011; tasks.on_tick()
 check(tasks.plan_status({ plan_id = parked_wait.plan_id }).status == "waiting" and tasks.upkeep_room() == "busy",
   "upkeep has room while the FIFO holds only a parked wait")
 local _, wait_reserved = tasks.upkeep_room()
-check(wait_reserved and wait_reserved["iron-plate"], "upkeep beside a parked wait never moves the item it counts")
+check(wait_reserved and wait_reserved["iron-plate"] == "carried",
+  "upkeep beside a parked wait uses only what the body carries of the item it counts")
 local blocked = tasks.queue_plan({ steps = { { action = "walk_to", x = 4, y = 4 } }, after_plan_id = parked_wait.plan_id })
 check(tasks.upkeep_room() == "busy", "a plan waiting on its pending predecessor leaves upkeep room")
 local ready = tasks.queue_plan({ steps = { { action = "walk_to", x = 4, y = 4 } } })
@@ -776,6 +777,10 @@ check(far_status.status == "cancelled" and far_status.upkeep.preempted and far_s
   and far_status.upkeep.unfinished_targets[1].step == 2 and far_status.upkeep.unfinished_targets[1].state == "not_started"
   and body.position.x == 0 and body.position.y == 0,
   "pre-empted upkeep skips its remaining work but walks back before giving way")
+local far_row
+for _, row in ipairs(storage.activity_log) do if row.plan_id == far.plan_id then far_row = row end end
+check(far_row and far_row.code == "PREEMPTED" and far_row.summary:match("^cancelled at step 2/3 walk_to: PREEMPTED"),
+  "the activity_log row of pre-empted upkeep names the first step it skipped")
 for tick = 41003, 41031 do game.tick = tick; tasks.on_tick() end
 check(tasks.plan_status({ plan_id = pilot.plan_id }).status == "completed"
   and tasks.plan_status({ plan_id = far_wait.plan_id }).status == "waiting",

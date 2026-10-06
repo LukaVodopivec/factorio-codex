@@ -687,7 +687,7 @@ local function step_settle(state, c)
     settle.ticks = game.tick - settle.started_tick
     return "arrived"
   end
-  -- A settle begun by 0.27.0 has no allowance of its own.
+  -- A settle begun by 0.27.1 has no allowance of its own.
   local allowed = settle.ticks_allowed or SETTLE_TICKS
   if game.tick - settle.started_tick >= allowed then
     return fail(c, "BODY_ON_CONVEYOR", string.format(

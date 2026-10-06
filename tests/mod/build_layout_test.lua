@@ -471,6 +471,23 @@ blockers = { { valid = true, name = "stone-wall", type = "wall", position = { x 
 local walled = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
 check(not walled.ok and walled.failed[1].reason:match("blocked by stone%-wall") ~= nil, "an owned blocker is named")
 blockers = {}
+-- An own belt already standing on a layout tile, facing another way: the
+-- build takes it as placed and turns it, so the check passes it too.
+local standing = { valid = true, name = "transport-belt", type = "transport-belt", force = character.force,
+  position = { x = 30.5, y = 30.5 }, direction = 4 }
+blockers = { standing }
+surface.find_entity = function(name, position)
+  if name == standing.name and math.abs(position.x - 30.5) < 0.5 and math.abs(position.y - 30.5) < 0.5 then return standing end
+end
+local adopted = dry({ anchor = { x = 30, y = 30 }, entities = { { name = "transport-belt", dx = 0.5, dy = 0.5, direction = 0 } } })
+check(adopted.ok, "an own entity of the same kind on a layout tile passes the check: the build adopts and turns it")
+check(#adopted.materials == 0, "an adopted entity is not in the bill: it stands already")
+-- Only a layout at a given anchor adopts: a site search never lands on what
+-- already stands there, so a second block is not reported on top of the first.
+local sited = dry({ site = { near = { x = 30.5, y = 30.5 } }, entities = { { name = "transport-belt", dx = 0.5, dy = 0.5, direction = 0 } } })
+check(sited.ok and not (sited.anchor.x == 30 and sited.anchor.y == 30),
+  "a site search does not take an own entity's tile as free")
+surface.find_entity, blockers = nil, {}
 
 local routed = dry({ anchor = { x = 100, y = 100 }, entities = {
   { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "stone-furnace", dx = 4, dy = 1 },

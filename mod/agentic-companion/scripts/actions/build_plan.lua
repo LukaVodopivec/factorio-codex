@@ -297,7 +297,7 @@ local function plan_needs(c, task)
     totals[name] = (totals[name] or 0) + n
   end
   for _, step in ipairs(task.steps) do
-    add(step.item, 1)
+    if not step._adopt then add(step.item, 1) end -- an adopted entity stands already
     for _, it in ipairs(step._insert or {}) do add(it.name, it.count) end
   end
   local needs = {}

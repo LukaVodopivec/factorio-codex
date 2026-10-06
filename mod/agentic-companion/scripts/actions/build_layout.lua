@@ -486,13 +486,23 @@ end
 -- Whether proto can stand at pos for this build: placeable now, or only
 -- Codex's body (it steps aside) or trees and rocks (placing mines them) are
 -- in the way. Ghosts: ghost_ground. Returns ok, reason, clears, note.
+-- With adopt (a layout entity at a given anchor, never a site or route
+-- search), the same own entity standing there passes with note "ADOPT":
+-- the build takes it as placed and turns it (build.adopt), when it can.
 -- Cached per search.
-local function ground(ctx, proto, pos, direction)
+local function adoptable(e, proto, direction)
+  if e.direction == direction or not e.supports_direction then return true end
+  local box = proto.collision_box
+  return not box or (box.right_bottom.x - box.left_top.x) == (box.right_bottom.y - box.left_top.y)
+end
+local function ground(ctx, proto, pos, direction, adopt, end_type)
   if not spend(ctx, 1) then return false, BUDGET_SPENT end
-  local key = string.format("%s|%.2f|%.2f|%d", proto.name, pos.x, pos.y, direction)
+  local key = string.format("%s|%.2f|%.2f|%d|%s|%s", proto.name, pos.x, pos.y, direction,
+    tostring(adopt or false), tostring(end_type))
   local hit = ctx.cache[key]
   if hit then return hit[1], hit[2], hit[3], hit[4] end
-  if not spend(ctx, 4) then return false, BUDGET_SPENT end -- 2 placement checks, the blocker and fluid reads
+  -- 2 placement checks and a blocker read, plus the own-entity read to adopt
+  if not spend(ctx, adopt and not ctx.ghosts and 4 or 3) then return false, BUDGET_SPENT end
   local c = ctx.c
   local area = placement_geometry.footprint(proto, pos, direction)
   local ok, reason, clears, note
@@ -500,6 +510,11 @@ local function ground(ctx, proto, pos, direction)
     ok, reason, note = ghost_ground(ctx, proto, pos, direction)
   elseif not charted(ctx, area) then
     ok, reason = false, "the footprint is not charted"
+  elseif adopt and (function()
+    local e = build.existing(c, proto, pos, direction, end_type)
+    return e and adoptable(e, proto, direction)
+  end)() then
+    ok, note = true, "ADOPT"
   else
     local placeable_now, why = placement_geometry.can_place(c, proto, pos, direction)
     if placeable_now or why == "CODEX_BODY_OVERLAP" then
@@ -513,6 +528,7 @@ local function ground(ctx, proto, pos, direction)
         end
       end
       local mix = placement_geometry.fluid_mix(c.surface, proto, pos, direction)
+      if proto.type == "pipe" or proto.type == "infinity-pipe" then ctx.calls = ctx.calls + 1 end -- its fluid read
       if mix then
         ok, clears, reason = false, nil, placement_geometry.fluid_mix_reason(mix)
       elseif blocker then
@@ -726,7 +742,8 @@ local function check(ctx, variant, anchor, all)
     local r = variant.rel[i]
     local e = r.entity
     local position = { x = r.position.x + ox, y = r.position.y + oy }
-    local ok, reason, clears, note = ground(ctx, e.proto, position, e.direction)
+    local ok, reason, clears, note = ground(ctx, e.proto, position, e.direction, ctx.adopt,
+      e.proto.type == "underground-belt" and belt_end(e) or nil)
     if ctx.out_of_budget then return result end
     if ok then
       result.passed = result.passed + 1
@@ -1025,7 +1042,8 @@ end
 -- plain tables and prototype references only, so a build keeps it in its
 -- task (storage) between ticks. state.result is set once it is decided.
 local function new_search(c, request)
-  local ctx = { c = c, calls = 0, ceiling = 0, cache = {}, chunks = {}, ghosts = request.ghosts, space = request.space }
+  local ctx = { c = c, calls = 0, ceiling = 0, cache = {}, chunks = {}, ghosts = request.ghosts, space = request.space,
+    adopt = request.anchor ~= nil and not request.ghosts or nil }
   local s = { ctx = ctx, tried = 0, ti = 1, vi = 1 }
   if request.tiles and #request.tiles > 0 then
     -- Platform foundation: checked first (foundation_step), over ticks.
@@ -1202,12 +1220,14 @@ end
 -- build_plan steps in dependency order, each tagged with its layout source.
 local function plan_steps(result)
   local ranked = { {}, {}, {} }
-  for _, p in ipairs(result.placements) do
+  for i, p in ipairs(result.placements) do
     local e = p.entity
     local list = ranked[RANK[e.proto.type] or 1]
+    local note = result.notes and result.notes[i]
     list[#list + 1] = { item = e.item, position = p.position, direction = e.direction, recipe = e.recipe,
       insert = e.insert, settings = e.settings, mirror = e.mirror,
       belt_to_ground_type = e.proto.type == "underground-belt" and belt_end(e) or nil,
+      _adopt = note and note.note == "ADOPT" or nil, -- standing already: not in the bill
       _source = { index = e.index } }
   end
   for _, r in ipairs(result.routes) do
@@ -1236,8 +1256,10 @@ end
 local function materials(c, steps)
   local counts, names = {}, {}
   for _, step in ipairs(steps) do
-    if not counts[step.item] then names[#names + 1] = step.item end
-    counts[step.item] = (counts[step.item] or 0) + 1
+    if not step._adopt then
+      if not counts[step.item] then names[#names + 1] = step.item end
+      counts[step.item] = (counts[step.item] or 0) + 1
+    end
   end
   table.sort(names)
   local out = {}
@@ -1889,7 +1911,7 @@ local function unobtainable(c, steps)
     counts[name] = (counts[name] or 0) + n
   end
   for _, step in ipairs(steps) do
-    add(step.item, 1)
+    if not step._adopt then add(step.item, 1) end
     for name, n in pairs(step.insert or {}) do add(name, n) end
   end
   table.sort(names)

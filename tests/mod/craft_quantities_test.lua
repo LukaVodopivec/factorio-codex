@@ -15,7 +15,7 @@ body.begin_crafting = function(args)
   return args.count
 end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
-_G.game = { tick = 0 }
+_G.game, _G.storage = { tick = 0 }, {}
 local craft = require("scripts.actions.craft")
 
 local task = { recipe = "transport-belt", count = 2, wait_for_completion = true }

@@ -45,10 +45,17 @@ function M.queued(c, item)
   return total
 end
 
+-- A step that waits on the crafting queue marks the tick it did
+-- (storage.craft_wait_tick, made when first needed): the step watchdog counts
+-- hand-crafting as progress only for such a step, so background crafts never
+-- keep a step that waits on something else from stalling.
+local function mark_wait() storage.craft_wait_tick = game.tick end
+
 -- A step about to consume `count` of `name` waits while it carries fewer
 -- and the crafting queue still makes some.
 function M.awaits(c, name, count)
-  return c.get_item_count(name) < count and M.queued(c, name) > 0
+  if c.get_item_count(name) < count and M.queued(c, name) > 0 then mark_wait(); return true end
+  return false
 end
 
 -- What's short for `count` crafts, e.g. "2x iron-plate, 1x iron-gear-wheel".
@@ -168,7 +175,7 @@ function M.tick(task)
   end
   if game.tick < s.next_poll then return nil end
   s.next_poll = game.tick + POLL_TICKS
-  if c.crafting_queue_size > 0 then return nil end
+  if c.crafting_queue_size > 0 then mark_wait(); return nil end
 
   -- An empty queue is not completion: the queue can be cancelled, or the
   -- products taken, while the owner holds the body. Count the crafts whose

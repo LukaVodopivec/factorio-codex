@@ -1300,9 +1300,12 @@ end
 -- its inventory, its hand-crafting and mining, and the step's own progress
 -- have all stood still for STALL_TICKS. Deliberate waits are exempt:
 -- wait_for_item and wait_for_research park the plan (it is not running), a
--- crafting queue that advances is progress, and a human hold stops the
--- watchdog and restarts its clock. Its state (storage.tasks.stall) is made
--- when first needed, so a save from before it needs no migration.
+-- crafting queue that advances is progress while the step waits on it, and a
+-- human hold stops the watchdog and restarts its clock. Background crafts are
+-- not the progress of a step that waits on something else: for it the
+-- crafting queue and the carried counts of what that queue made during the
+-- step are left out. Its state (storage.tasks.stall) is made when first
+-- needed, so a save from before it needs no migration.
 local NESTED_STEPS = { "_plan", "_layout", "_supply", "_sub", "_clear", "_exit", "_launch" }
 -- What a step shows of its own progress, read from its plain task state: the
 -- phase names go to the failure, the scalars to the progress signature. A
@@ -1341,13 +1344,28 @@ local function describe_step(task, phases, progress, depth)
     end
   end
 end
-local function body_signature(c, progress)
+-- `crafted`, for a step that does not wait on crafting: the set of items the
+-- crafting queue made during the step, grown here from every queue entry
+-- (prerequisites too); their counts and the queue itself are left out.
+local function body_signature(c, progress, crafted)
   local parts = {}
+  if crafted then
+    for _, entry in ipairs(c.crafting_queue or {}) do
+      local recipe = type(entry.recipe) == "string" and c.force.recipes[entry.recipe]
+      for _, product in ipairs(recipe and recipe.products or {}) do
+        if product.type == "item" then crafted[product.name] = true end
+      end
+    end
+  end
   for _, item in ipairs(c.get_main_inventory and c.get_main_inventory() and c.get_main_inventory().get_contents() or {}) do
-    parts[#parts + 1] = tostring(item.name) .. ":" .. tostring(item.quality or "") .. "=" .. tostring(item.count)
+    if not (crafted and crafted[item.name]) then
+      parts[#parts + 1] = tostring(item.name) .. ":" .. tostring(item.quality or "") .. "=" .. tostring(item.count)
+    end
   end
   table.sort(parts)
-  for _, member in ipairs({ "crafting_queue_size", "crafting_queue_progress", "character_mining_progress" }) do
+  local members = crafted and { "character_mining_progress" }
+    or { "crafting_queue_size", "crafting_queue_progress", "character_mining_progress" }
+  for _, member in ipairs(members) do
     local ok, value = pcall(function() return c[member] end)
     parts[#parts + 1] = member .. "=" .. tostring(ok and value or nil)
   end
@@ -1374,7 +1392,15 @@ local function watchdog(tasks)
   if runner and runner.waiting and runner.waiting(current) then tasks.stall = nil; return false end
   local phases, progress = {}, { "outcomes=" .. (plan and #plan.outcomes or 0) }
   describe_step(current, phases, progress, 0)
-  local ok, signature = pcall(body_signature, c, progress)
+  -- A step that waited on the crafting queue since the last sample (craft.lua
+  -- marks it) counts the queue as progress.
+  local crafted
+  local craft_wait = storage.craft_wait_tick
+  if not (craft_wait and game.tick - craft_wait <= STALL_SAMPLE_TICKS) then
+    stall.crafted = stall.crafted or {}
+    crafted = stall.crafted
+  end
+  local ok, signature = pcall(body_signature, c, progress, crafted)
   if not ok then tasks.stall = nil; return false end
   local p = c.position
   local function beyond(anchor)

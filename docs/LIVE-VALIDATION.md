@@ -162,9 +162,11 @@ cover them; none is live evidence yet):
 - A step whose body position, inventory, hand-crafting, mining and step state
   stand still for 60 seconds of game time fails with `STEP_STALLED`, naming
   the action and its phase, and the next queued plan starts. `wait_for_item`,
-  `wait_for_research`, a hand-crafting queue that advances and a human hold
-  never produce it; a `STEP_STALLED` on a step that was making real progress
-  is a defect to record with the step's action and phase.
+  `wait_for_research`, a hand-crafting queue that advances while the step
+  waits on its output, and a human hold never produce it; background crafts
+  (and the items they add) do not keep a step that waits on anything else
+  from stalling. A `STEP_STALLED` on a step that was making real progress is
+  a defect to record with the step's action and phase.
 - A step in flight when a 0.22.0 save is loaded with 0.22.1 finishes or fails
   with a code; it does not raise a script error.
 

@@ -105,9 +105,13 @@ body.surface = { find_entities_filtered = function(args)
   for _, e in ipairs(world) do
     local ok = e.valid and matches_type(args.type, e.type) and (args.name == nil or matches_type(args.name, e.name))
       and (args.force == nil or args.force == e.force)
-    if ok and args.position then
+    if ok and args.position and args.radius then
       local dx, dy = e.position.x - args.position.x, e.position.y - args.position.y
       ok = dx * dx + dy * dy <= args.radius * args.radius
+    elseif ok and args.position then
+      -- A point query: the entities whose box contains the point.
+      local box, p = e.bounding_box, args.position
+      ok = p.x >= box.left_top.x and p.x <= box.right_bottom.x and p.y >= box.left_top.y and p.y <= box.right_bottom.y
     end
     if ok and args.area then
       local a, p = args.area, e.position
@@ -316,23 +320,72 @@ check(gears.status == "done" and inventory["iron-gear-wheel"] == 5 and inventory
   and calls[2].kind == "craft" and calls[2].task.count == 5 and gears.outcome.supplied.crafted["iron-gear-wheel"] == 5,
   "get_items crafts an item after fetching exactly its ingredients")
 
--- Hand-gathering only when no own drill produces the resource.
+-- Hand-gathering a raw resource.
 reset()
 local ore = natural("resource", "iron-ore", { x = 6.5, y = 0.5 }, { { name = "iron-ore", amount = 1 } })
 local gathered = run({ items = { { name = "iron-ore", count = 7 } } })
 check(gathered.status == "done" and calls[1].kind == "mine" and calls[1].task.entity == ore and calls[1].task.count == 7
   and inventory["iron-ore"] == 7 and gathered.outcome.supplied.gathered["iron-ore"] == 7,
   "get_items hand-mines a resource no own drill produces")
+-- The only drill feeds its furnace: none of its ore can be taken, so the
+-- body hand-gathers ore the drill and furnace do not stand on.
+local function box(x1, y1, x2, y2) return { left_top = { x = x1, y = y1 }, right_bottom = { x = x2, y = y2 } } end
+local function drill_on_ore(drop_target, drop_position)
+  local under = natural("resource", "iron-ore", { x = 30.5, y = 0.5 }, { { name = "iron-ore", amount = 1 } })
+  return add({ type = "mining-drill", name = "burner-mining-drill", position = { x = 30, y = 0 },
+    bounding_box = box(29, -1, 31, 1), mining_target = under, drop_target = drop_target, drop_position = drop_position })
+end
 reset()
-natural("resource", "iron-ore", { x = 6.5, y = 0.5 }, { { name = "iron-ore", amount = 1 } })
-local mined_by_drill = add({ type = "resource", name = "iron-ore", position = { x = 30.5, y = 0.5 }, force = neutral,
-  prototype = { mineable_properties = { minable = true, products = { { name = "iron-ore", amount = 1 } } } } })
-add({ type = "mining-drill", name = "burner-mining-drill", position = { x = 30, y = 0 }, mining_target = mined_by_drill })
+local fed = add({ type = "furnace", name = "stone-furnace", position = { x = 31, y = -2 }, items = {},
+  bounding_box = box(30, -3, 32, -1) })
+fed.get_output_inventory = function() return holder(fed.items) end
+natural("resource", "iron-ore", { x = 30.5, y = -1.5 }, { { name = "iron-ore", amount = 1 } }) -- under the furnace
+local free_ore = natural("resource", "iron-ore", { x = 27.5, y = 0.5 }, { { name = "iron-ore", amount = 1 } })
+drill_on_ore(fed, { x = 30.5, y = -1.3 })
+body.position = { x = 31, y = 2 }
+local drill_gathered = run({ items = { { name = "iron-ore", count = 7 } } })
+check(drill_gathered.status == "done" and #calls == 1 and calls[1].kind == "mine" and calls[1].task.entity == free_ore
+  and calls[1].task.count == 7 and inventory["iron-ore"] == 7 and drill_gathered.outcome.supplied.gathered["iron-ore"] == 7,
+  "ore an own drill mines into its furnace is hand-gathered from a tile no own building covers")
+
+-- More covered ore tiles than one tick checks lie nearer than a free one:
+-- the search resumes next tick, never hands back an unchecked tile, and
+-- checks each tile once.
+reset()
+add({ type = "lab", name = "lab", position = { x = 4.5, y = 2 }, bounding_box = box(2, 0, 7, 4) })
+for x = 2.5, 6.5 do for y = 0.5, 3.5 do natural("resource", "iron-ore", { x = x, y = y }, { { name = "iron-ore", amount = 1 } }) end end
+local far_free = natural("resource", "iron-ore", { x = 10.5, y = 0.5 }, { { name = "iron-ore", amount = 1 } })
+local wide_gathered = run({ items = { { name = "iron-ore", count = 7 } } })
+local point_checks = 0
+for _, q in ipairs(queries) do if q.force and q.position and not q.radius then point_checks = point_checks + 1 end end
+check(wide_gathered.status == "done" and #calls == 1 and calls[1].kind == "mine" and calls[1].task.entity == far_free
+  and inventory["iron-ore"] == 7 and point_checks == 21,
+  "more than one tick's worth of covered ore is passed over across ticks before free ore is hand-gathered")
+
+-- With no uncovered ore in reach the shortfall names the drill.
+reset()
+drill_on_ore(nil, nil)
+body.position = { x = 31, y = 2 }
 local drill_short = run({ items = { { name = "iron-ore", count = 7 } } })
 check(drill_short.status == "failed" and #calls == 0 and drill_short.outcome.code == "SUPPLY_SHORTFALL"
-  and drill_short.outcome.missing[1].item == "iron-ore" and drill_short.outcome.missing[1].missing == 7
-  and drill_short.detail:match("own mining drill"),
-  "a resource own drills produce is never hand-mined; the shortfall says the drills make it")
+  and drill_short.outcome.missing[1].missing == 7
+  and drill_short.detail:match("1 own mining drill%(s%) produce it but none of their output can be taken now")
+  and drill_short.detail:match("none within 64 tiles to hand%-gather"),
+  "ore only under an own drill is never hand-mined; the shortfall names the drill")
+
+-- A drill with no drop target leaves its ore on the ground: taken there
+-- before anything is hand-gathered.
+reset()
+natural("resource", "iron-ore", { x = 2.5, y = 0.5 }, { { name = "iron-ore", amount = 1 } })
+drill_on_ore(nil, { x = 30.5, y = -1.3 })
+local loose = add({ type = "item-entity", name = "item-on-ground", position = { x = 30.5, y = -1.3 }, force = neutral,
+  items = { ["iron-ore"] = 1 }, stack = { valid_for_read = true, name = "iron-ore", count = 1 } })
+local dropped = run({ items = { { name = "iron-ore", count = 3 } } })
+check(dropped.status == "done" and calls[1].kind == "pickup" and calls[1].task.target.x == 30.5
+  and calls[1].task.target.y == -1.3 and calls[1].task.count == 1 and loose.items["iron-ore"] == 0
+  and calls[2].kind == "mine" and calls[2].task.count == 2 and inventory["iron-ore"] == 3
+  and dropped.outcome.supplied.taken["iron-ore"] == 1 and dropped.outcome.supplied.gathered["iron-ore"] == 2,
+  "get_items takes the loose ore at an own drill's drop position, then hand-gathers the rest")
 
 reset()
 local tree = natural("tree", "tree-01", { x = 3.5, y = 3.5 }, { { name = "wood", amount = 4 } })

@@ -1,9 +1,11 @@
 -- get_items and auto-supply: the body fetches what a step needs the way a
 -- player would. For each wanted item, in order: take it from the nearest own
--- chest, cargo landing pad or machine output (then belt), walking there; else hand-craft it,
--- supplying the recipe's ingredients the same way first (so intermediates
--- follow); else smelt it in an own furnace (ore and fuel in, wait, products
--- out); else hand-gather it, only when no own mining drill produces it.
+-- chest, cargo landing pad or machine output (then loose items an own drill
+-- dropped, then belt), walking there; else hand-craft it, supplying the
+-- recipe's ingredients the same way first (so intermediates follow); else
+-- smelt it in an own furnace (ore and fuel in, wait, products out); else
+-- hand-gather it, also an ore own drills mine when none of their output can
+-- be taken now (a first burner drill feeding its furnace).
 -- Whatever is still missing is a named shortfall. Every move is physical:
 -- the nested walk/extract/pickup/craft/mine/insert actions keep reach and
 -- time. Hand-crafts run in the background: output still in the crafting
@@ -40,6 +42,15 @@ local GATHER_LIMIT = 100     -- natural entities read per query
 -- searched (an area query of bounded size and count, never the whole force).
 local BELT_SEARCH_RADIUS = 48
 local BELT_SEARCH_LIMIT = 64
+-- A drill with no drop target leaves its output on the ground at its drop
+-- position: only the nearest few such drills are read, one point query each.
+local DROPS_READ = 4
+local DROP_RADIUS = 0.5
+local DROP_LIMIT = 8
+-- Resource candidates checked for an own building standing on them (a drill
+-- or furnace on the patch), one point query each, per supply tick; a search
+-- that spends them resumes next tick from the tiles already checked.
+local COVER_CHECKS = 16
 local NATURAL_TYPES = { "simple-entity", "tree", "plant", "resource" }
 -- Smelting through an own furnace: one source stack per round, a poll every
 -- half second, a furnace that makes no progress for ten seconds is done.
@@ -261,17 +272,33 @@ function natural_names(item)
   return names
 end
 
+-- An own building standing on a resource tile (a drill or furnace on the
+-- patch) covers it: the body selects the building there, not the ore. A
+-- character standing there does not.
+local function covered(c, entity)
+  local ok, found = pcall(c.surface.find_entities_filtered,
+    { position = entity.position, force = c.force, limit = 4 })
+  for _, other in ipairs(ok and type(found) == "table" and found or {}) do
+    if other.valid and other.type ~= "character" then return true end
+  end
+  return false
+end
+
 -- Nearest natural entity (resource tile, tree, rock) in charted land around
 -- the body that yields the item. The engine filters by the names that yield
 -- it, each query reads at most GATHER_LIMIT entities, and small radii come
 -- first, so a forest or ore patch never means a large read; an item nothing
--- natural yields makes no query.
-local function natural_source(c, item)
+-- natural yields makes no query. Ore an own building covers is passed over:
+-- covers (kept by the caller across ticks) records each checked tile, at most
+-- COVER_CHECKS new ones per call; nil, true when they are spent before a
+-- free source is found, so the caller resumes the search next tick.
+local function natural_source(c, item, covers)
   local names = natural_names(item)
   if #names == 0 then return nil end
   local chunks = {}
+  local checks = 0
   for _, radius in ipairs(GATHER_RADII) do
-    local best, best_d
+    local candidates = {}
     local ok, found = pcall(c.surface.find_entities_filtered,
       { position = c.position, radius = radius, name = names, limit = GATHER_LIMIT })
     for _, entity in ipairs(ok and found or {}) do
@@ -280,14 +307,77 @@ local function natural_source(c, item)
         local key = math.floor(position.x / 32) .. "," .. math.floor(position.y / 32)
         if chunks[key] == nil then chunks[key] = charted(c, position) end
         if chunks[key] then
-          local d = dist_sq(c.position, position)
-          if not best or d < best_d then best, best_d = entity, d end
+          candidates[#candidates + 1] = { entity = entity, distance = dist_sq(c.position, position), order = #candidates }
         end
       end
     end
-    if best then return best end
+    table.sort(candidates, function(a, b)
+      if a.distance ~= b.distance then return a.distance < b.distance end
+      return a.order < b.order
+    end)
+    for _, candidate in ipairs(candidates) do
+      local entity = candidate.entity
+      if entity.type ~= "resource" then return entity end
+      local position = string.format("%.2f,%.2f", entity.position.x, entity.position.y)
+      if covers[position] == nil then
+        if checks >= COVER_CHECKS then return nil, true end
+        checks = checks + 1
+        covers[position] = covered(c, entity)
+      end
+      if not covers[position] then return entity end
+    end
   end
   return nil
+end
+
+-- Loose items of the kind at the drop position of the nearest own drills
+-- that mine something yielding it and drop onto the ground (no drop target):
+-- the nearest stack. Drills come from the registry; at most DROPS_READ point
+-- queries.
+local function nearest_drop(c, task, item, tried)
+  if #natural_names(item) == 0 then return nil end
+  local ok, drills = pcall(registry.machines, { "mining-drill" })
+  if not ok or type(drills) ~= "table" then return nil end
+  local near = {}
+  for _, entry in ipairs(drills) do
+    local ok_drop, point = pcall(function()
+      local e = entry.entity
+      if not (e and e.valid) or e.drop_target then return nil end
+      local target = e.mining_target
+      if not (target and target.valid and yields(target, item)) then return nil end
+      local drop = e.drop_position
+      return drop and { x = drop.x, y = drop.y }
+    end)
+    if ok_drop and point then
+      local d = dist_sq(c.position, point)
+      local at = #near + 1
+      while at > 1 and near[at - 1].distance > d do at = at - 1 end
+      if at <= DROPS_READ then
+        table.insert(near, at, { point = point, distance = d })
+        near[DROPS_READ + 1] = nil
+      end
+    end
+  end
+  local best
+  for _, drop in ipairs(near) do
+    local ok_found, found = pcall(c.surface.find_entities_filtered,
+      { position = drop.point, radius = DROP_RADIUS, type = "item-entity", limit = DROP_LIMIT })
+    for _, entity in ipairs(ok_found and type(found) == "table" and found or {}) do
+      local ok_stack, name, count = pcall(function()
+        local stack = entity.valid and entity.stack
+        if stack and stack.valid_for_read then return stack.name, stack.count end
+      end)
+      local position = entity.position
+      local key = ok_stack and name == item and string.format("%.2f,%.2f", position.x, position.y)
+      if key and not tried[key] and not (task.exclude and contains(entity, task.exclude)) and charted(c, position) then
+        local d = dist_sq(c.position, position)
+        if not best or d < best.distance then
+          best = { key = key, position = { x = position.x, y = position.y }, count = count, distance = d, kind = "ground" }
+        end
+      end
+    end
+  end
+  return best
 end
 
 -- The first fuel the body carries or the force stores (chests and machine
@@ -469,15 +559,19 @@ local function advance(task, c, frame)
     end
     if frame.takes < MAX_TAKES then
       if not scan(task) then return true end
-      -- Chests and machine outputs first; nearby belts only when none holds it.
+      -- Chests and machine outputs first, then loose items at an own drill's
+      -- drop position; nearby belts only when none holds it.
       local source
       if frame.belts then source = nearest_belt(c, task, frame.name, frame.tried)
+      elseif frame.drops then
+        source = nearest_drop(c, task, frame.name, frame.tried)
+        if not source then frame.drops, frame.belts = nil, true; return false end
       else
         source = nearest_holder(c, task, frame.name, frame.tried)
-        if not source then frame.belts = true; return false end
+        if not source then frame.drops = true; return false end
       end
       if source then
-        frame.belts = nil
+        frame.belts, frame.drops = nil, nil
         frame.takes, frame.tried[source.key] = frame.takes + 1, true
         local want = need
         local proto = prototypes.item[frame.name]
@@ -486,6 +580,9 @@ local function advance(task, c, frame)
         local sub
         if source.kind == "belt" then
           sub = { type = "pickup", target = source.position, item = frame.name, count = math.max(1, math.min(need, room)) }
+        elseif source.kind == "ground" then
+          -- A ground stack is picked up whole.
+          sub = { type = "pickup", target = source.position, item = frame.name, count = source.count }
         else
           -- A landing pad's items are its main inventory (it has others).
           sub = { type = "extract", target = source.position, items = { [frame.name] = want },
@@ -614,20 +711,23 @@ local function advance(task, c, frame)
         if #natural_names(frame.name) > 0 and not scan(task) then return true end
         frame.drills = drills_producing(c, frame.name)
       end
-      if frame.drills == 0 then
-        if #natural_names(frame.name) > 0 and not scan(task) then return true end
-        local entity = natural_source(c, frame.name)
-        if entity then
-          frame.gathers = frame.gathers + 1
-          local cycles = entity.type == "resource" and math.min(need, MAX_RESOURCE_CYCLES) or 1
-          frame.source_kind, frame.before = "gather", have(c, frame.name)
-          local ok, err = pcall(M.begin, task, "_sub", { type = "mine", entity = entity, count = cycles,
-            target = { x = entity.position.x, y = entity.position.y }, target_kind = "natural" })
-          if ok then return true end
-          frame.error = tostring(err)
-        elseif frame.gathers == 0 then
-          frame.gather_error = string.format("none within %d tiles to hand-gather", GATHER_RADII[#GATHER_RADII])
-        end
+      -- Own drills' output was taken above when it could be; while none can
+      -- be taken now (it feeds a furnace, or none is out yet), the rest is
+      -- hand-gathered like any raw resource.
+      if #natural_names(frame.name) > 0 and not scan(task) then return true end
+      frame.covers = frame.covers or {}
+      local entity, more = natural_source(c, frame.name, frame.covers)
+      if more then return true end
+      if entity then
+        frame.gathers = frame.gathers + 1
+        local cycles = entity.type == "resource" and math.min(need, MAX_RESOURCE_CYCLES) or 1
+        frame.source_kind, frame.before = "gather", have(c, frame.name)
+        local ok, err = pcall(M.begin, task, "_sub", { type = "mine", entity = entity, count = cycles,
+          target = { x = entity.position.x, y = entity.position.y }, target_kind = "natural" })
+        if ok then return true end
+        frame.error = tostring(err)
+      elseif frame.gathers == 0 then
+        frame.gather_error = string.format("none within %d tiles to hand-gather", GATHER_RADII[#GATHER_RADII])
       end
     end
     frame.phase = "end"
@@ -635,18 +735,17 @@ local function advance(task, c, frame)
   end
 
   -- end: name why this item is still short.
-  local reason
+  local parts = {}
   if frame.drills and frame.drills > 0 then
-    reason = string.format("%d own mining drill(s) produce it but none is stored where Codex can take it", frame.drills)
-  else
-    local parts = {}
-    if frame.takes == 0 then parts[#parts + 1] = "no own chest, landing pad, machine output or belt holds it" end
-    if frame.craft_error then parts[#parts + 1] = "not hand-craftable: " .. frame.craft_error end
-    if frame.smelt_error then parts[#parts + 1] = "not smelted: " .. frame.smelt_error end
-    if frame.gather_error then parts[#parts + 1] = frame.gather_error end
-    if frame.error then parts[#parts + 1] = "last attempt: " .. frame.error end
-    reason = #parts > 0 and table.concat(parts, "; ") or "every source ran dry"
+    parts[#parts + 1] = string.format("%d own mining drill(s) produce it but none of their output can be taken now", frame.drills)
+  elseif frame.takes == 0 then
+    parts[#parts + 1] = "no own chest, landing pad, machine output or belt holds it"
   end
+  if frame.craft_error then parts[#parts + 1] = "not hand-craftable: " .. frame.craft_error end
+  if frame.smelt_error then parts[#parts + 1] = "not smelted: " .. frame.smelt_error end
+  if frame.gather_error then parts[#parts + 1] = frame.gather_error end
+  if frame.error then parts[#parts + 1] = "last attempt: " .. frame.error end
+  local reason = #parts > 0 and table.concat(parts, "; ") or "every source ran dry"
   shortfall(task, frame, need, reason)
   pop(task)
   return false

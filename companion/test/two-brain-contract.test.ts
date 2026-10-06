@@ -120,7 +120,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/You are the foreman, not the hands/);
     expect(flat(pilot)).toMatch(/Queue multi-step, goal-level work[\s\S]*?Never queue single-step or walk-only plans/);
     expect(flat(skill)).toMatch(/These actions walk to their own targets: never queue a `walk_to` before them\. `wait_for_item` does not walk and observes only within 30 tiles/);
-    expect(flat(pilot)).toMatch(/Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet/);
+    expect(flat(pilot)).toMatch(/Hand-mine only trees, rocks, and ore your drills do not yet supply fast enough/);
     expect(pilot).toMatch(/Hand-craft only the science that unlocks assemblers\./);
     expect(strategist).toMatch(/Hand-craft only the science that unlocks assemblers\./);
     expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);

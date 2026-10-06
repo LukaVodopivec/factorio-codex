@@ -341,7 +341,8 @@ force.technologies = setmetatable({}, { __pairs = function()
   return next, { automation = automation, logistics = logistics, electronics = electronics, ["hidden-tech"] = disabled,
     ["steam-power"] = triggered }, nil
 end })
-local research_stub = { research_trigger = function(tech) return tech == triggered and { type = "craft-item" } or nil end }
+local research_stub = { research_trigger = function(tech) return tech == triggered and { type = "craft-item" } or nil end,
+  unit_time_s = function() return nil end }
 package.loaded["scripts.research"] = research_stub
 force.current_research, force.research_progress, force.research_queue = { name = "automation" }, 0.25, { { name = "automation" } }
 local active_plan = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "walk_to" } }, source = "package:p1" }

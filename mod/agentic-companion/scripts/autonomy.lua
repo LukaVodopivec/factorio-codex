@@ -778,6 +778,18 @@ function M.by_surface(since_tick)
   return out
 end
 
+-- Labs that progressed in the last 10 s, on every surface (research is the
+-- force's): one pass over the lines, no entity read.
+function M.labs_working()
+  local a = data()
+  local working = 0
+  for _, id in ipairs(a and a.line_order or {}) do
+    local line = a.lines[id]
+    if line.product == "research" then working = working + (line.working or 0) end
+  end
+  return working
+end
+
 -- Line counts of one surface (an index), or of every surface when nil.
 function M.counts(surface)
   local a = data()

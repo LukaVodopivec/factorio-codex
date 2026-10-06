@@ -234,7 +234,7 @@ clone.valid = false
 check(#registry.machines({ "furnace" }) == 1, "an entity gone without an event is dropped on read")
 
 -- Reads after the bootstrap make no entity query.
-package.loaded["scripts.research"] = { research_trigger = function() return nil end }
+package.loaded["scripts.research"] = { research_trigger = function() return nil end, unit_time_s = function() return nil end }
 force.technologies = {}
 local queued = {}
 package.loaded["scripts.tasks"] = { queue_length = function() return 0 end, active_summary = function() return nil end,

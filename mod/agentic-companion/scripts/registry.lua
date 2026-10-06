@@ -24,7 +24,8 @@
 -- anchor surface (companion.anchor: its physical surface, the hub aboard).
 --
 -- Aggregates (what factory_status and map_summary's power rows read, never
--- by walking entities): per surface, every type's count and nameplate sum;
+-- by walking entities): per surface, every type's count and nameplate sum
+-- (and for labs the sum of their research speeds);
 -- per electric network, its sources by kind, accumulators, the nominal demand
 -- of its consumers that try to run, and a pole for its statistics; per
 -- surface, every item's stock in own holders with its largest holder, keyed
@@ -32,8 +33,8 @@
 -- and remove events update them at once. A maintenance cursor (maintain,
 -- MAINTAIN_WORK_PER_TICK work items a tick) walks the entries in a ring and
 -- refreshes what changes without an event: network ids (they change when
--- poles connect or split networks), consumer status, accumulator charge and
--- holder contents. pass_tick is when the last full pass ended.
+-- poles connect or split networks), consumer status, accumulator charge,
+-- holder contents and lab speed. pass_tick is when the last full pass ended.
 local companion = require("scripts.companion")
 local jobs = require("scripts.jobs")
 local surfaces = require("scripts.surfaces")
@@ -158,6 +159,21 @@ local function nameplate(entity, method)
     nameplates[key] = watts
   end
   return watts
+end
+
+-- A lab's base research speed: its prototype's at its quality, cached per
+-- name and quality.
+local lab_bases = {}
+local function lab_base(entity)
+  local ok, quality = pcall(function() return entity.quality.name end)
+  quality = ok and type(quality) == "string" and quality or "normal"
+  local key = entity.name .. "\0" .. quality
+  local speed = lab_bases[key]
+  if speed == nil then
+    speed = number(function() return entity.prototype.get_researching_speed(quality) end) or 0
+    lab_bases[key] = speed
+  end
+  return speed
 end
 
 -- ------------------------------------------------------------- aggregates
@@ -328,6 +344,15 @@ local function visit(r, entry)
     end
     join_network(r, entry, id)
   end
+  if entry.type == "lab" then
+    -- speed_bonus sums the force's lab research bonus, modules and beacons.
+    entry.lab_base = entry.lab_base or lab_base(entity)
+    local speed = entry.lab_base * (1 + (number(function() return entity.speed_bonus end) or 0))
+    local row = type_row(r, entry.surface, "lab")
+    row.research_speed = (row.research_speed or 0) + speed - (entry.research_speed or 0)
+    entry.research_speed = speed
+    cost = cost + 2
+  end
   if r.holders[entry.unit] then
     local contents = {}
     if entry.charted then
@@ -405,6 +430,7 @@ function M.remove(unit)
   local row = type_row(r, entry.surface, entry.type)
   row.count = math.max(0, row.count - 1)
   if entry.role == "source" then row.nameplate_w = row.nameplate_w - (entry.nominal_w or 0) end
+  if entry.research_speed then row.research_speed = (row.research_speed or 0) - entry.research_speed end
   for _, set in ipairs(SETS) do r[set][unit] = nil end
   return entry
 end
@@ -847,6 +873,19 @@ function M.aggregate(surface)
   local out = {}
   for kind, row in pairs(r and r.types[surface] or {}) do out[kind] = { count = row.count, nameplate_w = row.nameplate_w } end
   return out
+end
+
+-- Own labs on every surface (research is the force's): {count, speed}, the
+-- speed summed as the maintenance cursor last read each lab. Pure Lua over
+-- the type aggregates.
+function M.labs()
+  local r = data()
+  local count, speed = 0, 0
+  for _, by_type in pairs(r and r.types or {}) do
+    local row = by_type.lab
+    if row then count, speed = count + row.count, speed + (row.research_speed or 0) end
+  end
+  return { count = count, speed = math.max(0, speed) }
 end
 
 -- {ready, pass_tick}: whether the aggregates have had one full pass.

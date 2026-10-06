@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge, TaskClock } from "../src/bridge.js";
 import { eventSummary, IDLE_NOW, waitForEvent, type EventState, type PackageFailure } from "../src/mcp/events.js";
+import { registerMcpTools, type McpSurface } from "../src/mcp/server.js";
 
 const idle: EventState = { tick: 100, queue_depth: 0, fifo_empty: true, human_hold: false };
 const busy: EventState = { tick: 100, queue_depth: 1, fifo_empty: false, human_hold: false, active_plan_id: 5,
@@ -24,6 +25,60 @@ function fakeClock(): TaskClock & { slept: number } {
 }
 const quiet = (failures: PackageFailure[] = [], orders = false) => ({ ordersChanged: () => orders, packageFailures: () => failures });
 const input = (extra: { since_tick?: number } = {}) => ({ timeout_seconds: 60, ...extra });
+
+describe.each(["full", "read-only"] as McpSurface[])("next_event MCP readback (%s)", (surface) => {
+  function handler(bridge: Bridge) {
+    const handlers: Record<string, (args: any, extra?: any) => Promise<any>> = {};
+    registerMcpTools({ registerTool(name, _config, run) { handlers[name] = run; } }, async () => bridge,
+      () => ({ ok: false, error: "offline fixture" }), surface, () => null, surface === "full" ? "pilot" : "strategist");
+    return handlers.next_event!;
+  }
+
+  it.each(["completed", "partial", "failed", "cancelled"])("retains native %s plan outcome separately from read completion", async (status) => {
+    const outcomes = [{ step: 1, action: "insert_items", status: status === "completed" ? "completed" : "failed",
+      result: { inserted: { coal: 2 } }, error: status === "completed" ? undefined : "PATH_NOT_FOUND" }];
+    const call = vi.fn(async (method: string) => method === "event_state"
+      ? { ...busy, last_plan_ended: { plan_id: 4, status, tick: 95, surface: "nauvis" } }
+      : { source: "package:fixture", status, outcomes, inventory_delta: { coal: -2 } });
+    const value = await handler({ call } as unknown as Bridge)({ timeout_seconds: 1, since_tick: 90 });
+    expect(value.isError).not.toBe(true);
+    expect(value.structuredContent).toMatchObject({ event: "plan_ended", plan_id: 4, status, read_status: "completed",
+      source: "package:fixture", surface: "nauvis", outcomes, inventory_delta: { coal: -2 }, terminal: true, next_action: null });
+    expect(value.content[0].text).toContain(`plan 4 ended ${status}`);
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["event_state", "plan_status"]);
+  });
+
+  it("retains native failure when detailed outcomes are unavailable", async () => {
+    const call = vi.fn(async (method: string) => {
+      if (method === "plan_status") throw new Error("unknown plan_id");
+      return { ...busy, last_plan_ended: { plan_id: 4, status: "failed", tick: 95 } };
+    });
+    const value = await handler({ call } as unknown as Bridge)({ timeout_seconds: 1, since_tick: 90 });
+    expect(value.structuredContent).toMatchObject({ event: "plan_ended", status: "failed", read_status: "completed" });
+    expect(value.structuredContent).not.toHaveProperty("outcomes");
+    expect(value.isError).not.toBe(true);
+  });
+
+  it("distinguishes a non-plan read and a read error without inventing a plan outcome", async () => {
+    const value = await handler(game([idle]).bridge)({ timeout_seconds: 1 });
+    expect(value.structuredContent).toMatchObject({ event: "queue_empty", status: "completed", read_status: "completed" });
+    expect(value.structuredContent).not.toHaveProperty("plan_id");
+    const failed = await handler({ call: async () => { throw new Error("read failed"); } } as unknown as Bridge)({ timeout_seconds: 1 });
+    expect(failed.isError).toBe(true);
+    expect(failed.structuredContent).toMatchObject({ status: "failed", read_status: "failed", code: "TOOL_ERROR" });
+    expect(failed.structuredContent).not.toHaveProperty("event");
+    expect(failed.structuredContent).not.toHaveProperty("outcomes");
+  });
+
+  it("reports wait cancellation without cancelling physical plans", async () => {
+    const controller = new AbortController(); controller.abort();
+    const { bridge, call } = game([busy]);
+    const value = await handler(bridge)({ timeout_seconds: 1 }, { signal: controller.signal });
+    expect(value.structuredContent).toMatchObject({ event: "cancelled", status: "cancelled", read_status: "cancelled" });
+    expect(value.structuredContent).not.toHaveProperty("plan_id");
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["event_state"]);
+  });
+});
 
 describe("next_event package failures", () => {
   it("delivers a failure recorded after the session saw a later tick, once", async () => {

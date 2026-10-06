@@ -396,15 +396,20 @@ export function registerMcpTools(
         summary: `${entries.length} row${entries.length === 1 ? "" : "s"}${last ? `; last: ${lastText.trim()}` : ""}` });
     } catch (error) { return failure(error); }
   });
-  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended (with the plan's step outcomes and inventory change), research_finished, queue_empty, new_problem, package_failed, orders_changed, human_hold_started, human_hold_ended, rocket_ready, rocket_launched, cargo_delivered, platform_state_changed, platform_arrived, travel_phase, body_surface_changed, or timeout. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, research, problem, rocket, platform or travel event or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
+  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended (with the plan's step outcomes and inventory change), research_finished, queue_empty, new_problem, package_failed, orders_changed, human_hold_started, human_hold_ended, rocket_ready, rocket_launched, cargo_delivered, platform_state_changed, platform_arrived, travel_phase, body_surface_changed, or timeout. For plan_ended, status is the native plan outcome; read_status describes completion, cancellation or failure of this wait. Cancelling the wait leaves physical plans unchanged. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, research, problem, rocket, platform or travel event or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
     try {
       const value = await waitForEvent(await bridge(), nextEventSchema.parse(input), {
         ordersChanged: orders.changed,
         packageFailures: () => { const dir = runDir(); return dir ? packageFailures(dir) : []; },
         delivery: failureDelivery,
       }, extra?.signal);
-      return result({ ...value, status: "completed", terminal: true, summary: eventSummary(value), next_action: null });
-    } catch (error) { return failure(error); }
+      const readStatus = value.event === "cancelled" ? "cancelled" : "completed";
+      return result({ ...value, status: value.event === "plan_ended" ? value.status : readStatus,
+        read_status: readStatus, terminal: true, summary: eventSummary(value), next_action: null });
+    } catch (error) {
+      const failed = failure(error);
+      return { ...failed, structuredContent: { ...failed.structuredContent, read_status: "failed" } };
+    }
   });
   tools.registerTool("build_layout", { description: `Build a layout given as offsets (dx, dy) from an anchor, or from a site the mod finds (near a point, on a resource, near water): entities with direction, recipe, starting items (insert), mirror, belt_to_ground_type (input|output) for underground belts and settings (inserter filters, splitter priorities, chest limits, set as each is built), plus belt, pipe and power connections. The mod checks every placement, fetches or crafts the materials, clears trees and rocks, walks and builds. mode ghosts places ghosts for robots instead. With platform it marks ghosts on that space platform from an anchor relative to its hub, plus foundation tiles (tiles, tile_rects; each touches foundation), and the hub builds them from its own items; the body stays put. site.near_liquid picks water, lava, heavy-oil or ammoniacal-solution; a dry run may name surface to check another planet or platform.${dryRun}`, inputSchema: layoutSchema }, async (p, extra) => {
     try { return await step("build_layout")(layoutSchema.parse(p), extra?.signal); }

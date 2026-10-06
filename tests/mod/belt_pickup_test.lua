@@ -480,5 +480,55 @@ pickup.start(dense_task)
 local dense = run(dense_task, 20)
 check(dense and dense.status == "done" and approaches == 1,
   "where no step-off settles, the body tries once and picks where it stands")
+-- In a dense area where the step-off failed, a belt that keeps carrying the
+-- body away while items keep arriving stops after a few drifts out of reach.
+local drift_belt = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 1 })
+reset(drift_belt)
+capacity, body.position = 1000, { x = 5.5, y = 0.6 }
+approach_result = function()
+  if body.position.x == 5.5 and math.abs(body.position.y - 0.5) < 1 then
+    return { status = "failed", detail = "couldn't get in range: BODY_ON_CONVEYOR" }
+  end
+  return "ok"
+end
+local dense_drift = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 400 }
+pickup.start(dense_drift)
+local drift_stop, drift_steps = nil, 0
+for _ = 1, 600 do
+  drift_stop = pickup.tick(dense_drift)
+  if drift_stop then break end
+  step_world()
+  drift_steps = drift_steps + 1
+  if game.tick % 10 == 0 then drift_belt.lanes[1]["iron-plate"] = drift_belt.lanes[1]["iron-plate"] + 1 end
+  if dense_drift._picking_started and game.tick % 50 == 0 then body.position = { x = 5.5, y = 5 } end
+end
+check(dense_drift._settle_failed and drift_stop and drift_stop.status == "failed" and dense_drift._drifts == 3
+  and drift_stop.detail:match("out of reach 3 times") and drift_stop.outcome.picked_up == dense_drift._picked
+  and dense_drift._picked > 0,
+  "with no step-off possible, the third drift out of reach stops the pickup with what it picked (" .. drift_steps .. " ticks)")
 geometry.conveyor_under = conveyor_under
+
+-- A belt that delivers one item now and then, each within the no-progress
+-- limit, still ends the pickup after the total in-reach bound, with the
+-- count it picked; time out of reach does not count toward it.
+local trickle = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 1 })
+reset(trickle)
+capacity, approach_result = 1000, "ok"
+local slow = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 400 }
+pickup.start(slow)
+local slow_result, slow_ticks = nil, 0
+for _ = 1, 2400 do
+  slow_result = pickup.tick(slow)
+  if slow_result then break end
+  step_world()
+  slow_ticks = slow_ticks + 1
+  if game.tick % 100 == 0 then trickle.lanes[1]["iron-plate"] = trickle.lanes[1]["iron-plate"] + 1 end
+  if slow_ticks == 500 then body.position, approach_result = { x = 20, y = 0.5 }, nil end
+  if slow_ticks == 700 then approach_result = "ok" end
+end
+check(slow_result and slow_result.status == "failed" and slow_result.detail:match("delivered too slowly")
+  and slow._picked >= 18 and slow._picked <= 24 and slow_result.outcome.picked_up == slow._picked
+  and contents["iron-plate"] == slow._picked and slow_ticks >= 1990 and slow_ticks < 2100,
+  "a trickling belt ends the pickup after the total in-reach bound with the count picked ("
+  .. slow._picked .. " in " .. slow_ticks .. " ticks)")
 os.exit(failures == 0 and 0 or 1)

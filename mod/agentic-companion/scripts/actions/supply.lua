@@ -590,7 +590,7 @@ end
 local function shortfall(task, frame, missing, reason)
   local rows = task._shortfall
   if #rows < MAX_SHORTFALL_ROWS then
-    rows[#rows + 1] = { item = frame.name, missing = missing, reason = reason }
+    rows[#rows + 1] = { item = frame.name, missing = missing, reason = reason, inventory_full = frame.full }
   end
 end
 
@@ -644,7 +644,7 @@ local function advance(task, c, frame)
     local inventory = c.get_main_inventory()
     local room = inventory and inventory.get_insertable_count(frame.name) or need
     if room <= 0 then
-      frame.error, frame.phase = "my inventory is full", "end"
+      frame.error, frame.phase, frame.full = "my inventory is full", "end", true
       return false
     end
     if frame.takes < MAX_TAKES then

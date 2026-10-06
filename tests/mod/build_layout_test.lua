@@ -668,9 +668,28 @@ for _ = 1, 40 do
   if result then break end
 end
 recipes.lab.enabled = true
-check(result and result.status == "partial" and result.outcome.code == "LAYOUT_PARTIAL"
-  and result.outcome.failed[1].index == 1 and result.outcome.shortfall and result.outcome.shortfall[1].item == "lab",
-  "a partial build names the failed entity index and the shortfall")
+check(result and result.status == "failed" and result.outcome.code == "LAYOUT_CHECK_FAILED"
+  and result.outcome.failed[1].code == "ITEM_UNOBTAINABLE" and result.outcome.failed[1].item == "lab"
+  and #result.outcome.placed == 0 and #created == 0 and inventory["wooden-chest"] == 1,
+  "a layout whose bill cannot be had fails before any placement and names the short item")
+-- A placement that fails on the ground leaves the rest of a layout placed.
+inventory = { ["wooden-chest"] = 2 }
+created = {}
+local rest = { id = 17, anchor = { x = 240, y = 200 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 3.5, dy = 0.5 } } }
+layout.layout_action.runner.start(rest)
+result = layout.layout_action.runner.tick(rest)
+local first_chest = rest._plan and rest._plan.steps[1]
+blockers = first_chest and { { valid = true, name = "stone-wall", type = "wall",
+  position = { x = first_chest.position.x, y = first_chest.position.y } } } or {}
+for _ = 1, 40 do
+  result = layout.layout_action.runner.tick(rest)
+  if result then break end
+end
+blockers = {}
+check(result and result.status == "partial" and result.outcome.code == "LAYOUT_PARTIAL" and #created == 1
+  and #result.outcome.placed == 1 and result.outcome.failed[1].index == 0 and result.outcome.failed[1].code == "PLACE_FAILED",
+  "a layout whose first placement is blocked still places the rest")
 
 created = {}
 local blocked_task = { id = 9, anchor = { x = -5, y = 0 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } }
@@ -892,6 +911,110 @@ check(result and result.status == "failed" and result.outcome.code == "LAYOUT_CH
   and result.outcome.failed[1].code == "ITEM_UNOBTAINABLE" and result.outcome.failed[1].item == "burner-mining-drill"
   and #created == 0 and crafted == 0 and inventory["iron-plate"] == 8 and inventory["burner-mining-drill"] == 1,
   "an infeasible block build fails before spending the starting kit")
+-- A layout is checked the same way: belts the body carries are not placed
+-- when the inserter after them needs plates it cannot have.
+recipes["burner-inserter"] = { name = "burner-inserter", enabled = true, category = "crafting",
+  ingredients = { { type = "item", name = "iron-plate", amount = 3 } },
+  products = { { type = "item", name = "burner-inserter", amount = 1 } } }
+inventory = { ["transport-belt"] = 10, ["iron-plate"] = 2 }
+created, crafted = {}, 0
+local belts = {}
+for i = 0, 9 do belts[#belts + 1] = { name = "transport-belt", dx = i + 0.5, dy = 0.5, direction = 4 } end
+belts[#belts + 1] = { name = "burner-inserter", dx = 10.5, dy = 0.5, direction = 4 }
+local feed = { id = 18, anchor = { x = 100, y = 100 }, entities = belts }
+layout.layout_action.runner.start(feed)
+for _ = 1, 60 do
+  result = layout.layout_action.runner.tick(feed)
+  if result then break end
+end
+check(result and result.status == "failed" and result.outcome.code == "LAYOUT_CHECK_FAILED"
+  and result.outcome.failed[1].code == "ITEM_UNOBTAINABLE" and result.outcome.failed[1].item == "burner-inserter"
+  and result.outcome.failed[1].short.item == "iron-plate" and result.outcome.failed[1].short.missing == 1
+  and #result.outcome.placed == 0 and #created == 0 and crafted == 0
+  and inventory["transport-belt"] == 10 and inventory["iron-plate"] == 2,
+  "a layout one plate short of its last inserter places none of its belts and names the inserter and the plate")
+-- A layout fetches its whole bill in one supply before the first placement,
+-- so items that share ingredients (a stone furnace inside a drill) are
+-- claimed together, not spent by whichever is placed first.
+local furnace_recipe, drill_recipe = recipes["stone-furnace"], recipes["burner-mining-drill"]
+recipes["stone-furnace"] = { name = "stone-furnace", enabled = true, category = "crafting",
+  ingredients = { { type = "item", name = "stone", amount = 5 } },
+  products = { { type = "item", name = "stone-furnace", amount = 1 } } }
+recipes["burner-mining-drill"] = { name = "burner-mining-drill", enabled = true, category = "crafting",
+  ingredients = { { type = "item", name = "iron-plate", amount = 9 }, { type = "item", name = "stone-furnace", amount = 1 } },
+  products = { { type = "item", name = "burner-mining-drill", amount = 1 } } }
+inventory = { ["iron-plate"] = 9, stone = 10 }
+created = {}
+local supplied = {}
+local real_ensure = supply.ensure
+supply.ensure = function(_, needs)
+  supplied[#supplied + 1] = { needs = needs, placed = #created }
+  for _, need in ipairs(needs) do inventory[need.name] = need.count end
+  return { status = "done" }
+end
+local pair = { id = 19, anchor = { x = 50, y = 50 }, entities = {
+  { name = "burner-mining-drill", dx = 1, dy = 1 }, { name = "stone-furnace", dx = 1, dy = -1 } } }
+layout.layout_action.runner.start(pair)
+for _ = 1, 60 do
+  result = layout.layout_action.runner.tick(pair)
+  if result then break end
+end
+supply.ensure = real_ensure
+recipes["stone-furnace"], recipes["burner-mining-drill"] = furnace_recipe, drill_recipe
+local wanted = {}
+for _, need in ipairs(supplied[1] and supplied[1].needs or {}) do wanted[need.name] = need.count end
+check(result and result.status == "done" and #created == 2 and #supplied == 1 and supplied[1].placed == 0
+  and wanted["burner-mining-drill"] == 1 and wanted["stone-furnace"] == 1,
+  "a layout's drill and furnace are fetched in one supply before the first placement, and both are placed")
+-- A layout whose whole bill does not fit in the inventory at once (two free
+-- slots, three kinds of item) carries what fits and fetches the rest at its
+-- step, once placements have freed room; a block fails with nothing placed.
+local SLOTS = 2
+local function free_slots()
+  local used = 0
+  for name, count in pairs(inventory) do
+    if count > 0 then used = used + math.ceil(count / (items[name] and items[name].stack_size or 50)) end
+  end
+  return SLOTS - used
+end
+local real_main_inventory = character.get_main_inventory
+character.get_main_inventory = function()
+  return { get_insertable_count = function(name)
+    local stack = items[name] and items[name].stack_size or 50
+    local count = inventory[name] or 0
+    local partial = count > 0 and (stack - (count - 1) % stack - 1) or 0
+    return math.max(0, free_slots()) * stack + partial
+  end }
+end
+local crafts = {}
+supply.register_runner("craft", { start = function() end, tick = function(task)
+  crafts[#crafts + 1] = { recipe = task.recipe, placed = #created }
+  inventory[task.recipe] = (inventory[task.recipe] or 0) + task.count
+  return { status = "done", detail = "crafted" }
+end })
+local function tight_run(task, action, carried)
+  inventory, created, crafts = carried or {}, {}, {}
+  action.runner.start(task)
+  for _ = 1, 120 do
+    local out = action.runner.tick(task)
+    if out then return out end
+  end
+end
+local tight = { id = 20, anchor = { x = 150, y = 150 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "iron-chest", dx = 2.5, dy = 0.5 },
+  { name = "transport-belt", dx = 4.5, dy = 0.5, direction = 4 } } }
+result = tight_run(tight, layout.layout_action)
+local belt_crafted_at
+for _, row in ipairs(crafts) do if row.recipe == "transport-belt" then belt_crafted_at = row.placed end end
+check(result and result.status == "done" and #created == 3 and belt_crafted_at == 2 and free_slots() == SLOTS,
+  "a layout whose whole bill does not fit fetches the rest at its step and places everything")
+local tight_block = { id = 21, block = "mining", count = 1, resource = "iron-ore", near = { x = 50.5, y = 50.5 } }
+result = tight_run(tight_block, layout.block_action, { ["burner-mining-drill"] = 1, coal = 10 })
+check(result and result.status == "failed" and #created == 0 and #crafts == 0
+  and result.detail:match("placed nothing: SUPPLY_SHORTFALL.*my inventory is full"),
+  "a block whose bill does not fit in the inventory places nothing")
+supply.register_runner("craft", require("scripts.actions.craft"))
+character.get_main_inventory = real_main_inventory
 -- A block whose outlet cannot be placed stops there: its drill is never placed.
 inventory = { ["burner-mining-drill"] = 1, ["wooden-chest"] = 1, coal = 10 }
 created = {}

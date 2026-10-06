@@ -11,6 +11,8 @@ const skill = read(".agents/skills/factorio-player/SKILL.md");
 const pilot = read(".agents/skills/factorio-player/GOAL-PILOT-v1.md");
 const strategist = read(".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md");
 const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md");
+const reference = read(".agents/skills/factorio-player/FACTORIO-REFERENCE.md");
+const benchmark = read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md");
 const agents = flat(read("AGENTS.md"));
 const live = flat(read("docs/LIVE-VALIDATION.md"));
 const readme = flat(read("README.md"));
@@ -123,6 +125,19 @@ describe("persistent two-brain coordination contract", () => {
     expect(strategist).toMatch(/Hand-craft only the science that unlocks assemblers\./);
     expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);
     for (const action of ["get_items", "build_layout", "build_block"]) expect(skill).toContain(`\`${action}\``);
+  });
+
+  it("lets every role, benchmark roles included, know that Automation needs hand-crafted science that never scores", () => {
+    const roleFiles = [skill, pilot, strategist, knowledge, reference, benchmark].map(flat);
+    for (const text of roleFiles) expect(text).not.toMatch(/never (?:hand-craft|plan hand-crafted) science/i);
+    const benchmarkGoal = flat(benchmark);
+    expect(benchmarkGoal).toMatch(/A hand-crafted item or pack never scores itself; only what machines make and labs consume counts\. Yet Automation, the research that unlocks assemblers, can only use hand-crafted packs: hand-craft just those few, early\./);
+    expect(flat(reference)).toMatch(/Assemblers are locked until the Automation research completes, and its packs exist before any assembler can make them: those few packs are hand-crafted\. They do not score/);
+  });
+
+  it("tells the benchmark strategist to keep a package queued ahead of the pilot", () => {
+    const strategistDuties = flat(benchmark).match(/Strategist \(multi-agent only\):[^\n]*?(?= Advisors \()/)?.[0] ?? "";
+    expect(strategistDuties).toMatch(/Keep a package queued ahead of the pilot so the body never waits for a design\./);
   });
 
   it("teaches the 0.21.1 building tools in plain words", () => {

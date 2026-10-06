@@ -45,7 +45,8 @@ local DROPS_READ = 4
 local DROP_RADIUS = 0.5
 local DROP_LIMIT = 8
 -- Resource candidates checked for an own building standing on them (a drill
--- or furnace on the patch), one point query each, per gather search.
+-- or furnace on the patch), one point query each, per supply tick; a search
+-- that spends them resumes next tick from the tiles already checked.
 local COVER_CHECKS = 16
 local NATURAL_TYPES = { "simple-entity", "tree", "plant", "resource" }
 -- Smelting through an own furnace: one source stack per round, a poll every
@@ -284,12 +285,14 @@ end
 -- the body that yields the item. The engine filters by the names that yield
 -- it, each query reads at most GATHER_LIMIT entities, and small radii come
 -- first, so a forest or ore patch never means a large read; an item nothing
--- natural yields makes no query. Ore an own building covers is passed over
--- (at most COVER_CHECKS point queries).
-local function natural_source(c, item)
+-- natural yields makes no query. Ore an own building covers is passed over:
+-- covers (kept by the caller across ticks) records each checked tile, at most
+-- COVER_CHECKS new ones per call; nil, true when they are spent before a
+-- free source is found, so the caller resumes the search next tick.
+local function natural_source(c, item, covers)
   local names = natural_names(item)
   if #names == 0 then return nil end
-  local chunks, checked = {}, {}
+  local chunks = {}
   local checks = 0
   for _, radius in ipairs(GATHER_RADII) do
     local candidates = {}
@@ -313,12 +316,12 @@ local function natural_source(c, item)
       local entity = candidate.entity
       if entity.type ~= "resource" then return entity end
       local position = string.format("%.2f,%.2f", entity.position.x, entity.position.y)
-      if checked[position] == nil then
-        if checks >= COVER_CHECKS then return entity end
+      if covers[position] == nil then
+        if checks >= COVER_CHECKS then return nil, true end
         checks = checks + 1
-        checked[position] = covered(c, entity)
+        covers[position] = covered(c, entity)
       end
-      if not checked[position] then return entity end
+      if not covers[position] then return entity end
     end
   end
   return nil
@@ -670,7 +673,9 @@ local function advance(task, c, frame)
       -- be taken now (it feeds a furnace, or none is out yet), the rest is
       -- hand-gathered like any raw resource.
       if #natural_names(frame.name) > 0 and not scan(task) then return true end
-      local entity = natural_source(c, frame.name)
+      frame.covers = frame.covers or {}
+      local entity, more = natural_source(c, frame.name, frame.covers)
+      if more then return true end
       if entity then
         frame.gathers = frame.gathers + 1
         local cycles = entity.type == "resource" and math.min(need, MAX_RESOURCE_CYCLES) or 1

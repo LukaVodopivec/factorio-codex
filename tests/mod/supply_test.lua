@@ -346,6 +346,20 @@ check(drill_gathered.status == "done" and #calls == 1 and calls[1].kind == "mine
   and calls[1].task.count == 7 and inventory["iron-ore"] == 7 and drill_gathered.outcome.supplied.gathered["iron-ore"] == 7,
   "ore an own drill mines into its furnace is hand-gathered from a tile no own building covers")
 
+-- More covered ore tiles than one tick checks lie nearer than a free one:
+-- the search resumes next tick, never hands back an unchecked tile, and
+-- checks each tile once.
+reset()
+add({ type = "lab", name = "lab", position = { x = 4.5, y = 2 }, bounding_box = box(2, 0, 7, 4) })
+for x = 2.5, 6.5 do for y = 0.5, 3.5 do natural("resource", "iron-ore", { x = x, y = y }, { { name = "iron-ore", amount = 1 } }) end end
+local far_free = natural("resource", "iron-ore", { x = 10.5, y = 0.5 }, { { name = "iron-ore", amount = 1 } })
+local wide_gathered = run({ items = { { name = "iron-ore", count = 7 } } })
+local point_checks = 0
+for _, q in ipairs(queries) do if q.force and q.position and not q.radius then point_checks = point_checks + 1 end end
+check(wide_gathered.status == "done" and #calls == 1 and calls[1].kind == "mine" and calls[1].task.entity == far_free
+  and inventory["iron-ore"] == 7 and point_checks == 21,
+  "more than one tick's worth of covered ore is passed over across ticks before free ore is hand-gathered")
+
 -- With no uncovered ore in reach the shortfall names the drill.
 reset()
 drill_on_ore(nil, nil)

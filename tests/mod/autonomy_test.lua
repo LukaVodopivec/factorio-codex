@@ -441,6 +441,13 @@ factory_status.on_research_changed({ name = 77, tick = 502, research = { name = 
 local finished = factory_status.event_state().last_research_finished
 check(not_finished == nil and other_force == nil and finished.technology == "automation" and finished.tick == 502,
   "event_state names the last research the body's force finished")
+local researching = factory_status.event_state().research_idle
+local running_research = force.current_research
+force.current_research = nil
+local idle_research = factory_status.event_state().research_idle
+force.current_research = running_research
+check(researching == false and idle_research == true,
+  "event_state says whether the body's force has no research running (labs idle)")
 storage.tasks.last_cancel_all_tick = 450
 check(factory_status.event_state().last_cancel_all_tick == 450, "event_state carries the last cancel-all tick")
 storage.tasks.last_cancel_all_tick = nil

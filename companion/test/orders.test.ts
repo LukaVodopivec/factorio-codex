@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobBusyError, ModError, type Bridge } from "../src/bridge.js";
 import { createOrdersTracker, createPackageQueue, holdLock, packageFailures, readPackageQueue } from "../src/coordination/orders.js";
-import { result, runMcpServer, type McpSurface, type SessionRole } from "../src/mcp/server.js";
+import { registerMcpTools, result, runMcpServer, type McpSurface, type SessionRole } from "../src/mcp/server.js";
 import * as coordination from "../src/coordination/orders.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { currentRunDir, currentRunPointer, runPaths } from "../src/server/server.js";
@@ -25,7 +25,7 @@ const furnaces = (id: string, after: string | null = null) => ({
   steps: [{ action: "place_entity", x: 1.5, y: 2.5, name: "stone-furnace" },
     { action: "build_block", block: "smelting", count: 4, near: { x: 0, y: 0 } }],
 });
-function writeLedger(dir: string, revision: number, packages: unknown[], objective = "automate iron") {
+function writeLedger(dir: string, revision: number, packages: unknown[], objective = "automate iron", research?: string[]) {
   const priority = (text: string) => ({ objective: text, strategic_reason: "r", completion_condition: "c", essential_prerequisite: null });
   fs.writeFileSync(path.join(dir, "operations.json"), JSON.stringify({
     schema_version: 2, run: { id: "run-1", release_sha: "a".repeat(40), baseline_save_sha256: "b".repeat(64),
@@ -33,7 +33,7 @@ function writeLedger(dir: string, revision: number, packages: unknown[], objecti
       roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6.1-sol", reasoning: "medium", fast: false } } },
     revision, source_tick: 10, phase: "start", bottleneck: "iron", latest_measured_capacity: [],
     task_list: { NOW: priority(objective), NEXT: priority("copper"), LATER: priority("science") },
-    assumptions: [], build_packages: packages,
+    assumptions: [], build_packages: packages, ...(research === undefined ? {} : { research }),
   }));
 }
 
@@ -485,6 +485,89 @@ describe("package auto-queue", () => {
     expect(readPackageQueue(dir)?.packages.bad).toMatchObject({ status: "failed",
       reason: "capture failed: blueprint_capture: no own entities stand in that area" });
     expect(queuedPlans(refused.call)).toEqual([]);
+  });
+
+  it("queues the ledger's research once per revision that lists any, during a human hold and with the body elsewhere", async () => {
+    const dir = runDir();
+    writeLedger(dir, 4, [], "automate science", ["automation", "logistics"]);
+    const researched: any[] = [];
+    const { call, bridge } = fakeBridge({
+      ping: () => ({ companion_exists: true, tick: 900, body: { state: "aboard_platform", surface_ref: "platform:1" } }),
+      event_state: () => ({ tick: 900, human_hold: true }),
+      start_research: (params) => { researched.push(params); return { queued: true, technologies: ["logistics"], skipped: ["automation"] }; },
+    });
+    const queue = createPackageQueue(() => dir, bridge, () => new Date("2026-10-05T10:00:00Z"));
+    await queue.tick();
+    expect(researched).toEqual([{ technologies: ["automation", "logistics"], origin: "ledger/r4" }]);
+    expect(readPackageQueue(dir)?.research).toEqual({ revision: 4, status: "queued", technologies: ["automation", "logistics"],
+      queued: ["logistics"], skipped: ["automation"], at: "2026-10-05T10:00:00.000Z", tick: 900 });
+    // Once per revision: later passes and another process leave it alone.
+    await queue.tick();
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(researched).toHaveLength(1);
+    // A revision without research changes nothing; a later one that lists research again is applied.
+    writeLedger(dir, 5, [], "automate science", []);
+    await queue.tick();
+    expect(researched).toHaveLength(1);
+    writeLedger(dir, 6, [], "automate science", ["automation", "logistics"]);
+    await queue.tick();
+    expect(researched.map((params) => params.origin)).toEqual(["ledger/r4", "ledger/r6"]);
+    expect(queuedPlans(call)).toEqual([]);
+  });
+
+  it("records a refused research as failed once, retries a lost answer, and holds research written before a stop", async () => {
+    const dir = runDir();
+    const at = (time: string) => new Date(`2026-10-05T${time}Z`);
+    writeLedger(dir, 2, [], "automate science", ["trigger-alpha"]);
+    let answer: () => unknown = () => { throw new Error("RCON timeout"); };
+    const { call, bridge } = fakeBridge({ start_research: () => answer() });
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    expect(readPackageQueue(dir)?.research).toBeUndefined();
+    answer = () => { throw new ModError("cannot queue trigger technology trigger-alpha"); };
+    await queue.tick();
+    expect(readPackageQueue(dir)?.research).toMatchObject({ revision: 2, status: "failed",
+      reason: "cannot queue trigger technology trigger-alpha" });
+    await queue.tick();
+    expect(call.mock.calls.filter(([method]) => method === "start_research")).toHaveLength(2);
+    // A stop after the ledger was written holds its research until the strategist rewrites it.
+    const stopped = runDir();
+    writeLedger(stopped, 3, [], "automate science", ["automation"]);
+    fs.utimesSync(path.join(stopped, "operations.json"), at("09:00:00"), at("09:00:00"));
+    const held = fakeBridge({ event_state: () => ({ tick: 900, human_hold: false, last_cancel_all_tick: 900 }),
+      start_research: () => ({ queued: true, technologies: ["automation"] }) });
+    await createPackageQueue(() => stopped, held.bridge, () => at("10:00:00")).tick();
+    expect(held.call.mock.calls.some(([method]) => method === "start_research")).toBe(false);
+    writeLedger(stopped, 4, [], "automate science", ["automation"]);
+    fs.utimesSync(path.join(stopped, "operations.json"), at("10:01:00"), at("10:01:00"));
+    await createPackageQueue(() => stopped, held.bridge, () => at("10:02:00")).tick();
+    expect(readPackageQueue(stopped)?.research).toMatchObject({ revision: 4, status: "queued", queued: ["automation"] });
+  });
+
+  it("shows the ledger research outcome in activity_log, with the mod's research row in the summary", async () => {
+    const dir = runDir();
+    writeLedger(dir, 4, [], "automate science", ["automation"]);
+    const { bridge } = fakeBridge({ start_research: () => ({ queued: true, technologies: ["automation"] }),
+      activity_log: () => ({ tick: 900, omitted: 0, entries: [{ kind: "research", tick: 900, origin: "ledger/r4",
+        technologies: ["automation"], after_plan_id: 3 }] }) });
+    await createPackageQueue(() => dir, bridge).tick();
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, bridge,
+      () => ({ ok: false, error: "offline fixture" }), "read-only", () => dir, "strategist");
+    const log = (await handlers.activity_log!({})).structuredContent;
+    expect(log.research).toMatchObject({ revision: 4, status: "queued", technologies: ["automation"], queued: ["automation"] });
+    expect(log.summary).toBe("1 row; last: research by ledger/r4: queued automation");
+  });
+
+  it("applies research again when its record is newer than the loaded save (a rollback)", async () => {
+    const dir = runDir();
+    writeLedger(dir, 2, [], "automate science", ["automation"]);
+    fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify({ packages: {},
+      research: { revision: 2, status: "queued", technologies: ["automation"], queued: ["automation"], at: "2026-10-04T00:00:00Z", tick: 1000 } }));
+    const { call, bridge } = fakeBridge({ start_research: () => ({ queued: true, technologies: ["automation"] }) });
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(call).toHaveBeenCalledWith("start_research", { technologies: ["automation"], origin: "ledger/r2" });
+    expect(readPackageQueue(dir)?.research).toMatchObject({ revision: 2, tick: 900 });
   });
 
   it("takes over a dead process's lock atomically: a lock replaced meanwhile is put back", () => {

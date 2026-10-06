@@ -60,6 +60,14 @@ const packageFields = z.object({
 const buildPackage = packageFields.extend({ surface: packageSurface.default("nauvis") });
 const writtenPackage = packageFields.extend({ surface: packageSurface });
 const MAX_PACKAGE_BYTES = 8192;
+// The strategist's research selection: technologies in queue order. The
+// pilot's bridge queues them once for each revision that lists any, through
+// the mod's start_research, skipping those already researched or queued, and
+// records the outcome in activity_log (coordination/orders.ts).
+export const MAX_RESEARCH = 7;
+const technology = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/, "technologies are names such as \"automation\"");
+const research = z.array(technology).max(MAX_RESEARCH)
+  .refine((names) => new Set(names).size === names.length, "research lists each technology once");
 
 export const operationsLedgerSchema = z.object({
   schema_version: z.literal(2), run: runSchema,
@@ -69,6 +77,7 @@ export const operationsLedgerSchema = z.object({
   task_list: z.object({ NOW: priority, NEXT: priority, LATER: priority }).strict(),
   assumptions: z.array(assumption).max(8),
   build_packages: z.array(buildPackage).max(2).default([]),
+  research: research.default([]),
 }).strict();
 
 type BuildPackage = z.infer<typeof buildPackage>;

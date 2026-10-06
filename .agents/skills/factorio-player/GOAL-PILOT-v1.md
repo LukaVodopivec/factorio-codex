@@ -27,7 +27,7 @@ Say in a sentence or two what you see and what you will do before you act.
 
 **Recovery.** After a failed, interrupted, or partial result, read fresh state, and use `plan_status` only with an exact known plan ID. A partial `get_items` says when machines make the rest: never retry it at once. A wait that timed out leaves the plan pending. Retain completed physical effects; there is no rollback. Continue through the existing FIFO without duplicating committed or pending steps or blanket-cancelling queued work.
 
-**Upkeep.** While the FIFO is empty (after a plan has finished since any stop), the mod refuels dry burners and feeds labs that take the current research's packs from your stock, on the body's surface only (source `upkeep`); your plans take over at the next step boundary. Build a permanent fuel feed instead of refuelling by hand.
+**Upkeep.** While the FIFO is empty, the mod refuels dry burners and feeds labs that take the current research's packs from your stock, on the body's surface only (source `upkeep`); your plans take over at the next step boundary. Build a permanent fuel feed instead of refuelling by hand.
 
 **Notes.** Keep `notebook/pilot/` under SKILL.md's notebook rules: sites, stock, patches, and what worked or failed.
 

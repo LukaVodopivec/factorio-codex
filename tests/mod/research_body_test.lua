@@ -193,4 +193,35 @@ check(not pcall(research.start_research, { technologies = {} })
   and not pcall(research.start_research, { technology = "optics", technologies = { "optics" } }),
   "a list holds 1-7 names and replaces the single technology")
 
+-- The ledger's research (origin): what is researched or queued is skipped,
+-- and every call is an activity_log row naming its origin.
+local logged = {}
+research.set_logger(function(row) logged[#logged + 1] = row end)
+game.tick = 1200
+codex_force.research_queue = { optics }
+local from_ledger = research.start_research({ technologies = { "steam-power", "optics", "logistics" }, origin = "ledger/r4" })
+check(from_ledger.technologies[1] == "logistics" and #from_ledger.technologies == 1
+  and from_ledger.skipped[1] == "steam-power" and from_ledger.skipped[2] == "optics"
+  and #codex_force.research_queue == 2 and codex_force.research_queue[2] == logistics
+  and #logged == 1 and logged[1].kind == "research" and logged[1].origin == "ledger/r4" and logged[1].tick == 1200
+  and logged[1].technologies[1] == "logistics" and logged[1].skipped[2] == "optics" and logged[1].error == nil,
+  "ledger research skips researched and queued technologies, queues the rest and logs a research row")
+local again = research.start_research({ technologies = { "optics", "logistics" }, origin = "ledger/r5" })
+check(#again.technologies == 0 and #again.skipped == 2 and #codex_force.research_queue == 2 and #logged == 2,
+  "a restated ledger list adds nothing twice")
+codex_force.research_queue = {}
+local refused_ok, refused = pcall(research.start_research, { technologies = { "optics", "trigger-alpha" }, origin = "ledger/r6" })
+check(not refused_ok and tostring(refused):match("^cannot queue trigger technology trigger%-alpha")
+  and logged[3].origin == "ledger/r6" and logged[3].technologies[1] == "optics"
+  and logged[3].error:match("cannot queue trigger technology") ~= nil,
+  "a refused ledger research is logged with its error and what was queued before it")
+check(not pcall(research.start_research, { technology = "optics", origin = "ledger/r7" })
+  and not pcall(research.start_research, { technologies = { "optics" }, origin = "" })
+  and #logged == 3, "origin takes a non-empty name and a technologies list")
+codex_force.research_queue = {}
+local pilot = research.start_research({ technologies = { "optics" } })
+codex_force.research_queue = { optics }
+check(pilot.skipped == nil and #logged == 3 and not pcall(research.start_research, { technologies = { "optics" } }),
+  "without origin nothing is skipped or logged: an already queued technology is refused")
+
 os.exit(failures == 0 and 0 or 1)

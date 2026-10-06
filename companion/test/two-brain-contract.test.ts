@@ -107,7 +107,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/Never write `operations\.json` or `notebook\/strategist\/`/);
     expect(flat(strategist)).toMatch(/Size packages as whole blocks: `build_block`, `build_layout`, or `blueprint_place` steps, never single placements/);
     expect(flat(strategist)).toMatch(/Keep at least one package queued ahead so the body never waits for a design/);
-    expect(flat(strategist)).toMatch(/Rewrite the ledger only when NOW changes or a new package is ready, about six times an hour at most; never to record progress, which `activity_log` holds/);
+    expect(flat(strategist)).toMatch(/Rewrite the ledger only when NOW changes, a new package is ready, or labs need research, about six times an hour at most; never to record progress, which `activity_log` holds/);
     expect(flat(strategist)).toMatch(/Give each package a new `package_id`/);
     expect(flat(strategist)).toMatch(/`essential_prerequisite` is one outcome sentence \(at most 160 characters\)/);
     for (const field of ["objective", "strategic_reason", "completion_condition", "essential_prerequisite"]) expect(strategist).toContain(`\`${field}\``);
@@ -133,7 +133,10 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/use `explore`[\s\S]*Never scout with chains of walks/);
     expect(flatSkill).toMatch(/`connect_entities` lays one belt, pipe, or pole route of up to 200 pieces[\s\S]*a long route is one call/);
     expect(flatSkill).toMatch(/Crafting runs in the background: `craft_items` returns at once/);
-    expect(flatSkill).toMatch(/`start_research` takes a list of technologies in order; queue more when `next_event` reports `research_finished`/);
+    expect(flatSkill).toMatch(/The strategist picks research: the bridge queues the ledger's `research` list once per revision \(`activity_log` shows it\)/);
+    expect(flatSkill).not.toMatch(/`start_research` takes a list/);
+    expect(flat(strategist)).toMatch(/After `GO`, list up to seven technologies in queue order as the ledger's `research`/);
+    expect(flat(strategist)).toMatch(/When `research_finished` or `research_idle` says labs are idle, write the next list/);
     expect(flatSkill).toMatch(/`plan_ended` carries each step's outcome and the inventory change/);
     expect(flatSkill).toMatch(/Any item may be used anywhere, crafted or machine-made/);
     expect(skill).not.toMatch(/at most 25 pieces/);
@@ -291,7 +294,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/Bring in your inventory[\s\S]*leaving a planet takes a rocket from a silo there/);
     expect(flatSkill).toMatch(/The game is won when any of our platforms reaches the solar system edge; the body need not be aboard/);
     expect(flatSkill).toMatch(/Each package names its `surface` \(a planet\) and queues only while the body is there[\s\S]*`waiting_surface`, which is not a failure\. Only the pilot travels: a package never holds `travel`/);
-    expect(flatSkill).toMatch(/A `research_idle` problem means no research runs/);
+    expect(flatSkill).toMatch(/A `research_idle` problem means no research runs and labs are idle/);
     for (const word of ["frozen", "travel_phase", "platform_arrived", "body_surface_changed", "SURFACE_LEFT", "roots", "surface_limited"]) expect(skill).toContain(`\`${word}\``);
     for (const tool of ["travel", "set_platform_route"]) {
       expect(registered).toContain(tool);

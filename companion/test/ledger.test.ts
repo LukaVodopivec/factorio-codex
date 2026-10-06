@@ -35,6 +35,7 @@ function ledger() {
     },
     assumptions: [],
     build_packages: [] as unknown[],
+    research: [] as string[],
   };
 }
 
@@ -241,6 +242,24 @@ describe("build packages the bridge queues", () => {
     expect(reduced.ledger?.build_packages.map((entry) => entry.package_id)).toEqual(["coal-drill-furnace", "fuel-loop"]);
     const { build_packages: _omitted, ...older } = ledger();
     expect(reduceLedger(older, envelope(101)).result).toMatchObject({ status: "applied" });
+  });
+
+  it("carries the strategist's research list in queue order, empty when an update omits it", () => {
+    const report = envelope();
+    const file = ledgerFile();
+    fs.writeFileSync(file, `${JSON.stringify(ledger())}\n`, { mode: 0o600 });
+    expect(applyLedgerFile(file, { ...report, update: { ...report.update, research: ["automation", "logistics"] } }))
+      .toMatchObject({ status: "applied", revision: 1 });
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).research).toEqual(["automation", "logistics"]);
+    // research is selected per revision: an update without it lists none.
+    expect(applyLedgerFile(file, envelope(101))).toMatchObject({ status: "applied", revision: 2 });
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).research).toEqual([]);
+    const { research: _omitted, ...older } = ledger();
+    expect(operationsLedgerSchema.parse(older).research).toEqual([]);
+    for (const research of [["automation", "automation"], Array.from({ length: 8 }, (_, index) => `tech-${index}`), ["../x"], [""]]) {
+      expect(reduceLedger(ledger(), { ...report, update: { ...report.update, research } }).result)
+        .toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    }
   });
 
   it("accepts goal-level packages of any plan action, up to 200 steps", () => {

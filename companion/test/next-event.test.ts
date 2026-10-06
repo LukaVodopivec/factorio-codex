@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge, TaskClock } from "../src/bridge.js";
-import { eventSummary, IDLE_NOW, waitForEvent, type EventState, type PackageFailure } from "../src/mcp/events.js";
+import { eventSummary, IDLE_NOW, RESEARCH_IDLE, waitForEvent, type EventState, type PackageFailure } from "../src/mcp/events.js";
 import { registerMcpTools, type McpSurface } from "../src/mcp/server.js";
 
 const idle: EventState = { tick: 100, queue_depth: 0, fifo_empty: true, human_hold: false };
@@ -117,6 +117,29 @@ describe("next_event research beside a plan end", () => {
     const older = await waitForEvent(game([both]).bridge, input({ since_tick: 155 }), quiet(), undefined, fakeClock());
     expect(older).toMatchObject({ event: "plan_ended" });
     expect(older).not.toHaveProperty("research_finished");
+  });
+
+  it("says plainly when a finished research leaves no research running and the labs idle", async () => {
+    const stalled = { ...idle, tick: 170, last_plan_ended: { plan_id: 5, status: "completed", tick: 160 },
+      last_research_finished: { technology: "automation", tick: 150 }, research_idle: true };
+    const polled = await waitForEvent(game([busy, stalled]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(polled).toMatchObject({ research_finished: { technology: "automation", research_idle: true } });
+    expect(eventSummary(polled)).toBe(`plan 5 ended completed; research automation finished: ${RESEARCH_IDLE}; ${IDLE_NOW}`);
+    const running = { ...busy, tick: 300, last_research_finished: { technology: "automation", tick: 290 }, research_idle: false };
+    const next = await waitForEvent(game([busy, running]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(next).not.toHaveProperty("research_idle");
+    expect(eventSummary(next)).toBe("research automation finished");
+    const finished = await waitForEvent(game([busy, { ...running, research_idle: true }]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(finished).toMatchObject({ event: "research_finished", technology: "automation", research_idle: true });
+    expect(eventSummary(finished)).toBe(`research automation finished: ${RESEARCH_IDLE}`);
+    expect(RESEARCH_IDLE).toBe("no research is running and labs are idle; the strategist picks research in the ledger");
+  });
+
+  it("says plainly that labs are idle when a new problem is a research_idle one", () => {
+    expect(eventSummary({ event: "new_problem", problems: [{ status: "no_research_in_progress", cause: "research_idle", name: "lab" }] }))
+      .toBe(`new machine problem (1 rows); ${RESEARCH_IDLE}`);
+    expect(eventSummary({ event: "new_problem", problems: [{ status: "no_fuel", name: "stone-furnace" }] }))
+      .toBe("new machine problem (1 rows)");
   });
 });
 

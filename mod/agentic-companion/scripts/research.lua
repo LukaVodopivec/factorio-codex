@@ -105,29 +105,74 @@ end
 -- start_research {technology} or {technologies = [...]}: a list is queued
 -- in its order, each name checked as a single one would be; it stops at the
 -- first the game refuses and says which were queued.
+-- With origin (the pilot's bridge applying the strategist's ledger research,
+-- "ledger/r<revision>"), a list skips what is already researched or queued,
+-- so a restated list adds only what is new, and each call is a row in
+-- activity_log and the server log: {kind = "research", tick, origin,
+-- technologies (queued), skipped, error}.
 local MAX_TECHNOLOGIES = 7
+local MAX_ORIGIN = 120
 local queue_one
-function M.start_research(params)
-  if params.technologies ~= nil then
-    local list = params.technologies
-    if params.technology ~= nil or type(list) ~= "table" or #list < 1 or #list > MAX_TECHNOLOGIES then
-      error("start_research takes technology or technologies = 1-" .. MAX_TECHNOLOGIES .. " names in queue order")
-    end
-    local queued = {}
-    for _, name in ipairs(list) do
+local log_event
+-- tasks.log_event, set by control.lua (tasks requires more than research may).
+function M.set_logger(logger) log_event = logger end
+
+local function bare(err) return (tostring(err):gsub("^.-:%d+:%s*", "")) end
+
+local function known(force, name)
+  local ok, tech = pcall(function() return force.technologies[name] end)
+  if not (ok and tech) then return false end
+  if tech.researched then return true end
+  for _, queued in ipairs(force.research_queue or {}) do
+    if queued.name == name then return true end
+  end
+  return false
+end
+
+-- Queues list into out.technologies, skipping known ones into out.skipped.
+local function queue_list(list, out, skip_known)
+  for _, name in ipairs(list) do
+    if skip_known and known(companion.require_present().force, name) then
+      out.skipped[#out.skipped + 1] = name
+    else
       local ok, err = pcall(queue_one, name)
       if not ok then
-        error(string.format("%s%s", tostring(err):gsub("^.-:%d+:%s*", ""),
-          #queued > 0 and ("; queued before it: " .. table.concat(queued, ", ")) or ""))
+        error(string.format("%s%s", bare(err),
+          #out.technologies > 0 and ("; queued before it: " .. table.concat(out.technologies, ", ")) or ""), 0)
       end
-      queued[#queued + 1] = name
+      out.technologies[#out.technologies + 1] = name
     end
-    local force = companion.require_present().force
-    local queue = {}
-    for _, technology in ipairs(force.research_queue or {}) do queue[#queue + 1] = technology.name end
-    return { queued = true, technologies = queued, research_queue = queue }
   end
-  return queue_one(params.technology)
+  local queue = {}
+  for _, technology in ipairs(companion.require_present().force.research_queue or {}) do queue[#queue + 1] = technology.name end
+  return { queued = true, technologies = out.technologies, skipped = #out.skipped > 0 and out.skipped or nil,
+    research_queue = queue }
+end
+
+function M.start_research(params)
+  local origin = params.origin
+  if origin ~= nil and (type(origin) ~= "string" or origin == "" or #origin > MAX_ORIGIN) then
+    error("start_research origin names who asks, at most " .. MAX_ORIGIN .. " characters", 0)
+  end
+  local list = params.technologies
+  if list == nil and origin == nil then return queue_one(params.technology) end
+  if params.technology ~= nil or type(list) ~= "table" or #list < 1 or #list > MAX_TECHNOLOGIES then
+    error("start_research takes technology or technologies = 1-" .. MAX_TECHNOLOGIES .. " names in queue order"
+      .. (origin and "; with origin, technologies" or ""), 0)
+  end
+  local out = { technologies = {}, skipped = {} }
+  if origin == nil then return queue_list(list, out, false) end
+  local ok, result = pcall(queue_list, list, out, true)
+  local reason = not ok and bare(result) or nil
+  local row = { kind = "research", tick = game.tick, origin = origin, technologies = out.technologies,
+    skipped = #out.skipped > 0 and out.skipped or nil, error = reason }
+  if log_event then log_event(row) end
+  if log then
+    pcall(log, string.format("[agentic-companion] research origin=%s queued=%s skipped=%s%s", origin,
+      table.concat(out.technologies, ","), table.concat(out.skipped, ","), reason and (" error=" .. reason) or ""))
+  end
+  if not ok then error(reason, 0) end
+  return result
 end
 
 function queue_one(name)

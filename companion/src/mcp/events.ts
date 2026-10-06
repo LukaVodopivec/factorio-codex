@@ -30,6 +30,8 @@ export interface EventState {
   /** surface: the surface the plan's positions were on (mod 0.22.3 on). */
   last_plan_ended?: { plan_id: number; status: string; tick: number; surface?: string };
   last_research_finished?: { technology: string; tick: number };
+  /** True while the body's force has no research running; absent from older mods. */
+  research_idle?: boolean;
   last_cancel_all_tick?: number;
   /** The newest space event's tick and the last few entries, oldest first. */
   last_space_event_tick?: number; space_events?: SpaceEvent[];
@@ -47,6 +49,14 @@ export interface EventSources {
    *  call starts count as delivered. */
   delivery?: FailureDelivery;
 }
+
+/** Said wherever research stands still: after a research_finished with
+ *  nothing queued, and with a research_idle problem. */
+export const RESEARCH_IDLE = "no research is running and labs are idle; the strategist picks research in the ledger";
+const idleResearch = (state: EventState) => state.research_idle === true ? { research_idle: true } : {};
+/** Whether problem rows include labs standing still with no research. */
+export const researchIdleProblem = (problems: unknown): boolean =>
+  Array.isArray(problems) && problems.some((row) => (row as { cause?: unknown } | null)?.cause === "research_idle");
 
 const realClock: TaskClock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 export const EVENT_POLL_MS = 500;
@@ -83,7 +93,8 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   // A research that finished in the same poll rides along: its tick is
   // older than the returned one, so a later since_tick call would miss it.
   const ended = async (state: EventState, plan: { plan_id: number; status: string; surface?: string }, research?: EventState["last_research_finished"]) => {
-    const finished = research ? { research_finished: { technology: research.technology, research_tick: research.tick } } : {};
+    const finished = research ? { research_finished: { technology: research.technology, research_tick: research.tick,
+      ...idleResearch(state) } } : {};
     const surface = plan.surface === undefined ? {} : { surface: plan.surface };
     try {
       const status = await bridge.call<{ outcomes?: unknown; inventory_delta?: unknown; source?: string }>("plan_status", { plan_id: plan.plan_id });
@@ -93,7 +104,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     } catch { return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...surface, ...finished }); }
   };
   const researched = (state: EventState) => done("research_finished", state, { technology: state.last_research_finished!.technology,
-    research_tick: state.last_research_finished!.tick });
+    research_tick: state.last_research_finished!.tick, ...idleResearch(state) });
   // The problem tick counts machines on every surface: the body's surface's
   // new problems, then the worst ones of every other surface with any, each
   // naming its surface (the Nauvis factory stays visible from orbit).
@@ -170,12 +181,14 @@ const platformName = (value: Record<string, unknown>) => (value.platform as { na
 function eventText(value: Record<string, unknown>): string {
   switch (value.event) {
     case "plan_ended": {
-      const research = value.research_finished as { technology?: string } | undefined;
-      return `plan ${value.plan_id} ended ${value.status}${research ? `; research ${research.technology} finished` : ""}`;
+      const research = value.research_finished as { technology?: string; research_idle?: boolean } | undefined;
+      return `plan ${value.plan_id} ended ${value.status}${research ? `; research ${research.technology} finished` : ""}`
+        + (research?.research_idle ? `: ${RESEARCH_IDLE}` : "");
     }
-    case "research_finished": return `research ${value.technology} finished`;
+    case "research_finished": return `research ${value.technology} finished${value.research_idle ? `: ${RESEARCH_IDLE}` : ""}`;
     case "package_failed": return `package ${value.package_id} was not queued: ${value.reason ?? "unknown reason"}`;
-    case "new_problem": return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`;
+    case "new_problem": return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`
+      + (researchIdleProblem(value.problems) ? `; ${RESEARCH_IDLE}` : "");
     case "queue_empty": return IDLE_NOW;
     case "orders_changed": return "the strategist's orders changed";
     case "human_hold_started": return "a human took the body; plans stay queued";

@@ -735,7 +735,7 @@ do
   local function reader() return function() return {} end end
   package.loaded["scripts.state"] = { init = function() end }
   package.loaded["scripts.inspect"] = { MAX_TARGETS = 64, PER_TARGET = 40, job = inspect_job(), inspect = reader() }
-  package.loaded["scripts.research"] = { start_research = reader(), progression_status = reader() }
+  package.loaded["scripts.research"] = { start_research = reader(), progression_status = reader(), set_logger = function() end }
   local function job() return { start = function() return {} end, step = reader() } end
   package.loaded["scripts.spatial"] = { observe_job = job(), observe_compact = reader(), can_place = reader(),
     describe_prototype = reader() }

@@ -110,7 +110,14 @@ failure); a package never holds `travel`, which is the pilot's alone. A
 package may start with
 `blueprint_capture` steps, which the bridge makes before queuing the rest.
 The strategist writes no build package before `GO` (every pre-`GO` ledger write has
-`build_packages: []`). A reused package id is rejected by `ledger-apply`. Tool results
+`build_packages: []`). A reused package id is rejected by `ledger-apply`.
+The strategist selects research: the ledger's `research` lists up to seven
+technologies in queue order, and the same bridge queues them once per revision
+that lists any, through the mod's `start_research` with origin
+`ledger/r<revision>`, skipping those already researched or queued. The outcome
+is an `activity_log` row and the `research` record in `package-queue.json`;
+only a ledger older than the last `stop` holds it. `research_finished` and
+idle-lab signals say plainly when no research is running. Tool results
 carry the strategist's orders whenever the ledger revision changes. There are no pilot
 reports, ledger reads by shell, revision checks, or package revalidation. Do not
 add another writer, body, lane, ledger, broker, daemon, or control channel.

@@ -7,7 +7,7 @@ import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../co
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
 import { createOrdersTracker, createPackageQueue, packageFailures, readPackageQueue, type RunDir } from "../coordination/orders.js";
 import { currentRunDir } from "../server/server.js";
-import { eventSummary, nextEventSchema, waitForEvent, type FailureDelivery } from "./events.js";
+import { eventSummary, nextEventSchema, RESEARCH_IDLE, researchIdleProblem, waitForEvent, type FailureDelivery } from "./events.js";
 import { normalizeObservation } from "./observation.js";
 import { areaFields, areaIssue, blockFields, blockIssue, blueprintName, blueprintPlaceFields, blueprintPlaceIssue, captureFields, configureFields, copySettingsFields,
   createPlatformFields, deconstructFields, deconstructIssue, entitySettings, executeRunPlan, exploreFields, INSPECT_LIMIT, insertFields, insertIssue, inventoryRole,
@@ -138,6 +138,9 @@ function factoryStatusSummary(value: any): string {
   for (const line of lines) states[line?.state ?? "unknown"] = (states[line?.state ?? "unknown"] ?? 0) + 1;
   const parts = [`${lines.length} lines${lines.length ? ` (${Object.entries(states).map(([state, count]) => `${count} ${state}`).join(", ")})` : ""}`];
   if (Array.isArray(value?.problems)) parts.push(`${value.problems.length} problems`);
+  // Labs stand still: a research_idle problem, or labs with no current research.
+  const research = value?.research;
+  if (researchIdleProblem(value?.problems) || (research && research.labs?.count > 0 && !research.current)) parts.push(RESEARCH_IDLE);
   if (value?.body) parts.push(`queue ${value.body.queue_depth ?? 0}${value.body.human_control ? ", human hold" : ""}`);
   if (value?.trial) parts.push(`trial ${value.trial.status}, ${value.trial.remaining_seconds} s left`);
   if (Array.isArray(value?.elsewhere) && value.elsewhere.length > 0) parts.push(`${value.elsewhere.length} other surface${value.elsewhere.length === 1 ? "" : "s"} in elsewhere`);
@@ -387,18 +390,21 @@ export function registerMcpTools(
     } catch (error) { return failure(error); }
   });
   const activityLogSchema = z.object({ since_plan_id: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(64).default(16) }).strict();
-  tools.registerTool("activity_log", { description: "What the body did: recent plan outcomes, oldest first, each with source (pilot, upkeep or package:<id>), status and a summary; cancels (with who asked) and blueprint changes; plus the queue status of the strategist's packages.", inputSchema: activityLogSchema }, async (p) => {
+  tools.registerTool("activity_log", { description: "What the body did: recent plan outcomes, oldest first, each with source (pilot, upkeep or package:<id>), status and a summary; cancels (with who asked), blueprint changes and the strategist's ledger research (origin ledger/r<revision>, with what was queued or skipped); plus the queue status of the strategist's packages and of its research.", inputSchema: activityLogSchema }, async (p) => {
     try {
       const value = normalizeActivityLog(await (await bridge()).call("activity_log", activityLogSchema.parse(p)));
       const dir = runDir();
-      const packages = Object.entries((dir ? readPackageQueue(dir)?.packages : undefined) ?? {}).slice(-16)
+      const queue = dir ? readPackageQueue(dir) : null;
+      const packages = Object.entries(queue?.packages ?? {}).slice(-16)
         .map(([package_id, record]) => ({ package_id, ...record }));
       const entries: any[] = value?.entries ?? [];
       // Plan outcomes, and rows of another kind (cancel, blueprint) without a status.
       const last = entries.at(-1);
       const lastText = !last ? "" : last.kind === undefined ? `plan ${last.plan_id} ${last.summary ?? ""}`
-        : last.kind === "cancel" ? `cancel by ${last.origin} (${last.cancelled_count} cancelled)` : `${last.kind} ${last.action ?? ""} ${last.name ?? ""}`;
-      return result({ ...value, ...(packages.length ? { packages } : {}),
+        : last.kind === "cancel" ? `cancel by ${last.origin} (${last.cancelled_count} cancelled)`
+        : last.kind === "research" ? `research by ${last.origin}: ${last.error ?? `queued ${luaArray(last.technologies ?? []).join(", ") || "nothing new"}`}`
+        : `${last.kind} ${last.action ?? ""} ${last.name ?? ""}`;
+      return result({ ...value, ...(packages.length ? { packages } : {}), ...(queue?.research ? { research: queue.research } : {}),
         summary: `${entries.length} row${entries.length === 1 ? "" : "s"}${last ? `; last: ${lastText.trim()}` : ""}` });
     } catch (error) { return failure(error); }
   });

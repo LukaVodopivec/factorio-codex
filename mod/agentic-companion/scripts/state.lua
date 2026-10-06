@@ -47,9 +47,10 @@ function M.init()
     -- The body changed surface and the dispatcher has not applied the
     -- surface cancel rule yet (tasks.on_body_surface_changed): the change.
     surface_changed = tasks.surface_changed,
-    -- Where the body stood as the last pilot or package plan began:
-    -- {surface_index, x, y}, absent before one (idle upkeep serves near it).
-    work_anchor = tasks.work_anchor,
+    -- Where the body stood as recent pilot or package plans began, newest
+    -- first, at most four {surface_index, x, y} (tasks.note_work_site),
+    -- absent before one: idle upkeep serves near them.
+    work_sites = tasks.work_sites,
   }
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}

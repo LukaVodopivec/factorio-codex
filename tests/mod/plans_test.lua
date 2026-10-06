@@ -825,7 +825,7 @@ insert_runner.tick, autonomy_mod.on_body_time = insert_tick, on_body_time
 -- plan; it runs first, the plan it went ahead of never pre-empts it, and it
 -- walks back before that plan starts.
 walk.tick = function(task) body.position = { x = task.target.x, y = task.target.y }; return { status = "done", detail = "walked" } end
-body.position = { x = 0, y = 0 }
+body.position, storage.tasks.work_sites = { x = 0, y = 0 }, nil
 local boundary_rooms, boundary = {}, nil
 tasks.set_boundary_upkeep(function(tick)
   boundary_rooms[#boundary_rooms + 1] = tasks.upkeep_room(true) or "none"
@@ -847,8 +847,43 @@ check(boundary_rooms[1] == "boundary" and boundary_rooms[2] == "boundary" and bo
   and b_record and b_record.plan.status == "completed"
   and storage.tasks.records[boundary.plan_id].plan.finished_tick <= b_record.plan.started_tick,
   "between back-to-back plans the boundary upkeep plan runs first, to its end, and the next plan starts after it")
-check(body.position.x == 12 and storage.tasks.work_anchor and storage.tasks.work_anchor.x == 10,
-  "the next plan starts where the body stood (the walk back) and marks where the last plan began")
+check(body.position.x == 12 and storage.tasks.work_sites and #storage.tasks.work_sites == 1
+  and storage.tasks.work_sites[1].x == 0,
+  "the next plan starts where the body stood (the walk back); plans beginning near one site keep one work site")
+-- Work at a far site keeps the base among the work sites, however many
+-- plans begin there; at most four sites are kept, newest first.
+for i, x in ipairs({ 300, 310, 600, 900, 1200, 1500 }) do
+  tasks.queue_plan({ steps = { { action = "walk_to", x = x, y = 0 } } })
+  for tick = 60020 + i * 10, 60028 + i * 10 do game.tick = tick; tasks.on_tick() end
+  if i == 3 then
+    check(#storage.tasks.work_sites == 2 and storage.tasks.work_sites[1].x == 300 and storage.tasks.work_sites[2].x == 0,
+      "two plans beginning at a far site leave the base a work site")
+  end
+end
+local site_xs = {}
+for _, site in ipairs(storage.tasks.work_sites) do site_xs[#site_xs + 1] = site.x end
+check(table.concat(site_xs, ",") == "1200,900,600,300", "at most four work sites are kept, newest first")
+-- The boundary pass spares every item the plan it goes ahead of names: an
+-- upkeep plan never spends the fuel that plan was built around.
+local boundary_reserved
+tasks.set_boundary_upkeep(function()
+  local _, reserved = tasks.upkeep_room(true)
+  boundary_reserved = reserved
+  return nil
+end)
+game.tick = 60200
+body.force = { recipes = { gear = { products = { { type = "item", name = "gear", amount = 1 } },
+  ingredients = { { type = "item", name = "iron-plate", amount = 2 } } } } }
+local fueling = tasks.queue_plan({ steps = {
+  { action = "insert_items", targets = { { x = 1, y = 1 }, { x = 2, y = 1 } }, per_target = { coal = 20 } },
+  { action = "insert_items", x = 3, y = 1, items = { ["automation-science-pack"] = 5 } },
+  { action = "craft_items", recipe = "gear", crafts = 1 } } })
+game.tick = 60201; tasks.on_tick()
+check(boundary_reserved and boundary_reserved.coal == true and boundary_reserved["automation-science-pack"] == true
+  and boundary_reserved["iron-plate"] == true and boundary_reserved.gear == true,
+  "the boundary pass spares the fuel, packs and craft items of the plan about to start")
+tasks.cancel({ origin = "test/plans", plan_id = fueling.plan_id })
+body.force = nil
 tasks.set_boundary_upkeep(nil)
 walk.tick = walk_tick
 

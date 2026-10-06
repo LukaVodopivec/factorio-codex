@@ -457,28 +457,31 @@ game.tick = game.tick + 100000
 chores.upkeep(game.tick)
 check(queued[#queued].steps[1].x == 12, "a hundred dry machines far away never hide the dry one beside the body")
 
--- While idle, upkeep also serves machines within 96 tiles of where the last
--- pilot or package plan began (tasks' work_anchor, on the body's surface):
--- an idle body at a far site never leaves the base dry. Beside pending work
--- only the body's own 96 tiles count.
+-- While idle, upkeep also serves machines within 96 tiles of the work sites
+-- where recent pilot or package plans began (tasks' work_sites, on the
+-- body's surface): an idle body at a far site never leaves the base dry,
+-- even after several plans began there. Beside pending work only the body's
+-- own 96 tiles count.
 sampled({ [6] = machine(6, 120, "no_fuel") })
-storage.chores.refueled, storage.tasks.work_anchor = {}, { surface_index = 1, x = 110, y = 0 }
+storage.chores.refueled = {}
+storage.tasks.work_sites = { { surface_index = 1, x = 400, y = 0 }, { surface_index = 1, x = 110, y = 0 } }
 game.tick = game.tick + 100000
 local anchor_count = #queued
 room = "busy"
 chores.upkeep(game.tick)
 check(#queued == anchor_count and storage.chores.last_selection.refuel.candidates[1].decision == "too_far",
-  "beside pending work a machine 120 tiles away stays too far, wherever the last plan began")
+  "beside pending work a machine 120 tiles away stays too far, wherever plans began")
 room = "idle"
 chores.upkeep(game.tick)
 check(#queued == anchor_count + 1 and queued[#queued].steps[1].x == 120 and #queued[#queued].steps == 1
-  and storage.chores.last_selection.anchor.x == 110,
-  "an idle body serves a dry machine 120 tiles away near where the last plan began")
-storage.tasks.work_anchor.surface_index = 2
+  and #storage.chores.last_selection.sites == 2 and storage.chores.last_selection.sites[2].x == 110,
+  "an idle body serves a dry machine 120 tiles away near an older work site after later plans began far off")
+storage.tasks.work_sites[2].surface_index = 2
 storage.chores.refueled = {}
 chores.upkeep(game.tick)
-check(#queued == anchor_count + 1, "an anchor on another surface widens nothing")
-storage.tasks.work_anchor = nil
+check(#queued == anchor_count + 1 and #storage.chores.last_selection.sites == 1,
+  "a work site on another surface widens nothing")
+storage.tasks.work_sites = nil
 
 -- The plan-boundary pass (tasks' dispatcher calls it just before a queued
 -- pilot or package plan starts): a machine near the body dry for a minute

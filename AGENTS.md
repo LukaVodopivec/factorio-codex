@@ -139,8 +139,8 @@ and some plan has finished since the last emergency stop (a stop is never
 undone by upkeep; a reconciliation `stop` with `keep_upkeep` leaves it on),
 the mod refuels dry or low-fuel burner machines and brings
 the current research's science packs to labs that accept them, within 96 tiles
-of the body (with the FIFO empty, also of where the last pilot or package plan
-began), from own stock, as a plan with source `upkeep`, on the body's
+of the body (with the FIFO empty, also of the last four sites where pilot or
+package plans began), from own stock, as a plan with source `upkeep`, on the body's
 planet surface only; beside pending work it walks back to where the body
 stood, even when it ends early, never moves what a lending craft makes or
 uses, and uses only carried items of what a parked wait counts. Queued work that
@@ -148,7 +148,8 @@ would take the body takes it at the next step boundary, after that walk back.
 Back-to-back plans leave no such moment, so just before a queued pilot or
 package plan starts, a machine within 96 tiles of the body dry for a minute
 gets one such plan first (at most once in two minutes, never within two
-minutes after an upkeep step), which runs to its end, walk back included.
+minutes after an upkeep step), which never moves an item that plan names and
+runs to its end, walk back included.
 While a stop keeps upkeep off, the fifo block and `next_event`'s `queue_empty`
 say so. Upkeep is the mod's work, not pilot activity.
 
@@ -256,7 +257,8 @@ ledger; a ledger from another run is archival evidence only. Before `GO` on any
 resumed save or after a mod upgrade, reconcile retained work: call `stop`
 with `keep_upkeep: true` once even when idle (packages written before it stay
 held, so no old package moves the body before `GO`; upkeep stays on) and
-re-observe until idle. Every cancel names its
+re-observe until idle. It is the last `stop` before `GO`: repeat it after the
+stop and takeover rehearsals, whose plain `stop` turns upkeep off. Every cancel names its
 `origin` (tool and bridge role) in `activity_log` and the server log.
 
 **Notebook.** Each run has a markdown notebook in `<run_dir>/notebook/`, created

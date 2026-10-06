@@ -184,8 +184,8 @@ replacement.
 - **Upkeep.** While no queued plan would take the body, no hold is active, and some plan has
   finished since the last emergency stop (a stop is never undone by upkeep;
   one with `keep_upkeep` leaves it on),
-  the body, within 96 tiles of it (with the FIFO empty, also of where the last
-  pilot or package plan began), refuels dry or low burner machines (with any fuel of the machine's fuel
+  the body, within 96 tiles of it (with the FIFO empty, also of the last four
+  sites where pilot or package plans began), refuels dry or low burner machines (with any fuel of the machine's fuel
   category, such as nutrients for a biochamber) and brings the current
   research's science packs to labs that accept them and have room, from own
   stock, as a plan with source `upkeep`; any queued plan takes the body at the
@@ -194,7 +194,8 @@ replacement.
   shows a `research_idle` problem. Upkeep works only on the body's planet
   surface, never aboard or in transit. Just before a queued plan starts, a
   machine within 96 tiles of the body dry for a minute gets one upkeep plan
-  first (at most once in two minutes), so back-to-back plans never starve it.
+  first (at most once in two minutes), which moves no item that plan names, so
+  back-to-back plans never starve it.
 - **Several surfaces.** Lines, stock, flows and problems are kept per surface.
   `factory_status` details the body's surface (or the one named in `surface`)
   and summarises every other one with buildings in `elsewhere`, so the Nauvis

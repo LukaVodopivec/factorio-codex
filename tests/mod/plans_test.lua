@@ -25,7 +25,15 @@ package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extrac
   flush_action = { runner = runner("flush_fluid"), make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = runner("build_plan")
 local inspected = 0
-package.loaded["scripts.inspect"] = { MAX_TARGETS = 64, inspect = function() inspected = inspected + 1; return { entities = { { inventories = { output = { ["iron-plate"] = inspected >= 2 and 1 or 0 } } } } } end }
+package.loaded["scripts.inspect"] = { MAX_TARGETS = 64, inspect = function(params)
+  inspected = inspected + 1
+  -- As an uncharted or foreign target beyond 30 tiles: the read is refused.
+  local t = params.targets[1]
+  if (body.position.x - t.x) ^ 2 + (body.position.y - t.y) ^ 2 > 900 then
+    return { entities = { { error = "inspect positions must be within 30 tiles of Codex, or on an own-force entity in a charted chunk" } } }
+  end
+  return { entities = { { inventories = { output = { ["iron-plate"] = inspected >= 2 and 1 or 0 } } } } }
+end }
 _G.game, _G.defines = { tick = 0 }, { shooting = { not_shooting = 0 } }
 _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
 local tasks = require("scripts.tasks")
@@ -140,9 +148,10 @@ inspected, body.position = 0, { x = 100, y = 100 }
 local remote = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2, inventory = "output", item = "iron-plate", count = 1, timeout_seconds = 2 } } })
 game.tick = 45; tasks.on_tick()
 local remote_status = tasks.plan_status({ plan_id = remote.plan_id })
-check(inspected == 0 and remote_status.status == "failed"
-  and remote_status.outcomes[1].error:match("TARGET_OUT_OF_OBSERVATION_RANGE"),
-  "out-of-range wait rejects immediately without hidden remote inspection")
+check(inspected == 1 and remote_status.status == "failed"
+  and remote_status.outcomes[1].error:match("TARGET_OUT_OF_OBSERVATION_RANGE")
+  and remote_status.outcomes[1].recovery == nil,
+  "an out-of-range wait whose target is not readable from afar fails at once and never walks")
 check(remote_status.execution.incomplete_step.step == 1
   and remote_status.execution.incomplete_step.status == "failed"
   and remote_status.execution.incomplete_step.effects == "unknown",

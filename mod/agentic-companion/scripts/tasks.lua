@@ -3,6 +3,7 @@
 local companion = require("scripts.companion")
 local items = require("scripts.items")
 local inspect = require("scripts.inspect")
+local surfaces = require("scripts.surfaces")
 local walk = require("scripts.actions.walk")
 local mine = require("scripts.actions.mine")
 local pickup = require("scripts.actions.pickup")
@@ -780,22 +781,34 @@ local function wait_for_item(plan, step)
   -- The condition is read before the deadline is applied: a wait whose items
   -- are present never times out on stale evidence.
   local timed_out = game.tick - plan.wait_started_tick >= wait_timeout_ticks(step)
+  -- The read is inspect_entity's: within 30 tiles of the body, or beyond
+  -- them an own-force entity the force has charted (a parked wait the body
+  -- left for other work keeps reading its machine from afar).
+  local response = inspect.inspect({ targets = { { x = step.x, y = step.y } } })
+  local entity = response.entities and response.entities[1]
   local c = companion.require_companion()
   local dx, dy = c.position.x - step.x, c.position.y - step.y
-  if dx * dx + dy * dy > 900 and timed_out then
-    plan.wait_started_tick, plan.next_check_tick = nil, nil
-    return { status = "failed", detail = wait_timeout_detail(step) }
-  end
-  if dx * dx + dy * dy > 900 then
+  if (not entity or entity.error) and dx * dx + dy * dy > 900 then
+    if timed_out then
+      plan.wait_started_tick, plan.next_check_tick = nil, nil
+      return { status = "failed", detail = wait_timeout_detail(step) }
+    end
     local distance = math.sqrt(dx * dx + dy * dy)
     plan.wait_started_tick, plan.next_check_tick = nil, nil
+    -- A target read before lies in charted land, which stays charted: the
+    -- refusal there means no own machine is left at it, which walking back
+    -- cannot fix.
+    if step._starting_count ~= nil and surfaces.charted(c.force, c.surface, math.floor(step.x / 32), math.floor(step.y / 32)) then
+      return { status = "failed",
+        detail = string.format("WAIT_TARGET_GONE: no own machine is left at (%.1f, %.1f), %.1f tiles away", step.x, step.y, distance),
+        outcome = { code = "WAIT_TARGET_GONE", distance = distance,
+          corrective_hint = "The machine was removed or replaced: inspect the spot before waiting on it again." } }
+    end
     return { status = "failed",
-      detail = string.format("TARGET_OUT_OF_OBSERVATION_RANGE: wait target is %.1f tiles away; maximum is 30", distance),
+      detail = string.format("TARGET_OUT_OF_OBSERVATION_RANGE: wait target is %.1f tiles away and not readable from here; maximum is 30", distance),
       outcome = { code = "TARGET_OUT_OF_OBSERVATION_RANGE", distance = distance,
         max_distance = 30, corrective_hint = "Physically approach with walk_to, or put this wait after a movement predecessor." } }
   end
-  local response = inspect.inspect({ targets = { { x = step.x, y = step.y } } })
-  local entity = response.entities and response.entities[1]
   if not entity or entity.error then return { status = "failed", detail = entity and entity.error or "inspect returned no entity" } end
   local found = entity.inventories and entity.inventories[step.inventory] and entity.inventories[step.inventory][step.item] or 0
   if step._starting_count == nil then step._starting_count = found end

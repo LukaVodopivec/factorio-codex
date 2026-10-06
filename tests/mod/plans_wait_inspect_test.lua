@@ -12,14 +12,18 @@ local entity = { valid = true, name = "stone-furnace", type = "furnace", directi
   get_inventory = function(index) return index == 2 and output_inventory or empty_inventory end,
   get_output_inventory = function() return output_inventory end,
   get_recipe = function() return nil end, get_fluid_contents = function() return {} end }
+local present = true
 local surface = { find_entities_filtered = function(filter)
   inspect_calls = inspect_calls + 1
   check(filter.position.x == 2 and filter.position.y == 2,
     "wait_for_item passes its exact position through real batch inspection")
-  return { entity }
+  return present and { entity } or {}
 end }
 local technology = { name = "automation", researched = false }
-local force = { technologies = { automation = technology }, current_research = technology, research_queue = {} }
+local charted = true
+local force = { technologies = { automation = technology }, current_research = technology, research_queue = {},
+  is_chunk_charted = function() return charted end }
+entity.force = force
 local body = { valid = true, position = { x = 0, y = 0 }, surface = surface, force = force,
   walking_state = {}, mining_state = {}, crafting_queue = {} }
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
@@ -203,4 +207,43 @@ local most_ok = pcall(tasks.queue_plan, { steps = { { action = "inspect_entities
 local over_ok, over_err = pcall(tasks.queue_plan, { steps = { { action = "inspect_entities", positions = positions(65) } } })
 check(most_ok and not over_ok and tostring(over_err):find("requires 1-64 positions", 1, true),
   "an inspect_entities step takes 1-64 positions")
+-- A parked wait resumes after another plan took the body more than 30 tiles
+-- away. Its own charted machine is read from afar, as inspect_entity reads
+-- it; the body is not walked back.
+storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+body.position, body.walking_state, output_count, physical_starts, charted = { x = 0, y = 0 }, {}, 0, 0, true
+local away = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2,
+  inventory = "output", item = "iron-plate", count = 2, timeout_seconds = 60 } } })
+game.tick = 2000; tasks.on_tick()
+check(tasks.plan_status({ plan_id = away.plan_id }).status == "waiting", "the wait parks after reading its target nearby")
+body.position, output_count = { x = 200, y = 200 }, 2
+game.tick = 2030; tasks.on_tick()
+local away_status = tasks.plan_status({ plan_id = away.plan_id })
+check(away_status.status == "completed" and away_status.outcomes[1].result:match("output has 2 iron%-plate") ~= nil
+  and physical_starts == 0,
+  "a resumed wait 200 tiles from its charted machine reads it remotely and completes without walking")
+
+-- The machine is removed while the body is away: its charted spot holds no
+-- own machine, so the resumed wait fails at once as gone and never walks.
+local function resume_away(chart)
+  storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+  body.position, body.walking_state, output_count, physical_starts, charted = { x = 0, y = 0 }, {}, 0, 0, true
+  local plan = tasks.queue_plan({ steps = { { action = "wait_for_item", x = 2, y = 2,
+    inventory = "output", item = "iron-plate", count = 2, timeout_seconds = 60 } } })
+  game.tick = game.tick + 1000; tasks.on_tick()
+  body.position, charted, present = { x = 200, y = 200 }, chart, false
+  game.tick = game.tick + 30; tasks.on_tick()
+  present = true
+  return tasks.plan_status({ plan_id = plan.plan_id })
+end
+local gone = resume_away(true)
+check(gone.status == "failed" and gone.outcomes[1].error:match("^WAIT_TARGET_GONE") ~= nil
+  and gone.outcomes[1].recovery == nil and physical_starts == 0 and #storage.tasks.queue == 0,
+  "a resumed wait whose charted machine was removed fails as gone without walking back")
+-- An uncharted spot reveals nothing: the old physical-distance failure, no walk.
+local uncharted = resume_away(false)
+check(uncharted.status == "failed" and uncharted.outcomes[1].error:match("^TARGET_OUT_OF_OBSERVATION_RANGE") ~= nil
+  and uncharted.outcomes[1].recovery == nil and physical_starts == 0,
+  "a resumed wait whose target is uncharted fails with the distance correction and never walks")
+charted = true
 os.exit(failures == 0 and 0 or 1)

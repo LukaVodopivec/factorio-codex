@@ -11,6 +11,8 @@ const skill = read(".agents/skills/factorio-player/SKILL.md");
 const pilot = read(".agents/skills/factorio-player/GOAL-PILOT-v1.md");
 const strategist = read(".agents/skills/factorio-player/GOAL-STRATEGIST-v1.md");
 const knowledge = read(".agents/skills/factorio-player/PLAYER-KNOWLEDGE-v1.md");
+const reference = read(".agents/skills/factorio-player/FACTORIO-REFERENCE.md");
+const benchmark = read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md");
 const agents = flat(read("AGENTS.md"));
 const live = flat(read("docs/LIVE-VALIDATION.md"));
 const readme = flat(read("README.md"));
@@ -119,10 +121,23 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/Queue multi-step, goal-level work[\s\S]*?Never queue single-step or walk-only plans/);
     expect(flat(skill)).toMatch(/These actions walk to their own targets: never queue a `walk_to` before them\. `wait_for_item` does not walk and observes only within 30 tiles/);
     expect(flat(pilot)).toMatch(/Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet/);
-    expect(pilot).toMatch(/Never hand-craft science to push research; machines make it/);
-    expect(strategist).toMatch(/Never plan hand-crafted science\./);
+    expect(pilot).toMatch(/Hand-craft only the science that unlocks assemblers\./);
+    expect(strategist).toMatch(/Hand-craft only the science that unlocks assemblers\./);
     expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);
     for (const action of ["get_items", "build_layout", "build_block"]) expect(skill).toContain(`\`${action}\``);
+  });
+
+  it("lets every role, benchmark roles included, know that Automation needs hand-crafted science that never scores", () => {
+    const roleFiles = [skill, pilot, strategist, knowledge, reference, benchmark].map(flat);
+    for (const text of roleFiles) expect(text).not.toMatch(/never (?:hand-craft|plan hand-crafted) science/i);
+    const benchmarkGoal = flat(benchmark);
+    expect(benchmarkGoal).toMatch(/A hand-crafted item or pack never scores itself; only what machines make and labs consume counts\. Yet Automation, the research that unlocks assemblers, can only use hand-crafted packs: hand-craft just those few, early\./);
+    expect(flat(reference)).toMatch(/Assemblers are locked until the Automation research completes, and its packs exist before any assembler can make them: those few packs are hand-crafted\. They do not score/);
+  });
+
+  it("tells the benchmark strategist to keep a package queued ahead of the pilot", () => {
+    const strategistDuties = flat(benchmark).match(/Strategist \(multi-agent only\):[^\n]*?(?= Advisors \()/)?.[0] ?? "";
+    expect(strategistDuties).toMatch(/Keep a package queued ahead of the pilot so the body never waits for a design\./);
   });
 
   it("teaches the 0.21.1 building tools in plain words", () => {
@@ -163,7 +178,7 @@ describe("persistent two-brain coordination contract", () => {
   it("keeps the opening, automation-first, and power hints", () => {
     const flatKnowledge = flat(knowledge);
     expect(flatKnowledge).toMatch(/Automate iron and coal together in the first ten minutes: the first iron drill and furnace come before a second coal drill\. Never open fuel-first/);
-    expect(flat(strategist)).toMatch(/Judge progress by what machines make and by research on machine-made science, not by ore piled up/);
+    expect(flat(strategist)).toMatch(/Judge progress by what machines make and by research on machine-made science, not by ore piles/);
     expect(flatKnowledge).toMatch(/Ore or plates piling up in chests should feed more machines .* a pile is not progress/);
     expect(flat(strategist)).toMatch(/This is a principle, not a build or technology order/);
     expect(flat(strategist)).toMatch(/power shows satisfaction below 100% or production at capacity, more generation is NOW/);

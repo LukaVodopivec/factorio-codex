@@ -19,7 +19,7 @@ Say in a sentence or two what you see and what you will do before you act.
 - Pass `after_plan_id` only when a plan needs the earlier plan's effects; a chained plan is cancelled when its predecessor fails.
 - Before the first package arrives, build the opening yourself near your `GO` position, following NOW and the opening hint.
 - Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet.
-- Never hand-craft science to push research; machines make it.
+- Hand-craft only the science that unlocks assemblers.
 
 **Other planets.** Travel is yours alone. When NOW needs another planet, route a platform there with `set_platform_route`, then queue `travel` up to it, `travel` down to the planet, and that planet's first work in one plan; while aboard, use direct remote tools only.
 

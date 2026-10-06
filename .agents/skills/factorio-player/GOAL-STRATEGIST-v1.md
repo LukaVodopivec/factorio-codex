@@ -10,7 +10,7 @@
 
 **Priorities.** Keep `NOW` (the current capacity outcome), `NEXT` (the bottleneck after it), and `LATER` (the next major phase) in the ledger. Each has only `objective`, `strategic_reason`, `completion_condition`, and `essential_prerequisite`; the `essential_prerequisite` is one outcome sentence (at most 160 characters). They stay coordinate-free; coordinates appear only inside build packages.
 
-**Automation first.** Judge progress by what machines make and by research on machine-made science, not by ore piled up. Extraction, smelting and fuel or power grow ahead of the machines they feed. Never plan hand-crafted science. This is a principle, not a build or technology order. When `factory_status` power shows satisfaction below 100% or production at capacity, more generation is NOW before any other expansion.
+**Automation first.** Judge progress by what machines make and by research on machine-made science, not by ore piles. Extraction, smelting and fuel or power grow ahead of what they feed. Hand-craft only the science that unlocks assemblers. This is a principle, not a build or technology order. When `factory_status` power shows satisfaction below 100% or production at capacity, more generation is NOW before any other expansion.
 
 **Build packages.** You choose what, where, and how many.
 - Size packages as whole blocks: `build_block`, `build_layout`, or `blueprint_place` steps, never single placements (all listed packages together at most 8 KB; drop a package from the list once `activity_log` shows it queued).

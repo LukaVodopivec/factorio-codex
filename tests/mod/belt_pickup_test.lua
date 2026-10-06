@@ -439,4 +439,21 @@ belts = {}
 local none_ok, none_error = pcall(pickup.start, { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 1 })
 check(not none_ok and tostring(none_error):match("gone or changed"), "no ground stack and no belt at the position is refused")
 
+-- A belt that keeps carrying the body out of reach: re-approaching is no
+-- progress, so with nothing more coming along the pickup stops.
+local drifting = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 1 })
+reset(drifting)
+approach_result = "ok"
+local drift_task = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 3 }
+pickup.start(drift_task)
+local drift_result, drift_ticks = nil, 0
+for _ = 1, 3000 do
+  drift_result = pickup.tick(drift_task)
+  if drift_result then break end
+  step_world()
+  drift_ticks = drift_ticks + 1
+  body.position = { x = 20, y = 0.5 }
+end
+check(drift_result and drift_result.status == "failed" and drift_task._picked == 1 and drift_ticks < 600,
+  "a body the belt keeps carrying away stops once nothing more comes along (" .. drift_ticks .. " ticks)")
 os.exit(failures == 0 and 0 or 1)

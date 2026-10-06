@@ -120,7 +120,7 @@ end
 -- stack was already taken, with exactly its count gained, is left to finish.
 function M.resume(task)
   if task._belt then
-    task._picking_started, task._wait_tick = false, game.tick
+    task._picking_started, task._wait_tick, task._progress_tick = false, game.tick, nil
     return
   end
   if task._picking_started and not stack_snapshot(task._entity) then
@@ -178,7 +178,7 @@ local function other_lane(task)
   local other = 3 - task._lane
   if task._lane_retried or lane_count(task._belt, other, task.item) < 1 then return false end
   task._lane_retried = { lane = task._lane }
-  task._lane, task._picking_started, task._approach = other, false, nil
+  task._lane, task._picking_started, task._approach, task._progress_tick = other, false, nil, nil
   return true
 end
 
@@ -193,7 +193,8 @@ local function belt_tick(task, c)
   -- also while still approaching or while standing on a belt in a dense area.
   if not task._picking_started and within(c.position, belt.position, distance) then
     task._lane = task._lane or (lane_count(belt, 1, task.item) >= lane_count(belt, 2, task.item) and 1 or 2)
-    task._picking_started, task._progress_tick = true, game.tick
+    -- Re-approaching (a belt can carry the body out of reach) is no progress.
+    task._picking_started, task._progress_tick = true, task._progress_tick or game.tick
   end
   if not task._picking_started then
     if inventory.get_insertable_count(task.item) < task.count - task._picked then
@@ -226,7 +227,8 @@ local function belt_tick(task, c)
       return belt_stopped(c, task, string.format("%s; the %s carries no %s on this tile - try another plain belt tile of the run",
         blocked, lane_label(belt, 3 - task._lane), task.item))
     end
-    task._picking_started, task._progress_tick = true, game.tick
+    -- Re-approaching (a belt can carry the body out of reach) is no progress.
+    task._picking_started, task._progress_tick = true, task._progress_tick or game.tick
   end
 
   -- Acting needs reach, measured before anything is removed: the belt's centre

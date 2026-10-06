@@ -404,20 +404,78 @@ record = storage.tasks.records[direct]
 check(record ~= nil and record.status == "failed" and record.outcome.code == "STEP_STALLED"
   and record.detail:match("^STEP_STALLED: test_stuck"), "a direct task that stalls fails with STEP_STALLED")
 
--- A hand-crafting queue that advances is progress: the step is not stalled.
+-- A hand-crafting queue that advances is progress for a step that waits on
+-- it: the step is not stalled.
+local craft = require("scripts.actions.craft")
+body.force.recipes = {
+  ["iron-gear-wheel"] = { products = { { type = "item", name = "iron-gear-wheel", amount = 1 } } },
+  ["transport-belt"] = { products = { { type = "item", name = "transport-belt", amount = 2 } } },
+}
+tasks.register_action("test_craft_wait", { runner = { start = function() end,
+  tick = function() if craft.awaits(body, "iron-gear-wheel", 1) then return nil end end },
+  make_task = function() return {} end })
 reset(0.5, -0.5)
-plan = tasks.queue_plan({ steps = { { action = "test_stuck" } } }).plan_id
-body.crafting_queue_size = 1
+plan = tasks.queue_plan({ steps = { { action = "test_craft_wait" } } }).plan_id
+body.crafting_queue, body.crafting_queue_size = { { recipe = "iron-gear-wheel", count = 1 } }, 1
 for _ = 1, 7200 do
   body.crafting_queue_progress = (body.crafting_queue_progress + 0.01) % 1
   tick()
 end
 check(storage.tasks.active and storage.tasks.active.id == plan and not storage.tasks.records[plan],
   "a step waiting on a crafting queue that advances is never stalled")
-body.crafting_queue_size, body.crafting_queue_progress = 0, 0
+body.crafting_queue_progress = 0
 record, took = run(plan, 5000)
 check(record ~= nil and last_outcome(record).result.code == "STEP_STALLED" and took >= 3600 and took <= 3720,
   "once the crafting queue stands still the 60 seconds start")
+
+-- Background crafts are not the progress of a step that waits on something
+-- else: a queue that advances and drops belts into the inventory every half
+-- second, its entries draining one by one, still lets the step stall.
+reset(0.5, -0.5)
+plan = tasks.queue_plan({ steps = { { action = "test_stuck" } } }).plan_id
+body.crafting_queue = { { recipe = "iron-gear-wheel", count = 10, prerequisite = true },
+  { recipe = "transport-belt", count = 40 }, { recipe = "iron-gear-wheel", count = 30 } }
+body.crafting_queue_size = 3
+for i = 1, 3800 do
+  body.crafting_queue_progress = (body.crafting_queue_progress + 0.01) % 1
+  if i % 30 == 0 then inventory["transport-belt"] = (inventory["transport-belt"] or 0) + 2 end
+  if i == 1000 or i == 2000 then table.remove(body.crafting_queue, 1); body.crafting_queue_size = #body.crafting_queue end
+  if i == 3000 then inventory["iron-gear-wheel"] = 30 end
+  tick()
+  if storage.tasks.records[plan] then break end
+end
+record = storage.tasks.records[plan]
+check(record ~= nil and last_outcome(record).result.code == "STEP_STALLED" and game.tick <= 3720,
+  "background hand-crafting never keeps a step that waits on something else from stalling")
+body.crafting_queue, body.crafting_queue_size, body.crafting_queue_progress = {}, 0, 0
+
+-- A real craft_items step with wait_for_completion polls its own queue: a
+-- queue longer than 60 seconds that advances and hands over its products is
+-- that step's progress.
+body.force.recipes["electronic-circuit"] = { name = "electronic-circuit", enabled = true,
+  ingredients = { { type = "item", name = "copper-cable", amount = 3 } },
+  products = { { type = "item", name = "electronic-circuit", amount = 1 } } }
+body.begin_crafting = function(args)
+  body.crafting_queue, body.crafting_queue_size = { { recipe = args.recipe, count = args.count } }, 1
+  return args.count
+end
+reset(0.5, -0.5)
+plan = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "electronic-circuit", crafts = 100,
+  wait_for_completion = true } } }).plan_id
+for i = 1, 7500 do
+  if body.crafting_queue_size > 0 then
+    body.crafting_queue_progress = (body.crafting_queue_progress + 0.01) % 1
+    if i % 75 == 0 then inventory["electronic-circuit"] = (inventory["electronic-circuit"] or 0) + 1 end
+  end
+  tick()
+end
+check(storage.tasks.active and storage.tasks.active.id == plan and not storage.tasks.records[plan],
+  "a craft step waiting on its own long crafting queue is never stalled")
+body.crafting_queue, body.crafting_queue_size, body.crafting_queue_progress = {}, 0, 0
+inventory["electronic-circuit"] = 100
+record = run(plan, 100)
+check(record ~= nil and record.status == "completed", "the waiting craft step ends once its queue empties")
+body.begin_crafting, body.force.recipes["electronic-circuit"] = nil, nil
 
 -- Inventory change and movement are progress.
 reset(0.5, -0.5)

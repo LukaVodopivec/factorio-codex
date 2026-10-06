@@ -163,8 +163,9 @@ replacement.
   as `SUPPLY_SHORTFALL` with each missing item and why; what exists is
   carried, and own lines that make a missing item add their `rate_per_min`
   and `expected_minutes` for the rest. `build_layout` and `build_block`
-  fetch their whole bill in one supply before the first placement, and
-  fail `LAYOUT_CHECK_FAILED` with nothing placed when an item cannot be had.
+  fetch their whole bill in one supply before the first placement (a layout
+  fetches what the inventory has no room for at its step), and fail
+  `LAYOUT_CHECK_FAILED` with nothing placed when an item cannot be had.
 - **Auto-clear.** Placement mines trees and rocks in the footprint first.
 - **Power model.** Each `factory_status` power row splits production by
   source (steam, solar, burner, nuclear), adds accumulator charge,

@@ -960,6 +960,55 @@ for _, need in ipairs(supplied[1] and supplied[1].needs or {}) do wanted[need.na
 check(result and result.status == "done" and #created == 2 and #supplied == 1 and supplied[1].placed == 0
   and wanted["burner-mining-drill"] == 1 and wanted["stone-furnace"] == 1,
   "a layout's drill and furnace are fetched in one supply before the first placement, and both are placed")
+-- A layout whose whole bill does not fit in the inventory at once (two free
+-- slots, three kinds of item) carries what fits and fetches the rest at its
+-- step, once placements have freed room; a block fails with nothing placed.
+local SLOTS = 2
+local function free_slots()
+  local used = 0
+  for name, count in pairs(inventory) do
+    if count > 0 then used = used + math.ceil(count / (items[name] and items[name].stack_size or 50)) end
+  end
+  return SLOTS - used
+end
+local real_main_inventory = character.get_main_inventory
+character.get_main_inventory = function()
+  return { get_insertable_count = function(name)
+    local stack = items[name] and items[name].stack_size or 50
+    local count = inventory[name] or 0
+    local partial = count > 0 and (stack - (count - 1) % stack - 1) or 0
+    return math.max(0, free_slots()) * stack + partial
+  end }
+end
+local crafts = {}
+supply.register_runner("craft", { start = function() end, tick = function(task)
+  crafts[#crafts + 1] = { recipe = task.recipe, placed = #created }
+  inventory[task.recipe] = (inventory[task.recipe] or 0) + task.count
+  return { status = "done", detail = "crafted" }
+end })
+local function tight_run(task, action, carried)
+  inventory, created, crafts = carried or {}, {}, {}
+  action.runner.start(task)
+  for _ = 1, 120 do
+    local out = action.runner.tick(task)
+    if out then return out end
+  end
+end
+local tight = { id = 20, anchor = { x = 150, y = 150 }, entities = {
+  { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "iron-chest", dx = 2.5, dy = 0.5 },
+  { name = "transport-belt", dx = 4.5, dy = 0.5, direction = 4 } } }
+result = tight_run(tight, layout.layout_action)
+local belt_crafted_at
+for _, row in ipairs(crafts) do if row.recipe == "transport-belt" then belt_crafted_at = row.placed end end
+check(result and result.status == "done" and #created == 3 and belt_crafted_at == 2 and free_slots() == SLOTS,
+  "a layout whose whole bill does not fit fetches the rest at its step and places everything")
+local tight_block = { id = 21, block = "mining", count = 1, resource = "iron-ore", near = { x = 50.5, y = 50.5 } }
+result = tight_run(tight_block, layout.block_action, { ["burner-mining-drill"] = 1, coal = 10 })
+check(result and result.status == "failed" and #created == 0 and #crafts == 0
+  and result.detail:match("placed nothing: SUPPLY_SHORTFALL.*my inventory is full"),
+  "a block whose bill does not fit in the inventory places nothing")
+supply.register_runner("craft", require("scripts.actions.craft"))
+character.get_main_inventory = real_main_inventory
 -- A block whose outlet cannot be placed stops there: its drill is never placed.
 inventory = { ["burner-mining-drill"] = 1, ["wooden-chest"] = 1, coal = 10 }
 created = {}

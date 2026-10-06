@@ -9,7 +9,9 @@
 -- waiting for first output to expose Factorio's authoritative runtime target.
 -- Auto-supply (default on) fetches what the rest of the plan needs of a
 -- step's items in one trip (supply_all: the whole plan's bill in one supply
--- before the first placement); trees and rocks in a footprint are mined first.
+-- before the first placement; with steps_when_full, a bill the inventory has
+-- no room for is fetched step by step instead); trees and rocks in a
+-- footprint are mined first.
 -- Bounded recoveries, once per step: walk out of a footprint the body
 -- overlaps, re-approach a placed entity out of reach, retry a partial
 -- starter insert after a second. Placement is idempotent: the same entity
@@ -570,7 +572,11 @@ function M.tick(task)
     if needs == nil or #needs > 0 then
       local result = supply.ensure(task, needs)
       if not result then return nil end
-      if result.status ~= "done" then
+      local full = false
+      for _, row in ipairs(result.outcome and result.outcome.shortfall or {}) do full = full or row.inventory_full == true end
+      -- The whole bill does not fit at once: what fits is carried, and the
+      -- rest is fetched at its step, once placements have freed room.
+      if result.status ~= "done" and not (full and task.steps_when_full) then
         for _, row in ipairs(result.outcome and result.outcome.missing or {}) do task._short[row.item] = result.detail end
         task._supplied_all = true
         return failure(task, "placed nothing: " .. tostring(result.detail))

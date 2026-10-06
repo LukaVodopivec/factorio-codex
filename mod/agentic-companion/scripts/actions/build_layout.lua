@@ -13,7 +13,8 @@
 -- naming each item the body neither carries nor can obtain now; a hand
 -- build checks the same before fetching anything (LAYOUT_CHECK_FAILED, nothing
 -- placed) and carries its whole bill before the first placement. A block is
--- all or nothing; a layout places the rest past a failed placement.
+-- all or nothing; a layout places the rest past a failed placement and
+-- fetches at each step what the inventory had no room for.
 -- An entity or recipe whose surface conditions the surface breaks fails
 -- SURFACE_CONDITION before any site is searched. build_block expands a parametric block
 -- (scripts/blocks.lua) into a layout and may turn it to fit the site.
@@ -1705,11 +1706,14 @@ local function search(task, c, budget)
   -- between the items made of it, where fetching step by step lets early
   -- placements spend what later ones are made of. A block also fuels its
   -- burner machines and is all or nothing: the first failed placement stops
-  -- it (outlets come before the drills that fill them); a layout places the rest.
+  -- it (outlets come before the drills that fill them), and a bill the
+  -- inventory has no room for fails it. A layout places the rest, and fetches
+  -- what did not fit at its step, as placements free room.
   if task.block then build_plan.fuel_burners(c, steps) end
   task._check_failed = unobtainable(c, steps)
   if task._check_failed then return end
-  task._plan = { id = task.id, steps = steps, stop_on_error = task.block ~= nil, supply_all = true }
+  task._plan = { id = task.id, steps = steps, stop_on_error = task.block ~= nil, supply_all = true,
+    steps_when_full = task.block == nil }
   build_plan.start(task._plan)
 end
 

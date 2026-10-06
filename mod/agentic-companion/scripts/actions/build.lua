@@ -329,20 +329,22 @@ function M.place.start(task)
     and craft.queued(c, task.item) == 0 then
     error("I don't have any " .. task.item .. " in my inventory — craft or collect one first")
   end
+  -- Targets are checked for reach after the approach walk (in tick), so a
+  -- place begun far from its position is not refused before it walks there.
   if task.input_target ~= nil then
     if result.type ~= "inserter" then error(task.item .. " has no deterministic input target") end
-    task._input_target = output_targets.resolve(c, task.input_target, "place input_target", "input")
+    task._input_target = output_targets.resolve(c, task.input_target, "place input_target", "input", true)
     local matches, endpoint = output_targets.input_geometry_matches(c, result, task.position, task.direction,
-      task._input_target.entity)
+      task._input_target.entity, true)
     if not matches then
       error(string.format("place input_target is not at the exact provisional input endpoint%s",
         endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))
     end
   end
   if task.output_target ~= nil then
-    task._output_target = output_targets.resolve(c, task.output_target, "place output_target")
+    task._output_target = output_targets.resolve(c, task.output_target, "place output_target", nil, true)
     local matches, endpoint = output_targets.geometry_matches(c, result, task.position, task.direction,
-      task._output_target.entity)
+      task._output_target.entity, true)
     if not matches then
       error(string.format("place output_target is not at the exact provisional output endpoint%s",
         endpoint and string.format(" (%.1f, %.1f)", endpoint.x, endpoint.y) or ""))

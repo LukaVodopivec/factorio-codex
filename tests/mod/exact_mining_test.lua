@@ -119,8 +119,10 @@ _G.game = { tick = 100 }
 local mine = require("scripts.actions.mine")
 local mining_progress = 0
 local engine_gain = 2
+local engine_stalled = false
 local function advance_game_tick()
   game.tick = game.tick + 1
+  if engine_stalled then return end
   -- Model Factorio's physical entity-mining contract: time advances only while
   -- mining_state points at the selected exact entity. The engine, not the
   -- action, changes resource amount and inventory, including productivity.
@@ -222,7 +224,7 @@ check(completed and completed.status == "done" and repeated._completed == 3 and 
   "count mines repeated physical cycles on the same initially resolved resource")
 check(completed and completed.detail:match("requested 3 cycles, completed 3, actual gain 6 items") ~= nil,
   "repeated mining reports productivity-aware actual inventory gain")
-check(capacity_checks == 3, "complete product capacity is rechecked before every physical cycle")
+check(capacity_checks == 9, "complete product capacity is rechecked before every physical cycle and on each tick of it")
 check(body.selected == exact and adjacent.amount == 100, "repeated mining never switches to an adjacent resource")
 check(body.mining_state.mining == false and scripted_mine_calls == 0,
   "repeated mining stops immediately and never calls scripted LuaEntity.mine")
@@ -243,6 +245,36 @@ local exhausted = run(exhaustion_task, 10)
 check(exhausted and exhausted.status == "failed" and exhausted.detail:match("completed 1, actual gain 2 items") ~= nil
   and exhausted.detail:match("exhausted") ~= nil,
   "partial resource exhaustion fails honestly without choosing a replacement")
+
+-- A cycle the engine never finishes (the amount never drops) ends at a
+-- deadline from the target's mining time and the body's mining speed instead
+-- of re-asserting mining until the watchdog.
+reset_resource(100)
+configure_capacity(6)
+body.prototype = { mining_speed = 0.5 }
+engine_stalled = true
+local stalled_task = { target = { x = 0, y = 0 }, count = 50 }; mine.start(stalled_task)
+local stalled_start = game.tick
+local stalled = run(stalled_task, 600)
+check(stalled and stalled.status == "failed" and stalled.detail:match("MINING_STALLED") ~= nil
+  and stalled.detail:match("completed 0, actual gain 0 items") ~= nil and not body.mining_state.mining,
+  "a mining cycle the engine never finishes fails as MINING_STALLED")
+check(stalled and game.tick - stalled_start > 3 * 120 + 60 and game.tick - stalled_start < 3 * 120 + 70,
+  "the stall deadline is three mining times at the body's mining speed plus a second")
+engine_stalled = false
+
+-- Finished hand-crafts can fill the last slots in the middle of a natural
+-- cycle: the engine then holds it, so the action stops at once.
+reset_resource(100)
+configure_capacity(4)
+local filled_task = { target = { x = 0, y = 0 }, count = 3 }; mine.start(filled_task)
+check(mine.tick(filled_task) == nil and body.mining_state.mining, "natural mining starts with room for its products")
+engine_insert("stone", 4)
+local filled = mine.tick(filled_task)
+check(filled and filled.status == "failed" and filled.detail:match("inventory is full") ~= nil
+  and not body.mining_state.mining and exact.amount == 100,
+  "natural mining stops when the inventory fills during a cycle")
+body.prototype = nil
 
 tree.valid = true
 local invalid_count = pcall(mine.start, { target = { x = 0, y = 0 }, count = 201 })

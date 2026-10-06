@@ -364,6 +364,18 @@ function M.resume(task)
   task._mining_started = false
 end
 
+-- Ticks one physical cycle may take before the mod calls it stalled: three
+-- times the target's mining time at the character's base mining speed (bonuses
+-- only make it faster), plus a second. The engine holds a cycle it cannot
+-- finish without saying so; nothing else ends that wait.
+local function cycle_ticks(c, e)
+  local ok_time, mining_time = pcall(function() return e.prototype.mineable_properties.mining_time end)
+  local ok_speed, speed = pcall(function() return c.prototype.mining_speed end)
+  mining_time = ok_time and tonumber(mining_time) or 1
+  speed = ok_speed and tonumber(speed) or 0
+  return 3 * math.ceil(mining_time / math.max(speed, 0.01) * 60) + 60
+end
+
 local function charted(c, position)
   local ok, value = pcall(c.force.is_chunk_charted, c.surface,
     { x = math.floor(position.x / 32), y = math.floor(position.y / 32) })
@@ -456,6 +468,7 @@ function M.tick(task)
       return selection_failure(task, c, e, "initial_selection", "TARGET_NOT_SELECTABLE")
     end
     task._mining_started = true
+    task._cycle_deadline = game.tick + cycle_ticks(c, e)
     c.mining_state = { mining = true, position = e.position }
     return nil
   end
@@ -475,6 +488,21 @@ function M.tick(task)
   local target_changed = not (e and e.valid)
     or (task._target_amount ~= nil and current_amount ~= nil and current_amount < task._target_amount)
   if not target_changed then
+    if task._cycle_deadline and game.tick > task._cycle_deadline then
+      c.mining_state = { mining = false }
+      return partial_failure(task, string.format(
+        "MINING_STALLED: the physical mining cycle of %s did not finish within %d ticks", task._entity_name,
+        cycle_ticks(c, e)))
+    end
+    -- The engine holds a natural cycle whose products no longer fit (finished
+    -- hand-crafts can fill the last slots mid-cycle).
+    if task._target_kind ~= "owned" then
+      local inv = c.get_main_inventory()
+      if inv and not character_accepts_products(inv, e, nil) then
+        c.mining_state = { mining = false }
+        return partial_failure(task, "Codex inventory is full: it filled during the mining cycle")
+      end
+    end
     -- A real connected client can clear LuaPlayer.selected from its native
     -- input state between ticks. Reassert the already-resolved exact entity
     -- and physical mining state; never resolve or switch to a nearby target.

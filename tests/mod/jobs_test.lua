@@ -313,5 +313,19 @@ local firsts = {}
 for i, row in ipairs(heap) do firsts[i] = row.key end
 check(table.concat(firsts, ",") == "0,1,2,3,4,5,6,7", "keep_first keeps the first rows of a stream in a bounded heap")
 
+-- Frozen benchmark snapshots advance through bounded get_job slices without ticks.
+storage.jobs = nil
+game.tick_paused = true
+local frozen = jobs.start("count", { work = 900 })
+local result, polls = frozen, 0
+while result.job_status == "pending" and polls < 20 do
+  spent = {}; polls = polls + 1
+  result = jobs.get({ job_id = frozen.job_id })
+  check(spent[1] == nil or spent[1] <= jobs.MIN_WORK, "paused read respects per-call budget")
+end
+check(result.job_status == "done" and result.result.counted == 900 and polls > 1,
+  "snapshot jobs finish while entity simulation is frozen")
+game.tick_paused = false
+
 print(failures == 0 and "\nALL JOB TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

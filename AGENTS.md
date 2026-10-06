@@ -54,6 +54,26 @@
 
 ## Persistent two-brain gameplay
 
+### Explicit benchmark campaigns
+
+The owner has re-enabled fresh 20-minute benchmarking. An explicitly assigned
+benchmark follows `docs/BENCHMARK-CAMPAIGN.md` and the role's
+`.agents/skills/factorio-player/GOAL-BENCHMARK-v1.md`. Its frozen profile may
+use one to four persistent reasoning sessions and vary GPT-6 model, effort,
+and Fast mode. There is still exactly one body, one FIFO, one gameplay
+writer, and one ledger writer. In a solo trial the pilot owns the ledger;
+otherwise the strategist owns it and any additional advisors are read-only.
+The fixed two-role model choices below remain the default for other runs.
+Fresh current/next native settings evidence is checked against the assigned
+profile, rather than the default. Do not rescue or nudge a scored run; honest
+stalls count. Record any human/supervisor intervention as assistance and
+exclude the run. The recorder freezes at 1200 seconds; no action, queued
+package, or ledger update after cutoff contributes to the score. The root
+supervisor's native Goal owns repeated trials and hypotheses indefinitely;
+the finite campaign CLI stores selection and evidence, never launches model
+loops or another service. Human WR references are supervisor-only evidence;
+never copy their layouts or sequences into gameplay instructions or notebooks.
+
 Until the owner explicitly re-enables benchmarking, every new live run is supervised
 debugging. The initiating session is the debug supervisor and may diagnose or
 rescue through screenshots, raw Factorio/RCON or console, direct movement or

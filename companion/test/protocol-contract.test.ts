@@ -8,7 +8,7 @@ import { planStepSchema } from "../src/mcp/runPlan.js";
 describe("bridge protocol v28", () => {
   it("has the expected version and retained methods", () => {
     expect(PROTOCOL_VERSION).toBe(28);
-    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk", "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now",
+    expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "benchmark_control", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk", "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now",
       "get_job", "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles",
       "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel"]);
   });

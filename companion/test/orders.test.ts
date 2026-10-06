@@ -535,7 +535,7 @@ describe("current run directory", () => {
 describe("MCP package pump ownership", () => {
   it.each([
     ["full", "pilot", true], ["full", "supervisor", false],
-    ["full", "strategist", false], ["full", "unknown", false],
+    ["read-only", "strategist", false], ["read-only", "advisor", false], ["full", "unknown", false],
     ["read-only", "pilot", false],
   ] as [McpSurface, SessionRole, boolean][])("%s/%s starts package pumping: %s", async (surface, role, enabled) => {
     vi.useFakeTimers();

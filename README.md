@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.22.11**.
+Current release: **0.23.0**.
 
 Factorio Codex shows how Codex bots think about and architect a Factorio
 factory. Two reasoning sessions plan and direct one physical character named
@@ -26,6 +26,10 @@ Everything on a planet keeps physical reach. The game is won when a platform
 reaches the solar system edge (the `promethium-science-pack` technology,
 whose spawner-capture prerequisite this peaceful save cannot meet yet, is
 The owner's later decision).
+
+The owner can explicitly run a [fresh twenty-minute benchmark campaign](docs/BENCHMARK-CAMPAIGN.md)
+with one to four reasoning sessions, varied GPT-6 profiles and a fixed native
+cutoff. The normal two-brain setup remains the default.
 
 ## Install and use
 

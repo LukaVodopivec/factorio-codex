@@ -3,6 +3,7 @@
 -- reads chat or controls the body. The panel lives in player.gui.left and is
 -- never assigned to player.opened, so opened_gui_type stays none and it raises
 -- no on_gui_opened: it cannot start a human hold (companion.human_control).
+local benchmark = require("scripts.benchmark")
 local M = {}
 
 local CODEX_NAME = "Codex"
@@ -15,6 +16,8 @@ local PANEL_WIDTH = 420
 local ROLES = {
   astra = { label = "Astra", color = { r = 1.00, g = 0.70, b = 0.25 } },
   luna = { label = "Luna", color = { r = 0.45, g = 0.78, b = 1.00 } },
+  mining = { label = "Mining advisor", color = { r = 0.65, g = 1.00, b = 0.50 } },
+  logistics = { label = "Logistics advisor", color = { r = 0.95, g = 0.55, b = 0.90 } },
   supervisor = { label = "Supervisor", color = { r = 0.75, g = 0.75, b = 0.75 } },
 }
 
@@ -71,7 +74,8 @@ end
 -- Rebuilds the panel for one player; only the connected player named Codex
 -- has one.
 local function render(player)
-  if not (player and player.valid and player.connected and player.name == CODEX_NAME) then return end
+  if not (player and player.valid and player.connected
+    and (player.name == CODEX_NAME or player.controller_type == defines.controllers.spectator)) then return end
   local left = player.gui.left
   local frame = left[PANEL]
   if frame and frame.valid then
@@ -80,6 +84,17 @@ local function render(player)
     frame = left.add({ type = "frame", name = PANEL, caption = "Codex thinking", direction = "vertical" })
   end
   local t = data()
+  local trial = benchmark.display()
+  if trial then
+    add_label(frame, head(trial.label, PANEL_LINE_CHARS) .. " | " .. trial.status .. " | "
+      .. math.floor(trial.remaining_seconds / 60) .. ":" .. string.format("%02d", trial.remaining_seconds % 60))
+    local m = trial.metrics
+    add_label(frame, "Mined: Fe " .. m["iron-ore"] .. ", Cu " .. m["copper-ore"] .. ", coal " .. m.coal .. ", stone " .. m.stone)
+    add_label(frame, "Plates: Fe " .. m["iron-plate"] .. ", Cu " .. m["copper-plate"])
+    add_label(frame, "Average/min: resources " .. string.format("%.1f", trial.input_per_minute)
+      .. ", plates " .. string.format("%.1f", trial.output_per_minute))
+    if storage.benchmark.summary then add_label(frame, head(storage.benchmark.summary, PANEL_LINE_CHARS)) end
+  end
   add_label(frame, "NOW: " .. head(t.now or "-", PANEL_LINE_CHARS), ROLES.astra.color)
   for _, line in ipairs(t.lines) do
     local role = ROLES[line.role]
@@ -90,11 +105,12 @@ end
 local function render_all()
   for _, player in pairs(game.connected_players) do render(player) end
 end
+M.refresh = render_all
 
 -- say {role, text}: one chat line and one panel line.
 function M.say(params)
   local role = ROLES[params.role]
-  if not role then error("role must be astra, luna or supervisor") end
+  if not role then error("role must be astra, luna, mining, logistics or supervisor") end
   local text = clean_text(params, false)
   local lines = data().lines
   lines[#lines + 1] = { role = params.role, text = text, tick = game.tick }

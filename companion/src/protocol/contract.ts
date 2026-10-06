@@ -14,6 +14,7 @@ export const RPC_METHODS = [
   "map_summary",
   "production_requirements",
   "run_snapshot",
+  "benchmark_control",
   "connect_entities",
   "describe_prototype",
   "progression_status",

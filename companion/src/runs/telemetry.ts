@@ -9,6 +9,8 @@ import { operationsLedgerSchema } from "../coordination/ledger.js";
 import { RconClient } from "../rcon.js";
 import { atomicWriteFile } from "../setup/atomic.js";
 import { createThoughtFeed, type ThoughtFeed, type ThoughtRole } from "./thoughts.js";
+import { roleProfiles, runRolesSchema } from "./profiles.js";
+import { BENCHMARK_SECONDS, benchmarkEvidenceSchema, cutoffIssues } from "./benchmark.js";
 
 const countRow = z.object({ name: z.string(), count: z.number() }).strict();
 const resourceName = z.object({ type: z.enum(["item", "fluid"]), name: z.string() }).strict();
@@ -70,16 +72,15 @@ export function parseRunSnapshot(value: any): RunSnapshot {
 
 // A manifest keeps the role profiles its run recorded, so runs from earlier
 // role pairs stay readable; only a new ledger pins the current pair.
-const recordedRole = z.object({ model: z.string().min(1).max(80), reasoning: z.string().min(1).max(40),
-  fast: z.boolean().optional() }).strict();
 const manifestSchema = z.object({
   schema_version: z.literal(1), run: operationsLedgerSchema.shape.run.extend({
-    roles: z.object({ pilot: recordedRole, strategist: recordedRole }).strict() }),
+    roles: runRolesSchema }),
   variant: z.string().min(1), change: z.string().min(1), kind: z.enum(["debug", "benchmark"]),
   status: z.enum(["recording", "finished", "interrupted"]), assisted: z.boolean(),
   app_version: z.string(), mod_version: z.string(), factorio_version: z.string(),
   started_at: z.string(), start_tick: z.number().int().nonnegative(),
   ended_at: z.string().nullable(), end_tick: z.number().int().nonnegative().nullable(),
+  benchmark: benchmarkEvidenceSchema.optional(),
 }).strict();
 export type RunManifest = z.infer<typeof manifestSchema>;
 
@@ -159,6 +160,17 @@ export function markRunAssisted(root: string, id: string, reason: string, at = n
   writeManifest(files.manifest, { ...manifest, assisted: true });
 }
 
+/** Supervisor recovery after retiring writers and reconciling a dead recorder.
+ * Never converts an interrupted run into scored evidence or changes samples. */
+export function interruptRun(root: string, id: string, reason: string, at = new Date()): void {
+  if (!reason.trim()) throw new Error("interrupt requires a non-empty reconciliation reason");
+  const files = runPaths(root, id), manifest = readManifest(root, id);
+  if (manifest.status !== "recording") return;
+  appendJson(files.events, { type: "recorder_interrupted", at: at.toISOString(), reason });
+  writeManifest(files.manifest, { ...manifest, status: "interrupted",
+    ended_at: manifest.ended_at ?? at.toISOString(), end_tick: manifest.end_tick });
+}
+
 /** Resolves a role's rollout file from <run_dir>/rollouts.json. Only an absent
  *  pointer file falls back to the launch flag; any other read or parse error
  *  (for example a partly written file) returns null, which keeps the file the
@@ -176,7 +188,7 @@ export function rolloutResolver(pointer: string, role: ThoughtRole, flag: string
 }
 
 export interface RecordRunOptions { ledger: string; variant: string; change: string; kind: "debug" | "benchmark"; root?: string;
-  pilotRollout?: string; strategistRollout?: string }
+  pilotRollout?: string; strategistRollout?: string; durationSeconds?: number; incumbentSummary?: string }
 export function checkpointDelay(checkpoint: number, elapsedMs: number): number {
   return Math.max(0, checkpoint * 300_000 - elapsedMs);
 }
@@ -184,81 +196,127 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
   const config = loadConfig();
   if (!config) throw new Error("configuration is missing or invalid; run `factorio-codex setup`");
   const ledger = operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8")));
+  const profiles = roleProfiles(ledger.run.roles);
+  const duration = options.durationSeconds ?? BENCHMARK_SECONDS;
+  if (!Number.isInteger(duration) || duration < 1 || duration > BENCHMARK_SECONDS)
+    throw new Error("durationSeconds must be an integer from 1 to 1200");
   assertConnectionCompatibility(config.rcon);
   const rcon = new RconClient(config.rcon), bridge = new Bridge(rcon);
-  let feed: ThoughtFeed | undefined;
+  // Deadline control must not queue behind the recorder's jobs or thought feed.
+  const controlRcon = options.kind === "benchmark" ? new RconClient(config.rcon) : undefined;
+  const control = controlRcon ? new Bridge(controlRcon) : undefined;
+  let feed: ThoughtFeed | undefined, timer: NodeJS.Timeout | undefined, cutoffTimer: NodeJS.Timeout | undefined;
+  let finishing = false, chain = Promise.resolve(), freezePromise: Promise<void> | undefined;
+  let finishSignal: (() => void) | undefined;
+  const signalFinish = () => { if (!finishing) { finishing = true; if (timer) clearTimeout(timer); finishSignal?.(); } };
+  process.once("SIGINT", signalFinish); process.once("SIGTERM", signalFinish);
   try {
-  await rcon.connect(); await bridge.unlock();
-  const ping = await bridge.call<any>("ping"); assertRuntimeCompatibility(ping, companionVersion());
-  if (!ping.companion_exists) throw new Error("native player 'Codex' must have a living character before GO");
-  const baseline = parseRunSnapshot(await bridge.call("run_snapshot"));
-  const startedAt = new Date(), startedMono = performance.now(), root = runRoot(options.root);
-  let manifest: RunManifest = { schema_version: 1, run: ledger.run, variant: options.variant, change: options.change,
-    kind: options.kind, status: "recording", assisted: false, app_version: companionVersion(),
-    mod_version: ping.mod_version, factorio_version: ping.factorio_version, started_at: startedAt.toISOString(),
-    start_tick: baseline.tick, ended_at: null, end_tick: null };
-  const files = createRunStore(root, manifest);
-  const baselineSample: RunSample = { status: "ok", kind: "baseline", scheduled_elapsed_ms: 0, actual_elapsed_ms: 0,
-    capture_started_at: startedAt.toISOString(), capture_completed_at: startedAt.toISOString(), capture_latency_ms: 0,
-    tick: baseline.tick, tick_delta: 0, snapshot: baseline, delta: snapshotDelta(baseline, baseline) };
-  appendJson(files.samples, baselineSample);
-  console.log(`GO ${manifest.started_at} tick=${manifest.start_tick} run=${manifest.run.id}`);
-  // <run_dir>/rollouts.json ({"luna": path, "astra": path}), which the
-  // supervisor rewrites when it replaces a role session, overrides the flags.
-  const pointer = path.join(path.dirname(options.ledger), "rollouts.json");
-  const rollout = (role: ThoughtRole, flag: string | undefined) => rolloutResolver(pointer, role, flag);
-  const sources = ([["luna", options.pilotRollout], ["astra", options.strategistRollout]] as const)
-    .map(([role, flag]) => ({ role, file: rollout(role, flag) }));
-  const nowObjective = () => {
-    try { return operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8"))).task_list.NOW.objective; }
-    catch { return null; }
-  };
-  feed = createThoughtFeed({ sources, out: files.thoughts, say: (role, text) => bridge.call("say", { role, text }),
-    now: { read: nowObjective, say: (text) => bridge.call("say_now", { text }) } });
-
-  let nextCheckpoint = 1, finishing = false, timer: NodeJS.Timeout | undefined, chain = Promise.resolve();
-  const capture = async (kind: "checkpoint" | "final", scheduled: number): Promise<RunSample> => {
-    const captureStart = new Date(), before = performance.now();
-    try {
-      const snapshot = parseRunSnapshot(await bridge.call("run_snapshot"));
-      const after = performance.now();
-      return { status: "ok", kind, scheduled_elapsed_ms: scheduled, actual_elapsed_ms: after - startedMono,
-        capture_started_at: captureStart.toISOString(), capture_completed_at: new Date().toISOString(), capture_latency_ms: after - before,
-        tick: snapshot.tick, tick_delta: snapshot.tick - baseline.tick, snapshot, delta: snapshotDelta(snapshot, baseline) };
-    } catch (error) {
-      const after = performance.now();
-      return { status: "error", kind, scheduled_elapsed_ms: scheduled, actual_elapsed_ms: after - startedMono,
-        capture_started_at: captureStart.toISOString(), capture_completed_at: new Date().toISOString(), capture_latency_ms: after - before,
-        error: error instanceof Error ? error.message : String(error) };
+    await rcon.connect(); await bridge.unlock();
+    if (controlRcon && control) { await controlRcon.connect(); await control.unlock(); }
+    const ping = await bridge.call<any>("ping"); assertRuntimeCompatibility(ping, companionVersion());
+    if (!ping.companion_exists) throw new Error("native player 'Codex' must have a living character before GO");
+    // Refuse duplicate run stores before changing the game state.
+    const root = runRoot(options.root);
+    if (fs.existsSync(runPaths(root, ledger.run.id).manifest)) throw new Error("run already has recording evidence");
+    if (control) await control.call("benchmark_control", { action: "prepare", run_id: ledger.run.id,
+      duration_seconds: duration, label: `${options.variant}: ${profiles.map(p => `${p.id} ${p.model}/${p.reasoning}${p.fast ? "/Fast" : "/normal"}`).join("; ")}`,
+      summary: options.incumbentSummary });
+    const baseline = parseRunSnapshot(await bridge.call("run_snapshot"));
+    const startedAt = new Date(), startedMono = performance.now();
+    let manifest: RunManifest = { schema_version: 1, run: ledger.run, variant: options.variant, change: options.change,
+      kind: options.kind, status: "recording", assisted: false, app_version: companionVersion(),
+      mod_version: ping.mod_version, factorio_version: ping.factorio_version, started_at: startedAt.toISOString(),
+      start_tick: baseline.tick, ended_at: null, end_tick: null };
+    const files = createRunStore(root, manifest);
+    appendJson(files.samples, { status: "ok", kind: "baseline", scheduled_elapsed_ms: 0, actual_elapsed_ms: 0,
+      capture_started_at: startedAt.toISOString(), capture_completed_at: startedAt.toISOString(), capture_latency_ms: 0,
+      tick: baseline.tick, tick_delta: 0, snapshot: baseline, delta: snapshotDelta(baseline, baseline) });
+    const stopped = new Promise<void>(resolve => { finishSignal = resolve; if (finishing) resolve(); });
+    let freezeError: unknown;
+    const freeze = () => {
+      if (freezePromise) return freezePromise;
+      freezePromise = (async () => {
+        const requested = new Date();
+        try {
+          const result = await control!.call<any>("benchmark_control", { action: "freeze", run_id: ledger.run.id });
+          const completed = new Date();
+          manifest.benchmark = benchmarkEvidenceSchema.parse({ duration_seconds: duration,
+            deadline_at: new Date(startedAt.getTime() + duration * 1000).toISOString(),
+            freeze_started_at: requested.toISOString(), freeze_completed_at: completed.toISOString(),
+            freeze_skew_ms: performance.now() - startedMono - duration * 1000,
+            start_tick: baseline.tick,
+            frozen_tick: result.frozen_tick, reason: result.freeze_reason, metrics: result.metrics });
+          const live = readManifest(root, ledger.run.id);
+          manifest.assisted = live.assisted || result.assisted === true;
+          // A terminal timestamp closes ledger updates before collecting heavy reads.
+          manifest.ended_at = completed.toISOString(); manifest.end_tick = result.frozen_tick;
+          writeManifest(files.manifest, manifest);
+          appendJson(files.events, { type: "benchmark_frozen", at: completed.toISOString(), evidence: manifest.benchmark });
+        } catch (error) { freezeError = error; }
+        finally { signalFinish(); }
+      })();
+      return freezePromise;
+    };
+    if (control && !finishing) {
+      await control.call("benchmark_control", { action: "begin", run_id: ledger.run.id });
+      cutoffTimer = setTimeout(() => { void freeze(); }, Math.max(0, duration * 1000 - (performance.now() - startedMono)));
     }
-  };
-  const schedule = () => {
-    const deadline = nextCheckpoint * 300_000;
-    timer = setTimeout(() => {
-      const scheduled = deadline; nextCheckpoint += 1;
-      chain = chain.then(async () => { const sample = await capture("checkpoint", scheduled); appendJson(files.samples, sample);
-        console.log(sample.status === "ok" ? `CHECKPOINT +${scheduled / 60_000}m tick=${sample.tick}` : `CHECKPOINT +${scheduled / 60_000}m ERROR ${sample.error}`); });
-      if (!finishing) schedule();
-    }, checkpointDelay(nextCheckpoint, performance.now() - startedMono));
-  };
-  schedule();
-
-  await new Promise<void>((resolve) => {
-    const finish = () => { if (finishing) return; finishing = true; if (timer) clearTimeout(timer); resolve(); };
-    process.once("SIGINT", finish); process.once("SIGTERM", finish);
-  });
-  await chain;
-  feed?.stop(); feed = undefined;
-  const final = await capture("final", performance.now() - startedMono); appendJson(files.samples, final);
-  const currentManifest = readManifest(root, manifest.run.id);
-  manifest = { ...manifest, assisted: currentManifest.assisted,
-    status: final.status === "ok" ? "finished" : "interrupted", ended_at: new Date().toISOString(),
-    end_tick: final.status === "ok" ? final.tick : null };
-  writeManifest(files.manifest, manifest);
-  console.log(`FINISH ${manifest.ended_at} run=${manifest.run.id} status=${manifest.status}`);
+    if (!finishing) console.log(`GO ${manifest.started_at} tick=${manifest.start_tick} run=${manifest.run.id}`);
+    const pointer = path.join(path.dirname(options.ledger), "rollouts.json");
+    const sources = profiles.map(p => ({ role: p.id as ThoughtRole,
+      file: rolloutResolver(pointer, p.id, p.id === "luna" ? options.pilotRollout : p.id === "astra" ? options.strategistRollout : undefined) }));
+    feed = createThoughtFeed({ sources, out: files.thoughts, say: (role, text) => bridge.call("say", { role, text }),
+      now: { read: () => {
+        try { return operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8"))).task_list.NOW.objective; }
+        catch { return null; }
+      }, say: text => bridge.call("say_now", { text }) } });
+    const capture = async (kind: "checkpoint" | "final", scheduled: number): Promise<RunSample> => {
+      const began = new Date(), before = performance.now();
+      try {
+        const snapshot = parseRunSnapshot(await bridge.call("run_snapshot"));
+        return { status: "ok", kind, scheduled_elapsed_ms: scheduled, actual_elapsed_ms: performance.now() - startedMono,
+          capture_started_at: began.toISOString(), capture_completed_at: new Date().toISOString(), capture_latency_ms: performance.now() - before,
+          tick: snapshot.tick, tick_delta: snapshot.tick - baseline.tick, snapshot, delta: snapshotDelta(snapshot, baseline) };
+      } catch (error) {
+        return { status: "error", kind, scheduled_elapsed_ms: scheduled, actual_elapsed_ms: performance.now() - startedMono,
+          capture_started_at: began.toISOString(), capture_completed_at: new Date().toISOString(), capture_latency_ms: performance.now() - before,
+          error: error instanceof Error ? error.message : String(error) };
+      }
+    };
+    let nextCheckpoint = 1;
+    const schedule = () => {
+      const deadline = nextCheckpoint * 300_000;
+      if (control && deadline >= duration * 1000) return; // final sample is the frozen boundary
+      timer = setTimeout(() => {
+        nextCheckpoint++;
+        chain = chain.then(async () => {
+          const sample = await capture("checkpoint", deadline); appendJson(files.samples, sample);
+          console.log(sample.status === "ok" ? `CHECKPOINT +${deadline / 60_000}m tick=${sample.tick}` : `CHECKPOINT ERROR ${sample.error}`);
+        });
+        if (!finishing) schedule();
+      }, checkpointDelay(nextCheckpoint, performance.now() - startedMono));
+    };
+    if (!finishing) schedule();
+    await stopped;
+    if (control) await freeze();
+    if (cutoffTimer) clearTimeout(cutoffTimer);
+    feed.stop(); feed = undefined;
+    await chain;
+    const final = await capture("final", control ? duration * 1000 : performance.now() - startedMono);
+    appendJson(files.samples, final);
+    // Preserve the ordinary 20-minute comparison checkpoint using frozen state.
+    if (control && final.status === "ok") appendJson(files.samples, { ...final, kind: "checkpoint" });
+    const live = readManifest(root, ledger.run.id);
+    manifest = { ...manifest, assisted: live.assisted || manifest.assisted,
+      status: final.status === "ok" && !freezeError ? "finished" : "interrupted",
+      ended_at: manifest.ended_at ?? new Date().toISOString(), end_tick: final.status === "ok" ? final.tick : null };
+    writeManifest(files.manifest, manifest);
+    console.log(`FINISH ${manifest.ended_at} run=${manifest.run.id} status=${manifest.status}`);
+    if (freezeError) throw freezeError;
   } finally {
-    feed?.stop();
-    rcon.close();
+    if (timer) clearTimeout(timer); if (cutoffTimer) clearTimeout(cutoffTimer);
+    process.removeListener("SIGINT", signalFinish); process.removeListener("SIGTERM", signalFinish);
+    feed?.stop(); rcon.close(); controlRcon?.close();
   }
 }
 
@@ -281,6 +339,7 @@ export function compareRuns(root: string, baselineId: string, candidateId: strin
     if (value.kind !== "benchmark") reasons.push(`${label} is not a benchmark run`);
     if (value.status !== "finished") reasons.push(`${label} is not finished`);
     if (value.assisted) reasons.push(`${label} was assisted`);
+    if (value.benchmark) reasons.push(...cutoffIssues(value.benchmark).map(reason => `${label}: ${reason}`));
   }
   const a = readSamples(root, baselineId).filter((s): s is Extract<RunSample, { status: "ok" }> => s.status === "ok" && s.kind === "checkpoint");
   const b = readSamples(root, candidateId).filter((s): s is Extract<RunSample, { status: "ok" }> => s.status === "ok" && s.kind === "checkpoint");

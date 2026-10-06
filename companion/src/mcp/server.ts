@@ -64,7 +64,7 @@ export const FACTORY_STATUS_SECTIONS = ["lines", "problems", "power", "stock", "
 export type McpSurface = "full" | "read-only";
 /** Who runs this MCP process, named in the origin of every cancel it makes:
  *  the session launcher passes --role (or FACTORIO_CODEX_ROLE). */
-export const SESSION_ROLES = ["pilot", "strategist", "supervisor", "unknown"] as const;
+export const SESSION_ROLES = ["pilot", "strategist", "advisor", "supervisor", "unknown"] as const;
 export type SessionRole = typeof SESSION_ROLES[number];
 export const READ_ONLY_TOOLS = [
   "connect_status", "map_summary", "progression_status", "production_requirements",
@@ -169,6 +169,8 @@ export function registerMcpTools(
   runDir: RunDir = () => null,
   role: SessionRole = "unknown",
 ): void {
+  if ((role === "strategist" || role === "advisor") && surface !== "read-only")
+    throw new Error(`${role} requires the read-only MCP surface`);
   const orders = createOrdersTracker(runDir);
   const failureDelivery: FailureDelivery = { keys: null };
   // Every result carries Astra's orders once per new ledger revision.

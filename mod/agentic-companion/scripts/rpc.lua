@@ -4,6 +4,7 @@
 -- CHUNK_SIZE are stored in storage.rpc_outbox and streamed back to the
 -- app part by part via get_chunk.
 local timing = require("scripts.profiler")
+local benchmark = require("scripts.benchmark")
 
 local M = {}
 
@@ -88,6 +89,8 @@ local function run(method, params_json)
     end
     params = decoded
   end
+  local allowed, admission_error = pcall(benchmark.assert_action, method)
+  if not allowed then respond({ ok = false, error = tostring(admission_error) }); return end
   local ok, result = pcall(handler, params)
   if ok then
     respond({ ok = true, data = result or {} }, method == "get_chunk")

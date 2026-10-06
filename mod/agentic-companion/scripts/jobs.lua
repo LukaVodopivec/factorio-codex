@@ -343,6 +343,11 @@ function M.get(params)
   if not job then
     error("unknown job id " .. tostring(id) .. ": a result is kept until it is read once, or for 5 minutes", 0)
   end
+  -- Simulation is frozen at a trial boundary. A read still progresses in
+  -- bounded RPC slices, without resuming entities or physical tasks.
+  if job.status == "pending" and game.tick_paused then
+    work(jobs, job, { left = M.MIN_WORK }, true)
+  end
   local out = public(job)
   if job.status ~= "pending" then forget(jobs, id) end
   return out

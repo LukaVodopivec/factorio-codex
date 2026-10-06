@@ -125,11 +125,11 @@ describe("compact strategist operations ledger", () => {
     expect(fs.statSync(file).mode & 0o7777).toBe(mode);
   });
 
-  it("creates a new run with the gpt-6.1-sol strategist and keeps a ledger written for gpt-6-astra", () => {
+  it("accepts an explicitly configured strategist model and preserves it", () => {
     const astra = { ...ledger().run, roles: { ...ledger().run.roles, strategist: { model: "gpt-6-astra" as const, reasoning: "medium" as const, fast: false as const } } };
     const file = ledgerFile();
-    expect(applyLedgerFile(file, { ...initialization(), run: astra })).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
-    expect(fs.existsSync(file)).toBe(false);
+    expect(applyLedgerFile(file, { ...initialization(), run: astra })).toMatchObject({ status: "applied", revision: 1 });
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).run).toEqual(astra);
     // The run live at the 2026-10-05 decision recorded gpt-6-astra: its ledger still takes updates.
     expect(reduceLedger({ ...ledger(), run: astra }, envelope(101)).result).toMatchObject({ status: "applied", revision: 1 });
   });

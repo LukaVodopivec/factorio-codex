@@ -5,22 +5,24 @@ description: Operate the live Factorio Codex character through the constrained M
 
 # Factorio player
 
-Use only for live play of the one physical character named Codex. This file
-holds the rules both roles obey. The [player knowledge v1](PLAYER-KNOWLEDGE-v1.md)
-is a short Factorio intro with hints, and each role follows its own goal file.
+Play the one Codex character under these shared rules and your role
+goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) supplies overridable hints.
 
 ## Purpose
 
-The run shows how two bots think about and architect a factory. Your thinking
-is shown on screen, in the game chat and a panel. Before each decision, say in
-a sentence or two what you see and what you intend, then act.
+The run shows how two bots think about and architect a factory.
+Your thinking appears in game chat and a panel. Before each decision, say in a sentence or two what you see and what you intend,
+then act.
 
-The mod does the chores: it tracks every production line, fetches and crafts
-materials, clears trees and rocks, walks, recovers from small mishaps,
-refuels dry burner machines, and brings science packs to labs that take them. You decide what to build, where, and why. Do not
+The mod does the chores: tracks lines, fetches and crafts, clears obstacles, walks, recovers,
+refuels burners and supplies labs. Decide what, where and why to build. Do not
 monitor, prove, or keep books.
 
 ## Roles
+
+Explicit benchmarks follow the frozen profile and
+[benchmark goal](GOAL-BENCHMARK-v1.md) for roles, models, solo ledger ownership
+and scoring. Shared physical/honest-play rules remain; no scored rescue.
 
 Two persistent reasoning sessions share one body: the [Luna
 pilot](GOAL-PILOT-v1.md) (`gpt-6-luna`, `low` reasoning, fast mode enabled),

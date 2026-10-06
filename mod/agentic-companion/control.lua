@@ -29,6 +29,8 @@ local requests = require("scripts.requests")
 local configure = require("scripts.actions.configure")
 local build = require("scripts.actions.build")
 local timing = require("scripts.profiler")
+local benchmark = require("scripts.benchmark")
+benchmark.on_freeze = thoughts.refresh
 
 -- Where the body is ({state, surface_ref, platform_name?, rebind_refused?},
 -- companion.body_summary) and, while a travel step is pending in the FIFO,
@@ -123,6 +125,7 @@ jobs.register("platform_status", platforms.status_job)
 -- step; it carries no fifo block.
 jobs.register("run_snapshot", run_snapshot.job)
 rpc.register("run_snapshot", jobs.rpc("run_snapshot"))
+rpc.register("benchmark_control", benchmark.control)
 for _, kind in ipairs({ "observe_local", "inspect", "map_summary", "connect_entities", "build_layout", "build_block",
   "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status" }) do
   rpc.register(kind, read(jobs.rpc(kind)))
@@ -239,6 +242,7 @@ end
 -- patch cache read a few chunks a tick, the line sampler about machines/30,
 -- and read jobs share one allowance with the build search.
 local function tick(event)
+  if benchmark.on_tick(event.tick) then jobs.on_tick(); return end
   tasks.on_tick(event)
   registry.on_tick(event.tick)
   -- Patch work starts the tick after the registry is ready, never on the
@@ -250,6 +254,7 @@ local function tick(event)
   autonomy.on_tick(event.tick)
   jobs.on_tick()
   companion.follow_spectators()
+  if storage.benchmark and event.tick % 60 == 0 then thoughts.refresh() end
 end
 script.on_event(defines.events.on_tick, function(event)
   timing.measure(tick, event)

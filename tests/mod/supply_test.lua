@@ -211,7 +211,9 @@ craft_stub = stub("craft", function(task)
   for _, ingredient in ipairs(recipe.ingredients) do
     inventory[ingredient.name] = inventory[ingredient.name] - ingredient.amount * task.count
   end
-  inventory[task.recipe] = (inventory[task.recipe] or 0) + task.count
+  for _, product in ipairs(recipe.products) do
+    inventory[product.name] = (inventory[product.name] or 0) + product.amount * task.count
+  end
   return { status = "done", detail = "crafted" }
 end)
 craft_stub.queued = function(_, name) return crafting[name] or 0 end
@@ -488,6 +490,68 @@ check(topped.status == "done" and calls[1].kind == "extract" and calls[1].task.i
   and calls[2].kind == "craft" and calls[2].task.count == 2,
   "get_items crafts only what the queue does not already make")
 crafting = {}
+
+-- Shared ingredients: plates a recipe needs directly and through its gears
+-- and pipes are all fetched, from furnace outputs, and nothing is left over.
+local early_recipes = {
+  ["pipe"] = { { "iron-plate", 1 } },
+  ["steam-engine"] = { { "iron-gear-wheel", 8 }, { "pipe", 5 }, { "iron-plate", 10 } },
+  ["copper-cable"] = { { "copper-plate", 1 } },
+  ["electronic-circuit"] = { { "iron-plate", 1 }, { "copper-cable", 3 } },
+  ["transport-belt"] = { { "iron-plate", 1 }, { "iron-gear-wheel", 1 } },
+  ["lab"] = { { "electronic-circuit", 10 }, { "iron-gear-wheel", 10 }, { "transport-belt", 4 } },
+  ["inserter"] = { { "electronic-circuit", 1 }, { "iron-gear-wheel", 1 }, { "iron-plate", 1 } },
+  ["assembling-machine-1"] = { { "electronic-circuit", 3 }, { "iron-gear-wheel", 5 }, { "iron-plate", 9 } },
+}
+local yields_two = { ["copper-cable"] = true, ["transport-belt"] = true }
+for name, ingredients in pairs(early_recipes) do
+  local list = {}
+  for _, row in ipairs(ingredients) do list[#list + 1] = { type = "item", name = row[1], amount = row[2] } end
+  recipes[name] = { name = name, enabled = true, category = "crafting", ingredients = list,
+    products = { { type = "item", name = name, amount = yields_two[name] and 2 or 1 } } }
+  prototypes.item[name] = prototypes.item[name] or { stack_size = 50 }
+end
+prototypes.item["copper-plate"] = prototypes.item["copper-plate"] or { stack_size = 100 }
+local function furnace_output(position, items)
+  local f = add({ type = "furnace", name = "stone-furnace", position = position, items = items,
+    prototype = { crafting_categories = { smelting = true } } })
+  f.get_output_inventory = function() return holder(f.items) end
+  return f
+end
+
+reset()
+local iron_out = furnace_output({ x = 4, y = 0 }, { ["iron-plate"] = 31 })
+local engine = run({ items = { { name = "steam-engine", count = 1 } } })
+check(engine.status == "done" and inventory["steam-engine"] == 1 and iron_out.items["iron-plate"] == 0
+  and (inventory["iron-plate"] or 0) == 0 and engine.outcome.supplied.taken["iron-plate"] == 31,
+  "a steam engine fetches the 31 plates it needs directly and through gears and pipes (" .. engine.detail .. ")")
+
+reset()
+iron_out = furnace_output({ x = 4, y = 0 }, { ["iron-plate"] = 93 })
+local copper_out = furnace_output({ x = 8, y = 0 }, { ["copper-plate"] = 21 })
+local starter = run({ items = { { name = "steam-engine", count = 1 }, { name = "lab", count = 1 },
+  { name = "inserter", count = 1 }, { name = "assembling-machine-1", count = 1 } } })
+check(starter.status == "done" and inventory["steam-engine"] == 1 and inventory.lab == 1 and inventory.inserter == 1
+  and inventory["assembling-machine-1"] == 1 and iron_out.items["iron-plate"] == 0
+  and copper_out.items["copper-plate"] == 0,
+  "an engine, lab, inserter and assembler sharing plates, gears and circuits come from just enough plates ("
+    .. starter.detail .. ")")
+
+reset()
+chest({ x = 4.5, y = 0.5 }, { ["iron-plate"] = 50 })
+local both = run({ items = { { name = "iron-plate", count = 10 }, { name = "iron-gear-wheel", count = 5 } } })
+check(both.status == "done" and inventory["iron-plate"] == 10 and inventory["iron-gear-wheel"] == 5,
+  "plates wanted themselves are still carried after the gears wanted alongside are crafted from more plates")
+reset()
+chest({ x = 4.5, y = 0.5 }, { ["iron-plate"] = 50 })
+local resumed = { items = { { name = "iron-gear-wheel", count = 3 } } }
+supply.start(resumed)
+resumed._claims, resumed._stack[1].path = nil, nil -- begun before claims existed
+local resumed_result
+for _ = 1, 50 do resumed_result = supply.tick(resumed); if resumed_result then break end end
+check(resumed_result and resumed_result.status == "done" and inventory["iron-gear-wheel"] == 3,
+  "a supply begun before claims existed still finishes on its frame counts")
+for name in pairs(early_recipes) do recipes[name] = nil end
 
 -- Smelting: plates nothing holds and no hand recipe makes come from an own
 -- furnace: ore and fuel in, wait by it, plates out.

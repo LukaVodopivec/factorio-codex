@@ -367,7 +367,8 @@ local function expand_targets(force, targets, choices, options)
     end
     local old_crafts = node.recipe_executions
     node.required_units = node.required_units + count
-    node.recipe_executions = math.ceil(node.required_units / output)
+    -- Rates keep fractional executions per minute; counts round up to whole crafts.
+    node.recipe_executions = options.rate and node.required_units / output or math.ceil(node.required_units / output)
     local added_crafts = node.recipe_executions - old_crafts
     if added_crafts == 0 then return end
     visiting[product] = true
@@ -521,6 +522,113 @@ local function closure_requirements(params, body, location, force, target_kind, 
   }
 end
 
+-- ------------------------------------------------------------- rate plan
+-- Units per minute instead of counts: per stage the machines each tier
+-- needs, their fuel or electric power, the drills a raw resource needs, and
+-- what one belt of each tier carries. Every number is read from live
+-- prototypes at call time (crafting and mining speed, recipe and mining
+-- time, energy use, burner effectivity, fuel value, belt speed); nothing is
+-- tabulated. Counts are nominal full-duty capacity at normal quality with
+-- no modules, beacons or mining-productivity research.
+
+local function round(value) return math.floor(value * 100 + 0.5) / 100 end
+
+-- Energy per machine at full duty: burner (with fuel per minute in the
+-- reference fuel) or electric (kW).
+local function energy_row(row, proto, count, fuel)
+  local usage = read(function() return proto.get_max_energy_usage() end) or 0 -- joules per tick
+  local burner = read(function() return proto.burner_prototype end)
+  if burner then
+    local effectivity = read(function() return burner.effectivity end) or 1
+    row.energy = "burner"
+    row.fuel_mw = round(count * usage * 60 / effectivity / 1e6)
+    if fuel then row.fuel_per_minute = round(count * usage * 3600 / effectivity / fuel.joules) end
+  elseif read(function() return proto.electric_energy_source_prototype end) then
+    row.energy = "electric"
+    row.power_kw = round(count * usage * 60 / 1000)
+  else row.energy = "none" end
+  return row
+end
+
+local function unlocked(force, proto)
+  local placed = read(function() return proto.items_to_place_this end)
+  local item = placed and placed[1] and placed[1].name
+  local recipe = item and force.recipes[item]
+  return recipe ~= nil and recipe.enabled == true
+end
+
+-- Rows for every prototype that can do the work, sorted by name.
+local function tier_rows(force, protos, speed_of, work, fuel)
+  local rows = {}
+  for name, proto in pairs(protos) do
+    local speed = speed_of(proto)
+    if speed and speed > 0 then
+      local count = work / speed
+      rows[#rows + 1] = energy_row({ entity = name, speed = speed, machines = round(count),
+        machines_to_build = math.ceil(count - 1e-9), unlocked = unlocked(force, proto) }, proto, count, fuel)
+    end
+  end
+  table.sort(rows, function(a, b) return a.entity < b.entity end)
+  return rows
+end
+
+local function rate_plan(force, expanded, fuel_name)
+  local fuel_proto = prototypes.item[fuel_name]
+  local joules = fuel_proto and read(function() return fuel_proto.fuel_value end)
+  local fuel = joules and joules > 0 and { name = fuel_name, joules = joules } or nil
+  local crafters = prototypes.get_entity_filtered({ { filter = "type", type = { "assembling-machine", "furnace" } } })
+  local stages = {}
+  for _, node in ipairs(expanded.nodes) do
+    local able = {}
+    for name, proto in pairs(crafters) do
+      local categories = read(function() return proto.crafting_categories end) or {}
+      if categories[node.category] then able[name] = proto end
+    end
+    -- Crafting work per second at speed 1, shared out by machine speed.
+    local work = node.recipe_executions / 60 * node.craft_time_seconds_per_execution
+    stages[#stages + 1] = { item = node.item, recipe = node.recipe, category = node.category,
+      units_per_minute = round(node.required_units), executions_per_minute = round(node.recipe_executions),
+      machines = tier_rows(force, able, function(proto) return read(function() return proto.get_crafting_speed() end) end, work, fuel) }
+  end
+  local resources = prototypes.get_entity_filtered({ { filter = "type", type = "resource" } })
+  local drills = prototypes.get_entity_filtered({ { filter = "type", type = "mining-drill" } })
+  local raw = {}
+  for _, item in ipairs(sorted_keys(expanded.raw)) do
+    local per_minute = expanded.raw[item]
+    local row = { item = item, units_per_minute = round(per_minute), drills = {} }
+    for _, resource_name in ipairs(sorted_keys(resources)) do
+      local mining = read(function() return resources[resource_name].mineable_properties end)
+      local amount = 0
+      for _, product in ipairs(mining and mining.products or {}) do
+        if product.name == item and product.type ~= "fluid" then amount = amount + (tonumber(product.amount) or 0) end
+      end
+      local time = mining and tonumber(mining.mining_time)
+      if amount > 0 and time and time > 0 and #row.drills == 0 then
+        local category = read(function() return resources[resource_name].resource_category end)
+        local able = {}
+        for name, proto in pairs(drills) do
+          if (read(function() return proto.resource_categories end) or {})[category] then able[name] = proto end
+        end
+        row.resource = resource_name
+        -- Mining work per second: a drill of mining speed s yields s / time * amount per second.
+        row.drills = tier_rows(force, able, function(proto) return read(function() return proto.mining_speed end) end,
+          per_minute / 60 * time / amount, fuel)
+      end
+    end
+    raw[#raw + 1] = row
+  end
+  local belts = {}
+  for name, proto in pairs(prototypes.get_entity_filtered({ { filter = "type", type = "transport-belt" } })) do
+    local speed = read(function() return proto.belt_speed end)
+    -- A belt moves speed tiles per tick on two lanes of four items per tile.
+    if speed and speed > 0 then belts[#belts + 1] = { entity = name, items_per_minute = round(speed * 480 * 60), unlocked = unlocked(force, proto) } end
+  end
+  table.sort(belts, function(a, b) return a.items_per_minute < b.items_per_minute end)
+  return { units = "per_minute", basis = "nominal full-duty capacity, normal quality, no modules or mining productivity",
+    reference_fuel = fuel and { item = fuel.name, megajoules = round(fuel.joules / 1e6) } or nil,
+    stages = stages, raw = raw, belts = belts }
+end
+
 function M.production_requirements(params)
   local modes = (params.targets and 1 or 0) + (params.technology and 1 or 0) + (params.location and 1 or 0)
   if modes ~= 1 then error("production_requirements requires exactly one of targets, technology, or location") end
@@ -538,14 +646,19 @@ function M.production_requirements(params)
     if not item and not fluid then error("no item or fluid called '" .. tostring(target) .. "'") end
     local count = tonumber(raw_count)
     if not count or count <= 0 or count ~= count or count == math.huge then error("production_requirements target counts must be positive finite numbers") end
-    if item and count % 1 ~= 0 then error("item target counts must be positive integers") end
+    if item and count % 1 ~= 0 and not params.per_minute then error("item target counts must be positive integers") end
     target_names[#target_names + 1] = target
   end
   if #target_names < 1 or #target_names > 16 then error("production_requirements targets must contain 1-16 entries") end
   local choices = params.recipe_choices or {}
   if type(choices) ~= "table" then error("production_requirements recipe_choices must map product names to recipe names") end
   local expanded = expand_targets(force, targets, choices,
-    { partial = false, location = location, filter_location = params.planet })
+    { partial = false, location = location, filter_location = params.planet, rate = params.per_minute == true })
+  if params.per_minute then
+    local fuel = params.fuel or "coal"
+    if type(fuel) ~= "string" or not prototypes.item[fuel] then error("fuel must name an item, such as coal") end
+    return annotate({ planet = location, targets_per_minute = targets, rates = rate_plan(force, expanded, fuel) }, expanded, force)
+  end
   return annotate({ units = { targets = "item_or_fluid_units", raw = "item_or_fluid_units",
       products = "item_or_fluid_units", time = "seconds_at_crafting_speed_1" },
     planet = location, targets = targets, nodes = expanded.nodes, raw = expanded.raw, products = expanded.products,

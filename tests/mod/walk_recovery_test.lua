@@ -149,24 +149,94 @@ check(walk.tick(stuck) == nil and stuck._walk.clear_attempted and stuck._walk.ph
   "a tree that cannot be mined is tried once, then the body escapes it")
 walk.start_clearer = nil
 
--- Steering holds its direction while the bearing stays near it: a leg
--- between two of the eight directions becomes one straight run and one
--- diagonal run instead of a per-tick zig-zag.
+-- Steering keeps one direction until the body strays off the leg's straight
+-- line, then switches to the neighbour that heads back: a leg between two of
+-- the eight directions is a few long runs inside the planned corridor, not a
+-- per-tick zig-zag and not an L-shaped detour off it.
 do
   local unit = {}
   for name, angle in pairs({ north = 0, northeast = 45, east = 90, southeast = 135, south = 180, southwest = 225, west = 270, northwest = 315 }) do
     unit[defines.direction[name]] = { x = math.sin(math.rad(angle)), y = -math.cos(math.rad(angle)) }
   end
-  for _, goal in ipairs({ { x = 10, y = 3 }, { x = 6, y = 2.5 }, { x = 3, y = 10 }, { x = -7, y = -4 } }) do
-    local state, pos, last, changes, ticks = {}, { x = 0, y = 0 }, nil, 0, 0
-    while (pos.x - goal.x) ^ 2 + (pos.y - goal.y) ^ 2 > 0.25 and ticks < 400 do
+  for _, goal in ipairs({ { x = 10, y = 3 }, { x = 6, y = 2.5 }, { x = 3, y = 10 }, { x = -7, y = -4 }, { x = 20, y = 7 }, { x = 0, y = -9 } }) do
+    local state, pos, last, changes, ticks, drift = {}, { x = 0, y = 0 }, nil, 0, 0, 0
+    local len = math.sqrt(goal.x ^ 2 + goal.y ^ 2)
+    while (pos.x - goal.x) ^ 2 + (pos.y - goal.y) ^ 2 > 0.25 and ticks < 600 do
       local d = walk.steer(state, pos, goal)
       if last and d ~= last then changes = changes + 1 end
       last, ticks = d, ticks + 1
       pos = { x = pos.x + unit[d].x * 0.15, y = pos.y + unit[d].y * 0.15 }
+      drift = math.max(drift, math.abs(goal.x * pos.y - goal.y * pos.x) / len)
     end
-    check(changes <= 2 and ticks < 400, string.format(
-      "steering to (%g, %g) arrives with %d direction changes in %d ticks", goal.x, goal.y, changes, ticks))
+    check(ticks < 600 and drift <= 0.45 and changes <= 0.7 * len, string.format(
+      "steering to (%g, %g) arrives in %d ticks, %d direction changes, %.2f tiles off the line",
+      goal.x, goal.y, ticks, changes, drift))
   end
 end
+
+-- A belt carrying the body sideways, or a shove off a straight leg, never
+-- makes it miss the waypoint and walk on past it; a body pinned in place
+-- tries the other direction once, not every tick.
+do
+  local unit = {}
+  for name, angle in pairs({ north = 0, northeast = 45, east = 90, southeast = 135, south = 180, southwest = 225, west = 270, northwest = 315 }) do
+    unit[defines.direction[name]] = { x = math.sin(math.rad(angle)), y = -math.cos(math.rad(angle)) }
+  end
+  local function arrives(goal, push, start)
+    local state, pos, ticks = {}, start or { x = 0, y = 0 }, 0
+    while (pos.x - goal.x) ^ 2 + (pos.y - goal.y) ^ 2 > 0.25 do
+      if ticks >= 600 then return false end
+      local d = walk.steer(state, pos, goal)
+      local p = push(pos)
+      pos = { x = pos.x + unit[d].x * 0.15 + p.x, y = pos.y + unit[d].y * 0.15 + p.y }
+      ticks = ticks + 1
+    end
+    return true
+  end
+  local misses = 0
+  for _, goal in ipairs({ { x = 9.5, y = 0 }, { x = 12, y = 0 }, { x = 12, y = 0.3 }, { x = 10, y = 3 }, { x = 7, y = -2 } }) do
+    -- Perpendicular blue belts every third tile carry the body south.
+    local belts = function(p) return { x = 0, y = (math.floor(p.x) % 3 == 1) and 0.094 or 0 } end
+    if not arrives(goal, belts) then misses = misses + 1 end
+  end
+  check(misses == 0, string.format("%d of 5 legs across fast belts missed their waypoint", misses))
+  local function shove(at, by)
+    local done = false
+    return function(p)
+      if done or p.x < at then return { x = 0, y = 0 } end
+      done = true
+      return by
+    end
+  end
+  check(arrives({ x = 10, y = 0 }, shove(4, { x = 0, y = 0.6 }))
+    and arrives({ x = 10, y = 0 }, shove(9.6, { x = 1.5, y = 0.2 })),
+    "a body shoved off a straight leg, or past its waypoint, turns back to it")
+  local state, pos, flips, last = {}, { x = 0, y = 0 }, 0, nil
+  for _ = 1, 60 do
+    local d = walk.steer(state, pos, { x = 10, y = 3 })
+    if last and d ~= last then flips = flips + 1 end
+    last = d
+  end
+  check(flips <= 1, string.format("a pinned body changed direction %d times in 60 ticks", flips))
+end
+
+-- An escape that makes no progress toward one target walks the next target's
+-- own direction, never the blocked one it held before.
+-- Water fills x >= 2 except row 0, so every escape target lies west-ish and
+-- the body is held in place: each retry must walk its own target's bearing.
+water = function(x, y) return x >= 2 and y ~= 0 end
+body.position = { x = 2.3, y = 0.9 }
+local blocked = begin({ x = -10.5, y = 0.5 }, "exact", 1)
+walk.tick(blocked)
+local seen, matches = 0, true
+for _ = 1, 8 do
+  local w = blocked._walk
+  if w.phase ~= "escaping" or not body.walking_state.walking then break end
+  seen = seen + 1
+  matches = matches and body.walking_state.direction == walk.direction_toward(body.position, w.escape_target)
+  game.tick = game.tick + 31
+  walk.tick(blocked)
+end
+check(seen >= 2 and matches, string.format("each of %d stuck escape retries walks toward its own target", seen))
+water = function() return false end
 os.exit(failures == 0 and 0 or 1)

@@ -59,24 +59,59 @@ local function direction_toward(from, to)
 end
 M.direction_toward = direction_toward
 
--- The walking direction toward `to`, kept from the last tick while the
--- bearing stays within STEER_HOLD_DEG of it. Rounding the bearing afresh
--- each tick flips between two neighbouring directions on any leg that lies
--- between them (the body zig-zags and its sprite flickers); holding turns
--- such a leg into one straight run and one diagonal run.
-local STEER_HOLD_DEG = 40
-local atan2 = math.atan2 or math.atan -- Factorio's Lua 5.2 has atan2; 5.3+ takes two arguments
+-- The walking direction toward `to` along the straight line the leg began
+-- on. Rounding the bearing afresh each tick flips between two neighbouring
+-- directions on any leg that lies between them (the body zig-zags and its
+-- sprite flickers). Instead the body keeps one of the two directions that
+-- bracket the leg and switches to the other only when it strays more than
+-- STEER_SLACK tiles off the line, so it stays close to the native path's
+-- straight segment. Past `to` (a belt pushed it by) it aims straight at it.
+local STEER_SLACK = 0.3
+local function unit(d)
+  local a = math.rad(d * 22.5) -- 16-way directions, clockwise from north
+  return math.sin(a), -math.cos(a)
+end
 local function steer(state, from, to)
-  local dx, dy = to.x - from.x, to.y - from.y
-  local held = state.walk_dir
-  if held and (dx ~= 0 or dy ~= 0) then
-    local bearing = math.deg(atan2(dx, -dy)) -- clockwise from north
-    local off = (bearing - held * 22.5) % 360
-    if off > 180 then off = 360 - off end
-    if off <= STEER_HOLD_DEG then return held end
+  local leg = state.steer_leg
+  if not leg or leg.to.x ~= to.x or leg.to.y ~= to.y then
+    leg = { from = { x = from.x, y = from.y }, to = { x = to.x, y = to.y } }
+    state.steer_leg, state.walk_dir = leg, nil
   end
-  state.walk_dir = direction_toward(from, to)
-  return state.walk_dir
+  local lx, ly = to.x - leg.from.x, to.y - leg.from.y
+  local len = math.sqrt(lx * lx + ly * ly)
+  local nearest = direction_toward(from, to)
+  if len < 1e-6 then state.walk_dir = nearest; return nearest end
+  if (to.x - from.x) * lx + (to.y - from.y) * ly <= 0 then state.walk_dir = nearest; return nearest end
+  -- Signed distance off the leg line, and the two bracketing directions.
+  local off = (lx * (from.y - leg.from.y) - ly * (from.x - leg.from.x)) / len
+  local along = direction_toward(leg.from, to)
+  local ux, uy = unit(along)
+  local side = (lx * uy - ly * ux) / len -- how `along` moves the body off the line
+  if math.abs(side) < 1e-3 then
+    -- A leg along one of the eight directions: step back toward it when pushed off.
+    local d = math.abs(off) > STEER_SLACK and (along + (off > 0 and -2 or 2)) % 16 or along
+    state.walk_dir = d
+    return d
+  end
+  local other = (along + (side > 0 and -2 or 2)) % 16 -- the neighbour on the far side of the line
+  local held = state.walk_dir
+  local last = leg.last
+  leg.last = { x = from.x, y = from.y }
+  local moved = not last or (from.x - last.x) ^ 2 + (from.y - last.y) ^ 2 >= 1e-8
+  if moved then leg.flipped = nil end
+  if held ~= along and held ~= other then
+    held = along
+  elseif not moved and not leg.flipped then
+    -- The held direction is blocked (a shore or building face): try the other, once.
+    held, leg.flipped = held == along and other or along, true
+  elseif not moved then
+    -- Both are blocked: keep still in one direction until the stuck check re-plans.
+  elseif math.abs(off) > STEER_SLACK then
+    -- Head back toward the line: `along` drifts by `side`, `other` the opposite way.
+    held = ((off > 0) == (side > 0)) and other or along
+  end
+  state.walk_dir = held
+  return held
 end
 M.steer = steer
 
@@ -93,7 +128,7 @@ end
 
 local function request_path(state, c, task_id, target, phase, radius)
   target = target or state.target
-  state.walk_dir = nil
+  state.walk_dir, state.steer_leg = nil, nil
   local id = c.surface.request_path({
     bounding_box = { { -0.2, -0.2 }, { 0.2, 0.2 } },
     collision_mask = prototypes.entity["character"].collision_mask,
@@ -695,7 +730,7 @@ function M.begin_settle(state, c, anchor, limit)
   state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
     conveyor = conveyor_label(conveyor), started_tick = game.tick,
     ticks_allowed = SETTLE_TICKS * math.max(1, math.ceil(math.sqrt(dist_sq(c.position, cell)) / 4)) }
-  state.walk_dir = nil
+  state.walk_dir, state.steer_leg = nil, nil
   set_walking(c, { walking = true, direction = steer(state, c.position, cell) })
   return nil
 end
@@ -845,7 +880,8 @@ function M.step(state, c, task_id)
     end
     local failure = step_escape(state, c, evidence)
     if failure then return failure end
-    set_walking(c, { walking = true, direction = steer(state, pos, state.escape_target) })
+    -- Each escape target is a different way out: never hold a blocked direction.
+    set_walking(c, { walking = true, direction = direction_toward(pos, state.escape_target) })
     return nil
   end
 

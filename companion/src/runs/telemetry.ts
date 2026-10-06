@@ -13,12 +13,21 @@ import { createThoughtFeed, type ThoughtFeed, type ThoughtRole } from "./thought
 const countRow = z.object({ name: z.string(), count: z.number() }).strict();
 const resourceName = z.object({ type: z.enum(["item", "fluid"]), name: z.string() }).strict();
 const counters = z.object({ produced: z.array(countRow), consumed: z.array(countRow), unavailable: z.boolean().optional() }).strict();
+const snapshotBodySchema = z.object({ state: z.string(), surface_ref: z.string().optional(), platform_name: z.string().optional(),
+  rebind_refused: z.object({ tick: z.number().int().nonnegative(), characters: z.number().int().nonnegative() }).strict().optional(),
+}).strict();
 export const runSnapshotSchema = z.object({
   // null while the body is aboard a platform or in a cargo pod without a readable character (mod 0.22.3 on).
   tick: z.number().int().nonnegative(), character: z.record(z.string(), z.unknown()).nullable(),
   /** Where the body is (mod 0.22.3 on). */
-  body: z.object({ state: z.string(), surface_ref: z.string().optional(), platform_name: z.string().optional() }).strict().optional(),
+  body: snapshotBodySchema.optional(),
   progression: z.record(z.string(), z.unknown()), factory: z.record(z.string(), z.unknown()),
+  // Async get_job adds its FIFO readback; direct and historical samples may omit it.
+  fifo: z.object({ active_plan_id: z.number().int().positive().optional(),
+    queue_depth: z.number().int().nonnegative(), idle_seconds: z.number().int().nonnegative().optional(),
+    human_control: z.boolean(), human_idle_ticks: z.number().int().nonnegative().optional(),
+    body: snapshotBodySchema.extend({ bound_for: z.string().optional() }).strict(),
+  }).strict().optional(),
   lines: z.object({ line_count: z.number().int().nonnegative(), running_line_count: z.number().int().nonnegative(),
     self_sustaining_line_count: z.number().int().nonnegative(), hand_fed_line_count: z.number().int().nonnegative() }).strict().optional(),
   statistics: z.object({

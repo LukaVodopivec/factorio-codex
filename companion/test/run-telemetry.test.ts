@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { Bridge, ModError } from "../src/bridge.js";
+import type { RconClient } from "../src/rcon.js";
 import { checkpointDelay, compareRuns, createRunStore, markRunAssisted, readManifest, resourceVerdict,
   parseRunSnapshot, rolloutResolver, sampleSchema, snapshotDelta, type RunManifest, type RunSample, type RunSnapshot } from "../src/runs/telemetry.js";
 
@@ -37,6 +39,53 @@ function storedRun(store: string, meta: RunManifest, sample: RunSample) {
 }
 
 describe("five-minute run telemetry", () => {
+  const fifo = { active_plan_id: 1907, queue_depth: 1, idle_seconds: 0, human_control: false, human_idle_ticks: 500,
+    body: { state: "on_surface", surface_ref: "nauvis", bound_for: "vulcanus",
+      rebind_refused: { tick: 100, characters: 2 } } };
+  it.each([false, true])("validates and retains a snapshot from the bridge (async=%s)", async (async) => {
+    const source = snapshot(200, 15);
+    const rcon = { exec: async (cmd: string) => JSON.stringify({ ok: true, data: !async ? source
+      : cmd.includes('"get_job"') ? { job_id: 1, job_status: "done", result: source, fifo }
+        : { job_id: 1, job_status: "pending" } }) } as unknown as RconClient;
+    const bridge = new Bridge(rcon, { now: () => 0, sleep: async () => {} });
+    const parsed = parseRunSnapshot(await bridge.call("run_snapshot"));
+    expect(parsed.fifo).toEqual(async ? fifo : undefined);
+    const recorded = checkpoint(parsed, snapshot(100, 5));
+    expect(recorded.snapshot.fifo).toEqual(parsed.fifo);
+    expect(recorded.delta.items).toEqual([{ name: "iron-ore", produced: 10, consumed: 0 }]);
+  });
+
+  it("rejects malformed FIFO and unrelated extra fields instead of concealing them", () => {
+    for (const invalid of [{ ...fifo, queue_depth: -1 }, { ...fifo, human_control: "false" },
+      { ...fifo, unknown: 1 }, { ...fifo, body: { ...fifo.body, unknown: 1 } }]) {
+      expect(() => parseRunSnapshot({ ...snapshot(200, 15), fifo: invalid })).toThrow();
+    }
+    expect(() => parseRunSnapshot({ ...snapshot(200, 15), fifo, unknown: 1 })).toThrow();
+  });
+
+  it("retains native top-level rebind refusal and rejects malformed or extra body metadata", () => {
+    const body = { state: "on_surface", surface_ref: "nauvis", rebind_refused: { tick: 100, characters: 2 } };
+    expect(parseRunSnapshot({ ...snapshot(200, 15), body }).body).toEqual(body);
+    for (const invalid of [{ ...body, rebind_refused: { tick: -1, characters: 2 } },
+      { ...body, rebind_refused: { ...body.rebind_refused, unknown: 1 } }, { ...body, unknown: 1 }]) {
+      expect(() => parseRunSnapshot({ ...snapshot(200, 15), body: invalid })).toThrow();
+    }
+  });
+
+  it("keeps async native failures as errors without snapshot metrics", async () => {
+    const rcon = { exec: async (cmd: string) => JSON.stringify({ ok: true, data: cmd.includes('"get_job"')
+      ? { job_id: 1, job_status: "failed", error: "snapshot computation failed", fifo }
+      : { job_id: 1, job_status: "pending" } }) } as unknown as RconClient;
+    const bridge = new Bridge(rcon, { now: () => 0, sleep: async () => {} });
+    await expect(bridge.call("run_snapshot")).rejects.toThrow(ModError);
+    const error = sampleSchema.parse({ status: "error", kind: "checkpoint", scheduled_elapsed_ms: 300_000,
+      actual_elapsed_ms: 300_050, capture_started_at: "2026-09-04T08:05:00Z",
+      capture_completed_at: "2026-09-04T08:05:00.050Z", capture_latency_ms: 50, error: "snapshot computation failed" });
+    expect(error).not.toHaveProperty("snapshot");
+    expect(error).not.toHaveProperty("delta");
+    expect(() => sampleSchema.parse({ ...error, snapshot: snapshot(200, 15) })).toThrow();
+  });
+
   it("schedules from absolute five-minute deadlines without chained drift", () => {
     expect(checkpointDelay(1, 1_000)).toBe(299_000);
     expect(checkpointDelay(2, 301_000)).toBe(299_000);

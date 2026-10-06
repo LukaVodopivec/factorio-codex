@@ -61,7 +61,8 @@ local DROP_LIMIT = 8
 local COVER_CHECKS = 16
 local NATURAL_TYPES = { "simple-entity", "tree", "plant", "resource" }
 -- Smelting through an own furnace: one source stack per round, a poll every
--- half second, a furnace that makes no progress for ten seconds is done.
+-- half second, a furnace that makes no progress for ten seconds is done; one
+-- a line feeds or empties is left at once and not loaded again.
 local SMELT_POLL_TICKS = 30
 local SMELT_STALL_TICKS = 600
 local MAX_SMELT_ROUNDS = 4
@@ -618,13 +619,15 @@ end
 -- Nearest own furnace that smelts the recipe's category, is idle
 -- (idle_furnace) and whose result holds nothing or the item; or `own`, the
 -- furnace the frame loaded last, while its source holds only that ore.
-local function smelter(c, recipe, ore, item, own)
+-- Furnaces in avoid (by unit number) were seen fed or emptied by a line.
+local function smelter(c, recipe, ore, item, own, avoid)
   local ok, furnaces = pcall(registry.machines, { "furnace" })
   local best, best_d
   for _, entry in ipairs(ok and type(furnaces) == "table" and furnaces or {}) do
     local e = entry.entity
     local ok_fit, fits = pcall(function()
       if not (e and e.valid and e.prototype.crafting_categories[recipe.category]) then return false end
+      if avoid and avoid[e.unit_number] then return false end
       local source, result = inventory_of(e, "furnace_source"), inventory_of(e, "furnace_result")
       if not (source and result) then return false end
       if result.get_item_count() ~= result.get_item_count(item) then return false end
@@ -836,9 +839,10 @@ local function advance(task, c, frame)
       return false
     end
     if not scan(task) then return true end
-    local furnace = smelter(c, recipe, ingredient.name, frame.name, frame.smelt and frame.smelt.furnace)
+    local furnace = smelter(c, recipe, ingredient.name, frame.name, frame.smelt and frame.smelt.furnace, frame.smelt_avoid)
     if not furnace then
       frame.smelt_error = "no own furnace is free to smelt it (" .. recipe.category .. ")"
+        .. (frame.smelt_avoid and "; a line feeds or empties the one it loaded" or "")
       frame.phase = "gather"
       return false
     end
@@ -893,14 +897,23 @@ local function advance(task, c, frame)
     s.next_poll = game.tick + SMELT_POLL_TICKS
     local source, result = inventory_of(s.furnace, "furnace_source"), inventory_of(s.furnace, "furnace_result")
     local left, made = source and source.get_item_count(s.ore) or 0, result and result.get_item_count(frame.name) or 0
+    -- The body's own load only lowers the ore and raises the product: more
+    -- ore or fewer products means a line feeds or empties this furnace. The
+    -- wait ends now with what it made, and later rounds pass it over.
+    local foreign = s.left ~= nil and (left > s.left or made < s.made)
     if left ~= s.left or made ~= s.made then s.left, s.made, s.progress_tick = left, made, game.tick end
     local finished = left == 0 and not s.furnace.is_crafting()
-    if made < need and not finished and game.tick - s.progress_tick < SMELT_STALL_TICKS
+    if not foreign and made < need and not finished and game.tick - s.progress_tick < SMELT_STALL_TICKS
       and game.tick < (s.deadline or math.huge) then return true end
     frame.smelt_rounds = (frame.smelt_rounds or 0) + 1
     frame.phase = "smelt"
+    if foreign then
+      frame.smelt_avoid = frame.smelt_avoid or {}
+      if s.furnace.unit_number then frame.smelt_avoid[s.furnace.unit_number] = true end
+      frame.smelt_error = "a line feeds or empties the furnace it loaded"
+    end
     if made <= 0 then
-      frame.smelt_error, frame.phase = game.tick >= s.deadline and left > 0
+      frame.smelt_error, frame.phase = foreign and frame.smelt_error or game.tick >= s.deadline and left > 0
         and "the furnace made none of this load in time (a line may feed or empty it)"
         or "the furnace smelted nothing (out of fuel or power?)", "gather"
       return false

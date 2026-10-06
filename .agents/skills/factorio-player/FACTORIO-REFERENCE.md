@@ -72,6 +72,25 @@ and a live read disagree, the live read wins.
   if its fuel flow exceeds what all its machines burn; otherwise it slowly
   runs dry and stops.
 
+## Connections that make a line run
+
+- Every producer needs a sink for its output that is not its own input: a
+  consumer, a chest with space or a belt that leads somewhere. Two burner
+  drills feeding each other only refuel each other; nothing leaves. An
+  `output_full` machine is an unfinished connection, not a finished line.
+- An inserter only works when it picks from the machine or belt that holds
+  the item and drops into the one that needs it. Before building, confirm
+  from the checks the tools report (`can_place` names what an inserter would
+  pick from and drop onto) rather than from the intended direction.
+- A belt run is a connection only when its last belt faces the consumer or
+  the inserter that serves it.
+- Build power before the electric consumers it feeds, and give a burner
+  machine outside upkeep's reach (boilers, far drills) its permanent fuel
+  feed in the same package that builds it.
+- Price a design in plates and compare that with the plates the factory
+  measurably makes. A long belt route can cost more than the line it feeds
+  returns for many minutes; short local connections pay back first.
+
 ## Keep, rebuild or retire
 
 - Every building has a running cost: its fuel, the body's trips to feed or

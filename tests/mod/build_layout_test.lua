@@ -20,6 +20,12 @@ local function box(w, h) return { left_top = { x = -w / 2, y = -h / 2 }, right_b
 local function entity(name, type, w, h, extra)
   local proto = { name = name, type = type, tile_width = w, tile_height = h, collision_box = box(w - 0.3, h - 0.3) }
   for k, v in pairs(extra or {}) do proto[k] = v end
+  -- The live prototype fields the dry run's survey reads.
+  if proto.pickup then proto.inserter_pickup_position, proto.inserter_drop_position = proto.pickup, proto.drop end
+  if proto.electric then
+    proto.electric_energy_source_prototype = { usage_priority = type == "generator" and "secondary-output" or "secondary-input" }
+  end
+  if proto.supply then proto.get_supply_area_distance = function() return proto.supply end end
   return proto
 end
 local pole_reach = function() return 7.5 end
@@ -151,7 +157,18 @@ local surface = {
       local out = {}
       for _, b in ipairs(blockers) do
         if b.position.x > filter.area.left_top.x and b.position.x < filter.area.right_bottom.x
-          and b.position.y > filter.area.left_top.y and b.position.y < filter.area.right_bottom.y then out[#out + 1] = b end
+          and b.position.y > filter.area.left_top.y and b.position.y < filter.area.right_bottom.y
+          and (filter.type == nil or b.type == filter.type) then out[#out + 1] = b end
+      end
+      return out
+    end
+    if filter.radius then
+      local out = {}
+      for _, b in ipairs(blockers) do
+        local dx, dy = b.position.x - filter.position.x, b.position.y - filter.position.y
+        if dx * dx + dy * dy <= filter.radius * filter.radius and (filter.type == nil or b.type == filter.type) then
+          out[#out + 1] = b
+        end
       end
       return out
     end
@@ -477,6 +494,104 @@ for _, row in ipairs(routed.placed) do
 end
 check(order_ok, "poles are placed last")
 
+-- The dry run reports, as data, what each inserter picks from and drops
+-- into, what each belt run's last belt faces, unpowered machines and
+-- planned poles no wire reaches.
+local existing, belt_run
+do
+  function existing(name, kind, x, y, w, extra)
+    local e = { valid = true, name = name, type = kind, position = { x = x, y = y },
+      bounding_box = { left_top = { x = x - w / 2, y = y - w / 2 }, right_bottom = { x = x + w / 2, y = y + w / 2 } } }
+    for k, v in pairs(extra or {}) do e[k] = v end
+    return e
+  end
+  blockers = { existing("wooden-chest", "container", 900.5, 897.5, 0.7) }
+  local function feeder(direction)
+    return dry({ anchor = { x = 900, y = 900 }, entities = { { name = "stone-furnace", dx = 0, dy = 0 },
+      { name = "burner-inserter", dx = 0.5, dy = -1.5, direction = direction },
+      { name = "transport-belt", dx = 1.5, dy = -0.5, direction = 12 }, { name = "transport-belt", dx = 2.5, dy = -0.5, direction = 12 } } })
+  end
+  local north, south = feeder(0), feeder(8)
+  local fed, unfed = north.inserters and north.inserters[1], south.inserters and south.inserters[1]
+  check(north.ok and fed and fed.x == 900.5 and fed.y == 898.5 and fed.picks_from == "wooden-chest" and fed.drops_into == "stone-furnace",
+    "a dry run names what an inserter picks from (an existing chest) and drops into (a planned furnace)")
+  check(south.ok and unfed and unfed.picks_from == "stone-furnace" and unfed.drops_into == "wooden-chest",
+    "turning the inserter round swaps its pickup and drop targets in the dry run")
+  local belt_end = north.belt_ends and north.belt_ends[1]
+  check(north.belt_ends and #north.belt_ends == 1 and belt_end.x == 901.5 and belt_end.faces == "stone-furnace",
+    "a belt run's last belt names what it faces; a belt facing the next belt of its run is no end")
+  blockers = {}
+  local open_end = dry({ anchor = { x = 900, y = 920 }, entities = { { name = "transport-belt", dx = 0.5, dy = 0.5, direction = 4 } } })
+  check(open_end.ok and open_end.belt_ends and open_end.belt_ends[1].faces == "nothing" and open_end.inserters == nil,
+    "a belt facing open ground faces nothing; a layout without inserters lists none")
+  local routed_end
+  for _, row in ipairs(routed.belt_ends or {}) do if row.faces == "wooden-chest" then routed_end = row end end
+  check(routed_end ~= nil, "a routed belt's last belt faces the chest it was routed to")
+
+  -- A belt reversed in the middle of a run: the belt running head-on into
+  -- it and the reversed belt itself are both ends, beside the run's last.
+  function belt_run(...)
+    local list = {}
+    for i, e in ipairs({ ... }) do
+      list[i] = { name = e[1], dx = i - 0.5, dy = 0.5, direction = e[2], belt_to_ground_type = e[3] }
+    end
+    local out = dry({ anchor = { x = 900, y = 930 }, entities = list })
+    local ends = {}
+    for _, row in ipairs(out.belt_ends or {}) do ends[#ends + 1] = string.format("%g:%s", row.x, row.faces) end
+    table.sort(ends)
+    return out.ok and table.concat(ends, " ") or "failed"
+  end
+  local belt = "transport-belt"
+  local reversed = belt_run({ belt, 4 }, { belt, 4 }, { belt, 12 }, { belt, 4 }, { belt, 4 })
+  check(reversed == "901.5:transport-belt 902.5:transport-belt 904.5:nothing",
+    "a belt facing a reversed belt and the reversed belt are belt ends (" .. reversed .. ")")
+  local sideload = belt_run({ belt, 4 }, { belt, 0 })
+  check(sideload == "901.5:nothing", "a belt side-loading onto another is no end (" .. sideload .. ")")
+
+  local assembler = { name = "assembling-machine-1", dx = 0.5, dy = 0.5, recipe = "iron-gear-wheel" }
+  local bare = dry({ anchor = { x = 950, y = 950 }, entities = { assembler } })
+  check(bare.ok and bare.unpowered and bare.unpowered[1].name == "assembling-machine-1" and bare.isolated_poles == nil,
+    "an electric machine no pole covers is reported unpowered, and the dry run stays ok")
+  local poled = dry({ anchor = { x = 950, y = 950 }, entities = { assembler, { name = "small-electric-pole", dx = 3.5, dy = 0.5 } } })
+  check(poled.ok and poled.unpowered == nil and poled.isolated_poles and poled.isolated_poles[1].x == 953.5,
+    "a planned pole within supply distance powers the machine; with no pole in wire reach it is isolated")
+  local pole = existing("small-electric-pole", "electric-pole", 959.5, 950.5, 0.3, { prototype = entities["small-electric-pole"] })
+  blockers = { pole }
+  local wired = dry({ anchor = { x = 950, y = 950 }, entities = { assembler, { name = "small-electric-pole", dx = 3.5, dy = 0.5 } } })
+  check(wired.ok and wired.unpowered == nil and wired.isolated_poles == nil, "a planned pole in wire reach of an existing pole is not isolated")
+  pole.position, pole.bounding_box = { x = 953.5, y = 950.5 }, nil
+  local existing_supply = dry({ anchor = { x = 950, y = 950 }, entities = { assembler } })
+  check(existing_supply.ok and existing_supply.unpowered == nil, "an existing pole whose supply area covers the machine powers it")
+  -- The pole query reaches past the chart: what stands on charted chunks
+  -- still counts; a pole on an uncharted chunk never does.
+  local is_charted = character.force.is_chunk_charted
+  character.force.is_chunk_charted = function(_, chunk) return chunk.x < 30 end
+  pole.position = { x = 959.5, y = 950.5 }
+  local edge = dry({ anchor = { x = 956, y = 950 }, entities = { assembler } })
+  check(edge.ok and edge.unpowered == nil, "a charted pole covers a machine whose pole query reaches an uncharted chunk")
+  pole.position = { x = 960.5, y = 950.5 }
+  local beyond = dry({ anchor = { x = 957, y = 950 }, entities = { assembler } })
+  check(beyond.ok and beyond.unpowered and beyond.unpowered[1].x == 957.5, "a pole on an uncharted chunk powers nothing in the report")
+  character.force.is_chunk_charted = is_charted
+  blockers = {}
+  -- The survey is spread over ticks within the job's budget.
+  local row = {}
+  for i = 0, 19 do row[#row + 1] = { name = "burner-inserter", dx = i + 0.5, dy = 0.5 } end
+  local survey_job = layout.layout_check_job.start({ check_only = true, anchor = { x = 1000, y = 1000 }, entities = row })
+  local surveyed, survey_ticks, survey_worst = nil, 0, 0
+  while not surveyed and survey_ticks < 200 do
+    local surveying = survey_job.survey ~= nil
+    local budget = { left = 20 }
+    surveyed = layout.layout_check_job.step(survey_job, budget)
+    if surveying then survey_ticks, survey_worst = survey_ticks + 1, math.max(survey_worst, 20 - budget.left) end
+  end
+  check(surveyed and surveyed.ok and #surveyed.inserters == 20 and survey_ticks > 1 and survey_worst <= 26,
+    string.format("the dry run's survey of 20 inserters takes %d ticks (worst %d work for a 20 budget)", survey_ticks, survey_worst))
+  local power_block = check_block({ block = "power", count = 1, near = { x = 5, y = 3 }, check_only = true })
+  check(power_block.ok and power_block.isolated_poles == nil and power_block.unpowered == nil,
+    "poles that cover a planned generator are not isolated")
+end
+
 local bad_layout = pcall(layout.layout_action.validate, { action = "build_layout", entities = {} }, 1)
 local both = pcall(layout.layout_action.validate, { anchor = { x = 0, y = 0 }, site = { near = { x = 0, y = 0 } },
   entities = { { name = "pipe", dx = 0, dy = 0 } } }, 1)
@@ -605,6 +720,25 @@ local hopped = check_layout({ check_only = true, anchor = { x = 700, y = 700 }, 
 local unders = 0
 for _, row in ipairs(hopped.placed) do if row.name == "underground-belt" then unders = unders + 1 end end
 check(hopped.ok and unders == 2, "a layout belt hops a planned wall of chests with one underground pair")
+local hop_ends = {}
+for _, row in ipairs(hopped.belt_ends or {}) do hop_ends[#hop_ends + 1] = row.name end
+check(table.concat(hop_ends, " ") == "transport-belt", "a routed underground pair ends no belt run in the dry run")
+-- Underground ends in a dry run's belt_ends: an exit's back is closed, and
+-- an entrance with no exit in reach (planned, else an own exit) ends its run.
+do
+  local belt, under = "transport-belt", "underground-belt"
+  local closed_back = belt_run({ belt, 4 }, { under, 4, "output" }, { belt, 4 })
+  check(closed_back == "900.5:underground-belt 902.5:nothing",
+    "a belt facing an underground exit's closed back is an end (" .. closed_back .. ")")
+  local dangling = belt_run({ belt, 4 }, { under, 4, "input" })
+  check(dangling == "901.5:nothing", "an underground entrance with no exit is its run's end (" .. dangling .. ")")
+  local paired = belt_run({ belt, 4 }, { under, 4, "input" }, { "wooden-chest" }, { under, 4, "output" }, { belt, 4 })
+  check(paired == "904.5:nothing", "an underground entrance with its exit in reach is no end (" .. paired .. ")")
+  blockers = { existing(under, "underground-belt", 903.5, 930.5, 0.8, { direction = 4, belt_to_ground_type = "output" }) }
+  local existing_exit = belt_run({ belt, 4 }, { under, 4, "input" })
+  check(existing_exit == "", "an underground entrance whose own exit already stands in reach is no end (" .. existing_exit .. ")")
+  blockers = {}
+end
 local walled_off = check_layout({ check_only = true, anchor = { x = 800, y = 800 }, entities = wall,
   connections = { { kind = "belt", prototype = "transport-belt", underground = false,
     from = { dx = 0.5, dy = 0.5 }, to = { dx = 20.5, dy = 0.5 } } } })

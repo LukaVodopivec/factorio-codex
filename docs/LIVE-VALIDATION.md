@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.23.0**. Prior live evidence remains historical
-until the 0.23.0 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.24.0**. Prior live evidence remains historical
+until the 0.24.0 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -105,7 +105,7 @@ For the 0.22.3 release (other planets), record these observable checks
   `queue_depth` throughout, and `stop` during the wait leaves the body aboard.
 - After a surface change, an unfinished plan for the old surface ends with
   `SURFACE_LEFT` and leaves `queue_depth`; work queued after the `travel`
-  step runs on arrival. Astra's package for another surface shows
+  step runs on arrival. The strategist's package for another surface shows
   `waiting_surface` in `orders` until the body is there; a package holding
   `travel` is rejected by `ledger-apply`.
 - On another planet, `factory_status` details that planet and lists Nauvis
@@ -127,7 +127,7 @@ checks (offline fixtures cover them; none is live evidence yet):
 
 - `platform_status` lists every platform at no cost; `detail: "full"` for one
   platform returns its foundation rows, hub contents and requests, entities
-  and `ghosts.missing`, and works on Astra's read-only surface too.
+  and `ghosts.missing`, and works on the strategist's read-only surface too.
 - `create_platform` answers at once with a platform `waiting_for_starter_pack`
   over the body's planet; a second platform of the same name is `NAME_TAKEN`.
 - `launch_rocket` with no ready rocket fails at once with `ROCKET_NOT_READY`
@@ -193,7 +193,7 @@ turning them into a fixed opening or map-specific sequence:
 - Neither role calls a thread-reading tool after `GO`, each role's notebook
   folder is non-empty, the pilot sends no reports, and the ledger is never
   read by shell.
-- A package Astra writes starts within about 5 s with no pilot turn: its plan
+- A package the strategist writes starts within about 5 s with no pilot turn: its plan
   appears in `activity_log` with source `package:<id>`, and a package the mod
   check rejects appears as `package_failed` in `next_event`.
 - `factory_status` stays under about 6 KB and costs under about 8 ms of Lua
@@ -358,10 +358,10 @@ sessions and one physical writer. Start the sole gameplay pilot as
 `gpt-6-luna` with `low` reasoning and fast mode enabled. Start the persistent
 strategist as `gpt-6.1-sol` with `medium` reasoning at normal speed and expose
 only the disabled-by-default `factorio-readonly` MCP server to it; disable the
-full `factorio` server in that Astra session. Astra owns NOW/NEXT/LATER and the
+full `factorio` server in that the strategist session. The strategist owns NOW/NEXT/LATER and the
 architecture, and is the sole atomic writer of one compact `operations.json`,
-including its initial revision. The ledger is Astra's only channel to the
-pilot. Astra designs build packages of whole blocks or this run's blueprints,
+including its initial revision. The ledger is the strategist's only channel to the
+pilot. The strategist designs build packages of whole blocks or this run's blueprints,
 dry-run with `check_only` (the only coordinates in the ledger).
 The pilot's full-surface bridge queues each new package into the FIFO by
 itself, as a plan with source `package:<id>` after the mod's placement check,
@@ -369,21 +369,21 @@ with no pilot turn, and records outcomes in `<run_dir>/package-queue.json`.
 It never waits for a pilot plan: it holds packages only during a human hold
 and while the ledger file is older than the last `stop` it observed (persisted
 in `package-queue.json`), so packages written before a stop stay held until
-Astra rewrites the ledger. Leading `blueprint_capture` steps of a package are
-made by the bridge before the rest is queued. Astra writes no build package
+The strategist rewrites the ledger. Leading `blueprint_capture` steps of a package are
+made by the bridge before the rest is queued. The strategist writes no build package
 before `GO` (every pre-`GO` ledger write has `build_packages: []`), and a stop
 is followed by a re-observation (below), because a pilot `queue_plan` already
 in flight when `stop` lands still queues. A record newer than the
 loaded save's tick (a restart from an earlier save) is dropped and its package
 queued again.
-Luna is the foreman: it waits on `next_event`, handles failed packages, an
+The pilot is the foreman: it waits on `next_event`, handles failed packages, an
 empty queue and local judgment with goal-level actions, owns immediate safety
-and latest exact local evidence, and sends no reports. Astra reads never enter
+and latest exact local evidence, and sends no reports. The strategist reads never enter
 the physical FIFO. Record both profiles, their MCP surfaces, release SHA,
 archive hash, and save hash before `GO`. Never apply this cutover to a running
 run's sessions.
 
-Before `GO`, create `notebook/astra/` and `notebook/luna/`, both empty, beside
+Before `GO`, create `notebook/strategist/` and `notebook/pilot/`, both empty, beside
 the run's `operations.json`. Each role writes only its own folder and reads
 anything in either at any time: markdown ideas, outcomes, designs, and this
 run's exact positions and maps; no imported or copied external content, and
@@ -432,7 +432,7 @@ The launch flags express requested settings. `--fast on` requests
 normal service. Neither a launch flag nor a successful update is role-profile
 confirmation. Follow the native readback procedure below before `GO`.
 Start each with its checked-in role goal; the pilot takes no physical action
-before `GO`. Confirm Astra lists exactly the twenty-two configured read-only tools
+before `GO`. Confirm the strategist lists exactly the twenty-two configured read-only tools
 (`build_layout`, `build_block`, `connect_entities`, `blueprint_place` and `place_tiles` there are dry runs only) and cannot list any
 movement, transfer, crafting, placement, research mutation, plan
 enqueue/run/cancel, or stop tool before `GO`, and that the pilot has the full
@@ -443,13 +443,13 @@ peaceful mode/enemy bases disabled, exact native player, viewer, and one
 body/lane/writer. Archive the previous run's `operations.json` and
 `package-queue.json` into that previous run's directory and verify the current
 destinations are absent. The bridge reads the ledger at
-`<run-dir>/operations.json` of the server `server start` started. Give Astra
+`<run-dir>/operations.json` of the server `server start` started. Give the strategist
 that absolute path and the exact `run` object (`id`, `release_sha`,
 `baseline_save_sha256`, `save_identity`, `created_at`, `roles` per the ledger
 schema: `{"pilot":{"model":"gpt-6-luna","reasoning":"low","fast":true},`
 `"strategist":{"model":"gpt-6.1-sol","reasoning":"medium","fast":false}}`; a ledger
 written before 2026-10-05 keeps its recorded `gpt-6-astra`), and
-have Astra create it by piping an
+have the strategist create it by piping an
 `{"init": true, "run": <that object>, "source_tick": null, "update": ...}`
 envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger
 <absolute operations.json path>` from its worktree. Fill `update` with the
@@ -462,7 +462,7 @@ tick, that the persisted schema-2 ledger has mode `0600` and an empty
 records. Initialization refuses every
 existing destination without replacement. Later updates use the
 `{run_id, save_identity, source_tick, update}` envelope and require a newer
-tick. Never hand-seed the ledger: Astra is its sole atomic host writer.
+tick. Never hand-seed the ledger: The strategist is its sole atomic host writer.
 
 Rehearse the stop sequence below on the live role sessions without stopping the
 server; a role turn must end within about five seconds of pause plus
@@ -501,7 +501,7 @@ To continue a run's factory with a new release instead of a fresh map:
    invalid for `after_plan_id`. If an active task or queue depth remains, call
    `stop` and re-observe until idle.
 4. The old run's `operations.json` and `package-queue.json` stay archived in
-   its directory. Astra initialises the new run's ledger from fresh reads
+   its directory. The strategist initialises the new run's ledger from fresh reads
    (packages from the old ledger are not queued again); the copied notebook
    continues, because a resumed save of the same factory continues its run.
 5. Spawn the role sessions with this release's settings (for 0.22.3:
@@ -509,7 +509,7 @@ To continue a run's factory with a new release instead of a fresh map:
    above) and their updated goal files, redo the role-profile readback, start
    the recorder with `--pilot-rollout` and `--strategist-rollout` (a later
    replacement writes its rollout path to `<run_dir>/rollouts.json` as
-   `{"luna": path, "astra": path}`, which the recorder follows), and release
+   `{"pilot": path, "strategist": path}`, which the recorder follows), and release
    `GO` through the native procedure below. Record the upgrade as an
    intervention.
 
@@ -546,15 +546,15 @@ do not reconstruct readback from a launch command or substitute the supervisor's
 own settings. Record session and turn identity, native runtime version,
 observation receipt time, requested values, reported values and interpretation
 in existing run evidence. This preparation report uses the existing session
-transport to the supervisor; Astra's only channel to the pilot remains the ledger.
+transport to the supervisor; the strategist's only channel to the pilot remains the ledger.
 All required profile fields fit this compact projection. If fuller native output
 is needed, the supervisor reads it through the existing session transport and
 records it in existing run evidence; do not add a store or channel.
 
 If preparation changes a role profile, retain the update receipt, end that
 turn, and obtain a fresh native read in the subsequent turn. Require both
-`current_turn` and `next_turn` to match Luna / low / Fast (`priority` in the
-validated runtime) or Astra / medium / normal (`default` in these probes,
+`current_turn` and `next_turn` to match the pilot / low / Fast (`priority` in the
+validated runtime) or the strategist / medium / normal (`default` in these probes,
 `standard` only when the installed runtime establishes that mapping).
 `changed:false` on a read means no update was requested, not failed preparation.
 Missing fields, unresolved null tiers, wrong identity, malformed or stale
@@ -586,17 +586,17 @@ results, not inferred launch values. Receipt times below are UTC:
 
 | Probe / receipt | Native current turn | Native next turn | Enabled / inherited | Supervisor interpretation |
 | --- | --- | --- | --- | --- |
-| Luna, 01:14:15 | Luna / low / priority | Luna / low / priority | true / false | Pilot selected Fast profile confirmed; no GO while Sol report absent. |
+| the pilot, 01:14:15 | the pilot / low / priority | the pilot / low / priority | true / false | Pilot selected Fast profile confirmed; no GO while Sol report absent. |
 | Sol delayed until 01:14:42 | Sol / medium / default | Sol / medium / default | true / false | Both reports now consumed; normal tier and true flag retained separately, not classified as a bug. No gameplay GO was sent. |
-| Sol requests Luna/low/fast:true, 01:14:49; same-turn read | Sol / medium / default | Luna / low / priority | true / false | `changed:true`, `effective:next_turn`; preparation incomplete despite update success. |
-| Subsequent turn, 01:14:54 | Luna / low / priority | Luna / low / priority | true / false | Fresh native read confirms application after the turn boundary. |
-| Requests Sol/medium/fast:false, 01:14:56; same-turn read | Luna / low / priority | Sol / medium / default | true / false | Disabling Fast selects default for next turn while selection capability remains enabled. |
+| Sol requests the pilot/low/fast:true, 01:14:49; same-turn read | Sol / medium / default | the pilot / low / priority | true / false | `changed:true`, `effective:next_turn`; preparation incomplete despite update success. |
+| Subsequent turn, 01:14:54 | the pilot / low / priority | the pilot / low / priority | true / false | Fresh native read confirms application after the turn boundary. |
+| Requests Sol/medium/fast:false, 01:14:56; same-turn read | the pilot / low / priority | Sol / medium / default | true / false | Disabling Fast selects default for next turn while selection capability remains enabled. |
 | Subsequent turn, 01:15:00 | Sol / medium / default | Sol / medium / default | true / false | Fresh normal profile consumed; true flag is capability evidence. |
 | Separate session with features.fast_mode=false, 01:15:05 | Sol / medium / null | Sol / medium / null | false / false | Controlled feature-off probe changes the enabled flag; null tier remains qualified, not normal-profile confirmation. |
 
 The supervisor withheld profile approval while Sol's report was outstanding
 for 27 seconds, then consumed both structured reports. The delay was controlled
-by requesting Sol's read after Luna's; it does not test transport congestion.
+by requesting Sol's read after the pilot's; it does not test transport congestion.
 The supervisor withheld confirmation across each mismatched current/next update until the subsequent-turn read. This
 is a disposable preparation exercise, not a live GO test. The feature-on/off
 comparison verifies the installed flag's capability meaning for these probes;
@@ -707,7 +707,7 @@ subscribes it to that thread. Recheck the installed
 schemas when the runtime changes; a schema establishes capability, not success.
 
 1. Preserve the rehearsal's physical stop, goal pause, turn interruption,
-   settled task-owned commands, stopped Astra ledger writes, and fresh physical
+   settled task-owned commands, stopped the strategist ledger writes, and fresh physical
    quiescence. Read back each exact paused goal and interrupted/completed turn.
    Pause may itself settle a turn: if an interrupt reports no active turn,
    inspect that exact turn before deciding whether anything remains to stop.
@@ -730,9 +730,9 @@ schemas when the runtime changes; a schema establishes capability, not success.
 3. Start the recorder and obtain its baseline before releasing either role.
    Submit one `GO` per role with `thread/queue/add` using
    `{threadId, clientUserMessageId, input: [{type: "text", text: <GO>}]}`.
-   The pilot's GO text names Astra's exact thread ID, as does any replacement
+   The pilot's GO text names the strategist's exact thread ID, as does any replacement
    pilot's assignment, so neither role reads threads to find the other; the
-   pilot still sends Astra no reports.
+   pilot still sends the strategist no reports.
    Each role's GO text also carries this line: "Never call list_threads,
    read_thread or wait_threads; after any compaction re-read your goal file and
    SKILL.md, then your notebook INDEX.md." No configuration or
@@ -769,8 +769,8 @@ schemas when the runtime changes; a schema establishes capability, not success.
    turns or treat an idle roster sample as proof that no start is pending.
 6. Observe a later native goal continuation turn after the GO turn ends while
    the milestone remains open. The supervisor does not assign every batch.
-   Keep exactly the two persistent roles, one body and FIFO lane: Luna alone
-   writes gameplay, Astra keeps its read-only surface and alone writes the
+   Keep exactly the two persistent roles, one body and FIFO lane: the pilot alone
+   writes gameplay, the strategist keeps its read-only surface and alone writes the
    ledger. The supervisor's native session control is not a gameplay writer.
 
 **Verification evidence and limits (2026-10-02).** The installed Codex CLI
@@ -786,7 +786,7 @@ returned a turn ID, emitted the matching `turn/started`, and recorded a
 completed that turn, and then automatically started and completed a distinct
 native goal continuation answering `CONTINUATION`, without another start
 request. In the stdio samples, rehearsal/resume interrupted-turn durations
-were 6/8 ms for Luna and
+were 6/8 ms for the pilot and
 4/13 ms for Sol; these disposable timings do not establish live-role stop
 latency. Cleanup read both goals paused and threads idle, archived the test
 sessions, and observed the test app-server processes exit successfully.
@@ -823,7 +823,7 @@ active task and every queued plan within seconds); in each role TUI run
 `/goal pause` and read back the paused state; interrupt any active role turn
 with the native TUI stop control or app-server `turn/interrupt` for that role's
 exact `threadId` and `turnId`, and read back the interrupted turn; check
-separately that no task-owned command or job is still running; confirm Astra
+separately that no task-owned command or job is still running; confirm the strategist
 makes no further ledger write; wait at least 2 s (more than one 1 s bridge
 tick), call `observe_local`, and if it shows an `active_task` or
 `queue_depth > 0` (a pilot `queue_plan` in flight before the interrupt lands
@@ -939,8 +939,8 @@ through structured state before proceeding. Interruption does not roll back
 committed plans. If emergency cancellation is necessary, record `stop` and its
 effects. Then freshly prove absent active work, zero queued work, and zero
 crafting. Without both retirement proof and physical quiescence, do not launch
-the replacement. Once it runs, write its rollout file to `luna` in
-`<run_dir>/rollouts.json` so the thought feed follows it. Preserve Astra, the one body/FIFO/write path, invalidate affected
+the replacement. Once it runs, write its rollout file to `pilot` in
+`<run_dir>/rollouts.json` so the thought feed follows it. Preserve the strategist, the one body/FIFO/write path, invalidate affected
 state, and give the replacement latest structured state and the open milestone.
 Record all interventions; assisted progress and timing are not benchmark proof.
 

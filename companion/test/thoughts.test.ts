@@ -67,27 +67,27 @@ describe("rollout tail", () => {
 
 describe("thought feed", () => {
   it("forwards one line per role per tick, records it, never replays, and survives say failures", async () => {
-    const dir = tmp(), luna = path.join(dir, "luna.jsonl"), astra = path.join(dir, "astra.jsonl"), out = path.join(dir, "thoughts.jsonl");
-    fs.writeFileSync(luna, `${reasoning("history before start")}\n`);
-    fs.writeFileSync(astra, "");
+    const dir = tmp(), pilot = path.join(dir, "pilot.jsonl"), strategist = path.join(dir, "strategist.jsonl"), out = path.join(dir, "thoughts.jsonl");
+    fs.writeFileSync(pilot, `${reasoning("history before start")}\n`);
+    fs.writeFileSync(strategist, "");
     const said: Array<[string, string]> = [];
     let fail = true;
-    const feed = createThoughtFeed({ sources: [{ role: "luna", file: () => luna }, { role: "astra", file: () => astra }], out, intervalMs: 3_600_000,
+    const feed = createThoughtFeed({ sources: [{ role: "pilot", file: () => pilot }, { role: "strategist", file: () => strategist }], out, intervalMs: 3_600_000,
       say: async (role, text) => { said.push([role, text]); if (fail) { fail = false; throw new Error("rcon down"); } } });
     feeds.push(feed);
-    fs.appendFileSync(luna, [toolCall, reasoning("Need iron plates"), toolOutput, assistant("Building drills now.")].join("\n") + "\n");
-    fs.appendFileSync(astra, `${reasoning("NOW: automate red science")}\n`);
+    fs.appendFileSync(pilot, [toolCall, reasoning("Need iron plates"), toolOutput, assistant("Building drills now.")].join("\n") + "\n");
+    fs.appendFileSync(strategist, `${reasoning("NOW: automate red science")}\n`);
     await feed.tick();
-    expect(said).toEqual([["luna", "Need iron plates"], ["astra", "NOW: automate red science"]]);
+    expect(said).toEqual([["pilot", "Need iron plates"], ["strategist", "NOW: automate red science"]]);
     await feed.tick();
     await feed.tick();
-    expect(said).toEqual([["luna", "Need iron plates"], ["astra", "NOW: automate red science"], ["luna", "Building drills now."]]);
+    expect(said).toEqual([["pilot", "Need iron plates"], ["strategist", "NOW: automate red science"], ["pilot", "Building drills now."]]);
     const recorded = fs.readFileSync(out, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     const iso = expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
     expect(recorded).toEqual([
-      { ts: "2026-10-04T18:25:54.454Z", role: "luna", kind: "reasoning", text: "Need iron plates", said_at: null },
-      { ts: "2026-10-04T18:25:54.454Z", role: "astra", kind: "reasoning", text: "NOW: automate red science", said_at: iso },
-      { ts: "2026-10-04T18:24:35.117Z", role: "luna", kind: "message", text: "Building drills now.", said_at: iso },
+      { ts: "2026-10-04T18:25:54.454Z", role: "pilot", kind: "reasoning", text: "Need iron plates", said_at: null },
+      { ts: "2026-10-04T18:25:54.454Z", role: "strategist", kind: "reasoning", text: "NOW: automate red science", said_at: iso },
+      { ts: "2026-10-04T18:24:35.117Z", role: "pilot", kind: "message", text: "Building drills now.", said_at: iso },
     ]);
     const all = JSON.stringify(said) + fs.readFileSync(out, "utf8");
     for (const secret of ["SECRET", "gAAAA", "history before start"]) expect(all).not.toContain(secret);
@@ -98,7 +98,7 @@ describe("thought feed", () => {
     fs.writeFileSync(old, "");
     let current: string | null = old;
     const said: string[] = [];
-    const feed = createThoughtFeed({ sources: [{ role: "luna", file: () => current }], out, intervalMs: 3_600_000,
+    const feed = createThoughtFeed({ sources: [{ role: "pilot", file: () => current }], out, intervalMs: 3_600_000,
       say: async (_role, text) => { said.push(text); } });
     feeds.push(feed);
     fs.appendFileSync(old, `${reasoning("old pilot thinking")}\n`);
@@ -113,7 +113,7 @@ describe("thought feed", () => {
     expect(said).toEqual(["old pilot thinking", "replacement starts", "Queued the smelting block."]);
   });
 
-  it("sends Astra's NOW objective through say_now only when it changes, retrying a failed send", async () => {
+  it("sends the strategist's NOW objective through say_now only when it changes, retrying a failed send", async () => {
     const dir = tmp(), out = path.join(dir, "thoughts.jsonl");
     let objective: string | null = null, fail = true;
     const sent: string[] = [];

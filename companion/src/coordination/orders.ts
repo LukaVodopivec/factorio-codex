@@ -1,4 +1,4 @@
-// Astra's orders and build packages, read from the current run's
+// The strategist's orders and build packages, read from the current run's
 // operations.json. Tool results carry the orders once per new ledger revision,
 // and one full-surface bridge queues each new package into the FIFO by itself,
 // first making the blueprint captures a package starts with, while the body
@@ -232,7 +232,7 @@ const ledgerWrittenMs = (dir: string) => { try { return fs.statSync(ledgerFile(d
  *  retried on the next tick. It never waits for a pilot plan: nothing is
  *  queued only while a human holds the body, or while the ledger is older than
  *  the last emergency stop (packages written before a stop stay held until
- *  Astra rewrites the ledger). */
+ *  the strategist rewrites the ledger). */
 export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>, now = () => new Date()) {
   // Directories whose queued records this process has checked against the loaded save.
   const verified = new Set<string>();

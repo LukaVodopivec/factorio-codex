@@ -10,7 +10,7 @@ const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", r
 describe("protocol v28 DTO and tool registry", () => {
   it("declares v28 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(28);
-    expect(MCP_SERVER_VERSION).toBe("0.23.0");
+    expect(MCP_SERVER_VERSION).toBe("0.24.0");
     expect(RPC_METHODS).toHaveLength(43);
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
       "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now", "get_job",
@@ -349,7 +349,7 @@ describe("protocol v28 DTO and tool registry", () => {
     expect(schemas.deconstruct_area.safeParse({ platform: 3, mode: "robots" }).success).toBe(false);
     expect(schemas.upgrade_area.safeParse({ center: { x: 0, y: 0 }, radius: 2, from: "a", to: "b", platform: 3 }).success).toBe(false);
 
-    // Every remote step is a plan and package step too, so Astra's packages carry them.
+    // Every remote step is a plan and package step too, so the strategist's packages carry them.
     const steps = [{ action: "create_platform", name: "Second" }, { action: "set_requests", ...hub }, { action: "launch_rocket", ...launch },
       { action: "set_recipe", ...crusher }, { action: "configure_entity", ...collector }, { action: "build_layout", ...layout },
       { action: "blueprint_place", ...stamp }, { action: "deconstruct_area", ...clear }, { action: "extract_items", x: 1, y: 2, inventory: "rocket" }];
@@ -524,7 +524,7 @@ describe("protocol v28 DTO and tool registry", () => {
     const aboard = { state: "aboard_platform", surface_ref: "platform:3", platform_name: "Orbit" };
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { protocol_version: 28, mod_version: "0.23.0", factorio_version: "2.0.77", tick: 5, companion_exists: true,
+      ? { protocol_version: 28, mod_version: "0.24.0", factorio_version: "2.0.77", tick: 5, companion_exists: true,
         companion_ever_created: true, companion_dead: false, body: aboard }
       : { tick: 5, lines: [], fifo: { active_plan_id: 12, queue_depth: 1, idle_seconds: 0, body: aboard } });
     registerMcpTools({ registerTool(name: string, _config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; } },
@@ -538,7 +538,7 @@ describe("protocol v28 DTO and tool registry", () => {
     // Riding up, the pod is still over the planet it left; the trip's destination is bound_for.
     const riding = { state: "in_transit", surface_ref: "nauvis", bound_for: "platform:3" };
     call.mockImplementation(async (method: string) => method === "ping"
-      ? { protocol_version: 28, mod_version: "0.23.0", factorio_version: "2.0.77", tick: 6, companion_exists: true,
+      ? { protocol_version: 28, mod_version: "0.24.0", factorio_version: "2.0.77", tick: 6, companion_exists: true,
         companion_ever_created: true, companion_dead: false, body: riding } : {});
     expect((await handlers.connect_status({})).content[0].text)
       .toBe("Connected; the body is in a cargo pod (now over nauvis), bound for platform:3");

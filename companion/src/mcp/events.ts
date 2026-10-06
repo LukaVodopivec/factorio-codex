@@ -177,7 +177,7 @@ function eventText(value: Record<string, unknown>): string {
     case "package_failed": return `package ${value.package_id} was not queued: ${value.reason ?? "unknown reason"}`;
     case "new_problem": return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`;
     case "queue_empty": return IDLE_NOW;
-    case "orders_changed": return "Astra's orders changed";
+    case "orders_changed": return "the strategist's orders changed";
     case "human_hold_started": return "a human took the body; plans stay queued";
     case "human_hold_ended": return "the human hold ended; queued plans resume";
     case "rocket_ready": return `a rocket is ready in the silo at ${at(value.silo)}`;

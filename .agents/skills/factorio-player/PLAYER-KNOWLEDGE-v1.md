@@ -34,11 +34,10 @@ observations, exact positions included; nothing carries over to another run.
 - **Opening.** Automate iron and coal together in the first ten minutes: the
   first iron drill and furnace come before a second coal drill. Never open
   fuel-first.
-- **Input before output.** Raw extraction, smelting, and fuel or power capacity
-  stay ahead of demand, and new plates are reinvested into more of them.
-  Input rate (ore and plates per minute) is the primary measure. Flat input
-  while plates pile up in chests means those plates should fund more
-  extraction and smelting.
+- **Supply before demand.** Raw extraction, smelting, and fuel or power
+  capacity stay ahead of what the factory consumes. Ore or plates piling up
+  in chests should feed more machines that turn them into intermediates and
+  science; a pile is not progress.
 - **Fuel.** A burner line needs a fuel feed that is not the body. On a belt
   shared by a fuel takeoff and a surplus takeoff, the fuel takeoff sits
   upstream so surplus never starves the fuel loop.

@@ -62,7 +62,7 @@ function M.register_action(action, spec)
   runners[action] = spec.runner
 end
 -- Who queued a plan: the pilot (default), the mod's own upkeep, or the
--- bridge for one of Astra's build packages.
+-- bridge for one of the strategist's build packages.
 local function valid_source(source)
   return type(source) == "string" and #source <= 80
     and (source == "pilot" or source == "upkeep" or source:match("^package:.+") ~= nil)

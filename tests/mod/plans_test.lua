@@ -209,7 +209,7 @@ local over_ok, over_error = pcall(tasks.queue_plan, { steps = many })
 check(limit_ok and not over_ok and tostring(over_error):match("1%-200 steps") ~= nil,
   "a plan takes up to 200 steps")
 tasks.cancel({ origin = "stop/supervisor", all = true })
-check(not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 1 } }, source = "astra" })
+check(not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 1 } }, source = "strategist" })
   and not pcall(tasks.queue_plan, { steps = { { action = "walk_to", x = 1, y = 1 } }, source = "package:" }),
   "plan source is pilot, upkeep or package:<id>")
 local from_package = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } }, source = "package:iron-1" })

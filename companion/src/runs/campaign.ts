@@ -14,11 +14,11 @@ const sha = z.string().regex(/^[a-f0-9]{40}$/);
 export const configurationSchema = z.object({ id: identifier, profiles: profileListSchema,
   release_sha: sha, change: z.string().min(1), family: z.enum(["topology", "model", "instructions", "mod", "interaction"]) }).strict();
 const trialSchema = z.object({ run_id: runIdentifier, configuration: identifier, eligible: z.boolean(),
-  reasons: z.array(z.string()), input: z.number().nonnegative(), output: z.number().nonnegative(),
-  final_input_per_minute: z.number().nonnegative(), final_output_per_minute: z.number().nonnegative(),
-  resources: z.record(z.string(), z.number()), plates: z.record(z.string(), z.number()),
+  reasons: z.array(z.string()), research: z.number().nonnegative(), made: z.number().nonnegative(),
+  input: z.number().nonnegative(), final_input_per_minute: z.number().nonnegative(),
+  resources: z.record(z.string(), z.number()), made_items: z.record(z.string(), z.number()),
   recorded_at: z.string() }).strict();
-export const campaignSchema = z.object({ schema_version: z.literal(1), id: identifier,
+export const campaignSchema = z.object({ schema_version: z.literal(2), id: identifier,
   status: z.enum(["active", "paused"]), baseline_save_sha256: z.string().regex(/^[a-f0-9]{64}$/),
   seed: z.literal(747930220), subscription_only: z.literal(true), duration_seconds: z.literal(1200),
   incumbent: identifier, configurations: z.array(configurationSchema).min(1), trials: z.array(trialSchema),
@@ -32,7 +32,9 @@ export type Trial = z.infer<typeof trialSchema>;
 export type Configuration = z.infer<typeof configurationSchema>;
 
 export function readCampaign(file: string): Campaign {
-  return campaignSchema.parse(JSON.parse(fs.readFileSync(file, "utf8")));
+  const value = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (value?.schema_version === 1) throw new Error("campaign schema 1 predates the automation score; read it with release 0.23.0 or start a new campaign");
+  return campaignSchema.parse(value);
 }
 function writeCampaign(file: string, value: Campaign): void {
   atomicWriteFile(file, `${JSON.stringify(campaignSchema.parse(value), null, 2)}\n`, 0o600);
@@ -41,9 +43,10 @@ export function initializeCampaign(file: string, baseline: string, id: string, r
   if (fs.existsSync(file)) throw new Error("campaign already exists; resume it instead");
   const bytes = fs.readFileSync(baseline);
   if (bytes.subarray(0, 4).toString("hex") !== "504b0304") throw new Error("baseline is not a Factorio save ZIP");
-  const configurations = [2, 1, 3, 4].map(count => configurationSchema.parse({ id: `brains-${count}`, profiles: initialProfiles(count),
+  // Topology was screened (campaign 20261006); later hypotheses vary one variable of the two-brain incumbent.
+  const configurations = [2].map(count => configurationSchema.parse({ id: `brains-${count}`, profiles: initialProfiles(count),
     release_sha: releaseSha, change: `${count} reasoning agents, one physical body`, family: "topology" }));
-  const campaign = campaignSchema.parse({ schema_version: 1, id, status: "active", seed: 747930220, subscription_only: true,
+  const campaign = campaignSchema.parse({ schema_version: 2, id, status: "active", seed: 747930220, subscription_only: true,
     duration_seconds: 1200, baseline_save_sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
     incumbent: "brains-2", configurations, trials: [], screening_queue: configurations.map(c => c.id),
     screens_since_control: 0, unsuccessful_screens: 0, confirmation: null, pending: null });
@@ -76,22 +79,29 @@ export function nextTrial(file: string): { campaign: Campaign; configuration?: C
   return { campaign: c, configuration: c.configurations.find(config => config.id === c.pending!.configuration)! };
 }
 
-export function trialWins(candidate: Pick<Trial, "input" | "output" | "final_input_per_minute">,
-  incumbent: Pick<Trial, "input" | "output" | "final_input_per_minute">): boolean {
-  if (candidate.input > incumbent.input * 1.05) return true;
-  if (candidate.input < incumbent.input * .95) return false;
-  if (candidate.output !== incumbent.output) return candidate.output > incumbent.output;
-  return candidate.final_input_per_minute > incumbent.final_input_per_minute;
+// Within five percent counts as equal, so the next measure decides:
+// research, then machine-made output, then final-five-minute raw input.
+// A difference under the floor (packs, items, raw per minute) is noise too.
+function compare(a: number, b: number, floor: number): number {
+  if (Math.abs(a - b) < floor) return 0;
+  if (a > b * 1.05) return 1;
+  if (b > a * 1.05) return -1;
+  return 0;
+}
+const FLOOR = { research: 5, made: 20, rate: 5 };
+type Scored = Pick<Trial, "research" | "made" | "final_input_per_minute">;
+export function trialWins(candidate: Scored, incumbent: Scored): boolean {
+  return (compare(candidate.research, incumbent.research, FLOOR.research) || compare(candidate.made, incumbent.made, FLOOR.made)
+    || compare(candidate.final_input_per_minute, incumbent.final_input_per_minute, FLOOR.rate)) > 0;
 }
 function median(values: number[]): number { const sorted = [...values].sort((a, b) => a - b); return sorted[Math.floor(sorted.length / 2)]!; }
 export function confirmationWins(pairs: Array<[Trial, Trial]>): boolean {
   if (pairs.length !== 3 || pairs.some(pair => pair.some(t => !t.eligible))) return false;
-  const a = { input: median(pairs.map(p => p[0].input)), output: median(pairs.map(p => p[0].output)) };
-  const b = { input: median(pairs.map(p => p[1].input)), output: median(pairs.map(p => p[1].output)) };
+  const medians = (side: 0 | 1) => ({ research: median(pairs.map(p => p[side].research)), made: median(pairs.map(p => p[side].made)) });
+  const a = medians(0), b = medians(1);
   return pairs.filter(([candidate, incumbent]) => trialWins(candidate, incumbent)).length >= 2
-    && (a.input > b.input * 1.05 || (a.input >= b.input * .95 && a.input <= b.input * 1.05 && a.output > b.output * 1.05));
+    && (compare(a.research, b.research, FLOOR.research) || compare(a.made, b.made, FLOOR.made)) > 0;
 }
-
 export function recordTrial(file: string, runId: string, evidenceRoot = runRoot()): Campaign {
   const c = readCampaign(file);
   if (c.trials.some(t => t.run_id === runId)) return c; // idempotent interrupted external readback
@@ -110,16 +120,15 @@ export function recordTrial(file: string, runId: string, evidenceRoot = runRoot(
   try { samples = readSamples(evidenceRoot, runId); }
   catch { reasons.push("sample evidence is malformed or unreadable"); }
   const previous = samples.find(s => s.status === "ok" && s.kind === "checkpoint" && s.scheduled_elapsed_ms === 900_000);
-  let finalInput = 0, finalOutput = 0;
+  let finalInput = 0;
   if (previous?.status === "ok" && Math.abs(previous.actual_elapsed_ms - 900_000) <= 1000
     && previous.capture_latency_ms <= 1000
     && Math.abs(previous.tick_delta - 54_000) <= 60) {
     const counts = new Map(previous.delta.items.map(row => [row.name, row.produced]));
     finalInput = Math.max(0, score.input - INPUT_ITEMS.reduce((sum, name) => sum + (counts.get(name) ?? 0), 0)) / 5;
-    finalOutput = Math.max(0, score.output - (counts.get("iron-plate") ?? 0) - (counts.get("copper-plate") ?? 0)) / 5;
   } else reasons.push("15-minute throughput checkpoint is missing or outside its one-second boundary");
   const trial: Trial = { run_id: runId, configuration: config.id, eligible: reasons.length === 0, reasons, ...score,
-    final_input_per_minute: finalInput, final_output_per_minute: finalOutput, recorded_at: new Date().toISOString() };
+    final_input_per_minute: finalInput, recorded_at: new Date().toISOString() };
   c.trials.push(trial);
   const purpose = c.pending.purpose;
   c.pending = null;

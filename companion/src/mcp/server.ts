@@ -173,7 +173,7 @@ export function registerMcpTools(
     throw new Error(`${role} requires the read-only MCP surface`);
   const orders = createOrdersTracker(runDir);
   const failureDelivery: FailureDelivery = { keys: null };
-  // Every result carries Astra's orders once per new ledger revision.
+  // Every result carries the strategist's orders once per new ledger revision.
   const tools: ToolRegistrar = { registerTool: (name, config, handler) =>
     server.registerTool(name, config, async (args, extra) => orders.attach(await handler(args, extra))) };
   // signal (the MCP request's) stops the poll of a read the game runs as a job.
@@ -383,7 +383,7 @@ export function registerMcpTools(
     } catch (error) { return failure(error); }
   });
   const activityLogSchema = z.object({ since_plan_id: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(64).default(16) }).strict();
-  tools.registerTool("activity_log", { description: "What the body did: recent plan outcomes, oldest first, each with source (pilot, upkeep or package:<id>), status and a summary; cancels (with who asked) and blueprint changes; plus the queue status of Astra's packages.", inputSchema: activityLogSchema }, async (p) => {
+  tools.registerTool("activity_log", { description: "What the body did: recent plan outcomes, oldest first, each with source (pilot, upkeep or package:<id>), status and a summary; cancels (with who asked) and blueprint changes; plus the queue status of the strategist's packages.", inputSchema: activityLogSchema }, async (p) => {
     try {
       const value = normalizeActivityLog(await (await bridge()).call("activity_log", activityLogSchema.parse(p)));
       const dir = runDir();
@@ -641,7 +641,7 @@ export async function runMcpServer(
   const bridge = createBridgeProvider(configDiagnostic);
   registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface, currentRunDir, role);
   if (surface === "full" && role === "pilot") {
-    // Only the explicitly labelled pilot bridge queues Astra's packages.
+    // Only the explicitly labelled pilot bridge queues the strategist's packages.
     // Supervisor and unlabelled full-surface sessions may read or stop.
     const packages = createPackageQueue(currentRunDir, bridge);
     setInterval(() => { void packages.tick(); }, 1_000).unref();

@@ -3,7 +3,7 @@ import fs from "node:fs";
 // Thought feed: tails the two role Codex rollout files and shows their
 // reasoning summaries and assistant messages in the game. Output only; tool
 // calls, tool outputs and encrypted reasoning are never read out.
-export type ThoughtRole = "luna" | "astra" | "mining" | "logistics";
+export type ThoughtRole = "pilot" | "strategist" | "mining" | "logistics";
 export type ThoughtKind = "reasoning" | "message";
 export interface Thought { ts: string; role: ThoughtRole; kind: ThoughtKind; text: string }
 /** One thoughts.jsonl row: ts is the rollout time, said_at when the game showed it (null when the say failed). */
@@ -82,7 +82,7 @@ export interface ThoughtFeedOptions {
   sources: Array<{ role: ThoughtRole; file: () => string | null }>;
   say: (role: ThoughtRole, text: string) => Promise<unknown>;
   out: string;
-  /** Astra's current NOW objective for the panel's top line, sent through say_now when it changes. */
+  /** The strategist's current NOW objective for the panel's top line, sent through say_now when it changes. */
   now?: { read: () => string | null; say: (text: string) => Promise<unknown> };
   intervalMs?: number;
 }

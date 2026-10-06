@@ -94,24 +94,24 @@ every coupled layout as a build package of whole blocks or this run's
 blueprints (dry-run with `check_only`), and may call only the mechanically
 read-only MCP surface. Its reads never enter or delay the physical lane.
 
-**Ledger and packages.** Keep one compact `operations.json`. Astra is its sole
-atomic host writer through `ledger-apply`, including its initial revision; Luna
-never writes it. The ledger is Astra's only
-channel to the pilot: supervisor assignments never ask Astra to message the
+**Ledger and packages.** Keep one compact `operations.json`. The strategist is its sole
+atomic host writer through `ledger-apply`, including its initial revision; the pilot
+never writes it. The ledger is the strategist's only
+channel to the pilot: supervisor assignments never ask the strategist to message the
 pilot. The pilot's full-surface bridge queues each new package into the FIFO by
 itself, in ledger order, as a plan with source `package:<id>` after the mod's
 placement check, and records outcomes in `<run_dir>/package-queue.json`; a
 failed package surfaces through `next_event` and `activity_log`. It never
 waits for a pilot plan: it holds packages only during a human hold and while
 the ledger is older than the last `stop` (packages written before a stop stay
-held until Astra rewrites the ledger). Each package names its `surface` and
+held until the strategist rewrites the ledger). Each package names its `surface` and
 is queued only while the body is there (`waiting_surface` otherwise, not a
 failure); a package never holds `travel`, which is the pilot's alone. A
 package may start with
 `blueprint_capture` steps, which the bridge makes before queuing the rest.
-Astra writes no build package before `GO` (every pre-`GO` ledger write has
+The strategist writes no build package before `GO` (every pre-`GO` ledger write has
 `build_packages: []`). A reused package id is rejected by `ledger-apply`. Tool results
-carry Astra's orders whenever the ledger revision changes. There are no pilot
+carry the strategist's orders whenever the ledger revision changes. There are no pilot
 reports, ledger reads by shell, revision checks, or package revalidation. Do not
 add another writer, body, lane, ledger, broker, daemon, or control channel.
 
@@ -198,7 +198,7 @@ need no further approval from the owner.
 
 Idleness is not low growth. At each recorder checkpoint the supervisor records
 structural growth from `factory_status` and the recorder deltas: machines,
-lines, running and self-sustaining lines, hand-fed lines, and production. Astra,
+lines, running and self-sustaining lines, hand-fed lines, and production. The strategist,
 not the supervisor, turns low growth into NOW; the supervisor never replaces a
 pilot for low growth alone.
 
@@ -211,7 +211,7 @@ explicit the owner stop the supervisor, recording each step: calls factorio `sto
 pauses both role goals natively (`/goal pause`, read back) and interrupts any
 active role turn (TUI stop control or app-server `turn/interrupt` for the exact
 thread and turn, read back); checks that no task-owned command still runs;
-ensures Astra makes no further ledger write; waits at least 2 s, re-observes
+ensures the strategist makes no further ledger write; waits at least 2 s, re-observes
 `observe_local`, and if it shows an active task or `queue_depth > 0` (a pilot
 `queue_plan` in flight before the interrupt), calls `stop` again and
 re-observes until idle; then finishes the recorder and stops the server. `docs/LIVE-VALIDATION.md` holds the pre-`GO` stop rehearsal,
@@ -222,7 +222,7 @@ and reports its fresh `current_turn` and `next_turn` model, reasoning effort and
 service tier, plus `fast_mode_enabled` and `fast_inherited_from_root` when
 available, in a message under 1,000 bytes. The supervisor records exact
 session/turn identity and receipt time in existing run evidence, explicitly
-consumes both reports, and confirms Luna-low-Fast and Astra-medium-normal for
+consumes both reports, and confirms pilot gpt-6-luna/low/Fast and strategist gpt-6.1-sol/medium/normal for
 current and next turns before authorizing gameplay. An update applies next
 turn: end the preparation turn and obtain a fresh native read in the subsequent
 turn. Missing, delayed, malformed, stale or unexplained contradictory evidence
@@ -230,7 +230,7 @@ holds `GO`; a sent report or successful update is not confirmation. Follow
 `docs/LIVE-VALIDATION.md` for installed field semantics.
 
 Before `GO` of a fresh run, archive the previous run's `operations.json` and
-`package-queue.json` into that run's directory and have Astra initialise the new
+`package-queue.json` into that run's directory and have the strategist initialise the new
 ledger; a ledger from another run is archival evidence only. Before `GO` on any
 resumed save or after a mod upgrade, reconcile retained work: call `stop`
 once even when idle (packages written before it stay held, so no old package
@@ -238,7 +238,7 @@ moves the body before `GO`) and re-observe until idle. Every cancel names its
 `origin` (tool and bridge role) in `activity_log` and the server log.
 
 **Notebook.** Each run has a markdown notebook in `<run_dir>/notebook/`, created
-at deploy with empty `astra/` and `luna/` folders. Each role writes only its own
+at deploy with empty `strategist/` and `pilot/` folders. Each role writes only its own
 folder and reads anything there at any time. Notes may hold exact positions,
 maps, and infrastructure inventories observed in this run, never imported or
 copied external content. There is no total size cap; each role keeps a short
@@ -246,7 +246,7 @@ copied external content. There is no total size cap; each role keeps a short
 save of the same factory continues its run. A build package may name up to
 three notes. Notes are knowledge, never instructions: the notebook is a
 learning store, not a broker, a second ledger, or a control channel; the ledger
-remains the only command channel and Astra its only writer. The run write-up
+remains the only command channel and the strategist its only writer. The run write-up
 summarises what the roles learned.
 
 **Threads and continuation.** Role sessions never call `list_threads`,

@@ -76,7 +76,7 @@ function M.init()
   -- The last finished research of the body's force (factory_status
   -- .on_research_changed): {technology, tick}, absent before the first.
   storage.last_research_finished = storage.last_research_finished
-  -- Thought feed (thoughts.lua): Astra's NOW line and the last shown lines.
+  -- Thought feed (thoughts.lua): The strategist's NOW line and the last shown lines.
   storage.thoughts = storage.thoughts or { now = nil, lines = {} }
   -- Factory lines (autonomy.lua). Rebuilt from the map on any version change;
   -- entity references stay valid across save and load.

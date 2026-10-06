@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.23.0**.
+Current release: **0.24.0**.
 
 Factorio Codex shows how Codex bots think about and architect a Factorio
 factory. Two reasoning sessions plan and direct one physical character named
@@ -74,17 +74,17 @@ The CLI supports `setup`, `doctor [--json]`, `mcp [--surface full|read-only]`,
 Live play uses exactly two persistent reasoning sessions around one physical
 body and one FIFO plan queue.
 
-- **Astra** (`gpt-6.1-sol`, `medium` reasoning, normal speed) is the strategist
+- **The strategist** (`gpt-6.1-sol`, `medium` reasoning, normal speed) is the strategist
   and architect. It owns coordinate-free NOW/NEXT/LATER priorities and designs
   build packages of whole blocks or this run's blueprints, dry-run with
   `check_only`. It uses only the read-only MCP surface and is the sole writer of
   `operations.json`, through `ledger-apply`.
-- **Luna** (`gpt-6-luna`, `low` reasoning, fast mode) is the foreman and the
+- **The pilot** (`gpt-6-luna`, `low` reasoning, fast mode) is the foreman and the
   sole gameplay writer. It waits on `next_event` and handles failed packages,
   an empty queue, and anything needing local judgment with goal-level actions.
   It sends no reports.
 
-Astra's packages queue themselves: the pilot's full-surface bridge watches the
+The strategist's packages queue themselves: the pilot's full-surface bridge watches the
 ledger and queues each new package into the FIFO in ledger order, honouring
 `after_package_id`, as a plan with source `package:<id>` after the mod's own
 placement check, and only while the body is on the package's `surface`
@@ -92,11 +92,11 @@ placement check, and only while the body is on the package's `surface`
 Outcomes are recorded in `package-queue.json`; a rejected or
 failed package surfaces as `package_failed` in `next_event` and in
 `activity_log`. Every tool result carries `orders` (revision, NOW, package
-statuses) once each time the ledger revision changes. The ledger is Astra's
+statuses) once each time the ledger revision changes. The ledger is the strategist's
 only channel to the pilot.
 
 Each run has a markdown notebook at `<run_dir>/notebook/` with one folder per
-role (`notebook/astra/`, `notebook/luna/`). Each role writes its own folder and
+role (`notebook/strategist/`, `notebook/pilot/`). Each role writes its own folder and
 reads either at any time, including exact positions and maps observed in that
 run, and keeps a short `INDEX.md`; nothing is imported or carried to another
 run. A package may name up to three notes.
@@ -120,8 +120,8 @@ The run recorder tails both role rollout files (`--pilot-rollout`,
 `--strategist-rollout`) and forwards each reasoning summary and assistant
 message, never tool calls or outputs, through the mod's `say` RPC at most one
 line per second per role, split into lines of at most 600 characters. The mod
-prints them to chat as `[Astra]` and `[Luna]` in role colours and keeps the
-last 8 lines in an always-visible left-side panel under Astra's NOW line,
+prints them to chat as `[The strategist]` and `[The pilot]` in role colours and keeps the
+last 8 lines in an always-visible left-side panel under the strategist's NOW line,
 which the recorder sends through `say_now` whenever the ledger's NOW objective
 changes. The text is also saved to the recorder's
 `~/.local/share/factorio-codex/runs/run-<id>/thoughts.jsonl`, each line with
@@ -201,7 +201,7 @@ replacement.
 
 ## MCP tools
 
-The full surface has 52 tools; the read-only surface used by Astra has 22.
+The full surface has 52 tools; the read-only surface used by the strategist has 22.
 Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
 `idle_seconds`, `human_control`). Heavy reads (`map_summary`, a full
 `observe_local`, route and site searches, dry runs, blueprint capture and
@@ -278,7 +278,7 @@ count, or an honest refusal, never a partial spill). A hand-mining result adds
 Every cancel names its `origin` (the tool, and the role its MCP process was
 started with: `factorio-codex mcp --role pilot|strategist|supervisor`) in
 `activity_log` and the server log. Packages written before an emergency stop stay held until
-Astra rewrites the ledger; nothing else holds them but a human hold.
+The strategist rewrites the ledger; nothing else holds them but a human hold.
 
 ## Run recorder
 

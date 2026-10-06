@@ -1,5 +1,5 @@
 -- Thought feed: say prints a coloured chat line and keeps the last 8 lines,
--- say_now sets Astra's NOW line, and only the connected Codex player gets the
+-- say_now sets the strategist's NOW line, and only the connected Codex player gets the
 -- left-side panel. The panel is never player.opened, so the human-hold
 -- detector stays released. Offline: the real thoughts and companion modules
 -- over mocked LuaPlayer and LuaGui.
@@ -75,35 +75,35 @@ check(registered.say == thoughts.say and registered.say_now == thoughts.say_now,
   "register_rpcs registers say and say_now")
 
 -- Lazy storage: say works before init created it.
-local result = thoughts.say({ role = "luna", text = "walking to the iron patch" })
+local result = thoughts.say({ role = "pilot", text = "walking to the iron patch" })
 check(storage.thoughts and #storage.thoughts.lines == 1 and result.lines == 1, "say creates storage lazily")
-check(printed[1].message == "[Luna] walking to the iron patch", "say prints the role-prefixed line")
+check(printed[1].message == "[Pilot] walking to the iron patch", "say prints the role-prefixed line")
 check(printed[1].settings.color.b == 1.00 and printed[1].settings.sound == defines.print_sound.never,
   "chat line is coloured per role and silent")
 
 local panel = codex.gui.left[PANEL]
 check(panel and panel.valid and panel.type == "frame", "Codex gets a left-side frame")
 check(viewer.gui.left[PANEL] == nil, "other players get no panel")
-check(panel.children[1].caption == "NOW: -" and panel.children[2].caption == "[Luna] walking to the iron patch",
+check(panel.children[1].caption == "NOW: -" and panel.children[2].caption == "[Pilot] walking to the iron patch",
   "panel shows the NOW line then the recent lines")
 
 thoughts.say_now({ text = "smelt iron plates" })
 panel = codex.gui.left[PANEL]
 check(storage.thoughts.now == "smelt iron plates" and panel.children[1].caption == "NOW: smelt iron plates",
-  "say_now sets Astra's NOW line on top")
-check(printed[#printed].message == "[Astra] NOW: smelt iron plates", "say_now prints the NOW line as Astra")
+  "say_now sets the strategist's NOW line on top")
+check(printed[#printed].message == "[Strategist] NOW: smelt iron plates", "say_now prints the NOW line as the strategist")
 
-for i = 1, 10 do thoughts.say({ role = "astra", text = "thought " .. i }) end
+for i = 1, 10 do thoughts.say({ role = "strategist", text = "thought " .. i }) end
 panel = codex.gui.left[PANEL]
 check(#storage.thoughts.lines == 8 and storage.thoughts.lines[1].text == "thought 3"
   and storage.thoughts.lines[8].text == "thought 10", "storage keeps the last 8 lines")
-check(#panel.children == 9 and panel.children[9].caption == "[Astra] thought 10", "panel shows NOW plus 8 lines")
+check(#panel.children == 9 and panel.children[9].caption == "[Strategist] thought 10", "panel shows NOW plus 8 lines")
 
 -- Validation.
 check(not pcall(thoughts.say, { role = "bob", text = "x" }), "unknown role is rejected")
-check(not pcall(thoughts.say, { role = "luna", text = "" }), "empty text is rejected")
-check(not pcall(thoughts.say, { role = "luna", text = string.rep("a", 601) }), "text over 600 characters is rejected")
-check(pcall(thoughts.say, { role = "luna", text = string.rep("\195\169", 600) }),
+check(not pcall(thoughts.say, { role = "pilot", text = "" }), "empty text is rejected")
+check(not pcall(thoughts.say, { role = "pilot", text = string.rep("a", 601) }), "text over 600 characters is rejected")
+check(pcall(thoughts.say, { role = "pilot", text = string.rep("\195\169", 600) }),
   "600 multibyte characters are accepted")
 local long_line = panel and codex.gui.left[PANEL].children[9].caption
 check(long_line and #long_line < 600 and long_line:sub(-3) == "...", "panel truncates long lines on a character boundary")

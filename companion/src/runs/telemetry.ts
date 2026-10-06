@@ -264,7 +264,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     if (!finishing) console.log(`GO ${manifest.started_at} tick=${manifest.start_tick} run=${manifest.run.id}`);
     const pointer = path.join(path.dirname(options.ledger), "rollouts.json");
     const sources = profiles.map(p => ({ role: p.id as ThoughtRole,
-      file: rolloutResolver(pointer, p.id, p.id === "luna" ? options.pilotRollout : p.id === "astra" ? options.strategistRollout : undefined) }));
+      file: rolloutResolver(pointer, p.id, p.id === "pilot" ? options.pilotRollout : p.id === "strategist" ? options.strategistRollout : undefined) }));
     feed = createThoughtFeed({ sources, out: files.thoughts, say: (role, text) => bridge.call("say", { role, text }),
       now: { read: () => {
         try { return operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8"))).task_list.NOW.objective; }

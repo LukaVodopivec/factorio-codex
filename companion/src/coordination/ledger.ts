@@ -39,7 +39,7 @@ const packageId = z.string().regex(/^[a-z0-9-]{1,32}$/, "package ids are 1-32 lo
 // planet name or "platform:<index>".
 const packageSurface = z.string().regex(/^(?:[a-z][a-z0-9-]{0,39}|platform:[1-9][0-9]{0,5})$/,
   'surface is a planet name such as "nauvis" or "platform:<index>"');
-// A plan Astra designed; the pilot's bridge checks its placements and queues it
+// A plan the strategist designed; the pilot's bridge checks its placements and queues it
 // into the FIFO by itself, in ledger order, while the body is on its surface
 // (coordination/orders.ts). Leading blueprint_capture steps are made by the
 // bridge before the rest is queued. Every package an update writes names its
@@ -82,7 +82,7 @@ function packageIssues(packages: BuildPackage[], sourceTick: number | null): str
   packages.forEach((entry, index) => {
     const at = `build_packages.${index}`;
     if (sourceTick !== null && entry.source_tick > sourceTick) issues.push(`${at}.source_tick: newer than the revision's source_tick`);
-    // after_package_id may name a package the pilot already queued (and Astra dropped).
+    // after_package_id may name a package the pilot already queued (and the strategist dropped).
     if (entry.after_package_id === entry.package_id
       || (entry.after_package_id !== null && after.get(entry.after_package_id) === entry.package_id)) {
       issues.push(`${at}.after_package_id: packages cannot depend on themselves or on each other`);

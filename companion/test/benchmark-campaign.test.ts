@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { initialProfiles, profileListSchema } from "../src/runs/profiles.js";
 import { benchmarkScore, cutoffIssues, type BenchmarkEvidence } from "../src/runs/benchmark.js";
-import { initializeCampaign, nextTrial, recordTrial, confirmationWins, trialWins, setCampaignStatus, type Trial } from "../src/runs/campaign.js";
+import { addConfiguration, initializeCampaign, nextTrial, recordTrial, confirmationWins, trialWins, setCampaignStatus, type Trial } from "../src/runs/campaign.js";
 import { createRunStore, interruptRun, snapshotDelta, type RunManifest, type RunSnapshot } from "../src/runs/telemetry.js";
 
 const dirs: string[] = [];
@@ -15,22 +15,26 @@ function setup() {
   fs.writeFileSync(baseline, Buffer.from("504b030401", "hex"));
   initializeCampaign(file, baseline, "search", "a".repeat(40)); return { file, dir };
 }
-const metrics = { "iron-ore": 100, "copper-ore": 20, coal: 10, stone: 5, "iron-plate": 70, "copper-plate": 10 };
+const made = { "iron-plate": 70, "copper-plate": 10, "steel-plate": 0, "iron-gear-wheel": 6, "electronic-circuit": 4,
+  "automation-science-pack": 5, "logistic-science-pack": 0 };
+const metrics: Record<string, number> = { "iron-ore": 100, "copper-ore": 20, coal: 10, stone: 5, ...made,
+  ...Object.fromEntries(Object.keys(made).map(name => [`hand:${name}`, 0])), "hand:iron-gear-wheel": 2,
+  "hand:automation-science-pack": 1, "consumed:automation-science-pack": 4, "consumed:logistic-science-pack": 0 };
 const evidence: BenchmarkEvidence = { duration_seconds: 1200, deadline_at: "2026-10-06T00:20:00Z",
   freeze_started_at: "2026-10-06T00:20:00Z", freeze_completed_at: "2026-10-06T00:20:00Z", freeze_skew_ms: 0,
   start_tick: 100, frozen_tick: 72100, reason: "recorder", metrics };
-function record(file: string, dir: string, input: number, assisted = false, alter?: (files: ReturnType<typeof createRunStore>) => void) {
+function record(file: string, dir: string, research: number, assisted = false, alter?: (files: ReturnType<typeof createRunStore>) => void) {
   const { campaign: c, configuration: config } = nextTrial(file);
   const id = c.pending!.run_id;
   const meta: RunManifest = { schema_version: 1, run: { id, release_sha: config!.release_sha,
     baseline_save_sha256: c.baseline_save_sha256, save_identity: "fresh", created_at: "2026-10-06T00:00:00Z", roles: config!.profiles },
     variant: config!.id, change: config!.change, kind: "benchmark", status: "finished", assisted,
-    app_version: "0.23.0", mod_version: "0.23.0", factorio_version: "2.0.77", started_at: "2026-10-06T00:00:00Z",
+    app_version: "0.24.0", mod_version: "0.24.0", factorio_version: "2.0.77", started_at: "2026-10-06T00:00:00Z",
     start_tick: 100, ended_at: "2026-10-06T00:20:00Z", end_tick: 72100,
-    benchmark: { ...evidence, metrics: { ...metrics, "iron-ore": input } } };
+    benchmark: { ...evidence, metrics: { ...metrics, "consumed:automation-science-pack": research + 1 } } };
   const files = createRunStore(dir, meta);
   const snap: RunSnapshot = { tick: 54100, character: {}, progression: {}, factory: {}, statistics: {
-    items: { produced: [{ name: "iron-ore", count: input / 2 }], consumed: [] }, fluids: { produced: [], consumed: [] },
+    items: { produced: [{ name: "iron-ore", count: 50 }], consumed: [] }, fluids: { produced: [], consumed: [] },
     raw_resources: [{ name: "iron-ore", type: "item" }], semantics: { produced: "force_surface_input_counts", consumed: "force_surface_output_counts" } } };
   const zero = { ...snap, statistics: { ...snap.statistics, items: { produced: [], consumed: [] } } };
   fs.appendFileSync(files.samples, JSON.stringify({ status: "ok", kind: "checkpoint", scheduled_elapsed_ms: 900000,
@@ -55,7 +59,10 @@ describe("finite benchmark campaign", () => {
     expect(cutoffIssues(evidence)).toEqual([]);
     for (const value of [undefined, { ...evidence, duration_seconds: 10 }, { ...evidence, freeze_skew_ms: 1100 },
       { ...evidence, frozen_tick: 70000 }, { ...evidence, metrics: {} }]) expect(cutoffIssues(value).length).toBeGreaterThan(0);
-    expect(benchmarkScore(metrics)).toMatchObject({ input: 135, output: 80 });
+    // Hand-crafted gears and packs never score; labs consumed 4 packs, 1 hand-made.
+    expect(benchmarkScore(metrics)).toMatchObject({ research: 3, made: 70 + 10 + 4 + 4 + 4, input: 135 });
+    expect(cutoffIssues({ ...evidence, metrics: { ...metrics, "hand:iron-plate": undefined as unknown as number } }))
+      .toContain("scored counters are missing");
   });
   it("keeps pending selection stable, pauses, and retries excluded trials", () => {
     const { file, dir } = setup();
@@ -68,6 +75,8 @@ describe("finite benchmark campaign", () => {
   it("promotes only after three fresh alternating pairs", () => {
     const { file, dir } = setup();
     record(file, dir, 100); // two-brain incumbent baseline
+    addConfiguration(file, { id: "brains-1", profiles: initialProfiles(1), release_sha: "a".repeat(40),
+      change: "solo pilot", family: "topology" });
     let c = record(file, dir, 200); // solo screen
     expect(c.incumbent).toBe("brains-2"); expect(c.confirmation?.challenger).toBe("brains-1");
     for (const [config, score] of [["brains-1", 200], ["brains-2", 100], ["brains-2", 100],
@@ -76,6 +85,11 @@ describe("finite benchmark campaign", () => {
     }
     expect(c.incumbent).toBe("brains-1"); expect(c.confirmation).toBeNull();
     expect(recordTrial(file, c.trials.at(-1)!.run_id, dir)).toEqual(c);
+  });
+  it("refuses a pre-automation campaign file with a clear reason", () => {
+    const { file } = setup(), c = JSON.parse(fs.readFileSync(file, "utf8"));
+    fs.writeFileSync(file, JSON.stringify({ ...c, schema_version: 1 }));
+    expect(() => nextTrial(file)).toThrow(/predates the automation score/);
   });
   it("selects trials for the longest accepted campaign name", () => {
     const { file } = setup(), c = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -109,10 +123,17 @@ describe("finite benchmark campaign", () => {
     expect(c.trials[0]!.reasons).toContain("trial did not finish");
     expect(nextTrial(file).campaign.pending!.run_id).toBe("search-trial-0002");
   });
-  it("uses plates within five percent but rejects a one-off win", () => {
-    const t = (input: number, output: number) => ({ input, output, eligible: true, final_input_per_minute: 0 }) as Trial;
-    expect(trialWins(t(100, 110), t(100, 100))).toBe(true);
+  it("ranks research, then machine-made output within five percent, and rejects a one-off win", () => {
+    const t = (research: number, made: number, rate = 0) => ({ research, made, eligible: true, final_input_per_minute: rate }) as Trial;
+    expect(trialWins(t(20, 100), t(10, 900))).toBe(true);
+    expect(trialWins(t(5, 0), t(0, 900))).toBe(true);
+    expect(trialWins(t(1, 0), t(0, 900))).toBe(false);
+    expect(trialWins(t(0, 100, 42), t(0, 100, 40))).toBe(false);
+    expect(trialWins(t(100, 120), t(102, 100))).toBe(true);
+    expect(trialWins(t(0, 100, 50), t(0, 103, 40))).toBe(true);
+    expect(trialWins(t(0, 100, 30), t(0, 103, 40))).toBe(false);
     expect(confirmationWins([[t(120, 100), t(100, 100)], [t(90, 100), t(100, 100)], [t(90, 100), t(100, 100)]])).toBe(false);
-    expect(confirmationWins(Array.from({ length: 3 }, () => [t(100, 110), t(100, 100)]))).toBe(true);
+    expect(confirmationWins(Array.from({ length: 3 }, () => [t(100, 130), t(100, 100)]))).toBe(true);
+    expect(confirmationWins(Array.from({ length: 3 }, () => [t(100, 115), t(100, 100)]))).toBe(false);
   });
 });

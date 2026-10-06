@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const roleProfileSchema = z.object({
-  id: z.enum(["luna", "astra", "mining", "logistics"]),
+  id: z.enum(["pilot", "strategist", "mining", "logistics"]),
   role: z.enum(["pilot", "strategist", "advisor"]),
   model: z.enum(["gpt-6-luna", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra"]),
   reasoning: z.enum(["low", "medium", "high", "xhigh", "max"]),
@@ -20,8 +20,8 @@ export const profileListSchema = z.array(roleProfileSchema).min(1).max(4).superR
     issue("a multi-agent run has exactly one strategist");
   if (writers[0]?.role !== (roles.length === 1 ? "pilot" : "strategist"))
     issue("the solo pilot or multi-agent strategist owns the ledger");
-  if (pilots[0]?.id !== "luna" || roles.some(r => r.role === "strategist" && r.id !== "astra"))
-    issue("pilot and strategist use luna and astra ids");
+  if (pilots[0]?.id !== "pilot" || roles.some(r => r.role === "strategist" && r.id !== "strategist"))
+    issue("pilot and strategist use pilot and strategist ids");
   if (roles.some(r => r.role === "advisor" && !["mining", "logistics"].includes(r.id)))
     issue("advisors use mining or logistics ids");
 });
@@ -35,16 +35,16 @@ export type RunRoles = z.infer<typeof runRolesSchema>;
 export function roleProfiles(roles: RunRoles): RoleProfile[] {
   if (Array.isArray(roles)) return roles;
   return profileListSchema.parse([
-    { id: "luna", role: "pilot", ...roles.pilot, fast: roles.pilot.fast ?? false, ledger_writer: false },
-    { id: "astra", role: "strategist", ...roles.strategist, fast: roles.strategist.fast ?? false, ledger_writer: true },
+    { id: "pilot", role: "pilot", ...roles.pilot, fast: roles.pilot.fast ?? false, ledger_writer: false },
+    { id: "strategist", role: "strategist", ...roles.strategist, fast: roles.strategist.fast ?? false, ledger_writer: true },
   ]);
 }
 
 export function initialProfiles(count: number): RoleProfile[] {
   if (!Number.isInteger(count) || count < 1 || count > 4) throw new Error("agent count must be 1 through 4");
   return profileListSchema.parse([
-    { id: "luna", role: "pilot", model: "gpt-6-luna", reasoning: "low", fast: true, ledger_writer: count === 1 },
-    ...(count > 1 ? [{ id: "astra", role: "strategist", model: "gpt-6.1-sol", reasoning: "medium", fast: false, ledger_writer: true }] : []),
+    { id: "pilot", role: "pilot", model: "gpt-6-luna", reasoning: "low", fast: true, ledger_writer: count === 1 },
+    ...(count > 1 ? [{ id: "strategist", role: "strategist", model: "gpt-6.1-sol", reasoning: "medium", fast: false, ledger_writer: true }] : []),
     ...(count > 2 ? [{ id: "mining", role: "advisor", model: "gpt-6.1-sol", reasoning: "medium", fast: false, ledger_writer: false }] : []),
     ...(count > 3 ? [{ id: "logistics", role: "advisor", model: "gpt-6.1-sol", reasoning: "medium", fast: false, ledger_writer: false }] : []),
   ]);

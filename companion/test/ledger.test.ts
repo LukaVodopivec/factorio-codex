@@ -126,12 +126,12 @@ describe("compact strategist operations ledger", () => {
   });
 
   it("accepts an explicitly configured strategist model and preserves it", () => {
-    const astra = { ...ledger().run, roles: { ...ledger().run.roles, strategist: { model: "gpt-6-astra" as const, reasoning: "medium" as const, fast: false as const } } };
+    const strategist = { ...ledger().run, roles: { ...ledger().run.roles, strategist: { model: "gpt-6-astra" as const, reasoning: "medium" as const, fast: false as const } } };
     const file = ledgerFile();
-    expect(applyLedgerFile(file, { ...initialization(), run: astra })).toMatchObject({ status: "applied", revision: 1 });
-    expect(JSON.parse(fs.readFileSync(file, "utf8")).run).toEqual(astra);
+    expect(applyLedgerFile(file, { ...initialization(), run: strategist })).toMatchObject({ status: "applied", revision: 1 });
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).run).toEqual(strategist);
     // The run live at the 2026-10-05 decision recorded gpt-6-astra: its ledger still takes updates.
-    expect(reduceLedger({ ...ledger(), run: astra }, envelope(101)).result).toMatchObject({ status: "applied", revision: 1 });
+    expect(reduceLedger({ ...ledger(), run: strategist }, envelope(101)).result).toMatchObject({ status: "applied", revision: 1 });
   });
 
   it("does not initialize for an ordinary update against a missing file", () => {
@@ -383,7 +383,7 @@ describe("build packages the bridge queues", () => {
       { name: "chemical-plant", dx: 8, dy: 0, mirror: true },
       { name: "iron-chest", dx: 6, dy: 0, settings: { chest: { slots: 3 } } }]);
     expect(reduceLedger(old, envelope(101)).result).toMatchObject({ status: "applied", revision: 8 });
-    // On disk, with the package already queued: Astra's next write applies,
+    // On disk, with the package already queued: The strategist's next write applies,
     // and restating the 0.21.1 package unchanged is still the same package.
     const file = ledgerFile();
     fs.writeFileSync(file, JSON.stringify(old), { mode: 0o600 });

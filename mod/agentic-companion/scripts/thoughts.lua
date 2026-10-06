@@ -14,8 +14,8 @@ local PANEL_LINE_CHARS = 200
 local PANEL_WIDTH = 420
 
 local ROLES = {
-  astra = { label = "Astra", color = { r = 1.00, g = 0.70, b = 0.25 } },
-  luna = { label = "Luna", color = { r = 0.45, g = 0.78, b = 1.00 } },
+  strategist = { label = "Strategist", color = { r = 1.00, g = 0.70, b = 0.25 } },
+  pilot = { label = "Pilot", color = { r = 0.45, g = 0.78, b = 1.00 } },
   mining = { label = "Mining advisor", color = { r = 0.65, g = 1.00, b = 0.50 } },
   logistics = { label = "Logistics advisor", color = { r = 0.95, g = 0.55, b = 0.90 } },
   supervisor = { label = "Supervisor", color = { r = 0.75, g = 0.75, b = 0.75 } },
@@ -88,14 +88,14 @@ local function render(player)
   if trial then
     add_label(frame, head(trial.label, PANEL_LINE_CHARS) .. " | " .. trial.status .. " | "
       .. math.floor(trial.remaining_seconds / 60) .. ":" .. string.format("%02d", trial.remaining_seconds % 60))
-    local m = trial.metrics
-    add_label(frame, "Mined: Fe " .. m["iron-ore"] .. ", Cu " .. m["copper-ore"] .. ", coal " .. m.coal .. ", stone " .. m.stone)
-    add_label(frame, "Plates: Fe " .. m["iron-plate"] .. ", Cu " .. m["copper-plate"])
-    add_label(frame, "Average/min: resources " .. string.format("%.1f", trial.input_per_minute)
-      .. ", plates " .. string.format("%.1f", trial.output_per_minute))
+    local m = setmetatable({}, { __index = function(_, key) return trial.metrics[key] or 0 end })
+    add_label(frame, "Research: " .. trial.research .. " packs | machine-made " .. trial.made
+      .. " (" .. string.format("%.1f", trial.made_per_minute) .. "/min) | raw " .. trial.raw)
+    add_label(frame, "Plates: Fe " .. m["iron-plate"] .. ", Cu " .. m["copper-plate"] .. ", steel " .. m["steel-plate"]
+      .. " | gears " .. m["iron-gear-wheel"] .. ", circuits " .. m["electronic-circuit"])
     if storage.benchmark.summary then add_label(frame, head(storage.benchmark.summary, PANEL_LINE_CHARS)) end
   end
-  add_label(frame, "NOW: " .. head(t.now or "-", PANEL_LINE_CHARS), ROLES.astra.color)
+  add_label(frame, "NOW: " .. head(t.now or "-", PANEL_LINE_CHARS), ROLES.strategist.color)
   for _, line in ipairs(t.lines) do
     local role = ROLES[line.role]
     add_label(frame, "[" .. role.label .. "] " .. head(line.text, PANEL_LINE_CHARS), role.color)
@@ -110,7 +110,7 @@ M.refresh = render_all
 -- say {role, text}: one chat line and one panel line.
 function M.say(params)
   local role = ROLES[params.role]
-  if not role then error("role must be astra, luna, mining, logistics or supervisor") end
+  if not role then error("role must be strategist, pilot, mining, logistics or supervisor") end
   local text = clean_text(params, false)
   local lines = data().lines
   lines[#lines + 1] = { role = params.role, text = text, tick = game.tick }
@@ -120,12 +120,12 @@ function M.say(params)
   return { tick = game.tick, lines = #lines }
 end
 
--- say_now {text}: Astra's current NOW line at the top of the panel; empty
+-- say_now {text}: The strategist's current NOW line at the top of the panel; empty
 -- text clears it.
 function M.say_now(params)
   local text = clean_text(params, true)
   data().now = text ~= "" and text or nil
-  if text ~= "" then print_line(ROLES.astra, "NOW: " .. text) end
+  if text ~= "" then print_line(ROLES.strategist, "NOW: " .. text) end
   render_all()
   return { tick = game.tick }
 end

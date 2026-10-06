@@ -1,25 +1,46 @@
 -- Finite trial clock and frozen counters. Supervisor/recorder RPC only, never
--- a gameplay tool. Six statistic reads; no entity or surface scan.
+-- a gameplay tool. Thirteen statistic reads; no entity or surface scan.
+-- The score is automation: science packs labs consumed, then machine-made
+-- plates, intermediates and packs (hand-crafts subtracted), then raw input.
 local companion = require("scripts.companion")
 local M = {}
-local ITEMS = { "iron-ore", "copper-ore", "coal", "stone", "iron-plate", "copper-plate" }
+local RAW = { "iron-ore", "copper-ore", "coal", "stone" }
+local MADE = { "iron-plate", "copper-plate", "steel-plate", "iron-gear-wheel", "electronic-circuit",
+  "automation-science-pack", "logistic-science-pack" }
+local PACKS = { "automation-science-pack", "logistic-science-pack" }
 local MUTATIONS = { enqueue = true, queue_plan = true, start_research = true, travel = true,
   create_platform = true, set_platform_route = true, set_requests = true, configure_entity = true,
   set_recipe = true, blueprint_capture = true, blueprint_create = true, blueprint_delete = true }
 
+-- Native counters by key: an item name is produced, consumed:<pack> is a
+-- lab's consumption and hand:<item> the Codex body's hand-crafts of it
+-- (factory_activity's run-long counter, read from storage: requiring that
+-- module would close a require cycle through jobs).
 local function counts()
   local body = companion.require_present()
-  local surface = game.get_surface("nauvis")
-  local statistics = body.force.get_item_production_statistics(surface)
+  local statistics = body.force.get_item_production_statistics(game.get_surface("nauvis"))
+  local hand = storage.factory_activity and storage.factory_activity.hand_crafted or {}
   local out = {}
-  for _, name in ipairs(ITEMS) do out[name] = statistics.get_input_count(name) end
+  for _, name in ipairs(RAW) do out[name] = statistics.get_input_count(name) end
+  for _, name in ipairs(MADE) do out[name], out["hand:" .. name] = statistics.get_input_count(name), hand[name] or 0 end
+  for _, name in ipairs(PACKS) do out["consumed:" .. name] = statistics.get_output_count(name) end
   return out
 end
 
 local function measured(b)
   local current, out = counts(), {}
-  for _, name in ipairs(ITEMS) do out[name] = current[name] - b.baseline[name] end
+  for key, value in pairs(current) do out[key] = value - (b.baseline[key] or 0) end
   return out
+end
+
+-- research: lab consumption of packs not made by hand; made: machine output.
+-- A save frozen by an older release lacks newer keys: they read as zero.
+local function score(m)
+  local s, v = { research = 0, made = 0, raw = 0 }, function(key) return m[key] or 0 end
+  for _, name in ipairs(PACKS) do s.research = s.research + math.max(0, v("consumed:" .. name) - v("hand:" .. name)) end
+  for _, name in ipairs(MADE) do s.made = s.made + math.max(0, v(name) - v("hand:" .. name)) end
+  for _, name in ipairs(RAW) do s.raw = s.raw + v(name) end
+  return s
 end
 
 function M.assert_action(method)
@@ -101,11 +122,10 @@ function M.display()
   local remaining = b.status == "prepared" and b.duration_seconds
     or math.max(0, math.ceil((b.deadline_tick - game.tick) / 60))
   local elapsed = b.status == "prepared" and 0 or math.max(0, ((b.frozen_tick or game.tick) - b.start_tick) / 60)
-  local total, plates = 0, metrics["iron-plate"] + metrics["copper-plate"]
-  for i = 1, 4 do total = total + metrics[ITEMS[i]] end
+  local s = score(metrics)
   return { label = b.label, status = b.status, remaining_seconds = remaining, metrics = metrics,
-    input_per_minute = elapsed > 0 and total * 60 / elapsed or 0,
-    output_per_minute = elapsed > 0 and plates * 60 / elapsed or 0 }
+    research = s.research, made = s.made, raw = s.raw,
+    made_per_minute = elapsed > 0 and s.made * 60 / elapsed or 0 }
 end
 
 return M

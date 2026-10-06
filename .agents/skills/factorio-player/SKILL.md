@@ -24,9 +24,9 @@ Explicit benchmarks follow the frozen profile and
 [benchmark goal](GOAL-BENCHMARK-v1.md) for roles, models, solo ledger ownership
 and scoring. Shared physical/honest-play rules remain; no scored rescue.
 
-Two persistent reasoning sessions share one body: the [Luna
+Two persistent reasoning sessions share one body: the [The pilot
 pilot](GOAL-PILOT-v1.md) (`gpt-6-luna`, `low` reasoning, fast mode enabled),
-the foreman and sole gameplay writer, and the [Astra
+the foreman and sole gameplay writer, and the [The strategist
 strategist](GOAL-STRATEGIST-v1.md) (`gpt-6.1-sol`, `medium` reasoning, normal
 speed), who owns the long-horizon priorities and architecture on the read-only
 surface. The supervisor's rescue powers (`AGENTS.md`) never pass to a role.
@@ -250,7 +250,7 @@ blocks only its branch: name the missing field and continue.
 
 ## Orders and packages
 
-Astra writes `operations.json` through `ledger-apply` and is its sole writer:
+The strategist writes `operations.json` through `ledger-apply` and is its sole writer:
 NOW, NEXT, and LATER (coordinate-free) and at most two build packages, none
 before `GO`. The pilot's bridge queues each new package into the FIFO itself,
 in ledger order, after the mod's placement check, with no pilot turn. Each
@@ -258,13 +258,13 @@ package names its `surface` (a planet) and queues only while the body is
 there; until then `orders` shows it `waiting_surface`, which is not a failure. Only the
 pilot travels: a package never holds `travel`.
 Results carry `orders` once per ledger change. A failed package appears as
-`package_failed` and in `activity_log`; Astra alone redesigns it. There are no
-reports: the ledger is Astra's only channel to the pilot, and `activity_log`
-shows Astra what the body did.
+`package_failed` and in `activity_log`; the strategist alone redesigns it. There are no
+reports: the ledger is the strategist's only channel to the pilot, and `activity_log`
+shows the strategist what the body did.
 
 ## Notebook
 
-Each run has `notebook/astra/` and `notebook/luna/` beside the ledger, empty at
+Each run has `notebook/strategist/` and `notebook/pilot/` beside the ledger, empty at
 the start. Each role writes only its own folder and reads anything in either
 at any time: ideas, what worked or failed, and this run's exact positions,
 maps, and infrastructure inventories. There is no total size cap; keep a short

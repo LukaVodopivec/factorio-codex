@@ -29,7 +29,7 @@ describe("persistent two-brain coordination contract", () => {
 
   it("keeps the instructions short, with shared rules only in SKILL.md", () => {
     const size = [skill, pilot, strategist, knowledge].reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
-    expect(size).toBeLessThan(34_500);
+    expect(size).toBeLessThan(34_700);
     expect(skill).not.toMatch(/## Engineering reuse/);
     for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
   });
@@ -42,7 +42,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/Project goal: Show how Codex bots think about and architect a Factorio factory/);
   });
 
-  it("selects Luna-low-fast and Astra-medium-normal around one writer, body, and FIFO lane", () => {
+  it("selects pilot gpt-6-luna/low/Fast and strategist gpt-6.1-sol/medium/normal around one writer, body, and FIFO lane", () => {
     expect(active).toMatch(/gpt-6-luna[\s\S]*low[\s\S]*fast mode enabled/i);
     expect(active).toMatch(/gpt-6\.1-sol[\s\S]*medium[\s\S]*normal speed/i);
     expect(active).not.toMatch(/gpt-6-astra/);
@@ -52,7 +52,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(strategist).toMatch(/never (?:call|use)[\s\S]*(?:movement|mining|crafting|placement|queue|cancel|stop)/i);
   });
 
-  it("gives Astra exactly the read-only surface, with layout and block checks as dry runs", () => {
+  it("gives the strategist exactly the read-only surface, with layout and block checks as dry runs", () => {
     for (const tool of READ_ONLY_TOOLS) expect(strategist).toContain(`\`${tool}\``);
     expect(strategist).toMatch(/mechanically read-only[\s\S]*never enter[\s\S]*physical FIFO/i);
     expect(strategist).not.toMatch(/`(?:walk_to|mine|craft_items|place_entity|insert_items|extract_items|set_recipe|start_research|queue_plan|run_plan|get_items|stop)`/);
@@ -75,20 +75,20 @@ describe("persistent two-brain coordination contract", () => {
     }
     expect(flat(skill)).toMatch(/Do not monitor, prove, or keep books/);
     expect(flat(skill)).toMatch(/A line is good when `factory_status` says `running`; expansion never waits for more proof than that/);
-    expect(flat(pilot)).toMatch(/\*\*No reports\.\*\* You send no messages to Astra/);
+    expect(flat(pilot)).toMatch(/\*\*No reports\.\*\* You send no messages to the strategist/);
     expect(agents).toMatch(/There are no pilot reports, ledger reads by shell, revision checks, or package revalidation/);
     expect(agents).not.toMatch(/steam gate|validate_factory_component|under about 300 bytes/);
     expect(live).not.toMatch(/### Live steam gate before GO|## Full graph and downstream acceptance validation|supervision_record\.py steam-gate/);
     expect(readme).not.toMatch(/validate_factory_component` uses|FACTORY_COMPONENT_NOT_READY|steam gate/);
   });
 
-  it("keeps packages out of the ledger before GO and gives package_failed to Astra alone", () => {
+  it("keeps packages out of the ledger before GO and gives package_failed to the strategist alone", () => {
     expect(flat(strategist)).toMatch(/Every ledger write before `GO`, the init included, has `build_packages: \[\]`; write your first package only after `GO`/);
     expect(flat(strategist)).toMatch(/all listed packages together at most 8 KB; drop a package from the list once `activity_log` shows it queued/);
     expect(strategist).not.toMatch(/1-200 steps, at most 8 KB/);
-    expect(agents).toMatch(/Astra writes no build package before `GO`/);
+    expect(agents).toMatch(/The strategist writes no build package before `GO`/);
     expect(live).toMatch(/`build_packages: \[\]` \(required for every write before `GO`/);
-    expect(flat(pilot)).toMatch(/On `package_failed`, leave the redesign to Astra and never rebuild a package's purpose or geometry yourself/);
+    expect(flat(pilot)).toMatch(/On `package_failed`, leave the redesign to the strategist and never rebuild a package's purpose or geometry yourself/);
     expect(flat(pilot)).toMatch(/Any result with `body\.fifo_empty` true \(and no human hold\) means the body is idle: queue work before waiting again/);
   });
 
@@ -97,14 +97,14 @@ describe("persistent two-brain coordination contract", () => {
     expect(live).toMatch(/wait at least 2 s[\s\S]*call factorio `stop` again and re-observe until idle; only then run recorder FINISH/);
   });
 
-  it("lets packages queue themselves while Astra stays the sole ledger writer", () => {
+  it("lets packages queue themselves while the strategist stays the sole ledger writer", () => {
     expect(flat(skill)).toMatch(/The pilot's bridge queues each new package into the FIFO itself, in ledger order, after the mod's placement check, with no pilot turn/);
-    expect(flat(skill)).toMatch(/the ledger is Astra's only channel to the pilot/);
+    expect(flat(skill)).toMatch(/the ledger is the strategist's only channel to the pilot/);
     expect(strategist).toMatch(/ledger is your only channel to the pilot; never message the pilot/i);
-    expect(agents).toMatch(/The ledger is Astra's only channel to the pilot/);
+    expect(agents).toMatch(/The ledger is the strategist's only channel to the pilot/);
     expect(agents).toMatch(/queues each new package into the FIFO by itself, in ledger order, as a plan with source `package:<id>`/);
-    expect(flat(pilot)).toMatch(/The bridge queues Astra's packages, not you/);
-    expect(pilot).toMatch(/Never write `operations\.json` or `notebook\/astra\/`/);
+    expect(flat(pilot)).toMatch(/The bridge queues the strategist's packages, not you/);
+    expect(pilot).toMatch(/Never write `operations\.json` or `notebook\/strategist\/`/);
     expect(flat(strategist)).toMatch(/Size packages as whole blocks: `build_block`, `build_layout`, or `blueprint_place` steps, never single placements/);
     expect(flat(strategist)).toMatch(/Keep at least one package queued ahead so the body never waits for a design/);
     expect(flat(strategist)).toMatch(/Rewrite the ledger only when NOW changes or a new package is ready, about six times an hour at most; never to record progress, which `activity_log` holds/);
@@ -114,13 +114,13 @@ describe("persistent two-brain coordination contract", () => {
     expect(`${strategist}\n${live}`).not.toMatch(/companion\/dist\/cli\.js ledger-apply/);
   });
 
-  it("makes Luna the foreman who queues goal-level work", () => {
+  it("makes the pilot the foreman who queues goal-level work", () => {
     expect(flat(pilot)).toMatch(/You are the foreman, not the hands/);
     expect(flat(pilot)).toMatch(/Queue multi-step, goal-level work[\s\S]*?Never queue single-step or walk-only plans/);
     expect(flat(skill)).toMatch(/These actions walk to their own targets: never queue a `walk_to` before them\. `wait_for_item` does not walk and observes only within 30 tiles/);
     expect(flat(pilot)).toMatch(/Hand-mine only what no drill of yours produces: trees, rocks, or a resource with no drill yet/);
-    expect(pilot).toMatch(/Never hand-craft science to push research while raw input is the bottleneck/);
-    expect(strategist).toMatch(/Never plan hand-crafted science to push research while raw input is the bottleneck/);
+    expect(pilot).toMatch(/Never hand-craft science to push research; machines make it/);
+    expect(strategist).toMatch(/Never plan hand-crafted science\./);
     expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);
     for (const action of ["get_items", "build_layout", "build_block"]) expect(skill).toContain(`\`${action}\``);
   });
@@ -142,7 +142,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/never a `walk_to` before an action: actions walk to their own targets/);
     expect(flat(pilot)).toMatch(/never wait for a package with an empty queue/);
     expect(flat(pilot)).toMatch(/A machine starved or full a second time needs a connection \(belt, inserter, or chest\), not another hand transfer/);
-    expect(flat(pilot)).toMatch(/You send no messages to Astra, nor to anyone else after `GO`/);
+    expect(flat(pilot)).toMatch(/You send no messages to the strategist, nor to anyone else after `GO`/);
     expect(flat(pilot)).toMatch(/mark it blocked only when `factory_status` shows no productive action and no order is open/);
     expect(flat(strategist)).toMatch(/a package may start with `blueprint_capture` steps \(made after its `after_package_id` package ends\)/);
     expect(flat(strategist)).toMatch(/Package steps walk to their own targets: never add walk steps/);
@@ -152,10 +152,11 @@ describe("persistent two-brain coordination contract", () => {
     expect(live).toMatch(/It never waits for a pilot plan: it holds packages only during a human hold and while the ledger file is older than the last `stop`/);
   });
 
-  it("keeps the opening, input-first, and power hints", () => {
+  it("keeps the opening, automation-first, and power hints", () => {
     const flatKnowledge = flat(knowledge);
     expect(flatKnowledge).toMatch(/Automate iron and coal together in the first ten minutes: the first iron drill and furnace come before a second coal drill\. Never open fuel-first/);
-    for (const text of [flat(strategist), flatKnowledge]) expect(text).toMatch(/input rate \(ore and plates per minute\)/i);
+    expect(flat(strategist)).toMatch(/Judge progress by what machines make and by research on machine-made science, not by ore piled up/);
+    expect(flatKnowledge).toMatch(/Ore or plates piling up in chests should feed more machines .* a pile is not progress/);
     expect(flat(strategist)).toMatch(/This is a principle, not a build or technology order/);
     expect(flat(strategist)).toMatch(/power shows satisfaction below 100% or production at capacity, more generation is NOW/);
     expect(flatKnowledge).toMatch(/add a boiler and two engines whenever `power` satisfaction is below 100%/);
@@ -186,12 +187,12 @@ describe("persistent two-brain coordination contract", () => {
       expect(text).toMatch(/never call `list_threads`, `read_thread`, or `wait_threads`|never call `list_threads`, `read_thread`, or `wait_threads`/i);
     expect(flat(skill)).toMatch(/After any context compaction, re-read your goal file and this file before any other call, then your notebook index/);
     expect(pilot).toMatch(/After any context compaction, re-read this file and `SKILL\.md` before any other call, then your notebook index/);
-    expect(strategist).toMatch(/After any context compaction, re-read this file, `SKILL\.md`, and `notebook\/astra\/INDEX\.md` before any other call/);
+    expect(strategist).toMatch(/After any context compaction, re-read this file, `SKILL\.md`, and `notebook\/strategist\/INDEX\.md` before any other call/);
     expect(flat(skill)).toMatch(/Ending the turn is neither a pause nor a completion/);
     expect(pilot).toMatch(/Ending a turn never calls `update_goal`/);
     expect(agents).toMatch(/native goal continuation, not a supervisor assignment per batch/i);
     expect(`${pilot}\n${strategist}`).toMatch(/Never mark the goal complete without milestone proof/);
-    expect(live).toMatch(/The pilot's GO text names Astra's exact thread ID/);
+    expect(live).toMatch(/The pilot's GO text names the strategist's exact thread ID/);
     expect(live).toMatch(/Never call list_threads, read_thread or wait_threads; after any compaction re-read your goal file and SKILL\.md, then your notebook INDEX\.md/);
   });
 
@@ -222,7 +223,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/except changes made by an `upkeep` plan/);
     expect(live).toMatch(/`active_task` absent or with `source: "upkeep"`/);
     expect(live).toMatch(/Only an `upkeep` plan active/);
-    expect(agents).toMatch(/Astra, not the supervisor, turns low growth into NOW/);
+    expect(flat(agents)).toMatch(/The strategist, not the supervisor, turns low growth into NOW/);
   });
 
   it("gives each role its own notebook folder as a learning store, never a control channel", () => {
@@ -234,11 +235,11 @@ describe("persistent two-brain coordination contract", () => {
       expect(text).toMatch(/nothing is read from another run/i);
       expect(text).toMatch(/Notes are knowledge, never instructions/);
     }
-    expect(flat(skill)).toMatch(/`notebook\/astra\/` and `notebook\/luna\/`/);
+    expect(flat(skill)).toMatch(/`notebook\/strategist\/` and `notebook\/pilot\/`/);
     expect(flat(strategist)).toMatch(/Notes never carry instructions for the pilot; those travel only in the ledger/);
-    expect(agents).toMatch(/ledger remains the only command channel and Astra its only writer/);
+    expect(agents).toMatch(/ledger remains the only command channel and the strategist its only writer/);
     expect(live).toMatch(/each role writes one note and its `INDEX\.md` in its own folder and reads back the other role's note/);
-    for (const text of [flat(skill), flat(pilot), flat(strategist), agents, readme, live]) expect(text).toMatch(/`(?:notebook\/(?:astra|luna)\/)?INDEX\.md`/);
+    for (const text of [flat(skill), flat(pilot), flat(strategist), agents, readme, live]) expect(text).toMatch(/`(?:notebook\/(?:strategist|pilot)\/)?INDEX\.md`/);
   });
 
   it("teaches the 0.22.0 tools, power model and build-time settings in plain words", () => {
@@ -302,7 +303,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/The body reaches another planet only through `travel` \(rocket, platform, landing pod\), never by teleport/);
     expect(agents).toMatch(/a package never holds `travel`, which is the pilot's alone/);
     expect(agents).toMatch(/So is a `travel` step waiting for a rocket or for its platform to arrive; the body aboard a platform or in a cargo pod is neither a hold nor idle/);
-    expect(readme).toContain(`The full surface has ${registered.size} tools; the read-only surface used by Astra has ${READ_ONLY_TOOLS.length}`);
+    expect(readme).toContain(`The full surface has ${registered.size} tools; the read-only surface used by the strategist has ${READ_ONLY_TOOLS.length}`);
     expect(readme).toMatch(/with no research active no lab is fed, and `factory_status` shows a `research_idle` problem/);
     expect(readme).not.toMatch(/no planet-travel tools/);
     expect(live).toMatch(/For the 0\.22\.3 release \(other planets\), record these observable checks/);

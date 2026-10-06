@@ -32,8 +32,8 @@ enabled and is the sole gameplay writer, character controller, and exact-local-
 state authority. The persistent `gpt-6.1-sol` strategist uses `medium` reasoning at normal speed,
 owns one compact NOW/NEXT/LATER list, atomically writes `operations.json`, and
 receives only the separate read-only MCP surface. Strategist reads never enter
-the physical FIFO. Luna validates advice against newer physical evidence and
-continues fail-open when Astra or the ledger is stale or unavailable. Record both
+the physical FIFO. The pilot validates advice against newer physical evidence and
+continues fail-open when the strategist or the ledger is stale or unavailable. Record both
 profiles before `GO`; never change the active debug run in place. Cycles 1-6 and
 their continuations ran the earlier `gpt-6.1-sol` strategist ("Sol" below).
 
@@ -401,10 +401,10 @@ Release 0.19.7 addresses these defects:
   mine instead of a teleport rescue. Underground belts take
   `belt_to_ground_type` and report their paired end, and every read-only
   result carries `fifo` with a `body idle` hint after 30 idle seconds.
-- **Roles.** An Astra (`gpt-6-astra`) brain keeps a per-run notebook, with the
+- **Roles.** An the strategist (`gpt-6-astra`) brain keeps a per-run notebook, with the
   hard rules in SKILL.md and a short Factorio intro. Neither role reads threads,
   and both re-read their rules after compaction. The pilot never ends a turn
-  with an empty FIFO, Astra revises the ledger only on change, and
+  with an empty FIFO, the strategist revises the ledger only on change, and
   `essential_prerequisite` is capped at one 160-character sentence. Growth is
   input first: input rate is the primary metric, and no science is
   hand-crafted while raw input is the bottleneck.
@@ -435,7 +435,7 @@ outcomes.
 ## 2026-10-02 debug cycle 7 (0.19.7)
 
 Run `debug-20261002T180832Z` (fresh game, seed 747930220, release 0777538,
-Astra `gpt-6-astra` medium brain, Luna low Fast pilot) started at
+The strategist `gpt-6-astra` medium brain, the pilot low Fast pilot) started at
 18:19:53Z. It ran open-ended, with comparison snapshots at `GO+20m` and
 `GO+60m`, until the owner stopped it at 21:08:39Z. The supervisor's factorio `stop`
 came at 21:10:33Z. Both goals were paused, both turns interrupted and the body
@@ -500,7 +500,7 @@ Pacing missed its targets:
   calls), and only 26% of calls named `after_plan_id`.
 - The first placement came at `GO+7:05`, after mining rocks about 140 tiles
   away.
-- Astra wrote about 30 ledger revisions per game hour (86 in all). NOW
+- The strategist wrote about 30 ledger revisions per game hour (86 in all). NOW
   changed about 13 times (about 4.6 per hour); 48 revisions named a priority
   field (phase, bottleneck or task list) and 38 were package-only.
 
@@ -556,7 +556,7 @@ Release 0.19.8 addresses these defects:
   or of the site NOW sent it to until the first package, skips a package that
   already stands, names tools by their exact code-mode names, and takes from a full terminal buffer only what a queued
   package needs. Flat input for two checkpoints while buffers fill makes
-  extraction and smelting NOW; hauled capital is not service; Astra reuses its
+  extraction and smelting NOW; hauled capital is not service; the strategist reuses its
   own proven templates, leaves packages until the next publish replaces them,
   and re-validates a proven component it extends.
 - **Supervision.** the owner's instructions are relayed by `turn/steer` rather than
@@ -591,7 +591,7 @@ brackets):
 In cycle 9's first 70 minutes (0.20.0) the pilot spent 81% of its time thinking
 and the body was busy 6% of the time at `GO+20m`, with 12 machines at
 `GO+50m`. Of 298 pilot calls, 72 were `queue_plan` (mostly 1 to 3 steps), 69
-`plan_status` polls, 31 reports to Astra, 30 ledger reads, 33 notebook reads or
+`plan_status` polls, 31 reports to the strategist, 30 ledger reads, 33 notebook reads or
 writes, 21 `map_summary` and 18 `observe_local`; 5 validation waits of up to
 300 s each. The four instruction files were 53 KB, mostly protocol.
 
@@ -599,13 +599,13 @@ writes, 21 `map_summary` and 18 `observe_local`; 5 validation waits of up to
 tracking replaces validation windows and proofs, `factory_status` and
 `next_event` replace polling, `get_items`, `build_layout` and `build_block`
 fetch, clear, walk and build whole blocks, upkeep refuels dry burners, and
-Astra's packages queue themselves. Pilot reports are gone, and the bots'
+The strategist's packages queue themselves. Pilot reports are gone, and the bots'
 reasoning summaries are shown in the game. Cycle 10 is a fresh game on the
 fixed seed, accepted against these targets (cycle 9 in brackets):
 
 - machines at `GO+60m`: 40 or more (about 14);
 - body busy 60% or more of the time (6% at `GO+20m`); a package starts within
-  5 s of Astra writing it, with no pilot turn; pilot calls per machine built
+  5 s of the strategist writing it, with no pilot turn; pilot calls per machine built
   under 8 (about 25);
 - validation waits 0 (5); pilot reports 0 (31); ledger reads by shell 0 (30);
 - instruction files about 20 KB (53 KB);
@@ -628,7 +628,7 @@ lane was used.
 
 The pilot consumed each `run_plan.observation` as the authoritative final state
 and made no redundant observe or inspect call after either packet. Keep one
-persistent pilot for successive packets. A fresh Luna-low or Luna-medium child
+persistent pilot for successive packets. A fresh gpt-6-luna low or medium child
 may produce an empty bootstrap turn; reuse a previously `AVAILABLE` connected
 child and never bypass repository ownership or create another action writer.
 

@@ -149,14 +149,14 @@ describe("five-minute run telemetry", () => {
 
   it("resolves a role rollout from the pointer file and falls back to the flag only when it is absent", () => {
     const dir = root(), pointer = path.join(dir, "rollouts.json");
-    const luna = rolloutResolver(pointer, "luna", "/first/pilot.jsonl");
-    expect(luna()).toBe("/first/pilot.jsonl");
-    fs.writeFileSync(pointer, JSON.stringify({ luna: "/second/pilot.jsonl" }));
-    expect(luna()).toBe("/second/pilot.jsonl");
-    fs.writeFileSync(pointer, '{"luna": "/second/pi');
-    expect(luna()).toBeNull();
-    fs.writeFileSync(pointer, JSON.stringify({ astra: "/astra.jsonl" }));
-    expect(luna()).toBe("/first/pilot.jsonl");
+    const pilot = rolloutResolver(pointer, "pilot", "/first/pilot.jsonl");
+    expect(pilot()).toBe("/first/pilot.jsonl");
+    fs.writeFileSync(pointer, JSON.stringify({ pilot: "/second/pilot.jsonl" }));
+    expect(pilot()).toBe("/second/pilot.jsonl");
+    fs.writeFileSync(pointer, '{"pilot": "/second/pi');
+    expect(pilot()).toBeNull();
+    fs.writeFileSync(pointer, JSON.stringify({ strategist: "/strategist.jsonl" }));
+    expect(pilot()).toBe("/first/pilot.jsonl");
   });
 
   it("uses conservative vector dominance instead of summing resources", () => {

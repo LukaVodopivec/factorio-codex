@@ -7,15 +7,23 @@ may watch the one Codex body and coloured thought feed on the couch PC.
 
 Each trial uses an exact copy of the campaign's read-only baseline save,
 peaceful seed 747930220, normal game speed, one body/FIFO/gameplay writer and
-one ledger writer. The first configurations screen two, one, three and four
-reasoning sessions. Advisors have mechanically read-only MCP. The solo pilot
+one ledger writer. A new campaign starts with the two-session incumbent
+(campaign 20261006 screened one to four sessions); `campaign add` supplies each
+later one-variable hypothesis. Advisors have mechanically read-only MCP. The solo pilot
 owns an empty-package ledger and queues its own plans. Otherwise the strategist
 owns the ledger and its build packages queue through the existing pilot bridge.
 Every role uses native subscription routing; never fall back to a paid API.
 
-Score iron ore + copper ore + coal + stone acquired from native production
-input counters since GO. Compare plate output when inputs differ by at most
-five percent, then final-five-minute resource throughput. The recorder takes
+Score automation from native production counters since GO, in order: science
+packs labs consumed (research), then plates, gears, circuits and science packs
+made by machines, then final-five-minute raw throughput (iron ore, copper ore,
+coal, stone). Values within five percent count as equal and the next measure
+decides. The mod's run-long hand-craft counter is subtracted from both made
+items and consumed packs, so a hand-crafted scored item never counts (hand-made
+ingredients a machine turns into a scored item are not traced back). Research
+within five packs, made output within twenty items and raw throughput within
+five per minute also count as equal, so a handful of items never decides a
+comparison. The recorder takes
 ordinary snapshots at 5, 10 and 15 minutes, uses a separate control connection
 to freeze entity simulation at 1200 wall-clock seconds, and then collects a
 frozen final snapshot. Thinking and tool latency count. A native 72000-tick
@@ -40,7 +48,7 @@ Initialization copies the baseline beside campaign.json with mode 0400 and
 records its SHA256. `next` is stable until the pending trial is recorded.
 Configuration JSON contains `id`, `release_sha`, `change`, `family` (topology,
 model, instructions, mod or interaction), and `profiles`. Each profile names
-`id` (luna/astra/mining/logistics), `role` (pilot/strategist/advisor), `model`,
+`id` (pilot/strategist/mining/logistics), `role` (pilot/strategist/advisor), `model`,
 `reasoning`, `fast`, and `ledger_writer`. There must be one pilot and one
 ledger writer. A changed hypothesis always gets a new configuration id.
 
@@ -80,8 +88,8 @@ and retries the same configuration with a new run id.
 
 A promising screen opens three fresh paired trials, ordered challenger/
 incumbent, incumbent/challenger, challenger/incumbent. Promotion requires at
-least two pair wins and over five percent median input gain, or over five
-percent median plate gain while median inputs are within five percent. Invalid
+least two pair wins and over five percent median research gain, or over five
+percent median machine-made gain while median research is within five percent. Invalid
 trials repeat the same pending configuration without advancing confirmation.
 Recheck the incumbent after six screens. When the queue is exhausted the
 supervisor adds a concrete next hypothesis rather than a random combination.
@@ -93,7 +101,7 @@ verify changes between trials. After ten unsuccessful screens switch variable
 family. Keep the best confirmed configuration as incumbent while searching
 indefinitely. Periodically summarize scores, exclusions, bottlenecks, settings
 and next hypothesis in the campaign evidence. The in-game panel displays the
-profile, remaining time, raw/plate totals and the incumbent reference; coloured
+profile, remaining time, research, machine-made and raw totals and the incumbent reference; coloured
 thoughts show each role's current reasoning.
 
 An explicit the owner stop pauses the campaign and follows LIVE-VALIDATION.md's

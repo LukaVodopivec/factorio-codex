@@ -296,7 +296,7 @@ describe("package auto-queue", () => {
     expect(queuedPlans(call)).toEqual([expect.objectContaining({ source: "package:iron-a", surface: "nauvis" })]);
   });
 
-  it("holds packages written before an emergency stop until Astra rewrites the ledger, and waits out a human hold", async () => {
+  it("holds packages written before an emergency stop until the strategist rewrites the ledger, and waits out a human hold", async () => {
     const dir = runDir();
     const ledger = path.join(dir, "operations.json");
     const at = (time: string) => new Date(`2026-10-05T${time}Z`);
@@ -317,7 +317,7 @@ describe("package auto-queue", () => {
     await createPackageQueue(() => dir, bridge, () => clock).tick();
     expect(queuedPlans(call)).toEqual([]);
     expect(readPackageQueue(dir)?.cancel_all?.observed_at).toBe("2026-10-05T09:59:58.333Z");
-    // Astra rewrites the ledger after the stop: the package is queued with no pilot plan having run.
+    // The strategist rewrites the ledger after the stop: the package is queued with no pilot plan having run.
     writeLedger(dir, 2, [furnaces("iron-a")]);
     fs.utimesSync(ledger, at("10:01:00"), at("10:01:00"));
     await queue.tick();
@@ -337,7 +337,7 @@ describe("package auto-queue", () => {
     const queue = createPackageQueue(() => dir, bridge, () => clock);
     await queue.tick();
     expect(readPackageQueue(dir)?.cancel_all).toEqual({ tick: 48_000, observed_at: "2026-10-05T10:00:00.000Z" });
-    // After GO Astra writes its first package; the next pass queues it.
+    // After GO the strategist writes its first package; the next pass queues it.
     writeLedger(dir, 2, [furnaces("iron-a")]);
     fs.utimesSync(ledger, at("10:10:00"), at("10:10:00"));
     clock = at("10:10:01");
@@ -346,7 +346,7 @@ describe("package auto-queue", () => {
   });
 
   it("dates a stop it first sees back to when it happened, so a package written after the stop is queued", async () => {
-    // A new bridge starts 10 minutes (36000 ticks) after a stop; Astra wrote a package 5 minutes after the stop.
+    // A new bridge starts 10 minutes (36000 ticks) after a stop; the strategist wrote a package 5 minutes after the stop.
     const dir = runDir();
     const ledger = path.join(dir, "operations.json");
     const at = (time: string) => new Date(`2026-10-05T${time}Z`);

@@ -412,6 +412,15 @@ function M.event_state()
   local queued = 0
   for _, task in ipairs(t.queue) do if pilot_work(task) then queued = queued + 1 end end
   local space_tick, space_events = platforms.event_state()
+  -- Whether the force's labs stand idle: it has labs (the registry's cached
+  -- count; trigger technologies finish before any lab exists) and no
+  -- research running. nil while there is no body to name the force.
+  local research_ok, idle = pcall(function()
+    local anchor = companion.anchor()
+    if anchor and anchor.force then return anchor.force.current_research == nil and registry.labs().count > 0 end
+  end)
+  local research_idle = nil
+  if research_ok and type(idle) == "boolean" then research_idle = idle end
   return {
     tick = game.tick, last_plan_ended = t.last_plan_ended,
     active_plan_id = pilot_work(t.active) and t.active.type == "plan" and t.active.id or nil,
@@ -423,6 +432,7 @@ function M.event_state()
     human_hold = ok and held == true,
     -- {technology, tick} of the last research the force finished.
     last_research_finished = storage.last_research_finished,
+    research_idle = research_idle,
     last_cancel_all_tick = t.last_cancel_all_tick,
     -- The space event ring (platforms.lua): the newest entry's tick and the
     -- last few (rocket_launched, platform_state_changed, cargo_delivered,

@@ -128,6 +128,20 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(plain.summary).not.toContain("trial");
     expect(descriptions.factory_status).toMatch(/trial gives the clock .*final_window_in_seconds.*raw_since_go is total raw input, not that final rate/);
   });
+  it("factory_status says plainly in its summary when no research runs and labs are idle", async () => {
+    const handlers: Record<string, any> = {};
+    const call = vi.fn(async () => ({ tick: 9, surface: "nauvis", research: { current: null, labs: { count: 4, working: 0, speed: 4 } } }));
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig);
+    expect((await handlers.factory_status({ sections: ["research"] })).structuredContent.summary)
+      .toContain("no research is running and labs are idle; the ledger writer picks research in the ledger");
+    call.mockResolvedValueOnce({ tick: 9, problems: [{ status: "no_research_in_progress", cause: "research_idle", name: "lab", count: 4 }] } as never);
+    expect((await handlers.factory_status({ sections: ["problems"] })).structuredContent.summary).toContain("no research is running and labs are idle");
+    call.mockResolvedValueOnce({ tick: 9, research: { current: "automation", labs: { count: 4, working: 4, speed: 4 } }, problems: [] } as never);
+    expect((await handlers.factory_status({})).structuredContent.summary).not.toContain("no research is running");
+    call.mockResolvedValueOnce({ tick: 9, research: { available: [] } } as never);
+    expect((await handlers.factory_status({})).structuredContent.summary).not.toContain("no research is running");
+  });
   it("passes the remote marker of a charted own-force inspection through unchanged", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const call = vi.fn(async () => ({ tick: 9, entities: [

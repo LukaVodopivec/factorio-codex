@@ -135,6 +135,7 @@ rpc.register("blueprint_list", read(blueprints.list))
 rpc.register("blueprint_delete", blueprints.delete)
 rpc.register("blueprint_export", read(blueprints.export))
 blueprints.set_logger(tasks.log_event)
+research.set_logger(tasks.log_event)
 rpc.register("get_job", read(jobs.get))
 rpc.register("start_research", research.start_research)
 -- Remote actions on space platforms run at once, like start_research: the

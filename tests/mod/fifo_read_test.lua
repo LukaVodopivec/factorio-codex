@@ -37,7 +37,8 @@ stub("scripts.tasks", { set_observer = function() end, set_upkeep_listener = fun
   plan_status = reader("plan_status"), enqueue = reader("enqueue"), get = reader("get_task"),
   queue_plan = reader("queue_plan"), cancel = reader("cancel") })
 stub("scripts.inspect", { job = job_reader("inspect") })
-stub("scripts.research", { start_research = reader("start_research"), progression_status = reader("progression_status") })
+stub("scripts.research", { start_research = reader("start_research"), progression_status = reader("progression_status"),
+  set_logger = function() end })
 stub("scripts.actions.walk", { on_path_finished = function() end })
 stub("scripts.spatial", { observe_job = job_reader("observe_local"), observe_compact = reader("observe_compact"),
   can_place = reader("can_place"), describe_prototype = reader("describe_prototype") })

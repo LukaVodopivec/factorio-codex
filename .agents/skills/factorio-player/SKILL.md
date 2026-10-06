@@ -24,12 +24,11 @@ Explicit benchmarks follow the frozen profile and
 [benchmark goal](GOAL-BENCHMARK-v1.md) for roles, models, solo ledger ownership
 and scoring. Shared physical/honest-play rules remain; no scored rescue.
 
-Two persistent reasoning sessions share one body: the [The pilot
-pilot](GOAL-PILOT-v1.md) (`gpt-6-luna`, `low` reasoning, fast mode enabled),
-the foreman and sole gameplay writer, and the [The strategist
-strategist](GOAL-STRATEGIST-v1.md) (`gpt-6.1-sol`, `medium` reasoning, normal
-speed), who owns the long-horizon priorities and architecture on the read-only
-surface. The supervisor's rescue powers (`AGENTS.md`) never pass to a role.
+Two persistent reasoning sessions share one body: the
+[pilot](GOAL-PILOT-v1.md), the foreman and sole gameplay writer, and the
+[strategist](GOAL-STRATEGIST-v1.md), who owns the long-horizon priorities,
+research, and architecture on the read-only surface. The supervisor's rescue
+powers (`AGENTS.md`) never pass to a role.
 
 ## Objective
 
@@ -93,7 +92,7 @@ retried after the hold.
   `starved`, `output_full`, `no_fuel`, `no_power`, `no_heat`, `frozen`,
   `disabled`, or `idle`, with its cause (a fluid, no recipe, spent fuel full);
   rows past a cap are counted in `omitted_*`. A `research_idle` problem means
-  no research runs: start some. It details the body's surface; `elsewhere`
+  no research runs and labs are idle. It details the body's surface; `elsewhere`
   has one line per other planet or platform with buildings, and `surface:
   "nauvis"` (also on `map_summary`, `inspect_entity`, `can_place`,
   `find_placement`) reads another one from anywhere; `body.state` shows only
@@ -240,8 +239,7 @@ idle gaps.
 
 **Other facts.** Crafting runs in the background: `craft_items` returns at
 once, the body keeps working, and a later step that needs the item waits for
-it. `start_research` takes a list of technologies in order; queue more when
-`next_event` reports `research_finished`. Any item may be used anywhere,
+it. Any item may be used anywhere,
 crafted or machine-made. `mine` count means physical mining cycles; judge item ceilings
 from the in-game learned per-cycle yield and actual inventory deltas. A result with
 `drill_produced: true` means own drills mine that resource. An invalid schema,
@@ -257,10 +255,11 @@ in ledger order, after the mod's placement check, with no pilot turn. Each
 package names its `surface` (a planet) and queues only while the body is
 there; until then `orders` shows it `waiting_surface`, which is not a failure. Only the
 pilot travels: a package never holds `travel`.
+The ledger writer picks research: the bridge queues the ledger's `research` list
+once per revision (`activity_log` shows it).
 Results carry `orders` once per ledger change. A failed package appears as
 `package_failed` and in `activity_log`; the strategist alone redesigns it. There are no
-reports: the ledger is the strategist's only channel to the pilot, and `activity_log`
-shows the strategist what the body did.
+reports: the ledger is the strategist's only channel to the pilot.
 
 ## Notebook
 

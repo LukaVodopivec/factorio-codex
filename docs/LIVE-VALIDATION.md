@@ -378,7 +378,10 @@ before `GO` (every pre-`GO` ledger write has `build_packages: []`), and a stop
 is followed by a re-observation (below), because a pilot `queue_plan` already
 in flight when `stop` lands still queues. A record newer than the
 loaded save's tick (a restart from an earlier save) is dropped and its package
-queued again.
+queued again. The same bridge queues the ledger's `research` list once per
+revision that lists any (origin `ledger/r<revision>`, a `research` row in
+`activity_log`), skipping technologies already researched or queued; a stop
+holds it as it holds packages, a human hold does not.
 The pilot is the foreman: it waits on `next_event`, handles failed packages, an
 empty queue and local judgment with goal-level actions, owns immediate safety
 and latest exact local evidence, and sends no reports. The strategist reads never enter

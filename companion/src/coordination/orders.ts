@@ -2,7 +2,8 @@
 // operations.json. Tool results carry the orders once per new ledger revision,
 // and one full-surface bridge queues each new package into the FIFO by itself,
 // first making the blueprint captures a package starts with, while the body
-// is on the package's surface.
+// is on the package's surface. The same bridge queues the ledger's research
+// once per revision that lists any.
 import fs from "node:fs";
 import path from "node:path";
 import { ModError, type Bridge } from "../bridge.js";
@@ -22,8 +23,16 @@ export interface PackageRecord {
   /** Blueprints captured for the package; a package of captures only has no plan. */
   captured?: string[];
 }
+/** The outcome of the ledger's research for one revision: queued (the
+ *  technologies the game added; skipped: already researched or queued) or
+ *  failed (the mod's refusal, which names those queued before it). */
+export interface ResearchRecord {
+  revision: number; status: "queued" | "failed"; technologies: string[];
+  queued?: string[]; skipped?: string[]; reason?: string; at: string; tick?: number;
+}
 export interface PackageQueueState {
   packages: Record<string, PackageRecord>;
+  research?: ResearchRecord;
   /** The last emergency stop (the mod's last_cancel_all_tick) and when it
    *  happened: when a bridge first saw it, dated back by the game time
    *  since its tick. */
@@ -232,7 +241,9 @@ const ledgerWrittenMs = (dir: string) => { try { return fs.statSync(ledgerFile(d
  *  retried on the next tick. It never waits for a pilot plan: nothing is
  *  queued only while a human holds the body, or while the ledger is older than
  *  the last emergency stop (packages written before a stop stay held until
- *  the strategist rewrites the ledger). */
+ *  the strategist rewrites the ledger). The ledger's research is queued once
+ *  per revision that lists any (origin ledger/r<revision>, a row in
+ *  activity_log), held only by a stop, as packages are. */
 export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>, now = () => new Date()) {
   // Directories whose queued records this process has checked against the loaded save.
   const verified = new Set<string>();
@@ -260,7 +271,9 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
     // its plan_id may be reused, so the package is queued again.
     if (typeof ping.tick === "number") {
       const stale = Object.keys(state.packages).filter((id) => (state.packages[id]!.tick ?? -1) > ping.tick!);
-      if (stale.length > 0) {
+      const staleResearch = (state.research?.tick ?? -1) > ping.tick;
+      if (staleResearch) delete state.research;
+      if (stale.length > 0 || staleResearch) {
         for (const id of stale) delete state.packages[id];
         write();
       }
@@ -271,6 +284,25 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       // First seen now, but it happened (tick - stopTick) game ticks ago.
       const agoMs = typeof events.tick === "number" ? Math.max(0, events.tick - stopTick) * 1000 / 60 : 0;
       state.cancel_all = { tick: stopTick, observed_at: new Date(now().getTime() - agoMs).toISOString() };
+      write();
+    }
+    const heldByStop = state.cancel_all !== undefined && ledgerWrittenMs(dir) <= Date.parse(state.cancel_all.observed_at);
+    // Research moves no body, so neither a human hold nor the body's surface
+    // holds it; a ledger older than the last stop does, as for packages.
+    if (ledger.research.length > 0 && state.research?.revision !== ledger.revision && !heldByStop) {
+      const at = () => ({ at: now().toISOString(), ...(typeof ping.tick === "number" ? { tick: ping.tick } : {}) });
+      const base = { revision: ledger.revision, technologies: ledger.research };
+      try {
+        const answer = await b.call<{ technologies?: unknown; skipped?: unknown }>("start_research",
+          { technologies: ledger.research, origin: `ledger/r${ledger.revision}` });
+        const skipped = luaArray(answer?.skipped ?? []) as string[];
+        state.research = { ...base, status: "queued", queued: luaArray(answer?.technologies ?? []) as string[],
+          ...(skipped.length > 0 ? { skipped } : {}), ...at() };
+      } catch (error) {
+        // A lost answer is retried next pass: what it queued is then skipped.
+        if (!(error instanceof ModError)) throw error;
+        state.research = { ...base, status: "failed", reason: message(error), ...at() };
+      }
       write();
     }
     // Records exist: each pass checks them against the loaded save.
@@ -291,7 +323,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       verified.add(dir);
     }
     if (ledger.build_packages.every((entry) => settled(state, entry.package_id))) return;
-    if (state.cancel_all && ledgerWrittenMs(dir) <= Date.parse(state.cancel_all.observed_at)) return;
+    if (heldByStop) return;
     const record = (id: string, entry: Omit<PackageRecord, "revision" | "at" | "tick">) => {
       state.packages[id] = { ...entry, revision: ledger.revision, at: now().toISOString(),
         ...(typeof ping.tick === "number" ? { tick: ping.tick } : {}) };

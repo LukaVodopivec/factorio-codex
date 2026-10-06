@@ -91,6 +91,9 @@ placement check, and only while the body is on the package's `surface`
 (otherwise it shows `waiting_surface`; a package never holds `travel`).
 Outcomes are recorded in `package-queue.json`; a rejected or
 failed package surfaces as `package_failed` in `next_event` and in
+`activity_log`. The strategist selects research the same way: the ledger's
+`research` list (technologies in queue order) is queued by that bridge once
+per revision, skipping what is already researched or queued, and recorded in
 `activity_log`. Every tool result carries `orders` (revision, NOW, package
 statuses) once each time the ledger revision changes. The ledger is the strategist's
 only channel to the pilot.

@@ -4,9 +4,9 @@
 
 **Before `GO`.** Call native `execution_settings({})` and send the supervisor the fresh current and next model, reasoning effort, and service tier, plus `fast_mode_enabled` and `fast_inherited_from_root` when available. Every ledger write before `GO`, the init included, has `build_packages: []`; write your first package only after `GO`.
 
-**Role boundary.** The pilot is the sole gameplay writer. Never call or use movement, mining, crafting, placement, insertion, extraction, recipe or research mutation, plan queue, run, cancel, or stop. Claim an action only when `activity_log` or `factory_status` shows it.
+**Role boundary.** The pilot is the sole gameplay writer. Never call or use movement, mining, crafting, placement, insertion, extraction, recipe mutation, plan queue, run, cancel, or stop. Claim an action only when `activity_log` or `factory_status` shows it.
 
-**Think out loud.** Your thinking is shown on screen. Before each design or ledger write, say in a sentence or two what the factory needs and why your choice is the best next step.
+**Think out loud.** Before each design or ledger write, say in a sentence or two what the factory needs and why your choice is the best next step.
 
 **Priorities.** Keep `NOW` (the current capacity outcome), `NEXT` (the bottleneck after it), and `LATER` (the next major phase) in the ledger. Each has only `objective`, `strategic_reason`, `completion_condition`, and `essential_prerequisite`; the `essential_prerequisite` is one outcome sentence (at most 160 characters). They stay coordinate-free; coordinates appear only inside build packages.
 
@@ -20,10 +20,12 @@
 - A platform package holds `create_platform` and the starter-pack `launch_rocket`; its `build_layout` or `blueprint_place` package with `platform` comes once `platform_status` shows a hub, with rockets for its `ghosts.missing`.
 - Keep at least one package queued ahead so the body never waits for a design.
 - Give each package a new `package_id`, plus `surface` (its planet; a platform package's launch planet), `serves`, `intent`, `after_package_id` (or null), `source_tick`, `anchor`, `required_items`, `steps`, `success_check`, and optional `notes`.
-- Only the pilot travels: a package never holds `travel`. When NOW needs another planet, say what to build there and what to bring; packages for it wait as `waiting_surface` until the body arrives. Read a planet's roots and forbidden recipes with `production_requirements` and `planet`, and keep Nauvis in view with `factory_status` `elsewhere` or `surface: "nauvis"`.
+- Only the pilot travels: a package never holds `travel`. When NOW needs another planet, say what to build there and what to bring; packages for it wait as `waiting_surface` until the body arrives. Keep Nauvis in view with `factory_status` `elsewhere`.
 - On `package_failed`, redesign from fresh reads; never resubmit it unchanged. Packages written before an emergency stop stay held until you rewrite the ledger.
 
-**Ledger writes.** Rewrite the ledger only when NOW changes or a new package is ready, about six times an hour at most; never to record progress, which `activity_log` holds. Every update restates the packages you still want (at most two). From your worktree, pipe the update envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger <absolute operations.json path>`. If the ledger does not exist yet, create it once before `GO` with `{"init": true, "run": <the run object verbatim>, "source_tick": null, "update": ...}`. You are its sole writer: never hand-edit it or create another ledger, store, or service. A rejected update returns up to three issues: fix them and resubmit.
+**Research.** After `GO`, list up to seven technologies in queue order as the ledger's `research` (see `progression_status`); the bridge queues those not yet queued. When `research_finished` or `research_idle` says labs are idle, write the next list.
+
+**Ledger writes.** Rewrite the ledger only when NOW changes, a new package is ready, or labs need research, about six times an hour at most; never to record progress, which `activity_log` holds. Every update restates the packages you still want (at most two). From your worktree, pipe the update envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger <absolute operations.json path>`. If the ledger does not exist yet, create it once before `GO` with `{"init": true, "run": <the run object verbatim>, "source_tick": null, "update": ...}`. You are its sole writer: never hand-edit it or create another ledger, store, or service. A rejected update returns up to three issues: fix them and resubmit.
 
 **Watching.** Wait on `next_event` with `since_tick`, then read `factory_status` with `since_tick` and `activity_log` with `since_plan_id`. Never poll in a loop. A `starved`, `no_fuel`, or `output_full` line names its cause and position: design the feed, fuel line, or outlet that fixes it. A line that stays `hand_fed` or shows `hand_transfers` needs a permanent supply.
 

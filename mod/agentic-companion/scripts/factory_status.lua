@@ -275,7 +275,8 @@ local function labs_section(force, out)
   if not current then return end
   local unit_time_s = research.unit_time_s(current)
   out.unit_time_s = unit_time_s
-  if not (unit_time_s and unit_time_s > 0 and labs.speed > 0) then return end
+  -- Float sums can keep a tiny positive leftover after the last lab goes.
+  if not (unit_time_s and unit_time_s > 0 and labs.count > 0 and labs.speed > 0) then return end
   local per_minute = labs.pack_rate * 60 / unit_time_s
   local needed = {}
   local ok, ingredients = pcall(function() return current.research_unit_ingredients end)

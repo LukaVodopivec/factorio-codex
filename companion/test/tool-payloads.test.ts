@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_TASK_TIMEOUT_MS, type Bridge } from "../src/bridge.js";
 import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
 import { queuePlanSchema } from "../src/mcp/runPlan.js";
-import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeFifo, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
+import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeFifo, normalizeProductionRequirements, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 describe("public MCP to Lua DTO mappings", () => {
   it("returns canonical structured content without duplicating it as JSON text", () => {
@@ -355,6 +355,13 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     expect(schemas.describe_prototype.safeParse({ names: Array(11).fill("x") }).success).toBe(false);
     expect(schemas.inspect_entity.safeParse({ x: 1, y: 2 }).success).toBe(false);
     expect(schemas.production_requirements.safeParse({ target: "gear", count: 2 }).success).toBe(false);
+    // The rate planner: fuel only with per_minute; both forwarded to Lua; rates arrays normalized.
+    expect(schemas.production_requirements.safeParse({ targets: { "iron-plate": 30 }, fuel: "wood" }).success).toBe(false);
+    expect(schemas.production_requirements.safeParse({ technology: "automation", per_minute: true }).success).toBe(false);
+    expect(toolPayloads.productionRequirements({ targets: { "iron-plate": 7.5 }, per_minute: true, fuel: "wood" }))
+      .toEqual({ targets: { "iron-plate": 7.5 }, per_minute: true, fuel: "wood" });
+    const rates = normalizeProductionRequirements({ rates: { stages: [{ item: "iron-plate", machines: {} }], raw: {}, belts: {} } });
+    expect(rates.rates.stages[0].machines).toEqual([]); expect(rates.rates.raw).toEqual([]); expect(rates.rates.belts).toEqual([]);
     expect(schemas.place_entity.safeParse({ item: "stone-furnace", x: 1, y: 2 }).success).toBe(false);
     expect(schemas.craft_items.safeParse({ items: { "iron-gear-wheel": 2 } }).success).toBe(false);
 

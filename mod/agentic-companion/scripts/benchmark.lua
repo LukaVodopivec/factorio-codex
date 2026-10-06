@@ -1,5 +1,6 @@
--- Finite trial clock and frozen counters. Supervisor/recorder RPC only, never
--- a gameplay tool. Thirteen statistic reads; no entity or surface scan.
+-- Finite trial clock and frozen counters. Control is supervisor/recorder RPC
+-- only; gameplay tools only read the clock and score (factory_status trial).
+-- Thirteen statistic reads; no entity or surface scan.
 -- The score is automation: science packs labs consumed, then machine-made
 -- plates, intermediates and packs (hand-crafts subtracted), then raw input.
 local companion = require("scripts.companion")

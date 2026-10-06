@@ -106,8 +106,12 @@ and a live read disagree, the live read wins.
   `crafting_speed`, `max_energy_usage` (joules per tick; × 60 for watts),
   `mining_time` and products for resources, fuel categories and slot count.
 - `production_requirements` gives recipe executions, ingredient amounts and
-  total craft time at speed 1 for a target count; divide by machine speed
-  for wall time.
-- `factory_status` groups machines by status: `working`, `no_fuel`,
-  `insufficient_input`, `full_output`, `no_power` tell you which flow problem
-  each group has. A group with a mix of statuses has some members stuck.
+  total craft time at speed 1 for a target count. With `per_minute` true it
+  does the rate arithmetic above for you: machines per tier, fuel or power,
+  drills per raw resource and belt capacity for a target rate.
+- `factory_status` gives each production line one `state`: `running`,
+  `starved` (input missing; `cause` names it), `output_full`, `no_fuel`,
+  `no_power`, `frozen`, `no_heat`, `disabled` or `idle`; its problem rows name
+  the machine's own status. Starved and output_full are the flow problems
+  above; no_fuel and no_power are energy problems. During a benchmark its
+  `trial` shows the time left and the score so far.

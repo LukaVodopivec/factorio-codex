@@ -267,7 +267,7 @@ describe("exact local configuration", () => {
 
   it("keeps every durable gameplay prompt semantic and route-free", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-    const files = ["SKILL.md", "GOAL-PILOT-v1.md", "GOAL-STRATEGIST-v1.md", "PLAYER-KNOWLEDGE-v1.md"];
+    const files = ["SKILL.md", "GOAL-PILOT-v1.md", "GOAL-STRATEGIST-v1.md", "PLAYER-KNOWLEDGE-v1.md", "FACTORIO-REFERENCE.md"];
     const texts = files.map((file) => fs.readFileSync(path.join(root, ".agents/skills/factorio-player", file), "utf8"));
     for (const text of texts) {
       expect(text).not.toMatch(/\b(?:first|start by)\s+(?:mine|craft|place|build|research)\b/i);

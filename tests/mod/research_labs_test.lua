@@ -152,5 +152,14 @@ check(idle.labs.count == 1 and idle.unit_time_s == nil and idle.packs_per_minute
   "without current research only labs are shown")
 check(finds == 0, "the research section queries no entity")
 
+-- Float leftovers after the last lab goes never show demand or an eta.
+local real_labs = registry.labs
+registry.labs = function() return { count = 0, speed = 2.2e-16, pack_rate = 2.2e-16, progress_rate = 2.2e-16 } end
+force.current_research = automation
+local leftover = read()
+registry.labs = real_labs
+check(leftover.labs == nil and leftover.packs_per_minute_needed == nil and leftover.eta_seconds == nil,
+  "a float leftover with no labs shows no lab demand and no eta")
+
 if failures > 0 then error(failures .. " research labs check(s) failed") end
 print("research_labs_test: all checks passed")

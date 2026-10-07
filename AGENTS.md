@@ -288,7 +288,7 @@ genuine exhausted blocker; a stop never marks a goal complete.
 the rules (purpose, roles, one body and writer, honest play, tools, orders,
 notebook, stop), `FACTORIO-REFERENCE.md` explains rates, energy, flow problems, bootstrap
 dependencies and research from live tool values and the geometry of layouts, `PLAYER-KNOWLEDGE-v1.md` is a short Factorio intro with
-overridable hints, and the two goal files hold each role's duties. Principles,
+mechanics, rates and generic principles, and the two goal files hold each role's duties. Principles,
 ratios and mechanics written in this repository's own words are allowed there;
 imported blueprint strings and copied layouts stay out.
 The supported save is permanently peaceful: planets generate no Nauvis enemy

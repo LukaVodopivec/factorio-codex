@@ -17,9 +17,8 @@ Say in a sentence or two what you see and what you will do before you act.
 **Queue real work.**
 - Queue multi-step, goal-level work (`get_items`, `build_layout`, `blueprint_place`, placements that fetch their own items), a minute or more at a time. Never queue single-step or walk-only plans, and never a `walk_to` before an action: actions walk to their own targets.
 - Pass `after_plan_id` only when a plan needs the earlier plan's effects; a chained plan is cancelled when its predecessor fails.
-- Before the first package arrives, build the opening yourself near your `GO` position, following NOW and SKILL.md's Architecture.
-- Hand-mine only trees, rocks, and ore your drills do not yet supply fast enough.
-- Hand-craft only the science that unlocks assemblers.
+- Before the first package arrives, build the opening yourself, following NOW and SKILL.md's Architecture.
+- Hand-mining and hand-crafting take the body's time; drills and assemblers work while the body does something else. The packs for the research that unlocks assemblers can only be hand-crafted.
 
 **Other planets.** Travel is yours alone. When NOW needs another planet, route a platform there with `set_platform_route`, then queue `travel` up to it, `travel` down to the planet, and that planet's first work in one plan; while aboard, use direct remote tools only.
 
@@ -27,7 +26,7 @@ Say in a sentence or two what you see and what you will do before you act.
 
 **Recovery.** After a failed, interrupted, or partial result, read fresh state, and use `plan_status` only with an exact known plan ID. A partial `get_items` says when machines make the rest: never retry it at once. A wait that timed out leaves the plan pending. Retain completed physical effects; there is no rollback. Continue through the existing FIFO without duplicating committed or pending steps or blanket-cancelling queued work.
 
-**Upkeep.** When no plan needs the body and one has finished since any stop, the mod (source `upkeep`) refuels burners and feeds labs from stock within 96 tiles (idle 2 min: also recent work sites); your plans take over at a step boundary, except one run for a burner dry a minute. Build fuel feeds instead.
+**Upkeep.** When no plan needs the body and one has finished since any stop, the mod (source `upkeep`) refuels burners and feeds labs from stock within 96 tiles (idle 2 min: also recent work sites); your plans take over at a step boundary, except one run for a burner dry a minute. A burner beyond its reach runs dry unless a feed brings fuel.
 
 **Notes.** Keep `notebook/pilot/` under SKILL.md's notebook rules: sites, stock, patches, and what worked or failed.
 

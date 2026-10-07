@@ -107,7 +107,7 @@ run. A package may name up to three notes.
 Neither role calls `list_threads`, `read_thread`, or `wait_threads`, and after a
 context compaction each re-reads its goal file and `SKILL.md` first. Gameplay
 rules live in the repo-local `factorio-player` skill: `SKILL.md`, a short
-Factorio intro with overridable hints (`PLAYER-KNOWLEDGE-v1.md`), a reference for
+Factorio intro with mechanics, rates and generic principles (`PLAYER-KNOWLEDGE-v1.md`), a reference for
 rates and layout geometry (`FACTORIO-REFERENCE.md`), and one goal file per role.
 
 **the owner takeover.** Real control input on the native `Codex` client (movement,

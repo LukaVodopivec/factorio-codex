@@ -215,9 +215,12 @@ describe("exact local configuration", () => {
     for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "copied layouts", "online build sequences"])
       expect(normalizedKnowledge).toContain(forbidden);
     expect(normalizedKnowledge).toMatch(/researched principles and ratios written in this repository's own words/);
-    expect(normalizedKnowledge).toMatch(/overridable hints, never a build or technology order: measured state wins/);
-    for (const ratio of ["5 electric drills feed 8 stone furnaces", "30 drills and 48 furnaces", "5 red science assemblers per 6 green", "3 cable assemblers per 2 circuit assemblers", "1 boiler (1.8 MW) runs 2 steam engines"])
-      expect(normalizedKnowledge).toContain(ratio);
+    expect(normalizedKnowledge).toMatch(/overridable, never a build or technology order: measured state wins/);
+    // The steam rule and per-machine rates are game facts; machine-count ratios tell the bots how many to build.
+    expect(normalizedKnowledge).toContain("1 boiler (1.8 MW) runs 2 steam engines");
+    expect(normalizedKnowledge).toContain("Electric drill 0.5 ore/s, burner drill 0.25 ore/s, stone furnace 0.3125 plates/s");
+    for (const ratio of ["5 electric drills feed 8 stone furnaces", "30 drills and 48 furnaces", "5 red science assemblers per 6 green", "3 cable assemblers per 2 circuit assemblers"])
+      expect(normalizedKnowledge).not.toContain(ratio);
     const agents = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8").replace(/\s+/g, " ");
     expect(agents).toMatch(/Principles, ratios and mechanics written in this repository's own words are allowed there; imported blueprint strings and copied layouts stay out/);
     expect(agents).not.toMatch(/research-order hint/);

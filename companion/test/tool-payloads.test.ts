@@ -178,7 +178,9 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(descriptions.pickup_items).toMatch(/runs dry, or is still short after 30 s in reach, ends the step with the count actually picked up/);
     expect(descriptions.map_summary).toMatch(/problems_by_status counts every problem machine by status/);
     expect(descriptions.mine).toMatch(/drill_produced/);
-    expect(descriptions.mine).toMatch(/hand-mining still helps while they do not meet demand/);
+    expect(descriptions.mine).toMatch(/hand-mining adds to what they mine/);
+    expect(descriptions.mine).not.toMatch(/still helps|meet demand/);
+    expect(descriptions.factory_status).toMatch(/hand_transfers: served by hand twice or more in ten minutes, so not yet automated/);
     expect(descriptions.mine).not.toMatch(/instead/);
     expect(descriptions.get_items).toMatch(/also one own drills mine when none of their output can be taken now/);
     expect(descriptions.get_items).toMatch(/drop position/);

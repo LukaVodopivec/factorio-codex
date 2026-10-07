@@ -149,9 +149,9 @@ would take the body takes it at the next step boundary, after that walk back.
 Back-to-back plans leave no such moment, so just before a queued pilot or
 package plan starts, a machine within 96 tiles of the body or of those last
 four sites dry for a minute gets one such plan first, serving machines near
-both (at most once in two minutes, never within two minutes after an upkeep
-step), which never moves an item that plan names and runs to its end, walk
-back included.
+the body and only dry burners near those sites (at most once in two minutes,
+never within two minutes after an upkeep step), which never moves an item
+that plan names and runs to its end, walk back included.
 While a stop keeps upkeep off, the fifo block and `next_event`'s `queue_empty`
 say so. Upkeep is the mod's work, not pilot activity.
 

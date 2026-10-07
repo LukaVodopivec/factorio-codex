@@ -294,9 +294,10 @@ turning them into a fixed opening or map-specific sequence:
   Right after the rehearsal stop, upkeep waits for the first plan to finish,
   and the fifo block and `queue_empty` say `upkeep_off_since_tick`; after a
   `stop` with `keep_upkeep: true` it does not wait.
-- Between back-to-back plans, a burner within 96 tiles of the body that has
-  been dry for a minute gets one upkeep plan (`upkeep_selection.room`
-  `boundary`) before the next plan starts; it moves no item the next plan
+- Between back-to-back plans, a burner within 96 tiles of the body or of one
+  of the last four sites where pilot or package plans began
+  (`upkeep_selection.sites`) that has been dry for a minute gets one upkeep
+  plan (`upkeep_selection.room` `boundary`) before the next plan starts; it moves no item the next plan
   names, runs to its end, walks back, and the next plan starts after it. With
   the FIFO empty, a dry machine within 96 tiles of one of the last four sites
   where pilot or package plans began (`upkeep_selection.sites`) is served even

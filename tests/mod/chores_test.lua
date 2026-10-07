@@ -527,4 +527,25 @@ sampled({ [9] = dry(9, 120, game.tick - 3600) })
 storage.chores.boundary_tick = nil
 game.tick = game.tick + 7200
 check(chores.boundary_upkeep(game.tick) == nil, "a long-dry machine beyond 96 tiles of the body calls no boundary pass")
+-- Back-to-back plans far from the base: the boundary pass also
+-- reaches machines within 96 tiles of a work site on the body's surface,
+-- so the base's burners never stay dry while packages keep the body busy.
+-- The pass still walks back, still looks at most once in two minutes, and
+-- a site on another surface widens nothing.
+storage.tasks.work_sites = { { surface_index = 2, x = 120, y = 0 } }
+game.tick = game.tick + 7200
+check(chores.boundary_upkeep(game.tick) == nil, "a work site on another surface reaches no long-dry machine")
+storage.tasks.work_sites = { { surface_index = 1, x = 300, y = 0 }, { surface_index = 1, x = 110, y = 0 } }
+storage.chores.boundary_tick = nil
+game.tick = game.tick + 7200
+local site_count = #queued
+local site_id = chores.boundary_upkeep(game.tick)
+local site_plan = queued[#queued]
+check(site_id ~= nil and #queued == site_count + 1 and #site_plan.steps == 2 and site_plan.steps[1].x == 120
+  and site_plan.steps[2].upkeep_return == true and site_plan.steps[2].x == 0
+  and site_plan.selection.room == "boundary" and #site_plan.selection.sites == 2,
+  "a machine dry for a minute near a work site 120 tiles away gets the boundary pass, with the walk back")
+check(chores.boundary_upkeep(game.tick + 600) == nil and #queued == site_count + 1,
+  "the work-site boundary pass still looks at most once in two minutes")
+storage.tasks.work_sites = nil
 os.exit(failures == 0 and 0 or 1)

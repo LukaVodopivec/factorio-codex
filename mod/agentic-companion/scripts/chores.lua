@@ -28,9 +28,10 @@
 --   slot takes beside what is there.
 -- * Plan-boundary upkeep: back-to-back plans leave no such moment, so just
 --   before the dispatcher starts a queued pilot or package plan, one
---   ordinary pass runs first when a machine within 96 tiles of the body
---   has been dry for a minute and no upkeep step ended (nor this pass
---   looked) in the last two minutes; it never moves an item the plan it goes
+--   ordinary pass runs first when a machine within 96 tiles of the body or
+--   of the work sites has been dry for a minute and no upkeep step ended
+--   (nor this pass looked) in the last two minutes; it serves machines near
+--   the body and the work sites, never moves an item the plan it goes
 --   ahead of names, is never pre-empted and ends with the walk back, so that
 --   plan starts where it would have.
 -- * Charting: every minute the force charts the chunks around the body that
@@ -59,7 +60,7 @@ local PACKS_PER_LAB = 10
 -- units in each chore status, so a pass never walks every machine.
 local MAX_CANDIDATES = 64
 -- Upkeep serves machines within this many tiles of the body (and, after
--- two idle minutes, of the work sites): a far outpost
+-- two idle minutes or at a plan boundary, of the work sites): a far outpost
 -- is not worth a round trip each time it runs dry; factory_status shows it
 -- no_fuel, and supplying or retiring it is the bots' call.
 local UPKEEP_RADIUS = 96
@@ -80,6 +81,32 @@ end
 local function held()
   local ok, value = pcall(companion.human_control)
   return ok and value == true
+end
+
+-- Whether `position` lies within UPKEEP_RADIUS of the body or of a site in
+-- `sites` ({x, y} list, optional).
+local function within_reach(position, c, sites)
+  local r2 = UPKEEP_RADIUS * UPKEEP_RADIUS
+  local dx, dy = position.x - c.position.x, position.y - c.position.y
+  if dx * dx + dy * dy <= r2 then return true end
+  for _, site in ipairs(sites or {}) do
+    local sx, sy = position.x - site.x, position.y - site.y
+    if sx * sx + sy * sy <= r2 then return true end
+  end
+  return false
+end
+
+-- The work sites (tasks' work_sites: where recent pilot or package plans
+-- began) on the body's surface, or nil when there are none.
+local function work_sites(c)
+  local sites
+  for _, site in ipairs(storage.tasks and storage.tasks.work_sites or {}) do
+    if site.surface_index == c.surface_index then
+      sites = sites or {}
+      sites[#sites + 1] = site
+    end
+  end
+  return sites
 end
 
 -- Own machines on the body's surface in a raw sampler state, or in the
@@ -124,12 +151,7 @@ local function machines_in(c, raw, kind, skip, audit, sites)
       local entity = rec.entity
       local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
       local distance = dx * dx + dy * dy
-      local far = distance > UPKEEP_RADIUS * UPKEEP_RADIUS
-      for _, site in ipairs(far and sites or {}) do
-        local sx, sy = rec.position.x - site.x, rec.position.y - site.y
-        if sx * sx + sy * sy <= UPKEEP_RADIUS * UPKEEP_RADIUS then far = false; break end
-      end
-      if far then
+      if not within_reach(rec.position, c, sites) then
         if evidence then evidence.decision = "too_far" end
       elseif entity and entity.valid then
         seen = seen + 1
@@ -368,16 +390,12 @@ local function pass(c, tick, room, reserved)
   end
   -- After SITE_IDLE_TICKS idle, also near the work sites on this surface: an
   -- idle body at a far site never leaves the base dry, yet a short pause
-  -- between the pilot's plans never sends it on a long walk.
-  local sites
+  -- between the pilot's plans never sends it on a long walk. The boundary pass
+  -- (called by a machine dry for a minute) reaches them too, so back-to-back
+  -- plans far off never leave the base dry.
   local idle_long = room == "idle" and storage.tasks and storage.tasks.last_finished_tick ~= nil
     and tick - storage.tasks.last_finished_tick >= SITE_IDLE_TICKS
-  for _, site in ipairs(idle_long and storage.tasks.work_sites or {}) do
-    if site.surface_index == c.surface_index then
-      sites = sites or {}
-      sites[#sites + 1] = site
-    end
-  end
+  local sites = (idle_long or room == "boundary") and work_sites(c) or nil
   local steps, units = {}, {}
   local selection = { tick = tick, surface_index = c.surface_index, room = room, sites = sites,
     refuel = { candidate_limit = MAX_CANDIDATES, selected_limit = MAX_REFUELS,
@@ -411,10 +429,12 @@ function M.upkeep(tick)
   if room then pass(c, tick, room, reserved) end
 end
 
--- Whether a machine within UPKEEP_RADIUS of the body has been out of fuel
--- for DRY_TICKS and is not cooling down: the plan-boundary pass's cue. It
--- looks at no more than MAX_LOOKED machines of the sampler's no_fuel set.
+-- Whether a machine within UPKEEP_RADIUS of the body or of a work site has
+-- been out of fuel for DRY_TICKS and is not cooling down: the plan-boundary
+-- pass's cue. It looks at no more than MAX_LOOKED machines of the sampler's
+-- no_fuel set.
 local function long_dry(c, tick)
+  local sites = work_sites(c)
   local a = storage.autonomy
   local units = a and a.waiting and a.waiting.no_fuel and a.waiting.no_fuel[c.surface_index]
   local refueled, looked = storage.chores.refueled, 0
@@ -424,9 +444,9 @@ local function long_dry(c, tick)
     local rec = a.machines[unit]
     local at = refueled[unit]
     if rec and rec.raw == "no_fuel" and rec.problem == "no_fuel" and rec.problem_since
-      and tick - rec.problem_since >= DRY_TICKS and not (at and tick - at < REFUEL_COOLDOWN_TICKS) then
-      local dx, dy = rec.position.x - c.position.x, rec.position.y - c.position.y
-      if dx * dx + dy * dy <= UPKEEP_RADIUS * UPKEEP_RADIUS then return true end
+      and tick - rec.problem_since >= DRY_TICKS and not (at and tick - at < REFUEL_COOLDOWN_TICKS)
+      and within_reach(rec.position, c, sites) then
+      return true
     end
   end
   return false
@@ -436,8 +456,9 @@ end
 -- package plan starts): one ordinary pass in room "boundary" (sparing what
 -- that plan names: tasks.upkeep_room), whose plan
 -- runs first, is never pre-empted and ends with the walk back, when a
--- machine near the body has been dry for DRY_TICKS, no upkeep step ended
--- and this pass did not look within BOUNDARY_GAP_TICKS. Returns the plan ID.
+-- machine near the body or a work site has been dry for DRY_TICKS, no
+-- upkeep step ended and this pass did not look within BOUNDARY_GAP_TICKS.
+-- Returns the plan ID.
 function M.boundary_upkeep(tick)
   local c, chores = companion.get(), storage.chores
   if not (c and c.valid and chores) or held() then return nil end

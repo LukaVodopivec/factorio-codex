@@ -198,9 +198,10 @@ replacement.
   for 600 ticks; with no research active no lab is fed, and `factory_status`
   shows a `research_idle` problem. Upkeep works only on the body's planet
   surface, never aboard or in transit. Just before a queued plan starts, a
-  machine within 96 tiles of the body dry for a minute gets one upkeep plan
-  first (at most once in two minutes), which moves no item that plan names, so
-  back-to-back plans never starve it.
+  machine within 96 tiles of the body or of those last four sites dry for a
+  minute gets one upkeep plan first, serving machines near both (at most once
+  in two minutes), which moves no item that plan names and walks back, so
+  back-to-back plans far off never starve the base.
 - **Several surfaces.** Lines, stock, flows and problems are kept per surface.
   `factory_status` details the body's surface (or the one named in `surface`)
   and summarises every other one with buildings in `elsewhere`, so the Nauvis

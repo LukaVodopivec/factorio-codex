@@ -83,6 +83,7 @@ export interface FactoryLine {
   id: number | string; product?: string; entity?: string; machines: number; working: number; state: LineState;
   rate_per_min?: number; hand_fed: boolean; self_sustaining: boolean; position: Position; hand_transfers?: number; hand_seconds?: number;
   /** Why the worst machine stops: a fluid name, no_recipe, recipe_not_researched, burnt_result, an item,
+   *  a starved machine's game status (e.g. no_ingredients) when no missing input can be named,
    *  outlet_no_fuel (cause_position is the dry burner inserter taking from it), a depleted drill's ore. */
   cause?: string; cause_position?: Position;
   /** Running lines only: the worst member problem past its threshold. */

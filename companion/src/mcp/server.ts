@@ -265,7 +265,8 @@ export function registerMcpTools(
   const dryReport = " Its report also lists inserters (picks_from, drops_into: a planned or existing entity, or nothing), belt_ends"
     + " (each belt nothing ahead takes from: a run's end, one facing a reversed belt or an underground exit's back, an"
     + ` entrance with no exit; with what it faces), unpowered machines no pole covers, isolated_poles no wire reaches, ${oreReport}`
-    + ` and ${fluidReport}.`;
+    + ` and ${fluidReport}. A planned pipe or other fluid entity that, in build order, would join two fluids already standing`
+    + " through the layout's own pipes fails BLOCKED (would join X and Y pipes): the game refuses that placement.";
   // connect_entities plans the route as a read; the build is a direct
   // build_plan task, and a power route is then checked for continuity.
   const connectRoute = async ({ check_only, ...p }: z.infer<typeof routeSchema>, signal?: AbortSignal) => {
@@ -449,7 +450,7 @@ export function registerMcpTools(
   tools.registerTool("blueprint_list", { description: "The blueprints stored for this run, with size and entity count.", inputSchema: z.object({}).strict() }, async () => rpc("blueprint_list"));
   tools.registerTool("blueprint_describe", { description: "One stored blueprint: its entities with offsets, size and item cost.", inputSchema: named }, async (p, extra) => rpc("blueprint_describe", named.parse(p), extra?.signal));
   tools.registerTool("blueprint_export", { description: "A stored blueprint as a string for the notebook. It is never imported back.", inputSchema: named }, async (p) => rpc("blueprint_export", named.parse(p)));
-  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position; where the blueprint fits (there or at the free position) also ${oreReport} and ${fluidReport}.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
+  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position (none where its pipes would join two fluids: free_reason names the pipe); where the blueprint fits (there or at the free position) also ${oreReport} and ${fluidReport}.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
     try { return await step("blueprint_place")(placeBlueprintSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });

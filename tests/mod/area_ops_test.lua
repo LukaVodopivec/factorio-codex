@@ -216,6 +216,47 @@ check(not pcall(area_ops.place_check_job.start, { name = "gears", position = { x
   "blueprint_place over RPC is only the check_only dry run")
 world[#world].valid = false
 
+-- A blueprint's pipes that would carry one standing fluid into another: the
+-- dry run names the pipe the build would be refused, and is not ok.
+local function pipe_connections()
+  local list = {}
+  for _, d in ipairs({ 0, 4, 8, 12 }) do
+    list[#list + 1] = { connection_type = "normal", direction = d, positions = { { x = 0, y = 0 }, { x = 0, y = 0 }, { x = 0, y = 0 }, { x = 0, y = 0 } } }
+  end
+  return list
+end
+entities.pipe = proto("pipe", "pipe", 1, 1, { fluidbox_prototypes = { { index = 1, production_type = "input-output",
+  pipe_connections = pipe_connections() } } })
+items.pipe = { name = "pipe", place_result = entities.pipe, stack_size = 100 }
+inventory.pipe = 10
+local function fluid_pipe(x, y, fluid)
+  local links = {}
+  for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+    links[#links + 1] = { connection_type = "normal", position = { x = x, y = y }, target_position = { x = x + d[1], y = y + d[2] } }
+  end
+  return spawn("pipe", { x = x, y = y }, 0, { fluidbox = setmetatable({
+    get_prototype = function() return { production_type = "input-output" } end, get_pipe_connections = function() return links end },
+    { __len = function() return 1 end, __index = function(_, k) if k == 1 then return { name = fluid, amount = 50 } end end }) })
+end
+blueprints.create({ name = "pipes", entities = { { name = "pipe", dx = 0.5, dy = 0.5 }, { name = "pipe", dx = 1.5, dy = 0.5 } } })
+local lube, gas = fluid_pipe(29.5, 10.5, "lubricant"), fluid_pipe(32.5, 10.5, "petroleum-gas")
+local mixed = jobs.run_now(area_ops.place_check_job, { name = "pipes", position = { x = 30, y = 10 }, check_only = true })
+lube.valid, gas.valid = false, false
+check(not mixed.ok and #mixed.collisions == 1 and mixed.collisions[1].reason:match("would join lubricant and petroleum%-gas pipes")
+  and mixed.free_position == nil and mixed.free_reason == mixed.collisions[1].reason,
+  "a blueprint dry run is not ok when its own pipes would join two standing fluids, names the refused pipe and offers no free position")
+-- Blocked at the position, the first place near it that fits, (39, 9),
+-- would mix too: no free position, and free_reason says why; the
+-- position's own collisions stay its own.
+local chest = spawn("wooden-chest", { x = 40.5, y = 10.5 })
+lube, gas = fluid_pipe(38.5, 9.5, "lubricant"), fluid_pipe(41.5, 9.5, "petroleum-gas")
+local near_mix = jobs.run_now(area_ops.place_check_job, { name = "pipes", position = { x = 40, y = 10 }, check_only = true })
+chest.valid, lube.valid, gas.valid = false, false, false
+check(not near_mix.ok and near_mix.free_position == nil
+  and near_mix.free_reason and near_mix.free_reason:match("^pipe at %(40%.5, 9%.5%): it would join lubricant and petroleum%-gas pipes") ~= nil
+  and #near_mix.collisions == 1 and near_mix.collisions[1].reason:match("wooden%-chest") ~= nil,
+  "a free position near a blocked one whose pipes would mix is not offered, and free_reason names the refused pipe")
+
 local placed, place_task = run(area_ops.place_action, { name = "gears", position = { x = 10.2, y = 9.8 }, direction = 4 })
 local machine, arm
 for _, e in ipairs(live()) do

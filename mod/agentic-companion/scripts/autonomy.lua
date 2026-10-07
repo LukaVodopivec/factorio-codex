@@ -24,7 +24,9 @@
 --                   progressing)
 --   cause           why the worst machine stalls: the item or fluid a starved
 --                   one lacks ("seed" for an agricultural tower with no spot
---                   its seeds take), no_recipe / recipe_not_researched /
+--                   its seeds take; the game's status, such as
+--                   no_ingredients, when no lack can be named, as for a
+--                   furnace that never smelted), no_recipe / recipe_not_researched /
 --                   not_connected_to_hub_or_pad / no_research (labs while no
 --                   research is active) for an idle one (rocket_ready for a
 --                   silo whose rocket waits for its launch), burnt_result for
@@ -649,6 +651,9 @@ local function evaluate(a, tick)
         causes_left = causes_left - 1
         local ok, cause = pcall(cause_of, cause_rec, state)
         cause = ok and cause or nil
+        -- A starved machine whose lack cannot be named (a furnace that never
+        -- smelted has no recipe to read) gives the game's own status.
+        if not cause and state == "starved" then cause = cause_rec.raw end
         if cause ~= line.cause then line.changed_tick = tick end
         -- Capped, lines that stalled together are worked out over several
         -- evaluates, so their causes also age out on different ones.

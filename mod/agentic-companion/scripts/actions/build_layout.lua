@@ -34,7 +34,9 @@
 -- inserters [{name,x,y,direction,picks_from,drops_into}], belt_ends
 -- [{name,x,y,direction,faces}], unpowered [{name,x,y}], isolated_poles
 -- [{name,x,y}], on_ore [{name,x,y,ore}], mixed_ore [{name,x,y,mines,also}]
--- and open_fluid_ports [{name,x,y,port}] (see the dry-run survey).
+-- and open_fluid_ports [{name,x,y,port}] (see the dry-run survey). A planned
+-- fluid entity that would join two standing fluids through the layout's own
+-- earlier pipes fails BLOCKED, as the game would refuse it.
 --
 -- mode "ghosts" places the layout as ghosts instead: a transient blueprint
 -- on a planet, checked native ghosts on a platform. Recipes and settings ride
@@ -1540,8 +1542,11 @@ end
 -- (on_ore, by resource), each drill whose mining area holds more than one
 -- resource it can mine (mixed_ore: mines is the one with the most tiles,
 -- also the rest), and fluid connections that meet nothing (open_fluid_ports,
--- see fluid_open). Pickup and drop points are output_target's arithmetic
--- (find_placement's), tested against the planned footprints by tile; what
+-- see fluid_open). One thing it finds is a failure, not data: a planned
+-- fluid entity the game would refuse in the build's order because, through
+-- the layout's own earlier pipes, it would join two fluids that stand
+-- already (fluid_mixes, see mix_check). Pickup and drop points are
+-- output_target's arithmetic (find_placement's), tested against the planned footprints by tile; what
 -- no planned entity answers takes one small query, charged to the dry run's
 -- work (SURVEY_QUERY plus what it reads) and spread over ticks. A query
 -- counts only what stands on charted chunks.
@@ -1588,14 +1593,16 @@ local function widest_supply()
   return widest
 end
 
--- Everything the layout places: its placements and routed steps.
+-- Everything the layout places: its placements and routed steps, each with
+-- its source (index or connection), the item placing it and its build rank
+-- (plan_steps' order is rank, then this list's order).
 local function planned_list(result)
   local list = {}
   for _, p in ipairs(result.placements) do
     local e = p.entity
     list[#list + 1] = { name = e.proto.name, proto = e.proto, position = p.position, direction = e.direction,
       area = p.area, under = e.proto.type == "underground-belt" and belt_end(e) or nil, recipe = e.recipe,
-      mirror = e.mirror or nil }
+      mirror = e.mirror or nil, index = e.index, item = e.item, rank = RANK[e.proto.type] or 1 }
   end
   for _, routed in ipairs(result.routes or {}) do
     for _, step in ipairs(routed.steps) do
@@ -1603,7 +1610,8 @@ local function planned_list(result)
       local proto = item and item.place_result or routed.route.proto
       local position, direction = { x = step.x, y = step.y }, step.direction or 0
       list[#list + 1] = { name = proto.name, proto = proto, position = position, direction = direction,
-        area = placement_geometry.footprint(proto, position, direction), under = step.belt_to_ground_type }
+        area = placement_geometry.footprint(proto, position, direction), under = step.belt_to_ground_type,
+        connection = routed.route.index, item = step.name, rank = routed.route.kind == "power" and 3 or 1 }
     end
   end
   return list
@@ -1637,7 +1645,8 @@ end
 
 -- Which report row each survey item kind fills.
 local ROW_OF = { inserter = "inserters", belt = "belt_ends", entrance = "belt_ends", power = "unpowered",
-  pole = "isolated_poles", ore = "on_ore", drill = "mixed_ore", fluid = "open_fluid_ports" }
+  pole = "isolated_poles", ore = "on_ore", drill = "mixed_ore", fluid = "open_fluid_ports",
+  seed = "fluid_mixes", mix = "fluid_mixes" }
 local CRAFTERS = { ["assembling-machine"] = true, furnace = true, ["rocket-silo"] = true }
 
 local function uses_fluid(recipe_name)
@@ -1729,7 +1738,7 @@ local function survey_start(ctx, result, only)
   end
   ctx.calls = ctx.calls + math.ceil(#planned / LOAD_PER_ITEM)
   local V = { planned = planned, tiles = tiles, items = {}, i = 1, widest = widest_supply(), group = {}, linked = {},
-    ports = {}, port_at = {}, wild = {},
+    ports = {}, port_at = {}, wild = {}, seeds = {}, mixes = {}, unders = {},
     rows = { inserters = {}, belt_ends = {}, unpowered = {}, on_ore = {}, mixed_ore = {}, open_fluid_ports = {} } }
   local function add(item)
     if not only or only[ROW_OF[item.kind]] then V.items[#V.items + 1] = item end
@@ -1785,13 +1794,19 @@ local function survey_start(ctx, result, only)
   if not ctx.space then
     for i, p in ipairs(planned) do add({ kind = p.proto.type == "mining-drill" and "drill" or "ore", i = i }) end
   end
+  if not only or only.open_fluid_ports or only.fluid_mixes then fluid_ports(ctx, V) end
   if not only or only.open_fluid_ports then
-    fluid_ports(ctx, V)
     for i, p in ipairs(planned) do
       local rule = V.ports[i] and fluid_rule(p)
       if rule then add({ kind = "fluid", i = i, rule = rule }) end
     end
   end
+  -- The fluids standing entities feed into each planned fluid entity, then
+  -- one pass over them in build order.
+  for i in ipairs(planned) do
+    if V.ports[i] then add({ kind = "seed", i = i }) end
+  end
+  if next(V.ports) ~= nil then add({ kind = "mix", i = 1 }) end
   return V
 end
 
@@ -1946,10 +1961,209 @@ local function fluid_open(ctx, V, i, rule)
   return open
 end
 
+-- The fluids own standing entities feed into planned entity i's boxes
+-- (V.seeds[i][box] = {fluid = true}): a live normal connection of theirs
+-- from the tile a planned port points at into the tile it leaves from,
+-- whose box holds a fluid (what fluid_mix reads). One small query around
+-- the footprint (at most MIX_READS entities) and one connection read each.
+local MIX_READS = 32
+local function fluid_seeds(ctx, V, i)
+  local p, want = V.planned[i], {}
+  for _, port in ipairs(V.ports[i]) do
+    if not V.tiles[port.target] then want[port.target .. ">" .. port.at] = port.box or 0 end
+  end
+  if next(want) == nil then return end
+  local surface, force = where(ctx)
+  local a = p.area
+  ctx.calls = ctx.calls + SURVEY_QUERY
+  local ok, found = pcall(surface.find_entities_filtered, { force = force, limit = MIX_READS, area = {
+    left_top = { x = a.left_top.x - 1, y = a.left_top.y - 1 }, right_bottom = { x = a.right_bottom.x + 1, y = a.right_bottom.y + 1 } } })
+  if not (ok and type(found) == "table") then return end
+  for _, e in ipairs(found) do
+    if e.valid and e.type ~= "character" and charted_at(ctx, e.position) then
+      ctx.calls = ctx.calls + 1
+      for _, row in ipairs(fluid_connections.live(e)) do
+        local box = row.connection_type == "normal" and want[cell(math.floor(row.position.x), math.floor(row.position.y))
+          .. ">" .. cell(math.floor(row.target_position.x), math.floor(row.target_position.y))]
+        local held_ok, fluid = pcall(function() return box and e.fluidbox[row.fluidbox_index] end)
+        if held_ok and type(fluid) == "table" and type(fluid.name) == "string" then
+          local seeds = V.seeds[i] or {}
+          V.seeds[i] = seeds
+          seeds[box] = seeds[box] or {}
+          seeds[box][fluid.name] = true
+        end
+      end
+    end
+  end
+end
+
+-- A planned entity's underground fluid connection: its box, the unit step
+-- it leads along and its reach; false when it has none. One prototype read
+-- per name and direction (V.unders).
+local function underground_of(V, p)
+  local key = p.name .. "|" .. p.direction
+  if V.unders[key] ~= nil then return V.unders[key] end
+  local ok, found = pcall(function()
+    for index, box in pairs(p.proto.fluidbox_prototypes) do
+      for _, connection in ipairs(box.pipe_connections or {}) do
+        local step = connection.connection_type == "underground" and AHEAD[(math.floor(connection.direction or 0) + p.direction) % 16]
+        if step then
+          return { box = tonumber(box.index) or tonumber(index), dx = step[1], dy = step[2],
+            reach = math.floor(tonumber(connection.max_underground_distance) or 0) }
+        end
+      end
+    end
+  end)
+  V.unders[key] = ok and found or false
+  return V.unders[key]
+end
+
+-- The planned entity an underground connection meets: the nearest one of
+-- the same name within reach along it whose own leads back, its connection
+-- and how many tiles along it stands.
+local function underground_partner(V, i, u)
+  local p = V.planned[i]
+  for k = 1, u.reach do
+    for _, j in ipairs(planned_at(V, p.position.x + u.dx * k, p.position.y + u.dy * k)) do
+      local q = V.planned[j]
+      local back = q.name == p.name and underground_of(V, q)
+      if back and back.dx == -u.dx and back.dy == -u.dy then return j, back, k end
+    end
+  end
+end
+
+-- The fluid a standing partner feeds into planned entity i's underground
+-- connection (V.seeds, as fluid_seeds): the nearest own entity of its name
+-- along it, nearer than any planned partner, whose own underground leads
+-- back. One small query along the line (at most MIX_READS entities),
+-- charged per tile scanned.
+local function underground_seed(ctx, V, i)
+  local p = V.planned[i]
+  local u = underground_of(V, p)
+  if not u then return end
+  ctx.calls = ctx.calls + math.ceil(u.reach / LOAD_PER_ITEM)
+  local _, _, planned_k = underground_partner(V, i, u)
+  local reach = planned_k and planned_k - 1 or u.reach
+  if reach < 1 then return end
+  local surface, force = where(ctx)
+  local x1, y1 = p.position.x + u.dx, p.position.y + u.dy
+  local x2, y2 = p.position.x + u.dx * reach, p.position.y + u.dy * reach
+  ctx.calls = ctx.calls + SURVEY_QUERY
+  local ok, found = pcall(surface.find_entities_filtered, { force = force, name = p.name, limit = MIX_READS, area = {
+    left_top = { x = math.min(x1, x2) - 0.4, y = math.min(y1, y2) - 0.4 },
+    right_bottom = { x = math.max(x1, x2) + 0.4, y = math.max(y1, y2) + 0.4 } } })
+  if not (ok and type(found) == "table") then return end
+  ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
+  local best, best_k, best_box
+  for _, e in ipairs(found) do
+    local direction = e.valid and e.name == p.name and tonumber(e.direction)
+    if direction and charted_at(ctx, e.position) then
+      local k = math.abs(e.position.x - p.position.x) + math.abs(e.position.y - p.position.y)
+      local back = underground_of(V, { name = e.name, proto = p.proto, direction = direction })
+      if back and back.dx == -u.dx and back.dy == -u.dy and (not best_k or k < best_k) then
+        best, best_k, best_box = e, k, back.box
+      end
+    end
+  end
+  if not best then return end
+  local held_ok, fluid = pcall(function() return best.fluidbox[best_box or 1] end)
+  if held_ok and type(fluid) == "table" and type(fluid.name) == "string" then
+    local seeds = V.seeds[i] or {}
+    V.seeds[i] = seeds
+    local box = u.box or 0
+    seeds[box] = seeds[box] or {}
+    seeds[box][fluid.name] = true
+  end
+end
+
+-- The build places the planned entities in rank order; each one joins the
+-- fluid systems its ports meet: standing ones (seeds) and those of planned
+-- entities placed before it (port to port, or a pipe-to-ground's pair). The
+-- game refuses one that would join two fluids; it is a fluid_mixes failure
+-- and stays out of every system, as the refused placement does. Linear in
+-- the planned ports, charged per entity and per underground tile scanned.
+local function mix_check(ctx, V)
+  local order = {}
+  for i in pairs(V.ports) do order[#order + 1] = i end
+  table.sort(order, function(a, b)
+    local ra, rb = V.planned[a].rank or 1, V.planned[b].rank or 1
+    if ra ~= rb then return ra < rb end
+    return a < b
+  end)
+  ctx.calls = ctx.calls + #order
+  local parent, fluids, built = {}, {}, {}
+  local function find(k)
+    while parent[k] ~= k do k = parent[k] end
+    return k
+  end
+  for _, i in ipairs(order) do
+    local joins, boxes = {}, {}
+    local function join(box, node)
+      if not joins[box] then joins[box] = {}; boxes[#boxes + 1] = box end
+      if node then joins[box][#joins[box] + 1] = find(node) end
+    end
+    for _, port in ipairs(V.ports[i]) do
+      join(port.box or 0)
+      for _, other in ipairs(V.port_at[port.target] or {}) do
+        if other.i ~= i and built[other.i] and other.port.target == port.at then
+          join(port.box or 0, other.i .. "|" .. (other.port.box or 0))
+        end
+      end
+    end
+    local u = underground_of(V, V.planned[i])
+    if u then
+      ctx.calls = ctx.calls + math.ceil(u.reach / LOAD_PER_ITEM)
+      local j, back = underground_partner(V, i, u)
+      join(u.box or 0, j and built[j] and (j .. "|" .. (back.box or 0)) or nil)
+    end
+    local mixed
+    for _, box in ipairs(boxes) do
+      local set, names = {}, {}
+      local function take(list)
+        for name in pairs(list or {}) do
+          if not set[name] then set[name] = true; names[#names + 1] = name end
+        end
+      end
+      take(V.seeds[i] and V.seeds[i][box])
+      for _, node in ipairs(joins[box]) do take(fluids[node]) end
+      if #names >= 2 then
+        table.sort(names)
+        mixed = names
+        break
+      end
+    end
+    if mixed then
+      V.mixes[#V.mixes + 1] = { i = i, fluids = mixed }
+    else
+      built[i] = true
+      for _, box in ipairs(boxes) do
+        local node = i .. "|" .. box
+        parent[node] = node
+        local set = {}
+        for name in pairs(V.seeds[i] and V.seeds[i][box] or {}) do set[name] = true end
+        for _, other in ipairs(joins[box]) do
+          -- An earlier box of this entity may have taken that system in.
+          local r = find(other)
+          if r ~= node then
+            for name in pairs(fluids[r] or {}) do set[name] = true end
+            parent[r], fluids[r] = node, nil
+          end
+        end
+        fluids[node] = set
+      end
+    end
+  end
+end
+
 local function survey_item(ctx, V, item)
   local p = V.planned[item.i]
   local rows = V.rows
-  if item.kind == "ore" then
+  if item.kind == "seed" then
+    fluid_seeds(ctx, V, item.i)
+    underground_seed(ctx, V, item.i)
+  elseif item.kind == "mix" then
+    mix_check(ctx, V)
+  elseif item.kind == "ore" then
     local ore = resources_in(ctx, p.area)
     if ore then rows.on_ore[#rows.on_ore + 1] = { name = p.name, x = p.position.x, y = p.position.y, ore = ore } end
   elseif item.kind == "drill" then
@@ -2060,6 +2274,19 @@ local function survey_rows(V)
   end
   local out = { isolated_poles = #isolated > 0 and isolated or nil }
   for key, list in pairs(V.rows) do out[key] = #list > 0 and list or nil end
+  return out
+end
+
+-- The survey's failures: each planned entity the build would be refused
+-- for joining two fluids (mix_check), as a placement check names it.
+local function survey_failed(V)
+  local out = {}
+  for _, mix in ipairs(V.mixes) do
+    local p = V.planned[mix.i]
+    out[#out + 1] = { index = p.index, connection = p.connection, code = "BLOCKED",
+      reason = string.format("%s at (%.1f, %.1f): %s", p.item or p.name, p.position.x, p.position.y,
+        placement_geometry.fluid_mix_reason(mix.fluids)) }
+  end
   return out
 end
 
@@ -2226,6 +2453,11 @@ local function check_job(label, make_request)
       result.given_anchor = s.given_anchor
       local out = report(c, result, state.extra, s)
       for k, v in pairs(state.survey and survey_rows(state.survey) or {}) do out[k] = v end
+      -- A placement the build would be refused for mixing fluids fails.
+      for _, row in ipairs(state.survey and survey_failed(state.survey) or {}) do
+        out.ok = false
+        out.failed[#out.failed + 1] = row
+      end
       -- A build whose items cannot be had now is no answer to build.
       if out.unobtainable then
         out.ok = false
@@ -2397,8 +2629,9 @@ M._resolve, M._rotated, M._plan_steps = resolve, rotated, plan_steps
 M.search_start, M.search_step, M.check_report = new_search, advance, report
 -- Its survey of a buildable result: survey_start(ctx, result, only?) ->
 -- state, survey_step(ctx, state, limit) -> true once done, survey_rows(state)
--- -> the report rows (only names the rows wanted).
-M.survey_start, M.survey_step, M.survey_rows = survey_start, survey_step, survey_rows
+-- -> the report rows (only names the rows wanted), survey_failed(state) ->
+-- the placements the build would be refused (fluid_mixes).
+M.survey_start, M.survey_step, M.survey_rows, M.survey_failed = survey_start, survey_step, survey_rows, survey_failed
 M.validate_layout, M.platform_space = validate_layout, platform_space
 M.WORK_PER_TICK, M.MAX_WORK = WORK_PER_TICK, MAX_WORK
 

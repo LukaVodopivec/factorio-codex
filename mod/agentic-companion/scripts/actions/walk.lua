@@ -627,8 +627,8 @@ local function resolve_frontiers(state, c)
     end
     if best then
       code = "BODY_ENCLOSED"
-      suggested = { tool = "mine", target_kind = "owned", x = best.position.x, y = best.position.y,
-        expected_name = best.name,
+      -- The blocker the step-out goes through; no tool for the bot to call.
+      suggested = { x = best.position.x, y = best.position.y, expected_name = best.name,
         hint = string.format("the body is enclosed by own entities; the automatic step-out through this %s"
           .. " (take it up, walk out, put it back) failed or was not possible", best.name) }
     end

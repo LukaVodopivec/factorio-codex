@@ -344,7 +344,7 @@ tasks.register_action("move_entity", { runner = escape_runner, make_task = funct
 walk.tick = scripted({
   { status = "failed", detail = "BODY_ENCLOSED: boxed in", outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
     resolved_goal = { x = 20, y = 0.5 },
-    suggested_recovery = { tool = "mine", target_kind = "owned", x = 5.5, y = 0.5, expected_name = "wooden-chest" } } } } },
+    suggested_recovery = { x = 5.5, y = 0.5, expected_name = "wooden-chest" } } } } },
   { status = "done", detail = "arrived" },
 })
 escape_tick = function() return { status = "done", detail = "stepped out through the wooden-chest at (5.5, 0.5): took it up and put it back" } end

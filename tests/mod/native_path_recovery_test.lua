@@ -730,9 +730,10 @@ end
 check(enclosed and enclosed.failed:match("^BODY_ENCLOSED:") and enclosed_path.failure_class == "PATH_NOT_FOUND"
   and #enclosed_path.frontier_probes == 16 and ring_two == 8 and ring_two_at_8 == 8
   and enclosed_path.frontier_probes[16].reason == "path_failed"
-  and enclosed_path.suggested_recovery.tool == "mine" and enclosed_path.suggested_recovery.target_kind == "owned"
+  and enclosed_path.suggested_recovery.tool == nil and enclosed_path.suggested_recovery.target_kind == nil
   and enclosed_path.suggested_recovery.expected_name == "wooden-chest" and enclosed_path.suggested_recovery.x == 1,
-  "refused probes in both rings prove an enclosure that names the owned blocker toward the target, not a nearer one behind")
+"refused probes in both rings prove an enclosure that names the owned blocker toward the target, not a nearer one behind,"
+    .. " and no tool to mine it")
 check(enclosed_path.recovery.termination_reason == nil, "a proven enclosure at the cap keeps its enclosure meaning")
 -- What reaches the bot names the blocker and says the automatic step-out
 -- failed or was not possible; it never tells the bot to mine part of a line.

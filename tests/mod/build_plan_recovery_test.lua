@@ -215,7 +215,7 @@ supply.register_runner("move_entity", { start = function(task) escapes[#escapes 
 local enclosed_walk = { status = "failed",
   detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities: the automatic step-out through the owned fast-inserter at (187.5,-7.5) (take it up, walk out, put it back) failed or was not possible",
   outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
-    suggested_recovery = { tool = "mine", target_kind = "owned", x = 187.5, y = -7.5, expected_name = "fast-inserter" } } } } }
+    suggested_recovery = { x = 187.5, y = -7.5, expected_name = "fast-inserter" } } } } }
 local enclosed_calls = 0
 local function enclosed_until(n)
   enclosed_calls = 0
@@ -338,7 +338,7 @@ end })
 -- inside the room to outside only while the gap is open.
 local enclosed_room = { status = "failed", detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities",
   outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
-    suggested_recovery = { tool = "mine", target_kind = "owned", x = 200.5, y = 0.5, expected_name = "inserter" } } } } }
+    suggested_recovery = { x = 200.5, y = 0.5, expected_name = "inserter" } } } } }
 approach_mock.ensure = function(_, c, target, reach)
   local dx, dy = target.x - c.position.x, target.y - c.position.y
   local d = math.sqrt(dx * dx + dy * dy)

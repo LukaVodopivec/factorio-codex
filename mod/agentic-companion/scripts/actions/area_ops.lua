@@ -214,8 +214,8 @@ function Place.resume(task)
 end
 
 -- Ended mid build: the nested layout's escape puts its entity back or names it.
-function Place.cancelled(task)
-  if task._layout then return build_layout.layout_action.runner.cancelled(task._layout) end
+function Place.cancelled(task, body_only)
+  if task._layout then return build_layout.layout_action.runner.cancelled(task._layout, body_only) end
 end
 
 local function place_ghosts(task, c)

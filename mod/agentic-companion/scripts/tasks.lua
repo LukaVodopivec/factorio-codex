@@ -61,8 +61,10 @@ function M.set_boundary_upkeep(fn) boundary_upkeep = fn end
 -- plan's active budget, counted in ordinary steps), remote = function(step)
 -- -> boolean (optional: the step acts on a space platform without the body,
 -- so it carries no surface tag) }. A runner may add waiting(task) -> boolean
--- (a deliberate wait the step watchdog leaves alone) and cancelled(task) ->
--- table (what a cancel of the running step reports).
+-- (a deliberate wait the step watchdog leaves alone) and cancelled(task,
+-- body_only) -> table (what a cancel of the running step reports; with
+-- body_only, from the stall watchdog, only an entity the body has taken up
+-- is let go of: robot orders and travel markers are left alone).
 local extensions = {}
 function M.register_action(action, spec)
   assert(type(action) == "string" and type(spec) == "table" and type(spec.runner) == "table"
@@ -601,12 +603,12 @@ local function log_cancel(origin, id, cancelled)
 end
 
 -- A running step or direct task ends from outside (a cancel, the plan's
--- budget): its runner's cancelled hook, if any, lets go of what it holds (a
--- travel step's launch marker, an escape's taken-up entity). Returns the
--- hook's note, or nil.
-local function task_cancelled(task)
+-- budget, or with body_only the stall watchdog): its runner's cancelled
+-- hook, if any, lets go of what it holds (a travel step's launch marker, an
+-- escape's taken-up entity). Returns the hook's note, or nil.
+local function task_cancelled(task, body_only)
   local runner = task and runners[task.type]
-  local noted, note = pcall(function() return runner and runner.cancelled and runner.cancelled(task) or nil end)
+  local noted, note = pcall(function() return runner and runner.cancelled and runner.cancelled(task, body_only) or nil end)
   return noted and note or nil
 end
 local function step_cancelled(plan) return task_cancelled(plan.current_task) end
@@ -1447,6 +1449,12 @@ local function watchdog(tasks)
     tostring(action), math.floor(stalled / 60), phase, p.x, p.y)
   local outcome = { code = "STEP_STALLED", action = action, phase = phase, stalled_ticks = stalled,
     position = { x = p.x, y = p.y } }
+  -- A step-out stalled mid way: the taken-up entity goes back or is named.
+  local note = task_cancelled(current, true)
+  if type(note) == "table" then
+    outcome.cancelled = note
+    if type(note.detail) == "string" then detail = detail .. "; " .. note.detail end
+  end
   storage.path_request, task._path_result = nil, nil
   if plan then finish_step(plan, { status = "failed", detail = detail, outcome = outcome })
   else finish(task, "failed", detail, nil, outcome) end

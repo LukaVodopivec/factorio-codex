@@ -2528,8 +2528,8 @@ function Runner.resume(task)
 end
 
 -- Ended mid build: the nested build's escape puts its entity back or names it.
-function Runner.cancelled(task)
-  if task._plan then return build_plan.cancelled(task._plan) end
+function Runner.cancelled(task, body_only)
+  if task._plan then return build_plan.cancelled(task._plan, body_only) end
 end
 
 function Runner.tick(task)

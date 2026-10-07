@@ -481,6 +481,31 @@ record = storage.tasks.records[direct]
 check(record ~= nil and record.status == "failed" and record.outcome.code == "STEP_STALLED"
   and record.detail:match("^STEP_STALLED: test_stuck"), "a direct task that stalls fails with STEP_STALLED")
 
+-- A step-out that stalls: the watchdog calls the step's cancelled hook for
+-- the body's taken-up entity only (body_only), and the record keeps its note.
+local stall_hook_args = {}
+tasks.register_action("test_stuck_escape", { runner = { start = function() end, tick = function() end,
+  cancelled = function(_, body_only)
+    stall_hook_args[#stall_hook_args + 1] = body_only
+    return { code = "ESCAPE_CANCELLED", put_back = true, detail = "the plan ended mid step-out: put the inserter back at (2.5, 0.5)" }
+  end }, make_task = function() return { _mining_started = true } end })
+reset(0.5, -0.5)
+plan = tasks.queue_plan({ steps = { { action = "test_stuck_escape" } } }).plan_id
+record = run(plan, 5000)
+outcome = record and last_outcome(record)
+check(record ~= nil and outcome.result.code == "STEP_STALLED" and outcome.result.cancelled
+  and outcome.result.cancelled.code == "ESCAPE_CANCELLED" and outcome.result.cancelled.put_back
+  and outcome.error:match("^STEP_STALLED: test_stuck_escape") and outcome.error:match("put the inserter back at %(2%.5, 0%.5%)$")
+  and #stall_hook_args == 1 and stall_hook_args[1] == true,
+  "a stalled step-out lets go of its taken-up entity through the body-only cancelled hook and records the note")
+reset(0.5, -0.5)
+direct = tasks.enqueue({ task = { type = "test_stuck_escape" } }).task_id
+for _ = 1, 3720 do tick() end
+record = storage.tasks.records[direct]
+check(record ~= nil and record.outcome.code == "STEP_STALLED" and record.outcome.cancelled
+  and record.outcome.cancelled.code == "ESCAPE_CANCELLED" and #stall_hook_args == 2 and stall_hook_args[2] == true,
+  "a stalled direct step-out records the body-only cancelled note too")
+
 -- A hand-crafting queue that advances is progress for a step that waits on
 -- it: the step is not stalled.
 local craft = require("scripts.actions.craft")

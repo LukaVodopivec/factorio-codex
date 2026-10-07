@@ -224,6 +224,8 @@ platforms.on_platform_state_changed({ platform = alpha, old_state = defines.spac
 tick(task, 2)
 check(landings == 1 and task._phase == "ride" and storage.travel.active.to == "vulcanus",
   "the platform's arrival event lands the body at once")
+check(runner.cancelled(task, true) == nil and storage.travel.active and not storage.travel.active.cancelled,
+  "the stall watchdog's body-only cancel leaves a travel's ride marker alone")
 state = "in_transit"
 tick(task, 5)
 character.surface = vulcanus_surface

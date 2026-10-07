@@ -113,11 +113,11 @@ end
 -- The owner ends from outside (a cancel, its plan's budget): the first
 -- nested action whose runner has a cancelled hook lets go of what it holds
 -- (an escape's taken-up entity). Returns that hook's note, or nil.
-function M.cancel_nested(owner)
+function M.cancel_nested(owner, body_only)
   for _, field in ipairs(NESTED_FIELDS) do
     local sub = owner[field]
     local runner = type(sub) == "table" and sub.type and runners[sub.type]
-    if runner and runner.cancelled then return runner.cancelled(sub) end
+    if runner and runner.cancelled then return runner.cancelled(sub, body_only) end
   end
 end
 

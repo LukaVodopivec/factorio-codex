@@ -332,8 +332,9 @@ function Runner.waiting(task)
 end
 
 -- A cancel stops the waiting; a launch or landing already under way
--- finishes natively.
-function Runner.cancelled(task)
+-- finishes natively. A stall (body_only) holds no taken-up entity.
+function Runner.cancelled(task, body_only)
+  if body_only then return nil end
   local active = storage.travel and storage.travel.active
   if task._launched and active and active.task_id == task.id then
     active.cancelled = true

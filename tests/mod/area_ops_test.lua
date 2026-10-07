@@ -508,12 +508,13 @@ check(reached[1].x == 400.5 and reached[2].x == 404.5 and reached[3].x == 408.5,
 -- A hand blueprint_place ended mid build hands over to its nested layout's
 -- escape (move_entity's cancelled hook, covered by move_entity_test).
 require("scripts.actions.supply").register_runner("place_escape_probe", { start = function() end, tick = function() end,
-  cancelled = function(sub) return { code = "ESCAPE_CANCELLED", from = sub.from } end })
+  cancelled = function(sub, body_only) return { code = "ESCAPE_CANCELLED", from = sub.from, body_only = body_only } end })
 local place_runner = area_ops.place_action.runner
 local place_note = place_runner.cancelled and place_runner.cancelled({ _layout = { _plan = {
   _escape = { type = "place_escape_probe", from = { x = 5, y = 6 } } } } })
 check(place_note and place_note.code == "ESCAPE_CANCELLED" and place_note.from.x == 5
-  and place_runner.cancelled({ mode = "ghosts" }) == nil,
+  and place_runner.cancelled({ mode = "ghosts" }) == nil
+  and place_runner.cancelled({ _layout = { _plan = { _escape = { type = "place_escape_probe", from = { x = 5, y = 6 } } } } }, true).body_only == true,
   "a cancelled blueprint_place reports its nested layout's escape note; a ghost placement has none")
 
 mock.assert_clean()

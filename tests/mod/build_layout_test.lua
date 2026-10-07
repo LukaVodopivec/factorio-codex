@@ -1280,12 +1280,13 @@ character.prototype = nil
 -- (move_entity's cancelled hook, covered by move_entity_test).
 local nested = require("scripts.actions.supply")
 nested.register_runner("escape_probe", { start = function() end, tick = function() end,
-  cancelled = function(sub) return { code = "ESCAPE_CANCELLED", from = sub.from } end })
+  cancelled = function(sub, body_only) return { code = "ESCAPE_CANCELLED", from = sub.from, body_only = body_only } end })
 local layout_runner = layout.layout_action.runner
 local forwarded = layout_runner.cancelled and layout_runner.cancelled({ _plan = { _escape = { type = "escape_probe", from = { x = 3, y = 4 } } } })
 check(forwarded and forwarded.code == "ESCAPE_CANCELLED" and forwarded.from.x == 3
-  and layout_runner.cancelled({ _search = {} }) == nil,
-  "a cancelled layout step reports its nested build's escape note; a search has none")
+  and layout_runner.cancelled({ _search = {} }) == nil
+  and layout_runner.cancelled({ _plan = { _escape = { type = "escape_probe", from = { x = 3, y = 4 } } } }, true).body_only == true,
+  "a cancelled layout step reports its nested build's escape note, body-only passed on; a search has none")
 
 print(failures == 0 and "\nALL TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

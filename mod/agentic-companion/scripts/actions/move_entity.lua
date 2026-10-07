@@ -457,8 +457,8 @@ local function body_cancelled(task)
   return note
 end
 
-function M.cancelled(task)
-  if task.mode == "robots" then return robot_move.cancelled(task) end
+function M.cancelled(task, body_only)
+  if task.mode == "robots" then return not body_only and robot_move.cancelled(task) or nil end
   return body_cancelled(task)
 end
 function M.diagnostics(task) if task.mode == "robots" then return robot_move.diagnostics(task) end end

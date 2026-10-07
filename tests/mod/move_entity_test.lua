@@ -458,6 +458,14 @@ local far = placing and move.cancelled(placing)
 check(far and far.in_inventory and inventory.inserter == 1 and far.detail:match("its spot is out of build reach"),
   "a plan ended with the body out of build reach of the spot names the inserter in the inventory")
 
+-- The stall watchdog's body-only cancel leaves a robot move's orders alone.
+local unordered = 0
+local robot_task = { mode = "robots", _robot_ordered = true, _robot_source = { valid = true, force = "player",
+  cancel_deconstruction = function() unordered = unordered + 1 end } }
+local robot_ok, robot_note = pcall(move.cancelled, robot_task, true)
+check(robot_ok and robot_note == nil and unordered == 0 and robot_task._robot_ordered,
+  "a body-only cancel of a robot move cancels no robot order")
+
 -- Put back, but out of reach for its contents: still an escape, and the
 -- result keeps the restore note.
 fresh_gate()

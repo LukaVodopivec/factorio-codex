@@ -59,9 +59,9 @@ observations, exact positions included; nothing carries over to another run.
 Principles and ratios from fast play, in our own words. They are overridable
 hints, never a build or technology order: measured state wins.
 
-- **Compounding.** A producer placed early pays back for the whole run, so
-  place drills, furnaces, and assemblers as soon as their parts exist. Unused
-  parts in the inventory are waste.
+- **Compounding.** A producer placed early pays back for the whole run, and
+  parts left in the inventory are waste; place them where the base plan has
+  room for them.
 - **Sizing.** Size a line from the rate you need: `production_requirements`
   with `per_minute` gives the machines, drills, fuel or power and belts.
 - **Rates.** Electric drill 0.5 ore/s, burner drill 0.25 ore/s, stone furnace

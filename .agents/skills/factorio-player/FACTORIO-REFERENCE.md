@@ -106,8 +106,8 @@ run's report confirm each one on the real site.
   the boiler's back row and steam leaves from the middle of its front; an
   engine takes steam at either end.
 - An offshore pump stands at the shore: it draws from the liquid on one side
-  and outputs on the land side. It pumps the liquid it stands in: steam needs
-  water, so a pump on lava or an oil ocean feeds no boiler.
+  and outputs on the land side. It pumps the liquid it stands in: a boiler
+  needs water, so a pump on lava or an oil ocean feeds no boiler.
 - A small electric pole powers machines within 2.5 tiles of it and wires to
   poles up to 7.5 tiles away.
 

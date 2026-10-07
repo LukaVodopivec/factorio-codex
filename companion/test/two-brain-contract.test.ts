@@ -194,7 +194,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(strategist)).toMatch(/Judge progress by what machines make and by research on machine-made science, not by ore piles/);
     expect(flatKnowledge).toMatch(/Ore or plates piling up in chests should feed more machines .* a pile is not progress/);
     expect(flat(strategist)).toMatch(/This is a principle, not a build or technology order/);
-    expect(flat(strategist)).toMatch(/power shows satisfaction below 100% or production at capacity, more generation is NOW/);
+    expect(flat(strategist)).toMatch(/A power shortage \(`factory_status` power satisfaction below 100%\) slows every machine on the network, so new electric consumers add little until generation catches up; weigh that when choosing NOW/);
+    expect(flat(strategist)).not.toMatch(/more generation is NOW|before any other expansion/);
     expect(flatKnowledge).toMatch(/add generation whenever `power` satisfaction is below 100%/);
     expect(flatKnowledge).toMatch(/hints are starting points that newer structured evidence may override/);
   });
@@ -391,7 +392,8 @@ describe("persistent two-brain coordination contract", () => {
     for (const text of [skill, pilot, strategist, knowledge, reference, benchmark].map(flat)) {
       expect(text).not.toMatch(/first ten minutes|fuel-first|common fast planet order|About 10 iron|Opening scale|Research hint/i);
       expect(text).not.toMatch(/Automation, Logistics, Electronics/);
-      expect(text).not.toMatch(/as early as research allows|Right after red and green science/);
+      expect(text).not.toMatch(/as early as research allows|Right after red and green science|as soon as their parts exist/);
+      expect(text).not.toMatch(/steam needs water|whole blocks or this run's blueprints/i);
       expect(text).not.toContain("build_block");
     }
     for (const text of [agents, readme]) expect(text).not.toContain("build_block");
@@ -405,6 +407,16 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatReference).toMatch(/direction 0 picks up north and drops south/);
     expect(flatReference).toMatch(/One boiler makes steam for two steam engines/);
     expect(flatReference).toMatch(/An offshore pump stands at the shore/);
+    // A boiler, not steam, needs water: Vulcanus makes steam from acid and calcite.
+    for (const text of [flat(skill), flatReference]) expect(text).toMatch(/a boiler needs water/i);
+    expect(flat(knowledge)).toMatch(/\*\*Compounding\.\*\* A producer placed early pays back for the whole run, and parts left in the inventory are waste; place them where the base plan has room for them/);
+    expect(benchmark).toMatch(/Design coupled layouts yourself as build_layout steps or this run's blueprints/);
+    // Every role reads the geometry at startup, and each pointer says it is there.
+    for (const goal of [pilot, strategist]) expect(flat(goal)).toMatch(/\*\*Start and compaction\.\*\* Read `SKILL\.md`, `PLAYER-KNOWLEDGE-v1\.md`, `FACTORIO-REFERENCE\.md`/);
+    expect(flatSkill).toMatch(/\[reference\]\(FACTORIO-REFERENCE\.md\) covers rates, geometry for your own layouts/);
+    expect(benchmark).toMatch(/FACTORIO-REFERENCE\.md \(how rates, energy, flow problems, bootstrap dependencies, research and layout geometry work/);
+    expect(agents).toMatch(/`FACTORIO-REFERENCE\.md` explains [^`]*the geometry of layouts/);
+    expect(readme).toMatch(/a reference for rates and layout geometry \(`FACTORIO-REFERENCE\.md`\)/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

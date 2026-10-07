@@ -6,7 +6,7 @@ description: Operate the live Factorio Codex character through the constrained M
 # Factorio player
 
 Play the one Codex character under these shared rules and your role
-goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) gives overridable hints; [reference](FACTORIO-REFERENCE.md) covers rates, upkeep, retiring.
+goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) gives overridable hints; [reference](FACTORIO-REFERENCE.md) covers rates, geometry for your own layouts, upkeep, retiring.
 
 ## Purpose
 
@@ -237,7 +237,7 @@ re-read `factory_status` body position and choose a reachable target.
   that planet forbids (`surface_limited`).
 - Offshore pumps pump their tile's liquid (water, lava, heavy oil, ammoniacal
   solution); `find_placement` takes `fluid`, a layout site `near_liquid`.
-  Steam needs water. `find_placement` lists free spots nearest first; a
+  A boiler needs water. `find_placement` lists free spots nearest first; a
   drill's carries its `resource_coverage`.
   `SURFACE_CONDITION`: that building or recipe needs another planet's
   pressure, gravity, or magnetic field.

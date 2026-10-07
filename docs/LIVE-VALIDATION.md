@@ -202,9 +202,12 @@ turning them into a fixed opening or map-specific sequence:
   does an enclosure by owned entities fail as `BODY_ENCLOSED`, naming one
   owned blocker (on the line toward the target first); recover only by
   extracting and mining it, never by teleport.
-- A successful walk or approach never leaves the body on a belt: it steps once
+- A successful walk or approach never leaves the body on a belt: it steps
   to a clear off-belt tile (reported as `settle`), within 4 tiles, or for an
-  approach within 8 tiles and still in reach of its target. A layout retries
+  approach within 8 tiles and still in reach of its target, else anywhere in
+  that reach (searched over a few ticks). A step that ordinary walking cannot
+  finish in time, or a tile beyond those rings, is walked to once by a
+  native path. A layout retries
   once, after its last step, a placement whose approach failed
   `BODY_ON_CONVEYOR` or `START_COLLISION`. `BODY_ON_CONVEYOR` leaves
   the body on the belt, where it drifts until the next `walk_to` off it; after

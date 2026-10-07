@@ -51,6 +51,10 @@ local MAX_FRONTIER_PROBES = 16
 local SETTLE_RADII = { 2, 4 }
 local SETTLE_WIDE_RADIUS = 8
 local SETTLE_TICKS = 60 -- per 4 tiles to the off-belt tile
+-- When those rings hold none, an approach searches every tile centre within
+-- reach of its target (up to 10 tiles: about 320 cells), this many a tick.
+local SETTLE_SEARCH_RADIUS = 10
+local SETTLE_CHECKS_PER_TICK = 48
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
 local OCTANT_RATIO = 0.41421356
@@ -672,6 +676,21 @@ local function conveyor_label(conveyor)
     position = { x = conveyor.position.x, y = conveyor.position.y } }
 end
 
+-- Why the tile centre `cell` cannot take the body off a belt, or nil when it
+-- can: its body box touches no conveyor and no character collider, it is
+-- charted and, with an anchor, it lies within `limit` of it.
+local function settle_reject(c, box, cell, anchor, limit)
+  if anchor and dist_sq(cell, anchor) > limit * limit + 1e-6 then return "out_of_range" end
+  if not charted(c, cell) then return "uncharted" end
+  local pos = c.position
+  local dx, dy = cell.x - pos.x, cell.y - pos.y
+  local shifted = box and { left_top = { x = box.left_top.x + dx, y = box.left_top.y + dy },
+    right_bottom = { x = box.right_bottom.x + dx, y = box.right_bottom.y + dy } }
+  if not shifted or placement_geometry.conveyor_under(c, shifted) then return "conveyor" end
+  if goal_occupancy(c, cell).state ~= "clear" then return "collision" end
+  return nil
+end
+
 -- Nearest charted tile centre within `radius` tiles whose body box touches no
 -- conveyor and no character collider, optionally within `limit` of `anchor`.
 -- `inner` (optional) skips the cells an earlier, smaller radius checked.
@@ -700,28 +719,83 @@ function settle_cell(c, anchor, limit, radius, accept, inner)
   local rejected = { out_of_range = 0, uncharted = 0, conveyor = 0, collision = 0 }
   for _, entry in ipairs(cells) do
     local cell = entry.position
-    if anchor and dist_sq(cell, anchor) > limit * limit + 1e-6 then
-      rejected.out_of_range = rejected.out_of_range + 1
-    elseif not charted(c, cell) then
-      rejected.uncharted = rejected.uncharted + 1
-    else
-      local dx, dy = cell.x - pos.x, cell.y - pos.y
-      local shifted = box and { left_top = { x = box.left_top.x + dx, y = box.left_top.y + dy },
-        right_bottom = { x = box.right_bottom.x + dx, y = box.right_bottom.y + dy } }
-      if not shifted or placement_geometry.conveyor_under(c, shifted) then
-        rejected.conveyor = rejected.conveyor + 1
-      elseif goal_occupancy(c, cell).state ~= "clear" then
-        rejected.collision = rejected.collision + 1
-      elseif not accept or accept(cell) then
-        return cell, rejected
-      end
+    local why = settle_reject(c, box, cell, anchor, limit)
+    if why then
+      rejected[why] = rejected[why] + 1
+    elseif not accept or accept(cell) then
+      return cell, rejected
     end
   end
   return nil, rejected
 end
 
--- Belts carry a standing body, so a walk never finishes on one. Step once by
--- ordinary walking to the nearest clear off-belt tile, or fail truthfully.
+-- The tile centres within `limit` (at most SETTLE_SEARCH_RADIUS) of the
+-- anchor that the rings out to `inner` around the body did not check,
+-- nearest the body first: every off-belt tile from which the target is
+-- still in reach. Arithmetic only; the checks run SETTLE_CHECKS_PER_TICK a
+-- tick (step_settle_search).
+local function anchor_cells(c, anchor, limit, inner)
+  local pos, radius = c.position, math.min(limit, SETTLE_SEARCH_RADIUS)
+  local tx, ty = math.floor(pos.x), math.floor(pos.y)
+  local cells = {}
+  for y = math.floor(anchor.y - radius), math.floor(anchor.y + radius) do
+    for x = math.floor(anchor.x - radius), math.floor(anchor.x + radius) do
+      local cell = { x = x + 0.5, y = y + 0.5 }
+      local rx, ry = x - tx, y - ty
+      if dist_sq(cell, anchor) <= radius * radius + 1e-6 and rx * rx + ry * ry > inner * inner then
+        cells[#cells + 1] = cell
+      end
+    end
+  end
+  table.sort(cells, function(a, b)
+    local da, db = dist_sq(pos, a), dist_sq(pos, b)
+    if da ~= db then return da < db end
+    if a.y ~= b.y then return a.y < b.y end
+    return a.x < b.x
+  end)
+  return cells
+end
+
+local function settle_failure(c, conveyor, detail, path)
+  path.evidence_scope = "charted_visible_only"
+  path.start = path.start or { x = c.position.x, y = c.position.y }
+  path.conveyor = path.conveyor or conveyor
+  return fail(c, "BODY_ON_CONVEYOR", string.format("the body stands on %s at (%.1f, %.1f) and %s",
+    conveyor.name, conveyor.position.x, conveyor.position.y, detail),
+    { code = "BODY_ON_CONVEYOR", diagnostics = { path = path } })
+end
+
+-- One ordinary-walking step straight to an off-belt tile centre.
+local function settle_straight(state, c, cell, conveyor)
+  state.phase = "settling"
+  state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
+    conveyor = conveyor, started_tick = game.tick, routed = state.settle and state.settle.routed or nil,
+    ticks_allowed = SETTLE_TICKS * math.max(1, math.ceil(math.sqrt(dist_sq(c.position, cell)) / 4)) }
+  state.settle_route = nil
+  state.walk_dir, state.steer_leg = nil, nil
+  set_walking(c, { walking = true, direction = steer(state, c.position, cell) })
+end
+
+-- A native path to an off-belt tile centre that a straight step cannot
+-- reach (beyond the rings around the body, or past machines in the way).
+-- One per settle; its walker is the settle's own (state.settle_route).
+local function settle_routed(state, c, cell, conveyor)
+  state.phase = "settling"
+  state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
+    conveyor = conveyor, started_tick = game.tick, routed = true }
+  local route = {}
+  M.begin(route, c, cell, 0.5, "exact")
+  route.off_belt = true
+  state.settle_route = route
+  state.walk_dir, state.steer_leg = nil, nil
+  stop(c)
+end
+
+-- Belts carry a standing body, so a walk never finishes on one. Step by
+-- ordinary walking to the nearest clear off-belt tile; for an approach, one
+-- still within reach of the target, searched over the whole reach (a few
+-- ticks) when the rings around the body hold none, and walked to by a
+-- native path. Otherwise fail truthfully.
 function M.begin_settle(state, c, anchor, limit)
   local conveyor = placement_geometry.conveyor_under(c)
   if not conveyor then return nil end
@@ -742,37 +816,93 @@ function M.begin_settle(state, c, anchor, limit)
     inner = radius
     if cell then break end
   end
-  if not cell then
-    return fail(c, "BODY_ON_CONVEYOR", string.format(
-      "the body stands on %s at (%.1f, %.1f) and no charted clear off-belt tile lies within %d tiles%s",
-      conveyor.name, conveyor.position.x, conveyor.position.y, inner,
-      anchor and " and within reach of the target" or ""),
-      { code = "BODY_ON_CONVEYOR", diagnostics = { path = { evidence_scope = "charted_visible_only",
-        start = { x = c.position.x, y = c.position.y }, conveyor = conveyor_label(conveyor),
-        settle_rejected = rejected, settle_anchor = state.settle_anchor, settle_limit = limit } } })
+  local label = conveyor_label(conveyor)
+  if not cell and state.settle_anchor and limit then
+    local cells = anchor_cells(c, state.settle_anchor, limit, inner)
+    if #cells > 0 then
+      state.phase = "settle_search"
+      state.settle_search = { cells = cells, index = 1, rejected = rejected, conveyor = label, rings = inner }
+      stop(c)
+      return nil
+    end
   end
-  state.phase = "settling"
-  state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
-    conveyor = conveyor_label(conveyor), started_tick = game.tick,
-    ticks_allowed = SETTLE_TICKS * math.max(1, math.ceil(math.sqrt(dist_sq(c.position, cell)) / 4)) }
-  state.walk_dir, state.steer_leg = nil, nil
-  set_walking(c, { walking = true, direction = steer(state, c.position, cell) })
+  if not cell then
+    return settle_failure(c, label, string.format("no charted clear off-belt tile lies within %d tiles%s",
+      inner, anchor and " and within reach of the target" or ""),
+      { settle_rejected = rejected, settle_anchor = state.settle_anchor, settle_limit = limit })
+  end
+  settle_straight(state, c, cell, label)
   return nil
 end
 
-local function step_settle(state, c)
+-- SETTLE_CHECKS_PER_TICK cells of the search over the target's reach.
+local function step_settle_search(state, c)
+  local search, pos = state.settle_search, c.position
+  -- The belt may carry the body off itself, still in reach.
+  if not placement_geometry.conveyor_under(c)
+    and dist_sq(pos, state.settle_anchor) <= state.settle_limit * state.settle_limit + 1e-6 then
+    stop(c)
+    state.settle_search = nil
+    state.settle = { from = { x = pos.x, y = pos.y }, to = { x = pos.x, y = pos.y }, conveyor = search.conveyor,
+      started_tick = game.tick, final = { x = pos.x, y = pos.y }, ticks = 0 }
+    return "arrived"
+  end
+  local box = placement_geometry.character_box(c)
+  for _ = 1, SETTLE_CHECKS_PER_TICK do
+    local cell = search.cells[search.index]
+    if not cell then break end
+    search.index = search.index + 1
+    local why = settle_reject(c, box, cell, state.settle_anchor, state.settle_limit)
+    if not why then
+      state.settle_search = nil
+      settle_routed(state, c, cell, search.conveyor)
+      return nil
+    end
+    search.rejected[why] = search.rejected[why] + 1
+  end
+  if search.cells[search.index] then
+    stop(c)
+    return nil
+  end
+  state.settle_search = nil
+  return settle_failure(c, search.conveyor, string.format(
+    "no charted clear off-belt tile lies within %d tiles of it or anywhere within reach (%.1f tiles) of the target",
+    search.rings, math.min(state.settle_limit, SETTLE_SEARCH_RADIUS)),
+    { settle_rejected = search.rejected, settle_anchor = state.settle_anchor, settle_limit = state.settle_limit })
+end
+
+local function step_settle(state, c, task_id)
   local pos, settle = c.position, state.settle
   local anchored = not state.settle_anchor
     or dist_sq(pos, state.settle_anchor) <= state.settle_limit * state.settle_limit + 1e-6
   if anchored and not placement_geometry.conveyor_under(c) then
     stop(c)
+    state.settle_route = nil
     settle.final = { x = pos.x, y = pos.y }
     settle.ticks = game.tick - settle.started_tick
     return "arrived"
   end
+  local route = state.settle_route
+  if route then
+    local r = M.step(route, c, task_id)
+    if r == nil then return nil end
+    if type(r) == "table" then
+      state.settle_route = nil
+      return settle_failure(c, settle.conveyor, string.format("the walk to the off-belt tile (%.1f, %.1f) failed: %s",
+        settle.to.x, settle.to.y, r.failed), { settle = settle, route = r.outcome })
+    end
+    -- At the tile but still on a belt's edge or just out of reach: the rest is one straight step.
+    settle_straight(state, c, settle.to, settle.conveyor)
+    return nil
+  end
   -- A settle begun by 0.27.0 has no allowance of its own.
   local allowed = settle.ticks_allowed or SETTLE_TICKS
   if game.tick - settle.started_tick >= allowed then
+    -- Something stands between the body and the tile: walk there by a native path, once.
+    if not settle.routed then
+      settle_routed(state, c, settle.to, settle.conveyor)
+      return nil
+    end
     return fail(c, "BODY_ON_CONVEYOR", string.format(
       "ordinary walking did not leave %s toward (%.1f, %.1f) within %d ticks",
       settle.conveyor.name, settle.to.x, settle.to.y, allowed),
@@ -933,7 +1063,8 @@ function M.step(state, c, task_id)
   -- A body moving along a native path is not at a start: the check waits for
   -- the path's end, the goal, or the stuck check's new request.
   local following = (state.phase == "following" or state.phase == "frontier_following") and not at_goal(state, pos)
-  if evidence.state == "blocked" and not following then
+  -- A settle's own routed walker checks its own start.
+  if evidence.state == "blocked" and not following and not (state.phase == "settling" and state.settle_route) then
     if state.phase ~= "escaping" and begin_clear(state, c, task_id, evidence) then return nil end
     if state.escape_failed then
       return fail(c, "START_COLLISION", "the previous bounded escape failed and the current start remains blocked: "
@@ -951,12 +1082,14 @@ function M.step(state, c, task_id)
     return nil
   end
 
-  if state.phase == "settling" then return step_settle(state, c) end
+  if state.phase == "settling" then return step_settle(state, c, task_id) end
+  if state.phase == "settle_search" then return step_settle_search(state, c) end
 
   -- Arrival requires current proven clearance, including during an escape,
-  -- and a body that no belt can carry away.
+  -- and a body that no belt can carry away (a settle's routed walker leaves
+  -- that to its settle).
   if at_goal(state, pos) then
-    local conveyor = placement_geometry.conveyor_under(c)
+    local conveyor = not state.off_belt and placement_geometry.conveyor_under(c)
     if conveyor then
       if state.settle_attempted then
         return fail(c, "BODY_ON_CONVEYOR", "the body still stands on " .. conveyor.name

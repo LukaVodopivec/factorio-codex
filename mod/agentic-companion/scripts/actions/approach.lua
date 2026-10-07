@@ -11,6 +11,11 @@ local function dist_sq(a, b)
   return dx * dx + dy * dy
 end
 
+-- The walk is stepping the body off a belt: searching, walking or routed.
+local function settling(w)
+  return w.phase == "settling" or w.phase == "settle_search"
+end
+
 local function failed(failure)
   return { status = "failed", detail = "couldn't get in range: " .. failure.failed, outcome = failure.outcome }
 end
@@ -47,7 +52,7 @@ function M.ensure(task, c, target_pos, reach)
     and evidence.clear then
     -- A belt carries a standing body, so "in reach" first means off the belt,
     -- with the off-belt tile still within reach of the target.
-    if active and active.walk.phase == "settling" then
+    if active and settling(active.walk) then
       local r = walk.step(active.walk, c, task.id)
       if r == "arrived" then
         task._approach, task._approach_guard = nil, nil
@@ -152,7 +157,7 @@ function M.ensure_entity(task, c, e)
     return { status = "failed", detail = "the selected entity is gone" }
   end
   if c.can_reach_entity(e) and placement_geometry.path_start(c).clear
-    and not (task._approach and task._approach.walk.phase == "settling")
+    and not (task._approach and settling(task._approach.walk))
     and not placement_geometry.conveyor_under(c) then
     if task._approach then
       task._approach = nil

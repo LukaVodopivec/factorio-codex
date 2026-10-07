@@ -157,6 +157,7 @@ local tasks = require("scripts.tasks")
 -- where it says so. The pathfinder answers the tick after a request with a
 -- route that hugs the shore on the water margin, as the native one does.
 local shore_route = true
+local detour -- waypoints the pathfinder puts before the goal instead
 local function physics()
   local state = body.walking_state
   if not (state and state.walking) or pinned then return end
@@ -171,7 +172,9 @@ local function answer_path()
   if not request or not storage.path_request or storage.path_request.id ~= request.id then return end
   surface_request = nil
   local path = {}
-  if shore_route then
+  if detour then
+    for _, p in ipairs(detour) do path[#path + 1] = { position = { x = p.x, y = p.y } } end
+  elseif shore_route then
     local x = request.start.x + 1
     while x < request.goal.x do
       path[#path + 1] = { position = { x = x, y = 0.4 } }
@@ -183,7 +186,7 @@ local function answer_path()
 end
 local function reset(x, y)
   entities, inventory, pinned, held, path_requests, surface_request = {}, {}, false, false, 0, nil
-  wall, shore_route = function() return false end, true
+  wall, shore_route, detour = function() return false end, true, nil
   body.position, body.walking_state, body.mining_state = { x = x, y = y }, {}, {}
   body.crafting_queue, body.crafting_queue_size, body.crafting_queue_progress = {}, 0, 0
   _G.game = { tick = 0 }
@@ -645,6 +648,61 @@ check(upgraded_ok and record ~= nil and record.status == "failed" and took <= 20
   and outcome.result.code == "START_COLLISION",
   "a step in flight from a 0.22.0 save runs on without a crash: " .. tostring(upgraded_error))
 check(no_stall_state, "the watchdog makes its state on the first tick of a save that has none")
+
+-- ------------------------------------------- a body standing on belts
+-- Belts never collide with the body, but carry it: an approach ends off them,
+-- on a tile from which the target is still in reach.
+local function belts(x1, y1, x2, y2)
+  return { valid = true, name = "transport-belt", type = "transport-belt", direction = 0,
+    position = { x = (x1 + x2) / 2, y = (y1 + y2) / 2 }, prototype = { collision_mask = { layers = { transport_belt = true } } },
+    bounding_box = { left_top = { x = x1, y = y1 }, right_bottom = { x = x2, y = y2 } } }
+end
+
+-- A dense block: every tile within 8 of the body is belt, and the only free
+-- tiles within reach of the furnace lie past it, 9 tiles from the body. The
+-- search covers the whole reach over a few ticks and a native path leads
+-- there; 0.29.1 failed BODY_ON_CONVEYOR at once.
+reset(-0.5, -10.5)
+body.reach_distance, body.build_distance = 10, 10
+shore_route = false
+machine = furnace(8.5, -10.5)
+entities = { belts(-12, -25, 7.7, -1), machine }
+inventory = { coal = 5 }
+plan = tasks.queue_plan({ steps = { { action = "insert_items", x = 8.5, y = -10.5, items = { coal = 5 },
+  auto_supply = false } } }).plan_id
+record, took = run(plan, 600)
+outcome = record and last_outcome(record)
+check(record ~= nil and record.status == "completed" and machine.inserted == 5 and body.position.x >= 7.9
+  and (body.position.x - 8.5) ^ 2 + (body.position.y + 10.5) ^ 2 <= 100,
+  "an approach in a dense belt block walks to an off-belt tile anywhere within reach and inserts: "
+    .. tostring(outcome and outcome.error))
+body.reach_distance, body.build_distance = 6, 6
+
+-- The off-belt tile beside the body is diagonal, past a chest's corner that
+-- ordinary walking cannot pass; a native path around the corner leads there
+-- (0.29.1 failed "ordinary walking did not leave transport-belt").
+reset(0.5, -5.5)
+local function chest(x, y)
+  return { valid = true, name = "wooden-chest", type = "container", force = body.force, position = { x = x, y = y },
+    prototype = chest_proto, bounding_box = { left_top = { x = x - 0.35, y = y - 0.35 },
+      right_bottom = { x = x + 0.35, y = y + 0.35 } } }
+end
+local corners = { chest(-0.5, -5.5), chest(1.5, -5.5) }
+entities = { belts(0, -9, 1, -2), corners[1], corners[2] }
+wall = function(p)
+  local moved = { left_top = { x = p.x - 0.2, y = p.y - 0.2 }, right_bottom = { x = p.x + 0.2, y = p.y + 0.2 } }
+  return overlaps(moved, corners[1].bounding_box) or overlaps(moved, corners[2].bounding_box)
+end
+detour = { { x = 0.5, y = -6.5 } }
+inventory = { ["wooden-chest"] = 1 }
+plan = tasks.queue_plan({ steps = { { action = "build_layout", anchor = { x = 3, y = -6 },
+  entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } } } }).plan_id
+record, took = run(plan, 600)
+outcome = record and last_outcome(record)
+check(record ~= nil and record.status == "completed" and outcome.result.code == "LAYOUT_BUILT"
+  and entities[#entities].position.x == 3.5 and body.position.x <= -0.2 and body.position.y < -6,
+  "a settle step blocked by a corner walks to its off-belt tile by a native path and builds: "
+    .. tostring(outcome and (outcome.error or outcome.result and outcome.result.code)))
 
 print(failures == 0 and "\nALL APPROACH BOUNDS TESTS PASSED" or ("\n" .. failures .. " APPROACH BOUNDS TEST(S) FAILED"))
 os.exit(failures == 0 and 0 or 1)

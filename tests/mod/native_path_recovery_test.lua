@@ -579,9 +579,22 @@ walk.tick(task); deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
 body.position = { x = 10.5, y = 0.5 }
 walk.tick(task)
 game.tick = 60
-local stuck = walk.tick(task)
-check(stuck and stuck.status == "failed" and stuck.detail:match("^BODY_ON_CONVEYOR:.*within 60 ticks"),
-  "a settle step that never leaves the belt fails within its tick bound")
+local routed = walk.tick(task) == nil and task._walk.phase == "settling" and task._walk.settle.routed
+game.tick = 61
+check(routed and walk.tick(task) == nil and task._walk.settle_route and storage.path_request ~= nil
+  and requested_goals[2].x == 10.5 and requested_goals[2].y == -0.5,
+  "a straight settle step that does not leave the belt in time walks to its tile by a native path")
+local stuck
+for _ = 1, 8 do
+  if storage.path_request then deliver({ { x = 10.5, y = -0.5 } }, false) end
+  walk.tick(task)
+  game.tick = game.tick + 61
+  stuck = walk.tick(task)
+  if stuck then break end
+end
+check(stuck and stuck.status == "failed" and stuck.detail:match("^BODY_ON_CONVEYOR:.*off%-belt tile %(10%.5, %-0%.5%) failed: PATH_STALLED")
+  and stuck.outcome.code == "BODY_ON_CONVEYOR",
+  "a routed settle that never leaves the belt fails BODY_ON_CONVEYOR within its walk's own bounds")
 
 task = reset({ x = 12.5, y = 0.5 })
 body.position = { x = 10.5, y = 0.5 }
@@ -614,6 +627,32 @@ check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == nil and task._ap
 body.position = { x = 10.5, y = -5.5 }
 check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == "ok" and task._approach == nil,
   "the approach succeeds once the body has left the bundle")
+
+-- Belts cover the whole reach: the search past the rings checks a fixed
+-- number of tiles a tick (never the ~320 at once) and then fails truthfully.
+belts = { belt(-20, -20, 60, 60) }
+task = reset({ x = 10.5, y = 0.5 })
+body.position = { x = 10.5, y = 0.5 }
+belt_queries = 0
+body.surface.find_entities_filtered = function(filter)
+  if filter.type then belt_queries = belt_queries + 1; return belts end
+  return {}
+end
+-- The first tick checks the rings out to 8 (as before); the rest of the
+-- reach follows, a fixed number of tiles a tick.
+local answer = approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10)
+local most, searched = 0, 0
+local first = answer == nil and task._approach.walk.phase == "settle_search"
+for _ = 1, 20 do
+  belt_queries = 0
+  answer = approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10)
+  searched, most = searched + 1, math.max(most, belt_queries)
+  if answer then break end
+end
+check(first and type(answer) == "table" and answer.outcome.code == "BODY_ON_CONVEYOR"
+  and answer.detail:match("anywhere within reach %(10%.0 tiles%) of the target") and searched >= 3 and most <= 50,
+  string.format("belts over the whole reach fail BODY_ON_CONVEYOR after %d search ticks of at most %d belt checks each",
+    searched, most))
 body.surface.find_entities_filtered = function(filter)
   if filter.type then return belts end
   return {}

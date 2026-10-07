@@ -265,7 +265,8 @@ export function registerMcpTools(
   const dryReport = " Its report also lists inserters (picks_from, drops_into: a planned or existing entity, or nothing), belt_ends"
     + " (each belt nothing ahead takes from: a run's end, one facing a reversed belt or an underground exit's back, an"
     + ` entrance with no exit; with what it faces), unpowered machines no pole covers, isolated_poles no wire reaches, ${oreReport}`
-    + ` and ${fluidReport}.`;
+    + ` and ${fluidReport}. A planned pipe or other fluid entity that, in build order, would join two fluids already standing`
+    + " through the layout's own pipes fails BLOCKED (would join X and Y pipes): the game refuses that placement.";
   // connect_entities plans the route as a read; the build is a direct
   // build_plan task, and a power route is then checked for continuity.
   const connectRoute = async ({ check_only, ...p }: z.infer<typeof routeSchema>, signal?: AbortSignal) => {

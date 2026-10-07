@@ -39,7 +39,7 @@ local MAX_GHOSTS = 100
 local ORDERS_PER_TICK = 50
 local MAX_ROWS = 10           -- failure rows listed in a result
 -- The dry-run survey rows a hand or planet-ghost blueprint_place check reports.
-local SURVEYED = { on_ore = true, mixed_ore = true, open_fluid_ports = true }
+local SURVEYED = { on_ore = true, mixed_ore = true, open_fluid_ports = true, fluid_mixes = true }
 local MAX_TARGETS = 32
 local NATURAL_TYPES = { "tree", "simple-entity", "plant" } -- natural entities the body may clear
 -- Own-force entities that are never mined by an area action.
@@ -349,6 +349,11 @@ M.place_check_job = {
       budget.left = budget.left - (s.ctx.calls - before)
       if not done then return nil end
       for k, v in pairs(build_layout.survey_rows(job.survey)) do job.out[k] = v end
+      -- A placement the build would be refused for mixing fluids collides.
+      for _, row in ipairs(build_layout.survey_failed(job.survey)) do
+        job.out.ok = false
+        if #job.out.collisions < MAX_ROWS then job.out.collisions[#job.out.collisions + 1] = row end
+      end
       return job.out
     end
     local result = build_layout.search_step(c, s, math.max(1, budget.left))

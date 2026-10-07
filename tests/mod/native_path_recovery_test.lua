@@ -607,7 +607,8 @@ check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, 2.5) == "ok" and task._
 
 -- A wide belt bundle: the nearest off-belt tile is 6 tiles away and within
 -- build reach of the target. The approach's ring out to 8 finds it, checking
--- only cells the rings within 4 did not, and allows the longer walk its time.
+-- only cells the rings within 4 did not, a capped number a tick (the ring
+-- holds about 150), and allows the longer walk its time.
 belts = { belt(5, -5, 12, 12) }
 task = reset({ x = 10.5, y = 0.5 })
 body.position = { x = 10.5, y = 0.5 }
@@ -616,10 +617,18 @@ body.surface.find_entities_filtered = function(filter)
   if filter.type then belt_queries = belt_queries + 1; return belts end
   return {}
 end
-check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == nil and task._approach
+local wide_ticks, wide_most, wide_total, wide_answer = 0, 0, 0, nil
+repeat
+  belt_queries = 0
+  wide_answer = approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10)
+  wide_ticks, wide_most, wide_total = wide_ticks + 1, math.max(wide_most, belt_queries), wide_total + belt_queries
+until wide_answer ~= nil or not task._approach or task._approach.walk.phase ~= "settle_search" or wide_ticks > 10
+check(wide_answer == nil and task._approach
   and task._approach.walk.phase == "settling" and task._approach.walk.settle.to.y == -5.5
-  and task._approach.walk.settle.to.x == 10.5 and belt_queries < 130, -- 112; 174 rechecking the inner rings
-  "an approach on a wide belt bundle settles to the off-belt tile 6 tiles away, still within reach")
+  and task._approach.walk.settle.to.x == 10.5 and wide_total < 130 -- 112; 174 rechecking the inner rings
+  and wide_ticks > 1 and wide_most <= 52,
+  string.format("an approach on a wide belt bundle settles to the off-belt tile 6 tiles away, still within reach,"
+    .. " over %d ticks of at most %d belt checks (%d in all)", wide_ticks, wide_most, wide_total))
 game.tick = 60
 body.position = { x = 10.5, y = -3.5 }
 check(approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10) == nil and task._approach.walk.phase == "settling",
@@ -638,8 +647,8 @@ body.surface.find_entities_filtered = function(filter)
   if filter.type then belt_queries = belt_queries + 1; return belts end
   return {}
 end
--- The first tick checks the rings out to 8 (as before); the rest of the
--- reach follows, a fixed number of tiles a tick.
+-- The first tick checks the rings out to 4, the next ones the ring out to 8
+-- and then the rest of the reach, a fixed number of tiles a tick.
 local answer = approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10)
 local most, searched = 0, 0
 local first = answer == nil and task._approach.walk.phase == "settle_search"

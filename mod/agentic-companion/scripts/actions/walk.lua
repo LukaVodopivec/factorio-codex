@@ -45,9 +45,10 @@ local MAX_ESCAPES = 2 -- escapes one walk may begin (typically its start and its
 local FRONTIER_RADIUS = 0.5 -- each probe must reach its own frontier point
 local MAX_FRONTIER_PROBES = 16
 -- Off-belt tiles within 2 tiles of the body's tile, then (a belt crossing
--- or a wide splitter) within 4. An approach, whose tile must stay within
--- reach of its target, also tries the ring out to 8 (a wide belt bundle):
--- each ring checks only its own cells, at most about 150 in one tick.
+-- or a wide splitter) within 4: about 50 cells in one tick. An approach,
+-- whose tile must stay within reach of its target, also tries the ring out
+-- to 8 (a wide belt bundle, about 150 cells of its own), SETTLE_CHECKS_PER_TICK
+-- a tick, nearest first as the inner rings.
 local SETTLE_RADII = { 2, 4 }
 local SETTLE_WIDE_RADIUS = 8
 local SETTLE_TICKS = 60 -- per 4 tiles to the off-belt tile
@@ -695,12 +696,10 @@ local function settle_reject(c, box, cell, anchor, limit)
   return nil
 end
 
--- Nearest charted tile centre within `radius` tiles whose body box touches no
--- conveyor and no character collider, optionally within `limit` of `anchor`.
--- `inner` (optional) skips the cells an earlier, smaller radius checked.
--- `accept` (optional) sees each such centre, nearest first, and ends the
--- search by returning true.
-function settle_cell(c, anchor, limit, radius, accept, inner)
+-- The tile centres within `radius` tiles of the body's tile, nearest the
+-- body first; `inner` (optional) skips those within an earlier, smaller
+-- radius. Arithmetic only.
+local function ring_cells(c, radius, inner)
   local pos = c.position
   local tx, ty = math.floor(pos.x), math.floor(pos.y)
   local cells = {}
@@ -719,10 +718,19 @@ function settle_cell(c, anchor, limit, radius, accept, inner)
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
     return a.position.x < b.position.x
   end)
+  for i, entry in ipairs(cells) do cells[i] = entry.position end
+  return cells
+end
+
+-- Nearest charted tile centre within `radius` tiles whose body box touches no
+-- conveyor and no character collider, optionally within `limit` of `anchor`.
+-- `inner` (optional) skips the cells an earlier, smaller radius checked.
+-- `accept` (optional) sees each such centre, nearest first, and ends the
+-- search by returning true.
+function settle_cell(c, anchor, limit, radius, accept, inner)
   local box = placement_geometry.character_box(c)
   local rejected = { out_of_range = 0, uncharted = 0, conveyor = 0, collision = 0 }
-  for _, entry in ipairs(cells) do
-    local cell = entry.position
+  for _, cell in ipairs(ring_cells(c, radius, inner)) do
     local why = settle_reject(c, box, cell, anchor, limit)
     if why then
       rejected[why] = rejected[why] + 1
@@ -795,25 +803,35 @@ local function settle_routed(state, c, cell, conveyor)
   stop(c)
 end
 
+-- The approach's search past the rings it checked (out to `inner`): every
+-- tile centre within reach of the target, or the truthful failure.
+local function search_reach(state, c, label, rejected, inner)
+  local cells = anchor_cells(c, state.settle_anchor, state.settle_limit, inner)
+  if #cells > 0 then
+    state.phase = "settle_search"
+    state.settle_search = { cells = cells, index = 1, rejected = rejected, conveyor = label, rings = inner }
+    stop(c)
+    return nil
+  end
+  return settle_failure(c, label, string.format("no charted clear off-belt tile lies within %d tiles"
+    .. " and within reach of the target", inner),
+    { settle_rejected = rejected, settle_anchor = state.settle_anchor, settle_limit = state.settle_limit })
+end
+
 -- Belts carry a standing body, so a walk never finishes on one. Step by
 -- ordinary walking to the nearest clear off-belt tile; for an approach, one
--- still within reach of the target, searched over the whole reach (a few
--- ticks) when the rings around the body hold none, and walked to by a
--- native path. Otherwise fail truthfully.
+-- still within reach of the target: the wide ring, then the whole reach,
+-- searched over a few ticks when the rings around the body hold none, the
+-- reach's tile walked to by a native path. Otherwise fail truthfully.
 function M.begin_settle(state, c, anchor, limit)
   local conveyor = placement_geometry.conveyor_under(c)
   if not conveyor then return nil end
   state.settle_anchor = anchor and { x = anchor.x, y = anchor.y } or nil
   state.settle_limit = limit
   state.settle_attempted = true
-  local radii = {}
-  for i, radius in ipairs(SETTLE_RADII) do radii[i] = radius end
-  if state.settle_anchor and limit and limit > radii[#radii] then
-    radii[#radii + 1] = math.min(SETTLE_WIDE_RADIUS, math.floor(limit))
-  end
   local cell, inner
   local rejected = { out_of_range = 0, uncharted = 0, conveyor = 0, collision = 0 }
-  for _, radius in ipairs(radii) do
+  for _, radius in ipairs(SETTLE_RADII) do
     local ring_rejected
     cell, ring_rejected = settle_cell(c, state.settle_anchor, limit, radius, nil, inner)
     for key, count in pairs(ring_rejected) do rejected[key] = rejected[key] + count end
@@ -821,22 +839,25 @@ function M.begin_settle(state, c, anchor, limit)
     if cell then break end
   end
   local label = conveyor_label(conveyor)
-  if not cell and state.settle_anchor and limit then
-    local cells = anchor_cells(c, state.settle_anchor, limit, inner)
-    if #cells > 0 then
-      state.phase = "settle_search"
-      state.settle_search = { cells = cells, index = 1, rejected = rejected, conveyor = label, rings = inner }
-      stop(c)
-      return nil
-    end
+  if cell then
+    settle_straight(state, c, cell, label)
+    return nil
   end
-  if not cell then
-    return settle_failure(c, label, string.format("no charted clear off-belt tile lies within %d tiles%s",
-      inner, anchor and " and within reach of the target" or ""),
+  if not (state.settle_anchor and limit) then
+    return settle_failure(c, label, string.format("no charted clear off-belt tile lies within %d tiles", inner),
       { settle_rejected = rejected, settle_anchor = state.settle_anchor, settle_limit = limit })
   end
-  settle_straight(state, c, cell, label)
-  return nil
+  if limit > inner then
+    -- The wide ring, over ticks: its tile is walked to straight, as the
+    -- inner rings' are.
+    local wide = math.min(SETTLE_WIDE_RADIUS, math.floor(limit))
+    state.phase = "settle_search"
+    state.settle_search = { cells = ring_cells(c, wide, inner), index = 1, rejected = rejected, conveyor = label,
+      rings = inner, ring = wide }
+    stop(c)
+    return nil
+  end
+  return search_reach(state, c, label, rejected, inner)
 end
 
 -- SETTLE_CHECKS_PER_TICK cells of the search over the target's reach.
@@ -859,7 +880,8 @@ local function step_settle_search(state, c)
     local why = settle_reject(c, box, cell, state.settle_anchor, state.settle_limit)
     if not why then
       state.settle_search = nil
-      settle_routed(state, c, cell, search.conveyor)
+      if search.ring then settle_straight(state, c, cell, search.conveyor)
+      else settle_routed(state, c, cell, search.conveyor) end
       return nil
     end
     search.rejected[why] = search.rejected[why] + 1
@@ -869,6 +891,8 @@ local function step_settle_search(state, c)
     return nil
   end
   state.settle_search = nil
+  -- The wide ring holds none: on over the rest of the reach.
+  if search.ring then return search_reach(state, c, search.conveyor, search.rejected, search.ring) end
   return settle_failure(c, search.conveyor, string.format(
     "no charted clear off-belt tile lies within %d tiles of it or anywhere within reach (%.1f tiles) of the target",
     search.rings, math.min(state.settle_limit, SETTLE_SEARCH_RADIUS)),

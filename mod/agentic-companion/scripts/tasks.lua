@@ -156,7 +156,7 @@ local function task_crafts(task)
   local current = task.type == "plan" and task.current_task or task
   -- get_items and auto-supply may hand-craft inside any step.
   return current and (current.type == "craft" or current.type == "build_plan" or current.type == "get_items"
-    or current.type == "build_layout" or current.type == "build_block" or current.type == "blueprint_place"
+    or current.type == "build_layout" or current.type == "blueprint_place"
     or current.type == "build_ghosts" or current.type == "upgrade_area" or current.type == "place_tiles"
     or current.type == "equip" or current.type == "launch_rocket" or current._supply ~= nil)
 end
@@ -303,7 +303,6 @@ end
 M.register_action("set_recipe", build.set_recipe_action)
 M.register_action("get_items", supply.action)
 M.register_action("build_layout", build_layout.layout_action)
-M.register_action("build_block", build_layout.block_action)
 M.register_action("explore", explore.action)
 M.register_action("move_entity", move_entity.action)
 M.register_action("blueprint_place", area_ops.place_action)

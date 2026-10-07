@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 28;
+export const PROTOCOL_VERSION = 29;
 
 /** Executable manifest shared by runtime validation and conformance tests. */
 export const RPC_METHODS = [
@@ -29,7 +29,6 @@ export const RPC_METHODS = [
   "activity_log",
   "event_state",
   "build_layout",
-  "build_block",
   "say",
   "say_now",
   "get_job",
@@ -56,7 +55,7 @@ export type RpcMethod = (typeof RPC_METHODS)[number];
  *  result when it fits the tick, else {job_id, job_status: "pending"}, and
  *  get_job returns the result once it is done. */
 export const JOB_METHODS = [
-  "observe_local", "inspect", "find_placement", "map_summary", "connect_entities", "build_layout", "build_block",
+  "observe_local", "inspect", "find_placement", "map_summary", "connect_entities", "build_layout",
   "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status", "run_snapshot",
 ] as const satisfies readonly RpcMethod[];
 

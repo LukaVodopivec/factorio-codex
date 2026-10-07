@@ -2,9 +2,8 @@
 -- inspect, C13/C14 keys): one liquid helper (water, lava, oil ocean), the
 -- fluid an offshore pump pumps, surface conditions refused before any
 -- search, can_place and find_placement on a surface the body is not on (no
--- body there), build_block's drill by resource category and power only
--- where there is water, inspect's heat fields on another surface, and item
--- keys and spoil reads. Surfaces, tiles and entities are strict mocks.
+-- body there), inspect's heat fields on another surface, and item keys and
+-- spoil reads. Surfaces, tiles and entities are strict mocks.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
@@ -154,39 +153,6 @@ local refused, why = pcall(find, { item = "big-mining-drill", preferred = { x = 
 check(not refused and tostring(why):match("SURFACE_CONDITION") ~= nil, "a surface condition fails the search before it starts")
 check(not pcall(find, { item = "iron-chest", preferred = { x = 5, y = 5 }, fluid = "lava" }),
   "fluid is only for offshore pumps")
-
--- build_block: tungsten needs the big mining drill; power needs water.
-local blocks = require("scripts.blocks")
-local no_drill, need = pcall(blocks.expand, body, { block = "mining", count = 2, resource = "tungsten-ore" })
-check(not no_drill and tostring(need):match("^NEED_DRILL: .*hard%-solid.*big%-mining%-drill") ~= nil,
-  "tungsten ore with no big mining drill to hand is NEED_DRILL, naming the drills that mine it")
-carried["big-mining-drill"] = 2
-local big = blocks.expand(body, { block = "mining", count = 2, resource = "tungsten-ore" })
-local drills, poles, chests = {}, {}, {}
-for _, e in ipairs(big.layout.entities) do
-  if e.name == "big-mining-drill" then drills[#drills + 1] = e end
-  if e.name == "small-electric-pole" then poles[#poles + 1] = e end
-  if e.name == "iron-chest" then chests[#chests + 1] = e end
-end
-check(big.tiers.drill == "big-mining-drill" and #drills == 2 and drills[2].dx - drills[1].dx == 6 and #poles == 1
-  and poles[1].dx == drills[1].dx + 3 and #chests == 2 and chests[1].dx == drills[1].dx and chests[1].dy == -0.5,
-  "big drills pair around a pole, each emptying into a chest above its middle")
--- A burner block's chests: the cheap wooden chest unless the body carries iron ones.
-recipes["wooden-chest"] = { enabled = true }
-local opening = blocks.expand(body, { block = "mining", count = 2, resource = "iron-ore" })
-check(opening.tiers.drill == "burner-mining-drill" and opening.tiers.output == "wooden-chest",
-  "with no chest carried a burner block outputs into wooden chests, not iron chests the opening cannot afford")
-carried["iron-chest"] = 2
-check(blocks.expand(body, { block = "mining", count = 2, resource = "iron-ore" }).tiers.output == "iron-chest",
-  "carried iron chests are used before crafting wooden ones")
-carried["iron-chest"], recipes["wooden-chest"] = nil, nil
-local dry, dry_why = pcall(blocks.expand, body, { block = "power", count = 1 })
-check(not dry and tostring(dry_why):match("^NO_WATER_ON_SURFACE: vulcanus .*acid neutralisation") ~= nil,
-  "a steam power block on Vulcanus is NO_WATER_ON_SURFACE with Vulcanus's usual power")
-body.surface = nauvis
-local wet, wet_why = pcall(blocks.expand, body, { block = "power", count = 1 })
-check(tostring(wet_why):match("NO_WATER_ON_SURFACE") == nil, "Nauvis has water for boilers")
-body.surface = vulcanus
 
 -- inspect {surface}: a frozen assembler on Aquilo-like cold, read remotely.
 local frozen = mock.entity({ valid = true, name = "assembling-machine-2", type = "assembling-machine",

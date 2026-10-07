@@ -9,7 +9,7 @@ import { createOrdersTracker, createPackageQueue, packageFailures, readPackageQu
 import { currentRunDir } from "../server/server.js";
 import { eventSummary, nextEventSchema, RESEARCH_IDLE, researchIdleProblem, waitForEvent, type FailureDelivery } from "./events.js";
 import { normalizeObservation } from "./observation.js";
-import { areaFields, areaIssue, blockFields, blockIssue, blueprintName, blueprintPlaceFields, blueprintPlaceIssue, captureFields, configureFields, copySettingsFields,
+import { areaFields, areaIssue, blueprintName, blueprintPlaceFields, blueprintPlaceIssue, captureFields, configureFields, copySettingsFields,
   createPlatformFields, deconstructFields, deconstructIssue, entitySettings, executeRunPlan, exploreFields, INSPECT_LIMIT, insertFields, insertIssue, inventoryRole,
   launchRocketFields, layoutFields, layoutIssue, moveEntityFields, planStatusSchema, platformRouteFields, platformSelector, queuePlanSchema, requestsFields, requestsIssue,
   routeIssue, runPlanSchema, settingsIssue, surfaceRef, tilesFields, tilesIssue, travelFields, upgradeFields, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
@@ -76,7 +76,7 @@ export type SessionRole = typeof SESSION_ROLES[number];
 export const READ_ONLY_TOOLS = [
   "connect_status", "map_summary", "progression_status", "production_requirements",
   "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement",
-  "factory_status", "activity_log", "next_event", "build_layout", "build_block", "connect_entities",
+  "factory_status", "activity_log", "next_event", "build_layout", "connect_entities",
   "blueprint_list", "blueprint_describe", "blueprint_export", "blueprint_place", "place_tiles", "platform_status",
 ] as const;
 
@@ -248,8 +248,6 @@ export function registerMcpTools(
     value.surface !== undefined && value.check_only !== true ? "surface is for the dry run (check_only: true); queue_plan surface sets a build's" : null;
   const layoutSchema = z.object({ ...layoutFields, check_only: checkOnly, surface: surfaceRef.optional() }).strict()
     .superRefine(issue(layoutIssue)).superRefine(issue(drySurface));
-  const blockSchema = z.object({ ...blockFields, check_only: checkOnly, surface: surfaceRef.optional() }).strict()
-    .superRefine(issue(blockIssue)).superRefine(issue(drySurface));
   const placeBlueprintSchema = z.object({ ...blueprintPlaceFields, check_only: checkOnly }).strict().superRefine(issue(blueprintPlaceIssue));
   const tilesSchema = z.object({ ...tilesFields, check_only: checkOnly }).strict().superRefine(issue(tilesIssue));
   const routeSchema = z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string().min(1), from: position, to: position,
@@ -258,10 +256,16 @@ export function registerMcpTools(
   const areaSchema = (fields: Record<string, z.ZodType>) => z.object({ ...areaFields, ...fields }).strict().superRefine(issue(areaIssue));
   const named = z.object({ name: blueprintName }).strict();
   const dryRun = surface === "full" ? " check_only: true is a dry run that builds nothing." : " Dry run only: checks without building.";
-  // What a layout or block dry run reports as data, never as a failure.
+  // What a layout dry run reports as data, never as a failure.
+  const oreReport = "on_ore (each placement but a drill whose footprint covers resource tiles, with the tiles by resource),"
+    + " mixed_ore (each drill whose mining area holds more than one resource it can mine: mines, the one with the most"
+    + " tiles, and also, the rest by tile count)";
+  const fluidReport = "open_fluid_ports (a planned pump, boiler, engine, tank or other fluid machine with a fluid box no"
+    + " planned or existing connection meets, a pipe run's end, a pipe-to-ground's open side; port is the tile it points at)";
   const dryReport = " Its report also lists inserters (picks_from, drops_into: a planned or existing entity, or nothing), belt_ends"
     + " (each belt nothing ahead takes from: a run's end, one facing a reversed belt or an underground exit's back, an"
-    + " entrance with no exit; with what it faces), unpowered machines no pole covers and isolated_poles no wire reaches.";
+    + ` entrance with no exit; with what it faces), unpowered machines no pole covers, isolated_poles no wire reaches, ${oreReport}`
+    + ` and ${fluidReport}.`;
   // connect_entities plans the route as a read; the build is a direct
   // build_plan task, and a power route is then checked for continuity.
   const connectRoute = async ({ check_only, ...p }: z.infer<typeof routeSchema>, signal?: AbortSignal) => {
@@ -345,7 +349,7 @@ export function registerMcpTools(
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements, surface)), placements)); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("find_placement", { description: "Find valid placements near any charted point, nearest first; the body need not go there. Requests with input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12. Each candidate's plan_steps go straight into queue_plan (with fuel inserts when fuel is given). An empty result has a hint: change the request as it says. fluid picks what an offshore pump pumps (water, lava, ...); surface searches another planet.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), input_target: position.optional(), output_target: position.optional(), output_recipient_item: z.string().min(1).optional(), belt_to_ground_type: beltToGroundType, fuel: items.optional(), fluid: z.string().min(1).optional(), surface: surfaceRef.optional() }).strict().refine((p) => !(p.output_target && p.output_recipient_item), "use output_target or output_recipient_item, not both").refine((p) => !(p.input_target !== undefined || p.output_target !== undefined || p.output_recipient_item !== undefined) || p.directions.every((direction) => direction % 4 === 0), { message: "targeted placement directions must be cardinal: 0, 4, 8, or 12", path: ["directions"] }) }, async (p, extra) => {
+  tools.registerTool("find_placement", { description: "Find valid placements near any charted point, nearest first for every type (a drill candidate's resource_coverage is data to compare); the body need not go there. Requests with input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12. Each candidate's plan_steps go straight into queue_plan (with fuel inserts when fuel is given). An empty result has a hint: change the request as it says. fluid picks what an offshore pump pumps (water, lava, ...); surface searches another planet.", inputSchema: z.object({ item: z.string(), preferred: position, radius: z.number().int().min(1).max(30).default(10), directions: z.array(z.number().int().min(0).max(15)).min(1).max(16).default([0, 4, 8, 12]), limit: z.number().int().min(1).max(24).default(8), input_target: position.optional(), output_target: position.optional(), output_recipient_item: z.string().min(1).optional(), belt_to_ground_type: beltToGroundType, fuel: items.optional(), fluid: z.string().min(1).optional(), surface: surfaceRef.optional() }).strict().refine((p) => !(p.output_target && p.output_recipient_item), "use output_target or output_recipient_item, not both").refine((p) => !(p.input_target !== undefined || p.output_target !== undefined || p.output_recipient_item !== undefined) || p.directions.every((direction) => direction % 4 === 0), { message: "targeted placement directions must be cardinal: 0, 4, 8, or 12", path: ["directions"] }) }, async (p, extra) => {
     try { return result(normalizePlacementSearch(await (await bridge()).call("find_placement", toolPayloads.findPlacement(p), extra?.signal), p.fuel)); }
     catch (error) { return failure(error); }
   });
@@ -394,7 +398,7 @@ export function registerMcpTools(
     sections: z.array(z.enum(FACTORY_STATUS_SECTIONS)).min(1).max(FACTORY_STATUS_SECTIONS.length).optional(),
     surface: surfaceRef.optional(),
   }).strict();
-  tools.registerTool("factory_status", { description: "One compact read of the whole factory: production lines with state (running, starved, output_full, depleted, no_fuel, no_power, frozen, no_heat, disabled, idle), rate, cause and position (outlet_no_fuel: the dry burner inserter emptying the full machine; degraded: a running line's worst member problem; hand_transfers: served by hand twice or more in ten minutes, so it needs a connection; hand_seconds: body time that hand service took); problem machines (a research_idle one: labs stand still because no research is running); power by source with sustained_w and, when short, add_to_cover; stock; research (labs once there is one: count, working, summed speed; for the current research unit_time_s, packs_per_minute_needed to keep every lab busy and eta_seconds at full lab speed with lab productivity); the body; nearby resource patches; one line per space platform once there is one. It describes the body's surface, or the one named in surface; elsewhere has one line per other surface with buildings, so the home factory stays in view. since_tick returns only lines and problems changed since then, including elsewhere problems and top_problems; elsewhere line counts and power remain current. sections picks parts; logistics (robot networks) is read only when named, e.g. sections ['lines','power','logistics']. During a benchmark, trial gives the clock (remaining_seconds; final_window_in_seconds until the last five minutes, whose raw input rate breaks ties) and the score so far: research and made count since GO; raw_since_go is total raw input, not that final rate.", inputSchema: factoryStatusSchema }, async (p) => {
+  tools.registerTool("factory_status", { description: "One compact read of the whole factory: production lines with state (running, starved, output_full, depleted, no_fuel, no_power, frozen, no_heat, disabled, idle), rate, cause and position (outlet_no_fuel: the dry burner inserter emptying the full machine; degraded: a running line's worst member problem; hand_transfers: served by hand twice or more in ten minutes, so it needs a connection; hand_seconds: body time that hand service took); problem machines (a research_idle one: labs stand still because no research is running); power by source with sustained_w and, when short, add_to_cover with both ways to cover the deficit (steam: steam_engine, boiler, offshore_pump; solar where the sun gives power: solar_panel, accumulator), for you to choose; stock; research (labs once there is one: count, working, summed speed; for the current research unit_time_s, packs_per_minute_needed to keep every lab busy and eta_seconds at full lab speed with lab productivity); the body; nearby resource patches with their outline (bbox: left_top, right_bottom); one line per space platform once there is one. It describes the body's surface, or the one named in surface; elsewhere has one line per other surface with buildings, so the home factory stays in view. since_tick returns only lines and problems changed since then, including elsewhere problems and top_problems; elsewhere line counts and power remain current. sections picks parts; logistics (robot networks) is read only when named, e.g. sections ['lines','power','logistics']. During a benchmark, trial gives the clock (remaining_seconds; final_window_in_seconds until the last five minutes, whose raw input rate breaks ties) and the score so far: research and made count since GO; raw_since_go is total raw input, not that final rate.", inputSchema: factoryStatusSchema }, async (p) => {
     try {
       const value = normalizeFactoryStatus(await (await bridge()).call("factory_status", factoryStatusSchema.parse(p)));
       return result({ ...value, summary: factoryStatusSummary(value) });
@@ -438,10 +442,6 @@ export function registerMcpTools(
     try { return await step("build_layout")(layoutSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("build_block", { description: `Build count copies of a standard block near a point: mining (drills on a resource), smelting (furnace column), assembly (assembler row for a recipe), power (steam at water), labs, or a stored blueprint (block "blueprint"). The mod works out tiles and directions, fuels burner machines, then builds it like build_layout, all or nothing: every item is carried before the first placement and a failed placement stops it. A dry run may name surface to check another planet or platform.${dryRun} A dry run fails ITEM_UNOBTAINABLE naming an item the body neither carries nor can obtain now.${dryReport}`, inputSchema: blockSchema }, async (p, extra) => {
-    try { return await step("build_block")(blockSchema.parse(p), extra?.signal); }
-    catch (error) { return failure(error); }
-  });
   tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun}`, inputSchema: routeSchema }, async (p, extra) => {
     try { return await connectRoute(routeSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
@@ -449,7 +449,7 @@ export function registerMcpTools(
   tools.registerTool("blueprint_list", { description: "The blueprints stored for this run, with size and entity count.", inputSchema: z.object({}).strict() }, async () => rpc("blueprint_list"));
   tools.registerTool("blueprint_describe", { description: "One stored blueprint: its entities with offsets, size and item cost.", inputSchema: named }, async (p, extra) => rpc("blueprint_describe", named.parse(p), extra?.signal));
   tools.registerTool("blueprint_export", { description: "A stored blueprint as a string for the notebook. It is never imported back.", inputSchema: named }, async (p) => rpc("blueprint_export", named.parse(p)));
-  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
+  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position; where the blueprint fits (there or at the free position) also ${oreReport} and ${fluidReport}.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
     try { return await step("blueprint_place")(placeBlueprintSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
@@ -579,7 +579,7 @@ export function registerMcpTools(
   const copyInput = z.object(copySettingsFields).strict();
   tools.registerTool("copy_settings", { description: "Copy the recipe, filters and limits of one building onto up to 32 others of the same kind; the body walks within reach of each.", inputSchema: copyInput }, async (p, extra) =>
     step("copy_settings")(copyInput.parse(p), extra?.signal));
-  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, build_block, blueprint_place. equip and flush_fluid are plan steps only. Steps on a space platform (platform set) need no body. Positions are on the body's surface, or after a travel step on its destination; surface names another. A plan for a surface the body leaves is cancelled (SURFACE_LEFT). after_plan_id runs it only after that plan completes. Wait with next_action's next_event: its since_tick still catches a plan that already ended.", inputSchema: queuePlanSchema }, async (input) => {
+  tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, blueprint_place. equip and flush_fluid are plan steps only. Steps on a space platform (platform set) need no body. Positions are on the body's surface, or after a travel step on its destination; surface names another. A plan for a surface the body leaves is cancelled (SURFACE_LEFT). after_plan_id runs it only after that plan completes. Wait with next_action's next_event: its since_tick still catches a plan that already ended.", inputSchema: queuePlanSchema }, async (input) => {
     try {
       const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
       return result({ ...queued, status: "queued", terminal: false, summary: queuedPlanSummary(queued),

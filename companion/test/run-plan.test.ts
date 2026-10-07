@@ -57,15 +57,14 @@ describe("current queued-plan protocol", () => {
       { action: "get_items", item: "iron-gear-wheel", count: 10 },
       { ...layout, anchor: { x: 10, y: 20 } },
       { ...layout, site: { near: { x: 0, y: 0 }, on_resource: "iron-ore" } },
-      { action: "build_block", block: "mining", count: 4, resource: "iron-ore", near: { x: 5, y: 5 } },
       { action: "place_entity", name: "wooden-chest", x: 1, y: 1, auto_supply: false },
       { action: "insert_items", x: 1, y: 1, items: { coal: 5 }, auto_supply: true },
     ] });
-    expect(parsed.steps.map((step) => step.action)).toEqual(["get_items", "build_layout", "build_layout", "build_block", "place_entity", "insert_items"]);
+    expect(parsed.steps.map((step) => step.action)).toEqual(["get_items", "build_layout", "build_layout", "place_entity", "insert_items"]);
     expect(queuePlanSchema.safeParse({ steps: [layout] }).success).toBe(false);
     expect(queuePlanSchema.safeParse({ steps: [{ ...layout, anchor: { x: 0, y: 0 }, site: { near: { x: 0, y: 0 } } }] }).success).toBe(false);
     expect(queuePlanSchema.safeParse({ steps: [{ ...layout, anchor: { x: 0, y: 0 }, check_only: true }] }).success).toBe(false);
-    expect(queuePlanSchema.safeParse({ steps: [{ action: "build_block", block: "rails", count: 1 }] }).success).toBe(false);
+    expect(queuePlanSchema.safeParse({ steps: [{ action: "build_block", block: "mining", count: 1, resource: "iron-ore" }] }).success).toBe(false);
   });
 
   it("preserves exact inserter input and output targets through queued plans", () => {

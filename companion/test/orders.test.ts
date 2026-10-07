@@ -23,7 +23,7 @@ const furnaces = (id: string, after: string | null = null) => ({
   package_id: id, serves: "NOW", intent: "smelt iron", after_package_id: after, source_tick: 10,
   anchor: { x: 0, y: 0 }, required_items: {}, success_check: "plates appear",
   steps: [{ action: "place_entity", x: 1.5, y: 2.5, name: "stone-furnace" },
-    { action: "build_block", block: "smelting", count: 4, near: { x: 0, y: 0 } }],
+    { action: "build_layout", site: { near: { x: 0, y: 0 } }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] }],
 });
 function writeLedger(dir: string, revision: number, packages: unknown[], objective = "automate iron", research?: string[]) {
   const priority = (text: string) => ({ objective: text, strategic_reason: "r", completion_condition: "c", essential_prerequisite: null });
@@ -37,7 +37,7 @@ function writeLedger(dir: string, revision: number, packages: unknown[], objecti
   }));
 }
 
-/** A fake game: ping, event_state, can_place, layout, block and blueprint checks, captures, queue_plan and plan_status.
+/** A fake game: ping, event_state, can_place, layout and blueprint checks, captures, queue_plan and plan_status.
  *  No pilot plan has run: the FIFO reports no idle time. */
 function fakeBridge(overrides: Record<string, (params: any) => unknown> = {}) {
   let next = 40;
@@ -47,7 +47,7 @@ function fakeBridge(overrides: Record<string, (params: any) => unknown> = {}) {
     if (method === "ping") return { companion_exists: true, tick: 900, body: { state: "on_surface", surface_ref: "nauvis" }, fifo: { queue_depth: 0 } };
     if (method === "event_state") return { tick: 900, queue_depth: 0, fifo_empty: true, human_hold: false };
     if (method === "can_place") return { results: params.placements.map(() => ({ can_place: true })) };
-    if (method === "build_block" || method === "build_layout") return { placed: {}, failed: {} };
+    if (method === "build_layout") return { placed: {}, failed: {} };
     if (method === "blueprint_place") return { check_only: true, ok: true, collisions: {} };
     if (method === "blueprint_capture") return { name: params.name, entities: 4 };
     if (method === "queue_plan") return { plan_id: ++next };
@@ -102,7 +102,7 @@ describe("package auto-queue", () => {
     expect(plans.map((plan: any) => plan.source)).toEqual(["package:iron-a", "package:iron-b"]);
     expect(plans[0]).toMatchObject({ steps: furnaces("iron-a").steps, final_observation_radius: 15, observation_detail: "none" });
     expect(call).toHaveBeenCalledWith("can_place", { placements: [{ item: "stone-furnace", position: { x: 1.5, y: 2.5 }, direction: undefined }], surface: "nauvis" });
-    expect(call).toHaveBeenCalledWith("build_block", { block: "smelting", count: 4, near: { x: 0, y: 0 }, check_only: true });
+    expect(call).toHaveBeenCalledWith("build_layout", { site: { near: { x: 0, y: 0 } }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }], check_only: true });
     expect(readPackageQueue(dir)?.packages).toMatchObject({ "iron-a": { status: "queued", plan_id: 41, revision: 3, tick: 900 },
       "iron-b": { status: "queued", plan_id: 42 } });
     expect(fs.statSync(path.join(dir, "package-queue.json")).mode & 0o777).toBe(0o600);
@@ -128,13 +128,13 @@ describe("package auto-queue", () => {
       reason: "check failed: place_entity stone-furnace at (1.5, 2.5): blocked by iron-chest at (1.5, 2.5)" }]);
   });
 
-  it("fails a layout or block whose dry run reports failed placements, or a mod error", async () => {
+  it("fails a layout whose dry run reports failed placements, or a mod error", async () => {
     const dir = runDir();
     writeLedger(dir, 1, [furnaces("no-water")]);
-    const { call, bridge } = fakeBridge({ build_block: () => ({ placed: {}, failed: [{ index: 2, code: "NO_SITE", reason: "no water nearby" }] }) });
+    const { call, bridge } = fakeBridge({ build_layout: () => ({ placed: {}, failed: [{ index: 2, code: "NO_SITE", reason: "no water nearby" }] }) });
     await createPackageQueue(() => dir, bridge).tick();
     expect(queuedPlans(call)).toEqual([]);
-    expect(packageFailures(dir)[0]?.reason).toBe("check failed: build_block: NO_SITE no water nearby");
+    expect(packageFailures(dir)[0]?.reason).toBe("check failed: build_layout: NO_SITE no water nearby");
     const other = runDir();
     writeLedger(other, 1, [furnaces("refused")]);
     const refused = fakeBridge({ queue_plan: () => { throw new ModError("queue_plan requires 1-200 steps"); } });
@@ -143,7 +143,7 @@ describe("package auto-queue", () => {
   });
 
   it("retries a package whose dry run or capture met busy job slots or a slow game, never failing it", async () => {
-    for (const method of ["build_block", "blueprint_capture"]) {
+    for (const method of ["build_layout", "blueprint_capture"]) {
       const dir = runDir();
       const captured = { ...furnaces("iron-a"), steps: [{ action: "blueprint_capture", name: "cell", center: { x: 0, y: 0 }, radius: 4 },
         ...furnaces("iron-a").steps] };
@@ -151,7 +151,7 @@ describe("package auto-queue", () => {
       let busy = true;
       const { call, bridge } = fakeBridge({ [method]: (params: any) => {
         if (busy) { busy = false; throw new JobBusyError(`JOBS_BUSY: 8 jobs are pending or unread`); }
-        return method === "build_block" ? { placed: {}, failed: {} } : { name: params.name, entities: 4 };
+        return method === "build_layout" ? { placed: {}, failed: {} } : { name: params.name, entities: 4 };
       } });
       const queue = createPackageQueue(() => dir, bridge);
       await queue.tick();
@@ -470,7 +470,7 @@ describe("package auto-queue", () => {
     expect(readPackageQueue(dir)?.packages).toMatchObject({ first: { status: "queued", plan_id: 70 },
       second: { status: "queued", plan_id: 71 } });
     expect(queuedPlans(call).at(-1)).toMatchObject({ source: "package:second", after_plan_id: 70 });
-    expect(call.mock.calls.filter(([method]) => method === "build_block")).toHaveLength(2);
+    expect(call.mock.calls.filter(([method]) => method === "build_layout")).toHaveLength(2);
     expect(packageFailures(dir)).toEqual([]);
     expect(call.mock.calls.some(([method, params]) => method === "plan_status" && params.plan_id === undefined)).toBe(false);
   });
@@ -489,14 +489,14 @@ describe("package auto-queue", () => {
       reason: "check failed: blueprint_place smelter at (4, 4): the position is blocked; the nearest free position is (9, 4)" });
   });
 
-  it("fails a package whose block or blueprint needs an item the body cannot obtain now, naming it", async () => {
+  it("fails a package whose layout or blueprint needs an item the body cannot obtain now, naming it", async () => {
     const dir = runDir();
     const place = { ...furnaces("bp-arm"), steps: [{ action: "blueprint_place", name: "smelter", position: { x: 4, y: 4 } }] };
-    const opening = { ...furnaces("opening"), steps: [{ action: "build_block", block: "mining", count: 2, near: { x: 0, y: 0 } }] };
+    const opening = { ...furnaces("opening"), steps: [{ action: "build_layout", site: { near: { x: 0, y: 0 }, on_resource: "iron-ore" }, entities: [{ name: "burner-mining-drill", dx: 1, dy: 1 }, { name: "burner-mining-drill", dx: 3, dy: 1 }] }] };
     writeLedger(dir, 1, [opening, place]);
     const reason = "burner-mining-drill can't be carried now (needs 1 more iron-plate): no idle own furnace smelts it (smelting)";
     const { call, bridge } = fakeBridge({
-      build_block: () => ({ ok: false, placed: [{ name: "burner-mining-drill" }],
+      build_layout: () => ({ ok: false, placed: [{ name: "burner-mining-drill" }],
         failed: [{ code: "ITEM_UNOBTAINABLE", item: "burner-mining-drill", reason }] }),
       blueprint_place: () => ({ ok: false, collisions: {}, free_position: { x: 4, y: 4 },
         unobtainable: [{ code: "ITEM_UNOBTAINABLE", item: "inserter", reason: "inserter can't be carried now: not researched" }] }),
@@ -504,7 +504,7 @@ describe("package auto-queue", () => {
     await createPackageQueue(() => dir, bridge).tick();
     expect(queuedPlans(call)).toEqual([]);
     expect(packageFailures(dir).map((failure) => [failure.package_id, failure.reason])).toEqual([
-      ["opening", `check failed: build_block: ITEM_UNOBTAINABLE ${reason}`],
+      ["opening", `check failed: build_layout: ITEM_UNOBTAINABLE ${reason}`],
       ["bp-arm", "check failed: blueprint_place smelter: ITEM_UNOBTAINABLE inserter can't be carried now: not researched"],
     ]);
   });
@@ -514,11 +514,11 @@ describe("package auto-queue", () => {
     // The furnace the first step places smelts the plates the later steps need.
     const smelter = { ...furnaces("smelter"), steps: [...furnaces("smelter").steps,
       { action: "blueprint_place", name: "arm", position: { x: 4, y: 4 } }] };
-    const mining = { ...furnaces("mining", "smelter"), steps: [{ action: "build_block", block: "mining", count: 2, near: { x: 0, y: 0 } }] };
+    const mining = { ...furnaces("mining", "smelter"), steps: [{ action: "build_layout", site: { near: { x: 0, y: 0 }, on_resource: "iron-ore" }, entities: [{ name: "burner-mining-drill", dx: 1, dy: 1 }, { name: "burner-mining-drill", dx: 3, dy: 1 }] }] };
     writeLedger(dir, 1, [smelter, mining]);
     const short = [{ code: "ITEM_UNOBTAINABLE", item: "burner-mining-drill", reason: "burner-mining-drill can't be carried now" }];
     const { call, bridge } = fakeBridge({
-      build_block: () => ({ ok: false, placed: {}, failed: short }),
+      build_layout: () => ({ ok: false, placed: {}, failed: short }),
       blueprint_place: () => ({ ok: false, collisions: {}, unobtainable: short }),
     });
     const queue = createPackageQueue(() => dir, bridge);

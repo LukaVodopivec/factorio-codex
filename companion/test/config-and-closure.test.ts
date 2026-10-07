@@ -110,7 +110,7 @@ describe("exact local configuration", () => {
   });
   it.each([
     { ping: { protocol_version: 6, mod_version: "0.28.0" }, failedCheck: "protocol" },
-    { ping: { protocol_version: 28, mod_version: "0.6.0" }, failedCheck: "mod" },
+    { ping: { protocol_version: 29, mod_version: "0.6.0" }, failedCheck: "mod" },
   ])("reports a $failedCheck mismatch without contradicting authenticated RCON", async ({ ping, failedCheck }) => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValueOnce();

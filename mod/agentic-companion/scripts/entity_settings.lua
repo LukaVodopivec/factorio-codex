@@ -1,5 +1,5 @@
 -- Entity settings: what a player sets in an entity's window, as the one
--- Settings object of configure_entity, build_layout/build_block entities,
+-- Settings object of configure_entity, build_layout entities,
 -- build_plan steps, move_entity and blueprints:
 --   { inserter?: {filters?: [item] (at most 5; [] clears), mode?: whitelist|blacklist,
 --                 stack_size?: int >= 0 (0 = the game's default), spoil_priority?: fresh_first|spoiled_first|none},

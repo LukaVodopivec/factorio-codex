@@ -1,4 +1,4 @@
--- build_layout and build_block: the bot gives a layout as offsets (dx, dy)
+-- build_layout: the bot gives a layout as offsets (dx, dy)
 -- from an anchor, or a site request (near a point, on a resource, near
 -- water or another liquid: near_liquid water, lava, heavy-oil or
 -- ammoniacal-solution); the mod finds the site, checks every placement and connection
@@ -12,12 +12,11 @@
 -- A hand-built dry run on the body's surface also fails ITEM_UNOBTAINABLE,
 -- naming each item the body neither carries nor can obtain now; a hand
 -- build checks the same before fetching anything (LAYOUT_CHECK_FAILED, nothing
--- placed) and carries its whole bill before the first placement. A block is
--- all or nothing; a layout places the rest past a failed placement and
--- fetches at each step what the inventory had no room for.
+-- placed) and carries its whole bill before the first placement. A layout
+-- places the rest past a failed placement and fetches at each step what the
+-- inventory had no room for.
 -- An entity or recipe whose surface conditions the surface breaks fails
--- SURFACE_CONDITION before any site is searched. build_block expands a parametric block
--- (scripts/blocks.lua) into a layout and may turn it to fit the site.
+-- SURFACE_CONDITION before any site is searched.
 -- Belt and pipe connections are searched by connect_entities' resumable A*
 -- (up to 200 tiles, underground hops where the way is blocked), spread over
 -- ticks like the site search.
@@ -25,8 +24,7 @@
 -- Offsets are entity centres; each entity snaps to its own tile grid, so a
 -- layout written for an integer anchor (top-left tile corner) is exact. An
 -- entity's insert map is put in after it is placed (build_plan's starter
--- items); build_block fuels its burner machines that way by default. An
--- entity's settings (entity_settings: inserter filters, splitter priorities,
+-- items). An entity's settings (entity_settings: inserter filters, splitter priorities,
 -- chest limits) are set right after it is placed, while the body is in
 -- reach; mirror places it flipped; belt_to_ground_type picks an underground
 -- belt's end.
@@ -34,8 +32,9 @@
 -- code, reason}], shortfall?}; indexes are 0-based into entities/connections.
 -- A dry run whose layout fits also reports, as data and never as a failure,
 -- inserters [{name,x,y,direction,picks_from,drops_into}], belt_ends
--- [{name,x,y,direction,faces}], unpowered [{name,x,y}] and isolated_poles
--- [{name,x,y}] (see the dry-run survey).
+-- [{name,x,y,direction,faces}], unpowered [{name,x,y}], isolated_poles
+-- [{name,x,y}], on_ore [{name,x,y,ore}], mixed_ore [{name,x,y,mines,also}]
+-- and open_fluid_ports [{name,x,y,port}] (see the dry-run survey).
 --
 -- mode "ghosts" places the layout as ghosts instead: a transient blueprint
 -- on a planet, checked native ghosts on a platform. Recipes and settings ride
@@ -51,9 +50,9 @@ local companion = require("scripts.companion")
 local placement_geometry = require("scripts.placement_geometry")
 local output_target = require("scripts.output_target")
 local connect_entities = require("scripts.connect_entities")
+local fluid_connections = require("scripts.fluid_connections")
 local build_plan = require("scripts.actions.build_plan")
 local build = require("scripts.actions.build")
-local blocks = require("scripts.blocks")
 local entity_settings = require("scripts.entity_settings")
 local jobs = require("scripts.jobs")
 local blueprints = require("scripts.blueprints")
@@ -1038,7 +1037,7 @@ end
 -- ------------------------------------------------------------- resolution
 
 -- request = {anchor? | site?, layouts = {layout, ...}}; every layout is a
--- variant of the same design (block rotations). Returns the search state:
+-- variant of the same design (a turn of it). Returns the search state:
 -- plain tables and prototype references only, so a build keeps it in its
 -- task (storage) between ticks. state.result is set once it is decided.
 local function new_search(c, request)
@@ -1537,7 +1536,11 @@ end
 -- facing a reversed one, an underground entrance with no exit), the
 -- electric machines no pole's supply area covers (unpowered), and the
 -- planned poles no wire reaches from an existing pole or a planned generator
--- (isolated_poles). Pickup and drop points are output_target's arithmetic
+-- (isolated_poles), the resource tiles under each placement but a drill's
+-- (on_ore, by resource), each drill whose mining area holds more than one
+-- resource it can mine (mixed_ore: mines is the one with the most tiles,
+-- also the rest), and fluid connections that meet nothing (open_fluid_ports,
+-- see fluid_open). Pickup and drop points are output_target's arithmetic
 -- (find_placement's), tested against the planned footprints by tile; what
 -- no planned entity answers takes one small query, charged to the dry run's
 -- work (SURVEY_QUERY plus what it reads) and spread over ticks. A query
@@ -1591,7 +1594,8 @@ local function planned_list(result)
   for _, p in ipairs(result.placements) do
     local e = p.entity
     list[#list + 1] = { name = e.proto.name, proto = e.proto, position = p.position, direction = e.direction,
-      area = p.area, under = e.proto.type == "underground-belt" and belt_end(e) or nil }
+      area = p.area, under = e.proto.type == "underground-belt" and belt_end(e) or nil, recipe = e.recipe,
+      mirror = e.mirror or nil }
   end
   for _, routed in ipairs(result.routes or {}) do
     for _, step in ipairs(routed.steps) do
@@ -1631,7 +1635,79 @@ local function root(V, i)
   return i
 end
 
-local function survey_start(result)
+-- Which report row each survey item kind fills.
+local ROW_OF = { inserter = "inserters", belt = "belt_ends", entrance = "belt_ends", power = "unpowered",
+  pole = "isolated_poles", ore = "on_ore", drill = "mixed_ore", fluid = "open_fluid_ports" }
+local CRAFTERS = { ["assembling-machine"] = true, furnace = true, ["rocket-silo"] = true }
+
+local function uses_fluid(recipe_name)
+  local ok, uses = pcall(function()
+    local recipe = prototypes.recipe[recipe_name]
+    for _, list in ipairs({ recipe.ingredients or {}, recipe.products or {} }) do
+      for _, row in ipairs(list) do if row.type == "fluid" then return true end end
+    end
+    return false
+  end)
+  return ok and uses == true
+end
+
+-- How a planned entity's fluid ports are judged (fluid_open), nil when they
+-- are not: a pipe is a run's end below two met sides; a pipe-to-ground's
+-- normal side must meet; a crafting machine whose recipe takes or makes a
+-- fluid needs one met port; anything else (pumps, boilers, engines, tanks)
+-- one met port on each fluid box. A drill's box is optional, so never.
+local function fluid_rule(p)
+  local kind = p.proto.type
+  if kind == "pipe" or kind == "infinity-pipe" then return "pipe" end
+  if kind == "pipe-to-ground" then return "each" end
+  if kind == "mining-drill" then return nil end
+  if CRAFTERS[kind] then return p.recipe and uses_fluid(p.recipe) and "machine" or nil end
+  return "box"
+end
+
+local function by_box(a, b)
+  if (a.box or 0) ~= (b.box or 0) then return (a.box or 0) < (b.box or 0) end
+  if a.target.y ~= b.target.y then return a.target.y < b.target.y end
+  return a.target.x < b.target.x
+end
+
+-- Each planned entity's fluid ports (one prototype read per name and
+-- direction) as tile cells, indexed by the tile each leaves from. A
+-- mirrored entity's ports are not worked out: its tiles take any port.
+local function fluid_ports(ctx, V)
+  local cache, count = {}, 0
+  for i, p in ipairs(V.planned) do
+    local key = p.name .. "|" .. p.direction
+    local rel = cache[key]
+    if rel == nil then
+      ctx.calls = ctx.calls + 1
+      rel = fluid_connections.ports(p.proto, p.direction, placement_geometry.footprint(p.proto, { x = 0, y = 0 }, p.direction))
+      table.sort(rel, by_box)
+      cache[key] = rel
+    end
+    if #rel > 0 and p.mirror then
+      each_tile(p.area, function(x, y) V.wild[cell(x, y)] = true end)
+    elseif #rel > 0 then
+      local list = {}
+      for k, r in ipairs(rel) do
+        local x, y = p.position.x, p.position.y
+        local port = { box = r.box, at = cell(math.floor(x + r.at.x), math.floor(y + r.at.y)),
+          target = cell(math.floor(x + r.target.x), math.floor(y + r.target.y)),
+          tx = math.floor(x + r.target.x) + 0.5, ty = math.floor(y + r.target.y) + 0.5 }
+        list[k] = port
+        local here = V.port_at[port.at]
+        if here then here[#here + 1] = { i = i, port = port } else V.port_at[port.at] = { { i = i, port = port } } end
+      end
+      V.ports[i] = list
+      count = count + #list
+    end
+  end
+  ctx.calls = ctx.calls + math.ceil(count / LOAD_PER_ITEM)
+end
+
+-- The survey of a decided layout; only (a set of report row names) limits
+-- it to those rows.
+local function survey_start(ctx, result, only)
   local planned, tiles = planned_list(result), {}
   for i, p in ipairs(planned) do
     each_tile(p.area, function(x, y)
@@ -1639,8 +1715,13 @@ local function survey_start(result)
       if list then list[#list + 1] = i else tiles[cell(x, y)] = { i } end
     end)
   end
+  ctx.calls = ctx.calls + math.ceil(#planned / LOAD_PER_ITEM)
   local V = { planned = planned, tiles = tiles, items = {}, i = 1, widest = widest_supply(), group = {}, linked = {},
-    rows = { inserters = {}, belt_ends = {}, unpowered = {} } }
+    ports = {}, port_at = {}, wild = {},
+    rows = { inserters = {}, belt_ends = {}, unpowered = {}, on_ore = {}, mixed_ore = {}, open_fluid_ports = {} } }
+  local function add(item)
+    if not only or only[ROW_OF[item.kind]] then V.items[#V.items + 1] = item end
+  end
   -- Planned poles within wire reach of each other share a group; a group
   -- whose supply area takes in a planned generator has a source.
   local poles, makers, reach, supply = {}, {}, {}, {}
@@ -1651,7 +1732,6 @@ local function survey_start(result)
     end
     if power_role(p.proto) == "makes" then makers[#makers + 1] = p end
   end
-  V.poles = poles
   for a = 1, #poles do
     local pa = planned[poles[a]]
     for b = a + 1, #poles do
@@ -1668,26 +1748,38 @@ local function survey_start(result)
   end
   for i, p in ipairs(planned) do
     local kind = p.proto.type
-    if kind == "inserter" then V.items[#V.items + 1] = { kind = "inserter", i = i } end
+    if kind == "inserter" then add({ kind = "inserter", i = i }) end
     local front = (kind == "transport-belt" or kind == "underground-belt") and ahead(p)
     if front then
       local flows = false
       for _, j in ipairs(planned_at(V, front.x, front.y)) do
         if takes(planned[j], p.direction) then flows = true end
       end
-      if not flows then V.items[#V.items + 1] = { kind = "belt", i = i, front = front } end
+      if not flows then add({ kind = "belt", i = i, front = front }) end
     elseif kind == "underground-belt" and p.under ~= "output" and AHEAD[p.direction] then
-      V.items[#V.items + 1] = { kind = "entrance", i = i }
+      add({ kind = "entrance", i = i })
     end
     if power_role(p.proto) == "draws" then
       local covered = false
       for _, j in ipairs(poles) do
         if placement_geometry.overlaps(supply_box(planned[j].position, supply[j]), p.area) then covered = true; break end
       end
-      if not covered then V.items[#V.items + 1] = { kind = "power", i = i } end
+      if not covered then add({ kind = "power", i = i }) end
     end
   end
-  for _, i in ipairs(poles) do V.items[#V.items + 1] = { kind = "pole", i = i } end
+  for _, i in ipairs(poles) do add({ kind = "pole", i = i }) end
+  V.poles = (not only or only.isolated_poles) and poles or {}
+  -- Resources under what stands on a planet: no platform has any.
+  if not ctx.space then
+    for i, p in ipairs(planned) do add({ kind = p.proto.type == "mining-drill" and "drill" or "ore", i = i }) end
+  end
+  if not only or only.open_fluid_ports then
+    fluid_ports(ctx, V)
+    for i, p in ipairs(planned) do
+      local rule = V.ports[i] and fluid_rule(p)
+      if rule then add({ kind = "fluid", i = i, rule = rule }) end
+    end
+  end
   return V
 end
 
@@ -1733,10 +1825,142 @@ local function endpoint_name(ctx, V, point, kind)
   return found and found.name or "nothing"
 end
 
+-- The resource tiles whose centre lies in an area, counted by name, of
+-- those minable accepts (all when nil), on charted chunks only; nil when
+-- there are none. One small query, charged like survey_query.
+local function resources_in(ctx, area, minable)
+  local surface = where(ctx)
+  ctx.calls = ctx.calls + SURVEY_QUERY
+  local ok, found = pcall(surface.find_entities_filtered, { area = area, type = "resource" })
+  if not (ok and type(found) == "table") then return nil end
+  ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
+  local counts, any = {}, false
+  for _, e in ipairs(found) do
+    local at = e.valid and e.position
+    if at and at.x > area.left_top.x and at.x < area.right_bottom.x and at.y > area.left_top.y
+      and at.y < area.right_bottom.y and (not minable or minable(e.name)) and charted_at(ctx, at) then
+      counts[e.name] = (counts[e.name] or 0) + 1
+      any = true
+    end
+  end
+  return any and counts or nil
+end
+
+-- Whether a drill can mine a resource (true when either side is unreadable).
+local function mines(drill, name)
+  local ok, can = pcall(function()
+    local categories = drill.resource_categories
+    local category = prototypes.entity[name].resource_category
+    if type(categories) ~= "table" or type(category) ~= "string" then return true end
+    return categories[category] == true
+  end)
+  return not ok or can
+end
+
+-- Whether a planned fluid port meets a connection back from the tile it
+-- points at: a planned port there that points back (a mirrored planned
+-- fluid entity's tiles take any), else an own entity's live connection
+-- (one small query). A planned entity there with no port back meets
+-- nothing. planned_only answers nil instead of querying.
+local function port_met(ctx, V, i, port, planned_only)
+  if V.wild[port.target] then return true end
+  for _, other in ipairs(V.port_at[port.target] or {}) do
+    if other.i ~= i and other.port.target == port.at then return true end
+  end
+  if planned_only then return nil end
+  if V.tiles[port.target] then return false end
+  return survey_query(ctx, { area = { left_top = { x = port.tx - 0.4, y = port.ty - 0.4 },
+    right_bottom = { x = port.tx + 0.4, y = port.ty + 0.4 } } }, function(entity)
+    ctx.calls = ctx.calls + 1
+    for _, row in ipairs(fluid_connections.live(entity)) do
+      if row.connection_type == "normal" and cell(math.floor(row.position.x), math.floor(row.position.y)) == port.target
+        and cell(math.floor(row.target_position.x), math.floor(row.target_position.y)) == port.at then return true end
+    end
+    return false
+  end) ~= nil
+end
+
+-- The ports of planned entity i that meet nothing, by its rule (fluid_rule).
+-- Planned answers first; an own entity is queried only while the rule is
+-- still open.
+local function fluid_open(ctx, V, i, rule)
+  local ports, met = V.ports[i], {}
+  for k, port in ipairs(ports) do met[k] = port_met(ctx, V, i, port, true) end
+  local function settle(k)
+    if met[k] == nil then met[k] = port_met(ctx, V, i, ports[k]) end
+    return met[k]
+  end
+  local open = {}
+  if rule == "each" then
+    for k, port in ipairs(ports) do if not settle(k) then open[#open + 1] = port end end
+  elseif rule == "pipe" then
+    local count, fed = 0, nil
+    for k in ipairs(ports) do if met[k] then count, fed = count + 1, fed or ports[k] end end
+    for k in ipairs(ports) do
+      if count >= 2 then break end
+      if met[k] == nil and settle(k) then count, fed = count + 1, fed or ports[k] end
+    end
+    if count < 2 then
+      -- A run's end: the side straight ahead of the one it is fed from.
+      local p, pick = V.planned[i], nil
+      for k, port in ipairs(ports) do
+        if not met[k] then
+          local ahead_of_fed = fed and math.abs(port.tx + fed.tx - 2 * p.position.x) < 0.01
+            and math.abs(port.ty + fed.ty - 2 * p.position.y) < 0.01
+          if not pick or ahead_of_fed then pick = port end
+          if ahead_of_fed then break end
+        end
+      end
+      open[1] = pick
+    end
+  else
+    -- "box": each fluid box needs a met port; "machine": one of them.
+    local groups, order = {}, {}
+    for k, port in ipairs(ports) do
+      local key = rule == "box" and (port.box or 0) or 0
+      if not groups[key] then groups[key] = {}; order[#order + 1] = key end
+      table.insert(groups[key], k)
+    end
+    for _, key in ipairs(order) do
+      local any = false
+      for _, k in ipairs(groups[key]) do if met[k] then any = true end end
+      for _, k in ipairs(groups[key]) do
+        if any then break end
+        any = settle(k) == true
+      end
+      if not any then open[#open + 1] = ports[groups[key][1]] end
+    end
+  end
+  return open
+end
+
 local function survey_item(ctx, V, item)
   local p = V.planned[item.i]
   local rows = V.rows
-  if item.kind == "inserter" then
+  if item.kind == "ore" then
+    local ore = resources_in(ctx, p.area)
+    if ore then rows.on_ore[#rows.on_ore + 1] = { name = p.name, x = p.position.x, y = p.position.y, ore = ore } end
+  elseif item.kind == "drill" then
+    local r = read_number(function() return p.proto.mining_drill_radius end)
+    local found = r and resources_in(ctx, supply_box(p.position, r), function(name) return mines(p.proto, name) end)
+    local names = {}
+    for name in pairs(found or {}) do names[#names + 1] = name end
+    if #names > 1 then
+      table.sort(names, function(a, b)
+        if found[a] ~= found[b] then return found[a] > found[b] end
+        return a < b
+      end)
+      local also = {}
+      for k = 2, #names do also[names[k]] = found[names[k]] end
+      rows.mixed_ore[#rows.mixed_ore + 1] = { name = p.name, x = p.position.x, y = p.position.y, mines = names[1],
+        also = also }
+    end
+  elseif item.kind == "fluid" then
+    for _, port in ipairs(fluid_open(ctx, V, item.i, item.rule)) do
+      rows.open_fluid_ports[#rows.open_fluid_ports + 1] = { name = p.name, x = p.position.x, y = p.position.y,
+        port = { x = port.tx, y = port.ty } }
+    end
+  elseif item.kind == "inserter" then
     rows.inserters[#rows.inserters + 1] = { name = p.name, x = p.position.x, y = p.position.y, direction = p.direction,
       picks_from = endpoint_name(ctx, V, output_target.input_position(p.proto, p.position, p.direction), "input"),
       drops_into = endpoint_name(ctx, V, output_target.output_position(p.proto, p.position, p.direction), "output") }
@@ -1874,14 +2098,6 @@ local function layout_request(c, params)
   return request
 end
 
--- A block may be turned to fit its site: all four rotations are variants.
-local function block_request(c, params)
-  local expanded = blocks.expand(c, params)
-  local layouts = {}
-  for q = 0, 3 do layouts[q + 1] = rotated(expanded.layout, q) end
-  return { site = expanded.site, layouts = layouts, tiers = expanded.tiers }
-end
-
 -- The check_only answer of a ghost layout: what would be ghosted, what
 -- stands already, what waits for planned foundation, and the items.
 local function ghost_report(ctx, result, extra)
@@ -1946,7 +2162,7 @@ local function require_check_only(params, label)
   end
 end
 
--- RPC build_layout / build_block {.., check_only = true}: a read-only dry run
+-- RPC build_layout {.., check_only = true}: a read-only dry run
 -- as a job, searching with the build's own budget per tick until it has the
 -- site or a definite answer.
 -- Who a search works for: a platform layout needs only a connected body
@@ -1987,8 +2203,7 @@ local function check_job(label, make_request)
       local result = advance(c, s, math.max(1, budget.left))
       if result and not state.survey and #result.failed == 0 and result.placements then
         -- A buildable layout is surveyed next (data, never a failure).
-        state.survey = survey_start(result)
-        ctx.calls = ctx.calls + math.ceil(#state.survey.planned / LOAD_PER_ITEM)
+        state.survey = survey_start(ctx, result)
       end
       if state.survey and result then
         ctx.c = c
@@ -2012,10 +2227,6 @@ end
 M.layout_check_job = check_job("build_layout", function(c, params)
   validate_layout(params, "build_layout")
   return layout_request(c, params)
-end)
-M.block_check_job = check_job("build_block", function(c, params)
-  local request = block_request(c, params)
-  return request, { block = params.block, tiers = request.tiers }
 end)
 
 -- ----------------------------------------------------------------- runner
@@ -2043,16 +2254,12 @@ local function search(task, c, budget)
   -- Nothing is fetched when an item cannot be had now, and the whole bill is
   -- carried before the first placement: one supply shares an ingredient
   -- between the items made of it, where fetching step by step lets early
-  -- placements spend what later ones are made of. A block also fuels its
-  -- burner machines and is all or nothing: the first failed placement stops
-  -- it (outlets come before the drills that fill them), and a bill the
-  -- inventory has no room for fails it. A layout places the rest, and fetches
-  -- what did not fit at its step, as placements free room.
-  if task.block then build_plan.fuel_burners(c, steps) end
+  -- placements spend what later ones are made of. A layout places the rest
+  -- past a failed placement, and fetches what did not fit at its step, as
+  -- placements free room.
   task._check_failed = unobtainable(c, steps)
   if task._check_failed then return end
-  task._plan = { id = task.id, steps = steps, stop_on_error = task.block ~= nil, supply_all = true,
-    steps_when_full = task.block == nil }
+  task._plan = { id = task.id, steps = steps, stop_on_error = false, supply_all = true, steps_when_full = true }
   build_plan.start(task._plan)
 end
 
@@ -2061,8 +2268,7 @@ end
 -- left of one tick's budget.
 function Runner.start(task)
   local c = actor(task.platform)
-  local request = task.block and block_request(c, task) or layout_request(c, task)
-  task.tiers = request.tiers
+  local request = layout_request(c, task)
   task._search = new_search(c, request)
   task._search.given_anchor = request.given_anchor
   task._first_budget = math.max(1, WORK_PER_TICK - task._search.ctx.calls)
@@ -2077,7 +2283,7 @@ function Runner.resume(task)
 end
 
 function Runner.tick(task)
-  local label = task.block and ("build_block " .. task.block) or "build_layout"
+  local label = "build_layout"
   if task._search then
     -- The site search runs over ticks; the build starts on the next one.
     -- What it spends counts against the tick's allowance that read jobs share.
@@ -2113,8 +2319,8 @@ function Runner.tick(task)
     if (r and r.ok) or (step._placed_entity and step._placed_entity.valid) then
       placed[#placed + 1] = placed_row(step)
     end
-    -- A step the build stopped before (a block's stop or shortfall) is
-    -- listed without repeating why the build stopped.
+    -- A step the build stopped before (a shortfall) is listed without
+    -- repeating why the build stopped.
     if not (r and r.ok) then
       failed[#failed + 1] = { index = step._source.index, connection = step._source.connection,
         code = r and "PLACE_FAILED" or "NOT_ATTEMPTED", reason = r and r.why or nil }
@@ -2137,7 +2343,7 @@ function Runner.tick(task)
     detail = detail .. " — short of " .. table.concat(items, ", ")
   end
   return { status = status, detail = detail, outcome = { code = code, anchor = task._anchor, rotation = task._rotation,
-    tiers = task.tiers, placed = placed, failed = failed, shortfall = shortfall } }
+    placed = placed, failed = failed, shortfall = shortfall } }
 end
 
 -- Plan actions for tasks.register_action.
@@ -2165,16 +2371,6 @@ M.layout_action = {
   end,
 }
 
-M.block_action = {
-  runner = Runner,
-  make_task = function(step)
-    return { block = step.block, count = step.count, resource = step.resource, recipe = step.recipe, near = step.near,
-      blueprint = step.blueprint }
-  end,
-  validate = function(step, index) blocks.validate(step, "queue_plan build_block step " .. index) end,
-  budget_steps = function(step) return blocks.budget_steps(step) end,
-}
-
 -- For tests: a whole search, one tick's budget at a time.
 local function resolve(c, request)
   local s = new_search(c, request)
@@ -2182,11 +2378,15 @@ local function resolve(c, request)
   repeat result = advance(c, s, WORK_PER_TICK) until result
   return result, s
 end
-M._resolve, M._rotated, M._block_request, M._plan_steps = resolve, rotated, block_request, plan_steps
+M._resolve, M._rotated, M._plan_steps = resolve, rotated, plan_steps
 -- The resumable search for another dry run (blueprint_place check_only):
 -- search_start(c, {anchor? | site?, layouts}), search_step(c, s, budget) ->
 -- result | nil, check_report(c, result, extra) -> the check_only answer.
 M.search_start, M.search_step, M.check_report = new_search, advance, report
+-- Its survey of a buildable result: survey_start(ctx, result, only?) ->
+-- state, survey_step(ctx, state, limit) -> true once done, survey_rows(state)
+-- -> the report rows (only names the rows wanted).
+M.survey_start, M.survey_step, M.survey_rows = survey_start, survey_step, survey_rows
 M.validate_layout, M.platform_space = validate_layout, platform_space
 M.WORK_PER_TICK, M.MAX_WORK = WORK_PER_TICK, MAX_WORK
 

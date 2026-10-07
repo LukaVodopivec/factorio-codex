@@ -38,6 +38,8 @@ local MAX_AREA_ENTITIES = 300 -- entities one area action reads
 local MAX_GHOSTS = 100
 local ORDERS_PER_TICK = 50
 local MAX_ROWS = 10           -- failure rows listed in a result
+-- The dry-run survey rows a hand or planet-ghost blueprint_place check reports.
+local SURVEYED = { on_ore = true, mixed_ore = true, open_fluid_ports = true }
 local MAX_TARGETS = 32
 local NATURAL_TYPES = { "tree", "simple-entity", "plant" } -- natural entities the body may clear
 -- Own-force entities that are never mined by an area action.
@@ -299,8 +301,10 @@ M.place_action = {
 -- blueprint_place {.., check_only = true} over RPC: the placement at the
 -- position (collisions), else the first free position near it, and the
 -- materials against what the body carries; in hand mode an item the body
--- cannot obtain now (unobtainable) makes it not ok. A job: the same search and
--- per-tick budget as build_layout's dry run.
+-- cannot obtain now (unobtainable) makes it not ok. A placement that fits
+-- (here or at the free position) also reports build_layout's survey rows
+-- on_ore, mixed_ore and open_fluid_ports (a platform has no ore). A job: the
+-- same search and per-tick budget as build_layout's dry run.
 M.place_check_job = {
   start = function(params)
     local label = "blueprint_place"
@@ -332,11 +336,21 @@ M.place_check_job = {
       return { check_only = true, blueprint = job.name, mode = "ghosts", platform = job.platform, hub = job.hub,
         surface = "platform:" .. job.platform.index, position = job.anchor, ok = report.ok, collisions = collisions,
         already = report.already, needs_planned_tiles = report.needs_planned_tiles, materials = report.materials,
-        tiles = report.tiles, configuration_verified = false, missing = report.missing or {} }
+        tiles = report.tiles, configuration_verified = false, missing = report.missing or {},
+        open_fluid_ports = report.open_fluid_ports }
     end
     local c = actor(job.platform)
     local s = job.search
     local before = s.ctx.calls
+    if job.out then
+      -- The placement found is surveyed (data, never a failure).
+      s.ctx.c = c
+      local done = build_layout.survey_step(s.ctx, job.survey, before + math.max(1, budget.left))
+      budget.left = budget.left - (s.ctx.calls - before)
+      if not done then return nil end
+      for k, v in pairs(build_layout.survey_rows(job.survey)) do job.out[k] = v end
+      return job.out
+    end
     local result = build_layout.search_step(c, s, math.max(1, budget.left))
     budget.left = budget.left - (s.ctx.calls - before)
     if not result then return nil end
@@ -364,7 +378,13 @@ M.place_check_job = {
       free_reason = not report.ok and report.failed[1] and report.failed[1].reason or nil,
       tool_unlock = blueprints.tool_unlock(c, "blueprint") }
     if job.mode == "ghosts" then out.construction_robots = blueprints.construction_robots(c, job.anchor) end
-    return out
+    if not report.ok then return out end
+    -- What stands on ore, drills over mixed ore, and fluid ports that meet
+    -- nothing, as build_layout's dry run reports them, from the next tick.
+    local started = s.ctx.calls
+    job.out, job.survey = out, build_layout.survey_start(s.ctx, result, SURVEYED)
+    budget.left = budget.left - (s.ctx.calls - started)
+    return nil
   end,
 }
 

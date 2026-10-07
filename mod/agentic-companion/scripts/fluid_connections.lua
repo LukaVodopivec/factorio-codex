@@ -63,6 +63,47 @@ function M.prototype(proto, position, direction)
   return rows
 end
 
+-- One tile step out of an entity side, by cardinal direction.
+local UNIT = { [0] = { 0, -1 }, [4] = { 1, 0 }, [8] = { 0, 1 }, [12] = { -1, 0 } }
+
+-- The normal pipe connections of a prototype facing a cardinal direction,
+-- as ports {box, at, target} relative to its position: at lies in the
+-- entity's own tile the connection leaves from, target in the tile it
+-- points at (a neighbour there connects back from it); the tile is what
+-- counts, so a caller takes floor of each once placed. area is the
+-- footprint at the origin. A definition position inside the footprint is
+-- that tile (2.0: the connection's direction, turned with the entity, leads
+-- out); one outside it is the target itself. Underground and linked
+-- connections are left out; an unreadable box gives no ports.
+function M.ports(proto, direction, area)
+  local out = {}
+  direction = math.floor(tonumber(direction) or 0) % 16
+  if direction % 4 ~= 0 then return out end
+  local ok, boxes = pcall(function() return proto.fluidbox_prototypes end)
+  if not ok or type(boxes) ~= "table" then return out end
+  local lt, rb = area.left_top, area.right_bottom
+  for index, box in pairs(boxes) do
+    pcall(function()
+      local box_index = tonumber(box.index) or tonumber(index)
+      for _, connection in ipairs(box.pipe_connections or {}) do
+        local kind = connection.connection_type
+        local p = vec(connection.positions and connection.positions[direction / 4 + 1])
+        if p and (kind == nil or kind == "normal") then
+          if p.x > lt.x and p.x < rb.x and p.y > lt.y and p.y < rb.y then
+            local d = tonumber(connection.direction)
+            local step = d and UNIT[(math.floor(d) + direction) % 16]
+            if step then out[#out + 1] = { box = box_index, at = p, target = { x = p.x + step[1], y = p.y + step[2] } } end
+          else
+            out[#out + 1] = { box = box_index, target = p,
+              at = { x = math.min(math.max(p.x, lt.x + 0.01), rb.x - 0.01), y = math.min(math.max(p.y, lt.y + 0.01), rb.y - 0.01) } }
+          end
+        end
+      end
+    end)
+  end
+  return out
+end
+
 function M.live(entity, internal)
   local rows, count, complete = {}, 0, true
   local count_ok = pcall(function() count = #entity.fluidbox end)

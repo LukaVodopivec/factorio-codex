@@ -13,7 +13,7 @@ describe("strategist read-only MCP surface", () => {
     registerMcpTools({ registerTool(name) { names.push(name); } }, async () => ({} as Bridge), validConfig, "read-only");
     expect(names.sort()).toEqual([...READ_ONLY_TOOLS].sort());
     expect([...READ_ONLY_TOOLS].sort()).toEqual(["activity_log", "blueprint_describe", "blueprint_export", "blueprint_list",
-      "blueprint_place", "build_block", "build_layout", "can_place", "connect_entities", "connect_status",
+      "blueprint_place", "build_layout", "can_place", "connect_entities", "connect_status",
       "describe_prototype", "factory_status", "find_placement", "inspect_entity", "map_summary", "next_event", "observe_local",
       "place_tiles", "plan_status", "platform_status", "production_requirements", "progression_status"]);
   });
@@ -22,7 +22,7 @@ describe("strategist read-only MCP surface", () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => {
-      if (method === "ping") return { protocol_version: 28, mod_version: "0.28.0", factorio_version: "2.0.77",
+      if (method === "ping") return { protocol_version: 29, mod_version: "0.28.0", factorio_version: "2.0.77",
         tick: 12, companion_exists: false, companion_ever_created: false, companion_dead: false };
       if (method === "observe_local") return { tick: 12, entities: [], resource_patches: [], ground_items: [] };
       if (method === "inspect") return { tick: 12, entities: [{ name: "iron-chest", position: { x: 400.5, y: 0.5 }, remote: true }] };
@@ -33,7 +33,7 @@ describe("strategist read-only MCP surface", () => {
       if (method === "factory_status") return { tick: 12, lines: {}, problems: {} };
       if (method === "activity_log") return { tick: 12, entries: {}, omitted: 0 };
       if (method === "event_state") return { tick: 12, queue_depth: 0, fifo_empty: true, human_hold: false };
-      if (method === "build_layout" || method === "build_block") return { placed: {}, failed: {} };
+      if (method === "build_layout") return { placed: {}, failed: {} };
       if (method === "connect_entities") return { kind: "belt", steps: [{ name: "transport-belt", x: 1.5, y: 0.5 }] };
       if (method === "blueprint_place") return { check_only: true, ok: true, collisions: {} };
       if (method === "blueprint_list") return { blueprints: {}, capacity: 31 };
@@ -78,14 +78,12 @@ describe("strategist read-only MCP surface", () => {
     expect(status.structuredContent).toMatchObject({ lines: [], problems: [] });
     expect((await handlers.activity_log({ limit: 16 })).structuredContent.entries).toEqual([]);
     expect((await handlers.next_event({ timeout_seconds: 1 })).structuredContent.event).toBe("queue_empty");
-    // Layout and block dry runs only: the read-only schema rejects a real build.
+    // Layout dry runs only: the read-only schema rejects a real build.
     const layout = { anchor: { x: 0, y: 0 }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] };
     expect(schemas.build_layout.safeParse({ ...layout, check_only: false }).success).toBe(false);
     await handlers.build_layout(layout);
     expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true }, undefined);
-    expect(schemas.build_block.safeParse({ block: "labs", count: 2, check_only: false }).success).toBe(false);
-    await handlers.build_block({ block: "labs", count: 2 });
-    expect(call).toHaveBeenLastCalledWith("build_block", { block: "labs", count: 2, check_only: true }, undefined);
+    expect(handlers.build_block).toBeUndefined();
 
     // Route and blueprint placement checks: the route is only planned, nothing is built.
     const route = { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 3.5, y: 0.5 } };

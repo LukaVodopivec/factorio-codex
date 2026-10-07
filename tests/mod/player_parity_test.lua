@@ -326,7 +326,8 @@ check(home.production_w == 300000 and home.capacity_w == 900000 and home.demand_
   "a starved network reports native production by source, nameplate capacity, accumulators and satisfaction below 1")
 check(oil.production_w == 60000 and oil.capacity_w == 60000 and oil.satisfaction == 1 and oil.demand_w == 90000
   and oil.sources[1].kind == "solar" and oil.sources[1].count == 1 and oil.accumulators == nil
-  and oil.sustained_w == 42000 and oil.add_to_cover.solar_panel == 2 and oil.add_to_cover.accumulator > 0,
+  and oil.sustained_w == 42000 and oil.add_to_cover.solar.solar_panel == 2 and oil.add_to_cover.solar.accumulator > 0
+  and oil.add_to_cover.steam.steam_engine == 1,
   "a healthy remote solar network reports satisfaction 1 and what covers its day average")
 
 local function problem(status) return row(full.problems, "status", status) end

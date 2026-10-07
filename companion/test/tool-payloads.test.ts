@@ -349,7 +349,7 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     const handlers: Record<string, (args: any) => Promise<unknown>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { companion_exists: true, companion_ever_created: true, protocol_version: 28, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 1 }
+      ? { companion_exists: true, companion_ever_created: true, protocol_version: 29, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 1 }
       : method === "observe_local" ? { entities: [], resource_patches: [], ground_items: [] }
       : method === "queue_plan" ? { plan_id: 3 }
       : method === "plan_status" ? { plan_id: 3, status: "completed", outcomes: [] } : { ok: method });
@@ -448,25 +448,23 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     expect(schemas.factory_status.safeParse({ sections: ["validations"] }).success).toBe(false);
     await handlers.activity_log({ since_plan_id: 4 });
     expect(call).toHaveBeenLastCalledWith("activity_log", { since_plan_id: 4, limit: 16 });
-    // A layout or block dry run is a direct mod check; a real build is a one-step plan.
+    // A layout dry run is a direct mod check; a real build is a one-step plan.
     const layout = { anchor: { x: 1, y: 2 }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] };
     await handlers.build_layout({ ...layout, check_only: true });
     expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true }, undefined);
     expect(schemas.build_layout.safeParse({ entities: layout.entities }).success).toBe(false);
-    await handlers.build_block({ block: "smelting", count: 4, near: { x: 0, y: 0 }, check_only: true });
-    expect(call).toHaveBeenLastCalledWith("build_block", { block: "smelting", count: 4, near: { x: 0, y: 0 }, check_only: true }, undefined);
     call.mockClear();
     await handlers.build_layout(layout);
     await handlers.get_items({ item: "iron-plate", count: 20 });
     const queued = call.mock.calls.filter(([method]) => method === "queue_plan").map(([, params]) => (params as any).steps);
     expect(queued).toEqual([[{ action: "build_layout", ...layout }], [{ action: "get_items", item: "iron-plate", count: 20 }]]);
-    expect(Object.keys(handlers)).toHaveLength(52);
+    expect(Object.keys(handlers)).toHaveLength(51);
   });
 });
 
 describe("read-only FIFO state", () => {
   const fifoValue = (fifo: Record<string, unknown>) => ({ status: "completed", companion_exists: true, companion_ever_created: true,
-    protocol_version: 28, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 1,
+    protocol_version: 29, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 1,
     entities: [], resource_patches: [], ground_items: [], results: [], candidates: [], outcomes: [], steps: [], fifo });
   const args: Record<string, unknown> = {
     connect_status: {}, map_summary: {}, progression_status: {}, production_requirements: { targets: { "iron-plate": 1 } },
@@ -474,7 +472,6 @@ describe("read-only FIFO state", () => {
     plan_status: { plan_id: 7 }, can_place: { placements: [{ x: 1, y: 2, name: "transport-belt" }] },
     find_placement: { item: "transport-belt", preferred: { x: 0, y: 0 } },
     factory_status: {}, activity_log: {}, build_layout: { anchor: { x: 0, y: 0 }, entities: [{ name: "lab", dx: 0, dy: 0 }] },
-    build_block: { block: "labs", count: 1 },
     connect_entities: { kind: "belt", prototype: "transport-belt", from: { x: 0, y: 0 }, to: { x: 3, y: 0 } },
     blueprint_list: {}, blueprint_describe: { name: "smelter" }, blueprint_export: { name: "smelter" },
     blueprint_place: { name: "smelter", position: { x: 0, y: 0 } },
@@ -598,8 +595,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 28, mod_version: "0.28.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 28, mod_version: "0.28.0", tick: 2 })
+        ? { companion_dead: true, companion_exists: false, companion_ever_created: true, protocol_version: 29, mod_version: "0.28.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 29, mod_version: "0.28.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -608,13 +605,13 @@ describe("connect_status body lifecycle", () => {
   });
 
   it("rejects a stale mod before reporting connected", async () => {
-    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 28, mod_version: "0.6.0" });
+    const call = vi.fn().mockResolvedValue({ companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 29, mod_version: "0.6.0" });
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("mod version mismatch: mod v0.6.0, app v0.28.0");
     expect(call).toHaveBeenCalledTimes(1);
   });
 
   it("reports world-policy write failures from ping, and nothing when there are none", async () => {
-    const ping = { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 28, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 5 };
+    const ping = { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 29, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 5 };
     const failed = [{ tick: 4, surface: "vulcanus", write: "map_gen_settings", error: "denied" }];
     const withErrors = await connectStatus(async () => ({ call: vi.fn().mockResolvedValue({ ...ping, world_policy_errors: failed }) } as unknown as Bridge), validConfig);
     expect((withErrors.structuredContent as any).world_policy_errors).toEqual(failed);
@@ -626,8 +623,8 @@ describe("connect_status body lifecycle", () => {
     let pings = 0;
     const call = vi.fn(async (method: string) => method === "ping"
       ? (++pings === 1
-        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 28, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 1 }
-        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 28, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 2 })
+        ? { companion_dead: false, companion_exists: false, companion_ever_created: false, protocol_version: 29, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 1 }
+        : { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 29, mod_version: "0.28.0", factorio_version: "2.0.0", tick: 2 })
       : { name: "Codex", bound: true });
     const output = await connectStatus(async () => ({ call } as unknown as Bridge), validConfig);
     expect(output.isError).toBe(false);
@@ -637,7 +634,7 @@ describe("connect_status body lifecycle", () => {
 
   it("surfaces the bind-only no-player error without retrying or creating", async () => {
     const call = vi.fn()
-      .mockResolvedValueOnce({ protocol_version: 28, mod_version: "0.28.0", companion_exists: false, companion_ever_created: false, companion_dead: false })
+      .mockResolvedValueOnce({ protocol_version: 29, mod_version: "0.28.0", companion_exists: false, companion_ever_created: false, companion_dead: false })
       .mockRejectedValueOnce(new Error("native player 'Codex' is not connected with a living character"));
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("native player 'Codex' is not connected");
     expect(call.mock.calls).toEqual([["ping"], ["spawn_companion", {}]]);

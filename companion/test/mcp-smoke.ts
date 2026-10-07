@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const surface = process.env.MCP_SURFACE ?? "full";
-const readOnly = ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"];
+const readOnly = ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"];
 const expected = (surface === "read-only"
   ? readOnly
   : [...readOnly, "get_items","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","run_plan","start_research","stop",
@@ -55,7 +55,7 @@ try {
       "blueprint_capture", "blueprint_create", "blueprint_delete", "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings",
       "configure_entity", "set_requests", "create_platform", "launch_rocket", "set_platform_route", "travel"];
     if (forbidden.some((name) => names.includes(name))) throw new Error(`read-only surface exposed mutation: ${names}`);
-    for (const name of ["build_layout", "build_block", "connect_entities", "blueprint_place", "place_tiles"]) {
+    for (const name of ["build_layout", "connect_entities", "blueprint_place", "place_tiles"]) {
       const checkOnly = tools.find((tool: any) => tool.name === name)?.inputSchema?.properties?.check_only;
       if (checkOnly?.const !== true && JSON.stringify(checkOnly?.enum) !== "[true]") throw new Error(`read-only ${name} must be a dry run only: ${JSON.stringify(checkOnly)}`);
     }
@@ -65,7 +65,7 @@ try {
       if (!tools.find((tool: any) => tool.name === name)?.inputSchema?.properties?.surface) throw new Error(`read-only ${name} must read another surface`);
     }
     if (!tools.find((tool: any) => tool.name === "production_requirements")?.inputSchema?.properties?.planet) throw new Error("production_requirements must plan per planet");
-    console.log("PASS initialize, exact 22 read-only tools, dry-run-only layouts, routes, blueprint placements and tiles, platform reads, reads of every surface, no physical mutation surface");
+    console.log(`PASS initialize, exact ${names.length} read-only tools, dry-run-only layouts, routes, blueprint placements and tiles, platform reads, reads of every surface, no physical mutation surface`);
   } else {
   const placementTool = tools.find((tool: any) => tool.name === "find_placement");
   if (!/input_target, output_target, or output_recipient_item require cardinal directions only: 0, 4, 8, 12/.test(placementTool?.description ?? "")) throw new Error("find_placement must disclose the targeted cardinal constraint");
@@ -103,9 +103,10 @@ try {
   if (runPlanSchema.properties?.steps?.maxItems !== 200 || runPlanSchema.properties?.steps?.minItems !== 1) throw new Error("run_plan must accept 1-200 steps");
   if (runPlanSchema.properties?.final_observation_radius?.default !== 15 || runPlanSchema.properties?.observation_radius) throw new Error("run_plan must expose only final_observation_radius");
   const serializedSteps = JSON.stringify(runPlanSchema.properties?.steps);
-  for (const action of ["wait_for_research", "get_items", "build_layout", "build_block", "explore", "move_entity", "blueprint_place",
+  for (const action of ["wait_for_research", "get_items", "build_layout", "explore", "move_entity", "blueprint_place",
     "build_ghosts", "deconstruct_area", "upgrade_area", "copy_settings", "configure_entity", "flush_fluid", "place_tiles", "set_requests", "equip", "create_platform", "launch_rocket", "set_platform_route", "travel"]) if (!serializedSteps.includes(`\"const\":\"${action}\"`)) throw new Error(`run_plan must expose ${action}`);
   if (serializedSteps.includes('"const":"blueprint_capture"')) throw new Error("blueprint_capture is a package step, never a plan step");
+  if (serializedSteps.includes('"const":"build_block"') || names.includes("build_block")) throw new Error("build_block is gone: the bots design their own layouts");
   const craftSchema = tools.find((tool: any) => tool.name === "craft_items")?.inputSchema?.properties ?? {};
   if (craftSchema.wait_for_completion?.default !== undefined) throw new Error("craft_items must not wait for completion by default");
   const routeSchema = tools.find((tool: any) => tool.name === "connect_entities")?.inputSchema?.properties ?? {};
@@ -145,7 +146,7 @@ try {
   const route = JSON.stringify(tools.find((tool: any) => tool.name === "set_platform_route")?.inputSchema ?? {});
   if (!route.includes('"all_requests_satisfied"') || !route.includes('"go_to"') || !route.includes('"paused"')) throw new Error("set_platform_route must take stops with wait conditions, go_to and paused");
   if (!tools.find((tool: any) => tool.name === "queue_plan")?.inputSchema?.properties?.surface) throw new Error("queue_plan must take surface");
-  console.log("PASS initialize, exact 52 tools, Lua-parity schemas, platform parameters, trips and routes, forbidden-schema scan, actionable offline status");
+  console.log(`PASS initialize, exact ${names.length} tools, Lua-parity schemas, platform parameters, trips and routes, forbidden-schema scan, actionable offline status`);
   }
 } finally {
   child.kill();

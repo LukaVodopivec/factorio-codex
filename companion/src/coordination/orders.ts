@@ -191,7 +191,7 @@ const changesGround = (step: { action: string }) =>
 const changesGroundIn = (entry: BuildPackage | undefined) => entry?.steps.some(changesGround) === true;
 
 /** The mod's own placement check for one package; a reason when it fails,
- *  also when its first step is a block, layout or blueprint that needs an
+ *  also when its first step is a layout or blueprint that needs an
  *  item the body can neither carry nor obtain now (ITEM_UNOBTAINABLE).
  *  Only steps before the first one that changes the ground (place_tiles,
  *  mine, deconstruct_area, move_entity) are checked against the map: a
@@ -233,7 +233,7 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
         }
         continue;
       }
-      if (step.action !== "build_layout" && step.action !== "build_block") continue;
+      if (step.action !== "build_layout") continue;
       const { action, ...params } = step;
       const checked = await bridge.call<{ failed?: unknown }>(action, { ...params, check_only: true });
       const failed = (luaArray(checked?.failed ?? []) as Array<{ code?: string; reason?: string }>)

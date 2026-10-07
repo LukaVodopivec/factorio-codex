@@ -119,16 +119,6 @@ export const layoutFields = {
   connections: z.array(z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string().min(1),
     from: offset, to: offset, underground: z.union([z.string().min(1), z.literal(false)]).optional() }).strict()).max(32).optional(),
 };
-/** Parametric block expanded by the mod into a layout (build_block); a
- *  blueprint block is a stored blueprint. */
-export const blockFields = {
-  block: z.enum(["mining", "smelting", "assembly", "power", "labs", "blueprint"]),
-  count: z.number().int().min(1).max(24).optional(),
-  resource: z.string().min(1).optional(),
-  recipe: z.string().min(1).optional(),
-  blueprint: blueprintName.optional(),
-  near: point.optional(),
-};
 /** An area {left_top, right_bottom}, or center with radius (at most 64 x 64 tiles). */
 export const areaFields = {
   area: z.object({ left_top: point, right_bottom: point }).strict().optional(),
@@ -222,7 +212,6 @@ const planSteps = [
   z.object({ action: z.literal("wait_for_research"), technology: z.string().min(1), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("get_items"), item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
   z.object({ action: z.literal("build_layout"), ...layoutFields }).strict(),
-  z.object({ action: z.literal("build_block"), ...blockFields }).strict(),
   z.object({ action: z.literal("explore"), ...exploreFields }).strict(),
   z.object({ action: z.literal("move_entity"), ...moveEntityFields }).strict(),
   z.object({ action: z.literal("blueprint_place"), ...blueprintPlaceFields }).strict(),
@@ -263,11 +252,6 @@ export function insertIssue(value: { x?: number; y?: number; targets?: unknown; 
     if (value.per_target !== undefined) return "per_target goes with targets; use items for one position";
   } else if (value.x !== undefined || value.y !== undefined) return "give x and y, or targets, not both";
   return null;
-}
-export function blockIssue(value: { block: string; count?: number; blueprint?: string }): string | null {
-  if (value.block === "blueprint") return value.blueprint === undefined ? "a blueprint block names its blueprint" : null;
-  if (value.blueprint !== undefined) return "blueprint goes with block: \"blueprint\"";
-  return value.count === undefined ? `a ${value.block} block needs count` : null;
 }
 export function tilesIssue(value: { area?: unknown; positions?: unknown }): string | null {
   return (value.area === undefined) === (value.positions === undefined)
@@ -337,7 +321,6 @@ export function stepIssue(step: PackageStep): string | null {
     case "walk_to": return step.arrival_mode === "exact" && step.arrival_radius !== 1
       ? "exact arrival uses the fixed 1-tile tolerance; use vicinity for a wider radius" : null;
     case "build_layout": return layoutIssue(step);
-    case "build_block": return blockIssue(step);
     case "insert_items": return insertIssue(step);
     case "build_ghosts": case "upgrade_area": case "blueprint_capture": return areaIssue(step);
     case "deconstruct_area": return deconstructIssue(step);
@@ -442,7 +425,7 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
       if (budget.remaining() <= 0) {
         // The call returns before the MCP timeout but never cancels: the mod
         // owns the plan's active budget (up to 12 s per step, so a large
-        // build_layout or build_block may run well past 570 s). Report the
+        // build_layout may run well past 570 s). Report the
         // latest read, not the plan's sticky hold marker.
         const { human_control: _sticky, ...latest } = status;
         return { ...latest, ...(budget.holding ? { human_control: true } : {}),

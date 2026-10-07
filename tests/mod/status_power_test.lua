@@ -198,8 +198,10 @@ check(noon.capacity_w == 1200000 and noon.sustained_w == 840000 and noon.headroo
   and noon.night_s == 125 and noon.production_w == 600000 and noon.sources[1].kind == "solar"
   and noon.accumulators.charge == 0.5 and noon.accumulators.stored_j == 25000000,
   "at noon solar capacity is the nameplate; the day average is 70 % on Nauvis defaults")
-check(noon.add_to_cover.solar_panel == 9 and noon.add_to_cover.steam_engine == nil,
-  "a short solar network asks for the panels that cover its day average")
+local steam_way = noon.add_to_cover.steam
+check(noon.add_to_cover.solar.solar_panel == 9 and steam_way.steam_engine == 1 and steam_way.boiler == 1
+  and steam_way.offshore_pump == 1,
+  "a short solar network reports both ways: the panels that cover its day average, and the steam engines, boiler and pump")
 -- The night: 29 panels give 1.74 MW peak; integrate the 1.2 MW demand they
 -- cannot carry over 100 light samples of a 25,000-tick day.
 local expected_j = 0
@@ -209,8 +211,8 @@ for i = 1, 100 do
   elseif t > 0.55 and t < 0.75 then light = (t - 0.55) / 0.2 end
   expected_j = expected_j + math.max(0, 1200000 - 1740000 * light) * (25000 / 60 / 100)
 end
-check(noon.add_to_cover.accumulator == math.ceil(expected_j / 5000000) - 10,
-  "accumulators carry the night deficit of the covering panels (" .. noon.add_to_cover.accumulator .. " more)")
+check(noon.add_to_cover.solar.accumulator == math.ceil(expected_j / 5000000) - 10,
+  "accumulators carry the night deficit of the covering panels (" .. noon.add_to_cover.solar.accumulator .. " more)")
 surface_values.daytime = 0.5
 local midnight = row_for(3)
 check(midnight.capacity_w == 0 and midnight.sustained_w == 840000, "at midnight solar capacity is zero, its average unchanged")
@@ -244,12 +246,18 @@ flow_reads, surface_reads = 0, 0
 local rows_all, omitted = map_summary.build_power(surface, 1)
 local steam = rows_all[1]
 check(#rows_all == 1 and omitted == 1 and steam.network_id == 4 and steam.demand_w == 5400000
-  and steam.satisfaction == 0.167 and steam.add_to_cover.steam_engine == 5 and steam.add_to_cover.solar_panel == nil
+  and steam.satisfaction == 0.167 and steam.add_to_cover.steam.steam_engine == 5 and steam.add_to_cover.steam.boiler == 3
+  and steam.add_to_cover.steam.offshore_pump == 1 and steam.add_to_cover.solar.solar_panel == math.ceil(4500000 / 42000)
   and steam.sources[1].kind == "steam" and steam.sources[1].production_w == 900000,
-  "a starved steam network asks for steam engines; the limit keeps the largest network")
+  "a starved steam network reports steam engines (a boiler per two, a pump) and the solar panels that would cover it")
 check(flow_reads == 1 and surface_reads <= 8,
   "rows read one statistics row per output name of each kept network and a few surface attributes ("
     .. flow_reads .. " flow, " .. surface_reads .. " surface reads)")
+surface_values.power = 0
+local sunless = map_summary.build_power(surface, 1)[1]
+surface_values.power = nil
+check(sunless.add_to_cover.steam.steam_engine == 5 and sunless.add_to_cover.solar == nil,
+  "where the sun gives no power only the steam way is reported")
 
 -- A turbine (steam above 165 degrees) is nuclear.
 check(registry.power_kind("steam-engine") == "steam", "a steam engine is steam power")

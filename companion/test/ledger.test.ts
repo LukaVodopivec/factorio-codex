@@ -267,7 +267,7 @@ describe("build packages the bridge queues", () => {
   it("accepts goal-level packages of any plan action, up to 200 steps", () => {
     const blocks = { ...drillPair(), steps: [
       { action: "get_items", item: "stone-furnace", count: 8 },
-      { action: "build_block", block: "smelting", count: 8, near: { x: 40, y: -30 } },
+      { action: "build_layout", site: { near: { x: 40, y: -30 } }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] },
       { action: "build_layout", anchor: { x: 40, y: -40 }, entities: [{ name: "burner-mining-drill", dx: 0, dy: 0, direction: 8 }] },
       { action: "walk_to", x: 1, y: 2 }, { action: "craft_items", recipe: "iron-chest", crafts: 2 },
       { action: "mine", x: 48, y: -30 }] };
@@ -297,7 +297,6 @@ describe("build packages the bridge queues", () => {
     const capture = { action: "blueprint_capture", name: "smelter", center: { x: 40, y: -30 }, radius: 8 };
     const steps = [capture,
       { action: "blueprint_place", name: "smelter", position: { x: 80, y: -30 }, direction: 4 },
-      { action: "build_block", block: "blueprint", blueprint: "smelter", near: { x: 90, y: -30 } },
       { action: "move_entity", from: { x: 1.5, y: 1.5 }, to: { x: 4.5, y: 1.5 } },
       { action: "insert_items", targets: { name: "stone-furnace", near: { x: 80, y: -30 }, radius: 12 }, per_target: { coal: 5 } },
       { action: "explore", resource: "crude-oil", max_distance: 600 },
@@ -309,7 +308,7 @@ describe("build packages the bridge queues", () => {
     const cases: Array<[unknown[], string]> = [
       [[steps[1], capture], "blueprint_capture steps come first"],
       [[{ ...capture, radius: undefined }], "center and radius go together"],
-      [[{ action: "build_block", block: "blueprint" }], "names its blueprint"],
+      [[{ action: "build_block", block: "blueprint", blueprint: "smelter", near: { x: 90, y: -30 } }], "build_packages.0.steps.0"],
       [[{ action: "insert_items", x: 1, y: 2, items: { coal: 1 }, per_target: { coal: 1 } }], "items or per_target"],
     ];
     for (const [bad, text] of cases) {

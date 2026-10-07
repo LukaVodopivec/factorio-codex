@@ -5,7 +5,7 @@
 -- deconstruct_area by hand (nearest first, stops on a full inventory), by
 -- robot orders in bounded batches, and cancelled; upgrade_area by hand
 -- fast-replace (same footprint only, recipe kept) and by robot orders;
--- copy_settings within reach; build_block naming a blueprint.
+-- copy_settings within reach.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
@@ -91,7 +91,7 @@ surface = {
   can_place_entity = function(args)
     local area = geometry.footprint(entities[args.name], args.position, args.direction)
     for _, e in ipairs(live()) do
-      if e.type ~= "entity-ghost" and geometry.overlaps(area, e.bounding_box) then return false end
+      if e.type ~= "entity-ghost" and e.type ~= "resource" and geometry.overlaps(area, e.bounding_box) then return false end
     end
     return true
   end,
@@ -167,7 +167,6 @@ local blueprints = require("scripts.blueprints")
 local area_ops = require("scripts.actions.area_ops")
 local supply = require("scripts.actions.supply")
 local jobs = require("scripts.jobs")
-local layout = require("scripts.actions.build_layout")
 
 local function run(spec, step, max_ticks)
   local task = spec.make_task(step)
@@ -192,8 +191,16 @@ stored.entities[2].use_filters, stored.entities[2].filters = true, { { index = 1
 inventory["assembling-machine-1"], inventory.inserter = 2, 2
 
 local check_ok = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true })
-check(check_ok.ok and #check_ok.collisions == 0 and #check_ok.missing == 0 and check_ok.tool_unlock.tool == "blueprint",
-  "the dry run on free ground reports no collisions and nothing missing")
+check(check_ok.ok and #check_ok.collisions == 0 and #check_ok.missing == 0 and check_ok.tool_unlock.tool == "blueprint"
+  and check_ok.on_ore == nil, "the dry run on free ground reports no collisions, nothing missing and no ore")
+-- It also reports what would stand on ore, as build_layout's dry run does,
+-- and only the blueprint's survey rows.
+local ore = spawn("iron-ore", { x = 9.5, y = 10.5 })
+local over_ore = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true })
+ore.valid = false
+check(over_ore.ok and over_ore.on_ore and #over_ore.on_ore == 1 and over_ore.on_ore[1].name == "assembling-machine-1"
+  and over_ore.on_ore[1].ore["iron-ore"] == 1 and over_ore.inserters == nil and over_ore.unpowered == nil,
+  "a blueprint dry run reports the ore tile under its machine as on_ore")
 inventory.inserter = 0
 local no_arm = jobs.run_now(area_ops.place_check_job, { name = "gears", position = { x = 10, y = 10 }, check_only = true })
 inventory.inserter = 2
@@ -273,23 +280,12 @@ stored.entities[1].wires = { { 1, 1, 2, 1 } }
 local before_hand = #created
 check(not pcall(run, area_ops.place_action, { name = "gears", position = { x = 55, y = 30 } }) and #created == before_hand,
   "hand blueprint placement refuses native wiring before building instead of dropping it")
-check(not pcall(run, layout.block_action, { block = "blueprint", blueprint = "gears", near = { x = 55, y = 30 } })
-  and #created == before_hand,
-  "the physical blueprint block entry point applies the same wiring refusal before spending body stock")
 stored.entities[1].wires = nil
 stored.entities[1].items = { { id = { name = "speed-module", quality = "uncommon" },
   items = { in_inventory = { { inventory = 4, stack = 0, count = 1 } } } } }
 check(not pcall(run, area_ops.place_action, { name = "gears", position = { x = 55, y = 30 } }) and #created == before_hand,
   "hand blueprint placement refuses qualified item requests before spending normal body stock")
-check(not pcall(jobs.run_now, layout.block_check_job, { block = "blueprint", blueprint = "gears",
-  near = { x = 55, y = 30 }, check_only = true }) and #created == before_hand,
-  "blueprint block dry run and physical action share qualified item-request refusal")
 stored.entities[1].items = nil
-
--- build_block may name a blueprint.
-local block = jobs.run_now(layout.block_check_job, { block = "blueprint", blueprint = "gears", near = { x = 60, y = 60 }, check_only = true })
-check(block.ok and #block.placed == 2 and block.tiers.blueprint == "gears", "build_block builds a stored blueprint at a free site")
-check(not pcall(require("scripts.blocks").validate, { block = "blueprint" }), "a blueprint block needs the blueprint's name")
 
 -- ------------------------------------------------------------ build_ghosts
 

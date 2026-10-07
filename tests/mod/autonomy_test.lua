@@ -320,9 +320,10 @@ local summary_stub = {
     power_reads[#power_reads + 1] = { surface = target, limit = limit }
     return { { network_id = 7, satisfaction = 0.5, production_w = 900000, capacity_w = 900000, demand_w = 1800000,
       sustained_w = 900000, headroom_w = -900000, sources = { { kind = "steam", count = 1, nameplate_w = 900000, production_w = 900000 } },
-      night_s = 125, add_to_cover = { steam_engine = 1 } } }, 0
+      night_s = 125, add_to_cover = { steam = { steam_engine = 1, boiler = 1, offshore_pump = 1 } } } }, 0
   end,
-  patches = function() return { { name = "iron-ore", amount = 5000, tiles = 20, centroid = { x = 30, y = 40 } } } end,
+  patches = function() return { { name = "iron-ore", amount = 5000, tiles = 20, centroid = { x = 30, y = 40 },
+    bbox = { left_top = { x = 26, y = 37 }, right_bottom = { x = 34, y = 43 } } } } end,
 }
 package.loaded["scripts.map_summary"] = summary_stub
 storage.registry.entries[9001] = { unit = 9001, name = "wooden-chest", type = "container", position = { x = 1, y = 1 }, surface = 1 }
@@ -361,7 +362,7 @@ storage.tasks.last_plan_ended = { plan_id = 3, status = "completed", tick = 10 }
 local factory_status = require("scripts.factory_status")
 game.tick = game.tick + 30
 local status = factory_status.factory_status({})
-check(status.tick == game.tick and type(status.lines) == "table" and status.power[1].add_to_cover.steam_engine == 1
+check(status.tick == game.tick and type(status.lines) == "table" and status.power[1].add_to_cover.steam.steam_engine == 1
   and power_reads[1].surface == surface and power_reads[1].limit == 1 and status.omitted_power == nil
   and status.stock[1].item == "coal" and status.stock[1].total == 50 and #status.stock == 1
   and #status.stock[1].holders == 1 and status.stock[1].holders[1].kind == "chest" and status.stock[1].holders[1].count == 40
@@ -372,6 +373,9 @@ check(status.tick == game.tick and type(status.lines) == "table" and status.powe
   and status.body.inventory_summary["iron-plate"] == 9 and status.body.human_control == false
   and status.patches[1].name == "iron-ore" and status.patches[1].distance == 50,
   "factory_status composes lines, problems, power, stock, research, body and patches")
+local outline = status.patches[1].bbox
+check(outline and outline.left_top.x == 26 and outline.left_top.y == 37 and outline.right_bottom.x == 34
+  and outline.right_bottom.y == 43, "each factory_status patch row carries its outline (bbox) from the patch cache")
 check(#status.research.available == 1 and technology_walks == 1,
   "available research is enabled, unresearched, with every prerequisite done and no trigger")
 defines.events = defines.events or {}
@@ -466,7 +470,8 @@ check(factory_status.event_state().last_cancel_all_tick == 450, "event_state car
 storage.tasks.last_cancel_all_tick = nil
 
 -- Cost and size at 200 machines: about seven machine samples a tick, no
--- entity query, and a status read under 6 KB.
+-- entity query, and a status read under 7 KB (patch outlines and both
+-- ways to cover a power deficit took it past 6 KB).
 _G.storage = {}
 state.init()
 storage.registry.ready = true
@@ -572,7 +577,8 @@ summary_stub.build_power = function(_, limit)
   for i = 1, limit do rows[i] = { network_id = 1000 + i, satisfaction = 0.123, production_w = 123456789,
     capacity_w = 987654321 - i, demand_w = 1234567890, sustained_w = 987654321, headroom_w = -246913569,
     night_s = 124.9, sources = {}, accumulators = { count = 9999, stored_j = 49995000000, capacity_j = 49995000000, charge = 0.999 },
-    add_to_cover = { solar_panel = 99999, accumulator = 99999 } }
+    add_to_cover = { steam = { steam_engine = 99999, boiler = 99999, offshore_pump = 99999 },
+      solar = { solar_panel = 99999, accumulator = 99999 } } }
     for _, kind in ipairs({ "nuclear", "solar", "steam" }) do
       rows[i].sources[#rows[i].sources + 1] = { kind = kind, count = 9999, nameplate_w = 987654321, production_w = 123456789 }
     end
@@ -581,7 +587,8 @@ summary_stub.build_power = function(_, limit)
 end
 summary_stub.patches = function()
   local rows = {}
-  for i = 1, 20 do rows[i] = { name = long(i), amount = 123456789, tiles = 9999, centroid = { x = -1234.5, y = 1234.5 } } end
+  for i = 1, 20 do rows[i] = { name = long(i), amount = 123456789, tiles = 9999, centroid = { x = -1234.5, y = 1234.5 },
+    bbox = { left_top = { x = -12345, y = 12340 }, right_bottom = { x = -12330, y = 12355 } } } end
   return rows, true
 end
 local many_technologies = {}
@@ -607,7 +614,7 @@ check(full.omitted_lines and full.omitted_lines > 0 and full.omitted_problems an
   and full.body.inventory_omitted, "the worst-case read fills every section past its cap")
 check(starved_line and starved_line.id == max_id and full.lines[#full.lines].state ~= "running" or false,
   "lines needing attention come first, so a starved line with the highest id survives the cap")
-check(json_size < 6144, "a worst-case factory_status at 200 machines stays under 6 KB (" .. json_size .. " bytes)")
+check(json_size < 7168, "a worst-case factory_status at 200 machines stays under 7 KB (" .. json_size .. " bytes)")
 
 -- A machine mined while a refresh is still identifying the snapshot is left
 -- out; the refresh completes and the removal's dirty mark is kept.

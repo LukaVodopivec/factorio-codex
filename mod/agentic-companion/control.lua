@@ -88,7 +88,7 @@ local BODY_EXISTS = { on_surface = true, aboard_platform = true, in_transit = tr
 rpc.register("ping", read(function()
   local exists = BODY_EXISTS[companion.body().state] == true
   return {
-    protocol_version = 28,
+    protocol_version = 29,
     mod_version = script.active_mods["agentic-companion"],
     factorio_version = script.active_mods["base"],
     tick = game.tick,
@@ -105,13 +105,12 @@ rpc.register("spawn_companion", companion.connect)
 -- Heavy reads are jobs (jobs.lua): the RPC answers at once with the result
 -- when it fits what is left of this tick's work, else with {job_id,
 -- job_status = "pending"}; get_job {job_id} then returns it once done.
--- build_layout/build_block over RPC are check_only dry runs; the builds
--- themselves are plan steps.
+-- build_layout over RPC is a check_only dry run; the build itself is a plan
+-- step.
 jobs.register("observe_local", spatial.observe_job)
 jobs.register("map_summary", map_summary.summary_job)
 jobs.register("connect_entities", connect_entities.job)
 jobs.register("build_layout", build_layout.layout_check_job)
-jobs.register("build_block", build_layout.block_check_job)
 -- Blueprints (blueprints.lua): capture and describe read up to a blueprint's
 -- worth of entities; blueprint_place over RPC is its check_only dry run.
 jobs.register("blueprint_capture", blueprints.capture_job)
@@ -130,7 +129,7 @@ jobs.register("run_snapshot", run_snapshot.job)
 rpc.register("run_snapshot", jobs.rpc("run_snapshot"))
 rpc.register("benchmark_control", benchmark.control)
 rpc.register("timelapse", timelapse.rpc)
-for _, kind in ipairs({ "observe_local", "inspect", "map_summary", "connect_entities", "build_layout", "build_block",
+for _, kind in ipairs({ "observe_local", "inspect", "map_summary", "connect_entities", "build_layout",
   "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status" }) do
   rpc.register(kind, read(jobs.rpc(kind)))
 end

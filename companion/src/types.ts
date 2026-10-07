@@ -73,8 +73,10 @@ export interface PowerRow {
   sources: Array<{ kind: "steam" | "solar" | "burner" | "nuclear" | "other"; count: number; nameplate_w: number; production_w?: number }>;
   accumulators: { count: number; stored_j: number; capacity_j: number; charge: number } | null;
   night_s?: number;
-  /** Only while sustained_w < demand_w. */
-  add_to_cover?: { steam_engine?: number; solar_panel?: number; accumulator?: number };
+  /** Only while sustained_w < demand_w: both ways to cover the deficit; solar
+   *  only where the sun gives power. The bot chooses. */
+  add_to_cover?: { steam: { steam_engine: number; boiler: number; offshore_pump: number };
+    solar?: { solar_panel: number; accumulator?: number } };
 }
 export type LineState = "running" | "starved" | "output_full" | "depleted" | "no_fuel" | "no_power" | "no_heat" | "frozen" | "disabled" | "idle";
 export interface FactoryLine {

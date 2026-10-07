@@ -219,7 +219,7 @@ replacement.
 
 ## MCP tools
 
-The full surface has 52 tools; the read-only surface used by the strategist has 22.
+The full surface has 51 tools; the read-only surface used by the strategist has 21.
 Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
 `idle_seconds`, `human_control`). Heavy reads (`map_summary`, a full
 `observe_local`, route and site searches, dry runs, blueprint capture and

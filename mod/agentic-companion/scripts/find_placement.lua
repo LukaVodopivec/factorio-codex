@@ -334,9 +334,9 @@ local function search_start(params)
     buckets = {}, band = 0, index = 0,
     rejections = {}, closest_rejected = nil, evaluated = 0, truncated = false, engine_calls = 0,
     candidates = {}, rejected_no_compatible_resource = 0, category_by_name = {}, finished = 0,
-    -- Positions are visited in final order for every entity except drills,
-    -- which rank useful coverage first among the nearest valid positions found.
-    wanted = mining_radius(proto) and math.min(limit * 2, 48) or limit,
+    -- Positions are visited in final order (nearest first) for every
+    -- entity; a drill's resource coverage is data on its candidate.
+    wanted = limit,
   }
 end
 
@@ -533,32 +533,19 @@ local function search(S, X, c, budget)
   return false
 end
 
-local function rank(proto)
-  return function(a, b)
-    if proto.type == "mining-drill" then
-      local function coverage(candidate)
-        local amount, count = 0, 0
-        for _, row in ipairs(candidate.resource_coverage or {}) do
-          amount, count = amount + (row.total_amount or 0), count + (row.entity_count or 0)
-        end
-        return amount, count
-      end
-      local aa, ac = coverage(a); local ba, bc = coverage(b)
-      if aa ~= ba then return aa > ba end
-      if ac ~= bc then return ac > bc end
-    end
-    if a.distance ~= b.distance then return a.distance < b.distance end
-    if a.position.y ~= b.position.y then return a.position.y < b.position.y end
-    if a.position.x ~= b.position.x then return a.position.x < b.position.x end
-    return a.direction < b.direction
-  end
+-- Nearest first for every type: the bot weighs a drill's resource coverage.
+local function rank(a, b)
+  if a.distance ~= b.distance then return a.distance < b.distance end
+  if a.position.y ~= b.position.y then return a.position.y < b.position.y end
+  if a.position.x ~= b.position.x then return a.position.x < b.position.x end
+  return a.direction < b.direction
 end
 
 -- Terrain and fluid detail only for returned candidates, one a slice: a
 -- candidate's terrain reads its footprint's tiles and their chart.
 local function detail_candidates(S, X, c, budget)
   if S.finished == 0 then
-    table.sort(S.candidates, rank(X.proto))
+    table.sort(S.candidates, rank)
     while #S.candidates > S.limit do table.remove(S.candidates) end
   end
   while S.finished < #S.candidates do

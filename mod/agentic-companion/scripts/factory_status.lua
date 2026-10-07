@@ -161,7 +161,11 @@ local function patches_section(index, from)
   local cached, ready = map_summary.patches(index)
   local rows = {}
   for _, patch in ipairs(cached) do
-    local row = { name = patch.name, amount = patch.amount, tiles = patch.tiles, position = patch.centroid }
+    -- bbox: the patch's outline, so a site beside it can be chosen off the ore.
+    local box = patch.bbox
+    local row = { name = patch.name, amount = patch.amount, tiles = patch.tiles, position = patch.centroid,
+      bbox = box and { left_top = { x = box.left_top.x, y = box.left_top.y },
+        right_bottom = { x = box.right_bottom.x, y = box.right_bottom.y } } or nil }
     if from then
       local dx, dy = patch.centroid.x - from.x, patch.centroid.y - from.y
       row.distance = math.floor(math.sqrt(dx * dx + dy * dy) + 0.5)

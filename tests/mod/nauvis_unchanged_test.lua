@@ -262,6 +262,14 @@ for _, row in ipairs(status.lines or {}) do
   end
 end
 check(degraded_rows == 1, "exactly one line is degraded")
+-- Additive: each patch row carries the cache's outline.
+local outlined = #(status.patches or {}) > 0
+for _, row in ipairs(status.patches or {}) do
+  if not (row.bbox and row.bbox.left_top.x <= row.position.x and row.bbox.right_bottom.x >= row.position.x
+    and row.bbox.left_top.y <= row.position.y and row.bbox.right_bottom.y >= row.position.y) then outlined = false end
+  row.bbox = nil
+end
+check(outlined, "every factory_status patch row carries an outline around its centre")
 measured.status = text(status)
 -- 7. map_summary with every section, as one job.
 before = snapshot()

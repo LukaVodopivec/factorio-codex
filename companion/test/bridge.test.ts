@@ -282,13 +282,13 @@ describe("Bridge.call for reads the game runs as jobs", () => {
     const forgets: string[] = [];
     const slow = fakeRcon((cmd) => {
       if (cmd.includes("forget")) { forgets.push(cmd); return ok({ job_id: 8, forgotten: true }); }
-      return cmd.includes('"get_job"') ? ok({ job_id: 8, job_status: "pending" }) : pending(8, "build_block");
+      return cmd.includes('"get_job"') ? ok({ job_id: 8, job_status: "pending" }) : pending(8, "build_layout");
     });
     const time = fakeClock();
-    const late = await new Bridge(slow.rcon, time.clock).call("build_block", { check_only: true }).catch((e: unknown) => e);
+    const late = await new Bridge(slow.rcon, time.clock).call("build_layout", { check_only: true }).catch((e: unknown) => e);
     expect(late).toBeInstanceOf(JobBusyError);
     expect(late).not.toBeInstanceOf(ModError);
-    expect((late as Error).message).toMatch(/build_block was still being computed in the game after 120 s \(job 8, now dropped\)/);
+    expect((late as Error).message).toMatch(/build_layout was still being computed in the game after 120 s \(job 8, now dropped\)/);
     expect(time.sleeps.reduce((total, ms) => total + ms, 0)).toBeGreaterThanOrEqual(JOB_TIMEOUT_MS);
     // The timed-out job gives its slot back.
     expect(forgets).toEqual([`/silent-command remote.call("agentic","rpc","get_job","${escapeLuaString('{"job_id":8,"forget":true}')}")`]);

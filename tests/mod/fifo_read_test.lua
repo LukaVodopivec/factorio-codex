@@ -80,9 +80,9 @@ end
 check(all_idle, "every read-only RPC carries fifo {queue_depth=0, idle_seconds=45} without an extra call")
 check(#reads == #READS - 1, "fifo decoration adds no handler call beyond the read itself")
 local pinged = call("ping")
-check(pinged.protocol_version == 28 and pinged.body.state == "on_surface" and pinged.body.surface_ref == "nauvis"
+check(pinged.protocol_version == 29 and pinged.body.state == "on_surface" and pinged.body.surface_ref == "nauvis"
   and call("plan_status").fifo.body.surface_ref == "nauvis",
-  "ping (protocol 28) and every fifo block name the body's state and surface")
+  "ping (protocol 29) and every fifo block name the body's state and surface")
 body_state = "aboard_platform"
 local away = call("ping")
 body_state = "dead"

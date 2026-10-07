@@ -1624,15 +1624,20 @@ end
 --                  nameplate_w and the production_w the statistics name
 --   accumulators   count, stored_j, capacity_j, charge (or nil)
 --   night_s        dark seconds a day on this surface (planets)
---   add_to_cover   only while sustained_w < demand_w: steam engines for a
---                  steam network, else solar panels for the average and the
---                  accumulators that carry the night deficit of those panels
+--   add_to_cover   only while sustained_w < demand_w, both ways to cover the
+--                  deficit (the bot chooses): steam {steam_engine, boiler,
+--                  offshore_pump} and, where the sun gives power, solar
+--                  {solar_panel, accumulator?}: panels for the day average
+--                  and the accumulators that carry the night deficit of the
+--                  network's panels with the added ones
 -- The solar factor is the surface's "solar-power" property / 100 times its
 -- solar_power_multiplier. Light (daytime 0 is noon) is full outside
 -- dusk..dawn, falls linearly from dusk to evening, is zero to morning and
 -- rises to dawn; always_day is full light. On a platform surface solar
 -- capacity is its measured production and there is no day average.
-local STEAM_ENGINE_WATTS = 900000
+-- Base steam defaults: an engine's 900 kW, a boiler's 1.8 MW (two engines),
+-- and the 20 boilers an offshore pump's 1200 water/s feeds at 60/s each.
+local STEAM = { engine_w = 900000, boiler_w = 1800000, boilers_per_pump = 20 }
 local ACCUMULATOR_JOULES = 5000000
 local LIGHT_SAMPLES = 100
 
@@ -1747,28 +1752,34 @@ local function satisfaction_of(net, production_w)
   return 0
 end
 
+-- Both ways to cover the deficit, as counts: the bot picks one. Solar is
+-- left out where the sun gives no power.
 local function cover(row, net, env, solar_w, other_w)
   local deficit = row.demand_w - row.sustained_w
+  local engine_w = prototype_watts("steam-engine", STEAM.engine_w)
+  local ok, boiler_w = pcall(function() return prototypes.entity.boiler.get_max_energy_usage("normal") * 60 end)
+  if not (ok and type(boiler_w) == "number" and boiler_w > 0) then boiler_w = STEAM.boiler_w end
+  local engines = math.ceil(deficit / engine_w)
+  local boilers = math.ceil(engines * engine_w / boiler_w)
+  local out = { steam = { steam_engine = engines, boiler = boilers, offshore_pump = math.ceil(boilers / STEAM.boilers_per_pump) } }
   local solar = net.sources.solar
-  if (solar and solar.count > 0) or other_w == 0 then
-    local panel_w = solar and solar.count > 0 and solar.nameplate_w / solar.count or prototype_watts("solar-panel", 60000)
-    local per_panel = panel_w * env.factor * env.average
-    if per_panel <= 0 then return nil end
-    local panels = math.ceil(deficit / per_panel)
-    -- The night: energy the panels (with the added ones) cannot give,
-    -- integrated over the day's light samples.
-    local peak = (solar_w + panels * panel_w) * env.factor
-    local seconds = env.ticks_per_day / 60 / LIGHT_SAMPLES
-    local short_j = 0
-    for _, light in ipairs(env.light) do
-      short_j = short_j + math.max(0, row.demand_w - other_w - peak * light) * seconds
-    end
-    local stored = net.accumulators
-    local buffer = stored.count > 0 and stored.capacity_j / stored.count or prototype_buffer("accumulator")
-    local accumulators = math.ceil(short_j / buffer) - stored.count
-    return { solar_panel = panels, accumulator = accumulators > 0 and accumulators or nil }
+  local panel_w = solar and solar.count > 0 and solar.nameplate_w / solar.count or prototype_watts("solar-panel", 60000)
+  local per_panel = panel_w * env.factor * env.average
+  if per_panel <= 0 then return out end
+  local panels = math.ceil(deficit / per_panel)
+  -- The night: energy the panels (with the added ones) cannot give,
+  -- integrated over the day's light samples.
+  local peak = (solar_w + panels * panel_w) * env.factor
+  local seconds = env.ticks_per_day / 60 / LIGHT_SAMPLES
+  local short_j = 0
+  for _, light in ipairs(env.light) do
+    short_j = short_j + math.max(0, row.demand_w - other_w - peak * light) * seconds
   end
-  return { steam_engine = math.ceil(deficit / prototype_watts("steam-engine", STEAM_ENGINE_WATTS)) }
+  local stored = net.accumulators
+  local buffer = stored.count > 0 and stored.capacity_j / stored.count or prototype_buffer("accumulator")
+  local accumulators = math.ceil(short_j / buffer) - stored.count
+  out.solar = { solar_panel = panels, accumulator = accumulators > 0 and accumulators or nil }
+  return out
 end
 
 -- Rows for a surface's networks, most capacity first, at most `limit`, and

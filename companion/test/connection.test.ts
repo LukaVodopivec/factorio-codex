@@ -42,7 +42,7 @@ describe("lazy MCP bridge connection", () => {
       .mockReturnValueOnce(upgraded as unknown as RconClient)
       .mockReturnValueOnce(retry as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    const ping = vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: loadedVersion });
+    const ping = vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 29, mod_version: loadedVersion });
     const getBridge = createBridgeProvider(settings, factory);
     await expect(getBridge()).resolves.toBeInstanceOf(Bridge);
     first.close();
@@ -53,13 +53,13 @@ describe("lazy MCP bridge connection", () => {
       String(file).endsWith("/package.json")
         ? JSON.stringify({ name: "factorio-codex", version: "99.0.0" })
         : (readFile as any)(file, ...args)) as any);
-    ping.mockResolvedValue({ protocol_version: 28, mod_version: "99.0.0" });
+    ping.mockResolvedValue({ protocol_version: 29, mod_version: "99.0.0" });
     await expect(getBridge()).rejects.toThrow(`mod v99.0.0, app v${loadedVersion}`);
     expect(upgraded.close).toHaveBeenCalledOnce();
     expect(companionVersion()).toBe(loadedVersion);
     expect(MCP_SERVER_VERSION).toBe(loadedVersion);
 
-    ping.mockResolvedValue({ protocol_version: 28, mod_version: loadedVersion });
+    ping.mockResolvedValue({ protocol_version: 29, mod_version: loadedVersion });
     await expect(getBridge()).resolves.toBeInstanceOf(Bridge);
     retry.close();
   });
@@ -71,7 +71,7 @@ describe("lazy MCP bridge connection", () => {
     const rcon = new FakeRcon();
     const factory = vi.fn(() => rcon as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.28.0" });
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 29, mod_version: "0.28.0" });
     const getBridge = createBridgeProvider(diagnoseConfig, factory);
 
     await expect(getBridge()).rejects.toThrow("configuration is missing");
@@ -93,7 +93,7 @@ describe("lazy MCP bridge connection", () => {
     rcon.connect.mockImplementation(async () => { await ready.promise; rcon.connected = true; });
     const factory = vi.fn(() => rcon as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.28.0" });
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 29, mod_version: "0.28.0" });
     const getBridge = createBridgeProvider(settings, factory);
 
     const first = getBridge();
@@ -110,7 +110,7 @@ describe("lazy MCP bridge connection", () => {
     const factory = vi.fn(() => rcon as unknown as RconClient);
     const unlock = vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
     const call = vi.spyOn(Bridge.prototype, "call").mockResolvedValue({
-      protocol_version: 28,
+      protocol_version: 29,
       mod_version: "0.28.0",
     });
     const getBridge = createBridgeProvider(settings, factory);
@@ -136,7 +136,7 @@ describe("lazy MCP bridge connection", () => {
       .mockReturnValueOnce(first as unknown as RconClient)
       .mockReturnValueOnce(second as unknown as RconClient);
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 28, mod_version: "0.28.0" });
+    vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 29, mod_version: "0.28.0" });
     const getBridge = createBridgeProvider(settings, factory);
 
     await getBridge();
@@ -159,8 +159,8 @@ describe("lazy MCP bridge connection", () => {
     });
     vi.spyOn(Bridge.prototype, "call").mockImplementation(async function () {
       if (stage === "protocol" && (this as any).rcon === failed) return { protocol_version: 6, mod_version: "0.28.0" };
-      if (stage === "mod" && (this as any).rcon === failed) return { protocol_version: 28, mod_version: "0.6.0" };
-      return { protocol_version: 28, mod_version: "0.28.0" };
+      if (stage === "mod" && (this as any).rcon === failed) return { protocol_version: 29, mod_version: "0.6.0" };
+      return { protocol_version: 29, mod_version: "0.28.0" };
     });
     const getBridge = createBridgeProvider(settings, factory);
 

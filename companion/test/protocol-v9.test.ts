@@ -7,17 +7,18 @@ import { packageStepSchema } from "../src/mcp/runPlan.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 
-describe("protocol v28 DTO and tool registry", () => {
-  it("declares v28 and the exact accepted RPC surface", () => {
-    expect(PROTOCOL_VERSION).toBe(28);
+describe("protocol v29 DTO and tool registry", () => {
+  it("declares v29 and the exact accepted RPC surface", () => {
+    expect(PROTOCOL_VERSION).toBe(29);
     expect(MCP_SERVER_VERSION).toBe("0.28.0");
-    expect(RPC_METHODS).toHaveLength(44);
+    expect(RPC_METHODS).toHaveLength(43);
+    expect(RPC_METHODS).not.toContain("build_block");
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
-      "factory_status", "activity_log", "event_state", "build_layout", "build_block", "say", "say_now", "get_job",
+      "factory_status", "activity_log", "event_state", "build_layout", "say", "say_now", "get_job",
       "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel"]));
   });
 
-  it("registers exactly 52 tools and forwards exact v28 payloads", async () => {
+  it("registers exactly 51 tools, none of them build_block, and forwards exact v29 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -26,7 +27,8 @@ describe("protocol v28 DTO and tool registry", () => {
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(52);
+    expect(Object.keys(handlers)).toHaveLength(51);
+    expect(Object.keys(handlers)).not.toContain("build_block");
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });
     await handlers.find_placement(find);
@@ -146,9 +148,6 @@ describe("protocol v28 DTO and tool registry", () => {
     expect(schemas.insert_items.safeParse({ x: 1, y: 2, targets: [{ x: 3, y: 4 }], items: { coal: 1 } }).success).toBe(false);
     expect(schemas.insert_items.safeParse({ x: 1, y: 2, per_target: { coal: 1 } }).success).toBe(false);
     expect(schemas.insert_items.safeParse({ targets: Array(33).fill({ x: 0, y: 0 }), items: { coal: 1 } }).success).toBe(false);
-    expect(schemas.build_block.safeParse({ block: "blueprint", blueprint: "smelter" }).success).toBe(true);
-    expect(schemas.build_block.safeParse({ block: "blueprint" }).success).toBe(false);
-    expect(schemas.build_block.safeParse({ block: "labs" }).success).toBe(false);
     expect(schemas.blueprint_place.safeParse({ name: "smelter", position: { x: 0, y: 0 }, direction: 2 }).success).toBe(false);
     expect(schemas.blueprint_capture.safeParse({ name: "../x", center: { x: 0, y: 0 }, radius: 4 }).success).toBe(false);
     expect(schemas.start_research.safeParse({ technology: "automation", technologies: ["logistics"] }).success).toBe(false);
@@ -498,15 +497,14 @@ describe("protocol v28 DTO and tool registry", () => {
     await handlers.build_layout(schemas.build_layout.parse({ ...layout, check_only: true, surface: "vulcanus" }));
     expect(call).toHaveBeenLastCalledWith("build_layout", { ...layout, check_only: true, surface: "vulcanus" }, undefined);
     expect(schemas.build_layout.safeParse({ ...layout, surface: "vulcanus" }).success).toBe(false);
-    expect(schemas.build_block.safeParse({ block: "power", count: 1, check_only: true, surface: "nauvis" }).success).toBe(true);
-    expect(schemas.build_block.safeParse({ block: "power", count: 1, surface: "nauvis" }).success).toBe(false);
+    expect(schemas.queue_plan.safeParse({ steps: [{ action: "build_block", block: "power", count: 1 }] }).success).toBe(false);
     expect(schemas.build_layout.safeParse({ ...layout, site: { near: { x: 0, y: 0 }, near_liquid: "mud" } }).success).toBe(false);
     expect(schemas.queue_plan.safeParse({ steps: [{ action: "build_layout", ...layout }] }).success).toBe(true);
     expect(schemas.queue_plan.safeParse({ steps: [{ action: "create_platform", name: "Ferry", planet: "vulcanus" }] }).success).toBe(true);
     expect(schemas.create_platform.safeParse({ name: "Ferry", planet: "vulcanus" }).success).toBe(true);
   });
 
-  it("names the protocol 28 states, parameters and fields in the tool descriptions", () => {
+  it("names the protocol 29 states, parameters and fields in the tool descriptions", () => {
     const described: Record<string, string> = {};
     registerMcpTools({ registerTool(name: string, config: any) { described[name] = config.description; } },
       async () => ({ call: vi.fn() } as unknown as Bridge), validConfig);
@@ -517,17 +515,25 @@ describe("protocol v28 DTO and tool registry", () => {
     expect(described.platform_status).toMatch(/trip \(from, to, how far along\), speed, paused, schedule/);
     expect(described.platform_status).toMatch(/thrusters/);
     expect(described.build_layout).toMatch(/near_liquid picks water, lava, heavy-oil or ammoniacal-solution; a dry run may name surface/);
-    expect(described.build_block).toMatch(/A dry run may name surface/);
-    for (const tool of ["build_layout", "build_block"]) {
-      expect(described[tool]).toMatch(/inserters \(picks_from, drops_into[^)]*\), belt_ends .*facing a reversed belt.*unpowered .*isolated_poles/);
+    expect(described.build_block).toBeUndefined();
+    expect(described.build_layout).toMatch(/inserters \(picks_from, drops_into[^)]*\), belt_ends .*facing a reversed belt.*unpowered .*isolated_poles/);
+    for (const tool of ["build_layout", "blueprint_place"]) {
+      expect(described[tool]).toMatch(/on_ore \(each placement but a drill whose footprint covers resource tiles, with the tiles by resource\)/);
+      expect(described[tool]).toMatch(/mixed_ore \(each drill whose mining area holds more than one resource it can mine: mines.*also/);
+      expect(described[tool]).toMatch(/open_fluid_ports \(.*pipe run's end.*port is the tile it points at\)/);
     }
+    expect(described.find_placement).toMatch(/nearest first for every type \(a drill candidate's resource_coverage is data to compare\)/);
+    expect(described.factory_status).toMatch(/add_to_cover with both ways to cover the deficit \(steam: steam_engine, boiler, offshore_pump; solar where the sun gives power: solar_panel, accumulator\), for you to choose/);
+    expect(described.factory_status).toMatch(/resource patches with their outline \(bbox: left_top, right_bottom\)/);
+    expect(described.queue_plan).not.toMatch(/build_block/);
+    expect(described.run_plan).not.toMatch(/build_block/);
   });
 
   it("reports where the body is: ping, the FIFO and connect_status", async () => {
     const aboard = { state: "aboard_platform", surface_ref: "platform:3", platform_name: "Orbit" };
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const call = vi.fn(async (method: string) => method === "ping"
-      ? { protocol_version: 28, mod_version: "0.28.0", factorio_version: "2.0.77", tick: 5, companion_exists: true,
+      ? { protocol_version: 29, mod_version: "0.28.0", factorio_version: "2.0.77", tick: 5, companion_exists: true,
         companion_ever_created: true, companion_dead: false, body: aboard }
       : { tick: 5, lines: [], fifo: { active_plan_id: 12, queue_depth: 1, idle_seconds: 0, body: aboard } });
     registerMcpTools({ registerTool(name: string, _config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; } },
@@ -541,7 +547,7 @@ describe("protocol v28 DTO and tool registry", () => {
     // Riding up, the pod is still over the planet it left; the trip's destination is bound_for.
     const riding = { state: "in_transit", surface_ref: "nauvis", bound_for: "platform:3" };
     call.mockImplementation(async (method: string) => method === "ping"
-      ? { protocol_version: 28, mod_version: "0.28.0", factorio_version: "2.0.77", tick: 6, companion_exists: true,
+      ? { protocol_version: 29, mod_version: "0.28.0", factorio_version: "2.0.77", tick: 6, companion_exists: true,
         companion_ever_created: true, companion_dead: false, body: riding } : {});
     expect((await handlers.connect_status({})).content[0].text)
       .toBe("Connected; the body is in a cargo pod (now over nauvis), bound for platform:3");
@@ -552,7 +558,7 @@ describe("protocol v28 DTO and tool registry", () => {
     expect(normalizeFactoryStatus({ power: [row], logistics: { networks: [{ network_id: 2, coverage: {}, contents: {} }] } })).toEqual({
       power: [{ ...row, sources: [], accumulators: null }], logistics: { networks: [{ network_id: 2, coverage: [], contents: [] }] } });
     const short = { ...row, sources: [{ kind: "solar", count: 10, nameplate_w: 600000 }],
-      accumulators: { count: 2, stored_j: 1, capacity_j: 10000000, charge: 0 }, add_to_cover: { solar_panel: 3, accumulator: 4 } };
+      accumulators: { count: 2, stored_j: 1, capacity_j: 10000000, charge: 0 }, add_to_cover: { steam: { steam_engine: 1, boiler: 1, offshore_pump: 1 }, solar: { solar_panel: 3, accumulator: 4 } } };
     expect(normalizeMapSummary({ power: { networks: [short], networks_omitted: 0 } }).power.networks).toEqual([short]);
     expect(normalizeInspection({ entities: [{ name: "assembling-machine-2", inventories: { input: [], output: { "iron-gear-wheel": 3 } },
       settings: { inserter: { filters: {} } } }] }).entities[0]).toEqual({ name: "assembling-machine-2",

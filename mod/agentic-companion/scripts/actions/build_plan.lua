@@ -38,7 +38,6 @@ local M = {}
 local MAX_STEPS = 200
 local INSERT_RETRY_TICKS = 60
 local MAX_FAILURES_LISTED = 5
-local FUEL_PER_BURNER = 5
 local OUTPUT_WAIT_TICKS = 300 -- when the drill's mining cycle is unreadable
 -- Approach failures that belong to where the body stood, not to the step: a
 -- plan that goes on past failures tries such a step once more after its last
@@ -49,23 +48,6 @@ local RETRY_MOVED_SQ = 0.25 -- the body has moved more than half a tile
 local function dist_sq(a, b)
   local dx, dy = a.x - b.x, a.y - b.y
   return dx * dx + dy * dy
-end
-
--- Burner machines among steps (by their placed entity) that name no starter
--- items get fuel: the first fuel the body carries or the force stores, else
--- coal (supply fetches or gathers it).
-function M.fuel_burners(c, steps)
-  local fuel
-  for _, step in ipairs(steps) do
-    local item = prototypes.item[step.item]
-    local proto = item and item.place_result
-    local ok, burner = pcall(function() return proto and proto.burner_prototype end)
-    if step.insert == nil and ok and burner then
-      fuel = fuel or supply.fuel_item(c) or "coal"
-      step.insert = { [fuel] = FUEL_PER_BURNER }
-    end
-  end
-  return steps
 end
 
 -- ------------------------------------------------------------- validation

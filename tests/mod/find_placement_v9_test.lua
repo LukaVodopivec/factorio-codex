@@ -325,12 +325,20 @@ resources = {
   { valid = true, name = "iron-ore", type = "resource", amount = 600,
     prototype = { resource_category = "basic-solid" } },
 }
-local coverage_ranked = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+local nearest_drill = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
-check(coverage_ranked.candidates[1]
-  and coverage_ranked.candidates[1].position.x == 9
-  and coverage_ranked.candidates[1].resource_coverage[1].total_amount == 1200,
-  "drill placement ranks greater compatible resource coverage before proximity")
+check(nearest_drill.candidates[1]
+  and nearest_drill.candidates[1].position.x == 8 and nearest_drill.candidates[1].position.y == 8
+  and nearest_drill.candidates[1].resource_coverage[1].total_amount == 500,
+  "drill placement ranks nearest first like every type and keeps its resource coverage as data, though (9, 8) covers more")
+local both_drills = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
+  radius = 1, directions = { 0 }, limit = 2 })
+local richer
+for _, candidate in ipairs(both_drills.candidates) do
+  if candidate.position.x == 9 and candidate.position.y == 8 then richer = candidate end
+end
+check(richer and richer.resource_coverage[1].total_amount == 1200,
+  "the richer spot is still a candidate, with its coverage to compare")
 only_position = { x = 8, y = 8 }
 local mixed_drill = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })
@@ -426,7 +434,7 @@ for i = 1, 169 do
     position = { x = 10.5 + (i % 13), y = 10.5 + math.floor(i / 13) }, prototype = { resource_category = "basic-solid" } }
 end
 resources, target_matches = dense, {}
-local state = finder.job.start({ item = "electric-mining-drill", preferred = { x = 16.5, y = 16.5 }, radius = 6, limit = 8 })
+local state = finder.job.start({ item = "electric-mining-drill", preferred = { x = 16.5, y = 16.5 }, radius = 6, limit = 16 })
 local most_queries, ticks, done_search = 0, 0, nil
 repeat
   ticks = ticks + 1

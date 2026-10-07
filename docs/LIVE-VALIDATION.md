@@ -448,7 +448,7 @@ session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low
 session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effort medium --fast off \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
-  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
 `--role` names the session in the `origin` of every cancel its MCP process

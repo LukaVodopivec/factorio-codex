@@ -75,7 +75,7 @@ export interface PowerRow {
   night_s?: number;
   /** Only while sustained_w < demand_w: both ways to cover the deficit; solar
    *  only where the sun gives power. The bot chooses. */
-  add_to_cover?: { steam: { steam_engine: number; boiler: number; offshore_pump: number };
+  add_to_cover?: { steam: { steam_engine: number; boiler: number; offshore_pump?: number };
     solar?: { solar_panel: number; accumulator?: number } };
 }
 export type LineState = "running" | "starved" | "output_full" | "depleted" | "no_fuel" | "no_power" | "no_heat" | "frozen" | "disabled" | "idle";

@@ -54,6 +54,9 @@ local entities = {
   ["boiler"] = entity("boiler", "boiler", 3, 2),
   ["steam-engine"] = entity("steam-engine", "generator", 3, 5, { electric = true }),
   ["pipe"] = entity("pipe", "pipe", 1, 1),
+  ["pipe-to-ground"] = entity("pipe-to-ground", "pipe-to-ground", 1, 1),
+  ["pumpjack"] = entity("pumpjack", "mining-drill", 3, 3, { mining_drill_radius = 0.99, electric = true,
+    resource_categories = { ["basic-fluid"] = true } }),
 }
 -- 2.0 pipe connections: a tile inside the north-facing entity and the
 -- direction leading out of it; the four positions turn with the entity.
@@ -74,6 +77,21 @@ entities["offshore-pump"].fluidbox_prototypes = { fluid_box(1, { { 0, 0, 8 } }) 
 entities["boiler"].fluidbox_prototypes = { fluid_box(1, { { -1, 0.5, 12 }, { 1, 0.5, 4 } }), fluid_box(2, { { 0, -0.5, 0 } }) }
 entities["steam-engine"].fluidbox_prototypes = { fluid_box(1, { { 0, 2, 8 }, { 0, -2, 0 } }) }
 entities["pipe"].fluidbox_prototypes = { fluid_box(1, { { 0, 0, 0 }, { 0, 0, 4 }, { 0, 0, 8 }, { 0, 0, 12 } }) }
+-- A box of one production type: a drill's optional input (acid for
+-- uranium), a pumpjack's output, an assembler's recipe boxes.
+local function typed_box(production_type, index, connections)
+  local b = fluid_box(index, connections)
+  b.production_type = production_type
+  return b
+end
+entities["electric-mining-drill"].fluidbox_prototypes = {
+  typed_box("input", 1, { { -1, 0, 12 }, { 1, 0, 4 }, { 0, 1, 8 } }) }
+entities["pumpjack"].fluidbox_prototypes = { typed_box("output", 1, { { 1, -1, 0 } }) }
+entities["assembling-machine-2"].fluidbox_prototypes = { typed_box("input", 1, { { 0, -1, 0 } }),
+  typed_box("output", 2, { { 0, 1, 8 } }) }
+-- A pipe-to-ground: a normal side north, the underground side south.
+entities["pipe-to-ground"].fluidbox_prototypes = { fluid_box(1, { { 0, 0, 0 }, { 0, 0, 8 } }) }
+entities["pipe-to-ground"].fluidbox_prototypes[1].pipe_connections[2].connection_type = "underground"
 local items = {}
 for name, proto in pairs(entities) do items[name] = { name = name, place_result = proto, stack_size = 50 } end
 items["iron-plate"] = { name = "iron-plate", stack_size = 100 }
@@ -84,7 +102,12 @@ _G.prototypes = { item = items, entity = { ["iron-ore"] = { name = "iron-ore", t
     grass = { collision_mask = { layers = { ground_tile = true } } } },
   -- Nauvis's map generation places water (power blocks need it).
   space_location = { nauvis = { name = "nauvis", map_gen_settings = { autoplace_settings = { tile = { settings = { water = {} } } } } } },
-  space_connection = {} }
+  space_connection = {},
+  -- What the survey reads of a recipe: whether it takes or makes a fluid.
+  recipe = { ["iron-gear-wheel"] = { ingredients = { { type = "item", name = "iron-plate", amount = 2 } },
+      products = { { type = "item", name = "iron-gear-wheel", amount = 1 } } },
+    ["water-barrel"] = { ingredients = { { type = "fluid", name = "water", amount = 50 }, { type = "item", name = "barrel", amount = 1 } },
+      products = { { type = "item", name = "water-barrel", amount = 1 } } } } }
 for name, proto in pairs(entities) do prototypes.entity[name] = proto end
 function prototypes.get_entity_filtered(filters)
   local wanted = {}
@@ -166,6 +189,8 @@ local surface = {
       -- The site search reads its window in strips of rows.
       assert(filter.area and filter.area.right_bottom.y - filter.area.left_top.y <= 8, "a resource window is read in strips")
       engine.resource_reads = (engine.resource_reads or 0) + 1
+      -- A full strip is 8 rows; the dry run's survey reads footprints.
+      if filter.area.right_bottom.y - filter.area.left_top.y == 8 then engine.strip_reads = (engine.strip_reads or 0) + 1 end
       local out = {}
       for _, e in ipairs(resources) do
         local p = e.position
@@ -224,6 +249,7 @@ for name in pairs(items) do recipes[name] = { name = name, enabled = true,
   products = { { type = "item", name = name, amount = 1 } }, ingredients = {} } end
 recipes["iron-gear-wheel"] = { name = "iron-gear-wheel", enabled = true }
 recipes["locked-thing"] = { name = "locked-thing", enabled = false }
+recipes["water-barrel"] = { name = "water-barrel", enabled = true }
 character = {
   valid = true, name = "character", position = { x = 500.5, y = 500.5 },
   bounding_box = { left_top = { x = 500.3, y = 500.3 }, right_bottom = { x = 500.7, y = 500.7 } },
@@ -266,7 +292,7 @@ end
 check(on_patch and drills_sited == 2 and #mined.failed == 0, "a layout sited on a resource puts every drill on the patch")
 -- The resource window is a phase of the search: starting one reads nothing,
 -- and the window is read a strip of rows per query.
-engine.resource_reads = 0
+engine.resource_reads, engine.strip_reads = 0, 0
 local window = layout.layout_check_job.start(drills_with_chests({ near = { x = 60, y = 50 }, on_resource = "iron-ore" }))
 check(engine.resource_reads == 0, "starting a site search reads no resource: the window is read in the search's ticks")
 local window_result, window_slices = nil, 0
@@ -274,9 +300,10 @@ repeat
   window_slices = window_slices + 1
   window_result = layout.layout_check_job.step(window, { left = jobs.WORK_PER_TICK })
 until window_result or window_slices > 200
-local window_reads = engine.resource_reads
-check(window_result and window_result.ok and window_reads >= 8,
-  "a 64-row resource window is read in 8 strips (" .. window_reads .. " reads with the dry run's survey) and the site is found")
+local window_reads, survey_reads = engine.strip_reads, engine.resource_reads - engine.strip_reads
+check(window_result and window_result.ok and window_reads == 8 and survey_reads == 4,
+  "a 64-row resource window is read in 8 strips (" .. window_reads .. "), the dry run's survey reads one footprint "
+    .. "per placement (" .. survey_reads .. "), and the site is found")
 local nowhere = check_layout(drills_with_chests({ near = { x = -300, y = -300 }, on_resource = "iron-ore" }))
 check(not nowhere.ok and nowhere.failed[1].code == "SITE_NOT_FOUND", "no resource near the site is SITE_NOT_FOUND")
 
@@ -534,6 +561,32 @@ do
   check(joined.ok and joined.open_fluid_ports and #joined.open_fluid_ports == 1 and joined.open_fluid_ports[1].x == 950.5
     and joined.open_fluid_ports[1].port.x == 949.5,
     "a planned pipe an existing pipe connects back to is fed; only the far end of the run is open")
+  -- A pumpjack's output box delivers its oil, so an unpiped one is open; a
+  -- drill's input box is optional, so an electric drill alone is not.
+  resources[#resources + 1] = { valid = true, name = "crude-oil", type = "resource", position = { x = 70.5, y = 30.5 } }
+  local pumped = dry({ anchor = { x = 70, y = 30 }, entities = { { name = "pumpjack", dx = 0.5, dy = 0.5 } } })
+  resources[#resources] = nil
+  local oil_out = pumped.open_fluid_ports and pumped.open_fluid_ports[1]
+  check(pumped.ok and #(pumped.open_fluid_ports or {}) == 1 and oil_out.name == "pumpjack"
+    and oil_out.port.x == 71.5 and oil_out.port.y == 28.5,
+    "a pumpjack with no pipe at its output reports that open port")
+  local drilled = dry({ anchor = { x = 60, y = 50 }, entities = { { name = "electric-mining-drill", dx = 0.5, dy = 0.5 } } })
+  check(drilled.ok and drilled.open_fluid_ports == nil, "an electric drill's optional input box is never an open port")
+  -- An assembler's fluid boxes count only for a recipe that takes or makes a
+  -- fluid, and then one met port is enough: unmet, it is one row.
+  local gears = dry({ anchor = { x = 930, y = 930 }, entities = {
+    { name = "assembling-machine-2", dx = 1.5, dy = 1.5, recipe = "iron-gear-wheel" } } })
+  check(gears.ok and gears.open_fluid_ports == nil, "an assembler whose recipe uses no fluid has no open fluid ports")
+  local barrels = dry({ anchor = { x = 930, y = 930 }, entities = {
+    { name = "assembling-machine-2", dx = 1.5, dy = 1.5, recipe = "water-barrel" } } })
+  check(barrels.ok and #(barrels.open_fluid_ports or {}) == 1 and barrels.open_fluid_ports[1].name == "assembling-machine-2",
+    "an assembler on a fluid recipe with no port met is one open row, not one per box")
+  -- A pipe-to-ground's normal side must meet; its underground side is not a port.
+  local tunnel = dry({ anchor = { x = 940, y = 930 }, entities = { { name = "pipe-to-ground", dx = 0.5, dy = 0.5 } } })
+  local tunnel_open = tunnel.open_fluid_ports and tunnel.open_fluid_ports[1]
+  check(tunnel.ok and #(tunnel.open_fluid_ports or {}) == 1 and tunnel_open.name == "pipe-to-ground"
+    and tunnel_open.port.x == 940.5 and tunnel_open.port.y == 929.5,
+    "a pipe-to-ground whose normal side meets nothing reports that side open")
 
   -- Ore under footprints: every placement but a drill reports the resource
   -- tiles it covers; a drill reports other resources it would mine.
@@ -768,6 +821,22 @@ end
 check(result and result.status == "done" and result.outcome.code == "LAYOUT_BUILT" and #result.outcome.placed == 3
   and result.outcome.anchor.x == 200, "a layout builds through build_plan and reports anchor and placed")
 check(#created == 3 and created[3].name == "burner-inserter", "recipients are built before the inserter that feeds them")
+-- A drill is built after the outlet it drops into, never before it: the
+-- chests listed last are placed first.
+inventory = { ["burner-mining-drill"] = 2, ["wooden-chest"] = 2 }
+created = {}
+local mine_block = drills_with_chests(nil)
+mine_block.id, mine_block.check_only, mine_block.site, mine_block.anchor = 18, nil, nil, { x = 50, y = 50 }
+layout.layout_action.runner.start(mine_block)
+for _ = 1, 40 do
+  result = layout.layout_action.runner.tick(mine_block)
+  if result then break end
+end
+local built_order = {}
+for _, args in ipairs(created) do built_order[#built_order + 1] = args.name end
+check(#created == 4 and created[1].name == "wooden-chest" and created[2].name == "wooden-chest"
+  and created[3].name == "burner-mining-drill" and created[4].name == "burner-mining-drill",
+  "a drill's outlet chests are placed before the drills (" .. table.concat(built_order, ", ") .. ")")
 
 inventory = { ["wooden-chest"] = 1 }
 created = {}

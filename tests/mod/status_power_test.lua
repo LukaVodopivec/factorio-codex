@@ -199,9 +199,10 @@ check(noon.capacity_w == 1200000 and noon.sustained_w == 840000 and noon.headroo
   and noon.accumulators.charge == 0.5 and noon.accumulators.stored_j == 25000000,
   "at noon solar capacity is the nameplate; the day average is 70 % on Nauvis defaults")
 local steam_way = noon.add_to_cover.steam
-check(noon.add_to_cover.solar.solar_panel == 9 and steam_way.steam_engine == 1 and steam_way.boiler == 1
+check(noon.add_to_cover.solar.solar_panel == 9 and steam_way.steam_engine == 1 and steam_way.boiler == 0
   and steam_way.offshore_pump == 1,
-  "a short solar network reports both ways: the panels that cover its day average, and the steam engines, boiler and pump")
+  "a short solar network reports both ways: the panels that cover its day average, and the steam engine with the "
+    .. "pump it needs, no boiler while two base boilers stand on the surface (a heat exchanger is none)")
 -- The night: 29 panels give 1.74 MW peak; integrate the 1.2 MW demand they
 -- cannot carry over 100 light samples of a 25,000-tick day.
 local expected_j = 0
@@ -246,10 +247,11 @@ flow_reads, surface_reads = 0, 0
 local rows_all, omitted = map_summary.build_power(surface, 1)
 local steam = rows_all[1]
 check(#rows_all == 1 and omitted == 1 and steam.network_id == 4 and steam.demand_w == 5400000
-  and steam.satisfaction == 0.167 and steam.add_to_cover.steam.steam_engine == 5 and steam.add_to_cover.steam.boiler == 3
+  and steam.satisfaction == 0.167 and steam.add_to_cover.steam.steam_engine == 5 and steam.add_to_cover.steam.boiler == 1
   and steam.add_to_cover.steam.offshore_pump == 1 and steam.add_to_cover.solar.solar_panel == math.ceil(4500000 / 42000)
   and steam.sources[1].kind == "steam" and steam.sources[1].production_w == 900000,
-  "a starved steam network reports steam engines (a boiler per two, a pump) and the solar panels that would cover it")
+  "a starved steam network reports steam engines, the boilers its six engines need beyond the two standing, a pump, "
+    .. "and the solar panels that would cover it")
 check(flow_reads == 1 and surface_reads <= 8,
   "rows read one statistics row per output name of each kept network and a few surface attributes ("
     .. flow_reads .. " flow, " .. surface_reads .. " surface reads)")
@@ -258,6 +260,30 @@ local sunless = map_summary.build_power(surface, 1)[1]
 surface_values.power = nil
 check(sunless.add_to_cover.steam.steam_engine == 5 and sunless.add_to_cover.solar == nil,
   "where the sun gives no power only the steam way is reported")
+
+-- Steam already standing counts: an offshore pump feeds twenty boilers, so
+-- with one on the surface no pump is added.
+next_unit = next_unit + 1
+registry.add(mock.entity({ valid = true, name = "offshore-pump", type = "offshore-pump", position = { x = 398, y = 0 },
+  unit_number = next_unit, force = force, surface = surface, prototype = mock.entity_prototype({}) }))
+local pumped = map_summary.build_power(surface, 1)[1].add_to_cover.steam
+check(pumped.steam_engine == 5 and pumped.boiler == 1 and pumped.offshore_pump == 0,
+  "a standing offshore pump with room for the added boilers asks for no pump")
+-- On a planet whose own map-generated tiles give no water, there is no
+-- offshore pump to add.
+local planet = "vulcanus"
+mock.read(surface, "planet", function() return { name = planet } end)
+_G.prototypes.tile = { lava = { fluid = { name = "lava" } }, ["volcanic-soil-dark"] = {}, water = { fluid = { name = "water" } } }
+_G.prototypes.space_location = {
+  vulcanus = { map_gen_settings = { autoplace_settings = { tile = { settings = { lava = {}, ["volcanic-soil-dark"] = {} } } } } },
+  nauvis = { map_gen_settings = { autoplace_settings = { tile = { settings = { water = {}, ["volcanic-soil-dark"] = {} } } } } } }
+local dry = map_summary.build_power(surface, 1)[1].add_to_cover.steam
+check(dry.steam_engine == 5 and dry.boiler == 1 and dry.offshore_pump == nil,
+  "on a planet whose tiles give no water the steam way names engines and boilers, never an offshore pump")
+planet = "nauvis"
+check(map_summary.build_power(surface, 1)[1].add_to_cover.steam.offshore_pump == 0,
+  "a planet whose map generation places water keeps the offshore pump count")
+registry.remove(next_unit)
 
 -- A turbine (steam above 165 degrees) is nuclear.
 check(registry.power_kind("steam-engine") == "steam", "a steam engine is steam power")

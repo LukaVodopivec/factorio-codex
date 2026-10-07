@@ -92,6 +92,19 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
+For the 0.29.0 release (the bots do the thinking), record these observable
+checks on a copy of a running factory's save:
+
+- A hand-written steam layout (offshore pump, boiler, two steam engines,
+  poles) dry-runs with no `open_fluid_ports` row; a gap in its water line
+  reports the open port.
+- A layout that puts a furnace or chest on ore reports it in `on_ore`, and a
+  drill on two resources in `mixed_ore`; neither fails the dry run.
+- `factory_status` patch rows carry a `bbox` outline, `find_placement` lists
+  candidates nearest first, and a short power row's `add_to_cover` lists both
+  `steam` and `solar`.
+- `build_block` is gone from both MCP tool lists and from `queue_plan` steps.
+
 For the 0.22.3 release (other planets), record these observable checks
 (offline fixtures cover them; none is live evidence yet):
 
@@ -118,8 +131,7 @@ For the 0.22.3 release (other planets), record these observable checks
   pack that took nothing are not retried for 600 ticks; with no research
   active no lab is fed and `factory_status` shows a `research_idle` problem.
 - `find_placement` with `fluid` finds offshore pumps on lava or the
-  ammoniacal ocean; `build_block` `power` refuses with
-  `NO_WATER_ON_SURFACE` on Vulcanus; a building whose surface conditions
+  ammoniacal ocean; a building whose surface conditions
   fail reports `SURFACE_CONDITION`; `production_requirements` lists
   `roots` per planet.
 - Upgrading a 0.22.1 or 0.22.2 save keeps its queued plans and jobs, and a
@@ -214,12 +226,11 @@ turning them into a fixed opening or map-specific sequence:
   `patches_ready` turn true within about a minute of load; after that no
   `factory_status`, `event_state` or `activity_log` line exceeds about 8 ms,
   and the 600-tick aggregate averages well under 8 ms a tick at 200 machines.
-- `build_layout` and each `build_block` kind (`mining`, `smelting`, `assembly`,
-  `power`, `labs`) build end to end from a dry run that matched; auto-supply
+- `build_layout` builds end to end from a dry run that matched; auto-supply
   takes from a chest and from a belt before crafting, and placement clears
   trees and rocks in the footprint.
 - Heavy reads run as jobs: a `map_summary`, a full `observe_local`, a route
-  search and a `build_block` dry run inside the factory each return one result
+  search and a `build_layout` dry run inside the factory each return one result
   (a site or a definite no-site answer, never `SITE_SEARCH_INCOMPLETE`) while
   no game-log `rpc` line for them exceeds about 8 ms.
 - Blueprints: `blueprint_capture` of a working block lists its entities and
@@ -247,8 +258,9 @@ turning them into a fixed opening or map-specific sequence:
 - `factory_status` line causes name the fluid, `no_recipe`,
   `recipe_not_researched` or `burnt_result`; `no_heat` and `disabled` appear
   where a machine is cold or disabled. Each power row splits production by
-  source; while demand exceeds `sustained_w` it gives `add_to_cover`, and
-  building what it names makes `headroom_w` non-negative. `sections:
+  source; while demand exceeds `sustained_w` it gives `add_to_cover` with
+  both `steam` and `solar` counts, and building either one makes
+  `headroom_w` non-negative. `sections:
   ["logistics"]` lists robot networks under about 900 bytes and the default
   read omits it.
 - `configure_entity` sets a filter inserter's filters and a chest's slot limit
@@ -392,7 +404,7 @@ only the disabled-by-default `factorio-readonly` MCP server to it; disable the
 full `factorio` server in that the strategist session. The strategist owns NOW/NEXT/LATER and the
 architecture, and is the sole atomic writer of one compact `operations.json`,
 including its initial revision. The ledger is the strategist's only channel to the
-pilot. The strategist designs build packages of whole blocks or this run's blueprints,
+pilot. The strategist designs build packages of its own layouts or this run's blueprints,
 dry-run with `check_only` (the only coordinates in the ledger).
 The pilot's full-surface bridge queues each new package into the FIFO by
 itself, as a plan with source `package:<id>` after the mod's placement check,
@@ -448,7 +460,7 @@ session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low
 session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effort medium --fast off \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
-  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","build_block","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
 `--role` names the session in the `origin` of every cancel its MCP process
@@ -466,8 +478,8 @@ The launch flags express requested settings. `--fast on` requests
 normal service. Neither a launch flag nor a successful update is role-profile
 confirmation. Follow the native readback procedure below before `GO`.
 Start each with its checked-in role goal; the pilot takes no physical action
-before `GO`. Confirm the strategist lists exactly the twenty-two configured read-only tools
-(`build_layout`, `build_block`, `connect_entities`, `blueprint_place` and `place_tiles` there are dry runs only) and cannot list any
+before `GO`. Confirm the strategist lists exactly the twenty-one configured read-only tools
+(`build_layout`, `connect_entities`, `blueprint_place` and `place_tiles` there are dry runs only) and cannot list any
 movement, transfer, crafting, placement, research mutation, plan
 enqueue/run/cancel, or stop tool before `GO`, and that the pilot has the full
 surface and no read-only server.
@@ -544,7 +556,7 @@ To continue a run's factory with a new release instead of a fresh map:
    (packages from the old ledger are not queued again); the copied notebook
    continues, because a resumed save of the same factory continues its run.
 5. Spawn the role sessions with this release's settings (for 0.22.3:
-   `-c model_reasoning_summary=detailed` and the twenty-two read-only tools
+   `-c model_reasoning_summary=detailed` and the twenty-one read-only tools
    above) and their updated goal files, redo the role-profile readback, start
    the recorder with `--pilot-rollout` and `--strategist-rollout` (a later
    replacement writes its rollout path to `<run_dir>/rollouts.json` as

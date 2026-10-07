@@ -76,7 +76,7 @@ body and one FIFO plan queue.
 
 - **The strategist** (`gpt-6.1-sol`, `medium` reasoning, normal speed) is the strategist
   and architect. It owns coordinate-free NOW/NEXT/LATER priorities and designs
-  build packages of whole blocks or this run's blueprints, dry-run with
+  build packages of its own layouts or this run's blueprints, dry-run with
   `check_only`. It uses only the read-only MCP surface and is the sole writer of
   `operations.json`, through `ledger-apply`.
 - **The pilot** (`gpt-6-luna`, `low` reasoning, fast mode) is the foreman and the
@@ -157,7 +157,7 @@ replacement.
   its machines within ten minutes, `hand_transfers`: such a line needs a
   connection, not another trip. There are no proofs or validation windows.
 - **Auto-supply.** `get_items`, `place_entity`, `insert_items`, `build_plan`,
-  `build_layout` and `build_block` fetch what they lack: from the nearest own
+  `build_layout` and `blueprint_place` fetch what they lack: from the nearest own
   chest or machine output, then loose items at an own drill's drop position
   (belts only when nothing else holds it), else by smelting ore in an own
   furnace or hand-crafting with intermediates up to four levels deep (queued
@@ -166,16 +166,16 @@ replacement.
   none of their output can be taken now. A shortfall is reported
   as `SUPPLY_SHORTFALL` with each missing item and why; what exists is
   carried, and own lines that make a missing item add their `rate_per_min`
-  and `expected_minutes` for the rest. `build_layout` and `build_block`
-  fetch their whole bill in one supply before the first placement (a layout
-  fetches what the inventory has no room for at its step), and fail
-  `LAYOUT_CHECK_FAILED` with nothing placed when an item cannot be had.
+  and `expected_minutes` for the rest. `build_layout` fetches its whole bill
+  in one supply before the first placement (what the inventory has no room
+  for at its step), and fails `LAYOUT_CHECK_FAILED` with nothing placed when an item cannot be had.
 - **Auto-clear.** Placement mines trees and rocks in the footprint first.
 - **Power model.** Each `factory_status` power row splits production by
   source (steam, solar, burner, nuclear), adds accumulator charge,
   `sustained_w` (solar at the planet's day-average light) and `headroom_w`,
-  and, when demand exceeds `sustained_w`, `add_to_cover`: the steam engines,
-  solar panels or accumulators that would cover it. Counts come from the
+  and, when demand exceeds `sustained_w`, `add_to_cover` with both ways to
+  cover it, `steam` (engines, boilers, pumps) and `solar` (panels,
+  accumulators); the bot chooses. Counts come from the
   entity registry, never a read-time scan.
 - **Settings at build time.** Inserter filters and stack size, splitter
   priorities and filter, and chest slot limits or storage filters given as
@@ -219,7 +219,7 @@ replacement.
 
 ## MCP tools
 
-The full surface has 52 tools; the read-only surface used by the strategist has 22.
+The full surface has 51 tools; the read-only surface used by the strategist has 21.
 Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
 `idle_seconds`, `human_control`). Heavy reads (`map_summary`, a full
 `observe_local`, route and site searches, dry runs, blueprint capture and
@@ -229,19 +229,18 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | Tool | Surface | Purpose |
 | --- | --- | --- |
 | `connect_status` | both | config, RCON, mod and protocol check; binds the `Codex` player |
-| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover`, stock, research, body (state, surface, health), patches, one line per space platform, `elsewhere` (one line per other surface with buildings), `unlocked_locations`; `surface`, `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
+| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover` (steam and solar), stock, research, body (state, surface, health), patches with their `bbox` outline, one line per space platform, `elsewhere` (one line per other surface with buildings), `unlocked_locations`; `surface`, `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
 | `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change), `research_finished`, `queue_empty`, `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, `rocket_ready`, `rocket_launched`, `cargo_delivered`, `platform_state_changed`, `platform_arrived`, `travel_phase`, `body_surface_changed`, or `timeout` |
 | `activity_log` | both | recent plan outcomes with `source` (`pilot`, `upkeep`, `package:<id>`), cancels with their `origin`, blueprint changes, and package statuses |
-| `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections; `mode: ghosts` for robots; `platform` marks ghosts and foundation tiles on a space platform for its hub to build |
-| `build_block` | both (read-only: dry run) | `mining`, `smelting`, `assembly`, `power` or `labs` blocks, `count` copies, or a stored `blueprint` |
+| `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections; `mode: ghosts` for robots; `platform` marks ghosts and foundation tiles on a space platform for its hub to build; a dry run also reports, as data, inserters, belt ends, unpowered machines, isolated poles, `on_ore` (non-drill buildings over ore), `mixed_ore` (drills whose area holds another resource) and `open_fluid_ports` (fluid connections that meet nothing) |
 | `connect_entities` | both (read-only: dry run) | belt, pipe or power route of up to 200 pieces between entities or free tiles, underground past obstacles |
 | `blueprint_list`, `blueprint_describe`, `blueprint_export` | both | this run's stored blueprints; export is a string for notes, never imported |
-| `blueprint_place` | both (read-only: dry run) | build a stored blueprint by hand or as ghosts, or as ghosts on a space platform |
+| `blueprint_place` | both (read-only: dry run) | build a stored blueprint by hand or as ghosts, or as ghosts on a space platform; its dry run also reports `on_ore`, `mixed_ore` and `open_fluid_ports` |
 | `place_tiles` | both (read-only: dry run) | lay landfill, stone path, concrete, foundation or ice platform over an area or up to 1,024 positions, nearest first; a dry run counts the items |
 | `platform_status` | both | space platforms: state, location, trip, speed, schedule, hub slots and requests; `detail: full` for one platform adds foundation, hub contents, entities, thrusters and `ghosts.missing` |
 | `map_summary` | both | full flow graph of the charted factory on one surface (`surface`; `"all"` sums flows); `include` adds `stockpiles`, `sites`, `patches`, `power`, `problems`, `flows_all` |
 | `observe_local`, `inspect_entity` | both | nearby entities and exact entity state with settings, temperature and `frozen`, up to 64 positions (own entities anywhere charted; `surface` on `inspect_entity`) |
-| `can_place`, `find_placement` | both | placement checks anywhere charted, on any surface (`surface`), with surface conditions; `find_placement` `fluid` picks the liquid an offshore pump pumps |
+| `can_place`, `find_placement` | both | placement checks anywhere charted, on any surface (`surface`), with surface conditions; `find_placement` lists candidates nearest first (a drill's with its `resource_coverage`), and its `fluid` picks the liquid an offshore pump pumps |
 | `production_requirements`, `progression_status`, `describe_prototype` | both | recipe arithmetic with each raw material's `roots` (planet and how it is gathered), `unobtainable` and, with `planet`, `surface_limited` recipes; research; prototypes |
 | `plan_status` | both | one exact plan, optionally waiting up to 60 s |
 | `get_items` | full | fetch, craft or gather `count` of an item |
@@ -260,7 +259,7 @@ description) run in the game as jobs spread over ticks; the bridge polls
 Plan steps are `walk_to`, `mine`, `pickup_items`, `place_entity`,
 `craft_items`, `insert_items`, `extract_items`, `set_recipe`, `rotate_entity`,
 `inspect_entities`, `wait_for_item`, `wait_for_research`, `get_items`,
-`build_layout`, `build_block`, `explore`, `move_entity`, `blueprint_place`,
+`build_layout`, `explore`, `move_entity`, `blueprint_place`,
 `build_ghosts`, `deconstruct_area`, `upgrade_area`, `copy_settings`,
 `configure_entity`, `place_tiles`, `set_requests`, `create_platform`,
 `launch_rocket`, `set_platform_route`, `travel`, `equip` and `flush_fluid`;

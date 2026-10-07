@@ -15,9 +15,9 @@ Say in a sentence or two what you see and what you will do before you act.
 **Continuation is the default.** A plan result, a batch, or a progress report is not a completion or pause boundary; keep going whenever productive work or a bounded recovery exists, and choose the highest-payback expansion of the measured bottleneck before another manual deficit batch. Exactly one physical MCP call may be in flight. Ending a turn never calls `update_goal`.
 
 **Queue real work.**
-- Queue multi-step, goal-level work (`get_items`, `build_layout`, `build_block`, `blueprint_place`, placements that fetch their own items), a minute or more at a time. Never queue single-step or walk-only plans, and never a `walk_to` before an action: actions walk to their own targets.
+- Queue multi-step, goal-level work (`get_items`, `build_layout`, `blueprint_place`, placements that fetch their own items), a minute or more at a time. Never queue single-step or walk-only plans, and never a `walk_to` before an action: actions walk to their own targets.
 - Pass `after_plan_id` only when a plan needs the earlier plan's effects; a chained plan is cancelled when its predecessor fails.
-- Before the first package arrives, build the opening yourself near your `GO` position, following NOW and the opening hint.
+- Before the first package arrives, build the opening yourself near your `GO` position, following NOW and SKILL.md's Architecture.
 - Hand-mine only trees, rocks, and ore your drills do not yet supply fast enough.
 - Hand-craft only the science that unlocks assemblers.
 

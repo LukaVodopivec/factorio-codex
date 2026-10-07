@@ -28,7 +28,8 @@
   Factorio mod.
 - Prefer deletion and the smallest repair to the retained upstream path.
 - Anything deterministic (monitoring, supply, recoveries, layout arithmetic,
-  upkeep) belongs in the mod as a tool, not in the bots' instructions.
+  upkeep) belongs in the mod as a tool, not in the bots' instructions, never
+  choices.
 - Keep movement, reach, inventory, crafting, placement, and time constraints
   observable and covered by tests.
 - Never expose images, raw Lua, arbitrary console commands, credentials, or
@@ -90,8 +91,8 @@ local state. It waits on `next_event` and handles failed packages, an empty
 queue, and local judgment with goal-level actions; it sends no reports. The
 persistent `gpt-6.1-sol` strategist uses `medium` reasoning at normal speed,
 owns coordinate-free NOW/NEXT/LATER priorities and the architecture, designs
-every coupled layout as a build package of whole blocks or this run's
-blueprints (dry-run with `check_only`), and may call only the mechanically
+every coupled layout itself as a build package of its own layouts or this
+run's blueprints (dry-run with `check_only`), and may call only the mechanically
 read-only MCP surface. Its reads never enter or delay the physical lane.
 
 **Ledger and packages.** Keep one compact `operations.json`. The strategist is its sole
@@ -287,15 +288,31 @@ genuine exhausted blocker; a stop never marks a goal complete.
 the rules (purpose, roles, one body and writer, honest play, tools, orders,
 notebook, stop), `FACTORIO-REFERENCE.md` explains rates, energy, flow problems, bootstrap
 dependencies and research from live tool values, `PLAYER-KNOWLEDGE-v1.md` is a short Factorio intro with
-overridable hints, and the two goal files hold each role's duties. Researched
-principles, ratios, and a research-order hint written in this repository's own
-words are allowed there; imported blueprint strings and copied layouts stay out.
+overridable hints, and the two goal files hold each role's duties. Principles,
+ratios and mechanics written in this repository's own words are allowed there;
+imported blueprint strings and copied layouts stay out.
 The supported save is permanently peaceful: planets generate no Nauvis enemy
 bases and Vulcanus no demolishers; Gleba's own bases stay (peaceful mode),
 because their eggs feed agricultural science. Debug
 runs continue past `GO+20m` to their assigned milestone; Candidate B and
 fresh-baseline freeze rules are historical unless the owner explicitly starts a
 benchmark.
+
+**Enable thinking, never replace it.** The mod and the instructions let the
+bots show their thinking; they never do it for them.
+
+- The mod may execute a bot's decision (walk, fetch, craft, clear, upkeep,
+  recovery), give honest player-visible information (charted state, patch
+  outlines, what a footprint covers, why a machine stops, answers to the bot's
+  own search), and do deterministic arithmetic (rates, counts that cover a
+  stated demand, item totals).
+- The mod never chooses a design, site, order, quantity or timing, and never
+  grants free items or energy, or uncharted or cross-run map knowledge.
+- Instructions pass the same test: rules, mechanics, tool contracts, and
+  principles with their reasons; never build, research or planet orders,
+  opening scripts, fixed counts, layouts or coordinates.
+- Self-check: if a tool or passage lets a bot act well without deciding what,
+  where, when or how many, it is doing the thinking.
 
 When a newly observed gameplay difficulty appears to require greenfield code,
 first make one bounded Firecrawl reuse survey for maintained mods, interfaces,

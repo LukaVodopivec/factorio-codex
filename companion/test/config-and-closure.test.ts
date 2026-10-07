@@ -218,7 +218,16 @@ describe("exact local configuration", () => {
     expect(normalizedKnowledge).toMatch(/overridable hints, never a build or technology order: measured state wins/);
     for (const ratio of ["5 electric drills feed 8 stone furnaces", "30 drills and 48 furnaces", "5 red science assemblers per 6 green", "3 cable assemblers per 2 circuit assemblers", "1 boiler (1.8 MW) runs 2 steam engines"])
       expect(normalizedKnowledge).toContain(ratio);
-    expect(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8").replace(/\s+/g, " ")).toMatch(/Researched principles, ratios, and a research-order hint written in this repository's own words are allowed there; imported blueprint strings and copied layouts stay out/);
+    const agents = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8").replace(/\s+/g, " ");
+    expect(agents).toMatch(/Principles, ratios and mechanics written in this repository's own words are allowed there; imported blueprint strings and copied layouts stay out/);
+    expect(agents).not.toMatch(/research-order hint/);
+    // Future developer agents keep the mod and the instructions from doing the bots' thinking.
+    expect(agents).toMatch(/Anything deterministic \(monitoring, supply, recoveries, layout arithmetic, upkeep\) belongs in the mod as a tool, not in the bots' instructions, never choices/);
+    expect(agents).toMatch(/\*\*Enable thinking, never replace it\.\*\* The mod and the instructions let the bots show their thinking; they never do it for them/);
+    expect(agents).toMatch(/The mod may execute a bot's decision \(walk, fetch, craft, clear, upkeep, recovery\), give honest player-visible information[\s\S]*and do deterministic arithmetic/);
+    expect(agents).toMatch(/The mod never chooses a design, site, order, quantity or timing, and never grants free items or energy, or uncharted or cross-run map knowledge/);
+    expect(agents).toMatch(/Instructions pass the same test: rules, mechanics, tool contracts, and principles with their reasons; never build, research or planet orders, opening scripts, fixed counts, layouts or coordinates/);
+    expect(agents).toMatch(/Self-check: if a tool or passage lets a bot act well without deciding what, where, when or how many, it is doing the thinking/);
   });
 
   it("ships only the couch-PC native Codex client launcher", () => {

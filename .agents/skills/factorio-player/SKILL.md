@@ -18,6 +18,15 @@ The mod does the chores: tracks lines, fetches and crafts, clears obstacles, wal
 refuels burners and supplies labs. Decide what, where and why to build. Do not
 monitor, prove, or keep books.
 
+## Architecture
+
+Plan the base before siting any block, and keep that plan as the factory
+grows. Ore patches are for drills and their output lines; smelting, assembly,
+power, storage and labs go on free ground beside the patches, with room to
+grow and clear paths. Before choosing a site, read the patch outlines (`bbox`
+in `factory_status` patches) and the dry run's `on_ore` report. The layout is
+your own design: no tool chooses it for you.
+
 ## Roles
 
 Explicit benchmarks follow the frozen profile and
@@ -99,8 +108,8 @@ retried after the hold.
   off a planet (aboard, in transit, dead). The power row (the largest network;
   `map_summary` with `include: ['power']` lists all) splits production by
   source and gives `sustained_w` (solar at this planet's day average); when
-  short, `add_to_cover` says how many steam engines, solar panels, or
-  accumulators would cover demand. `sections: ['logistics']` shows robot networks. A false
+  short, `add_to_cover` lists both ways to cover demand, `steam` (engines,
+  boilers, pumps) and `solar` (panels, accumulators): you choose. `sections: ['logistics']` shows robot networks. A false
   `*_ready` flag means that part still fills after a load: read again.
 - `next_event` returns `plan_ended`, `research_finished`, `queue_empty`,
   `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`,
@@ -111,33 +120,34 @@ retried after the hold.
   craft): the pilot queues work before waiting again.
 - `activity_log` shows each plan's `source` (`pilot`, `upkeep`,
   `package:<id>`) and who cancelled what; `plan_status` reads one exact
-  `plan_id`; `build_layout`, `build_block`, `connect_entities`, and
-  `blueprint_place` with `check_only: true` are dry runs that return the site
-  or a definite answer (layout and block dry runs take `surface`).
+  `plan_id`; `build_layout`, `connect_entities`, and `blueprint_place` with
+  `check_only: true` are dry runs that return the site or a definite answer
+  (layout dry runs take `surface`). A layout or blueprint dry run also lists,
+  as data: `on_ore` (a non-drill building over ore), `mixed_ore` (a drill whose
+  area holds another resource too) and `open_fluid_ports` (a fluid connection
+  that meets nothing).
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
 - `platform_status` is your platform screen: state, location, hub slots and
   requests. `detail: "full"` for one platform adds its foundation, hub
   contents, entities, and `ghosts.missing`: what must still go up.
 
-**Goal-level actions (pilot only).** `get_items`, `build_layout`,
-`build_block`, and `blueprint_place` do the legwork (fetch, craft, smelt,
-clear, walk, build); you choose what, where, and how many. `place_entity`,
-`insert_items`, and `build_plan` fetch missing items (`auto_supply`, on by
-default); placements clear trees and rocks.
-These actions walk to their own targets: never queue a `walk_to` before them.
-`wait_for_item` does not walk and reads within 30 tiles or charted own
-machines: put it after an action there or a `walk_to`.
-A `STEP_STALLED` or `START_COLLISION` step means the body could not move:
+**Goal-level actions (pilot only).** `get_items`, `build_layout`, and
+`blueprint_place` do the legwork (fetch, craft, smelt, clear, walk, build);
+you choose what, where, and how many. `place_entity`, `insert_items`, and
+`build_plan` fetch missing items (`auto_supply`, on by default); placements
+clear trees and rocks. These actions walk to their own targets: never queue a
+`walk_to` before them. `wait_for_item` does not walk and reads within 30 tiles
+or charted own machines: put it after an action there or a `walk_to`. A
+`STEP_STALLED` or `START_COLLISION` step means the body could not move:
 re-read `factory_status` body position and choose a reachable target.
 
 **Building tools.**
 
 - Blueprints: when a build works, store it once (`blueprint_capture` of your
   buildings, or `blueprint_create` from a layout) and stamp it again with
-  `blueprint_place` or `build_block` with `block: "blueprint"`, never piece by
-  piece. Blueprints belong to this run; `blueprint_export` is a string for
-  notes, never imported.
+  `blueprint_place`, never piece by piece. Blueprints belong to this run;
+  `blueprint_export` is a string for notes, never imported.
 - `move_entity` picks up one of your buildings with its contents and places
   it elsewhere with its recipe, direction, settings, fuel, and modules.
 - `configure_entity` sets what a building's window sets: inserter filters and
@@ -227,8 +237,8 @@ re-read `factory_status` body position and choose a reachable target.
   that planet forbids (`surface_limited`).
 - Offshore pumps pump their tile's liquid (water, lava, heavy oil, ammoniacal
   solution); `find_placement` takes `fluid`, a layout site `near_liquid`.
-  `build_block` `power` builds steam only where there is water, and `mining`
-  picks a drill that can mine the resource (`NEED_DRILL` otherwise).
+  Steam needs water. `find_placement` lists free spots nearest first; a
+  drill's carries its `resource_coverage`.
   `SURFACE_CONDITION`: that building or recipe needs another planet's
   pressure, gravity, or magnetic field.
 

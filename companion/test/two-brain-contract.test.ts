@@ -30,8 +30,16 @@ describe("persistent two-brain coordination contract", () => {
   });
 
   it("keeps the instructions short, with shared rules only in SKILL.md", () => {
-    const size = [skill, pilot, strategist, knowledge].reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
-    expect(size).toBeLessThan(34_700);
+    // Per-role budgets, not one summed cap: what matters is how much each role
+    // must attend to at once (instruction-following falls as rules pile up, and
+    // a passage in the middle of a long read is easily lost), not context capacity.
+    const bytes = (...texts: string[]) => texts.reduce((total, text) => total + Buffer.byteLength(text, "utf8"), 0);
+    const benchmarkGoal = read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md");
+    for (const goal of [pilot, strategist, benchmarkGoal]) {
+      expect(bytes(skill, goal)).toBeLessThan(25_000); // the compaction re-read set
+      expect(bytes(skill, goal, knowledge)).toBeLessThan(30_500); // the startup set
+    }
+    expect(bytes(reference)).toBeLessThan(10_500);
     expect(skill).not.toMatch(/## Engineering reuse/);
     for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
   });
@@ -59,7 +67,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(strategist).toMatch(/never (?:call|use)[\s\S]*(?:movement|mining|crafting|placement|queue|cancel|stop)/i);
   });
 
-  it("gives the strategist exactly the read-only surface, with layout and block checks as dry runs", () => {
+  it("gives the strategist exactly the read-only surface, with layout checks as dry runs", () => {
     for (const tool of READ_ONLY_TOOLS) expect(strategist).toContain(`\`${tool}\``);
     expect(strategist).toMatch(/mechanically read-only[\s\S]*never enter[\s\S]*physical FIFO/i);
     expect(strategist).not.toMatch(/`(?:walk_to|mine|craft_items|place_entity|insert_items|extract_items|set_recipe|start_research|queue_plan|run_plan|get_items|stop)`/);
@@ -112,7 +120,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(agents).toMatch(/queues each new package into the FIFO by itself, in ledger order, as a plan with source `package:<id>`/);
     expect(flat(pilot)).toMatch(/The bridge queues the strategist's packages, not you/);
     expect(pilot).toMatch(/Never write `operations\.json` or `notebook\/strategist\/`/);
-    expect(flat(strategist)).toMatch(/Size packages as whole blocks: `build_block`, `build_layout`, or `blueprint_place` steps, never single placements/);
+    expect(flat(strategist)).toMatch(/Size packages as whole blocks: `build_layout` or `blueprint_place` steps, never single placements/);
     expect(flat(strategist)).toMatch(/Keep at least one package queued ahead so the body never waits for a design/);
     expect(flat(strategist)).toMatch(/Rewrite the ledger only when NOW changes, a new package is ready, or labs need research, about six times an hour at most; never to record progress, which `activity_log` holds/);
     expect(flat(strategist)).toMatch(/Give each package a new `package_id`/);
@@ -129,7 +137,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(pilot).toMatch(/Hand-craft only the science that unlocks assemblers\./);
     expect(strategist).toMatch(/Hand-craft only the science that unlocks assemblers\./);
     expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);
-    for (const action of ["get_items", "build_layout", "build_block"]) expect(skill).toContain(`\`${action}\``);
+    for (const action of ["get_items", "build_layout", "blueprint_place"]) expect(skill).toContain(`\`${action}\``);
   });
 
   it("lets every role, benchmark roles included, know that Automation needs hand-crafted science that never scores", () => {
@@ -147,7 +155,7 @@ describe("persistent two-brain coordination contract", () => {
 
   it("teaches the 0.21.1 building tools in plain words", () => {
     const flatSkill = flat(skill);
-    expect(flatSkill).toMatch(/when a build works, store it once \(`blueprint_capture`[\s\S]*stamp it again with `blueprint_place` or `build_block` with `block: "blueprint"`/);
+    expect(flatSkill).toMatch(/when a build works, store it once \(`blueprint_capture`[\s\S]*stamp it again with `blueprint_place`, never piece by piece/);
     expect(flatSkill).toMatch(/Blueprints belong to this run; `blueprint_export` is a string for notes, never imported/);
     expect(flatSkill).toMatch(/`move_entity` picks up one of your buildings with its contents/);
     expect(flatSkill).toMatch(/use `explore`[\s\S]*Never scout with chains of walks/);
@@ -180,14 +188,14 @@ describe("persistent two-brain coordination contract", () => {
     expect(live).toMatch(/It never waits for a pilot plan: it holds packages only during a human hold and while the ledger file is older than the last `stop`/);
   });
 
-  it("keeps the opening, automation-first, and power hints", () => {
+  it("keeps the opening, automation-first, and power hints as principles", () => {
     const flatKnowledge = flat(knowledge);
-    expect(flatKnowledge).toMatch(/Automate iron and coal together in the first ten minutes: the first iron drill and furnace come before a second coal drill\. Never open fuel-first/);
+    expect(flatKnowledge).toMatch(/Plates gate every machine, and fuel pays only when it feeds something that makes progress\. Choose what to automate from what you carry and the patches in view/);
     expect(flat(strategist)).toMatch(/Judge progress by what machines make and by research on machine-made science, not by ore piles/);
     expect(flatKnowledge).toMatch(/Ore or plates piling up in chests should feed more machines .* a pile is not progress/);
     expect(flat(strategist)).toMatch(/This is a principle, not a build or technology order/);
     expect(flat(strategist)).toMatch(/power shows satisfaction below 100% or production at capacity, more generation is NOW/);
-    expect(flatKnowledge).toMatch(/add a boiler and two engines whenever `power` satisfaction is below 100%/);
+    expect(flatKnowledge).toMatch(/add generation whenever `power` satisfaction is below 100%/);
     expect(flatKnowledge).toMatch(/hints are starting points that newer structured evidence may override/);
   });
 
@@ -272,7 +280,7 @@ describe("persistent two-brain coordination contract", () => {
 
   it("teaches the 0.22.0 tools, power model and build-time settings in plain words", () => {
     const flatSkill = flat(skill);
-    expect(flatSkill).toMatch(/`add_to_cover` says how many steam engines, solar panels, or accumulators would cover demand/);
+    expect(flatSkill).toMatch(/`add_to_cover` lists both ways to cover demand, `steam` \(engines, boilers, pumps\) and `solar` \(panels, accumulators\): you choose/);
     expect(flatSkill).toMatch(/`sections: \['logistics'\]` shows robot networks/);
     expect(flatSkill).toMatch(/`configure_entity` sets what a building's window sets[\s\S]*changes only what you name/);
     expect(flatSkill).toMatch(/Give `build_layout` entities `settings` \(and `mirror`, and `belt_to_ground_type: input\|output` for an underground belt\) instead to build a sorter or a mall already configured/);
@@ -352,7 +360,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(named.length).toBeGreaterThan(0);
     for (const tool of named) expect(registered).toContain(tool);
     for (const tool of [...skill.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]!))
-      if (/^(?:get_items|build_layout|build_block|factory_status|next_event|activity_log|queue_plan|run_plan|build_plan|connect_entities|place_entity|insert_items)$/.test(tool)) expect(registered).toContain(tool);
+      if (/^(?:get_items|build_layout|blueprint_place|factory_status|next_event|activity_log|queue_plan|run_plan|build_plan|connect_entities|place_entity|insert_items)$/.test(tool)) expect(registered).toContain(tool);
     expect(pilot).toContain("`tools.mcp__factorio__<tool>` with one prefix");
     expect(pilot).not.toMatch(/mcp__factorio__(?:mcp__|codex_tui__|send_message_to_thread|execution_settings)/);
     const server = read("companion/src/mcp/server.ts");
@@ -360,6 +368,43 @@ describe("persistent two-brain coordination contract", () => {
     expect(server).toMatch(/queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot/);
     expect(live).toMatch(/### Resume with a mod upgrade/);
     expect(live).toMatch(/completes as a no-op with code `REMOVED_ACTION`/);
+  });
+
+  it("enables the bots' thinking: an Architecture rule, a base plan, and principles instead of scripts", () => {
+    const flatSkill = flat(skill);
+    expect(skill).toMatch(/## Purpose\n[\s\S]*?\n## Architecture\n[\s\S]*?\n## Roles\n/);
+    expect(skill.indexOf("## Architecture")).toBeLessThan(skill.indexOf("## Roles"));
+    expect(flatSkill).toMatch(/Plan the base before siting any block, and keep that plan as the factory grows/);
+    expect(flatSkill).toMatch(/Ore patches are for drills and their output lines; smelting, assembly, power, storage and labs go on free ground beside the patches/);
+    expect(flatSkill).toMatch(/read the patch outlines \(`bbox` in `factory_status` patches\) and the dry run's `on_ore` report/);
+    expect(flatSkill).toMatch(/The layout is your own design/);
+    for (const field of ["on_ore", "mixed_ore", "open_fluid_ports", "resource_coverage"]) expect(skill).toContain(`\`${field}\``);
+    expect(flatSkill).toMatch(/`find_placement` lists free spots nearest first/);
+    expect(flat(strategist)).toMatch(/\*\*Base plan\.\*\* Keep a standing base plan \(SKILL\.md's Architecture\) as a note in `notebook\/strategist\/`, named in `INDEX\.md`/);
+    expect(flat(strategist)).toMatch(/Revise it when a new patch, technology or planet changes the picture, and say why/);
+    const solo = benchmark.match(/In a solo trial[^\n]*?(?= Strategist \()/)?.[0] ?? "";
+    const duties = benchmark.match(/Strategist \(multi-agent only\):[^\n]*?(?= Advisors \()/)?.[0] ?? "";
+    for (const text of [solo, duties]) expect(text).toMatch(/SKILL\.md's Architecture base plan in your notebook, named in its INDEX\.md/);
+    expect(flat(pilot)).toMatch(/following NOW and SKILL\.md's Architecture/);
+    expect(pilot).not.toMatch(/opening hint/);
+    // The removed prescriptions stay out of every instruction file.
+    for (const text of [skill, pilot, strategist, knowledge, reference, benchmark].map(flat)) {
+      expect(text).not.toMatch(/first ten minutes|fuel-first|common fast planet order|About 10 iron|Opening scale|Research hint/i);
+      expect(text).not.toMatch(/Automation, Logistics, Electronics/);
+      expect(text).not.toMatch(/as early as research allows|Right after red and green science/);
+      expect(text).not.toContain("build_block");
+    }
+    for (const text of [agents, readme]) expect(text).not.toContain("build_block");
+    expect(live).not.toMatch(/"build_block"|`build_block` `power`|each `build_block` kind/);
+    expect(flat(knowledge)).toMatch(/\*\*Sizing\.\*\* Size a line from the rate you need: `production_requirements` with `per_minute`/);
+    expect(flat(knowledge)).toMatch(/\*\*Research\.\*\* Choose research for what it unlocks at the current bottleneck\. In 2\.0 some technologies unlock by a trigger/);
+    // The geometry facts a hand-designed layout needs, in the reference.
+    const flatReference = flat(reference);
+    expect(flatReference).toMatch(/## Geometry/);
+    expect(flatReference).toMatch(/A mining drill drops its output onto the tile just past the edge it faces/);
+    expect(flatReference).toMatch(/direction 0 picks up north and drops south/);
+    expect(flatReference).toMatch(/One boiler makes steam for two steam engines/);
+    expect(flatReference).toMatch(/An offshore pump stands at the shore/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

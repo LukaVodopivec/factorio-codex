@@ -91,6 +91,26 @@ and a live read disagree, the live read wins.
   measurably makes. A long belt route can cost more than the line it feeds
   returns for many minutes; short local connections pay back first.
 
+## Geometry
+
+Facts of the base game for designing your own layouts; `can_place` and the dry
+run's report confirm each one on the real site.
+
+- A mining drill drops its output onto the tile just past the edge it faces
+  (a burner drill beyond its left column, an electric drill beyond its
+  middle): whatever stands there receives it, else it lands on the ground.
+- An inserter picks up from the tile on one side and drops onto the tile on
+  the other. Its direction names the pickup side: direction 0 picks up north
+  and drops south, 4 picks up east and drops west.
+- One boiler makes steam for two steam engines. Water enters at the ends of
+  the boiler's back row and steam leaves from the middle of its front; an
+  engine takes steam at either end.
+- An offshore pump stands at the shore: it draws from the liquid on one side
+  and outputs on the land side. It pumps the liquid it stands in: steam needs
+  water, so a pump on lava or an oil ocean feeds no boiler.
+- A small electric pole powers machines within 2.5 tiles of it and wires to
+  poles up to 7.5 tiles away.
+
 ## Keep, rebuild or retire
 
 - Every building has a running cost: its fuel, the body's trips to feed or

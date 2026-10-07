@@ -31,9 +31,9 @@ observations, exact positions included; nothing carries over to another run.
 
 ## Hints
 
-- **Opening.** Automate iron and coal together in the first ten minutes: the
-  first iron drill and furnace come before a second coal drill. Never open
-  fuel-first.
+- **Opening.** Plates gate every machine, and fuel pays only when it feeds
+  something that makes progress. Choose what to automate from what you carry
+  and the patches in view.
 - **Supply before demand.** Raw extraction, smelting, and fuel or power
   capacity stay ahead of what the factory consumes. Ore or plates piling up
   in chests should feed more machines that turn them into intermediates and
@@ -62,34 +62,31 @@ hints, never a build or technology order: measured state wins.
 - **Compounding.** A producer placed early pays back for the whole run, so
   place drills, furnaces, and assemblers as soon as their parts exist. Unused
   parts in the inventory are waste.
-- **Opening scale.** About 10 iron, 6 copper, 16 coal, and 4 stone burner
-  drills carry the opening; move to electric drills before bulk belts.
+- **Sizing.** Size a line from the rate you need: `production_requirements`
+  with `per_minute` gives the machines, drills, fuel or power and belts.
 - **Rates.** Electric drill 0.5 ore/s, burner drill 0.25 ore/s, stone furnace
   0.3125 plates/s, yellow belt 15 items/s.
 - **Ratios.** 5 electric drills feed 8 stone furnaces; a full yellow belt is
   30 drills and 48 furnaces. 5 red science assemblers per 6 green (size iron
   for green). 3 cable assemblers per 2 circuit assemblers.
 - **Power.** 1 boiler (1.8 MW) runs 2 steam engines (0.9 MW each). A shortage
-  slows every machine, so add a boiler and two engines whenever `power`
-  satisfaction is below 100% or production sits at capacity. Once researched,
-  solar panels with accumulators are an option that needs no fuel;
-  `add_to_cover` sizes either.
-- **Mall.** Right after red and green science run, automate belts, inserters,
-  drills, poles, and pipes into chests whose slot limit is set at build time,
-  and build from those chests. Filter inserters and filtered splitters sort
-  mixed belts, such as Fulgora's scrap. Unlock construction robots as early as
-  research allows.
+  slows every machine, so add generation whenever `power` satisfaction is
+  below 100% or production sits at capacity. Once researched, solar panels
+  with accumulators are an option that needs no fuel; `add_to_cover` sizes
+  both.
+- **Mall.** Assemblers that make belts, inserters, drills, poles, and pipes
+  into chests (slot limit set at build time) save the body's crafting time.
+  Filter inserters and filtered splitters sort mixed belts, such as Fulgora's
+  scrap.
 - **Water.** Landfill joins a site across water; Aquilo's ocean takes ice
   platform.
-- **Research hint.** Automation, Logistics, Electronics, Fast inserter,
-  Logistic science, Steel, Automation 2, Advanced material processing, Engine,
-  Fluid handling, Oil, Plastics, Advanced circuits, Sulfur, Chemical science,
-  robotics, production and utility science, the silo. In 2.0 some
-  technologies unlock by a trigger, not science: crafting iron plates, copper
-  plates, a lab, or steel, and mining crude oil or uranium ore.
-- **Space Age.** The win is a platform reaching the solar system edge. A
-  common fast planet order is Gleba, Fulgora, Vulcanus, Aquilo; evidence may
-  choose another. Skip Quality. Keep the first platforms minimal.
+- **Research.** Choose research for what it unlocks at the current
+  bottleneck. In 2.0 some technologies unlock by a trigger, not science:
+  crafting iron plates, copper plates, a lab, or steel, and mining crude oil
+  or uranium ore.
+- **Space Age.** The win is a platform reaching the solar system edge. Choose
+  each planet for what it unlocks toward that and the constraint it adds.
+  Quality brings the edge no closer. Keep the first platforms minimal.
 
 ## Learning
 

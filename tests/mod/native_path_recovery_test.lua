@@ -725,6 +725,13 @@ check(enclosed and enclosed.failed:match("^BODY_ENCLOSED:") and enclosed_path.fa
   and enclosed_path.suggested_recovery.expected_name == "wooden-chest" and enclosed_path.suggested_recovery.x == 1,
   "refused probes in both rings prove an enclosure that names the owned blocker toward the target, not a nearer one behind")
 check(enclosed_path.recovery.termination_reason == nil, "a proven enclosure at the cap keeps its enclosure meaning")
+-- What reaches the bot names the blocker and says the automatic step-out
+-- failed or was not possible; it never tells the bot to mine part of a line.
+check(enclosed.failed:match("the automatic step%-out through the owned wooden%-chest at %(1%.0,") ~= nil
+  and enclosed_path.suggested_recovery.hint:match("automatic step%-out through this wooden%-chest .*failed or was not possible") ~= nil
+  and not enclosed.failed:lower():match("mine owned") and not enclosed.failed:match("open a route")
+  and not enclosed_path.suggested_recovery.hint:lower():match("mine this"),
+  "an enclosure names its blocker and says the automatic step-out failed, not to mine it")
 -- A dense build sorts more than the 16 reported colliders ahead of the one on
 -- the line; the suggestion still comes from every collider found.
 for index = 1, 16 do

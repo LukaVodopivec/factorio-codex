@@ -599,9 +599,11 @@ local function resolve_frontiers(state, c)
   local code = occupancy and occupancy.state == "occupied" and "GOAL_OCCUPIED" or "PATH_NOT_FOUND"
   -- The pathfinder refused every probe it answered, and none ended
   -- inconclusive (timeout, backpressure, uncharted route): the body is
-  -- enclosed. Name an owned blocker so ordinary owned mining, not a
-  -- teleport, can open it: one on the line toward the target first, then the
-  -- nearest. Otherwise an empty frontier list stays PATH_NOT_FOUND.
+  -- enclosed. Name an owned blocker, one on the line toward the target
+  -- first, then the nearest: the automatic step-out (move_entity's escape:
+  -- take it up, walk out, put it back) goes through it, never a teleport.
+  -- What reaches the bot means that step-out failed or was not possible.
+  -- Otherwise an empty frontier list stays PATH_NOT_FOUND.
   local suggested
   local refused, inconclusive = false, false
   for _, probe in ipairs(state.frontier_probes or {}) do
@@ -626,7 +628,8 @@ local function resolve_frontiers(state, c)
       code = "BODY_ENCLOSED"
       suggested = { tool = "mine", target_kind = "owned", x = best.position.x, y = best.position.y,
         expected_name = best.name,
-        hint = "mine this owned blocker (extract its contents first if it holds items), then retry the walk" }
+        hint = string.format("the body is enclosed by own entities; the automatic step-out through this %s"
+          .. " (take it up, walk out, put it back) failed or was not possible", best.name) }
     end
   end
   -- The suggestion considers every collider found; the report keeps 16.
@@ -655,7 +658,8 @@ local function resolve_frontiers(state, c)
     state.target.x, state.target.y, state.frontier_segments or 0)
   return fail(c, code, string.format("%s; %s; reachable_frontier=%s%s", reason, evidence,
     recommended and string.format("(%.1f,%.1f)", recommended.position.x, recommended.position.y) or "none",
-    suggested and string.format("; enclosed by owned entities: mine owned %s at (%.1f,%.1f) to open a route",
+    suggested and string.format("; enclosed by owned entities: the automatic step-out through the owned %s at"
+      .. " (%.1f,%.1f) (take it up, walk out, put it back) failed or was not possible",
       suggested.expected_name, suggested.x, suggested.y) or ""),
     { code = code, diagnostics = { path = diagnostics } })
 end

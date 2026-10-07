@@ -213,7 +213,7 @@ local escapes, escape_result = {}, nil
 supply.register_runner("move_entity", { start = function(task) escapes[#escapes + 1] = task end,
   tick = function() return escape_result end })
 local enclosed_walk = { status = "failed",
-  detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities: mine owned fast-inserter at (187.5,-7.5) to open a route",
+  detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities: the automatic step-out through the owned fast-inserter at (187.5,-7.5) (take it up, walk out, put it back) failed or was not possible",
   outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
     suggested_recovery = { tool = "mine", target_kind = "owned", x = 187.5, y = -7.5, expected_name = "fast-inserter" } } } } }
 local enclosed_calls = 0

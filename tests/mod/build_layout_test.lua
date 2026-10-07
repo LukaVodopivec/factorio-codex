@@ -630,8 +630,28 @@ do
   local tunnelled = dry({ anchor = { x = 960, y = 970 }, entities = { { name = "pipe", dx = 0.5, dy = 0.5 },
     { name = "pipe-to-ground", dx = 1.5, dy = 0.5, direction = 12 }, { name = "pipe-to-ground", dx = 5.5, dy = 0.5, direction = 4 },
     { name = "pipe", dx = 6.5, dy = 0.5 } } })
+  -- A planned entrance whose underground partner already stands: the
+  -- petroleum gas the standing exit carries meets the lubricant the
+  -- entrance takes from its normal side.
+  local function standing_exit(x, y, fluid)
+    local e = existing("pipe-to-ground", "pipe-to-ground", x, y, 0.7, { direction = 4 })
+    e.fluidbox = setmetatable({ get_prototype = function() return { production_type = "input-output" } end,
+      get_pipe_connections = function() return {} end },
+      { __len = function() return 1 end, __index = function(_, k) if k == 1 then return { name = fluid, amount = 100 } end end })
+    return e
+  end
+  blockers = { standing_fluid_pipe(959.5, 975.5, "lubricant"), standing_exit(964.5, 975.5, "petroleum-gas") }
+  local to_standing = dry({ anchor = { x = 960, y = 975 }, entities = {
+    { name = "pipe-to-ground", dx = 0.5, dy = 0.5, direction = 12 } } })
+  blockers = { standing_fluid_pipe(959.5, 975.5, "lubricant"), standing_exit(964.5, 975.5, "lubricant") }
+  local to_same = dry({ anchor = { x = 960, y = 975 }, entities = {
+    { name = "pipe-to-ground", dx = 0.5, dy = 0.5, direction = 12 } } })
   underground.max_underground_distance = nil
   blockers = {}
+  check(not to_standing.ok and #to_standing.failed == 1 and to_standing.failed[1].index == 0
+    and to_standing.failed[1].reason:match("^pipe%-to%-ground at %(960%.5, 975%.5%): it would join lubricant and petroleum%-gas pipes") ~= nil,
+    "a planned pipe-to-ground fed lubricant fails when its standing underground partner carries petroleum gas")
+  check(to_same.ok and #to_same.failed == 0, "a standing underground partner of the same fluid joins nothing that mixes")
   check(not tunnelled.ok and #tunnelled.failed == 1 and tunnelled.failed[1].index == 3
     and tunnelled.failed[1].reason:match("would join lubricant and petroleum%-gas pipes") ~= nil,
     "the lubricant a planned pipe-to-ground pair carries under a gap meets petroleum gas past its exit")

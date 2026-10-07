@@ -2019,15 +2019,60 @@ local function underground_of(V, p)
 end
 
 -- The planned entity an underground connection meets: the nearest one of
--- the same name within reach along it whose own leads back.
+-- the same name within reach along it whose own leads back, its connection
+-- and how many tiles along it stands.
 local function underground_partner(V, i, u)
   local p = V.planned[i]
   for k = 1, u.reach do
     for _, j in ipairs(planned_at(V, p.position.x + u.dx * k, p.position.y + u.dy * k)) do
       local q = V.planned[j]
       local back = q.name == p.name and underground_of(V, q)
-      if back and back.dx == -u.dx and back.dy == -u.dy then return j, back end
+      if back and back.dx == -u.dx and back.dy == -u.dy then return j, back, k end
     end
+  end
+end
+
+-- The fluid a standing partner feeds into planned entity i's underground
+-- connection (V.seeds, as fluid_seeds): the nearest own entity of its name
+-- along it, nearer than any planned partner, whose own underground leads
+-- back. One small query along the line (at most MIX_READS entities),
+-- charged per tile scanned.
+local function underground_seed(ctx, V, i)
+  local p = V.planned[i]
+  local u = underground_of(V, p)
+  if not u then return end
+  ctx.calls = ctx.calls + math.ceil(u.reach / LOAD_PER_ITEM)
+  local _, _, planned_k = underground_partner(V, i, u)
+  local reach = planned_k and planned_k - 1 or u.reach
+  if reach < 1 then return end
+  local surface, force = where(ctx)
+  local x1, y1 = p.position.x + u.dx, p.position.y + u.dy
+  local x2, y2 = p.position.x + u.dx * reach, p.position.y + u.dy * reach
+  ctx.calls = ctx.calls + SURVEY_QUERY
+  local ok, found = pcall(surface.find_entities_filtered, { force = force, name = p.name, limit = MIX_READS, area = {
+    left_top = { x = math.min(x1, x2) - 0.4, y = math.min(y1, y2) - 0.4 },
+    right_bottom = { x = math.max(x1, x2) + 0.4, y = math.max(y1, y2) + 0.4 } } })
+  if not (ok and type(found) == "table") then return end
+  ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
+  local best, best_k, best_box
+  for _, e in ipairs(found) do
+    local direction = e.valid and e.name == p.name and tonumber(e.direction)
+    if direction and charted_at(ctx, e.position) then
+      local k = math.abs(e.position.x - p.position.x) + math.abs(e.position.y - p.position.y)
+      local back = underground_of(V, { name = e.name, proto = p.proto, direction = direction })
+      if back and back.dx == -u.dx and back.dy == -u.dy and (not best_k or k < best_k) then
+        best, best_k, best_box = e, k, back.box
+      end
+    end
+  end
+  if not best then return end
+  local held_ok, fluid = pcall(function() return best.fluidbox[best_box or 1] end)
+  if held_ok and type(fluid) == "table" and type(fluid.name) == "string" then
+    local seeds = V.seeds[i] or {}
+    V.seeds[i] = seeds
+    local box = u.box or 0
+    seeds[box] = seeds[box] or {}
+    seeds[box][fluid.name] = true
   end
 end
 
@@ -2115,6 +2160,7 @@ local function survey_item(ctx, V, item)
   local rows = V.rows
   if item.kind == "seed" then
     fluid_seeds(ctx, V, item.i)
+    underground_seed(ctx, V, item.i)
   elseif item.kind == "mix" then
     mix_check(ctx, V)
   elseif item.kind == "ore" then

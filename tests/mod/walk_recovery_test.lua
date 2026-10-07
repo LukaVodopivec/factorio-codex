@@ -239,4 +239,96 @@ for _ = 1, 8 do
 end
 check(seen >= 2 and matches, string.format("each of %d stuck escape retries walks toward its own target", seen))
 water = function() return false end
+
+-- Narrow gaps. The native pathfinder plans with a 0.2 path box, so its
+-- route may run through a gap barely wider than the body. The body moves
+-- in eight directions, 0.15 tiles a tick, and never into a collider (as in
+-- the game, which does not slide it along the face it meets). Turning for
+-- the next leg half a tile before the gap's mouth waypoint cut the corner
+-- into the gap's side, and the walk stalled there.
+do
+  local VECTORS = { [0] = { 0, -1 }, [2] = { 1, -1 }, [4] = { 1, 0 }, [6] = { 1, 1 }, [8] = { 0, 1 },
+    [10] = { -1, 1 }, [12] = { -1, 0 }, [14] = { -1, -1 } }
+  local function collider(name, kind, x1, y1, x2, y2, minable)
+    return { valid = true, name = name, type = kind, position = { x = (x1 + x2) / 2, y = (y1 + y2) / 2 },
+      bounding_box = { left_top = { x = x1, y = y1 }, right_bottom = { x = x2, y = y2 } },
+      prototype = { collision_mask = { layers = { player = true } }, mineable_properties = { minable = minable } } }
+  end
+  -- Walks from `start` along the native `path` (every request gets it) and
+  -- returns the walk's result.
+  local function through(start, goal, path, colliders)
+    entities = colliders
+    body.position = { x = start.x, y = start.y }
+    local task = begin(goal, "exact", 1)
+    for _ = 1, 1500 do
+      game.tick = game.tick + 1
+      if storage.path_request then deliver(path) end
+      local result = walk.tick(task)
+      if result then return result, task end
+      local state = body.walking_state
+      if state.walking then
+        local v = VECTORS[state.direction]
+        local k = (v[1] ~= 0 and v[2] ~= 0) and 0.15 / math.sqrt(2) or 0.15
+        local to = { x = body.position.x + v[1] * k, y = body.position.y + v[2] * k }
+        local moved = { left_top = { x = to.x - 0.2, y = to.y - 0.2 }, right_bottom = { x = to.x + 0.2, y = to.y + 0.2 } }
+        local free = true
+        for _, e in ipairs(entities) do
+          if e.valid and overlaps(moved, e.bounding_box) then free = false end
+        end
+        if free then body.position = to end
+      end
+    end
+    return { status = "timeout" }, task
+  end
+  walk.start_clearer = nil
+  -- Two huge rocks 0.6 tiles apart; the route enters the gap from the
+  -- north-west at its mouth waypoint.
+  local rocks = { collider("huge-rock", "simple-entity", -3, -1, 0, 1, true),
+    collider("huge-rock", "simple-entity", 0.6, -1, 3.6, 1, true) }
+  local result = through({ x = -4.5, y = -6 }, { x = 4, y = 5 },
+    { { x = 0.3, y = -1.3 }, { x = 0.3, y = 1.3 }, { x = 4, y = 5 } }, rocks)
+  check(result.status == "done", "a walk through a 0.6-tile gap between two rocks arrives: "
+    .. tostring(result.detail))
+  -- A lab and a tree 0.6 tiles apart, on a route of tile-spaced waypoints.
+  local lab = collider("lab", "lab", -2.4, -1.2, 0, 1.2, false)
+  lab.force = body.force
+  result = through({ x = -4.5, y = -6 }, { x = 4, y = 5 },
+    { { x = -3.5, y = -5 }, { x = -2.5, y = -4 }, { x = -1.5, y = -3 }, { x = -0.5, y = -2 }, { x = 0.3, y = -1.5 },
+      { x = 0.3, y = -0.5 }, { x = 0.3, y = 0.5 }, { x = 0.3, y = 1.5 }, { x = 1.3, y = 2.5 }, { x = 4, y = 5 } },
+    { lab, collider("tree-01", "tree", 0.6, -0.4, 1.4, 0.4, true) })
+  check(result.status == "done", "a walk between a lab and a tree 0.6 tiles apart arrives: " .. tostring(result.detail))
+
+  -- A gap too tight for eight walking directions (0.45 tiles: the body's
+  -- centre must hold within 0.025 of its middle): the stalled body mines the
+  -- rock ahead of it once, from where it stands, and walks on.
+  local mined = {}
+  walk.start_clearer = {
+    start = function(task) mined[#mined + 1] = task.entity; task.ticks = 0 end,
+    tick = function(task)
+      task.ticks = task.ticks + 1
+      if task.ticks < 3 then return nil end
+      task.entity.valid = false
+      return { status = "done", detail = "mined " .. task.entity.name }
+    end,
+  }
+  rocks = { collider("huge-rock", "simple-entity", -3, -1, 0.075, 1, true),
+    collider("huge-rock", "simple-entity", 0.525, -1, 3.6, 1, true) }
+  local task
+  result, task = through({ x = -4.5, y = -6 }, { x = 4, y = 5 },
+    { { x = 0.3, y = -1.3 }, { x = 0.3, y = 1.3 }, { x = 4, y = 5 } }, rocks)
+  check(result.status == "done" and #mined == 1 and result.outcome.stall_cleared
+    and result.outcome.stall_cleared.name == "huge-rock" and result.outcome.stall_cleared.status == "done",
+    "a walk stalled at a rock gap it cannot thread mines the rock once and arrives: " .. tostring(result.detail))
+  -- An owned building is never mined: the stall fails truthfully.
+  mined = {}
+  local left, right = collider("stone-wall", "wall", -3, -1, 0.075, 1, true),
+    collider("stone-wall", "wall", 0.525, -1, 3.6, 1, true)
+  left.force, right.force = body.force, body.force
+  result = through({ x = -4.5, y = -6 }, { x = 4, y = 5 },
+    { { x = 0.3, y = -1.3 }, { x = 0.3, y = 1.3 }, { x = 4, y = 5 } }, { left, right })
+  check(result.status == "failed" and result.detail:match("^PATH_STALLED") and #mined == 0,
+    "a stall between owned buildings mines nothing and fails PATH_STALLED")
+  walk.start_clearer = nil
+  entities = {}
+end
 os.exit(failures == 0 and 0 or 1)

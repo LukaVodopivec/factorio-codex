@@ -16,7 +16,12 @@ local placement_geometry = require("scripts.placement_geometry")
 
 local M = {}
 
-local WAYPOINT_RADIUS_SQ = 0.25 -- advance to the next waypoint within 0.5 tiles
+-- A waypoint is reached within 0.2 tiles, or within 0.5 once the body has
+-- passed it along its leg (a belt or a shove carried it by). Turning for the
+-- next leg half a tile early cuts the corner: at the mouth of a gap the
+-- native 0.2 path box fits, the body then meets the gap's side.
+local WAYPOINT_RADIUS_SQ = 0.25
+local WAYPOINT_EXACT_SQ = 0.04
 local STUCK_CHECK_TICKS = 60
 local STUCK_EPSILON_SQ = 0.01 -- moved less than 0.1 tiles in a check window = stuck
 -- The native pathfinder spreads a search over ticks (1,000 steps a tick by
@@ -126,6 +131,15 @@ M.steer = steer
 local function dist_sq(a, b)
   local dx, dy = a.x - b.x, a.y - b.y
   return dx * dx + dy * dy
+end
+
+local function reached_waypoint(state, pos, waypoint)
+  local d2 = dist_sq(pos, waypoint)
+  if d2 <= WAYPOINT_EXACT_SQ then return true end
+  if d2 > WAYPOINT_RADIUS_SQ then return false end
+  local leg = state.steer_leg
+  return leg ~= nil and leg.to.x == waypoint.x and leg.to.y == waypoint.y
+    and (waypoint.x - pos.x) * (waypoint.x - leg.from.x) + (waypoint.y - pos.y) * (waypoint.y - leg.from.y) <= 0
 end
 
 -- Entity searches take the layer dictionary, not the whole CollisionMask.
@@ -796,15 +810,50 @@ local function natural_start_blocker(c, evidence)
   end
 end
 
--- Mines the start blocker from where the body stands; true while mining.
+-- A tree or rock (not own) whose box comes within STALL_CLEAR_MARGIN of the
+-- stalled body's box: the one ahead toward `toward` first, then the nearest.
+local STALL_CLEAR_MARGIN = 0.3
+local NATURAL_TYPES = { "plant", "simple-entity", "tree" }
+local function natural_stall_blocker(c, toward)
+  local box = placement_geometry.character_box(c)
+  if not box then return nil end
+  local area = { left_top = { x = box.left_top.x - STALL_CLEAR_MARGIN, y = box.left_top.y - STALL_CLEAR_MARGIN },
+    right_bottom = { x = box.right_bottom.x + STALL_CLEAR_MARGIN, y = box.right_bottom.y + STALL_CLEAR_MARGIN } }
+  local ok, found = pcall(c.surface.find_entities_filtered, { area = area, type = NATURAL_TYPES, limit = 8 })
+  local pos, best, best_ahead, best_d = c.position, nil, false, nil
+  for _, e in ipairs(ok and type(found) == "table" and found or {}) do
+    local ok_minable, minable = pcall(function()
+      return e.valid and e.force ~= c.force and e.prototype.mineable_properties.minable
+    end)
+    if ok_minable and minable and (not e.bounding_box or placement_geometry.overlaps(area, e.bounding_box)) then
+      local ahead = (e.position.x - pos.x) * (toward.x - pos.x) + (e.position.y - pos.y) * (toward.y - pos.y) > 0
+      local d = dist_sq(pos, e.position)
+      if not best or (ahead and not best_ahead) or (ahead == best_ahead and d < best_d) then
+        best, best_ahead, best_d = e, ahead, d
+      end
+    end
+  end
+  return best
+end
+
+-- Mines a blocker from where the body stands; true while mining.
 local function step_clear(state, c)
   local ok, result = pcall(M.start_clearer.tick, state.clearing)
   if ok and result == nil then return true end
-  state.start_cleared = { name = state.clearing.entity_name, position = state.clearing.target,
+  state[state.clearing_record or "start_cleared"] = { name = state.clearing.entity_name, position = state.clearing.target,
     status = ok and result.status or "failed", detail = ok and result.detail or tostring(result) }
-  state.clearing, state.phase = nil, "request"
+  state.clearing, state.clearing_record, state.phase = nil, nil, "request"
   c.mining_state = { mining = false }
   return false
+end
+
+local function clear_blocker(state, c, task_id, blocker, record)
+  local clearing = { id = task_id, type = "mine", entity = blocker, count = 1, target_kind = "natural", from_here = true,
+    target = { x = blocker.position.x, y = blocker.position.y }, entity_name = blocker.name }
+  if not pcall(M.start_clearer.start, clearing) then return false end
+  state.clearing, state.clearing_record, state.phase = clearing, record, "clearing"
+  stop(c)
+  return true
 end
 
 local function begin_clear(state, c, task_id, evidence)
@@ -812,12 +861,18 @@ local function begin_clear(state, c, task_id, evidence)
   local blocker = natural_start_blocker(c, evidence)
   if not blocker then return false end
   state.clear_attempted = true
-  local clearing = { id = task_id, type = "mine", entity = blocker, count = 1, target_kind = "natural", from_here = true,
-    target = { x = blocker.position.x, y = blocker.position.y }, entity_name = blocker.name }
-  if not pcall(M.start_clearer.start, clearing) then return false end
-  state.clearing, state.phase = clearing, "clearing"
-  stop(c)
-  return true
+  return clear_blocker(state, c, task_id, blocker, "start_cleared")
+end
+
+-- A walk stalled beside a tree or rock (a gap the native 0.2 path box fits
+-- but the body's eight walking directions cannot thread) mines it once from
+-- where the body stands, then asks for a new path.
+local function begin_stall_clear(state, c, task_id, toward)
+  if state.stall_clear_attempted or not M.start_clearer then return false end
+  local blocker = natural_stall_blocker(c, toward)
+  if not blocker then return false end
+  state.stall_clear_attempted = true
+  return clear_blocker(state, c, task_id, blocker, "stall_cleared")
 end
 
 -- (Re)initialize a walker. `state` must be a plain table stored on the task;
@@ -1017,7 +1072,7 @@ function M.step(state, c, task_id)
   if state.phase == "following" or state.phase == "frontier_following" then
     local following_frontier = state.phase == "frontier_following"
     local path = state.path
-    while state.waypoint <= #path and dist_sq(pos, path[state.waypoint]) <= WAYPOINT_RADIUS_SQ do
+    while state.waypoint <= #path and reached_waypoint(state, pos, path[state.waypoint]) do
       state.waypoint = state.waypoint + 1
     end
     if state.waypoint > #path then
@@ -1058,6 +1113,7 @@ function M.step(state, c, task_id)
         stop(c)
         return nil
       end
+      if begin_stall_clear(state, c, task_id, goal or state.target) then return nil end
       local evidence = blocker_evidence(state, c, goal or state.target)
       return fail(c, "PATH_STALLED", string.format(
           "got stuck at (%.1f, %.1f), still %.1f tiles from the target; %s",
@@ -1137,7 +1193,8 @@ function M.tick(task)
           settle.conveyor.position.x, settle.conveyor.position.y) or ""),
       outcome = { requested_goal = task._walk.requested_goal, resolved_goal = task._walk.target,
         arrival_mode = task._walk.arrival_mode, arrival_radius = task._walk.arrival_radius,
-        recovery_segments = task._walk.frontier_segments, settle = settle, start_cleared = task._walk.start_cleared } }
+        recovery_segments = task._walk.frontier_segments, settle = settle, start_cleared = task._walk.start_cleared,
+        stall_cleared = task._walk.stall_cleared } }
   elseif type(r) == "table" then
     return { status = "failed", detail = r.failed, outcome = r.outcome }
   end

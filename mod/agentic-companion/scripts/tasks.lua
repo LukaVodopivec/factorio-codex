@@ -1139,6 +1139,7 @@ local function tick_plan(plan)
     local detail = string.format("plan exceeded its %d-second active budget", budget / 60)
     if plan.current_task then
       local note = step_cancelled(plan)
+      if plan._recovery and plan._recovery.phase == "fixing" then plan._recovery.phase = "failed" end
       finish_step(plan, { status = "failed", detail = detail, outcome = note })
     else finish(plan, "failed", detail) end
     return
@@ -1455,6 +1456,9 @@ local function watchdog(tasks)
     outcome.cancelled = note
     if type(note.detail) == "string" then detail = detail .. "; " .. note.detail end
   end
+  -- A stalled recovery fix is over: it must not tick again once its entity
+  -- is back (a walk back after this step would otherwise rerun it).
+  if plan and plan._recovery and plan._recovery.phase == "fixing" then plan._recovery.phase = "failed" end
   storage.path_request, task._path_result = nil, nil
   if plan then finish_step(plan, { status = "failed", detail = detail, outcome = outcome })
   else finish(task, "failed", detail, nil, outcome) end

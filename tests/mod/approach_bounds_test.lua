@@ -506,6 +506,18 @@ check(record ~= nil and record.outcome.code == "STEP_STALLED" and record.outcome
   and record.outcome.cancelled.code == "ESCAPE_CANCELLED" and #stall_hook_args == 2 and stall_hook_args[2] == true,
   "a stalled direct step-out records the body-only cancelled note too")
 
+-- A recovery fix that stalls is over: the watchdog marks the recovery failed,
+-- so nothing reruns the fix after its entity went back.
+reset(0.5, -0.5)
+plan = tasks.queue_plan({ steps = { { action = "test_stuck_escape" } } }).plan_id
+tick()
+local active = storage.tasks.active
+active._recovery = { step = active.current_step, phase = "fixing", fix = active.current_task,
+  first = { status = "failed", detail = "BODY_ENCLOSED" } }
+record = run(plan, 5000)
+check(record ~= nil and active._recovery.phase == "failed" and #record.plan.outcomes == 1,
+  "a stalled recovery fix ends its recovery, so it never ticks again")
+
 -- A hand-crafting queue that advances is progress for a step that waits on
 -- it: the step is not stalled.
 local craft = require("scripts.actions.craft")

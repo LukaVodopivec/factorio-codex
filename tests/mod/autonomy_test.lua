@@ -198,6 +198,23 @@ check(plate_line.state == "running" and plate_line.working == 1 and plate_line.m
 mock.state(f1).status = RAW.no_ingredients
 run(630)
 
+-- A furnace that never smelted has no recipe and no product: its starved
+-- line names the furnace and the game's status, never nothing.
+local unused = machine("furnace", "stone-furnace", 200, 0, { products_finished = 0, status = RAW.no_ingredients,
+  get_recipe = function() return nil end, get_inventory = function() return inventory({}) end })
+autonomy.refresh()
+run(660)
+local unused_line
+for _, line in ipairs(autonomy.lines()) do
+  if line.position and line.position.x == unused.position.x and line.position.y == unused.position.y then unused_line = line end
+end
+check(unused_line and unused_line.state == "starved" and unused_line.product == nil and unused_line.entity == "stone-furnace"
+  and unused_line.cause == "no_ingredients" and unused_line.cause_position,
+  "a starved line with no product names its machine and the game's status as its cause")
+unused.valid = false
+autonomy.refresh()
+run(30)
+
 -- A dry drill is a problem after a second and the line says no_fuel.
 mock.state(d1).status, mock.state(d2).status = RAW.no_fuel, RAW.no_fuel
 local before_problem = storage.autonomy.last_problem_tick

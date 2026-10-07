@@ -303,8 +303,11 @@ M.place_action = {
 -- materials against what the body carries; in hand mode an item the body
 -- cannot obtain now (unobtainable) makes it not ok. A placement that fits
 -- (here or at the free position) also reports build_layout's survey rows
--- on_ore, mixed_ore and open_fluid_ports (a platform has no ore). A job: the
--- same search and per-tick budget as build_layout's dry run.
+-- on_ore, mixed_ore and open_fluid_ports (a platform has no ore). A place
+-- whose pipes the build would be refused for mixing fluids is not free: no
+-- free_position, free_reason names the pipe (and at the position it is a
+-- collision). A job: the same search and per-tick budget as build_layout's
+-- dry run.
 M.place_check_job = {
   start = function(params)
     local label = "blueprint_place"
@@ -349,10 +352,16 @@ M.place_check_job = {
       budget.left = budget.left - (s.ctx.calls - before)
       if not done then return nil end
       for k, v in pairs(build_layout.survey_rows(job.survey)) do job.out[k] = v end
-      -- A placement the build would be refused for mixing fluids collides.
-      for _, row in ipairs(build_layout.survey_failed(job.survey)) do
-        job.out.ok = false
-        if #job.out.collisions < MAX_ROWS then job.out.collisions[#job.out.collisions + 1] = row end
+      -- A placement the build would be refused for mixing fluids is not
+      -- free: at the position it collides (the list holds nothing else
+      -- there), near it the free position goes and free_reason says why.
+      local mixes = build_layout.survey_failed(job.survey)
+      if #mixes > 0 then
+        job.out.free_position, job.out.free_reason = nil, mixes[1].reason
+        if job.phase == "at" then
+          job.out.ok = false
+          for i = 1, math.min(MAX_ROWS, #mixes) do job.out.collisions[i] = mixes[i] end
+        end
       end
       return job.out
     end

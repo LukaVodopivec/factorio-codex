@@ -242,8 +242,20 @@ blueprints.create({ name = "pipes", entities = { { name = "pipe", dx = 0.5, dy =
 local lube, gas = fluid_pipe(29.5, 10.5, "lubricant"), fluid_pipe(32.5, 10.5, "petroleum-gas")
 local mixed = jobs.run_now(area_ops.place_check_job, { name = "pipes", position = { x = 30, y = 10 }, check_only = true })
 lube.valid, gas.valid = false, false
-check(not mixed.ok and #mixed.collisions == 1 and mixed.collisions[1].reason:match("would join lubricant and petroleum%-gas pipes"),
-  "a blueprint dry run is not ok when its own pipes would join two standing fluids, and names the refused pipe")
+check(not mixed.ok and #mixed.collisions == 1 and mixed.collisions[1].reason:match("would join lubricant and petroleum%-gas pipes")
+  and mixed.free_position == nil and mixed.free_reason == mixed.collisions[1].reason,
+  "a blueprint dry run is not ok when its own pipes would join two standing fluids, names the refused pipe and offers no free position")
+-- Blocked at the position, the first place near it that fits, (39, 9),
+-- would mix too: no free position, and free_reason says why; the
+-- position's own collisions stay its own.
+local chest = spawn("wooden-chest", { x = 40.5, y = 10.5 })
+lube, gas = fluid_pipe(38.5, 9.5, "lubricant"), fluid_pipe(41.5, 9.5, "petroleum-gas")
+local near_mix = jobs.run_now(area_ops.place_check_job, { name = "pipes", position = { x = 40, y = 10 }, check_only = true })
+chest.valid, lube.valid, gas.valid = false, false, false
+check(not near_mix.ok and near_mix.free_position == nil
+  and near_mix.free_reason and near_mix.free_reason:match("^pipe at %(40%.5, 9%.5%): it would join lubricant and petroleum%-gas pipes") ~= nil
+  and #near_mix.collisions == 1 and near_mix.collisions[1].reason:match("wooden%-chest") ~= nil,
+  "a free position near a blocked one whose pipes would mix is not offered, and free_reason names the refused pipe")
 
 local placed, place_task = run(area_ops.place_action, { name = "gears", position = { x = 10.2, y = 9.8 }, direction = 4 })
 local machine, arm

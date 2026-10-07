@@ -800,8 +800,13 @@ local function wait_for_research(plan, step)
 end
 
 local PARKED_ACTIONS = { wait_for_item = true, wait_for_research = true }
--- Actions a save from an older version may still hold.
-local REMOVED_ACTIONS = { validate_factory_component = true }
+-- Actions a save from an older version may still hold, and how such a step
+-- ends: a dropped check as done, a dropped build as failed (nothing was built).
+local REMOVED_ACTIONS = { validate_factory_component = "done", build_block = "failed" }
+local function removed_result(action)
+  return { status = REMOVED_ACTIONS[action], detail = "REMOVED_ACTION: " .. action .. " no longer exists",
+    outcome = { code = "REMOVED_ACTION", action = action } }
+end
 local function wait_timeout_detail(step)
   local start = tonumber(step._starting_count) or 0
   local current = tonumber(step._current_count) or start
@@ -1128,10 +1133,9 @@ local function tick_plan(plan)
     plan.current_step = plan.ending and return_step(plan) or plan.completed_steps + 1
     local step = plan.steps[plan.current_step]
     if REMOVED_ACTIONS[step.action] then
-      -- A step saved by an older version: complete it as a no-op.
+      -- A step saved by an older version ends without running.
       plan.wait_started_tick, plan.next_check_tick = nil, nil
-      finish_step(plan, { status = "done", detail = "REMOVED_ACTION: " .. step.action .. " no longer exists",
-        outcome = { code = "REMOVED_ACTION", action = step.action } })
+      finish_step(plan, removed_result(step.action))
       return
     end
     -- A positional step never starts on another surface than its own (a body
@@ -1161,8 +1165,7 @@ local function tick_plan(plan)
   if step.action == "wait_for_item" then ok, result = pcall(wait_for_item, plan, step)
   elseif step.action == "wait_for_research" then ok, result = pcall(wait_for_research, plan, step)
   elseif REMOVED_ACTIONS[step.action] then
-    ok, result = true, { status = "done", detail = "REMOVED_ACTION: " .. step.action .. " no longer exists",
-      outcome = { code = "REMOVED_ACTION", action = step.action } }
+    ok, result = true, removed_result(step.action)
     plan.wait_started_tick, plan.next_check_tick = nil, nil
   elseif step.action == "inspect_entities" then
     ok, result = pcall(function()

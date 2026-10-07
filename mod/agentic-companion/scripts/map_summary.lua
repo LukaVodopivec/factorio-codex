@@ -16,6 +16,7 @@ local autonomy = require("scripts.autonomy")
 local fluid_connections = require("scripts.fluid_connections")
 local output_target = require("scripts.output_target")
 local registry = require("scripts.registry")
+local production_requirements = require("scripts.production_requirements")
 local jobs = require("scripts.jobs")
 
 local M = {}
@@ -1626,10 +1627,14 @@ end
 --   night_s        dark seconds a day on this surface (planets)
 --   add_to_cover   only while sustained_w < demand_w, both ways to cover the
 --                  deficit (the bot chooses): steam {steam_engine, boiler,
---                  offshore_pump} and, where the sun gives power, solar
---                  {solar_panel, accumulator?}: panels for the day average
---                  and the accumulators that carry the night deficit of the
---                  network's panels with the added ones
+--                  offshore_pump?}: the engines for the deficit, and the
+--                  boilers and offshore pumps the surface's steam engines
+--                  with the added ones need beyond those already standing
+--                  there (0 when they suffice; no offshore_pump on a planet
+--                  whose map-generated tiles give no water); and, where the sun gives
+--                  power, solar {solar_panel, accumulator?}: panels for the
+--                  day average and the accumulators that carry the night
+--                  deficit of the network's panels with the added ones
 -- The solar factor is the surface's "solar-power" property / 100 times its
 -- solar_power_multiplier. Light (daytime 0 is noon) is full outside
 -- dusk..dawn, falls linearly from dusk to evening, is zero to morning and
@@ -1638,8 +1643,8 @@ end
 -- Base steam defaults: an engine's 900 kW, a boiler's 1.8 MW (two engines),
 -- and the 20 boilers an offshore pump's 1200 water/s feeds at 60/s each.
 local STEAM = { engine_w = 900000, boiler_w = 1800000, boilers_per_pump = 20 }
-local ACCUMULATOR_JOULES = 5000000
-local LIGHT_SAMPLES = 100
+-- An accumulator's default 5 MJ, and the daytimes a day's light is sampled at.
+local SOLAR = { accumulator_j = 5000000, light_samples = 100 }
 
 local function prototype_watts(name, fallback)
   local ok, watts = pcall(function() return prototypes.entity[name].get_max_energy_production("normal") * 60 end)
@@ -1648,7 +1653,7 @@ end
 
 local function prototype_buffer(name)
   local ok, joules = pcall(function() return prototypes.entity[name].electric_energy_source_prototype.buffer_capacity end)
-  return ok and type(joules) == "number" and joules > 0 and joules or ACCUMULATOR_JOULES
+  return ok and type(joules) == "number" and joules > 0 and joules or SOLAR.accumulator_j
 end
 
 local function light_at(day, t)
@@ -1659,7 +1664,7 @@ local function light_at(day, t)
   return (t - day.morning) / (day.dawn - day.morning)
 end
 
--- The light of LIGHT_SAMPLES evenly spaced daytimes, cached per surface for
+-- The light of SOLAR.light_samples evenly spaced daytimes, cached per surface for
 -- its daytime parameters (pure arithmetic, so a cache rebuilt after a load
 -- is the same).
 local light_tables = {}
@@ -1668,7 +1673,7 @@ local function light_table(index, day)
   local cached = light_tables[index]
   if cached and cached.key == key then return cached.values end
   local values = {}
-  for i = 1, LIGHT_SAMPLES do values[i] = light_at(day, (i - 0.5) / LIGHT_SAMPLES) end
+  for i = 1, SOLAR.light_samples do values[i] = light_at(day, (i - 0.5) / SOLAR.light_samples) end
   light_tables[index] = { key = key, values = values }
   return values
 end
@@ -1754,14 +1759,34 @@ end
 
 -- Both ways to cover the deficit, as counts: the bot picks one. Solar is
 -- left out where the sun gives no power.
-local function cover(row, net, env, solar_w, other_w)
+-- Steam sizes the whole surface: the boilers and offshore pumps its steam
+-- engines with the added ones need, less those standing there (one Lua pass
+-- over the registry's sets of those types; a boiler heated by a reactor, a
+-- heat exchanger, feeds turbines, so only the base boiler counts). There is
+-- no offshore_pump on a planet whose own map-generated tiles give no water
+-- (Vulcanus lava, Fulgora oil, Aquilo ammonia); an unreadable planet counts
+-- as water.
+local function cover(row, net, env, solar_w, other_w, surface)
   local deficit = row.demand_w - row.sustained_w
   local engine_w = prototype_watts("steam-engine", STEAM.engine_w)
   local ok, boiler_w = pcall(function() return prototypes.entity.boiler.get_max_energy_usage("normal") * 60 end)
   if not (ok and type(boiler_w) == "number" and boiler_w > 0) then boiler_w = STEAM.boiler_w end
   local engines = math.ceil(deficit / engine_w)
-  local boilers = math.ceil(engines * engine_w / boiler_w)
-  local out = { steam = { steam_engine = engines, boiler = boilers, offshore_pump = math.ceil(boilers / STEAM.boilers_per_pump) } }
+  local standing = { generator = 0, boiler = 0, ["offshore-pump"] = 0 }
+  for _, entry in ipairs(registry.machines({ "generator", "boiler", "offshore-pump" }, env.index)) do
+    if entry.type == "offshore-pump" or (entry.type == "boiler" and entry.name == "boiler")
+      or (entry.type == "generator" and registry.power_kind(entry.name) == "steam") then
+      standing[entry.type] = standing[entry.type] + 1
+    end
+  end
+  local ok_planet, water = pcall(function()
+    return production_requirements.has_liquid(surface.planet.name, "water")
+  end)
+  water = not ok_planet or water == true
+  local boilers = math.ceil((standing.generator + engines) * engine_w / boiler_w)
+  local pumps = math.ceil(boilers / STEAM.boilers_per_pump)
+  local out = { steam = { steam_engine = engines, boiler = math.max(0, boilers - standing.boiler),
+    offshore_pump = water and math.max(0, pumps - standing["offshore-pump"]) or nil } }
   local solar = net.sources.solar
   local panel_w = solar and solar.count > 0 and solar.nameplate_w / solar.count or prototype_watts("solar-panel", 60000)
   local per_panel = panel_w * env.factor * env.average
@@ -1770,7 +1795,7 @@ local function cover(row, net, env, solar_w, other_w)
   -- The night: energy the panels (with the added ones) cannot give,
   -- integrated over the day's light samples.
   local peak = (solar_w + panels * panel_w) * env.factor
-  local seconds = env.ticks_per_day / 60 / LIGHT_SAMPLES
+  local seconds = env.ticks_per_day / 60 / SOLAR.light_samples
   local short_j = 0
   for _, light in ipairs(env.light) do
     short_j = short_j + math.max(0, row.demand_w - other_w - peak * light) * seconds
@@ -1834,7 +1859,7 @@ function M.build_power(surface, limit)
       row.sustained_w = watts(other_w + solar_w * env.factor * env.average)
       row.headroom_w = row.sustained_w - row.demand_w
       row.night_s = math.floor(env.night_s * 10 + 0.5) / 10
-      if row.sustained_w < row.demand_w then row.add_to_cover = cover(row, net, env, solar_w, other_w) end
+      if row.sustained_w < row.demand_w then row.add_to_cover = cover(row, net, env, solar_w, other_w, surface) end
     end
   end
   return rows, omitted

@@ -266,6 +266,28 @@ local legacy_status = tasks.plan_status({ plan_id = legacy.id })
 check(legacy_status.status == "completed" and legacy_status.outcomes[1].result.code == "REMOVED_ACTION",
   "a persisted validate_factory_component step completes as REMOVED_ACTION")
 
+-- A build_block step saved by 0.28, queued or running, fails as
+-- REMOVED_ACTION: nothing was built, and on_tick never raises.
+local function legacy_block(running)
+  storage.tasks.next_id = storage.tasks.next_id + 1
+  local plan = { type = "plan", id = storage.tasks.next_id - 1, status = "waiting", current_step = 1, completed_steps = 0,
+    outcomes = {}, steps = { { action = "build_block", x = 0, y = 0, kind = "mining" }, { action = "walk_to", x = 1, y = 1 } },
+    current_task = running and { type = "build_block", id = storage.tasks.next_id - 1 } or nil,
+    started_tick = game.tick, observation_detail = "none" }
+  table.insert(storage.tasks.queue, plan)
+  return plan
+end
+for _, running in ipairs({ false, true }) do
+  local block = legacy_block(running)
+  local ticked = true
+  for _ = 1, 3 do game.tick = game.tick + 1; ticked = ticked and pcall(tasks.on_tick) end
+  local block_status = tasks.plan_status({ plan_id = block.id })
+  check(ticked and block_status.status == "failed" and block_status.completed_steps == 0
+    and block_status.outcomes[1].status == "failed" and block_status.outcomes[1].result.code == "REMOVED_ACTION"
+    and block_status.outcomes[1].result.action == "build_block",
+    string.format("a persisted %s build_block step fails as REMOVED_ACTION without raising", running and "running" or "queued"))
+end
+
 -- Upkeep gives way to queued work at the next step boundary.
 local upkeep = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 }, { action = "walk_to", x = 2, y = 2 } },
   source = "upkeep" })

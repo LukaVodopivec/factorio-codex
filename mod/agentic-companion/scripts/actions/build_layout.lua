@@ -1655,12 +1655,20 @@ end
 -- are not: a pipe is a run's end below two met sides; a pipe-to-ground's
 -- normal side must meet; a crafting machine whose recipe takes or makes a
 -- fluid needs one met port; anything else (pumps, boilers, engines, tanks)
--- one met port on each fluid box. A drill's box is optional, so never.
+-- one met port on each fluid box. A drill's input box is optional (acid
+-- only for some ores), so a drill is judged only when it has an output box,
+-- as a pumpjack delivers its oil through one.
 local function fluid_rule(p)
   local kind = p.proto.type
   if kind == "pipe" or kind == "infinity-pipe" then return "pipe" end
   if kind == "pipe-to-ground" then return "each" end
-  if kind == "mining-drill" then return nil end
+  if kind == "mining-drill" then
+    local ok, output = pcall(function()
+      for _, box in pairs(p.proto.fluidbox_prototypes) do if box.production_type == "output" then return true end end
+      return false
+    end)
+    return ok and output and "box" or nil
+  end
   if CRAFTERS[kind] then return p.recipe and uses_fluid(p.recipe) and "machine" or nil end
   return "box"
 end

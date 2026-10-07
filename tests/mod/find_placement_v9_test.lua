@@ -333,12 +333,11 @@ check(nearest_drill.candidates[1]
   "drill placement ranks nearest first like every type and keeps its resource coverage as data, though (9, 8) covers more")
 local both_drills = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 2 })
-local richer
-for _, candidate in ipairs(both_drills.candidates) do
-  if candidate.position.x == 9 and candidate.position.y == 8 then richer = candidate end
-end
-check(richer and richer.resource_coverage[1].total_amount == 1200,
-  "the richer spot is still a candidate, with its coverage to compare")
+local nearer, richer = both_drills.candidates[1], both_drills.candidates[2]
+check(#both_drills.candidates == 2 and nearer.position.x == 8 and nearer.position.y == 8
+  and nearer.resource_coverage[1].total_amount == 500
+  and richer.position.x == 9 and richer.position.y == 8 and richer.resource_coverage[1].total_amount == 1200,
+  "the richer spot comes after the nearer one, with its coverage to compare")
 only_position = { x = 8, y = 8 }
 local mixed_drill = find({ item = "burner-mining-drill", preferred = { x = 8, y = 8 },
   radius = 1, directions = { 0 }, limit = 1 })

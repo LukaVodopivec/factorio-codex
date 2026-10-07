@@ -319,6 +319,18 @@ do
   check(result.status == "done" and #mined == 1 and result.outcome.stall_cleared
     and result.outcome.stall_cleared.name == "huge-rock" and result.outcome.stall_cleared.status == "done",
     "a walk stalled at a rock gap it cannot thread mines the rock once and arrives: " .. tostring(result.detail))
+  -- A tree beside the stalled body (nearer than the rock, and on the leg's
+  -- side of it) is not in the way: only the rock the next leg runs into is
+  -- mined, and the walk arrives with the tree still standing.
+  mined = {}
+  local tree = collider("tree-01", "tree", 0.55, -1.3, 0.95, -1.0, true)
+  rocks = { collider("huge-rock", "simple-entity", -3, -1, 0.075, 1, true),
+    collider("huge-rock", "simple-entity", 0.525, -1, 3.6, 1, true), tree }
+  result, task = through({ x = -4.5, y = -6 }, { x = 4, y = 5 },
+    { { x = 0.3, y = -1.3 }, { x = 0.3, y = 1.3 }, { x = 4, y = 5 } }, rocks)
+  check(result.status == "done" and #mined == 1 and mined[1].name == "huge-rock" and tree.valid,
+    "a stalled walk mines the rock ahead of its next leg, not the tree beside it: " .. tostring(result.detail)
+      .. " mined " .. tostring(mined[1] and mined[1].name))
   -- An owned building is never mined: the stall fails truthfully.
   mined = {}
   local left, right = collider("stone-wall", "wall", -3, -1, 0.075, 1, true),

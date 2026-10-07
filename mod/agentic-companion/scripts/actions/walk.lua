@@ -940,28 +940,53 @@ local function natural_start_blocker(c, evidence)
   end
 end
 
--- A tree or rock (not own) whose box comes within STALL_CLEAR_MARGIN of the
--- stalled body's box: the one ahead toward `toward` first, then the nearest.
-local STALL_CLEAR_MARGIN = 0.3
+-- How far along the next leg the stalled body's box is swept for a blocker:
+-- only a tree or rock it would walk into is in the way, never one beside it.
+local STALL_SWEEP = 0.3
 local NATURAL_TYPES = { "plant", "simple-entity", "tree" }
+
+-- Where along the unit direction (dx, dy), within [0, STALL_SWEEP], the body
+-- box first overlaps `b`, or nil when the swept box misses it (slab test of
+-- the body's centre against `b` grown by the body's half-extents).
+local function sweep_entry(pos, box, dx, dy, b)
+  local t0, t1 = 0, STALL_SWEEP
+  local axes = { { pos.x, dx, b.left_top.x - (box.right_bottom.x - pos.x), b.right_bottom.x + (pos.x - box.left_top.x) },
+    { pos.y, dy, b.left_top.y - (box.right_bottom.y - pos.y), b.right_bottom.y + (pos.y - box.left_top.y) } }
+  for _, a in ipairs(axes) do
+    local p, d, lo, hi = a[1], a[2], a[3], a[4]
+    if d == 0 then
+      if p <= lo or p >= hi then return nil end
+    else
+      local ta, tb = (lo - p) / d, (hi - p) / d
+      if ta > tb then ta, tb = tb, ta end
+      if ta > t0 then t0 = ta end
+      if tb < t1 then t1 = tb end
+      if t0 >= t1 then return nil end
+    end
+  end
+  return t0
+end
+
+-- The first tree or rock (not own) the stalled body's box would meet if it
+-- walked STALL_SWEEP tiles on toward `toward`, or nil.
 local function natural_stall_blocker(c, toward)
   local box = placement_geometry.character_box(c)
   if not box then return nil end
-  local area = { left_top = { x = box.left_top.x - STALL_CLEAR_MARGIN, y = box.left_top.y - STALL_CLEAR_MARGIN },
-    right_bottom = { x = box.right_bottom.x + STALL_CLEAR_MARGIN, y = box.right_bottom.y + STALL_CLEAR_MARGIN } }
+  local pos = c.position
+  local dx, dy = toward.x - pos.x, toward.y - pos.y
+  local len = math.sqrt(dx * dx + dy * dy)
+  if len < 1e-6 then return nil end
+  dx, dy = dx / len, dy / len
+  local area = { left_top = { x = box.left_top.x + math.min(0, dx * STALL_SWEEP), y = box.left_top.y + math.min(0, dy * STALL_SWEEP) },
+    right_bottom = { x = box.right_bottom.x + math.max(0, dx * STALL_SWEEP), y = box.right_bottom.y + math.max(0, dy * STALL_SWEEP) } }
   local ok, found = pcall(c.surface.find_entities_filtered, { area = area, type = NATURAL_TYPES, limit = 8 })
-  local pos, best, best_ahead, best_d = c.position, nil, false, nil
+  local best, best_t = nil, nil
   for _, e in ipairs(ok and type(found) == "table" and found or {}) do
     local ok_minable, minable = pcall(function()
       return e.valid and e.force ~= c.force and e.prototype.mineable_properties.minable
     end)
-    if ok_minable and minable and (not e.bounding_box or placement_geometry.overlaps(area, e.bounding_box)) then
-      local ahead = (e.position.x - pos.x) * (toward.x - pos.x) + (e.position.y - pos.y) * (toward.y - pos.y) > 0
-      local d = dist_sq(pos, e.position)
-      if not best or (ahead and not best_ahead) or (ahead == best_ahead and d < best_d) then
-        best, best_ahead, best_d = e, ahead, d
-      end
-    end
+    local t = ok_minable and minable and e.bounding_box and sweep_entry(pos, box, dx, dy, e.bounding_box)
+    if t and (not best_t or t < best_t) then best, best_t = e, t end
   end
   return best
 end

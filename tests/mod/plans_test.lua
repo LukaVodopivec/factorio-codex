@@ -19,8 +19,15 @@ local walk_arrival
 local function runner(kind) return { start = function(task) starts[#starts + 1] = kind; if kind == "place" then queued_place_output_target = task.output_target end; if kind == "walk_to" then walk_arrival = { mode = task.arrival_mode, radius = task.arrival_radius } end end, tick = function(task) local fails = kind == "mine" and task.target and task.target.x == 1; if kind == "mine" and not fails then inventory_count = 5 end; return { status = fails and "failed" or "done", detail = fails and "physical failure" or kind .. " done" } end } end
 local walk, mine, craft = runner("walk_to"), runner("mine"), runner("craft")
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"], package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = walk, mine, runner("pickup"), craft
+-- footprint_exit's geometry is build_plan_recovery_test's; here it records
+-- what the plan recovery asks and answers a spot 3.5 tiles north.
+local exit_asked
 package.loaded["scripts.actions.build"] = { place = runner("place"), rotate = runner("rotate"),
-  set_recipe_action = { runner = runner("set_recipe"), make_task = function() return {} end } }
+  set_recipe_action = { runner = runner("set_recipe"), make_task = function() return {} end },
+  footprint_exit = function(_, proto, position, direction)
+    exit_asked = { proto = proto, position = position, direction = direction }
+    return { x = position.x, y = position.y - 3.5 }
+  end }
 package.loaded["scripts.actions.transfer"] = { insert = runner("insert"), extract = runner("extract"),
   flush_action = { runner = runner("flush_fluid"), make_task = function() return {} end } }
 package.loaded["scripts.actions.build_plan"] = runner("build_plan")
@@ -327,31 +334,44 @@ check(refuel_status.status == "completed" and inserted_items[2].coal == 3
 insert_runner.tick = original_insert_tick
 
 local walk_tick, mine_tick = walk.tick, mine.tick
-local mined
+do
+-- the escape takes the blocker up, walks out and puts it back
+-- (move_entity's escape, covered by move_entity_test); here a scripted
+-- runner stands in for it.
+local escape, escape_tick
+local escape_runner = { start = function(task) escape = task end, tick = function(task) return escape_tick(task) end }
+tasks.register_action("move_entity", { runner = escape_runner, make_task = function() return {} end })
 walk.tick = scripted({
   { status = "failed", detail = "BODY_ENCLOSED: boxed in", outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
+    resolved_goal = { x = 20, y = 0.5 },
     suggested_recovery = { tool = "mine", target_kind = "owned", x = 5.5, y = 0.5, expected_name = "wooden-chest" } } } } },
   { status = "done", detail = "arrived" },
 })
-mine.tick = function(task) mined = task; return { status = "done", detail = "mined" } end
+escape_tick = function() return { status = "done", detail = "stepped out through the wooden-chest at (5.5, 0.5): took it up and put it back" } end
 local enclosed = tasks.queue_plan({ steps = { { action = "walk_to", x = 20, y = 0 } } })
 for tick = 371, 374 do game.tick = tick; tasks.on_tick() end
 local enclosed_status = tasks.plan_status({ plan_id = enclosed.plan_id })
-check(enclosed_status.status == "completed" and mined and mined.target.x == 5.5 and mined.target_kind == "owned"
-  and mined.count == 1 and enclosed_status.outcomes[1].recovery.fix == "mine",
-  "an enclosed body mines the suggested owned blocker and walks again")
+check(enclosed_status.status == "completed" and escape and escape.type == "move_entity" and escape.from.x == 5.5
+  and escape.to.x == 5.5 and escape.through.x == 20 and escape.through.y == 0.5 and escape.expected_name == "wooden-chest"
+  and enclosed_status.outcomes[1].recovery.fix == "move_entity"
+  and enclosed_status.outcomes[1].recovery.fix_detail:match("took it up and put it back"),
+  "an enclosed body steps out through the suggested owned blocker, puts it back, walks again, and the outcome says so")
+escape = nil
 walk.tick = scripted({
   { status = "failed", detail = "BODY_ENCLOSED: boxed in", outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
     suggested_recovery = { x = 5.5, y = 0.5 } } } } },
 })
-mine.tick = function() return { status = "failed", detail = "refusing to recover a chest with contents" } end
+escape_tick = function() return { status = "failed", detail = "MOVE_MINE_FAILED: the wooden-chest stays where it was — refusing" } end
 local still_enclosed = tasks.queue_plan({ steps = { { action = "walk_to", x = 20, y = 0 } } })
 for tick = 375, 380 do game.tick = tick; tasks.on_tick() end
 local still_status = tasks.plan_status({ plan_id = still_enclosed.plan_id })
 check(still_status.status == "failed" and still_status.outcomes[1].error:match("^BODY_ENCLOSED")
+  and escape and escape.through.x == 20 and escape.through.y == 0
   and still_status.outcomes[1].recovery.fix_error:match("refusing"),
-  "a failed recovery returns the original failure with the fix error")
-walk.tick, mine.tick = walk_tick, mine_tick
+  "a failed recovery returns the original failure with the fix error; without a resolved goal it walks toward the step's target")
+walk.tick = walk_tick
+tasks.register_action("move_entity", package.loaded["scripts.actions.move_entity"].action)
+end
 
 local reach_calls = 0
 mine.tick = function()
@@ -381,8 +401,9 @@ walk.start = function(task) walked_to = task.target end
 local overlap = tasks.queue_plan({ steps = { { action = "place_entity", name = "stone-furnace", x = 10, y = 10 } } })
 for tick = 385, 390 do game.tick = tick; tasks.on_tick() end
 check(tasks.plan_status({ plan_id = overlap.plan_id }).status == "completed" and walked_to
-  and (walked_to.y <= 10 - 1 - 1.25 or walked_to.y >= 10 + 1 + 1.25 or walked_to.x <= 10 - 1 - 1.25 or walked_to.x >= 10 + 1 + 1.25),
-  "a body standing in the placement footprint walks clear and places again")
+  and (walked_to.y <= 10 - 1 - 1.25 or walked_to.y >= 10 + 1 + 1.25 or walked_to.x <= 10 - 1 - 1.25 or walked_to.x >= 10 + 1 + 1.25)
+  and exit_asked and exit_asked.position.x == 10 and exit_asked.proto == prototypes.item["stone-furnace"].place_result,
+  "a body standing in the placement footprint walks clear (build.footprint_exit's spot) and places again")
 walk.start, place_runner.tick = walk_start, place_tick
 body.position = { x = 0, y = 0 }
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1

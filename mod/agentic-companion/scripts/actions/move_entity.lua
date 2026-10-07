@@ -9,6 +9,15 @@
 -- shortfall?}. A placement that fails leaves the entity in the inventory and
 -- says so. Before mining, the target spot is checked so a move that cannot
 -- land never takes the entity up.
+--
+-- Escape (internal, never a tool input): {from, through = {x, y}, reach?,
+-- expected_name?} steps the body out of an enclosure of own entities. The
+-- body takes up the named entity, walks through the opening toward
+-- `through` until it has passed the entity's spot and stands a tile clear of
+-- it (or is within `reach` of `through`, or that walk failed), then puts the
+-- same entity back on its own spot and restores it as above. Result:
+-- {code = ESCAPED, name, from, restored}, or a failure that says whether the
+-- entity is back in place or in the inventory.
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
@@ -16,11 +25,13 @@ local placement_geometry = require("scripts.placement_geometry")
 local build = require("scripts.actions.build")
 local entity_settings = require("scripts.entity_settings")
 local supply = require("scripts.actions.supply")
+local set_walking = require("scripts.human_inputs").set_walking
 
 local robot_move = require("scripts.actions.robot_move")
 local M = {}
 
--- The nested place runs through supply's nested runner table.
+-- The nested place runs through supply's nested runner table; build_plan
+-- runs an escape (below) the same way.
 supply.register_runner("place", build.place)
 
 local NEVER = { character = true, ["entity-ghost"] = true, ["tile-ghost"] = true, ["item-request-proxy"] = true,
@@ -114,6 +125,14 @@ function M.start(task)
   validate(task, "move_entity")
   local e = own_entity_at(c, task.from, task.mode == "robots")
   if not e then error(string.format("move_entity: no own entity stands at (%.1f, %.1f)", task.from.x, task.from.y), 0) end
+  if task.through ~= nil then
+    if not point(task.through) then error("move_entity escape needs through = {x, y}", 0) end
+    if task.expected_name and e.name ~= task.expected_name then
+      error(string.format("move_entity: a %s, not the %s, stands at (%.1f, %.1f)", e.name, task.expected_name,
+        task.from.x, task.from.y), 0)
+    end
+    task.to, task.direction, task.mode = { x = e.position.x, y = e.position.y }, nil, nil
+  end
   local proto = e.prototype
   local ok_items, items = pcall(function() return proto.items_to_place_this end)
   local first = ok_items and type(items) == "table" and items[1] or nil
@@ -123,7 +142,7 @@ function M.start(task)
   local w, h = tonumber(proto.tile_width) or 1, tonumber(proto.tile_height) or 1
   if direction % 8 == 4 then w, h = h, w end
   local to = { x = snapped(task.to.x, w), y = snapped(task.to.y, h) }
-  if to.x == e.position.x and to.y == e.position.y and direction == e.direction then
+  if to.x == e.position.x and to.y == e.position.y and direction == e.direction and not task.through then
     error(string.format("move_entity: the %s already stands at (%.1f, %.1f) facing that way", e.name, to.x, to.y), 0)
   end
   if task.mode == "robots" then
@@ -154,6 +173,23 @@ M.resume = supply.resume
 local function failed(task, code, detail, in_inventory)
   return { status = "failed", detail = code .. ": " .. detail, outcome = { code = code, moved = false,
     from = task._snapshot.from, in_inventory = in_inventory } }
+end
+
+-- Escape: true once the body has passed over the taken-up entity's spot and
+-- stands a tile clear of it, so putting it back closes the way behind it.
+local function stepped_out(task, c)
+  local area = placement_geometry.footprint(task._proto, task._to, task._direction)
+  local function grown(margin)
+    return { left_top = { x = area.left_top.x - margin, y = area.left_top.y - margin },
+      right_bottom = { x = area.right_bottom.x + margin, y = area.right_bottom.y + margin } }
+  end
+  local p = c.position
+  local near = grown(0.5)
+  if p.x >= near.left_top.x and p.x <= near.right_bottom.x and p.y >= near.left_top.y and p.y <= near.right_bottom.y then
+    task._through_entered = true
+  end
+  local body = placement_geometry.character_box(c)
+  return task._through_entered == true and body ~= nil and not placement_geometry.overlaps(grown(1), body)
 end
 
 -- Recipe, settings and contents onto the placed entity.
@@ -193,11 +229,19 @@ local function restore(task, c, e)
     end
   end
   if not next(restored.items) then restored.items = nil end
-  local detail = string.format("moved the %s from (%.1f, %.1f) to (%.1f, %.1f)", snap.name, snap.from.x, snap.from.y,
-    e.position.x, e.position.y)
+  local detail = task.through and string.format("stepped out through the %s at (%.1f, %.1f): took it up and put it back",
+    snap.name, e.position.x, e.position.y) or string.format("moved the %s from (%.1f, %.1f) to (%.1f, %.1f)",
+    snap.name, snap.from.x, snap.from.y, e.position.x, e.position.y)
   if #shortfall > 0 then detail = detail .. string.format(" — %d kinds of its items did not go back in", #shortfall) end
   if #notes > 0 then detail = detail .. " — " .. table.concat(notes, "; ") end
-  return { status = "done", detail = detail, outcome = { code = "MOVED", moved = true, name = snap.name,
+  if task._through_error then
+    -- Back in place, but the walk out failed: the body is still enclosed.
+    return { status = "failed", detail = string.format("ESCAPE_FAILED: took up the %s at (%.1f, %.1f), the walk out"
+      .. " failed and it is back in place — %s", snap.name, e.position.x, e.position.y, task._through_error),
+      outcome = { code = "ESCAPE_FAILED", restored_in_place = true, name = snap.name, from = snap.from,
+        restored = restored, notes = #notes > 0 and notes or nil } }
+  end
+  return { status = "done", detail = detail, outcome = { code = task.through and "ESCAPED" or "MOVED", moved = true, name = snap.name,
     from = snap.from, to = { x = e.position.x, y = e.position.y }, restored = restored,
     shortfall = #shortfall > 0 and shortfall or nil, notes = #notes > 0 and notes or nil } }
 end
@@ -219,7 +263,7 @@ function M.tick(task)
       if result.status ~= "done" then
         return failed(task, "MOVE_MINE_FAILED", string.format("the %s stays where it was — %s", snap.name, tostring(result.detail)))
       end
-      task._phase = "place"
+      task._phase = task.through and "through" or "place"
     elseif kind == "place" then
       if result.status ~= "done" and result.status ~= "partial" then
         local overlap = type(result.detail) == "string" and result.detail:find("CODEX_BODY_OVERLAP", 1, true)
@@ -245,6 +289,16 @@ function M.tick(task)
       count = 1, target_kind = "owned", expected_name = e.name, allow_fluid_loss = task.allow_fluid_loss == true })
     if not ok then return failed(task, "MOVE_MINE_FAILED", plain(err)) end
     return nil
+  end
+  if task._phase == "through" then
+    if not stepped_out(task, c) then
+      local reached = approach.ensure(task, c, task.through, tonumber(task.reach) or 1)
+      if reached == nil then return nil end
+      if type(reached) == "table" then task._through_error = tostring(reached.detail) end
+    end
+    task._approach, task._approach_guard = nil, nil
+    set_walking(c, { walking = false })
+    task._phase = "place"
   end
   if task._phase == "place" then
     local ok, err = pcall(supply.begin, task, "_sub", { type = "place", item = task._item, position = task._to,
@@ -277,6 +331,8 @@ function M.diagnostics(task) if task.mode == "robots" then return robot_move.dia
 for _, name in ipairs({ "on_robot_pre_mined", "on_robot_mined_entity", "on_robot_built_entity" }) do
   M[name] = function(task, event) if task.mode == "robots" then robot_move[name](task, event) end end
 end
+supply.register_runner("move_entity", M)
+
 -- The plan action for tasks.register_action.
 M.action = {
   runner = M,

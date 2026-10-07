@@ -14,10 +14,13 @@
 -- before the first placement; with steps_when_full, a bill the inventory has
 -- no room for is fetched step by step instead); trees and rocks in a
 -- footprint are mined first.
--- Bounded recoveries, once per step: walk out of a footprint the body
--- overlaps, re-approach a placed entity out of reach, retry a partial
--- starter insert after a second, and (without stop_on_error) retry after the
--- last step a step whose approach failed for where the body stood.
+-- Bounded recoveries per step: walk out of a footprint the body overlaps (up
+-- to three spots beside it), step out of an enclosure of own entities once
+-- (take up the blocker the walk names, walk out, put it back with its
+-- settings: move_entity's escape), re-approach a placed entity out of reach,
+-- retry a partial starter insert after a second, and (without stop_on_error)
+-- retry after the last step a step whose approach failed for where the body
+-- stood.
 -- Placement is idempotent: the same entity already standing there counts as
 -- placed (turned when it faces another way), and its recipe and starter items
 -- are still applied.
@@ -32,6 +35,7 @@ local entity_settings = require("scripts.entity_settings")
 local supply = require("scripts.actions.supply")
 local transfer = require("scripts.actions.transfer")
 local craft = require("scripts.actions.craft")
+require("scripts.actions.move_entity") -- registers the escape runner
 
 local M = {}
 
@@ -44,6 +48,7 @@ local OUTPUT_WAIT_TICKS = 300 -- when the drill's mining cycle is unreadable
 -- step, if the body stands elsewhere by then.
 local RETRY_CODES = { BODY_ON_CONVEYOR = true, START_COLLISION = true }
 local RETRY_MOVED_SQ = 0.25 -- the body has moved more than half a tile
+local MAX_EXITS = 3 -- spots beside a footprint the body walks to, per step
 
 local function dist_sq(a, b)
   local dx, dy = a.x - b.x, a.y - b.y
@@ -396,6 +401,10 @@ end
 -- has moved since it failed; its new outcome replaces the first.
 local function advance(task, ok, why)
   local i = task._index
+  if task._escape_note then
+    why = why and (task._escape_note .. "; " .. why) or task._escape_note
+    task._escape_note = nil
+  end
   if task._retry_pass then
     for n = #task._failures, 1, -1 do
       if task._failures[n].index == i then table.remove(task._failures, n) end
@@ -423,6 +432,7 @@ local function advance(task, ok, why)
     until not deferred or (c and dist_sq(c.position, deferred.from) > RETRY_MOVED_SQ)
     -- A revisited step starts over: its once-per-step markers name it again.
     task._existing_index, task._supplied_index, task._exit_index, task._reach_index = nil, nil, nil, nil
+    task._escape_index = nil
     task._index = deferred and deferred.index or #task.steps + 1
   end
   if task._index > #task.steps then
@@ -624,13 +634,19 @@ function M.tick(task)
     task._supplied_all = true
   end
   if task._built then return finish_placed_step(task, c, step, task._built) end
+  if task._escape then
+    local escaped = supply.step(task, "_escape")
+    if not escaped then return nil end
+    if escaped.status ~= "done" then
+      return advance(task, false, "BODY_ENCLOSED and stepping out failed: " .. tostring(escaped.detail))
+    end
+    task._escape_note = escaped.detail
+  end
   if task._exit then
     local walked = supply.step(task, "_exit")
     if not walked then return nil end
-    if walked.status ~= "done" then
-      return advance(task, false, string.format("can't place %s at (%.1f, %.1f) — CODEX_BODY_OVERLAP and walking clear failed: %s",
-        step.item, step.position.x, step.position.y, tostring(walked.detail)))
-    end
+    -- Another exit may still work: the placement check below decides.
+    task._exit_error = walked.status ~= "done" and tostring(walked.detail) or nil
   end
 
   -- Checks that walking can never fix (mirrors place.start, which also runs
@@ -691,6 +707,21 @@ function M.tick(task)
     if cleared ~= "ok" then return advance(task, false, cleared.detail) end
   end
   local reached = approach.ensure(task, c, step.position, c.build_distance)
+  if type(reached) == "table" and task._escape_index ~= task._index then
+    -- Enclosed by own entities, once per step: take up the blocker the walk
+    -- names, walk out and put it back (move_entity's escape), then go on.
+    local ok, blocker = pcall(function() return reached.outcome.diagnostics.path.suggested_recovery end)
+    if ok and type(blocker) == "table" and reached.outcome.code == "BODY_ENCLOSED"
+      and type(blocker.x) == "number" and type(blocker.y) == "number" then
+      task._escape_index = task._index
+      local at = { x = blocker.x, y = blocker.y }
+      local started, err = pcall(supply.begin, task, "_escape", { type = "move_entity", from = at, to = at,
+        through = { x = step.position.x, y = step.position.y }, reach = c.build_distance,
+        expected_name = blocker.expected_name })
+      if started then return nil end
+      return advance(task, false, string.format("%s; stepping out failed: %s", tostring(reached.detail), tostring(err)))
+    end
+  end
   if type(reached) == "table" then
     if RETRY_CODES[reached.outcome and reached.outcome.code] and not task.stop_on_error and not task._retry_pass then
       task._deferred = task._deferred or {}
@@ -741,18 +772,37 @@ function M.tick(task)
   end
 
   local can_place, placement_reason = placement_geometry.can_place(c, place_result, step.position, step.direction)
-  if not can_place and placement_reason == "CODEX_BODY_OVERLAP" and task._exit_index ~= task._index then
-    -- Standing in the footprint once: walk clear of it, then try again.
-    task._exit_index = task._index
-    local exit = build.footprint_exit(c, place_result, step.position, step.direction)
-    if exit and pcall(supply.begin, task, "_exit", { type = "walk_to", target = exit, arrival_mode = "exact", arrival_radius = 1 }) then
-      return nil
+  if not can_place and placement_reason == "CODEX_BODY_OVERLAP" then
+    -- Standing in the footprint: walk clear of it, then try again, up to
+    -- MAX_EXITS different spots beside it for this step.
+    if task._exit_index ~= task._index then
+      task._exit_index, task._exits, task._exit_error = task._index, {}, nil
+    end
+    task._exits = task._exits or {}
+    if #task._exits < MAX_EXITS then
+      local exit = build.footprint_exit(c, place_result, step.position, step.direction, task._exits)
+      if exit then
+        task._exits[#task._exits + 1] = exit
+        local ok, err = pcall(supply.begin, task, "_exit", { type = "walk_to", target = exit, arrival_mode = "exact", arrival_radius = 1 })
+        if ok then return nil end
+        task._exit_error = tostring(err)
+      end
     end
   end
   if not can_place then
+    local why
+    if placement_reason ~= "CODEX_BODY_OVERLAP" then
+      why = blocked_reason(c, step.position, place_result, step.direction)
+    elseif task._exit_error then
+      why = "CODEX_BODY_OVERLAP and walking clear failed: " .. task._exit_error
+    elseif #(task._exits or {}) == 0 then
+      why = "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint; no spot clear of it was found within 5 tiles"
+    else
+      why = string.format("CODEX_BODY_OVERLAP — walk clear of the exact collision footprint; still in it after walking to %d spot(s) beside it",
+        #task._exits)
+    end
     return advance(task, false, string.format("can't place %s at (%.1f, %.1f) — %s",
-      step.item, step.position.x, step.position.y,
-      placement_reason == "CODEX_BODY_OVERLAP" and "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint" or blocked_reason(c, step.position, place_result, step.direction)))
+      step.item, step.position.x, step.position.y, why))
   end
 
   local built = c.surface.create_entity({

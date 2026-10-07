@@ -200,8 +200,11 @@ turning them into a fixed opening or map-specific sequence:
   Its `frontier_probes` give one reason per probe. Only when every answered
   probe was refused and none ended `timeout`, `transient` or `path_uncharted`
   does an enclosure by owned entities fail as `BODY_ENCLOSED`, naming one
-  owned blocker (on the line toward the target first); recover only by
-  extracting and mining it, never by teleport.
+  owned blocker (on the line toward the target first). A plan step or layout
+  placement recovers once by itself: the body takes that blocker up, walks
+  out through the opening and puts the same entity back with its direction,
+  recipe, settings and contents (the step's detail names it); never by
+  teleport.
 - A successful walk or approach never leaves the body on a belt: it steps once
   to a clear off-belt tile (reported as `settle`), within 4 tiles, or for an
   approach within 8 tiles and still in reach of its target. A layout retries

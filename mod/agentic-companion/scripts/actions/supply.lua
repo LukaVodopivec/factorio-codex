@@ -98,7 +98,7 @@ function M.step(owner, field)
 end
 
 -- After a human hold the body stands elsewhere: nested actions re-approach.
-local NESTED_FIELDS = { "_supply", "_sub", "_clear", "_exit" }
+local NESTED_FIELDS = { "_supply", "_sub", "_clear", "_exit", "_escape" }
 function M.resume(owner)
   for _, field in ipairs(NESTED_FIELDS) do
     local sub = owner[field]

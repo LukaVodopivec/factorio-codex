@@ -162,21 +162,38 @@ function M.clear_footprint(task, c, proto, position, direction)
 end
 
 -- A spot beside the placement footprint where the body stands clear of it,
--- nearest first; nil when none is found.
-function M.footprint_exit(c, proto, position, direction)
+-- nearest the body first, or nil. Candidates lie on the four sides and four
+-- corners, 2, 3.5 and 5 tiles out (24 point queries at most), so a dense
+-- layout that blocks the nearest sides still leaves a way out; each keeps
+-- 1.25 tiles from the footprint, so a walk there that stops within its
+-- 1-tile arrival tolerance stands clear. `tried` lists exits already walked
+-- to: a spot within a tile of one is not offered again.
+local EXIT_GAPS = { 2, 3.5, 5 }
+function M.footprint_exit(c, proto, position, direction, tried)
   local area = placement_geometry.footprint(proto, position, direction)
   local p, lt, rb = c.position, area.left_top, area.right_bottom
-  local candidates = { { x = p.x, y = lt.y - 2 }, { x = p.x, y = rb.y + 2 },
-    { x = lt.x - 2, y = p.y }, { x = rb.x + 2, y = p.y } }
+  local candidates = {}
+  for _, gap in ipairs(EXIT_GAPS) do
+    local n, s, w, e = lt.y - gap, rb.y + gap, lt.x - gap, rb.x + gap
+    for _, spot in ipairs({ { x = p.x, y = n }, { x = p.x, y = s }, { x = w, y = p.y }, { x = e, y = p.y },
+      { x = w, y = n }, { x = e, y = n }, { x = w, y = s }, { x = e, y = s } }) do
+      candidates[#candidates + 1] = spot
+    end
+  end
   table.sort(candidates, function(a, b)
     local da = (a.x - p.x) ^ 2 + (a.y - p.y) ^ 2
     local db = (b.x - p.x) ^ 2 + (b.y - p.y) ^ 2
     if da ~= db then return da < db end
-    return a.y == b.y and a.x < b.x or a.y < b.y
+    if a.y ~= b.y then return a.y < b.y end
+    return a.x < b.x
   end)
   for _, candidate in ipairs(candidates) do
     local ok, clear = pcall(c.surface.find_non_colliding_position, c.name or "character", candidate, 0.5, 0.1)
-    if ok and clear and not placement_geometry.overlaps(area,
+    local fresh = ok and clear ~= nil
+    for _, old in ipairs(fresh and tried or {}) do
+      if (old.x - clear.x) ^ 2 + (old.y - clear.y) ^ 2 < 1 then fresh = false end
+    end
+    if fresh and not placement_geometry.overlaps(area,
       { left_top = { x = clear.x - 1.25, y = clear.y - 1.25 }, right_bottom = { x = clear.x + 1.25, y = clear.y + 1.25 } }) then
       return { x = clear.x, y = clear.y }
     end

@@ -25,7 +25,6 @@ local rocket = require("scripts.actions.rocket")
 local travel = require("scripts.actions.travel")
 local inventory_roles = require("scripts.inventory_roles")
 local set_walking = require("scripts.human_inputs").set_walking
-local placement_geometry = require("scripts.placement_geometry")
 local factory_activity = require("scripts.factory_activity")
 local autonomy = require("scripts.autonomy")
 local M = {}
@@ -747,7 +746,7 @@ local function finish_step(plan, result)
     error = (status == "failed" or status == "cancelled") and (result.detail or status) or nil,
     recovery = recovery and recovery.step == plan.current_step and { code = recovery.code,
       fix = recovery.fix and recovery.fix.type or (recovery.items and "retry_remainder" or "retry"),
-      fix_error = recovery.fix_error } or nil,
+      fix_error = recovery.fix_error, fix_detail = recovery.fix_detail } or nil,
   }
   plan.current_task = nil
   if plan.source == "upkeep" and upkeep_listener then pcall(upkeep_listener, plan, plan.current_step, status) end
@@ -901,39 +900,29 @@ local function result_code(result)
   if detail:find("couldn't get within physical reach", 1, true) then return "TARGET_OUT_OF_REACH" end
   return detail:match("^([A-Z][A-Z0-9_]+[A-Z0-9])")
 end
--- A tile beside the placement footprint, clear for the body, nearest first.
+-- A spot beside the placement footprint, clear for the body, nearest first.
 local function footprint_exit(task)
   local c = companion.get()
   local item = c and prototypes.item[task.item]
   local proto = item and item.place_result
   if not proto then return nil end
-  local area = placement_geometry.footprint(proto, task.position, task.direction)
-  local p, lt, rb = c.position, area.left_top, area.right_bottom
-  local candidates = { { x = p.x, y = lt.y - 2 }, { x = p.x, y = rb.y + 2 },
-    { x = lt.x - 2, y = p.y }, { x = rb.x + 2, y = p.y } }
-  table.sort(candidates, function(a, b)
-    local da = (a.x - p.x) ^ 2 + (a.y - p.y) ^ 2
-    local db = (b.x - p.x) ^ 2 + (b.y - p.y) ^ 2
-    if da ~= db then return da < db end
-    return a.y == b.y and a.x < b.x or a.y < b.y
-  end)
-  for _, candidate in ipairs(candidates) do
-    local ok, clear = pcall(c.surface.find_non_colliding_position, c.name or "character", candidate, 0.5, 0.1)
-    if ok and clear and not placement_geometry.overlaps(area,
-      { left_top = { x = clear.x - 1.25, y = clear.y - 1.25 }, right_bottom = { x = clear.x + 1.25, y = clear.y + 1.25 } }) then
-      return { x = clear.x, y = clear.y }
-    end
-  end
+  return build.footprint_exit(c, proto, task.position, task.direction)
 end
 local function try_recover(plan, step, result)
   if result.status == "done" or plan._recovery and plan._recovery.step == plan.current_step then return false end
   local failed, code = plan.current_task, result_code(result)
   local recovery = { step = plan.current_step, code = code, first = result, started_tick = failed and failed.started_tick }
   if code == "BODY_ENCLOSED" then
-    local ok, suggested = pcall(function() return result.outcome.diagnostics.path.suggested_recovery end)
-    if not ok or type(suggested) ~= "table" then return false end
-    recovery.fix = { type = "mine", target = { x = suggested.x, y = suggested.y }, count = 1,
-      target_kind = "owned", expected_name = suggested.expected_name }
+    -- Take up the named own blocker, walk out toward where the step was
+    -- going, put it back (move_entity's escape), then run the step again.
+    local ok, path = pcall(function() return result.outcome.diagnostics.path end)
+    local suggested = ok and type(path) == "table" and path.suggested_recovery or nil
+    if type(suggested) ~= "table" or type(suggested.x) ~= "number" or type(suggested.y) ~= "number" then return false end
+    local goal = path.resolved_goal or path.requested_goal or failed and (failed.target or failed.position)
+    if type(goal) ~= "table" or type(goal.x) ~= "number" or type(goal.y) ~= "number" then return false end
+    local at = { x = suggested.x, y = suggested.y }
+    recovery.fix = { type = "move_entity", from = at, to = at, through = { x = goal.x, y = goal.y },
+      expected_name = suggested.expected_name }
   elseif code == "CODEX_BODY_OVERLAP" and failed and failed.type == "place" then
     local ok, exit = pcall(footprint_exit, failed)
     if not ok or not exit then return false end
@@ -977,7 +966,7 @@ local function step_recovery(plan)
     finish_step(plan, recovery.first)
     return true
   end
-  recovery.phase = "retrying"
+  recovery.phase, recovery.fix_detail = "retrying", result.detail
   return false
 end
 local function predecessor_status(id)

@@ -746,7 +746,8 @@ local function finish_step(plan, result)
     error = (status == "failed" or status == "cancelled") and (result.detail or status) or nil,
     recovery = recovery and recovery.step == plan.current_step and { code = recovery.code,
       fix = recovery.fix and recovery.fix.type or (recovery.items and "retry_remainder" or "retry"),
-      fix_error = recovery.fix_error, fix_detail = recovery.fix_detail } or nil,
+      fix_error = recovery.fix_error, fix_detail = recovery.fix_detail,
+      exits = recovery.exits and #recovery.exits or nil } or nil,
   }
   plan.current_task = nil
   if plan.source == "upkeep" and upkeep_listener then pcall(upkeep_listener, plan, plan.current_step, status) end
@@ -891,7 +892,9 @@ local function expire_parked_waits(tasks)
 end
 -- Deterministic recoveries: at most one bounded physical fix per step, then
 -- the same step runs again from scratch; a fix that fails returns the
--- step's original result.
+-- step's original result. A place step whose body stands in its footprint
+-- walks clear to up to MAX_EXITS different spots instead, the step running
+-- again after each walk that arrives.
 local function result_code(result)
   local outcome = type(result.outcome) == "table" and result.outcome or nil
   if outcome and type(outcome.code) == "string" then return outcome.code end
@@ -900,16 +903,34 @@ local function result_code(result)
   if detail:find("couldn't get within physical reach", 1, true) then return "TARGET_OUT_OF_REACH" end
   return detail:match("^([A-Z][A-Z0-9_]+[A-Z0-9])")
 end
--- A spot beside the placement footprint, clear for the body, nearest first.
-local function footprint_exit(task)
-  local c = companion.get()
-  local item = c and prototypes.item[task.item]
+-- A place step still in its footprint walks to up to this many different
+-- spots beside it (build_plan's bound), the step running again after each.
+local MAX_EXITS = 3
+-- Walks to a spot beside the placement footprint, clear for the body,
+-- nearest first and not one already tried; false when none is left.
+local function walk_clear(plan, recovery)
+  if #recovery.exits >= MAX_EXITS then return false end
+  local c, place = companion.get(), recovery.place
+  local item = c and prototypes.item[place.item]
   local proto = item and item.place_result
-  if not proto then return nil end
-  return build.footprint_exit(c, proto, task.position, task.direction)
+  if not proto then return false end
+  local ok, exit = pcall(build.footprint_exit, c, proto, place.position, place.direction, recovery.exits)
+  if not ok or not exit then return false end
+  recovery.exits[#recovery.exits + 1] = exit
+  recovery.fix = { type = "walk_to", target = exit, arrival_mode = "exact", arrival_radius = 1, id = plan.id }
+  return pcall(runners.walk_to.start, recovery.fix)
 end
 local function try_recover(plan, step, result)
-  if result.status == "done" or plan._recovery and plan._recovery.step == plan.current_step then return false end
+  if result.status == "done" then return false end
+  local prior = plan._recovery and plan._recovery.step == plan.current_step and plan._recovery or nil
+  if prior then
+    -- One fix per step, except a place step still in its footprint after
+    -- walking clear: another spot beside it, up to MAX_EXITS in all.
+    if not (prior.exits and result_code(result) == "CODEX_BODY_OVERLAP") or not walk_clear(plan, prior) then return false end
+    prior.phase, prior.fix_error = "fixing", nil
+    plan.current_task = prior.fix
+    return true
+  end
   local failed, code = plan.current_task, result_code(result)
   local recovery = { step = plan.current_step, code = code, first = result, started_tick = failed and failed.started_tick }
   if code == "BODY_ENCLOSED" then
@@ -924,9 +945,12 @@ local function try_recover(plan, step, result)
     recovery.fix = { type = "move_entity", from = at, to = at, through = { x = goal.x, y = goal.y },
       expected_name = suggested.expected_name }
   elseif code == "CODEX_BODY_OVERLAP" and failed and failed.type == "place" then
-    local ok, exit = pcall(footprint_exit, failed)
-    if not ok or not exit then return false end
-    recovery.fix = { type = "walk_to", target = exit, arrival_mode = "exact", arrival_radius = 1 }
+    recovery.exits, recovery.place = {}, { item = failed.item, position = failed.position, direction = failed.direction }
+    if not walk_clear(plan, recovery) then return false end
+    recovery.phase = "fixing"
+    plan._recovery = recovery
+    plan.current_task = recovery.fix
+    return true
   elseif code == "TARGET_OUT_OF_REACH" and failed and runners[failed.type] then
     recovery.resume_tick = game.tick
   elseif code == "PARTIAL_INSERT" and step.action == "insert_items" then
@@ -962,11 +986,17 @@ local function step_recovery(plan)
   if not result then return true end
   plan.current_task = nil
   if result.status ~= "done" then
-    recovery.phase, recovery.fix_error = "failed", result.detail
+    recovery.fix_error = result.detail
+    -- A walk clear of a footprint that failed: another spot may still work.
+    if recovery.exits and walk_clear(plan, recovery) then
+      plan.current_task = recovery.fix
+      return true
+    end
+    recovery.phase = "failed"
     finish_step(plan, recovery.first)
     return true
   end
-  recovery.phase, recovery.fix_detail = "retrying", result.detail
+  recovery.phase, recovery.fix_detail, recovery.fix_error = "retrying", result.detail, nil
   return false
 end
 local function predecessor_status(id)

@@ -405,6 +405,54 @@ check(tasks.plan_status({ plan_id = overlap.plan_id }).status == "completed" and
   and exit_asked and exit_asked.position.x == 10 and exit_asked.proto == prototypes.item["stone-furnace"].place_result,
   "a body standing in the placement footprint walks clear (build.footprint_exit's spot) and places again")
 walk.start, place_runner.tick = walk_start, place_tick
+
+-- review: a plain place step still in its footprint after walking
+-- clear walks to another spot beside it (a different one each time, as
+-- build_plan does), up to three, the step running again after each; a walk
+-- that fails tries the next spot.
+do
+  local build_mock = package.loaded["scripts.actions.build"]
+  local plain_exit, walk_tick_before = build_mock.footprint_exit, walk.tick
+  local spots, tried_counts = {}, {}
+  build_mock.footprint_exit = function(_, _, position, _, tried)
+    tried_counts[#tried_counts + 1] = tried and #tried or -1
+    return { x = position.x, y = position.y - 3.5 - (tried and #tried or 0) }
+  end
+  walk.start = function(task) spots[#spots + 1] = task.target end
+  local overlapped = { status = "failed", detail = "can't place stone-furnace at (10.0, 10.0) — CODEX_BODY_OVERLAP — walk clear" }
+  local function place_plan(results, first_tick)
+    spots, tried_counts = {}, {}
+    place_runner.tick = scripted(results)
+    local queued = tasks.queue_plan({ steps = { { action = "place_entity", name = "stone-furnace", x = 10, y = 10 } } })
+    for tick = first_tick, first_tick + 15 do game.tick = tick; tasks.on_tick() end
+    return tasks.plan_status({ plan_id = queued.plan_id })
+  end
+  local function distinct()
+    for a = 1, #spots do for b = a + 1, #spots do
+      if spots[a].x == spots[b].x and spots[a].y == spots[b].y then return false end
+    end end
+    return true
+  end
+
+  local third = place_plan({ overlapped, overlapped, overlapped, { status = "done", detail = "placed" } }, 391)
+  check(third.status == "completed" and #spots == 3 and distinct() and tried_counts[1] == 0 and tried_counts[3] == 2
+    and third.outcomes[1].recovery.exits == 3 and third.outcomes[1].recovery.fix == "walk_to",
+    "a place step still in its footprint walks to a different spot beside it each time and places after the third")
+
+  local stuck_status = place_plan({ overlapped }, 391)
+  check(stuck_status.status == "failed" and #spots == 3 and stuck_status.outcomes[1].error:match("CODEX_BODY_OVERLAP")
+    and stuck_status.outcomes[1].recovery.exits == 3,
+    "a place step still in its footprint after three spots fails with the overlap, bounded")
+
+  walk.tick = scripted({ { status = "failed", detail = "PATH_NOT_FOUND: no path" }, { status = "done", detail = "arrived" } })
+  local rewalked = place_plan({ overlapped, { status = "done", detail = "placed" } }, 391)
+  check(rewalked.status == "completed" and #spots == 2 and distinct() and rewalked.outcomes[1].recovery.exits == 2
+    and rewalked.outcomes[1].recovery.fix_error == nil,
+    "a walk clear of the footprint that fails tries the next spot, then the step places")
+
+  build_mock.footprint_exit, walk.tick = plain_exit, walk_tick_before
+  walk.start, place_runner.tick = walk_start, place_tick
+end
 body.position = { x = 0, y = 0 }
 body.crafting_queue, body.crafting_queue_size = { { count = 3 } }, 1
 check(tasks.cancel({ origin = "stop/supervisor", all = true }).cancelled == 0 and body.crafting_queue_size == 0, "stop cancels residual nonblocking crafting")

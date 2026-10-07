@@ -6,7 +6,7 @@ description: Operate the live Factorio Codex character through the constrained M
 # Factorio player
 
 Play the one Codex character under these shared rules and your role
-goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) gives overridable hints; [reference](FACTORIO-REFERENCE.md) covers rates, geometry for your own layouts, upkeep, retiring.
+goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) is a short intro to how the game works; [reference](FACTORIO-REFERENCE.md) covers rates, geometry for your own layouts, upkeep, retiring.
 
 ## Purpose
 
@@ -21,9 +21,8 @@ monitor, prove, or keep books.
 ## Architecture
 
 Plan the base before siting any block, and keep that plan as the factory
-grows. Ore patches are for drills and their output lines; smelting, assembly,
-power, storage and labs go on free ground beside the patches, with room to
-grow and clear paths. Before choosing a site, read the patch outlines (`bbox`
+grows. A building on ore keeps drills off that ore, and a block with no free
+ground around it cannot grow or be reached. Before choosing a site, read the patch outlines (`bbox`
 in `factory_status` patches) and the dry run's `on_ore` report. The layout is
 your own design: no tool chooses it for you.
 
@@ -210,28 +209,27 @@ re-read `factory_status` body position and choose a reachable target.
   power comes from lightning or heavy oil. Gleba grows fruit
   that spoils, as do nutrients and eggs (`spoils_in_s` in stock); spoiled
   eggs hatch enemies, and the first pentapod eggs come from a destroyed
-  Gleba spawner's loot. Aquilo freezes unheated machines (`frozen`): heat
-  pipes from heating towers first.
+  Gleba spawner's loot. Aquilo freezes unheated machines (`frozen`); heating
+  towers warm them through heat pipes.
 - `set_platform_route` sets a platform's stops (unlocked locations, each with
   the game's wait conditions) at once, without the body. `go_to` sends it to
   one stop, `paused` holds it, and `platform_status` shows the trip.
 - `travel {to: "platform:<n>"}` rides the next ready rocket up to that
   platform; `travel {to: "<planet>"}` waits aboard until the platform
-  reaches the planet, then lands you by pod. Route a platform with
-  thrusters, fuel, and turrets first; the trip takes minutes and keeps the
-  FIFO.
+  reaches the planet, then lands you by pod. A platform moves only with
+  fuelled thrusters, and asteroids hit it on the way unless turrets shoot
+  them; the trip takes minutes and keeps the FIFO.
 - Queue the destination's work in the same plan after the `travel` step: its
   positions are on the destination. While aboard, use the direct remote
   tools. `BODY_ABOARD` and `BODY_IN_TRANSIT` are not failures; wait for
   `body_surface_changed` (also `travel_phase`, `platform_arrived`). Leaving a surface cancels its unfinished plans with
   `SURFACE_LEFT`.
 - Nauvis keeps running and stays readable while you are away, but upkeep
-  reaches 96 tiles from the body: give it permanent fuel and science feeds
-  first. Stock is per surface; `get_items` reaches only the body's planet.
-- Bring in your inventory what the first power, mining, and smelting there
-  need, a cargo landing pad (its requests pull items from platforms in
-  orbit), and a silo's parts: leaving a planet takes a rocket from a silo
-  there. After a death, `mine` your corpse (`target_kind: "owned"`).
+  reaches 96 tiles from the body: a machine there without a permanent fuel or
+  science feed runs dry. Stock is per surface; `get_items` reaches only the body's planet.
+- You land with only what you carry. A cargo landing pad's requests pull
+  items from platforms in orbit, and leaving a planet takes a rocket from a
+  silo there. After a death, `mine` your corpse (`target_kind: "owned"`).
 - `production_requirements` gives each raw material its `roots` (planet and
   how it is gathered) and the `unobtainable`; with `planet` it names recipes
   that planet forbids (`surface_limited`).

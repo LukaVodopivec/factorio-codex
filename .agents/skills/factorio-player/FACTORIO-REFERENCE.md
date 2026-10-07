@@ -84,9 +84,9 @@ and a live read disagree, the live read wins.
   pick from and drop onto) rather than from the intended direction.
 - A belt run is a connection only when its last belt faces the consumer or
   the inserter that serves it.
-- Build power before the electric consumers it feeds, and give a burner
-  machine outside upkeep's reach (boilers, far drills) its permanent fuel
-  feed in the same package that builds it.
+- An electric machine does nothing until a powered pole covers it, and a
+  burner machine outside upkeep's reach (boilers, far drills) runs dry once
+  its first fuel is gone unless a feed brings more.
 - Price a design in plates and compare that with the plates the factory
   measurably makes. A long belt route can cost more than the line it feeds
   returns for many minutes; short local connections pay back first.
@@ -139,9 +139,9 @@ run's report confirm each one on the real site.
   from what you carry or can make soon. An entity that needs a material you
   do not yet produce (iron plates for an iron chest, circuits for an
   inserter) blocks the whole design until that material flows.
-- Prefer the cheapest entity that does the job now (a burner machine before
-  power exists, a smaller container that still holds enough), and upgrade
-  once the better one's materials flow.
+- The cheapest entity that does the job ties up the fewest materials (a
+  burner machine needs no power, a smaller container may still hold enough);
+  a better one pays once its materials flow.
 
 ## Research
 
@@ -155,7 +155,7 @@ run's report confirm each one on the real site.
 - Assemblers are locked until the Automation research completes, and its
   packs exist before any assembler can make them: those few packs are
   hand-crafted. They do not score, but every machine-made pack depends on
-  them, so they are worth their crafting time early.
+  them.
 - Some technologies unlock by a trigger, such as crafting a first item,
   rather than by packs; `progression_status` names the trigger.
 - `production_requirements` with a technology lists the packs it still needs;

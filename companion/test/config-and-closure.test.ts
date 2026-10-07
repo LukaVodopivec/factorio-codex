@@ -211,15 +211,20 @@ describe("exact local configuration", () => {
     expect(benchmark).toMatch(/Candidate B historically used exactly[\s\S]*Sol-medium read\/plan-only master[\s\S]*Terra-low\s+sole-writer pilot[\s\S]*Terra-low read-only specialist[\s\S]*fast mode off/i);
     expect(benchmark).toMatch(/superseded the earlier prospective wave matrix/i);
     expect(benchmark).not.toMatch(/\| W[123] —/);
-    expect(knowledge).toMatch(/recipes[\s\S]*calculations[\s\S]*operations[\s\S]*relative\s+layouts/);
-    for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "copied layouts", "online build sequences"])
+    // The owner's unassisted standard: wiki-level mechanics, rates and ratios as facts, and generic principles; no guides.
+    expect(normalizedKnowledge).toMatch(/Wiki-level mechanics in this repository's own words: recipes, crafting times, machine speeds, rates and ratios stated as facts, what technologies unlock and require, and fluid, power, belt, inserter and silo mechanics; plus generic planning principles with their reasons\. No guides: no step-by-step or opening sequences, build, research or planet orders, recommended counts for a run, layouts, map coordinates/);
+    for (const forbidden of ["map coordinates", "tutorials", "external blueprint strings", "copied layouts", "online build sequences", "anything from earlier runs"])
       expect(normalizedKnowledge).toContain(forbidden);
-    expect(normalizedKnowledge).toMatch(/researched principles and ratios written in this repository's own words/);
-    expect(normalizedKnowledge).toMatch(/overridable hints, never a build or technology order: measured state wins/);
-    for (const ratio of ["5 electric drills feed 8 stone furnaces", "30 drills and 48 furnaces", "5 red science assemblers per 6 green", "3 cable assemblers per 2 circuit assemblers", "1 boiler (1.8 MW) runs 2 steam engines"])
+    expect(normalizedKnowledge).toMatch(/overridable, never a build or technology order: measured state wins/);
+    // Rates and machine-count ratios are wiki facts, stated as what keeps what busy, never as what to build.
+    expect(normalizedKnowledge).toContain("1 boiler (1.8 MW) runs 2 steam engines");
+    expect(normalizedKnowledge).toContain("Electric drill 0.5 ore/s, burner drill 0.25 ore/s, stone furnace 0.3125 plates/s");
+    for (const ratio of ["One electric drill's ore keeps 1.6 stone furnaces busy (5 drills keep 8 furnaces busy)", "A full yellow belt carries the ore of 30 electric drills and keeps 48 stone furnaces busy", "Red science takes 5 s and green 6 s, so 5 assemblers making red make as many packs as 6 making green", "3 assemblers making copper cable keep 2 making electronic circuits busy", "Quality brings the edge no closer"])
       expect(normalizedKnowledge).toContain(ratio);
+    expect(normalizedKnowledge).not.toMatch(/\b(?:build|place|use) \d+ (?:electric |burner |stone )?(?:drills?|furnaces?|assemblers?)/i);
     const agents = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8").replace(/\s+/g, " ");
-    expect(agents).toMatch(/Principles, ratios and mechanics written in this repository's own words are allowed there; imported blueprint strings and copied layouts stay out/);
+    expect(agents).toMatch(/The bots may have, in this repository's own words, anything the Factorio wiki explains about how the game works \(recipes, crafting times, machine speeds, rates and ratios stated as facts, what technologies unlock and require, fluid, power, belt, inserter and silo mechanics\), generic planning principles with their reasons, and the harness rules and tool contracts\. No guides: no step-by-step or opening sequences, build, research or planet orders, recommended counts for a run, layouts, coordinates, imported blueprint strings, or anything from earlier runs\./);
+    expect(agents).not.toMatch(/overridable hints/);
     expect(agents).not.toMatch(/research-order hint/);
     // Future developer agents keep the mod and the instructions from doing the bots' thinking.
     expect(agents).toMatch(/Anything deterministic \(monitoring, supply, recoveries, layout arithmetic, upkeep\) belongs in the mod as a tool, not in the bots' instructions, never choices/);

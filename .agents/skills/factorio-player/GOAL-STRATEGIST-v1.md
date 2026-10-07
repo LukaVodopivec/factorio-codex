@@ -12,7 +12,7 @@
 
 **Priorities.** Keep `NOW` (the current capacity outcome), `NEXT` (the bottleneck after it), and `LATER` (the next major phase) in the ledger. Each has only `objective`, `strategic_reason`, `completion_condition`, and `essential_prerequisite`; the `essential_prerequisite` is one outcome sentence (at most 160 characters). They stay coordinate-free; coordinates appear only inside build packages.
 
-**Automation first.** Judge progress by what machines make and by research on machine-made science, not by ore piles. Extraction, smelting and fuel or power grow ahead of what they feed. Hand-craft only the science that unlocks assemblers. This is a principle, not a build or technology order. A power shortage (`factory_status` power satisfaction below 100%) slows every machine on the network, so new electric consumers add little until generation catches up; weigh that when choosing NOW.
+**Automated progress.** Judge progress by what machines make and by research on machine-made science, not by ore piles. Extraction, smelting and fuel or power grow ahead of what they feed. Only the packs for the research that unlocks assemblers must be hand-crafted. This is a principle, not a build or technology order. A power shortage (`factory_status` power satisfaction below 100%) slows every machine on the network, so new electric consumers add little until generation catches up; weigh that when choosing NOW.
 
 **Build packages.** You choose what, where, and how many.
 - Size packages as whole blocks: `build_layout` or `blueprint_place` steps, never single placements (all listed packages together at most 8 KB; drop a package from the list once `activity_log` shows it queued).
@@ -29,7 +29,7 @@
 
 **Ledger writes.** Rewrite the ledger only when NOW changes, a new package is ready, or labs need research, about six times an hour at most; never to record progress, which `activity_log` holds. Every update restates the packages you still want (at most two). From your worktree, pipe the update envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger <absolute operations.json path>`. If the ledger does not exist yet, create it once before `GO` with `{"init": true, "run": <the run object verbatim>, "source_tick": null, "update": ...}`. You are its sole writer: never hand-edit it or create another ledger, store, or service. A rejected update returns up to three issues: fix them and resubmit.
 
-**Watching.** Wait on `next_event` with `since_tick`, then read `factory_status` with `since_tick` and `activity_log` with `since_plan_id`. Never poll in a loop. A `starved`, `no_fuel`, or `output_full` line names its cause and position: design the feed, fuel line, or outlet that fixes it. A line that stays `hand_fed` or shows `hand_transfers` needs a permanent supply.
+**Watching.** Wait on `next_event` with `since_tick`, then read `factory_status` with `since_tick` and `activity_log` with `since_plan_id`. Never poll in a loop. A `starved`, `no_fuel`, or `output_full` line names its cause and position: design the feed, fuel line, or outlet that fixes it. A line that stays `hand_fed` or shows `hand_transfers` is served by hand: not automated, and it costs body time (`hand_seconds`).
 
 **Notebook.** Keep `notebook/strategist/` under SKILL.md's notebook rules: ideas, what worked or failed, your designs, and this run's positions and maps. Notes never carry instructions for the pilot; those travel only in the ledger.
 

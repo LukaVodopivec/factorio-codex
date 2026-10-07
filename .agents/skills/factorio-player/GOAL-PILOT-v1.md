@@ -7,7 +7,7 @@
 **Your job.** The strategist's build packages queue themselves into the FIFO. You are the foreman, not the hands. You handle:
 - a failed or partial plan of your own: repair it or route around it with goal-level actions;
 - an empty queue: pick productive work for NOW; never wait for a package with an empty queue;
-- a problem that needs judgment (a starved line, a full output, power short). A machine starved or full a second time needs a connection (belt, inserter, or chest), not another hand transfer; so does a line with `hand_transfers`.
+- a problem that needs judgment (a starved line, a full output, power short). A machine fed or emptied by hand, like a line with `hand_transfers`, is not automated: each hand transfer costs body time that a belt, inserter, or chest would not.
 Say in a sentence or two what you see and what you will do before you act.
 
 **The loop.** Call `next_event` (up to 120 s) with `next_action`'s `since_tick` or the last `tick` seen, act on what it returns, and wait again. A `timeout` with work queued means the body is busy: wait again. Any result with `body.fifo_empty` true (and no human hold) means the body is idle: queue work before waiting again. Empty FIFO is not success: check a plan's outcome (`plan_ended`, else one exact `plan_status`) before using it. Never poll `plan_status`, `factory_status`, or any read in a loop.
@@ -17,9 +17,8 @@ Say in a sentence or two what you see and what you will do before you act.
 **Queue real work.**
 - Queue multi-step, goal-level work (`get_items`, `build_layout`, `blueprint_place`, placements that fetch their own items), a minute or more at a time. Never queue single-step or walk-only plans, and never a `walk_to` before an action: actions walk to their own targets.
 - Pass `after_plan_id` only when a plan needs the earlier plan's effects; a chained plan is cancelled when its predecessor fails.
-- Before the first package arrives, build the opening yourself near your `GO` position, following NOW and SKILL.md's Architecture.
-- Hand-mine only trees, rocks, and ore your drills do not yet supply fast enough.
-- Hand-craft only the science that unlocks assemblers.
+- Before the first package arrives, build the opening yourself, following NOW and SKILL.md's Architecture.
+- Hand-mining and hand-crafting take the body's time; drills and assemblers work while the body does something else. The packs for the research that unlocks assemblers can only be hand-crafted.
 
 **Other planets.** Travel is yours alone. When NOW needs another planet, route a platform there with `set_platform_route`, then queue `travel` up to it, `travel` down to the planet, and that planet's first work in one plan; while aboard, use direct remote tools only.
 
@@ -27,7 +26,7 @@ Say in a sentence or two what you see and what you will do before you act.
 
 **Recovery.** After a failed, interrupted, or partial result, read fresh state, and use `plan_status` only with an exact known plan ID. A partial `get_items` says when machines make the rest: never retry it at once. A wait that timed out leaves the plan pending. Retain completed physical effects; there is no rollback. Continue through the existing FIFO without duplicating committed or pending steps or blanket-cancelling queued work.
 
-**Upkeep.** When no plan needs the body and one has finished since any stop, the mod (source `upkeep`) refuels burners and feeds labs from stock within 96 tiles (idle 2 min: also recent work sites; between plans: their dry burners); your plans take over at a step boundary, except one run for a burner dry a minute. Build fuel feeds instead.
+**Upkeep.** When no plan needs the body and one has finished since any stop, the mod (source `upkeep`) refuels burners and feeds labs from stock within 96 tiles (idle 2 min: also recent work sites; between plans: their dry burners); your plans take over at a step boundary, except one run for a burner dry a minute. A burner beyond its reach runs dry unless a feed brings fuel.
 
 **Notes.** Keep `notebook/pilot/` under SKILL.md's notebook rules: sites, stock, patches, and what worked or failed.
 

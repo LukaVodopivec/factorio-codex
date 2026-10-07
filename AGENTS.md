@@ -288,10 +288,15 @@ genuine exhausted blocker; a stop never marks a goal complete.
 **Gameplay rules** live in `.agents/skills/factorio-player/`: `SKILL.md` holds
 the rules (purpose, roles, one body and writer, honest play, tools, orders,
 notebook, stop), `FACTORIO-REFERENCE.md` explains rates, energy, flow problems, bootstrap
-dependencies and research from live tool values and the geometry of layouts, `PLAYER-KNOWLEDGE-v1.md` is a short Factorio intro with
-overridable hints, and the two goal files hold each role's duties. Principles,
-ratios and mechanics written in this repository's own words are allowed there;
-imported blueprint strings and copied layouts stay out.
+dependencies and research from live tool values and the geometry of layouts, `PLAYER-KNOWLEDGE-v1.md` is a short Factorio intro, and the two goal files hold
+each role's duties. The bots may have, in this repository's own words, anything
+the Factorio wiki explains about how the game works (recipes, crafting times,
+machine speeds, rates and ratios stated as facts, what technologies unlock and
+require, fluid, power, belt, inserter and silo mechanics), generic planning
+principles with their reasons, and the harness rules and tool contracts. No
+guides: no step-by-step or opening sequences, build, research or planet orders,
+recommended counts for a run, layouts, coordinates, imported blueprint strings,
+or anything from earlier runs.
 The supported save is permanently peaceful: planets generate no Nauvis enemy
 bases and Vulcanus no demolishers; Gleba's own bases stay (peaceful mode),
 because their eggs feed agricultural science. Debug

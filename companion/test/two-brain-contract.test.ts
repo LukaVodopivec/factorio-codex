@@ -133,9 +133,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/You are the foreman, not the hands/);
     expect(flat(pilot)).toMatch(/Queue multi-step, goal-level work[\s\S]*?Never queue single-step or walk-only plans/);
     expect(flat(skill)).toMatch(/These actions walk to their own targets: never queue a `walk_to` before them\. `wait_for_item` does not walk and reads within 30 tiles or charted own machines/);
-    expect(flat(pilot)).toMatch(/Hand-mine only trees, rocks, and ore your drills do not yet supply fast enough/);
-    expect(pilot).toMatch(/Hand-craft only the science that unlocks assemblers\./);
-    expect(strategist).toMatch(/Hand-craft only the science that unlocks assemblers\./);
+    expect(flat(pilot)).toMatch(/Hand-mining and hand-crafting take the body's time; drills and assemblers work while the body does something else\. The packs for the research that unlocks assemblers can only be hand-crafted\./);
+    expect(flat(strategist)).toMatch(/Only the packs for the research that unlocks assemblers must be hand-crafted\./);
     expect(flat(pilot)).toMatch(/Pass `after_plan_id` only when a plan needs the earlier plan's effects/);
     for (const action of ["get_items", "build_layout", "blueprint_place"]) expect(skill).toContain(`\`${action}\``);
   });
@@ -144,7 +143,7 @@ describe("persistent two-brain coordination contract", () => {
     const roleFiles = [skill, pilot, strategist, knowledge, reference, benchmark].map(flat);
     for (const text of roleFiles) expect(text).not.toMatch(/never (?:hand-craft|plan hand-crafted) science/i);
     const benchmarkGoal = flat(benchmark);
-    expect(benchmarkGoal).toMatch(/A hand-crafted item or pack never scores itself; only what machines make and labs consume counts\. Yet Automation, the research that unlocks assemblers, can only use hand-crafted packs: hand-craft just those few, early\./);
+    expect(benchmarkGoal).toMatch(/A hand-crafted item or pack never scores itself; only what machines make and labs consume counts\. Yet Automation, the research that unlocks assemblers, can only use hand-crafted packs, since no assembler exists before it\./);
     expect(flat(reference)).toMatch(/Assemblers are locked until the Automation research completes, and its packs exist before any assembler can make them: those few packs are hand-crafted\. They do not score/);
   });
 
@@ -177,7 +176,7 @@ describe("persistent two-brain coordination contract", () => {
       expect(registered).toContain(tool);
     expect(flat(pilot)).toMatch(/never a `walk_to` before an action: actions walk to their own targets/);
     expect(flat(pilot)).toMatch(/never wait for a package with an empty queue/);
-    expect(flat(pilot)).toMatch(/A machine starved or full a second time needs a connection \(belt, inserter, or chest\), not another hand transfer/);
+    expect(flat(pilot)).toMatch(/A machine fed or emptied by hand, like a line with `hand_transfers`, is not automated: each hand transfer costs body time that a belt, inserter, or chest would not\./);
     expect(flat(pilot)).toMatch(/You send no messages to the strategist, nor to anyone else after `GO`/);
     expect(flat(pilot)).toMatch(/mark it blocked only when `factory_status` shows no productive action and no order is open/);
     expect(flat(strategist)).toMatch(/a package may start with `blueprint_capture` steps \(made after its `after_package_id` package ends\)/);
@@ -198,7 +197,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(strategist)).not.toMatch(/more generation is NOW|before any other expansion/);
     expect(flatKnowledge).toMatch(/A shortage \(`power` satisfaction below 100%\) slows every machine on the network, so new consumers add little until generation catches up/);
     expect(flatKnowledge).not.toMatch(/add generation whenever/);
-    expect(flatKnowledge).toMatch(/hints are starting points that newer structured evidence may override/);
+    expect(flatKnowledge).toMatch(/The principles are generic ways to plan ahead that newer structured evidence may override\. None is a build order/);
   });
 
   it("covers the Space Age horizon without fixing the planet order", () => {
@@ -326,7 +325,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/`travel \{to: "platform:<n>"\}` rides the next ready rocket[\s\S]*`travel \{to: "<planet>"\}` waits aboard until the platform reaches the planet, then lands you by pod/);
     expect(flatSkill).toMatch(/Queue the destination's work in the same plan after the `travel` step/);
     expect(flatSkill).toMatch(/Nauvis keeps running and stays readable while you are away, but upkeep reaches 96 tiles from the body/);
-    expect(flatSkill).toMatch(/Bring in your inventory[\s\S]*leaving a planet takes a rocket from a silo there/);
+    expect(flatSkill).toMatch(/You land with only what you carry\. A cargo landing pad's requests pull items from platforms in orbit, and leaving a planet takes a rocket from a silo there/);
     expect(flatSkill).toMatch(/The game is won when any of our platforms reaches the solar system edge; the body need not be aboard/);
     expect(flatSkill).toMatch(/Each package names its `surface` \(a planet\) and queues only while the body is there[\s\S]*`waiting_surface`, which is not a failure\. Only the pilot travels: a package never holds `travel`/);
     expect(flatSkill).toMatch(/A `research_idle` problem means no research runs and labs are idle/);
@@ -377,7 +376,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(skill).toMatch(/## Purpose\n[\s\S]*?\n## Architecture\n[\s\S]*?\n## Roles\n/);
     expect(skill.indexOf("## Architecture")).toBeLessThan(skill.indexOf("## Roles"));
     expect(flatSkill).toMatch(/Plan the base before siting any block, and keep that plan as the factory grows/);
-    expect(flatSkill).toMatch(/Ore patches are for drills and their output lines; smelting, assembly, power, storage and labs go on free ground beside the patches/);
+    expect(flatSkill).toMatch(/A building on ore keeps drills off that ore, and a block with no free ground around it cannot grow or be reached/);
     expect(flatSkill).toMatch(/read the patch outlines \(`bbox` in `factory_status` patches\) and the dry run's `on_ore` report/);
     expect(flatSkill).toMatch(/The layout is your own design/);
     for (const field of ["on_ore", "mixed_ore", "open_fluid_ports", "resource_coverage"]) expect(skill).toContain(`\`${field}\``);
@@ -410,7 +409,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatReference).toMatch(/An offshore pump stands at the shore/);
     // A boiler, not steam, needs water: Vulcanus makes steam from acid and calcite.
     for (const text of [flat(skill), flatReference]) expect(text).toMatch(/a boiler needs water/i);
-    expect(flat(knowledge)).toMatch(/\*\*Compounding\.\*\* A producer placed early pays back for the whole run, and parts left in the inventory are waste; place them where the base plan has room for them/);
+    expect(flat(knowledge)).toMatch(/\*\*Compounding\.\*\* A producer pays back for every minute it runs, so one placed sooner returns more; parts left in the inventory return nothing/);
     expect(benchmark).toMatch(/Design coupled layouts yourself as build_layout steps or this run's blueprints/);
     // Every role reads the geometry at startup, and each pointer says it is there.
     for (const goal of [pilot, strategist]) expect(flat(goal)).toMatch(/\*\*Start and compaction\.\*\* Read `SKILL\.md`, `PLAYER-KNOWLEDGE-v1\.md`, `FACTORIO-REFERENCE\.md`/);
@@ -418,6 +417,46 @@ describe("persistent two-brain coordination contract", () => {
     expect(benchmark).toMatch(/FACTORIO-REFERENCE\.md \(how rates, energy, flow problems, bootstrap dependencies, research and layout geometry work/);
     expect(agents).toMatch(/`FACTORIO-REFERENCE\.md` explains [^`]*the geometry of layouts/);
     expect(readme).toMatch(/a reference for rates and layout geometry \(`FACTORIO-REFERENCE\.md`\)/);
+  });
+
+  it("gives an unassisted run only mechanics, rates, harness rules and generic principles, never strategy", () => {
+    // The owner publishes these runs as unassisted: no site, count, order, timing or opening the bots did not choose.
+    for (const text of [skill, pilot, strategist, knowledge, reference, benchmark].map(flat)) {
+      expect(text).not.toMatch(/Ore patches are for drills|go on free ground beside the patches|near your `GO` position/);
+      expect(text).not.toMatch(/Hand-(?:craft|mine) only|hand-craft just those few|worth their crafting time early/i);
+      expect(text).not.toMatch(/Build power before|Build fuel feeds instead|Prefer the cheapest entity|before power exists/);
+      expect(text).not.toMatch(/heating towers first|turrets first|science feeds first|Bring in your inventory/);
+      expect(text).not.toMatch(/Keep the first platforms minimal/);
+      expect(text).not.toMatch(/mining row|smelting column|assembler row|fuel takeoff sits upstream/);
+      expect(text).not.toMatch(/Speed hints|from fast play|size iron for green|placed early pays back/i);
+      // Ratios are facts about what keeps what busy; a count to build is a guide.
+      expect(text).not.toMatch(/\b(?:build|place|use) \d+ (?:electric |burner |stone )?(?:drills?|furnaces?|assemblers?)/i);
+    }
+    // Wiki-level ratio facts are present, phrased as how the game works.
+    const flatKnowledge = flat(knowledge);
+    expect(flatKnowledge).toMatch(/One electric drill's ore keeps 1\.6 stone furnaces busy/);
+    expect(flatKnowledge).toMatch(/A full yellow belt carries the ore of 30 electric drills and keeps 48 stone furnaces busy/);
+    expect(flatKnowledge).toMatch(/5 assemblers making red make as many packs as 6 making green/);
+    expect(flatKnowledge).toMatch(/3 assemblers making copper cable keep 2 making electronic circuits busy/);
+    expect(flatKnowledge).toMatch(/\*\*Space Age\.\*\*[^*]*Quality brings the edge no closer\./);
+    const server = read("companion/src/mcp/server.ts");
+    expect(server).not.toMatch(/hand-mining still helps|so it needs a connection/);
+  });
+
+  it("states hand service as a fact everywhere: a line served by hand is not automated and costs body time", () => {
+    const server = flat(read("companion/src/mcp/server.ts"));
+    for (const text of [skill, pilot, strategist, knowledge, reference, server, readme].map(flat))
+      expect(text).not.toMatch(/needs a (?:connection|permanent (?:feed|supply))|not another (?:trip|hand transfer)/);
+    expect(server).toMatch(/hand_transfers: served by hand twice or more in ten minutes, so not yet automated; hand_seconds: body time that hand service took/);
+    expect(flat(pilot)).toMatch(/like a line with `hand_transfers`, is not automated: each hand transfer costs body time/);
+    expect(flat(strategist)).toMatch(/A line that stays `hand_fed` or shows `hand_transfers` is served by hand: not automated, and it costs body time \(`hand_seconds`\)\./);
+    expect(flat(knowledge)).toMatch(/\*\*Hand work\.\*\* A line served by hand is not automated: each transfer costs body time \(`hand_seconds`\)/);
+    expect(readme).toMatch(/`hand_transfers`: such a line is served by hand, not automated, and costs body time/);
+  });
+
+  it("heads the strategist's progress principle as automated progress, not an order", () => {
+    expect(flat(strategist)).toMatch(/\*\*Automated progress\.\*\* Judge progress by what machines make/);
+    expect(strategist).not.toMatch(/Automation first/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

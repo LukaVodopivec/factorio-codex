@@ -505,6 +505,17 @@ check(copied.status == "partial" and copied.outcome.copied == 2 and t1.recipe ==
 check(inventory["iron-plate"] == 6 and copied.outcome.returned["iron-plate"] == 6, "what a copy pushes out goes into the inventory")
 check(reached[1].x == 400.5 and reached[2].x == 404.5 and reached[3].x == 408.5, "the body reaches the source, then each target")
 
+-- A hand blueprint_place ended mid build hands over to its nested layout's
+-- escape (move_entity's cancelled hook, covered by move_entity_test).
+require("scripts.actions.supply").register_runner("place_escape_probe", { start = function() end, tick = function() end,
+  cancelled = function(sub) return { code = "ESCAPE_CANCELLED", from = sub.from } end })
+local place_runner = area_ops.place_action.runner
+local place_note = place_runner.cancelled and place_runner.cancelled({ _layout = { _plan = {
+  _escape = { type = "place_escape_probe", from = { x = 5, y = 6 } } } } })
+check(place_note and place_note.code == "ESCAPE_CANCELLED" and place_note.from.x == 5
+  and place_runner.cancelled({ mode = "ghosts" }) == nil,
+  "a cancelled blueprint_place reports its nested layout's escape note; a ghost placement has none")
+
 mock.assert_clean()
 print(failures == 0 and "\nALL AREA ACTION TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

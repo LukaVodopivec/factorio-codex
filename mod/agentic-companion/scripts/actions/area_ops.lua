@@ -213,6 +213,11 @@ function Place.resume(task)
   if task._layout then build_layout.layout_action.runner.resume(task._layout) end
 end
 
+-- Ended mid build: the nested layout's escape puts its entity back or names it.
+function Place.cancelled(task)
+  if task._layout then return build_layout.layout_action.runner.cancelled(task._layout) end
+end
+
 local function place_ghosts(task, c)
   local label = "blueprint_place " .. task.name
   local stack = blueprints.build_stack(task.name, task.flip, label)

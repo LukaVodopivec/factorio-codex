@@ -48,7 +48,7 @@
 --                   no member out of fuel or power past its threshold
 --   hand_transfers  character transfers into or out of its machines in the
 --                   last 10 minutes, shown from the second on: a line served
---                   by hand again needs a connection (belt, inserter, chest)
+--                   by hand again is not yet automated (no belt, inserter or chest feeds it)
 --   hand_seconds    body time those insert/extract steps took in the last 10
 --                   minutes (walking and fetching included), shown from 10 s:
 --                   what keeping the line running by hand costs

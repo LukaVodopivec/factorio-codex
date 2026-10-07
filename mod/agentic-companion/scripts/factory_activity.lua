@@ -45,7 +45,7 @@ function M.record(kind, outcome)
     target = target, items = items,
   }
   -- A hand-fed machine is not self-sustaining, and a line served by hand
-  -- again needs a connection (autonomy owns both rules).
+  -- again is not yet automated (autonomy owns both rules).
   if target then autonomy.on_transfer(target.position, kind) end
   if #activity.events > MAX_EVENTS then
     local evicted = table.remove(activity.events, 1)

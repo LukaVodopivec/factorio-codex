@@ -176,7 +176,7 @@ describe("persistent two-brain coordination contract", () => {
       expect(registered).toContain(tool);
     expect(flat(pilot)).toMatch(/never a `walk_to` before an action: actions walk to their own targets/);
     expect(flat(pilot)).toMatch(/never wait for a package with an empty queue/);
-    expect(flat(pilot)).toMatch(/A machine starved or full a second time needs a connection \(belt, inserter, or chest\), not another hand transfer/);
+    expect(flat(pilot)).toMatch(/A machine fed or emptied by hand, like a line with `hand_transfers`, is not automated: each hand transfer costs body time that a belt, inserter, or chest would not\./);
     expect(flat(pilot)).toMatch(/You send no messages to the strategist, nor to anyone else after `GO`/);
     expect(flat(pilot)).toMatch(/mark it blocked only when `factory_status` shows no productive action and no order is open/);
     expect(flat(strategist)).toMatch(/a package may start with `blueprint_capture` steps \(made after its `after_package_id` package ends\)/);
@@ -426,15 +426,37 @@ describe("persistent two-brain coordination contract", () => {
       expect(text).not.toMatch(/Hand-(?:craft|mine) only|hand-craft just those few|worth their crafting time early/i);
       expect(text).not.toMatch(/Build power before|Build fuel feeds instead|Prefer the cheapest entity|before power exists/);
       expect(text).not.toMatch(/heating towers first|turrets first|science feeds first|Bring in your inventory/);
-      expect(text).not.toMatch(/Keep the first platforms minimal|Quality brings the edge no closer/);
+      expect(text).not.toMatch(/Keep the first platforms minimal/);
       expect(text).not.toMatch(/mining row|smelting column|assembler row|fuel takeoff sits upstream/);
       expect(text).not.toMatch(/Speed hints|from fast play|size iron for green|placed early pays back/i);
-      // A rate per machine is a fact; a machine count per other machine tells them how many to build.
-      expect(text).not.toMatch(/\b\d+ [a-z -]*?(?:drills?|furnaces?|assemblers?) (?:feed|per) \d+/i);
-      expect(text).not.toMatch(/\b\d+ drills and \d+ furnaces/);
+      // Ratios are facts about what keeps what busy; a count to build is a guide.
+      expect(text).not.toMatch(/\b(?:build|place|use) \d+ (?:electric |burner |stone )?(?:drills?|furnaces?|assemblers?)/i);
     }
+    // Wiki-level ratio facts are present, phrased as how the game works.
+    const flatKnowledge = flat(knowledge);
+    expect(flatKnowledge).toMatch(/One electric drill's ore keeps 1\.6 stone furnaces busy/);
+    expect(flatKnowledge).toMatch(/A full yellow belt carries the ore of 30 electric drills and keeps 48 stone furnaces busy/);
+    expect(flatKnowledge).toMatch(/5 assemblers making red make as many packs as 6 making green/);
+    expect(flatKnowledge).toMatch(/3 assemblers making copper cable keep 2 making electronic circuits busy/);
+    expect(flatKnowledge).toMatch(/\*\*Space Age\.\*\*[^*]*Quality brings the edge no closer\./);
     const server = read("companion/src/mcp/server.ts");
     expect(server).not.toMatch(/hand-mining still helps|so it needs a connection/);
+  });
+
+  it("states hand service as a fact everywhere: a line served by hand is not automated and costs body time", () => {
+    const server = flat(read("companion/src/mcp/server.ts"));
+    for (const text of [skill, pilot, strategist, knowledge, reference, server, readme].map(flat))
+      expect(text).not.toMatch(/needs a (?:connection|permanent (?:feed|supply))|not another (?:trip|hand transfer)/);
+    expect(server).toMatch(/hand_transfers: served by hand twice or more in ten minutes, so not yet automated; hand_seconds: body time that hand service took/);
+    expect(flat(pilot)).toMatch(/like a line with `hand_transfers`, is not automated: each hand transfer costs body time/);
+    expect(flat(strategist)).toMatch(/A line that stays `hand_fed` or shows `hand_transfers` is served by hand: not automated, and it costs body time \(`hand_seconds`\)\./);
+    expect(flat(knowledge)).toMatch(/\*\*Hand work\.\*\* A line served by hand is not automated: each transfer costs body time \(`hand_seconds`\)/);
+    expect(readme).toMatch(/`hand_transfers`: such a line is served by hand, not automated, and costs body time/);
+  });
+
+  it("heads the strategist's progress principle as automated progress, not an order", () => {
+    expect(flat(strategist)).toMatch(/\*\*Automated progress\.\*\* Judge progress by what machines make/);
+    expect(strategist).not.toMatch(/Automation first/);
   });
 
   it("keeps durable gameplay instructions generic and text-only", () => {

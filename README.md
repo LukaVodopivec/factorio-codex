@@ -154,8 +154,8 @@ replacement.
   worst member problem and where), `rate_per_min`, `hand_fed` (a character
   transfer in the last minute), `self_sustaining` (a minute of running with
   no character transfer, no stall and no member out of fuel or power) and, from the second hand transfer into or out of
-  its machines within ten minutes, `hand_transfers`: such a line needs a
-  connection, not another trip. There are no proofs or validation windows.
+  its machines within ten minutes, `hand_transfers`: such a line is served by
+  hand, not automated, and costs body time. There are no proofs or validation windows.
 - **Auto-supply.** `get_items`, `place_entity`, `insert_items`, `build_plan`,
   `build_layout` and `blueprint_place` fetch what they lack: from the nearest own
   chest or machine output, then loose items at an own drill's drop position

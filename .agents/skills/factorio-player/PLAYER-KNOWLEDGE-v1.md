@@ -6,12 +6,16 @@ newer structured evidence may override. None is a build order.
 
 ## Boundary
 
-Facts from honest in-game play and Codex observations (recipes, calculations
-from in-game values, repeatable operations, Codex-authored relative layouts),
-plus researched principles and ratios written in this repository's own words. Never store map
-coordinates, tutorials, external blueprint strings, copied layouts, online
-build sequences, or seed facts here. The run notebook holds this run's
-observations, exact positions included; nothing carries over to another run.
+Wiki-level mechanics in this repository's own words: recipes, crafting
+times, machine speeds, rates and ratios stated as facts, what technologies
+unlock and require, and fluid, power, belt, inserter and silo mechanics; plus
+generic planning principles with their reasons. No guides: no step-by-step or
+opening sequences, build, research or planet orders, recommended counts for
+a run, layouts, map coordinates, tutorials, external blueprint strings,
+copied layouts, online build sequences, seed facts, or anything from earlier
+runs.
+The run notebook holds this run's observations, exact positions included;
+nothing carries over to another run.
 
 ## Mechanics
 
@@ -49,8 +53,8 @@ observations, exact positions included; nothing carries over to another run.
 - **Use your stock.** Chests, furnace outputs, and belts are the first source
   for building and crafting. Machine-made parts (gears, cable, circuits,
   belts, inserters) come from the machines that make them.
-- **Hand work.** Feeding a running machine by hand again and again means it
-  needs a permanent feed.
+- **Hand work.** A line served by hand is not automated: each transfer costs
+  body time (`hand_seconds`), and the line stalls while the body is away.
 - **Two strikes.** The same failure twice at one site means a new design, not
   a third repair.
 
@@ -65,6 +69,11 @@ overridable, never a build or technology order: measured state wins.
   with `per_minute` gives the machines, drills, fuel or power and belts.
 - **Rates.** Electric drill 0.5 ore/s, burner drill 0.25 ore/s, stone furnace
   0.3125 plates/s, yellow belt 15 items/s.
+- **Ratios.** One electric drill's ore keeps 1.6 stone furnaces busy (5
+  drills keep 8 furnaces busy). A full yellow belt carries the ore of 30
+  electric drills and keeps 48 stone furnaces busy. Red science takes 5 s and
+  green 6 s, so 5 assemblers making red make as many packs as 6 making green.
+  3 assemblers making copper cable keep 2 making electronic circuits busy.
 - **Power.** 1 boiler (1.8 MW) runs 2 steam engines (0.9 MW each). A shortage
   (`power` satisfaction below 100%) slows every machine on the network, so
   new consumers add little until generation catches up. Once researched, solar panels
@@ -82,6 +91,7 @@ overridable, never a build or technology order: measured state wins.
   or uranium ore.
 - **Space Age.** The win is a platform reaching the solar system edge. Choose
   each planet for what it unlocks toward that and the constraint it adds.
+  Quality brings the edge no closer.
 
 ## Learning
 

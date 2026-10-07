@@ -409,6 +409,124 @@ inventory.inserter = 0
 
 check(not pcall(move.start, { from = { x = 200.5, y = 0.5 }, to = { x = 200.5, y = 0.5 }, through = { x = 220.5, y = 0.5 },
   expected_name = "fast-inserter", id = 9 }), "an escape refuses an entity other than the named one")
+
+-- The plan ends mid escape (a cancel, a stop, the plan's budget): the
+-- cancelled hook puts the taken-up inserter back when the body can, with
+-- its direction and filters; otherwise it names it in the inventory.
+local function gate_at()
+  return surface.find_entity("inserter", { x = 200.5, y = 0.5 })
+end
+local function fresh_gate()
+  local standing = gate_at()
+  if standing then standing.valid = false end
+  local g = spawn("inserter", { x = 200.5, y = 0.5 }, 4, { use_filters = true })
+  g.filters[1] = "iron-plate"
+  inventory.inserter = 0
+  place_body(199.5, 0.5)
+  return g
+end
+local function escape_until(stop_when)
+  local task = { from = { x = 200.5, y = 0.5 }, to = { x = 200.5, y = 0.5 }, through = { x = 220.5, y = 0.5 },
+    expected_name = "inserter", id = 9 }
+  move.start(task)
+  for _ = 1, 80 do
+    if move.tick(task) then return nil end
+    if stop_when(task) then return task end
+  end
+end
+fresh_gate()
+local mid = escape_until(function(task) return task._phase == "through" and body.position.x >= 201.5 end)
+local put = mid and move.cancelled(mid)
+local again = gate_at()
+check(put and put.code == "ESCAPE_CANCELLED" and put.put_back and not put.in_inventory and again and again.valid
+  and again.direction == 4 and again.filters[1] == "iron-plate" and inventory.inserter == 0
+  and put.detail == "the plan ended mid step-out: put the inserter back at (200.5, 0.5)",
+  "a plan ended mid step-out puts the taken-up inserter back with its direction and filters, and says so")
+
+fresh_gate()
+local in_gap = escape_until(function(task) return task._phase == "through" and body.position.x >= 200.4 end)
+local kept = in_gap and move.cancelled(in_gap)
+check(kept and kept.code == "ESCAPE_CANCELLED" and kept.in_inventory and gate_at() == nil and inventory.inserter == 1
+  and kept.detail:match("^the plan ended mid step%-out: the inserter taken up at %(200%.5, 0%.5%) is in my inventory")
+  and kept.detail:match("its spot is not free %(CODEX_BODY_OVERLAP%)"),
+  "a plan ended with the body in the opening names the inserter in the inventory and why it is not back")
+
+fresh_gate()
+local placing = escape_until(function(task) return task._phase == "place" end)
+place_body(230.5, 0.5)
+local far = placing and move.cancelled(placing)
+check(far and far.in_inventory and inventory.inserter == 1 and far.detail:match("its spot is out of build reach"),
+  "a plan ended with the body out of build reach of the spot names the inserter in the inventory")
+
+-- Put back, but out of reach for its contents: still an escape, and the
+-- result keeps the restore note.
+fresh_gate()
+approach_mock.ensure_entity = function() return { status = "failed", detail = "couldn't get in range: PATH_NOT_FOUND" } end
+local unrestored = escape_run()
+approach_mock.ensure_entity = function() return "ok" end
+check(unrestored and unrestored.status == "done" and unrestored.outcome.code == "ESCAPED" and unrestored.outcome.not_restored
+  and gate_at() ~= nil and unrestored.detail:match("took it up and put it back; its recipe, settings and items were not"
+    .. " restored: couldn't get in range: PATH_NOT_FOUND"),
+  "an escape whose restore is out of reach is still an escape and keeps the restore note")
+
+-- Parallel belts beyond the opening: stepping out onto them, the put-back
+-- would settle the body off the belt into the open gap and walk it clear of
+-- the footprint inside. The escape walks on until the body is off the belts.
+entities["transport-belt"] = proto("transport-belt", "transport-belt", 1, 1)
+local function wall(position)
+  return position.x > 199.6 and position.x < 201.4 and math.abs(position.y - 0.5) > 0.6 and math.abs(position.y - 0.5) < 6
+end
+surface.find_non_colliding_position = function(_, position) if not wall(position) then return position end end
+supply.register_runner("walk_to", { start = function() end, tick = function(sub)
+  place_body(sub.target.x, sub.target.y)
+  return { status = "done", detail = "arrived" }
+end })
+-- Arrival in reach on a belt settles to the nearest clear off-belt tile, as the walk does.
+approach_mock.ensure = function(_, c, target, reach)
+  local dx, dy = target.x - c.position.x, target.y - c.position.y
+  local d = math.sqrt(dx * dx + dy * dy)
+  if d <= reach then
+    if not geometry.conveyor_under(c) then return "ok" end
+    local tx, ty, best = math.floor(c.position.x), math.floor(c.position.y), nil
+    for oy = -3, 3 do for ox = -3, 3 do
+      local cell = { x = tx + ox + 0.5, y = ty + oy + 0.5 }
+      local cell_box = { left_top = { x = cell.x - 0.2, y = cell.y - 0.2 }, right_bottom = { x = cell.x + 0.2, y = cell.y + 0.2 } }
+      if #surface.find_entities_filtered({ area = cell_box }) == 0 then
+        local dd = (cell.x - c.position.x) ^ 2 + (cell.y - c.position.y) ^ 2
+        local bd = best and (best.x - c.position.x) ^ 2 + (best.y - c.position.y) ^ 2
+        if not best or dd < bd or dd == bd and (cell.y < best.y or cell.y == best.y and cell.x < best.x) then best = cell end
+      end
+    end end
+    place_body(best.x, best.y)
+    return nil
+  end
+  local step = math.min(0.5, d)
+  place_body(c.position.x + dx / d * step, c.position.y + dy / d * step)
+  return nil
+end
+local belts = {}
+for _, x in ipairs({ 201.5, 202.5, 203.5 }) do
+  for y = -5, 5 do belts[#belts + 1] = spawn("transport-belt", { x = x, y = y + 0.5 }) end
+end
+fresh_gate()
+local belted = escape_run()
+check(belted and belted.status == "done" and belted.outcome.code == "ESCAPED" and gate_at() ~= nil
+  and body.position.x > 201.85 and not geometry.conveyor_under(body),
+  "an escape onto parallel belts walks on until the body is off them, then puts the inserter back with the body outside")
+for _, b in ipairs(belts) do b.valid = false end
+
+-- Never ESCAPED with the body back inside: here putting the inserter back
+-- moves the body into the opening, and the walk clear of the footprint
+-- ends inside.
+fresh_gate()
+local pushed = false
+local inside_again = escape_run({ during = function(task)
+  if task._phase == "place" and not pushed then pushed = true; place_body(200.5, 0.5) end
+end })
+check(pushed and inside_again and inside_again.status == "failed" and inside_again.outcome.code == "ESCAPE_FAILED"
+  and inside_again.outcome.restored_in_place and gate_at() ~= nil and body.position.x < 200
+  and inside_again.detail:match("putting it back moved the body into the opening"),
+  "an escape whose put-back moved the body back through the opening is an ESCAPE_FAILED, not ESCAPED")
 approach_mock.ensure = function() return "ok" end
 place_body(0.5, 0.5)
 print(failures == 0 and "\nALL MOVE_ENTITY TESTS PASSED" or ("\n" .. failures .. " FAILURES"))

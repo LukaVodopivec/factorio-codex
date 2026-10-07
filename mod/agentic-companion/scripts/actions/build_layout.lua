@@ -2526,6 +2526,11 @@ function Runner.resume(task)
   build_plan.resume(plan)
 end
 
+-- Ended mid build: the nested build's escape puts its entity back or names it.
+function Runner.cancelled(task)
+  if task._plan then return build_plan.cancelled(task._plan) end
+end
+
 function Runner.tick(task)
   local label = "build_layout"
   if task._search then

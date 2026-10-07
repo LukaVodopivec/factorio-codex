@@ -600,15 +600,18 @@ local function log_cancel(origin, id, cancelled)
   end
 end
 
--- A running step ends from outside (a cancel, the plan's budget): its
--- runner's cancelled hook, if any, lets go of what it holds (a travel step's
--- launch marker). Returns the hook's note, or nil.
-local function step_cancelled(plan)
-  local task = plan.current_task
+-- A running step or direct task ends from outside (a cancel, the plan's
+-- budget): its runner's cancelled hook, if any, lets go of what it holds (a
+-- travel step's launch marker, an escape's taken-up entity). Returns the
+-- hook's note, or nil.
+local function task_cancelled(task)
   local runner = task and runners[task.type]
   local noted, note = pcall(function() return runner and runner.cancelled and runner.cancelled(task) or nil end)
   return noted and note or nil
 end
+local function step_cancelled(plan) return task_cancelled(plan.current_task) end
+-- The running direct task's note, as its cancelled outcome.
+local function direct_cancelled(task) if task.type ~= "plan" then return task_cancelled(task) end end
 
 function M.cancel(params)
   local origin = params.origin
@@ -639,7 +642,7 @@ function M.cancel(params)
     end
     if tasks.active then
       record_cancelled_step(tasks.active)
-      finish(tasks.active, "cancelled", detail); n = n + 1
+      finish(tasks.active, "cancelled", detail, nil, direct_cancelled(tasks.active)); n = n + 1
     end
     cancel_crafting()
     -- Emergency cancellation is not the next plan's idle time, and upkeep
@@ -654,7 +657,7 @@ function M.cancel(params)
   if not id then error("cancel requires task_id, plan_id, or all=true") end
   if tasks.active and tasks.active.id == id then
     record_cancelled_step(tasks.active)
-    finish(tasks.active, "cancelled", detail)
+    finish(tasks.active, "cancelled", detail, nil, direct_cancelled(tasks.active))
     log_cancel(origin, id, 1)
     return { cancelled = 1 }
   end

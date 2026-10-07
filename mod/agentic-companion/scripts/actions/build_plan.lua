@@ -599,6 +599,8 @@ end
 -- ------------------------------------------------------------------- tick
 
 M.resume = supply.resume
+-- Ended mid step-out: the escape puts its entity back or names it.
+M.cancelled = supply.cancel_nested
 
 function M.tick(task)
   local c = companion.get()

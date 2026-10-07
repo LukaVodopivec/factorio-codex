@@ -204,7 +204,11 @@ turning them into a fixed opening or map-specific sequence:
   placement recovers once by itself: the body takes that blocker up, walks
   out through the opening and puts the same entity back with its direction,
   recipe, settings and contents (the step's detail names it); never by
-  teleport.
+  teleport. It walks out until the body stands off any belt, and reports
+  `ESCAPED` only with the body still outside once the entity is back. A
+  plan that ends mid step-out (cancel, stop, budget) puts the entity back
+  when the body can; otherwise the cancelled step's result names it in the
+  inventory.
 - A successful walk or approach never leaves the body on a belt: it steps
   to a clear off-belt tile (reported as `settle`), within 4 tiles, or for an
   approach within 8 tiles and still in reach of its target, else anywhere in

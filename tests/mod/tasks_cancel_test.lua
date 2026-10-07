@@ -63,4 +63,19 @@ check(stopped_mining.cancelled == 1 and body.mining_state.mining == false,
   "cancelling the active mine stops LuaControl mining immediately")
 check(storage.tasks.records[1].status == "cancelled", "mine cancellation remains observable")
 check(body.picking_state == false, "cancelling active work clears LuaControl picking_state")
+
+-- A direct build_plan cancelled mid step-out: its cancelled hook's note (the
+-- escape's taken-up entity) is the record's outcome.
+crafting_runner.cancelled = function() return { code = "ESCAPE_CANCELLED", in_inventory = true } end
+for _, how in ipairs({ { task_id = 1 }, { all = true } }) do
+  _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
+  tasks.enqueue({ task = { type = "build_plan" } })
+  tasks.on_tick()
+  how.origin = "stop/supervisor"
+  tasks.cancel(how)
+  local record = storage.tasks.records[1]
+  check(record.status == "cancelled" and record.outcome and record.outcome.code == "ESCAPE_CANCELLED"
+    and record.outcome.in_inventory, "a cancelled direct build_plan records its escape note (" .. (how.all and "stop" or "cancel") .. ")")
+end
+crafting_runner.cancelled = nil
 os.exit(failures == 0 and 0 or 1)

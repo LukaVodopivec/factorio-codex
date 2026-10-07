@@ -14,12 +14,16 @@
 -- expected_name?} steps the body out of an enclosure of own entities. The
 -- body takes up the named entity and walks through the opening toward
 -- `through` until it has passed the entity's spot and stands a tile clear of
--- it; reaching `through` still beside the spot (it lies just past the
--- opening) walks on once to a spot past the gap. Only that, or a failed
--- walk, ends the walk out. Then it puts the same entity back on its own spot
--- and restores it as above. Result: {code = ESCAPED, name, from, restored},
--- or a failure that says whether the entity is back in place or in the
--- inventory.
+-- it, off any belt (a belt would carry it back); reaching `through` still
+-- beside the spot (it lies just past the opening) walks on once to a spot
+-- past the gap. Only that, or a failed walk, ends the walk out. Then it puts
+-- the same entity back on its own spot and restores it as above (contents it
+-- cannot reach stay in the inventory, and the result says so). Result:
+-- {code = ESCAPED, name, from, restored}, only while the body still stands
+-- outside after the put-back; else a failure that says whether the entity
+-- is back in place or in the inventory. A plan that ends mid escape
+-- (cancelled hook) puts the entity back when it can there and then, else
+-- names it in the inventory.
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
@@ -179,6 +183,8 @@ end
 
 -- Escape: true once the body has passed over the taken-up entity's spot and
 -- stands a tile clear of it, so putting it back closes the way behind it.
+-- Off any belt too: a belt carries a standing body, and the put-back would
+-- settle it into the open gap first.
 local function stepped_out(task, c)
   local area = placement_geometry.footprint(task._proto, task._to, task._direction)
   local function grown(margin)
@@ -192,6 +198,19 @@ local function stepped_out(task, c)
   end
   local body = placement_geometry.character_box(c)
   return task._through_entered == true and body ~= nil and not placement_geometry.overlaps(grown(1), body)
+    and not placement_geometry.conveyor_under(c)
+end
+
+-- Escape: still outside once the entity is back. Putting it back must not
+-- have moved the body into the gap (a settle off a belt, a walk clear of the
+-- footprint), from where it may have stepped back inside.
+local function still_out(task, c)
+  if task._through_error or task._reentered then return false end
+  local area = placement_geometry.footprint(task._proto, task._to, task._direction)
+  local body = placement_geometry.character_box(c)
+  return body ~= nil and not placement_geometry.overlaps({
+    left_top = { x = area.left_top.x - 1, y = area.left_top.y - 1 },
+    right_bottom = { x = area.right_bottom.x + 1, y = area.right_bottom.y + 1 } }, body)
 end
 
 -- Escape: the walk out heads for `through` with this reach, so arriving
@@ -212,8 +231,23 @@ local function past_gap(task)
   return { x = cx + dx / length * out, y = cy + dy / length * out }
 end
 
--- Recipe, settings and contents onto the placed entity.
-local function restore(task, c, e)
+-- Escape, with the entity back in place: the failure when the body is not
+-- out (the walk out failed, or the put-back moved it into the gap), or nil.
+local function escape_failure(task, c, e, restored, notes)
+  if not task.through or still_out(task, c) then return nil end
+  local snap = task._snapshot
+  local why = task._through_error and ("the walk out failed and it is back in place — " .. task._through_error)
+    or string.format("putting it back moved the body into the opening, and it is back in place: the body stands at"
+      .. " (%.1f, %.1f), maybe inside again", c.position.x, c.position.y)
+  return { status = "failed", detail = string.format("ESCAPE_FAILED: took up the %s at (%.1f, %.1f), %s",
+    snap.name, e.position.x, e.position.y, why),
+    outcome = { code = "ESCAPE_FAILED", restored_in_place = true, name = snap.name, from = snap.from,
+      restored = restored, notes = notes and #notes > 0 and notes or nil } }
+end
+
+-- Recipe, settings and contents onto the placed entity: restored, notes,
+-- shortfall.
+local function put_contents(task, c, e)
   local snap = task._snapshot
   local restored = { direction = e.direction, items = {} }
   local notes, shortfall = {}, {}
@@ -249,18 +283,19 @@ local function restore(task, c, e)
     end
   end
   if not next(restored.items) then restored.items = nil end
+  return restored, notes, shortfall
+end
+
+local function restore(task, c, e)
+  local snap = task._snapshot
+  local restored, notes, shortfall = put_contents(task, c, e)
   local detail = task.through and string.format("stepped out through the %s at (%.1f, %.1f): took it up and put it back",
     snap.name, e.position.x, e.position.y) or string.format("moved the %s from (%.1f, %.1f) to (%.1f, %.1f)",
     snap.name, snap.from.x, snap.from.y, e.position.x, e.position.y)
   if #shortfall > 0 then detail = detail .. string.format(" — %d kinds of its items did not go back in", #shortfall) end
   if #notes > 0 then detail = detail .. " — " .. table.concat(notes, "; ") end
-  if task._through_error then
-    -- Back in place, but the walk out failed: the body is still enclosed.
-    return { status = "failed", detail = string.format("ESCAPE_FAILED: took up the %s at (%.1f, %.1f), the walk out"
-      .. " failed and it is back in place — %s", snap.name, e.position.x, e.position.y, task._through_error),
-      outcome = { code = "ESCAPE_FAILED", restored_in_place = true, name = snap.name, from = snap.from,
-        restored = restored, notes = #notes > 0 and notes or nil } }
-  end
+  local failure = escape_failure(task, c, e, restored, notes)
+  if failure then return failure end
   return { status = "done", detail = detail, outcome = { code = task.through and "ESCAPED" or "MOVED", moved = true, name = snap.name,
     from = snap.from, to = { x = e.position.x, y = e.position.y }, restored = restored,
     shortfall = #shortfall > 0 and shortfall or nil, notes = #notes > 0 and notes or nil } }
@@ -275,6 +310,10 @@ function M.tick(task)
   local c = companion.get()
   if not c then return { status = "failed", detail = "the companion character is gone" } end
   local snap = task._snapshot
+  if task.through and task._phase == "place" and not task._reentered and placement_geometry.overlaps(
+    placement_geometry.footprint(task._proto, task._to, task._direction), placement_geometry.character_box(c)) then
+    task._reentered = true
+  end
   if task._sub then
     local kind = task._sub.type
     local result = supply.step(task, "_sub")
@@ -342,6 +381,16 @@ function M.tick(task)
   pcall(registry.add, e)
   local reached = approach.ensure_entity(task, c, e)
   if type(reached) == "table" then
+    local unrestored = "its recipe, settings and items were not restored: " .. tostring(reached.detail)
+    if task.through then
+      -- Back in place with the body out: an escape, its contents still to restore.
+      local failure = escape_failure(task, c, e, nil, { unrestored })
+      if failure then return failure end
+      return { status = "done", detail = string.format("stepped out through the %s at (%.1f, %.1f): took it up and put"
+        .. " it back; %s", snap.name, e.position.x, e.position.y, unrestored),
+        outcome = { code = "ESCAPED", moved = true, name = snap.name, from = snap.from,
+          to = { x = e.position.x, y = e.position.y }, not_restored = true, notes = { unrestored } } }
+    end
     -- Moved, but out of reach for its settings: they and its items wait in the inventory.
     return { status = "partial", detail = string.format("moved the %s to (%.1f, %.1f); its recipe, settings and items"
       .. " were not restored: %s", snap.name, e.position.x, e.position.y, tostring(reached.detail)),
@@ -354,7 +403,64 @@ end
 
 function M.observe(task) if task.mode == "robots" then robot_move.observe(task) end end
 function M.waiting(task) return task.mode == "robots" and robot_move.waiting(task) end
-function M.cancelled(task) if task.mode == "robots" then return robot_move.cancelled(task) end end
+-- The plan ends while the body holds the taken-up entity (a cancel, a stop,
+-- the plan's budget). An escape puts it back on its own spot there and then
+-- when the body can (in build reach, the spot free, the item carried: one
+-- placement and its restore), so no unchosen hole is left; otherwise, and
+-- for a move, the note names the entity and says it is in the inventory.
+-- An entity already placed gets its contents restored when in reach.
+local function body_cancelled(task)
+  local snap, phase = task._snapshot, task._phase
+  if not snap or (phase ~= "through" and phase ~= "place" and phase ~= "restore") then return nil end
+  local c = companion.get()
+  if not c then return nil end
+  local what = task.through and "the plan ended mid step-out" or "the plan ended mid move"
+  local note = { code = task.through and "ESCAPE_CANCELLED" or "MOVE_CANCELLED", name = snap.name, from = snap.from }
+  local e = build.existing(c, task._proto, task._to, task._direction, snap.belt_to_ground_type)
+  local why
+  if not e and task.through then
+    local dx, dy = c.position.x - task._to.x, c.position.y - task._to.y
+    local ok, placeable, reason = pcall(placement_geometry.can_place, c, task._proto, task._to, task._direction)
+    if c.get_item_count(task._item) < 1 then why = "it is not in my inventory"
+    elseif dx * dx + dy * dy > (c.build_distance or 0) ^ 2 then why = "its spot is out of build reach"
+    elseif not (ok and placeable) then why = "its spot is not free (" .. tostring(ok and reason or placeable) .. ")"
+    else
+      local okc, built = pcall(c.surface.create_entity, { name = snap.name, position = task._to, direction = task._direction,
+        mirror = snap.mirror or nil, type = snap.belt_to_ground_type, force = c.force, raise_built = true })
+      if okc and built then
+        e = built
+        c.remove_item({ name = task._item, count = 1 })
+        pcall(registry.add, e)
+      else why = "placing it failed" end
+    end
+  end
+  if not e then
+    note.in_inventory = true
+    note.detail = string.format("%s: the %s taken up at (%.1f, %.1f) is in my inventory%s", what, snap.name,
+      snap.from.x, snap.from.y, why and (" — couldn't put it back: " .. why) or "")
+    return note
+  end
+  note.put_back = task.through and true or nil
+  note.to = { x = e.position.x, y = e.position.y }
+  note.detail = task.through and string.format("%s: put the %s back at (%.1f, %.1f)", what, snap.name, e.position.x, e.position.y)
+    or string.format("%s: the %s stands at (%.1f, %.1f)", what, snap.name, e.position.x, e.position.y)
+  local ok_reach, reachable = pcall(c.can_reach_entity, e)
+  if not (ok_reach and reachable) then
+    note.not_restored = true
+    note.detail = note.detail .. "; its recipe, settings and items were not restored (out of reach)"
+    return note
+  end
+  local restored, notes, shortfall = put_contents(task, c, e)
+  note.restored, note.shortfall, note.notes = restored, #shortfall > 0 and shortfall or nil, #notes > 0 and notes or nil
+  if #shortfall > 0 then note.detail = note.detail .. string.format(" — %d kinds of its items did not go back in", #shortfall) end
+  if #notes > 0 then note.detail = note.detail .. " — " .. table.concat(notes, "; ") end
+  return note
+end
+
+function M.cancelled(task)
+  if task.mode == "robots" then return robot_move.cancelled(task) end
+  return body_cancelled(task)
+end
 function M.diagnostics(task) if task.mode == "robots" then return robot_move.diagnostics(task) end end
 for _, name in ipairs({ "on_robot_pre_mined", "on_robot_mined_entity", "on_robot_built_entity" }) do
   M[name] = function(task, event) if task.mode == "robots" then robot_move[name](task, event) end end

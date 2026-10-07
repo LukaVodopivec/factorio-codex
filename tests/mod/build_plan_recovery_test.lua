@@ -369,6 +369,32 @@ check(room_result and room_result.status == "done" and created == 1 and gate_bac
   and not geometry.overlaps({ left_top = { x = 199.15, y = -0.85 }, right_bottom = { x = 201.85, y = 1.85 } }, body_box(put_back_at))
   and room_result.detail:match("stepped out through the inserter at %(200%.5, 0%.5%): took it up and put it back"),
   "a layout step beyond an enclosure's gap steps out, puts the gate back with the body a tile clear outside, and places")
+
+-- The build ends mid step-out (a cancel, a stop, its plan's budget): its
+-- cancelled hook hands over to the escape's, which puts the gate back.
+set_body(199.5, 0.5)
+inventory["stone-furnace"], inventory.inserter = 1, 0
+local cut = { id = 64, auto_supply = false, steps = { { item = "stone-furnace", position = { x = 214.5, y = 0.5 } } } }
+build_plan.start(cut)
+for _ = 1, 200 do
+  if build_plan.tick(cut) then break end
+  if cut._escape and cut._escape._phase == "through" and character.position.x >= 201.5 then break end
+end
+local mid_escape = cut._escape ~= nil and gate_standing() == nil and inventory.inserter == 1
+-- The hook places as the game does, onto this world.
+local plain_create = surface.create_entity
+surface.create_entity = function(args)
+  if args.name ~= "inserter" then return plain_create(args) end
+  local e = spawn_gate()
+  e.direction = args.direction
+  return e
+end
+character.can_reach_entity = function() return true end
+local note = build_plan.cancelled and build_plan.cancelled(cut)
+check(mid_escape and note and note.code == "ESCAPE_CANCELLED" and note.put_back and gate_standing() ~= nil
+  and inventory.inserter == 0 and note.detail:match("put the inserter back at %(200%.5, 0%.5%)"),
+  "a build ended mid step-out puts the taken-up gate back through its escape's cancelled hook")
+surface.create_entity, character.can_reach_entity = plain_create, nil
 walk_mock.tick = full_tick
 
 os.exit(failures == 0 and 0 or 1)

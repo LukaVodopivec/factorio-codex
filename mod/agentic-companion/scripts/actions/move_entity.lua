@@ -10,14 +10,16 @@
 -- says so. Before mining, the target spot is checked so a move that cannot
 -- land never takes the entity up.
 --
--- Escape (internal, never a tool input): {from, through = {x, y}, reach?,
+-- Escape (internal, never a tool input): {from, through = {x, y},
 -- expected_name?} steps the body out of an enclosure of own entities. The
--- body takes up the named entity, walks through the opening toward
+-- body takes up the named entity and walks through the opening toward
 -- `through` until it has passed the entity's spot and stands a tile clear of
--- it (or is within `reach` of `through`, or that walk failed), then puts the
--- same entity back on its own spot and restores it as above. Result:
--- {code = ESCAPED, name, from, restored}, or a failure that says whether the
--- entity is back in place or in the inventory.
+-- it; reaching `through` still beside the spot (it lies just past the
+-- opening) walks on once to a spot past the gap. Only that, or a failed
+-- walk, ends the walk out. Then it puts the same entity back on its own spot
+-- and restores it as above. Result: {code = ESCAPED, name, from, restored},
+-- or a failure that says whether the entity is back in place or in the
+-- inventory.
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
@@ -192,6 +194,24 @@ local function stepped_out(task, c)
   return task._through_entered == true and body ~= nil and not placement_geometry.overlaps(grown(1), body)
 end
 
+-- Escape: the walk out heads for `through` with this reach, so arriving
+-- never stands in for having stepped out (stepped_out decides).
+local ESCAPE_REACH = 1
+
+-- Escape: a spot past the gap, on the far side of the entity's spot from
+-- the enclosure, toward `through`: far enough that a body arriving within
+-- ESCAPE_REACH of it stands a tile clear of the spot, on a diagonal too.
+local function past_gap(task)
+  local area = placement_geometry.footprint(task._proto, task._to, task._direction)
+  local cx, cy = (area.left_top.x + area.right_bottom.x) / 2, (area.left_top.y + area.right_bottom.y) / 2
+  local dx, dy = task.through.x - cx, task.through.y - cy
+  local length = math.sqrt(dx * dx + dy * dy)
+  if length < 0.1 then return nil end
+  local half = math.max(area.right_bottom.x - area.left_top.x, area.right_bottom.y - area.left_top.y) / 2
+  local out = (half + 1.5) * 1.5 + ESCAPE_REACH
+  return { x = cx + dx / length * out, y = cy + dy / length * out }
+end
+
 -- Recipe, settings and contents onto the placed entity.
 local function restore(task, c, e)
   local snap = task._snapshot
@@ -290,12 +310,20 @@ function M.tick(task)
     if not ok then return failed(task, "MOVE_MINE_FAILED", plain(err)) end
     return nil
   end
-  if task._phase == "through" then
-    if not stepped_out(task, c) then
-      local reached = approach.ensure(task, c, task.through, tonumber(task.reach) or 1)
-      if reached == nil then return nil end
-      if type(reached) == "table" then task._through_error = tostring(reached.detail) end
+  if task._phase == "through" and not stepped_out(task, c) then
+    local reached = approach.ensure(task, c, task._past or task.through, ESCAPE_REACH)
+    if reached == nil then return nil end
+    if reached == "ok" and not task._past and not stepped_out(task, c) then
+      -- At `through` but still beside the opening: on past the gap, once.
+      task._past = past_gap(task)
+      if task._past then return nil end
     end
+    if not stepped_out(task, c) then
+      task._through_error = type(reached) == "table" and tostring(reached.detail)
+        or string.format("the walk out ended within a tile of the %s's spot", snap.name)
+    end
+  end
+  if task._phase == "through" then
     task._approach, task._approach_guard = nil, nil
     set_walking(c, { walking = false })
     task._phase = "place"

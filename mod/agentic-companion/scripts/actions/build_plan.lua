@@ -716,8 +716,7 @@ function M.tick(task)
       task._escape_index = task._index
       local at = { x = blocker.x, y = blocker.y }
       local started, err = pcall(supply.begin, task, "_escape", { type = "move_entity", from = at, to = at,
-        through = { x = step.position.x, y = step.position.y }, reach = c.build_distance,
-        expected_name = blocker.expected_name })
+        through = { x = step.position.x, y = step.position.y }, expected_name = blocker.expected_name })
       if started then return nil end
       return advance(task, false, string.format("%s; stepping out failed: %s", tostring(reached.detail), tostring(err)))
     end

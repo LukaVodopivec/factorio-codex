@@ -15,6 +15,7 @@ export const RPC_METHODS = [
   "production_requirements",
   "run_snapshot",
   "benchmark_control",
+  "timelapse",
   "connect_entities",
   "describe_prototype",
   "progression_status",

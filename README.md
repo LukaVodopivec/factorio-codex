@@ -1,6 +1,6 @@
 # Factorio Codex
 
-Current release: **0.27.9**.
+Current release: **0.28.0**.
 
 Factorio Codex shows how Codex bots think about and architect a Factorio
 factory. Two reasoning sessions plan and direct one physical character named
@@ -320,6 +320,21 @@ runs remain available for descriptive comparison but are excluded from an
 automatic benchmark verdict. Debug runs continue past `GO+20m` to their
 assigned milestone unless the owner stops them; Candidate B and R1-R7 remain
 historical evidence in [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md).
+
+## Timelapse
+
+For the owner's video, the supervisor can start a 4K timelapse over the `timelapse`
+RPC (`{"action":"start","folder":"<run id>"}`; `status`, `stop`). It is output
+only: no MCP tool reads or starts it, and no image reaches the bots. Every five
+game seconds the Codex client renders a 3840x2160 JPG (`take_screenshot` with
+`by_player`; the headless server renders nothing) into
+`script-output\timelapse\<folder>\`. The camera frames the largest cluster
+of production machines on Nauvis, ignores outposts and long lines, and only
+zooms out (from 1 to 0.25) as that cluster grows; the first rocket launch on
+Nauvis is caught every four ticks close on the silo, then a short pull-back
+ends the capture. On the couch PC, `scripts/timelapse-video.ps1 -Run <folder>`
+joins the frames into an HEVC video (`-Every 2` doubles the speed, `-SkipIdle`
+drops unchanged frames).
 
 ## Verification
 

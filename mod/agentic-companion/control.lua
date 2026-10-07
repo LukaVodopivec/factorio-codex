@@ -15,6 +15,7 @@ local human_inputs = require("scripts.human_inputs")
 local autonomy = require("scripts.autonomy")
 local factory_status = require("scripts.factory_status")
 local thoughts = require("scripts.thoughts")
+local timelapse = require("scripts.timelapse")
 local chores = require("scripts.chores")
 local registry = require("scripts.registry")
 local surfaces = require("scripts.surfaces")
@@ -128,6 +129,7 @@ jobs.register("platform_status", platforms.status_job)
 jobs.register("run_snapshot", run_snapshot.job)
 rpc.register("run_snapshot", jobs.rpc("run_snapshot"))
 rpc.register("benchmark_control", benchmark.control)
+rpc.register("timelapse", timelapse.rpc)
 for _, kind in ipairs({ "observe_local", "inspect", "map_summary", "connect_entities", "build_layout", "build_block",
   "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status" }) do
   rpc.register(kind, read(jobs.rpc(kind)))
@@ -260,6 +262,7 @@ local function tick(event)
   jobs.on_tick()
   companion.follow_spectators()
   if storage.benchmark and event.tick % 60 == 0 then thoughts.refresh() end
+  timelapse.on_tick(event.tick)
 end
 script.on_event(defines.events.on_tick, function(event)
   timing.measure(tick, event)
@@ -338,7 +341,10 @@ script.on_event(defines.events.on_surface_deleted, function(event)
 end)
 -- The space event ring (platforms.lua); a game without Space Age has none of
 -- these events. A pod that lands with the body also moves the body.
-for name, handler in pairs({ on_rocket_launch_ordered = platforms.on_rocket_launch_ordered,
+for name, handler in pairs({ on_rocket_launch_ordered = function(event)
+    platforms.on_rocket_launch_ordered(event)
+    timelapse.on_rocket_launch_ordered(event)
+  end,
   on_space_platform_changed_state = platforms.on_platform_state_changed,
   on_cargo_pod_finished_descending = function(event)
     platforms.on_cargo_pod_finished_descending(event)

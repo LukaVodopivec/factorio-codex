@@ -31,8 +31,8 @@
 --   ordinary pass runs first when a machine within 96 tiles of the body or
 --   of the work sites has been dry for a minute and no upkeep step ended
 --   (nor this pass looked) in the last two minutes; it serves machines near
---   the body and the work sites, never moves an item the plan it goes
---   ahead of names, is never pre-empted and ends with the walk back, so that
+--   the body and dry burners near the work sites, never moves an item the
+--   plan it goes ahead of names, is never pre-empted and ends with the walk back, so that
 --   plan starts where it would have.
 -- * Charting: every minute the force charts the chunks around the body that
 --   it has not charted yet, on planet surfaces only, and once when the body
@@ -60,7 +60,8 @@ local PACKS_PER_LAB = 10
 -- units in each chore status, so a pass never walks every machine.
 local MAX_CANDIDATES = 64
 -- Upkeep serves machines within this many tiles of the body (and, after
--- two idle minutes or at a plan boundary, of the work sites): a far outpost
+-- two idle minutes, of the work sites; at a plan boundary, only their dry
+-- burners): a far outpost
 -- is not worth a round trip each time it runs dry; factory_status shows it
 -- no_fuel, and supplying or retiring it is the bots' call.
 local UPKEEP_RADIUS = 96
@@ -241,16 +242,17 @@ local function low_fuel_for(c, entity, fuel, known, reserved)
   end
 end
 
--- Insert steps that refuel own burner machines out of fuel, then those
--- working on their last fuel item: the machines sharing a fuel share what
--- there is of it. Each step's machine is kept in `units` by the step.
-local function refuel_steps(c, tick, steps, audit, units, reserved, sites)
+-- Insert steps that refuel own burner machines out of fuel (also near
+-- `dry_sites`), then those working on their last fuel item (also near
+-- `low_sites`): the machines sharing a fuel share what there is of it. Each
+-- step's machine is kept in `units` by the step.
+local function refuel_steps(c, tick, steps, audit, units, reserved, dry_sites, low_sites)
   local refueled = storage.chores.refueled
   local function cooling(unit)
     return refueled[unit] ~= nil and tick - refueled[unit] < REFUEL_COOLDOWN_TICKS
   end
-  local machines = machines_in(c, "no_fuel", nil, cooling, audit, sites)
-  for _, machine in ipairs(machines_in(c, "low_fuel", nil, cooling, audit, sites)) do
+  local machines = machines_in(c, "no_fuel", nil, cooling, audit, dry_sites)
+  for _, machine in ipairs(machines_in(c, "low_fuel", nil, cooling, audit, low_sites)) do
     machine.low = true
     machines[#machines + 1] = machine
   end
@@ -391,18 +393,20 @@ local function pass(c, tick, room, reserved)
   -- After SITE_IDLE_TICKS idle, also near the work sites on this surface: an
   -- idle body at a far site never leaves the base dry, yet a short pause
   -- between the pilot's plans never sends it on a long walk. The boundary pass
-  -- (called by a machine dry for a minute) reaches them too, so back-to-back
-  -- plans far off never leave the base dry.
+  -- (called by a machine dry for a minute) reaches only the dry burners
+  -- there, so back-to-back plans far off never leave the base's burners dry
+  -- yet the plan it goes ahead of waits for no long tour.
   local idle_long = room == "idle" and storage.tasks and storage.tasks.last_finished_tick ~= nil
     and tick - storage.tasks.last_finished_tick >= SITE_IDLE_TICKS
   local sites = (idle_long or room == "boundary") and work_sites(c) or nil
+  local all_sites = idle_long and sites or nil
   local steps, units = {}, {}
   local selection = { tick = tick, surface_index = c.surface_index, room = room, sites = sites,
     refuel = { candidate_limit = MAX_CANDIDATES, selected_limit = MAX_REFUELS,
       retry_ticks = REFUEL_COOLDOWN_TICKS, candidates = {}, selected = {},
       observed_candidates = 0, scan_complete = true } }
-  refuel_steps(c, tick, steps, selection.refuel, units, reserved, sites)
-  lab_steps(c, tick, steps, reserved, sites)
+  refuel_steps(c, tick, steps, selection.refuel, units, reserved, sites, all_sites)
+  lab_steps(c, tick, steps, reserved, all_sites)
   selection.step_count = #steps
   if #steps > 0 and room ~= "idle" then
     steps[#steps + 1] = { action = "walk_to", x = c.position.x, y = c.position.y,
@@ -455,7 +459,8 @@ end
 -- The plan-boundary pass (tasks' dispatcher, just before a queued pilot or
 -- package plan starts): one ordinary pass in room "boundary" (sparing what
 -- that plan names: tasks.upkeep_room), whose plan
--- runs first, is never pre-empted and ends with the walk back, when a
+-- runs first, is never pre-empted and ends with the walk back (near a work
+-- site it serves only dry burners), when a
 -- machine near the body or a work site has been dry for DRY_TICKS, no
 -- upkeep step ended and this pass did not look within BOUNDARY_GAP_TICKS.
 -- Returns the plan ID.

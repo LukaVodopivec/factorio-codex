@@ -547,5 +547,21 @@ check(site_id ~= nil and #queued == site_count + 1 and #site_plan.steps == 2 and
   "a machine dry for a minute near a work site 120 tiles away gets the boundary pass, with the walk back")
 check(chores.boundary_upkeep(game.tick + 600) == nil and #queued == site_count + 1,
   "the work-site boundary pass still looks at most once in two minutes")
+-- Near a work site the boundary pass serves only dry burners: a low-fuel
+-- burner or a lab missing packs there waits for idle upkeep, so the plan it
+-- goes ahead of never waits on a long tour. Near the body both still count.
+sampled({ [20] = dry(20, 120, game.tick - 3600), [21] = low(21, 125), [22] = low(22, 30),
+  [23] = lab(23, 115, "missing_science_packs", { ["automation-science-pack"] = 200 }) })
+body.force.current_research = { name = "automation", research_unit_ingredients = {
+  { type = "item", name = "automation-science-pack", amount = 1 } } }
+storage.chores.refueled, storage.chores.fed_labs, storage.chores.boundary_tick = {}, {}, nil
+carried, stocked = { coal = 50 }, { ["automation-science-pack"] = 30 }
+game.tick = game.tick + 7200
+local reach_count = #queued
+check(chores.boundary_upkeep(game.tick) ~= nil and #queued == reach_count + 1 and #queued[#queued].steps == 3
+  and queued[#queued].steps[1].x == 30 and queued[#queued].steps[2].x == 120
+  and queued[#queued].steps[3].upkeep_return == true,
+  "at a work site the boundary pass reaches the dry burner, not a low-fuel burner or a lab; near the body a low one still counts")
+body.force.current_research = nil
 storage.tasks.work_sites = nil
 os.exit(failures == 0 and 0 or 1)

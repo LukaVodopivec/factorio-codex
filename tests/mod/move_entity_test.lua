@@ -297,5 +297,119 @@ end
 local ok,why=pcall(move.start,move.action.make_task({from={x=0,y=0},to={x=4,y=0},mode="robots"}))
 check(not ok and tostring(why):match("source selection exceeds 16"),"a crowded source fails before unbounded selection or robot ordering")
 surface.find_entities_filtered=old_find
+
+-- escape: enclosed beside its own filtered inserter, the body takes
+-- it up, walks out through the opening, and puts the same inserter back on
+-- its spot with its direction and filters once it stands a tile clear.
+local approach_mock = package.loaded["scripts.actions.approach"]
+local function place_body(x, y)
+  body.position = { x = x, y = y }
+  body.bounding_box = { left_top = { x = x - 0.2, y = y - 0.2 }, right_bottom = { x = x + 0.2, y = y + 0.2 } }
+end
+-- Half a tile a tick straight toward the target (through the opening), as
+-- approach.ensure does: "ok" once within the asked reach of it.
+local walk_answer
+approach_mock.ensure = function(_, c, target, reach)
+  local dx, dy = target.x - c.position.x, target.y - c.position.y
+  local d = math.sqrt(dx * dx + dy * dy)
+  if d <= reach then return "ok" end
+  if walk_answer then return walk_answer end
+  local step = math.min(0.5, d)
+  place_body(c.position.x + dx / d * step, c.position.y + dy / d * step)
+  return nil
+end
+-- Where the body stood when the escape put the inserter back.
+local put_back_at
+local plain_create = surface.create_entity
+surface.create_entity = function(args)
+  put_back_at = { x = body.position.x, y = body.position.y }
+  return plain_create(args)
+end
+local function escape_run(extra)
+  local task = { from = { x = 200.5, y = 0.5 }, to = { x = 200.5, y = 0.5 }, through = { x = 220.5, y = 0.5 },
+    expected_name = "inserter", id = 9 }
+  for k, v in pairs(extra or {}) do task[k] = v end
+  move.start(task)
+  local result
+  for _ = 1, 80 do
+    if extra and extra.during then extra.during(task) end
+    result = move.tick(task)
+    if result then return result, task end
+  end
+end
+mines = {}
+local gate = spawn("inserter", { x = 200.5, y = 0.5 }, 4, { use_filters = true })
+gate.filters[1] = "iron-plate"
+inventory.inserter = 0
+place_body(199.5, 0.5)
+local out = escape_run()
+local back = surface.find_entity("inserter", { x = 200.5, y = 0.5 })
+check(out and out.status == "done" and out.outcome.code == "ESCAPED" and not gate.valid and back and back.valid
+  and back.direction == 4 and back.use_filters == true and back.filters[1] == "iron-plate" and inventory.inserter == 0,
+  "an escape puts the same inserter back on its own spot with its direction and filters")
+check(mines[1] and mines[1].target_kind == "owned" and mines[1].expected_name == "inserter"
+  and body.position.x >= 202 and body.position.x < 203,
+  "it is put back once the body has passed the opening and stands a tile clear, not at the walk's end")
+check(out.detail == "stepped out through the inserter at (200.5, 0.5): took it up and put it back",
+  "the escape's detail says what was taken up and put back")
+
+-- The body is past the opening only a tile clear of the inserter's spot:
+-- its footprint grown by a tile, plus the body's own box.
+local function clear_of_gate(at)
+  return at ~= nil and not geometry.overlaps({ left_top = { x = 200.5 - 1.35, y = 0.5 - 1.35 },
+    right_bottom = { x = 200.5 + 1.35, y = 0.5 + 1.35 } },
+    { left_top = { x = at.x - 0.2, y = at.y - 0.2 }, right_bottom = { x = at.x + 0.2, y = at.y + 0.2 } })
+end
+
+-- review: the step lies within the build distance of the opening
+-- (build_plan used to pass its build_distance as the escape's reach) and
+-- just past it. Coming within that reach, or reaching the step's spot, is
+-- not stepping out: the body walks on past the gap, and only then is the
+-- inserter put back, so the way behind it is closed and the body is out.
+for _, case in ipairs({
+  { through = { x = 210.8, y = 0.5 }, reach = body.build_distance, what = "the step lies within the build distance" },
+  { through = { x = 201.5, y = 0.5 }, what = "the step lies just past the opening" },
+  { through = { x = 201.5, y = 1.5 }, what = "the step lies diagonally past the opening" },
+}) do
+  -- Each case starts from the inserter standing in the opening.
+  gate = surface.find_entity("inserter", { x = 200.5, y = 0.5 }) or spawn("inserter", { x = 200.5, y = 0.5 }, 4)
+  inventory.inserter = 0
+  place_body(199.5, 0.5)
+  put_back_at = nil
+  local result = escape_run({ through = case.through, reach = case.reach })
+  check(result and result.status == "done" and result.outcome.code == "ESCAPED" and clear_of_gate(put_back_at)
+    and surface.find_entity("inserter", { x = 200.5, y = 0.5 }) ~= nil and inventory.inserter == 0,
+    "an escape puts the inserter back only once the body stands a tile clear past it when " .. case.what)
+end
+
+-- The walk out fails: the inserter goes back and the failure says so.
+place_body(199.5, 0.5)
+walk_answer = { status = "failed", detail = "couldn't get in range: BODY_ENCLOSED: still boxed in" }
+local boxed = escape_run()
+check(boxed and boxed.status == "failed" and boxed.outcome.code == "ESCAPE_FAILED"
+  and boxed.detail:match("back in place — couldn't get in range: BODY_ENCLOSED")
+  and surface.find_entity("inserter", { x = 200.5, y = 0.5 }) ~= nil,
+  "a failed walk out still puts the entity back and reports it plainly")
+walk_answer = nil
+
+-- Something takes the spot while the body walks out: the inserter stays in
+-- the inventory and the failure says so plainly.
+place_body(199.5, 0.5)
+local squatter
+local lost = escape_run({ during = function(task)
+  if not squatter and task._phase == "through" and body.position.x > 201 then
+    squatter = spawn("wooden-chest", { x = 200.5, y = 0.5 })
+  end
+end })
+check(lost and lost.status == "failed" and lost.outcome.code == "MOVE_PLACE_FAILED" and lost.outcome.in_inventory
+  and lost.detail:match("inserter is in my inventory") and inventory.inserter == 1,
+  "an entity that cannot go back stays in the inventory and the failure says so")
+squatter.valid = false
+inventory.inserter = 0
+
+check(not pcall(move.start, { from = { x = 200.5, y = 0.5 }, to = { x = 200.5, y = 0.5 }, through = { x = 220.5, y = 0.5 },
+  expected_name = "fast-inserter", id = 9 }), "an escape refuses an entity other than the named one")
+approach_mock.ensure = function() return "ok" end
+place_body(0.5, 0.5)
 print(failures == 0 and "\nALL MOVE_ENTITY TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

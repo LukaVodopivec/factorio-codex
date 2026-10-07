@@ -58,16 +58,66 @@ check(math.abs(exit.x - 10) >= 2.15 or math.abs(exit.y - 10) >= 2.15, "the exit 
 local placed = build_plan.tick(plan)
 check(placed and placed.status == "done" and created == 1, "after walking clear the step places")
 
--- Only once per step: a body that is still in the way fails with a code.
+-- Bounded per step: a body that is still in the way after three different
+-- spots beside the footprint fails with a code and says so.
 character.position = { x = 10, y = 10 }
 geometry.can_place = function() return false, "CODEX_BODY_OVERLAP" end
 local stuck = { id = 42, steps = { { item = "stone-furnace", position = { x = 10, y = 10 } } } }
 build_plan.start(stuck)
-build_plan.tick(stuck)
-local failed = build_plan.tick(stuck)
+local failed
+for _ = 1, 10 do failed = build_plan.tick(stuck); if failed then break end end
 check(failed and failed.status == "failed" and failed.detail:match("CODEX_BODY_OVERLAP")
-  and failed.outcome.code == "BUILD_PLAN_STEP_FAILED" and failed.outcome.placed == 0 and #walks == 2,
-  "a second overlap on the same step fails with the build's own code, so the dispatcher does not rerun the build")
+  and failed.detail:match("still in it after walking to 3 spot%(s%) beside it")
+  and failed.outcome.code == "BUILD_PLAN_STEP_FAILED" and failed.outcome.placed == 0 and #walks == 4,
+  "an overlap that survives three exits fails with the build's own code, so the dispatcher does not rerun the build")
+local spots = {}
+for n = 2, 4 do
+  for m = 2, n - 1 do
+    if (walks[n].target.x - walks[m].target.x) ^ 2 + (walks[n].target.y - walks[m].target.y) ^ 2 < 1 then spots.repeated = true end
+  end
+end
+check(not spots.repeated, "each retry walks to a different spot")
+
+-- a dense layout fills the four spots two tiles beside the
+-- footprint; a farther or corner spot still gets the body out.
+geometry.can_place = overlap_until_moved
+character.position = { x = 10, y = 10 }
+inventory["stone-furnace"] = 5
+character.surface.find_non_colliding_position = function(_, position)
+  if (position.x - 10) ^ 2 + (position.y - 10) ^ 2 < 3.5 ^ 2 then return nil end
+  return { x = position.x, y = position.y }
+end
+local dense = { id = 50, auto_supply = false, steps = { { item = "stone-furnace", position = { x = 10, y = 10 } } } }
+build_plan.start(dense)
+created = 0
+local dense_result
+for _ = 1, 10 do dense_result = build_plan.tick(dense); if dense_result then break end end
+check(dense_result and dense_result.status == "done" and created == 1,
+  "a body boxed in on its four near sides walks to a farther spot and places")
+
+-- the first walk ends with the body still in the footprint; it
+-- tries another spot instead of failing.
+character.surface.find_non_colliding_position = function(_, position) return { x = position.x, y = position.y } end
+character.position = { x = 10, y = 10 }
+local walk_mock = package.loaded["scripts.actions.walk"]
+local full_tick, short = walk_mock.tick, 1
+walk_mock.tick = function(task)
+  if short > 0 then
+    short = short - 1
+    character.position = { x = 10, y = 11 } -- stopped short, still overlapping
+    return { status = "done", detail = "arrived" }
+  end
+  return full_tick(task)
+end
+local short_plan = { id = 51, auto_supply = false, steps = { { item = "stone-furnace", position = { x = 10, y = 10 } } } }
+build_plan.start(short_plan)
+created = 0
+local before = #walks
+local short_result
+for _ = 1, 10 do short_result = build_plan.tick(short_plan); if short_result then break end end
+check(short_result and short_result.status == "done" and created == 1 and #walks == before + 2,
+  "a walk that leaves the body in the footprint is followed by a walk to another spot, then the step places")
+walk_mock.tick = full_tick
 
 geometry.can_place = overlap_until_moved
 character.surface.find_non_colliding_position = function() return { x = -99, y = 10 } end
@@ -154,5 +204,171 @@ local _, stopped = three_step_plan(48, true)
 check(stopped and stopped.status == "failed" and attempts["0:0"] == 1 and created == 0,
   "a stop_on_error plan stops at the failure instead of retrying it")
 approach_mock.ensure = function() return "ok" end
+
+-- enclosed by own entities at the first placement, the body steps
+-- out once (move_entity's escape: take the named blocker up, walk out, put
+-- it back), then places; the step's detail says what was moved and restored.
+local supply = require("scripts.actions.supply")
+local escapes, escape_result = {}, nil
+supply.register_runner("move_entity", { start = function(task) escapes[#escapes + 1] = task end,
+  tick = function() return escape_result end })
+local enclosed_walk = { status = "failed",
+  detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities: mine owned fast-inserter at (187.5,-7.5) to open a route",
+  outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
+    suggested_recovery = { tool = "mine", target_kind = "owned", x = 187.5, y = -7.5, expected_name = "fast-inserter" } } } } }
+local enclosed_calls = 0
+local function enclosed_until(n)
+  enclosed_calls = 0
+  approach_mock.ensure = function()
+    enclosed_calls = enclosed_calls + 1
+    return enclosed_calls <= n and enclosed_walk or "ok"
+  end
+end
+local function layout(id)
+  created, character.position = 0, { x = 0, y = 0 }
+  inventory["stone-furnace"] = 3
+  local p = { id = id, auto_supply = false, steps = { { item = "stone-furnace", position = { x = 0, y = 0 } } } }
+  build_plan.start(p)
+  local result
+  for _ = 1, 10 do result = build_plan.tick(p); if result then break end end
+  return result
+end
+enclosed_until(1)
+escape_result = { status = "done", detail = "stepped out through the fast-inserter at (187.5, -7.5): took it up and put it back",
+  outcome = { code = "ESCAPED" } }
+local escaped = layout(60)
+local escape = escapes[1]
+check(escape and escape.type == "move_entity" and escape.id == 60 and escape.from.x == 187.5 and escape.from.y == -7.5
+  and escape.to.x == 187.5 and escape.through.x == 0 and escape.expected_name == "fast-inserter",
+  "an enclosed approach starts one escape through the named own blocker toward the step")
+check(escaped and escaped.status == "done" and created == 1
+  and escaped.detail:match("step 1: stepped out through the fast%-inserter at %(187%.5, %-7%.5%): took it up and put it back"),
+  "after stepping out the step places, and its detail names what was taken up and put back")
+
+enclosed_until(1)
+escape_result = { status = "failed", detail = "MOVE_PLACE_FAILED: the fast-inserter is in my inventory — something stands there" }
+local unrestored = layout(61)
+check(unrestored and unrestored.status == "failed" and created == 0
+  and unrestored.detail:match("BODY_ENCLOSED and stepping out failed: MOVE_PLACE_FAILED: the fast%-inserter is in my inventory"),
+  "an escape that cannot put the blocker back fails the step and says the entity is in the inventory")
+
+enclosed_until(99)
+escapes = {}
+escape_result = { status = "done", detail = "stepped out through the fast-inserter at (187.5, -7.5): took it up and put it back" }
+local still = layout(62)
+check(still and still.status == "failed" and #escapes == 1 and still.detail:match("BODY_ENCLOSED: no path"),
+  "an enclosure still there after one escape fails the step: one escape per step")
+approach_mock.ensure = function() return "ok" end
+
+-- review, end to end with move_entity's own escape: the body stands
+-- in a room whose east wall (x 200-201) has one inserter as its only gap,
+-- and the step lies 11 tiles east, just beyond the build distance. The
+-- escape walks out through the gap with the step within build distance
+-- after a tile; that is not stepping out. It puts the inserter back only
+-- once the body stands a tile clear outside, so the step places instead of
+-- the body being shut in again (a spot beside the gap inside the room).
+supply.register_runner("move_entity", package.loaded["scripts.actions.move_entity"])
+local mine_runner = { start = function() end, tick = function(sub)
+  for _, e in ipairs(character.surface._world) do
+    if e.valid and math.abs(e.position.x - sub.target.x) < 0.5 and math.abs(e.position.y - sub.target.y) < 0.5 then
+      e.valid = false
+      inventory[e.name] = (inventory[e.name] or 0) + 1
+      return { status = "done", detail = "mined" }
+    end
+  end
+  return { status = "failed", detail = "nothing there" }
+end }
+supply.register_runner("mine", mine_runner)
+local function body_box(at) return { left_top = { x = at.x - 0.2, y = at.y - 0.2 }, right_bottom = { x = at.x + 0.2, y = at.y + 0.2 } } end
+local function set_body(x, y)
+  character.position = { x = x, y = y }
+  character.bounding_box = body_box(character.position)
+end
+local inserter_proto = { name = "inserter", type = "inserter", tile_width = 1, tile_height = 1,
+  collision_box = { left_top = { x = -0.35, y = -0.35 }, right_bottom = { x = 0.35, y = 0.35 } },
+  items_to_place_this = { { name = "inserter", count = 1 } } }
+prototypes.item.inserter = { stack_size = 50, place_result = inserter_proto }
+local world = {}
+local function spawn_gate()
+  local e = { valid = true, name = "inserter", type = "inserter", position = { x = 200.5, y = 0.5 }, direction = 4,
+    force = character.force, prototype = inserter_proto }
+  e.bounding_box = geometry.footprint(inserter_proto, e.position, e.direction)
+  world[#world + 1] = e
+  return e
+end
+local function gate_standing()
+  for _, e in ipairs(world) do if e.valid and e.name == "inserter" then return e end end
+end
+local surface = character.surface
+surface._world = world
+surface.find_entities_filtered = function(filter)
+  local out = {}
+  for _, e in ipairs(world) do
+    local area = filter.area or { left_top = filter.position, right_bottom = filter.position }
+    if e.valid and geometry.overlaps(area, e.bounding_box) and (not filter.force or filter.force == e.force) then out[#out + 1] = e end
+  end
+  return out
+end
+surface.find_entity = function(name, position)
+  for _, e in ipairs(world) do
+    if e.valid and e.name == name and math.abs(e.position.x - position.x) < 0.5 and math.abs(e.position.y - position.y) < 0.5 then return e end
+  end
+end
+surface.count_tiles_filtered = function() return 0 end
+-- The wall's other tiles take no body: a spot in them is never clear.
+surface.find_non_colliding_position = function(_, position)
+  if position.x > 199.6 and position.x < 201.4 and math.abs(position.y - 0.5) > 0.6 and math.abs(position.y - 0.5) < 6 then return nil end
+  return { x = position.x, y = position.y }
+end
+local inside = function(at) return at.x < 201 and math.abs(at.y - 0.5) < 6 end
+-- The escape's put-back, as the place runner does it: never onto the body.
+local put_back_at
+supply.register_runner("place", { start = function() end, tick = function(sub)
+  local area = geometry.footprint(prototypes.item[sub.item].place_result, sub.position, sub.direction)
+  if geometry.overlaps(area, character.bounding_box) then
+    return { status = "failed", detail = string.format("can't place %s at (%.1f, %.1f) — CODEX_BODY_OVERLAP — walk clear",
+      sub.item, sub.position.x, sub.position.y) }
+  end
+  put_back_at = { x = character.position.x, y = character.position.y }
+  inventory[sub.item] = inventory[sub.item] - 1
+  spawn_gate().direction = sub.direction
+  return { status = "done", detail = "placed" }
+end })
+-- Walks: straight, half a tile a tick, "ok" within the asked reach; from
+-- inside the room to outside only while the gap is open.
+local enclosed_room = { status = "failed", detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities",
+  outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
+    suggested_recovery = { tool = "mine", target_kind = "owned", x = 200.5, y = 0.5, expected_name = "inserter" } } } } }
+approach_mock.ensure = function(_, c, target, reach)
+  local dx, dy = target.x - c.position.x, target.y - c.position.y
+  local d = math.sqrt(dx * dx + dy * dy)
+  if d <= reach then return "ok" end
+  if inside(c.position) and not inside(target) and gate_standing() then return enclosed_room end
+  local step = math.min(0.5, d)
+  set_body(c.position.x + dx / d * step, c.position.y + dy / d * step)
+  return nil
+end
+walk_mock.tick = function(task)
+  set_body(task.target.x, task.target.y)
+  return { status = "done", detail = "arrived" }
+end
+geometry.can_place = function(c, proto, position, direction)
+  if geometry.overlaps(geometry.footprint(proto, position, direction), c.bounding_box) then return false, "CODEX_BODY_OVERLAP" end
+  return true, "placeable"
+end
+spawn_gate()
+set_body(199.5, 0.5)
+created, inventory["stone-furnace"], inventory.inserter = 0, 1, 0
+local room = { id = 63, auto_supply = false, steps = { { item = "stone-furnace", position = { x = 210.5, y = 0.5 } } } }
+build_plan.start(room)
+local room_result
+for _ = 1, 200 do room_result = build_plan.tick(room); if room_result then break end end
+local gate_back = gate_standing()
+check(room_result and room_result.status == "done" and created == 1 and gate_back and gate_back.direction == 4
+  and inventory.inserter == 0 and put_back_at and not inside(put_back_at)
+  and not geometry.overlaps({ left_top = { x = 199.15, y = -0.85 }, right_bottom = { x = 201.85, y = 1.85 } }, body_box(put_back_at))
+  and room_result.detail:match("stepped out through the inserter at %(200%.5, 0%.5%): took it up and put it back"),
+  "a layout step beyond an enclosure's gap steps out, puts the gate back with the body a tile clear outside, and places")
+walk_mock.tick = full_tick
 
 os.exit(failures == 0 and 0 or 1)

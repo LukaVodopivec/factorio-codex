@@ -529,6 +529,21 @@ do
   end
   check(surveyed and surveyed.ok and #surveyed.inserters == 20 and survey_ticks > 1 and survey_worst <= 26,
     string.format("the dry run's survey of 20 inserters takes %d ticks (worst %d work for a 20 budget)", survey_ticks, survey_worst))
+  -- A survey saved by 0.29.1 has no fluid-mix state (mixes, seeds, unders)
+  -- or items: it finishes after the upgrade instead of raising.
+  local old_job = layout.layout_check_job.start({ check_only = true, anchor = { x = 1000, y = 1000 }, entities = row })
+  local old_done, old_ok, old_ticks = nil, true, 0
+  while old_ok and not old_done and old_ticks < 200 do
+    old_ticks = old_ticks + 1
+    local s = old_job.survey
+    if s and s.mixes then
+      s.mixes, s.seeds, s.unders = nil, nil, nil
+      for k = #s.items, 1, -1 do if s.items[k].kind == "seed" or s.items[k].kind == "mix" then table.remove(s.items, k) end end
+    end
+    old_ok, old_done = pcall(layout.layout_check_job.step, old_job, { left = 20 })
+  end
+  check(old_ok and old_done and old_done.ok and #old_done.inserters == 20,
+    "a dry-run survey saved by 0.29.1 without fluid-mix state finishes after the upgrade: " .. tostring(old_ok or old_done))
   -- A hand-written steam layout at the shore: the pump feeds the boiler's
   -- west water port, the boiler's steam goes north into the engine.
   local function steam(engine_x, extra)

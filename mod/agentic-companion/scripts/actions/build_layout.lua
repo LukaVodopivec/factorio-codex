@@ -2278,10 +2278,11 @@ local function survey_rows(V)
 end
 
 -- The survey's failures: each planned entity the build would be refused
--- for joining two fluids (mix_check), as a placement check names it.
+-- for joining two fluids (mix_check), as a placement check names it. A
+-- survey saved by 0.29.1 has no mixes.
 local function survey_failed(V)
   local out = {}
-  for _, mix in ipairs(V.mixes) do
+  for _, mix in ipairs(V.mixes or {}) do
     local p = V.planned[mix.i]
     out[#out + 1] = { index = p.index, connection = p.connection, code = "BLOCKED",
       reason = string.format("%s at (%.1f, %.1f): %s", p.item or p.name, p.position.x, p.position.y,

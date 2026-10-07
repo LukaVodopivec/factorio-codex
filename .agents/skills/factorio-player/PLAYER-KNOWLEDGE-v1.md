@@ -70,8 +70,8 @@ hints, never a build or technology order: measured state wins.
   30 drills and 48 furnaces. 5 red science assemblers per 6 green (size iron
   for green). 3 cable assemblers per 2 circuit assemblers.
 - **Power.** 1 boiler (1.8 MW) runs 2 steam engines (0.9 MW each). A shortage
-  slows every machine, so add generation whenever `power` satisfaction is
-  below 100% or production sits at capacity. Once researched, solar panels
+  (`power` satisfaction below 100%) slows every machine on the network, so
+  new consumers add little until generation catches up. Once researched, solar panels
   with accumulators are an option that needs no fuel; `add_to_cover` sizes
   both.
 - **Mall.** Assemblers that make belts, inserters, drills, poles, and pipes

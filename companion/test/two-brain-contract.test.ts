@@ -196,7 +196,8 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(strategist)).toMatch(/This is a principle, not a build or technology order/);
     expect(flat(strategist)).toMatch(/A power shortage \(`factory_status` power satisfaction below 100%\) slows every machine on the network, so new electric consumers add little until generation catches up; weigh that when choosing NOW/);
     expect(flat(strategist)).not.toMatch(/more generation is NOW|before any other expansion/);
-    expect(flatKnowledge).toMatch(/add generation whenever `power` satisfaction is below 100%/);
+    expect(flatKnowledge).toMatch(/A shortage \(`power` satisfaction below 100%\) slows every machine on the network, so new consumers add little until generation catches up/);
+    expect(flatKnowledge).not.toMatch(/add generation whenever/);
     expect(flatKnowledge).toMatch(/hints are starting points that newer structured evidence may override/);
   });
 

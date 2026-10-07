@@ -86,7 +86,10 @@ local function typed_box(production_type, index, connections)
 end
 entities["electric-mining-drill"].fluidbox_prototypes = {
   typed_box("input", 1, { { -1, 0, 12 }, { 1, 0, 4 }, { 0, 1, 8 } }) }
-entities["pumpjack"].fluidbox_prototypes = { typed_box("output", 1, { { 1, -1, 0 } }) }
+-- The pumpjack as the game data has it: production_type "none", an output
+-- pipe connection.
+entities["pumpjack"].fluidbox_prototypes = { typed_box("none", 1, { { 1, -1, 0 } }) }
+entities["pumpjack"].fluidbox_prototypes[1].pipe_connections[1].flow_direction = "output"
 entities["assembling-machine-2"].fluidbox_prototypes = { typed_box("input", 1, { { 0, -1, 0 } }),
   typed_box("output", 2, { { 0, 1, 8 } }) }
 -- A pipe-to-ground: a normal side north, the underground side south.

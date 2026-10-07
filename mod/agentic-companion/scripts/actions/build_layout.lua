@@ -1657,14 +1657,18 @@ end
 -- fluid needs one met port; anything else (pumps, boilers, engines, tanks)
 -- one met port on each fluid box. A drill's input box is optional (acid
 -- only for some ores), so a drill is judged only when it has an output box,
--- as a pumpjack delivers its oil through one.
+-- as a pumpjack delivers its oil through one (the game marks it by an
+-- output pipe connection, not always by production_type).
 local function fluid_rule(p)
   local kind = p.proto.type
   if kind == "pipe" or kind == "infinity-pipe" then return "pipe" end
   if kind == "pipe-to-ground" then return "each" end
   if kind == "mining-drill" then
     local ok, output = pcall(function()
-      for _, box in pairs(p.proto.fluidbox_prototypes) do if box.production_type == "output" then return true end end
+      for _, box in pairs(p.proto.fluidbox_prototypes) do
+        if box.production_type == "output" then return true end
+        for _, c in pairs(box.pipe_connections or {}) do if c.flow_direction == "output" then return true end end
+      end
       return false
     end)
     return ok and output and "box" or nil

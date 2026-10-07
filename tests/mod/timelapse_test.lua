@@ -35,7 +35,7 @@ check(not pcall(timelapse.rpc, { action = "start", folder = "../x" }), "a folder
 local started = timelapse.rpc({ action = "start", folder = "run-1" })
 check(started.active and started.frames == 0, "start begins an active capture")
 run_to(1)
-check(#shots == 1 and shots[1].by_player == player and shots[1].path == "timelapse/run-1/frame_000001.jpg"
+check(#shots == 1 and shots[1].by_player == player and shots[1].path == "timelapse/run-1/frame_000001_t1.jpg"
   and shots[1].resolution[1] == 3840 and shots[1].resolution[2] == 2160 and shots[1].zoom == 1
   and shots[1].position.x == 5 and shots[1].daytime == 0 and shots[1].show_gui == false,
   "before any machine the first 4K frame centres on the body at zoom 1, daylight, no GUI")
@@ -64,7 +64,8 @@ end
 local view_w = 3840 / (32 * zooms[#zooms])
 check(falling and eased and zooms[#zooms] >= 0.25 and view_w >= box.r - box.l,
   string.format("the zoom only falls, in small steps, until the base fits (zoom %.3f)", zooms[#zooms]))
-check(shots[#shots].path == string.format("timelapse/run-1/frame_%06d.jpg", #shots), "frames are numbered without gaps")
+check(shots[#shots].path == string.format("timelapse/run-1/frame_%06d_t%d.jpg", #shots, game.tick),
+  "frames are numbered without gaps and name the tick they were taken")
 
 -- A huge base: the zoom stops at 0.25.
 for x = 0, 2000, 40 do machines[#machines + 1] = { position = { x = x, y = 50 } } end

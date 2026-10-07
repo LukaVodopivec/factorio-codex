@@ -22,7 +22,7 @@ describe("strategist read-only MCP surface", () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => {
-      if (method === "ping") return { protocol_version: 29, mod_version: "0.29.0", factorio_version: "2.0.77",
+      if (method === "ping") return { protocol_version: 29, mod_version: "0.29.1", factorio_version: "2.0.77",
         tick: 12, companion_exists: false, companion_ever_created: false, companion_dead: false };
       if (method === "observe_local") return { tick: 12, entities: [], resource_patches: [], ground_items: [] };
       if (method === "inspect") return { tick: 12, entities: [{ name: "iron-chest", position: { x: 400.5, y: 0.5 }, remote: true }] };

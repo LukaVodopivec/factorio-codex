@@ -149,11 +149,13 @@ function M.camera(s, box, focus)
   s.centre.y = s.centre.y + clamp(want.y - s.centre.y, -MAX_MOVE * vh, MAX_MOVE * vh)
 end
 
+-- The file name carries the game tick, so the video can show the time each
+-- frame was taken (the frame number alone says nothing about the gaps).
 local function shoot(s, player, surface)
   s.frame = s.frame + 1
   game.take_screenshot({ by_player = player, surface = surface, position = { x = s.centre.x, y = s.centre.y },
     resolution = { WIDTH, HEIGHT }, zoom = s.zoom,
-    path = string.format("timelapse/%s/frame_%06d.jpg", s.folder, s.frame), quality = 90,
+    path = string.format("timelapse/%s/frame_%06d_t%d.jpg", s.folder, s.frame, game.tick), quality = 90,
     daytime = 0, hide_clouds = true, hide_fog = true, show_gui = false, show_entity_info = false,
     anti_alias = false, force_render = true })
 end

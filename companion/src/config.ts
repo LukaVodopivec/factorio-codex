@@ -42,4 +42,4 @@ export function resolveSettings(): Settings { const cfg = loadConfig(); return {
 export function packageRoot(): string { let dir = path.dirname(fileURLToPath(import.meta.url)); for (let i = 0; i < 6; i++) { const pkg = path.join(dir, "package.json"); try { if (JSON.parse(fs.readFileSync(pkg, "utf8")).name === "factorio-codex") return dir; } catch {} const parent = path.dirname(dir); if (parent === dir) break; dir = parent; } return path.dirname(path.dirname(fileURLToPath(import.meta.url))); }
 // Identify loaded code: an in-place upgrade must not let an old bridge
 // authenticate as the new release when its RCON connection is recreated.
-export function companionVersion(): string { return "0.29.0"; }
+export function companionVersion(): string { return "0.29.1"; }

@@ -1,7 +1,7 @@
 # Live validation
 
-This runbook validates release **0.29.0**. Prior live evidence remains historical
-until the 0.29.0 run is recorded. The Linux workstation has no dedicated
+This runbook validates release **0.29.1**. Prior live evidence remains historical
+until the 0.29.1 run is recorded. The Linux workstation has no dedicated
 GPU and is permanently headless: run only the dedicated server, Node bridge,
 and agent tooling there. Never start a Factorio GUI/client or any other visual
 GUI workload on that workstation during rollout, validation, or a benchmark.
@@ -92,7 +92,7 @@ not provide a Linux visual client launcher.
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
 
-For the 0.29.0 release (the bots do the thinking), record these observable
+For the 0.29.1 release (the bots do the thinking), record these observable
 checks on a copy of a running factory's save:
 
 - A hand-written steam layout (offshore pump, boiler, two steam engines,

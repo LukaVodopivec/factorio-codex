@@ -408,10 +408,13 @@ function M.waiting(task) return task.mode == "robots" and robot_move.waiting(tas
 -- when the body can (in build reach, the spot free, the item carried: one
 -- placement and its restore), so no unchosen hole is left; otherwise, and
 -- for a move, the note names the entity and says it is in the inventory.
--- An entity already placed gets its contents restored when in reach.
+-- An entity already placed gets its contents restored when in reach. The
+-- character can finish mining in the engine update after the step's last
+-- tick: a "mine" phase whose entity is gone has taken it up too.
 local function body_cancelled(task)
   local snap, phase = task._snapshot, task._phase
-  if not snap or (phase ~= "through" and phase ~= "place" and phase ~= "restore") then return nil end
+  local mined = phase == "mine" and task._entity ~= nil and not task._entity.valid
+  if not snap or not (mined or phase == "through" or phase == "place" or phase == "restore") then return nil end
   local c = companion.get()
   if not c then return nil end
   local what = task.through and "the plan ended mid step-out" or "the plan ended mid move"

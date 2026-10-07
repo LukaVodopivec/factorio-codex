@@ -458,6 +458,18 @@ local far = placing and move.cancelled(placing)
 check(far and far.in_inventory and inventory.inserter == 1 and far.detail:match("its spot is out of build reach"),
   "a plan ended with the body out of build reach of the spot names the inserter in the inventory")
 
+-- The character finishes mining in the engine update after the step's last
+-- tick: a cancel still in the "mine" phase finds the inserter taken up and
+-- puts it back like one in the step-out.
+local mining_gate = fresh_gate()
+local mining = escape_until(function(task) return task._phase == "mine" and task._sub ~= nil end)
+mining_gate.valid, inventory.inserter = false, 1
+local gap_note = mining and move.cancelled(mining)
+local back = gate_at()
+check(gap_note and gap_note.code == "ESCAPE_CANCELLED" and gap_note.put_back and back and back.valid
+  and back.direction == 4 and back.filters[1] == "iron-plate" and inventory.inserter == 0,
+  "a cancel in the tick the mining finished puts the taken-up inserter back")
+
 -- The stall watchdog's body-only cancel leaves a robot move's orders alone.
 local unordered = 0
 local robot_task = { mode = "robots", _robot_ordered = true, _robot_source = { valid = true, force = "player",

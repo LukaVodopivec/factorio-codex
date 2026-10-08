@@ -13,9 +13,11 @@
 // marked ready. Nothing in the mod has a test flag or path.
 //
 // After the scenarios: ping shows no handler_errors, the server log has no
-// script errors, and every profiler line (rpc and on_tick, profiler.lua)
-// stays within the 8 ms per tick budget.
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+// script errors, every profiler rpc line stays within the 8 ms budget, and
+// every 600-tick on_tick window (profiler.lua) averages within it. The
+// profiler logs no per-tick maximum, so one slow tick inside a quiet window
+// is not caught here.
+import { spawn, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import dgram from "node:dgram";
 import fs from "node:fs";
@@ -54,13 +56,18 @@ const freeUdpPort = () => new Promise<number>((resolve, reject) => {
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factorio-codex-live-"));
 const paths = runPaths(dir);
 const configIni = path.join(dir, "config.ini");
+// The Factorio process running now: --create first, then the server.
 let server: ChildProcess | null = null;
 let rcon: RconClient | null = null;
 
-async function cleanup(): Promise<void> {
+// One cleanup for every caller (each signal and the main flow's finally): all
+// wait for the same server exit before the dir is removed. The handlers stay
+// registered (not once): tsx relays a signal to this process a second time,
+// and with no listener left that second one would end it mid-cleanup.
+let cleaning: Promise<void> | undefined;
+const cleanup = () => (cleaning ??= (async () => {
   rcon?.close();
   const child = server;
-  server = null;
   if (child && child.exitCode === null && child.signalCode === null) {
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
     child.kill("SIGINT");
@@ -70,9 +77,9 @@ async function cleanup(): Promise<void> {
     }
   }
   fs.rmSync(dir, { recursive: true, force: true });
-}
+})());
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => { void cleanup().finally(() => process.exit(130)); });
+  process.on(signal, () => { void cleanup().finally(() => process.exit(128 + os.constants.signals[signal])); });
 }
 
 async function startServer(): Promise<Bridge> {
@@ -81,12 +88,18 @@ async function startServer(): Promise<Bridge> {
   fs.writeFileSync(paths.mapGen, JSON.stringify({ ...MAP_GEN_SETTINGS, seed: SEED }));
   fs.writeFileSync(paths.serverSettings, JSON.stringify({ ...SERVER_SETTINGS, description: "Factorio Codex live smoke suite",
     visibility: { public: false, lan: false }, auto_pause: false }));
-  const created = spawnSync(bin!, ["-c", configIni, ...createArgs(paths)], { encoding: "utf8" });
-  if (created.status !== 0 || !fs.existsSync(paths.save)) {
-    throw new Error(`factorio --create failed (exit ${created.status}): ${(created.stdout + created.stderr).trim().split("\n").slice(-5).join(" | ")}`);
+  // Not spawnSync: a blocked event loop would never run the signal handler.
+  const create = server = spawn(bin!, ["-c", configIni, ...createArgs(paths)], { stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  create.stdout!.on("data", (chunk) => { output += chunk; });
+  create.stderr!.on("data", (chunk) => { output += chunk; });
+  const status = await new Promise<number | null>((resolve, reject) => create.once("error", reject).once("close", resolve));
+  if (status !== 0 || !fs.existsSync(paths.save)) {
+    throw new Error(`factorio --create failed (exit ${status}): ${output.trim().split("\n").slice(-5).join(" | ")}`);
   }
   const password = crypto.randomBytes(12).toString("hex");
   const [gamePort, rconPort] = [await freeUdpPort(), await freeTcpPort()];
+  if (cleaning) throw new Error("interrupted");
   const log = fs.openSync(paths.log, "w");
   server = spawn(bin!, ["-c", configIni, "--start-server", paths.save, "--server-settings", paths.serverSettings,
     "--mod-directory", paths.mods, "--bind", "127.0.0.1", "--port", String(gamePort),
@@ -103,6 +116,9 @@ async function startServer(): Promise<Bridge> {
       return bridge;
     } catch (error) {
       client.close();
+      // Only a server still starting is retried (as server.ts does); a refused
+      // unlock or a wrong password will not clear by waiting.
+      if (!(error instanceof Error) || !/cannot connect to RCON|auth timed out|ECONNRESET|closed/i.test(error.message)) throw error;
       if (Date.now() > deadline) throw new Error(`server did not accept RCON in 180 s: ${error instanceof Error ? error.message : error}`);
     }
   }
@@ -322,12 +338,12 @@ try {
   report(errors.length === 0, "the server log has no script errors", errors.slice(0, 5).join(" | "));
   const { rpcs, windows } = profile(log);
   const slow = rpcs.filter((row) => row.ms > TICK_BUDGET_MS);
-  const worstTick = Math.max(0, ...windows);
-  report(rpcs.length > 0 && windows.length > 0 && slow.length === 0 && worstTick <= TICK_BUDGET_MS,
-    `the profiler stays within ${TICK_BUDGET_MS} ms per tick`,
+  const worstWindow = Math.max(0, ...windows);
+  report(rpcs.length > 0 && windows.length > 0 && slow.length === 0 && worstWindow <= TICK_BUDGET_MS,
+    `every rpc and the 600-tick on_tick average stay within ${TICK_BUDGET_MS} ms`,
     `${rpcs.length} rpcs, slowest ${rpcs.length ? Math.max(...rpcs.map((row) => row.ms)).toFixed(2) : "-"} ms`
       + `${slow.length ? ` (over budget: ${slow.map((row) => `${row.method} ${row.ms.toFixed(2)}`).join(", ")})` : ""}; `
-      + `${windows.length} tick windows, worst ${worstTick.toFixed(3)} ms/tick`);
+      + `${windows.length} tick windows, worst average ${worstWindow.toFixed(3)} ms/tick`);
 } catch (error) {
   report(false, "live server", `${error instanceof Error ? error.message : String(error)}; log: ${logTail()}`);
 } finally {

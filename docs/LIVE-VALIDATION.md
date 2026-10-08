@@ -40,11 +40,13 @@ entities with `create_entity` and call the mod's modules and RPCs:
 - `items.move` keeping durability and quality.
 
 Then it asserts that `ping` shows no `handler_errors`, the server log has no
-script errors, and every profiler line (each RPC and each 600-tick `on_tick`
-window) stays within the 8 ms per tick budget. A headless server has no Codex
-player and charts nothing, so the suite's own setup command patches only that
-throwaway server's live Lua state: a stand-in body on nauvis, every chunk
-counted as charted for the mod's chart rule, and the registry marked ready.
+script errors, every profiler `rpc` line stays within 8 ms, and each 600-tick
+`on_tick` window averages within 8 ms a tick. The profiler logs no per-tick
+maximum, so one slow tick inside a quiet window is not caught. A headless
+server has no Codex player and charts nothing, so the suite's own setup
+command patches only that throwaway server's live Lua state: a stand-in body
+on nauvis, every chunk counted as charted for the mod's chart rule, and the
+registry marked ready.
 The mod carries no test flag or path; chart checks the engine answers itself
 (planet layouts and routes) still need a client run below.
 

@@ -557,6 +557,8 @@ local function ingredient_names(rec)
     if ingredient.type ~= "fluid" then names[ingredient.name] = true end
   end
   return names
+end
+
 -- The other fluid what a box's connections reach holds (fluid_connections
 -- target_fluid: a pipe of heavy oil at a crude-oil inlet), else nil.
 local function box_meets(entity, index, fluid)

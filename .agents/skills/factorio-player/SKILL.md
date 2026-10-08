@@ -110,8 +110,7 @@ retried after the hold.
   short, `add_to_cover` lists both ways to cover demand, `steam` (engines,
   boilers, pumps) and `solar` (panels, accumulators): you choose. `sections: ['logistics']` shows robot networks. A false
   `*_ready` flag means that part still fills after a load: read again.
-- A stalled row's `feed`: facts about the inserters feeding that machine
-  (fields in the tool description).
+- A stalled row's `feed`: its feeding inserters.
 - `next_event` returns `plan_ended`, `research_finished`, `queue_empty`,
   `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`,
   `human_hold_ended`, or `timeout`. Pass the last `tick` you saw as
@@ -125,14 +124,11 @@ retried after the hold.
   `check_only: true` are dry runs that return the site or a definite answer
   (layout dry runs take `surface`). A layout or blueprint dry run also lists,
   as data: `on_ore` (a non-drill building over ore), `mixed_ore` (a drill whose
-  area holds another resource too) and `open_fluid_ports` (a fluid connection
-  that meets nothing). They and belt route dry runs list `belt_joins` (lane
-  joins, `mixes`).
-- `port_fluids`: each crafter port's recipe `fluid` and what its system `carries`.
+  area holds another resource too), `open_fluid_ports` (unconnected),
+  `belt_joins` and `port_fluids`.
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
-- `inspect_entity` gives belt `lanes` and `lane_mix`, inserter `holding`;
-  `trace: up|down` walks belt lanes to their sources.
+- `inspect_entity`: belt lanes, inserter `holding`, `trace`.
 - `platform_status` is your platform screen: state, location, hub slots and
   requests. `detail: "full"` for one platform adds its foundation, hub
   contents, entities, and `ghosts.missing`: what must still go up.

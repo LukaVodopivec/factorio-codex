@@ -21,6 +21,8 @@ _G.prototypes = { entity = {
 
 -- Resources by chunk key; amounts change as the test mines them.
 local resources = { ["0,0"] = {}, ["1,0"] = {}, ["5,5"] = {} }
+-- How often each chunk was read.
+local reads = {}
 local function resource(key, name, x, y, amount)
   local entity = mock.entity({ valid = true, name = name, type = "resource", position = { x = x, y = y }, amount = amount })
   table.insert(resources[key], entity)
@@ -34,6 +36,8 @@ resource("5,5", "crude-oil", 175, 172, 150000)
 local nauvis = mock.surface({ index = 1, name = "nauvis", valid = true,
   find_entities_filtered = function(filter)
     local area = filter.area
+    local key = math.floor(area[1][1] / 32) .. "," .. math.floor(area[1][2] / 32)
+    reads[key] = (reads[key] or 0) + 1
     return resources[math.floor(area[1][1] / 32) .. "," .. math.floor(area[1][2] / 32)] or {}
   end,
   get_chunks = function()
@@ -87,7 +91,11 @@ run(3700)
 iron = row("iron-ore")
 check(iron and iron.tiles == 50 and iron.remaining_fraction == 0.49 and iron.bbox.right_bottom.x <= 20,
   "a mined-out chunk keeps its initial amount: 48.5 % remain, and the bbox covers only standing ore")
-check(storage.patch_caches[1].chunks["1,0"].cells["iron-ore"].tiles == 0, "the mined-out part stays as an empty cell")
+local empty = storage.patch_caches[1].chunks["1,0"].cells["iron-ore"]
+check(empty.tiles == 0 and empty.rate == nil, "the mined-out part stays as an empty cell, with no rate")
+local read_empty, read_mined = reads["1,0"], reads["0,0"]
+run(1200)
+check(reads["1,0"] == read_empty and reads["0,0"] > read_mined, "a chunk mined out everywhere leaves the refresh round robin")
 resources["0,0"] = {}
 run(3700)
 check(row("iron-ore") == nil, "a patch mined out everywhere is no row")

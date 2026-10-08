@@ -2776,7 +2776,8 @@ end
 -- stop). A patch's rows add minutes_left (amount / summed rate, while it is
 -- mined) and remaining_fraction (amount / summed initial, in hundredths,
 -- once below 1). A resource whose chunk part is mined out stays as an empty
--- cell, so the patch's initial amount never shrinks. Infinite resources
+-- cell (with no rate, and its chunk leaves the refresh round robin), so the
+-- patch's initial amount never shrinks. Infinite resources
 -- (crude oil) never run out: their rows give yield_percent instead, the
 -- summed yield of the patch's wells as the game shows it (amount /
 -- normal_resource_amount).
@@ -2900,6 +2901,8 @@ local function read_chunk(surface, cache, chunk)
       cell.rate = math.max(0, (cell.base_amount - cell.amount) * 3600 / (tick - cell.base_tick))
       cell.base_amount, cell.base_tick = cell.amount, tick
     end
+    -- Nothing left here to mine: no rate.
+    if cell.tiles == 0 then cell.rate = nil end
   end
   for _, cell in pairs(by_name) do
     if not cell.initial then cell.initial, cell.base_amount, cell.base_tick = cell.amount, cell.amount, tick end
@@ -3026,9 +3029,14 @@ local function patch_step(cache, surface, tick)
     if cache.build or cache.dirty then patch_build_step(cache) end
     if tick - (cache.refreshed_tick or 0) < PATCH_REFRESH_TICKS then return end
     cache.refreshed_tick = tick
-    -- Round robin over the cached resource chunks.
+    -- Round robin over the cached resource chunks; one mined out everywhere
+    -- is read no more (its ore never returns).
     if #cache.refresh == 0 then
-      for key, chunk in pairs(cache.chunks) do cache.refresh[#cache.refresh + 1] = { key = key, x = chunk.cx, y = chunk.cy } end
+      for key, chunk in pairs(cache.chunks) do
+        for _, cell in pairs(chunk.cells) do
+          if cell.tiles > 0 then cache.refresh[#cache.refresh + 1] = { key = key, x = chunk.cx, y = chunk.cy }; break end
+        end
+      end
       table.sort(cache.refresh, function(a, b) return a.key > b.key end)
     end
     local next_chunk = table.remove(cache.refresh)

@@ -386,7 +386,17 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       const stale = Object.keys(state.packages).filter((id) => (state.packages[id]!.tick ?? -1) > ping.tick!);
       const staleResearch = (state.research?.tick ?? -1) > ping.tick;
       if (staleResearch) delete state.research;
-      if (stale.length > 0 || staleResearch) {
+      // A kept package whose plan end or verify measurement is newer runs
+      // again here: both are taken again from this save line.
+      const staleEnd = Object.keys(state.packages).filter((id) => {
+        const record = state.packages[id]!;
+        return !stale.includes(id) && ((record.plan_ended_tick ?? -1) > ping.tick! || (record.verification?.tick ?? -1) > ping.tick!);
+      });
+      for (const id of staleEnd) {
+        const record = state.packages[id]!;
+        delete record.plan_ended_tick; delete record.plan_status; delete record.verification;
+      }
+      if (stale.length > 0 || staleResearch || staleEnd.length > 0) {
         for (const id of stale) delete state.packages[id];
         write();
       }

@@ -96,7 +96,7 @@ export async function connectStatus(
         status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version,
         mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick,
         companion_exists: false, companion_ever_created: ping.companion_ever_created,
-        companion_dead: ping.companion_dead, read_only: true, ...bodyOf(ping), ...(ping.fifo ? { fifo: ping.fifo } : {}), ...policyErrors(ping),
+        companion_dead: ping.companion_dead, read_only: true, ...bodyOf(ping), ...(ping.fifo ? { fifo: ping.fifo } : {}), ...policyErrors(ping), ...handlerErrors(ping),
         summary: "Connected read-only; no living Codex character is currently available",
       });
     }
@@ -110,7 +110,7 @@ export async function connectStatus(
     status: "connected", app_version: companionVersion(), protocol_version: ping.protocol_version,
     mod_version: ping.mod_version, factorio_version: ping.factorio_version, tick: ping.tick,
     companion_exists: ping.companion_exists, companion_ever_created: ping.companion_ever_created,
-    companion_dead: ping.companion_dead, ...bodyOf(ping), ...(ping.fifo ? { fifo: ping.fifo } : {}), ...policyErrors(ping),
+    companion_dead: ping.companion_dead, ...bodyOf(ping), ...(ping.fifo ? { fifo: ping.fifo } : {}), ...policyErrors(ping), ...handlerErrors(ping),
     ...(away ? { summary: `Connected; the body is ${away}` } : {}),
   });
 }
@@ -133,6 +133,15 @@ function bodyAway(ping: any): string | null {
 function policyErrors(ping: any): { world_policy_errors?: unknown[] } {
   const errors = luaArray(ping?.world_policy_errors ?? []);
   return errors.length > 0 ? { world_policy_errors: errors } : {};
+}
+
+/** Errors a mod handler raised and its dispatcher caught, as ping reports
+ *  them: the count since the save gained the ring and the newest few
+ *  {tick, where, error}; absent when there are none. */
+function handlerErrors(ping: any): { handler_errors?: { count: number; recent: unknown[] } } {
+  const errors = ping?.handler_errors;
+  if (!errors || typeof errors.count !== "number" || errors.count <= 0) return {};
+  return { handler_errors: { count: errors.count, recent: luaArray(errors.recent ?? []) } };
 }
 
 type ToolRegistrar = {
@@ -328,7 +337,7 @@ export function registerMcpTools(
       detail, next_action: null,
     });
   };
-  tools.registerTool("connect_status", { description: "Check config, RCON, mod and protocol versions, then bind the connected native player named Codex.", inputSchema: z.object({}) }, async () => {
+  tools.registerTool("connect_status", { description: "Check config, RCON, mod and protocol versions, then bind the connected native player named Codex.", inputSchema: z.object({}).strict() }, async () => {
     try {
       return await connectStatus(bridge, configDiagnostic, surface === "full");
     } catch (error) {
@@ -336,17 +345,17 @@ export function registerMcpTools(
       return result({ status: "offline", terminal: true, summary: `Offline: ${message}`, next_action: null }, false);
     }
   });
-  tools.registerTool("observe_local", { description: "Nearby entities, ground items and resource patches around the body. compact is bounded; full returns more, out to 20 tiles (requested_radius says when you asked for more), and takes a few game ticks.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15), detail: z.enum(["compact", "full"]).default("compact") }) }, async ({ radius, detail }, extra) => {
+  tools.registerTool("observe_local", { description: "Nearby entities, ground items and resource patches around the body. compact is bounded; full returns more, out to 20 tiles (requested_radius says when you asked for more), and takes a few game ticks.", inputSchema: z.object({ radius: z.number().int().min(5).max(30).default(15), detail: z.enum(["compact", "full"]).default("compact") }).strict() }, async ({ radius, detail }, extra) => {
     try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }, extra?.signal))); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("inspect_entity", { description: `Inspect up to ${INSPECT_LIMIT} exact positions: contents by inventory, settings, status; a rocket silo's rocket (parts, cargo, weight, auto requests), a landing pad's stock and requests. Beyond 30 tiles only own entities in charted chunks are read, marked remote: true. surface reads another planet or platform. Input: {"positions":[{"x":1.5,"y":2.5}]}.`, inputSchema: z.object({ positions: z.array(position).min(1).max(INSPECT_LIMIT), surface: surfaceRef.optional() }) }, async ({ positions, surface }) => {
+  tools.registerTool("inspect_entity", { description: `Inspect up to ${INSPECT_LIMIT} exact positions: contents by inventory, settings, status; a rocket silo's rocket (parts, cargo, weight, auto requests), a landing pad's stock and requests. Beyond 30 tiles only own entities in charted chunks are read, marked remote: true. surface reads another planet or platform. Input: {"positions":[{"x":1.5,"y":2.5}]}.`, inputSchema: z.object({ positions: z.array(position.strict()).min(1).max(INSPECT_LIMIT), surface: surfaceRef.optional() }).strict() }, async ({ positions, surface }) => {
     try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions, surface)))); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("describe_prototype", { description: "Describe up to 10 item, entity or recipe prototypes; auto tries entity, then item, then recipe.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }) }, async (p) => rpc("describe_prototype", p));
-  tools.registerTool("progression_status", { description: "Researched technologies, what can be researched now, and what each unlocks, with science_count units of unit_time_s seconds each at lab speed 1; a trigger technology names its trigger and a hint at the tool that completes it.", inputSchema: z.object({}) }, async () => rpc("progression_status"));
-  tools.registerTool("can_place", { description: "Check up to 24 placements without building, anywhere charted: the body need not go there. Each result keeps the request and gives can_place, the reason, overlaps_batch (indexes of overlapping placements in the batch), and what an inserter would pick up from and drop onto. surface checks another planet or platform.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() })).min(1).max(24), surface: surfaceRef.optional() }) }, async ({ placements, surface }) => {
+  tools.registerTool("describe_prototype", { description: "Describe up to 10 item, entity or recipe prototypes; auto tries entity, then item, then recipe.", inputSchema: z.object({ names: z.array(z.string()).min(1).max(10), kind: z.enum(["auto", "entity", "recipe", "item"]).default("auto") }).strict() }, async (p) => rpc("describe_prototype", p));
+  tools.registerTool("progression_status", { description: "Researched technologies, what can be researched now, and what each unlocks, with science_count units of unit_time_s seconds each at lab speed 1; a trigger technology names its trigger and a hint at the tool that completes it.", inputSchema: z.object({}).strict() }, async () => rpc("progression_status"));
+  tools.registerTool("can_place", { description: "Check up to 24 placements without building, anywhere charted: the body need not go there. Each result keeps the request and gives can_place, the reason, overlaps_batch (indexes of overlapping placements in the batch), and what an inserter would pick up from and drop onto. surface checks another planet or platform.", inputSchema: z.object({ placements: z.array(position.extend({ name: z.string(), direction: z.number().int().min(0).max(15).optional() }).strict()).min(1).max(24), surface: surfaceRef.optional() }).strict() }, async ({ placements, surface }) => {
     try { return result(normalizeCanPlace(await (await bridge()).call("can_place", toolPayloads.canPlace(placements, surface)), placements)); }
     catch (error) { return failure(error); }
   });
@@ -480,7 +489,7 @@ export function registerMcpTools(
     try { return await task("insert_items", "insert", toolPayloads.insert(insertInput.parse(p)), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("extract_items", { description: "Take the named items, or everything when items is omitted, out of the entity at a position. inventory picks one of its inventories (output by default, a chest's contents); the result lists the ones it has.", inputSchema: position.extend({ items: items.optional(), inventory: inventoryRole.optional() }) }, async (p, extra) => task("extract_items", "extract", toolPayloads.extract(p), extra?.signal));
+  tools.registerTool("extract_items", { description: "Take the named items, or everything when items is omitted, out of the entity at a position. inventory picks one of its inventories (output by default, a chest's contents); the result lists the ones it has.", inputSchema: position.extend({ items: items.optional(), inventory: inventoryRole.optional() }).strict() }, async (p, extra) => task("extract_items", "extract", toolPayloads.extract(p), extra?.signal));
   const configureInput = z.object(configureFields).strict().superRefine(issue(settingsIssue));
   tools.registerTool("configure_entity", { description: "Set what you would set in a building's window: inserter filters, mode and stack size, splitter priorities and filter, a chest's slot limit or storage filter (null clears), an asteroid collector's chunk filters, a rocket silo's auto_requests. The body walks there; with platform it sets that platform's entity without the body. It changes only what you name and returns the settings as they now are; repeating it changes nothing.", inputSchema: configureInput }, async (p, extra) => {
     try {
@@ -544,8 +553,8 @@ export function registerMcpTools(
         next_action: nextEventAfter(queued.tick) });
     } catch (error) { return failure(error); }
   });
-  tools.registerTool("rotate_entity", { description: "Rotate the entity at a position once, or set its direction 0-15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }) }, async (p, extra) => task("rotate_entity", "rotate", toolPayloads.rotate(p), extra?.signal));
-  tools.registerTool("build_plan", { description: "Place up to 25 items in order; each may set a recipe, settings and insert items, or be mirrored. Stops at the first failure by default; earlier placements stay. Without stop_on_error, a step whose approach failed BODY_ON_CONVEYOR or START_COLLISION is retried once after the last.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional(), mirror: z.boolean().optional(), settings: entitySettings.optional() })).min(1).max(25), auto_craft: z.boolean().default(true), auto_supply: z.boolean().optional(), stop_on_error: z.boolean().default(true) }) }, async ({ steps, ...rest }, extra) => task("build_plan", "build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
+  tools.registerTool("rotate_entity", { description: "Rotate the entity at a position once, or set its direction 0-15.", inputSchema: position.extend({ direction: z.number().int().min(0).max(15).optional() }).strict() }, async (p, extra) => task("rotate_entity", "rotate", toolPayloads.rotate(p), extra?.signal));
+  tools.registerTool("build_plan", { description: "Place up to 25 items in order; each may set a recipe, settings and insert items, or be mirrored. Stops at the first failure by default; earlier placements stay. Without stop_on_error, a step whose approach failed BODY_ON_CONVEYOR or START_COLLISION is retried once after the last.", inputSchema: z.object({ steps: z.array(position.extend({ name: z.string(), direction: z.number().int().optional(), input_target: position.strict().optional(), output_target: position.strict().optional(), belt_to_ground_type: beltToGroundType, recipe: z.string().optional(), insert: items.optional(), mirror: z.boolean().optional(), settings: entitySettings.optional() }).strict()).min(1).max(25), auto_craft: z.boolean().default(true), auto_supply: z.boolean().optional(), stop_on_error: z.boolean().default(true) }).strict() }, async ({ steps, ...rest }, extra) => task("build_plan", "build_plan", toolPayloads.buildPlan(steps, rest), extra?.signal));
   const moveInput = z.object(moveEntityFields).strict();
   tools.registerTool("move_entity", { description: "Move one of your buildings: the body picks it up with its contents, places it at to, and restores its recipe, direction (unless given), settings, fuel, modules and ingredients. A failed placement leaves it in the inventory. Explicit mode robots instead orders native robot deconstruction and blueprint rebuild within a shared covered network; the body must reach the source. Supports empty buildings with modules and native blueprint settings, refuses fluid/content or external-wire loss, waits for verified paid recovery and construction, and reports pending or partial failure. Cancellation retains paid builds; outstanding native requests may continue. Default mode body is unchanged.", inputSchema: moveInput }, async (p, extra) =>
     step("move_entity")(moveInput.parse(p), extra?.signal));
@@ -594,7 +603,7 @@ export function registerMcpTools(
     try { return await rpc("start_research", researchInput.parse(p)); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("stop", { description: "Emergency stop: cancels the active and queued plans and hand-crafting; upkeep stays off until a plan finishes, unless keep_upkeep is true (retained-work reconciliation). Supervisor only, never for gameplay or routine recovery.", inputSchema: z.object({ keep_upkeep: z.boolean().optional() }) }, async (p) => rpc("cancel", { all: true, origin: `stop/${role}`, ...(p.keep_upkeep === true ? { keep_upkeep: true } : {}) }));
+  tools.registerTool("stop", { description: "Emergency stop: cancels the active and queued plans and hand-crafting; upkeep stays off until a plan finishes, unless keep_upkeep is true (retained-work reconciliation). Supervisor only, never for gameplay or routine recovery.", inputSchema: z.object({ keep_upkeep: z.boolean().optional() }).strict() }, async (p) => rpc("cancel", { all: true, origin: `stop/${role}`, ...(p.keep_upkeep === true ? { keep_upkeep: true } : {}) }));
 }
 
 type Connection = { rcon: RconClient; bridge: Bridge };

@@ -27,6 +27,7 @@ local inventory_roles = require("scripts.inventory_roles")
 local set_walking = require("scripts.human_inputs").set_walking
 local factory_activity = require("scripts.factory_activity")
 local autonomy = require("scripts.autonomy")
+local errors = require("scripts.errors")
 local M = {}
 local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 -- A plan's active budget: 570 s, or 12 s per step for long build packages.
@@ -174,7 +175,7 @@ local function observe_terminal(plan)
   if plan.observation or plan.observation_error or not observer then return end
   -- A plan persisted by an older version may still ask for full: compact.
   local ok, value = pcall(observer, { radius = plan.final_observation_radius, detail = "compact" })
-  if ok then plan.observation = value else plan.observation_error = tostring(value) end
+  if ok then plan.observation = value else plan.observation_error = errors.record("task:plan:observe", value) end
 end
 -- What the body carries, by item key (a non-normal quality is
 -- "name@quality"): its character's main inventory in every body state (the
@@ -237,9 +238,14 @@ local function log_plan(plan, detail)
     or not ending and plan.outcomes[#plan.outcomes] or nil
   local result = last and type(last.result) == "table" and last.result or nil
   local reason = last and last.error or detail
+  -- A failed or partial plan always names a code: STEP_FAILED_UNCLASSIFIED
+  -- (STEP_PARTIAL_UNCLASSIFIED) when nothing classified its end; the summary
+  -- names the step's action.
   local code = result and type(result.code) == "string" and result.code
+    or last and type(last.code) == "string" and last.code
     or plan.preempted and (ending or not plan.ending) and "PREEMPTED"
     or type(reason) == "string" and reason:match("^([A-Z][A-Z0-9_]+[A-Z0-9])") or nil
+  if not code and (plan.status == "failed" or plan.status == "partial") then code = errors.code(plan.status) end
   local summary
   if plan.status == "completed" then
     summary = string.format("completed %d/%d steps", plan.completed_steps, #plan.steps)
@@ -264,6 +270,13 @@ local function log_plan(plan, detail)
 end
 -- keep_crafting: a surface change cancels plans but never hand-crafting.
 local function finish(task, status, detail, preserve_body, outcome, keep_crafting)
+  if type(detail) == "string" then detail = errors.plain(detail) end
+  -- A direct task that failed names a code, as a plan step does.
+  if task.type ~= "plan" and (status == "failed" or status == "partial")
+    and not (type(outcome) == "table" and type(outcome.code) == "string") then
+    outcome = type(outcome) == "table" and outcome or { action = task.type }
+    outcome.code = errors.code(status, nil, detail)
+  end
   if status == "cancelled" and not keep_crafting and task_crafts(task) then cancel_crafting() end
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
   storage.tasks.last_finished_tick = game.tick
@@ -722,6 +735,16 @@ local function walk_back(plan, status, detail, outcome_index)
     step = outcome_index and plan.current_step or plan.completed_steps + 1, outcome_index = outcome_index }
   return true
 end
+-- A step result's code: its outcome's, else one its detail names (the
+-- recoveries below key on it), else nil.
+local function result_code(result)
+  local outcome = type(result.outcome) == "table" and result.outcome or nil
+  if outcome and type(outcome.code) == "string" then return outcome.code end
+  local detail = type(result.detail) == "string" and result.detail or ""
+  if detail:find("CODEX_BODY_OVERLAP", 1, true) then return "CODEX_BODY_OVERLAP" end
+  if detail:find("couldn't get within physical reach", 1, true) then return "TARGET_OUT_OF_REACH" end
+  return detail:match("^([A-Z][A-Z0-9_]+[A-Z0-9])")
+end
 local function finish_step(plan, result)
   local kind = plan.current_task and plan.current_task.type
   factory_activity.record(kind, result.outcome)
@@ -744,8 +767,11 @@ local function finish_step(plan, result)
   end
   local status = result.status == "done" and "completed" or result.status
   local recovery = plan._recovery
+  if type(result.detail) == "string" then result.detail = errors.plain(result.detail) end
   plan.outcomes[#plan.outcomes + 1] = {
     step = plan.current_step, action = step.action, status = status,
+    -- Every failed or partial step names a code (errors.code).
+    code = (status == "failed" or status == "partial") and (result_code(result) or errors.code(status)) or nil,
     upkeep_context = plan.source == "upkeep" and supply.diagnostics(plan.current_task) or nil,
     result = result.outcome or ((status == "completed" or status == "partial") and (result.detail or status) or nil),
     error = (status == "failed" or status == "cancelled") and (result.detail or status) or nil,
@@ -755,7 +781,10 @@ local function finish_step(plan, result)
       exits = recovery.exits and #recovery.exits or nil } or nil,
   }
   plan.current_task = nil
-  if plan.source == "upkeep" and upkeep_listener then pcall(upkeep_listener, plan, plan.current_step, status) end
+  if plan.source == "upkeep" and upkeep_listener then
+    local ok, err = pcall(upkeep_listener, plan, plan.current_step, status)
+    if not ok then errors.record("task:upkeep_listener", err) end
+  end
   local ending = plan.ending
   if ending then
     -- The walk back after an early end has ended: the plan ends as it would
@@ -816,7 +845,7 @@ local function wait_timeout_detail(step)
   local start = tonumber(step._starting_count) or 0
   local current = tonumber(step._current_count) or start
   local elapsed = step._wait_started_tick and game.tick - step._wait_started_tick or 0
-  return string.format("timed out waiting for %d %s in %s: starting %d, current %d, observed delta %d after %d ticks",
+  return string.format("ITEM_WAIT_TIMEOUT: timed out waiting for %d %s in %s: starting %d, current %d, observed delta %d after %d ticks",
     step.count, step.item, step.inventory, start, current, current - start, elapsed)
 end
 local function wait_for_item(plan, step)
@@ -884,6 +913,7 @@ local function expire_parked_waits(tasks)
         or string.format("timed out waiting for research %s after %d ticks", step.technology, game.tick - plan.wait_started_tick)
       plan.outcomes[#plan.outcomes + 1] = {
         step = plan.current_step, action = step.action, status = "failed", error = detail,
+        code = step.action == "wait_for_research" and "RESEARCH_WAIT_TIMEOUT" or "ITEM_WAIT_TIMEOUT",
         result = step.action == "wait_for_research" and { code = "RESEARCH_WAIT_TIMEOUT",
           technology = step.technology, elapsed_ticks = game.tick - plan.wait_started_tick } or nil,
       }
@@ -900,14 +930,6 @@ end
 -- step's original result. A place step whose body stands in its footprint
 -- walks clear to up to MAX_EXITS different spots instead, the step running
 -- again after each walk that arrives.
-local function result_code(result)
-  local outcome = type(result.outcome) == "table" and result.outcome or nil
-  if outcome and type(outcome.code) == "string" then return outcome.code end
-  local detail = type(result.detail) == "string" and result.detail or ""
-  if detail:find("CODEX_BODY_OVERLAP", 1, true) then return "CODEX_BODY_OVERLAP" end
-  if detail:find("couldn't get within physical reach", 1, true) then return "TARGET_OUT_OF_REACH" end
-  return detail:match("^([A-Z][A-Z0-9_]+[A-Z0-9])")
-end
 -- A place step still in its footprint walks to up to this many different
 -- spots beside it (build_plan's bound), the step running again after each.
 local MAX_EXITS = 3
@@ -984,7 +1006,8 @@ local function step_recovery(plan)
   local result
   if recovery.fix then
     local ok, value = pcall(runners[recovery.fix.type].tick, recovery.fix)
-    result = ok and value or not ok and { status = "failed", detail = tostring(value) } or nil
+    result = ok and value or not ok and { status = "failed",
+      detail = errors.record("task:" .. tostring(recovery.fix.type) .. ":recovery", value) } or nil
   elseif game.tick >= recovery.resume_tick then
     result = { status = "done" }
   end
@@ -1136,7 +1159,7 @@ end
 local function tick_plan(plan)
   local budget = math.max(PLAN_BUDGET_TICKS, (plan.budget_steps or #plan.steps) * STEP_BUDGET_TICKS)
   if game.tick - plan.started_tick >= budget then
-    local detail = string.format("plan exceeded its %d-second active budget", budget / 60)
+    local detail = string.format("PLAN_BUDGET_EXCEEDED: plan exceeded its %d-second active budget", budget / 60)
     if plan.current_task then
       local note = step_cancelled(plan)
       if plan._recovery and plan._recovery.phase == "fixing" then plan._recovery.phase = "failed" end
@@ -1183,7 +1206,7 @@ local function tick_plan(plan)
       plan.current_task.started_tick = recovery and recovery.step == plan.current_step and recovery.started_tick
         or game.tick
       local ok, err = pcall(runners[plan.current_task.type].start, plan.current_task)
-      if not ok then finish_step(plan, { status = "failed", detail = tostring(err) }); return end
+      if not ok then finish_step(plan, { status = "failed", detail = errors.record("task:" .. tostring(plan.current_task.type) .. ":start", err) }); return end
     end
   end
   local step, ok, result = plan.steps[plan.current_step]
@@ -1235,7 +1258,7 @@ local function tick_plan(plan)
     table.insert(storage.tasks.queue, 1, plan)
     return
   end
-  if not ok then result = { status = "failed", detail = tostring(result) } end
+  if not ok then result = { status = "failed", detail = errors.record("task:" .. tostring(step.action) .. ":tick", result) } end
   if result and not try_recover(plan, step, result) then finish_step(plan, result) end
 end
 -- The work sites, newest first, at most WORK_SITES: a start within
@@ -1299,6 +1322,7 @@ local function dispatch(tasks)
     if boundary_upkeep and task.type == "plan" and task.source ~= "upkeep" and task.status == "queued" then
       table.insert(tasks.queue, 1, task)
       local ok, id = pcall(boundary_upkeep, game.tick)
+      if not ok then errors.record("task:boundary_upkeep", id) end
       local tail = tasks.queue[#tasks.queue]
       task = table.remove(tasks.queue, ok and id and tail.id == id and #tasks.queue or 1)
     end
@@ -1312,11 +1336,11 @@ local function dispatch(tasks)
     if task.type == "plan" then set_plan_status(task, "running") else task.status = "running" end
     task.started_tick, tasks.active = task.started_tick or game.tick, task
     if task.type == "plan" and task.start_inventory == nil then task.start_inventory = inventory_snapshot() end
-    if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", tostring(err)); return end end
+    if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", errors.record("task:" .. task.type .. ":start", err)); return end end
   end
   if task.type == "plan" then tick_plan(task); return end
   local ok, result = pcall(runners[task.type].tick, task)
-  if not ok then finish(task, "failed", tostring(result)) elseif result then
+  if not ok then finish(task, "failed", errors.record("task:" .. task.type .. ":tick", result)) elseif result then
     factory_activity.record(task.type, result.outcome)
     if TOPOLOGY_TASKS[task.type] then autonomy.mark_dirty() end
     finish(task, result.status, result.detail, nil, result.outcome)
@@ -1510,7 +1534,7 @@ local function resume_active(tasks)
   if runner and runner.resume then
     local ok, err = pcall(runner.resume, current)
     if not ok then
-      local result = { status = "failed", detail = tostring(err) }
+      local result = { status = "failed", detail = errors.record("task:" .. tostring(current.type) .. ":resume", err) }
       if task.type == "plan" then finish_step(task, result) else finish(task, "failed", result.detail) end
     end
   end

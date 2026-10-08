@@ -97,7 +97,10 @@ alone is not evidence of usable framing.
 2. Run a two-or-more-step `run_plan`. Confirm ordered fail-fast outcomes, no
    later enqueue after failure, and a final observation on completed, failed,
    and cancelled paths. Confirm Codex walks at ordinary Factorio speed and no
-   global game-speed setting changes.
+   global game-speed setting changes. Every failed or partial step and
+   `activity_log` row names a `code`, and no error message (there, in a tool
+   error, or in `connect_status`'s `handler_errors`, which appears only once a
+   mod handler raised one) names a `.lua` source location.
 3. In the supervisor's recorded emergency-quiescence rehearsal, interrupt a
    long action in the TUI, observe retained work, then have the supervisor call
    `stop` if cancellation is required. Verify active tasks, queued plans, and

@@ -31,6 +31,7 @@ local configure = require("scripts.actions.configure")
 local build = require("scripts.actions.build")
 local timing = require("scripts.profiler")
 local benchmark = require("scripts.benchmark")
+local errors = require("scripts.errors")
 benchmark.on_freeze = thoughts.refresh
 
 -- Where the body is ({state, surface_ref, platform_name?, rebind_refused?},
@@ -97,6 +98,9 @@ rpc.register("ping", read(function()
     companion_dead = companion.record() ~= nil and not exists,
     -- The last world-policy writes that failed (per surface), if any.
     world_policy_errors = companion.world_policy_errors(),
+    -- Errors a handler raised and a dispatcher caught: {count, recent}
+    -- (errors.summary), absent before the first.
+    handler_errors = errors.summary(),
     -- Where the body is (body_summary).
     body = body_summary(),
   }
@@ -208,7 +212,9 @@ local function move_body(event)
 end
 local function body_moved(event)
   local ok, err = pcall(move_body, event)
-  if not ok and log then pcall(log, "[agentic-companion] body move handling failed: " .. tostring(err)) end
+  if ok then return end
+  local message = errors.record("event:body_moved", err)
+  if log then pcall(log, "[agentic-companion] body move handling failed: " .. message) end
 end
 local function initialize()
   state.init()
@@ -335,7 +341,8 @@ script.on_event(defines.events.on_surface_created, companion.enforce_peaceful_wo
 -- patch cache with it; a later surface may reuse its index.
 script.on_event(defines.events.on_surface_deleted, function(event)
   for _, handler in ipairs({ registry.on_surface_deleted, map_summary.on_surface_deleted, surfaces.on_surface_deleted }) do
-    pcall(handler, event)
+    local ok, err = pcall(handler, event)
+    if not ok then errors.record("event:on_surface_deleted", err) end
   end
 end)
 -- The space event ring (platforms.lua); a game without Space Age has none of

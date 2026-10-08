@@ -5,6 +5,7 @@
 -- app part by part via get_chunk.
 local timing = require("scripts.profiler")
 local benchmark = require("scripts.benchmark")
+local errors = require("scripts.errors")
 
 local M = {}
 
@@ -90,12 +91,14 @@ local function run(method, params_json)
     params = decoded
   end
   local allowed, admission_error = pcall(benchmark.assert_action, method)
-  if not allowed then respond({ ok = false, error = tostring(admission_error) }); return end
+  -- An error reaches the app without its Lua source location; a handler's
+  -- raised error is also kept in the error ring (errors.lua).
+  if not allowed then respond({ ok = false, error = errors.plain(admission_error) }); return end
   local ok, result = pcall(handler, params)
   if ok then
     respond({ ok = true, data = result or {} }, method == "get_chunk")
   else
-    respond({ ok = false, error = tostring(result) })
+    respond({ ok = false, error = errors.record("rpc:" .. tostring(method), result) })
   end
 end
 

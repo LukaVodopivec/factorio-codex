@@ -617,8 +617,9 @@ do
   local never = wait(1)
   for _ = 1, 62 do tick() end
   local expired = tasks.plan_status({ plan_id = never.plan_id })
-  check(expired.status == "failed" and tostring(expired.outcomes[1].error):match("timed out waiting for 5 iron%-plate"),
-    "an unmet wait still times out at its deadline")
+  check(expired.status == "failed" and tostring(expired.outcomes[1].error):match("timed out waiting for 5 iron%-plate")
+    and expired.outcomes[1].code == "ITEM_WAIT_TIMEOUT",
+    "an unmet wait still times out at its deadline, with ITEM_WAIT_TIMEOUT")
 
   -- A queued inspect step reports the read's own scope once any entity is remote.
   reset()

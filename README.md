@@ -260,7 +260,11 @@ placement check, and only while the body is on the package's `surface`
 (otherwise it shows `waiting_surface`; a package never holds `travel`).
 Outcomes are recorded in `package-queue.json`; a rejected or
 failed package surfaces as `package_failed` in `next_event` and in
-`activity_log`. The strategist selects research the same way: the ledger's
+`activity_log`. A package may declare up to three `verify` metrics (an item
+made per minute, or the state of the line at a position); the bridge measures
+them once, two minutes of game time after the package's plan ends, and reports
+`package_verified` or `package_unmet` with the measured values, fixing and
+re-queuing nothing. The strategist selects research the same way: the ledger's
 `research` list (technologies in queue order) is queued by that bridge once
 per revision, skipping what is already researched or queued, and recorded in
 `activity_log`. Every tool result carries `orders` (revision, NOW, package
@@ -410,7 +414,7 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | Tool | Surface | Purpose |
 | --- | --- | --- |
 | `connect_status` | both | config, RCON, mod and protocol check; binds the `Codex` player |
-| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover` (steam and solar) and, short of power, `supply_states` (the generating lines on that network), stock, research, body (state, surface, health), patches with their `bbox` outline, one line per space platform, `elsewhere` (one line per other surface with buildings), `unlocked_locations`, `destroyed` problem rows for own buildings lost, the game's own `alerts` by type; `surface`, `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
+| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover` (steam and solar) and, short of power, `supply_states` (the generating lines on that network), stock, research, body (state, surface, health), patches with their `bbox` outline (mined ones with `minutes_left` and `remaining_fraction`, crude oil with `yield_percent`), one line per space platform, `elsewhere` (one line per other surface with buildings), `unlocked_locations`, `destroyed` problem rows for own buildings lost, the game's own `alerts` by type; `surface`, `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
 | `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change; `repeat` on a code that keeps ending the same step, `recent_draws` on `SUPPLY_SHORTFALL`), `research_finished`, `queue_empty`, `new_problem`, `watch_fired`, `entities_lost`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, `rocket_ready`, `rocket_launched`, `cargo_delivered`, `platform_state_changed`, `platform_arrived`, `travel_phase`, `body_surface_changed`, or `timeout` |
 | `activity_log` | both | recent plan outcomes with `source` (`pilot`, `upkeep`, `package:<id>`), cancels with their `origin`, blueprint changes, and package statuses (with `footprint_changed`); `changes` reads the change journal of who built, removed, rotated or changed what |
 | `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections; `mode: ghosts` for robots; `platform` marks ghosts and foundation tiles on a space platform for its hub to build; a dry run also reports, as data, inserters, belt ends, unpowered machines, isolated poles, `on_ore` (non-drill buildings over ore), `mixed_ore` (drills whose area holds another resource), `open_fluid_ports` (fluid connections that meet nothing) and `port_fluids` (each fluid-recipe crafter port's recipe fluid and what its system carries) |

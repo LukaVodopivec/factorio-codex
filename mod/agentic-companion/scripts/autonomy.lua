@@ -1459,6 +1459,19 @@ local function round_to(value, places)
   return math.floor(value * scale + 0.5) / scale
 end
 
+-- The line of the own machine centred at `position` on a surface (an
+-- index): {line_id, product, state, cause, rate_per_min, machines, working},
+-- or nil when no line machine stands there (a package's verify metric).
+function M.line_at(surface, position)
+  local a = data()
+  local unit = a and a.machine_at and a.machine_at[position_key(surface, position)]
+  local rec = unit and a.machines[unit]
+  local line = rec and rec.line_id and a.lines[rec.line_id]
+  if not line then return nil end
+  return { line_id = line.id, product = line.product, state = line.state, cause = line.cause,
+    rate_per_min = rate_per_min(line, game.tick), machines = #line.machines, working = line.working }
+end
+
 -- Public line rows of one surface (an index; nil or "all": every surface),
 -- ordered by id.
 -- since_tick keeps only lines that changed state, flags, membership or cause

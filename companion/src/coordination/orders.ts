@@ -3,14 +3,16 @@
 // and one full-surface bridge queues each new package into the FIFO by itself,
 // first making the blueprint captures a package starts with, while the body
 // is on the package's surface. The same bridge queues the ledger's research
-// once per revision that lists any.
+// once per revision that lists any, and measures a package's verify metrics
+// once its plan has ended and settled.
 import fs from "node:fs";
 import path from "node:path";
 import { ModError, type Bridge } from "../bridge.js";
+import type { PackageVerificationEvent } from "../mcp/events.js";
 import { queuePlanSchema } from "../mcp/runPlan.js";
 import { luaArray, toolPayloads } from "../mcp/toolPayloads.js";
 import { atomicWriteFile } from "../setup/atomic.js";
-import { operationsLedgerSchema, type OperationsLedger } from "./ledger.js";
+import { operationsLedgerSchema, verifySchema, type OperationsLedger, type VerifyMetric } from "./ledger.js";
 
 export type RunDir = () => string | null;
 type BuildPackage = OperationsLedger["build_packages"][number];
@@ -29,6 +31,20 @@ export interface PackageRecord {
    *  many (a merged row counts each change it covers, an omitted row one);
    *  a fact, never a refusal. */
   footprint_changed?: FootprintChanged;
+  /** The package's verify metrics and surface, kept from when it was queued
+   *  (the ledger may drop it before they are measured). */
+  verify?: VerifyMetric[]; surface?: string;
+  /** When its plan ended (the record's tick for captures only) and how. */
+  plan_ended_tick?: number; plan_status?: string;
+  verification?: Verification;
+}
+/** The measured verify metrics: verified when every one is met, else unmet
+ *  (reason: why nothing could be measured). Each metric is the declared one
+ *  plus measured (the mod's values: per_min, or the line's line_id, product,
+ *  state, cause, rate_per_min, machines and working, or error) and met. */
+export interface Verification {
+  status: "verified" | "unmet"; tick: number; at: string;
+  metrics: Array<VerifyMetric & { measured: Record<string, unknown>; met: boolean }>; reason?: string;
 }
 export interface FootprintChanged { count: number; changes: unknown[] }
 /** The outcome of the ledger's research for one revision: queued (the
@@ -83,6 +99,19 @@ export function readPackageQueue(dir: string): PackageQueueState | null {
     const value = JSON.parse(text);
     return value && typeof value.packages === "object" && !Array.isArray(value.packages) ? value : null;
   } catch { return null; }
+}
+
+/** Verify outcomes, for next_event: package_verified or package_unmet with
+ *  the plan's end and the measured metrics; at identifies the outcome. */
+export function packageVerifications(dir: string): PackageVerificationEvent[] {
+  return Object.entries(readPackageQueue(dir)?.packages ?? {}).flatMap(([id, record]) => {
+    const result = record.verification;
+    if (!result || typeof result !== "object") return [];
+    return [{ event: result.status === "verified" ? "package_verified" as const : "package_unmet" as const,
+      package_id: id, ...(record.plan_status === undefined ? {} : { plan_status: record.plan_status }),
+      metrics: result.metrics ?? [], ...(result.reason === undefined ? {} : { reason: result.reason }),
+      tick: result.tick, at: result.at }];
+  });
 }
 
 /** Packages that were not queued, for next_event; at identifies the record
@@ -323,6 +352,68 @@ async function planSource(b: Bridge, planId: number): Promise<string | undefined
 
 const ledgerWrittenMs = (dir: string) => { try { return fs.statSync(ledgerFile(dir)).mtimeMs; } catch { return 0; } };
 
+/** Game ticks from a package's plan end to its verify measurement. */
+export const VERIFY_SETTLE_TICKS = 7200;
+/** A measurement the mod keeps refusing is given up this long after it was due. */
+const VERIFY_GIVE_UP_TICKS = 18000;
+/** How often a package's plan is asked whether it ended (ms). */
+const VERIFY_POLL_MS = 10_000;
+const ENDED = new Set(["completed", "partial", "failed", "cancelled"]);
+
+/** Measures each queued package's verify metrics once, VERIFY_SETTLE_TICKS
+ *  after its plan ended, through factory_status measure on its surface, and
+ *  records the outcome on its record. Measurement only: nothing is fixed or
+ *  queued again. A mod refusal is retried until VERIFY_GIVE_UP_TICKS past
+ *  due, then recorded as unmet with its reason. */
+async function verifyPackages(b: Bridge, state: PackageQueueState, tick: number, write: () => void,
+  now: () => Date, polled: Map<string, number>): Promise<void> {
+  for (const [id, record] of Object.entries(state.packages)) {
+    if (record.status !== "queued" || record.verify === undefined || record.verification !== undefined) continue;
+    const done = (result: Omit<Verification, "at" | "tick">) => {
+      record.verification = { ...result, tick, at: now().toISOString() };
+      write();
+    };
+    const metrics = verifySchema.safeParse(record.verify);
+    if (!metrics.success) { done({ status: "unmet", metrics: [], reason: "its verify metrics in package-queue.json are malformed" }); continue; }
+    if (record.plan_ended_tick === undefined) {
+      if (record.plan_id === undefined) {
+        record.plan_ended_tick = record.tick ?? tick;
+      } else {
+        const key = `${id}#${record.plan_id}`;
+        if (now().getTime() - (polled.get(key) ?? -Infinity) < VERIFY_POLL_MS) continue;
+        polled.set(key, now().getTime());
+        try {
+          const plan = await b.call<{ status?: string; source?: string; finished_tick?: number }>("plan_status", { plan_id: record.plan_id });
+          // Another plan's id after a save rollback: the record is dropped and queued again.
+          if (plan?.source !== `package:${id}` || !ENDED.has(String(plan.status))) continue;
+          record.plan_ended_tick = typeof plan.finished_tick === "number" ? plan.finished_tick : tick;
+          record.plan_status = plan.status;
+        } catch (error) {
+          // A pruned plan ended long ago.
+          if (!(error instanceof ModError)) throw error;
+          record.plan_ended_tick = tick;
+        }
+      }
+      write();
+    }
+    const due = record.plan_ended_tick + VERIFY_SETTLE_TICKS;
+    if (tick < due) continue;
+    try {
+      const answer = await b.call<{ measured?: unknown }>("factory_status",
+        { sections: [], surface: record.surface ?? "nauvis", measure: metrics.data });
+      const measured = luaArray(answer?.measured ?? []) as Array<Record<string, unknown>>;
+      const rows = metrics.data.map((metric, index) => {
+        const { met, ...values } = measured[index] ?? { error: "NOT_MEASURED" };
+        return { ...metric, measured: values, met: met === true };
+      });
+      done({ status: rows.every((row) => row.met) ? "verified" : "unmet", metrics: rows });
+    } catch (error) {
+      if (!(error instanceof ModError)) throw error;
+      if (tick >= due + VERIFY_GIVE_UP_TICKS) done({ status: "unmet", metrics: [], reason: `not measured: ${message(error)}` });
+    }
+  }
+}
+
 /** Queues each new ledger package once, in ledger order, as a plan with
  *  source package:<id>; leading blueprint_capture steps are made first.
  *  Outcomes persist in <run_dir>/package-queue.json; a connection problem is
@@ -335,6 +426,8 @@ const ledgerWrittenMs = (dir: string) => { try { return fs.statSync(ledgerFile(d
 export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>, now = () => new Date()) {
   // Directories whose queued records this process has checked against the loaded save.
   const verified = new Set<string>();
+  // When each package's plan was last asked whether it ended.
+  const polled = new Map<string, number>();
   const process_ = async () => {
     const dir = runDir();
     const ledger = dir ? readLedger(dir) : null;
@@ -361,7 +454,17 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       const stale = Object.keys(state.packages).filter((id) => (state.packages[id]!.tick ?? -1) > ping.tick!);
       const staleResearch = (state.research?.tick ?? -1) > ping.tick;
       if (staleResearch) delete state.research;
-      if (stale.length > 0 || staleResearch) {
+      // A kept package whose plan end or verify measurement is newer runs
+      // again here: both are taken again from this save line.
+      const staleEnd = Object.keys(state.packages).filter((id) => {
+        const record = state.packages[id]!;
+        return !stale.includes(id) && ((record.plan_ended_tick ?? -1) > ping.tick! || (record.verification?.tick ?? -1) > ping.tick!);
+      });
+      for (const id of staleEnd) {
+        const record = state.packages[id]!;
+        delete record.plan_ended_tick; delete record.plan_status; delete record.verification;
+      }
+      if (stale.length > 0 || staleResearch || staleEnd.length > 0) {
         for (const id of stale) delete state.packages[id];
         write();
       }
@@ -393,6 +496,8 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       }
       write();
     }
+    // A package's verify is measured whatever holds the queue: it moves nothing.
+    if (typeof ping.tick === "number") await verifyPackages(b, state, ping.tick, write, now, polled);
     // Records exist: each pass checks them against the loaded save.
     if (Object.keys(state.packages).length === 0 && ledger.build_packages.length === 0) return;
     if (events.human_hold === true) return;
@@ -498,7 +603,9 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       const changed = retry ? state.packages[id]?.footprint_changed : await footprintChanges(b, entry);
       const captured = { ...(captures.length > 0 ? { captured: captures.map((step) => step.name) } : {}),
         ...(changed ? { footprint_changed: changed } : {}) };
-      if (steps.length === 0) { record(id, { status: "queued", ...captured }); continue; }
+      // A package's verify metrics go with its record.
+      const verify = entry.verify ? { verify: entry.verify, surface: entry.surface } : {};
+      if (steps.length === 0) { record(id, { status: "queued", ...captured, ...verify }); continue; }
       const plan = queuePlanSchema.safeParse({ steps, surface: entry.surface, ...(afterPlanId ? { after_plan_id: afterPlanId } : {}) });
       if (!plan.success) { record(id, { status: "failed", reason: plan.error.issues[0]?.message ?? "invalid steps" }); continue; }
       // An emergency stop or a human hold during this pass: nothing more is queued.
@@ -508,7 +615,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       if (!retry) record(id, { status: "queuing", ...captured });
       try {
         const queued = await b.call<{ plan_id: number }>("queue_plan", { ...plan.data, source: `package:${id}` });
-        record(id, { status: "queued", plan_id: queued.plan_id, ...(changesGroundIn(entry) ? { changes_ground: true } : {}), ...captured });
+        record(id, { status: "queued", plan_id: queued.plan_id, ...(changesGroundIn(entry) ? { changes_ground: true } : {}), ...captured, ...verify });
       } catch (error) {
         // Only the mod's own refusal is a failure; a lost answer stays queuing.
         if (!(error instanceof ModError)) throw error;

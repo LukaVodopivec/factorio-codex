@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobBusyError, ModError, type Bridge } from "../src/bridge.js";
-import { createOrdersTracker, createPackageQueue, holdLock, packageFailures, readPackageQueue } from "../src/coordination/orders.js";
+import { createOrdersTracker, createPackageQueue, holdLock, packageFailures, packageVerifications, readPackageQueue } from "../src/coordination/orders.js";
 import { registerMcpTools, result, runMcpServer, type McpSurface, type SessionRole } from "../src/mcp/server.js";
 import * as coordination from "../src/coordination/orders.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -711,6 +711,175 @@ describe("package auto-queue", () => {
     const { call, bridge } = fakeBridge();
     await createPackageQueue(() => dir, bridge).tick();
     expect(call).not.toHaveBeenCalled();
+  });
+});
+
+describe("package verify", () => {
+  const verify = [{ item: "iron-plate", per_min_at_least: 30 }, { line_at: { x: 1.5, y: 2.5 }, state: "running" }];
+  /** A game whose clock and plan end the test sets; factory_status answers the measure. */
+  function game(measured: unknown[], overrides: Record<string, (params: any) => unknown> = {}) {
+    const clock = { tick: 900, plan: "running", finished: undefined as number | undefined, source: "package:iron-a" };
+    const fake = fakeBridge({
+      ping: () => ({ companion_exists: true, tick: clock.tick, body: { state: "on_surface", surface_ref: "nauvis" } }),
+      event_state: () => ({ tick: clock.tick, queue_depth: 0, fifo_empty: true, human_hold: false }),
+      plan_status: (params) => ({ plan_id: params.plan_id, status: clock.plan, source: clock.source, finished_tick: clock.finished }),
+      factory_status: () => ({ tick: clock.tick, measured }),
+      ...overrides,
+    });
+    return { ...fake, clock };
+  }
+  const measures = (call: ReturnType<typeof fakeBridge>["call"]) =>
+    call.mock.calls.filter(([method]) => method === "factory_status").map(([, params]) => params);
+
+  it("measures once, two minutes of game time after the plan ended, and reports package_verified", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify }]);
+    const { call, bridge, clock } = game([{ per_min: 31.5, met: true },
+      { line_id: 4, product: "iron-plate", state: "running", rate_per_min: 31.5, machines: 2, working: 2, met: true }]);
+    let ms = 0;
+    const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages["iron-a"]).toMatchObject({ status: "queued", verify, surface: "nauvis" });
+    // Still running: nothing measured.
+    ms += 20_000; clock.tick = 3000;
+    await queue.tick();
+    expect(measures(call)).toEqual([]);
+    clock.plan = "completed"; clock.finished = 3100; ms += 20_000; clock.tick = 3200;
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages["iron-a"]).toMatchObject({ plan_ended_tick: 3100, plan_status: "completed" });
+    clock.tick = 3100 + 7199; ms += 1_000;
+    await queue.tick();
+    expect(measures(call)).toEqual([]);
+    clock.tick = 3100 + 7200; ms += 1_000;
+    await queue.tick();
+    expect(measures(call)).toEqual([{ sections: [], surface: "nauvis", measure: verify }]);
+    const record = readPackageQueue(dir)?.packages["iron-a"];
+    expect(record?.verification).toMatchObject({ status: "verified", tick: 10300, metrics: [
+      { item: "iron-plate", per_min_at_least: 30, measured: { per_min: 31.5 }, met: true },
+      { line_at: { x: 1.5, y: 2.5 }, state: "running", measured: { line_id: 4, state: "running", rate_per_min: 31.5 }, met: true }] });
+    expect(packageVerifications(dir)).toEqual([expect.objectContaining({ event: "package_verified", package_id: "iron-a",
+      plan_status: "completed", tick: 10300 })]);
+    // Measured once: a later pass, even after the ledger drops the package, measures nothing more.
+    writeLedger(dir, 2, []);
+    clock.tick = 20000; ms += 1_000;
+    await queue.tick();
+    expect(measures(call)).toHaveLength(1);
+    // Nothing is queued again.
+    expect(queuedPlans(call)).toHaveLength(1);
+  });
+
+  it("reports package_unmet with the measured values when one metric falls short", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify }]);
+    const { bridge, clock } = game([{ per_min: 12, met: false }, { error: "NO_LINE", met: false }]);
+    let ms = 0;
+    const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+    await queue.tick();
+    clock.plan = "failed"; clock.finished = 1000; clock.tick = 1000 + 7200; ms += 20_000;
+    await queue.tick();
+    await queue.tick();
+    expect(packageVerifications(dir)).toEqual([expect.objectContaining({ event: "package_unmet", plan_status: "failed",
+      metrics: [expect.objectContaining({ measured: { per_min: 12 }, met: false }),
+        expect.objectContaining({ measured: { error: "NO_LINE" }, met: false })] })]);
+  });
+
+  it("records unmet with the reason once the mod refused the measurement five minutes past due", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify }]);
+    const { call, bridge, clock } = game([], { factory_status: () => { throw new ModError("surface vulcan is not charted"); } });
+    let ms = 0;
+    const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+    await queue.tick();
+    clock.plan = "completed"; clock.finished = 1000; clock.tick = 1000 + 7200; ms += 20_000;
+    await queue.tick();
+    clock.tick = 1000 + 7200 + 17_999;
+    await queue.tick();
+    expect(measures(call)).toHaveLength(2);
+    expect(readPackageQueue(dir)?.packages["iron-a"]).not.toHaveProperty("verification");
+    clock.tick = 1000 + 7200 + 18_000;
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages["iron-a"]?.verification).toMatchObject({ status: "unmet", metrics: [],
+      reason: expect.stringContaining("surface vulcan is not charted"), tick: 26200 });
+    expect(packageVerifications(dir)).toEqual([expect.objectContaining({ event: "package_unmet" })]);
+  });
+
+  it("dates the end of a plan the mod no longer knows to when that was seen", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify }]);
+    let pruned = false;
+    const { call, bridge, clock } = game([{ per_min: 31, met: true }, { state: "running", met: true }], {
+      plan_status: (params) => {
+        if (pruned) throw new ModError(`unknown plan_id ${params.plan_id}`);
+        return { plan_id: params.plan_id, status: "running", source: "package:iron-a" };
+      },
+    });
+    let ms = 0;
+    const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+    await queue.tick();
+    pruned = true; clock.tick = 2000; ms += 20_000;
+    await queue.tick();
+    const record = readPackageQueue(dir)?.packages["iron-a"];
+    expect(record).toMatchObject({ plan_ended_tick: 2000 });
+    expect(record).not.toHaveProperty("plan_status");
+    clock.tick = 2000 + 7200;
+    await queue.tick();
+    expect(measures(call)).toHaveLength(1);
+    expect(readPackageQueue(dir)?.packages["iron-a"]?.verification).toMatchObject({ status: "verified", tick: 9200 });
+  });
+
+  it("ignores an ended plan whose source is another's, and measures nothing for it", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify }]);
+    const { call, bridge, clock } = game([{ per_min: 31, met: true }, { state: "running", met: true }]);
+    let ms = 0;
+    const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+    await queue.tick();
+    clock.plan = "completed"; clock.finished = 1000; clock.source = "pilot"; clock.tick = 1000 + 9000; ms += 20_000;
+    await queue.tick();
+    expect(call.mock.calls.filter(([method]) => method === "plan_status").length).toBeGreaterThan(0);
+    expect(readPackageQueue(dir)?.packages["iron-a"]).not.toHaveProperty("plan_ended_tick");
+    expect(measures(call)).toEqual([]);
+  });
+
+  it("takes a plan end and measurement from a rolled-back save line again", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify }]);
+    // Queued before the restored save's tick; its end and measurement came after it.
+    fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify({ packages: {
+      "iron-a": { status: "queued", plan_id: 57, revision: 1, at: "2026-10-04T00:00:00Z", tick: 300, verify, surface: "nauvis",
+        plan_ended_tick: 5000, plan_status: "completed",
+        verification: { status: "unmet", tick: 12200, at: "2026-10-04T00:10:00Z", metrics: [] } } } }));
+    const { call, bridge, clock } = game([{ per_min: 31, met: true }, { state: "running", met: true }]);
+    clock.tick = 4000;
+    let ms = 0;
+    const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+    await queue.tick();
+    const record = readPackageQueue(dir)?.packages["iron-a"];
+    expect(record).toMatchObject({ status: "queued", plan_id: 57, tick: 300 });
+    for (const field of ["plan_ended_tick", "plan_status", "verification"]) expect(record).not.toHaveProperty(field);
+    expect(packageVerifications(dir)).toEqual([]);
+    // The plan runs again here; it is measured two minutes after this end.
+    clock.plan = "completed"; clock.finished = 6000; clock.tick = 6100; ms += 20_000;
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages["iron-a"]).toMatchObject({ plan_ended_tick: 6000 });
+    expect(measures(call)).toEqual([]);
+    clock.tick = 6000 + 7200;
+    await queue.tick();
+    expect(packageVerifications(dir)).toEqual([expect.objectContaining({ event: "package_verified", tick: 13200 })]);
+    expect(queuedPlans(call)).toEqual([]);
+  });
+
+  it("keeps a package without verify free of measurement", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [furnaces("iron-a")]);
+    const { call, bridge, clock } = game([]);
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    clock.plan = "completed"; clock.finished = 900; clock.tick = 900 + 8000;
+    await queue.tick();
+    expect(measures(call)).toEqual([]);
+    expect(readPackageQueue(dir)?.packages["iron-a"]).not.toHaveProperty("verify");
+    expect(packageVerifications(dir)).toEqual([]);
   });
 });
 

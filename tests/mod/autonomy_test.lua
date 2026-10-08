@@ -693,7 +693,8 @@ end
 summary_stub.patches = function()
   local rows = {}
   for i = 1, 20 do rows[i] = { name = long(i), amount = 123456789, tiles = 9999, centroid = { x = -1234.5, y = 1234.5 },
-    bbox = { left_top = { x = -12345, y = 12340 }, right_bottom = { x = -12330, y = 12355 } } } end
+    bbox = { left_top = { x = -12345, y = 12340 }, right_bottom = { x = -12330, y = 12355 } },
+    minutes_left = 1234567890, remaining_fraction = 0.99 } end
   return rows, true
 end
 local many_technologies = {}

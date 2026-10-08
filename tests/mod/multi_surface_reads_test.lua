@@ -280,6 +280,29 @@ check(remote.surface == "vulcanus" and #remote.lines == 3 and remote_stock.calci
   "factory_status {surface} reads that surface; the body's own surface joins elsewhere")
 check(not pcall(factory_status.factory_status, { surface = "atlantis" }), "an unknown surface is refused")
 
+-- A package's verify metrics, measured on the surface the read names (the
+-- package bridge): a production rate against the stated one, and the line
+-- of the machine whose box holds a position.
+prototypes.item["iron-plate"], prototypes.fluid = {}, {}
+local measured = factory_status.factory_status({ sections = {}, surface = "vulcanus", measure = {
+  { item = "iron-plate", per_min_at_least = 61 }, { item = "unobtainium", per_min_at_least = 1 },
+  { line_at = { x = 0.2, y = 0.3 }, state = "running" } } }).measured
+check(measured[1].per_min == 60 and measured[1].met == false and measured[2].error == "UNKNOWN_ITEM" and measured[2].met == false
+  and measured[3].product == "iron-plate" and measured[3].state == "running" and measured[3].machines == 2
+  and measured[3].line_id == line_of(vulcanus_lines, "iron-plate").id and measured[3].met == true,
+  "measure gives the surface's rate against the stated one and the line of the machine at a position")
+local finder = nauvis.find_entities_filtered
+nauvis.find_entities_filtered = function() return {} end
+local nothing = factory_status.factory_status({ sections = {}, measure = { { line_at = { x = 50, y = 0 }, state = "running" },
+  { line_at = { x = 0, y = -40 }, state = "running" } } })
+nauvis.find_entities_filtered = finder
+check(nothing.measured[1].error == "NO_LINE" and nothing.measured[1].met == false and nothing.measured[2].error == "UNCHARTED"
+  and nothing.lines == nil,
+  "a position with no line machine is NO_LINE, an uncharted one UNCHARTED; a measure with no sections reads nothing else")
+check(not pcall(factory_status.factory_status, { sections = {}, measure = { { item = "iron-plate" } } })
+  and not pcall(factory_status.factory_status, { sections = {}, measure = { {}, {}, {}, {} } }),
+  "a malformed or fourth metric is refused")
+
 -- A summary works out once whether its surface is a platform's: its scan
 -- reads the surface's index a bounded number of times, not once per entity.
 local index_reads = 0

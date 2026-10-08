@@ -2751,9 +2751,25 @@ end
 -- One cache works a tick, in turn, so the per-tick work does not grow with
 -- the number of planets. Platform surfaces have no cache (no resources).
 -- Reads never scan.
+--
+-- Depletion, adapted from the YARM resource monitor's approach (resmon.lua,
+-- MIT licence, https://github.com/narc0tiq/YARM): each cell (one resource in
+-- one chunk) keeps `initial`, its amount when first read, and a depletion
+-- rate measured from its amount between two reads at least
+-- M.PATCH_RATE_TICKS apart (the force's drills on it, as mined; 0 once they
+-- stop). A patch's rows add minutes_left (amount / summed rate, while it is
+-- mined) and remaining_fraction (amount / summed initial, in hundredths,
+-- once below 1). A resource whose chunk part is mined out stays as an empty
+-- cell (with no rate, and its chunk leaves the refresh round robin), so the
+-- patch's initial amount never shrinks. Infinite resources
+-- (crude oil) never run out: their rows give yield_percent instead, the
+-- summed yield of the patch's wells as the game shows it (amount /
+-- normal_resource_amount).
 local PATCH_CHUNKS_PER_TICK = 2
 local PATCH_RESOURCES_PER_TICK = 2048
 local PATCH_REFRESH_TICKS = 120
+-- (A module field: this file's main chunk is at Lua's 200-local limit.)
+M.PATCH_RATE_TICKS = 3600
 
 local function chunk_key(x, y) return x .. "," .. y end
 
@@ -2857,6 +2873,24 @@ local function read_chunk(surface, cache, chunk)
   end
   local by_name = {}
   for name, cell_by_key in pairs(cells) do by_name[name] = cell_by_key[key] end
+  local tick = game.tick
+  local old = cache.chunks[key]
+  for name, before in pairs(old and old.cells or {}) do
+    -- Mined out here: an empty cell keeps its initial amount.
+    by_name[name] = by_name[name] or { cx = chunk.x, cy = chunk.y, amount = 0, tiles = 0, x = 0, y = 0 }
+    local cell = by_name[name]
+    cell.initial, cell.rate = before.initial or before.amount, before.rate
+    cell.base_amount, cell.base_tick = before.base_amount or before.amount, before.base_tick or tick
+    if tick - cell.base_tick >= M.PATCH_RATE_TICKS then
+      cell.rate = math.max(0, (cell.base_amount - cell.amount) * 3600 / (tick - cell.base_tick))
+      cell.base_amount, cell.base_tick = cell.amount, tick
+    end
+    -- Nothing left here to mine: no rate.
+    if cell.tiles == 0 then cell.rate = nil end
+  end
+  for _, cell in pairs(by_name) do
+    if not cell.initial then cell.initial, cell.base_amount, cell.base_tick = cell.amount, cell.amount, tick end
+  end
   cache.chunks[key] = next(by_name) and { cx = chunk.x, cy = chunk.y, cells = by_name } or nil
   cache.dirty = true
   return count
@@ -2890,9 +2924,13 @@ local function patch_build_step(cache)
       local by_name = B.cells[patch.name]
       local cell = by_name[table.remove(B.stack)]
       patch.amount, patch.tiles = patch.amount + cell.amount, patch.tiles + cell.tiles
+      patch._initial, patch._rate = patch._initial + (cell.initial or cell.amount), patch._rate + (cell.rate or 0)
       patch._x, patch._y = patch._x + cell.x, patch._y + cell.y
-      patch._left, patch._right = math.min(patch._left, cell.left), math.max(patch._right, cell.right)
-      patch._top, patch._bottom = math.min(patch._top, cell.top), math.max(patch._bottom, cell.bottom)
+      -- A mined-out cell has no outline: it joins the patch, never its bbox.
+      if cell.tiles > 0 then
+        patch._left, patch._right = math.min(patch._left or cell.left, cell.left), math.max(patch._right or cell.right, cell.right)
+        patch._top, patch._bottom = math.min(patch._top or cell.top, cell.top), math.max(patch._bottom or cell.bottom, cell.bottom)
+      end
       for dy = -1, 1 do for dx = -1, 1 do
         local key = (cell.cx + dx) .. "," .. (cell.cy + dy)
         if by_name[key] and not B.seen[patch.name .. "|" .. key] then
@@ -2901,20 +2939,35 @@ local function patch_build_step(cache)
         end
       end end
     elseif patch then
-      patch.bbox = { left_top = { x = math.floor(patch._left), y = math.floor(patch._top) },
-        right_bottom = { x = math.ceil(patch._right), y = math.ceil(patch._bottom) } }
-      patch.centroid = { x = math.floor(patch._x / patch.tiles * 10 + 0.5) / 10,
-        y = math.floor(patch._y / patch.tiles * 10 + 0.5) / 10 }
-      patch._x, patch._y, patch._left, patch._right, patch._top, patch._bottom = nil, nil, nil, nil, nil, nil
-      B.rows[#B.rows + 1], B.patch = patch, nil
+      -- A patch mined out everywhere is no row.
+      if patch.tiles > 0 then
+        patch.bbox = { left_top = { x = math.floor(patch._left), y = math.floor(patch._top) },
+          right_bottom = { x = math.ceil(patch._right), y = math.ceil(patch._bottom) } }
+        patch.centroid = { x = math.floor(patch._x / patch.tiles * 10 + 0.5) / 10,
+          y = math.floor(patch._y / patch.tiles * 10 + 0.5) / 10 }
+        -- Depletion (see the patch cache's note).
+        local ok, infinite, normal = pcall(function()
+          local proto = prototypes.entity[patch.name]
+          return proto.infinite_resource, proto.normal_resource_amount
+        end)
+        if ok and infinite then
+          if type(normal) == "number" and normal > 0 then patch.yield_percent = math.floor(patch.amount / normal * 100 + 0.5) end
+        else
+          if patch._rate > 0 then patch.minutes_left = math.floor(patch.amount / patch._rate + 0.5) end
+          local fraction = patch._initial > 0 and math.floor(patch.amount / patch._initial * 100 + 0.5) / 100
+          if fraction and fraction < 1 then patch.remaining_fraction = fraction end
+        end
+        patch._x, patch._y, patch._left, patch._right, patch._top, patch._bottom = nil, nil, nil, nil, nil, nil
+        patch._initial, patch._rate = nil, nil
+        B.rows[#B.rows + 1] = patch
+      end
+      B.patch = nil
     elseif B.next <= #B.list then
       local first = B.list[B.next]
       B.next = B.next + 1
       if not B.seen[first.name .. "|" .. first.key] then
         B.seen[first.name .. "|" .. first.key] = true
-        local cell = B.cells[first.name][first.key]
-        B.patch = { name = first.name, amount = 0, tiles = 0, _x = 0, _y = 0,
-          _left = cell.left, _right = cell.right, _top = cell.top, _bottom = cell.bottom }
+        B.patch = { name = first.name, amount = 0, tiles = 0, _x = 0, _y = 0, _initial = 0, _rate = 0 }
         B.stack = { first.key }
       end
     else
@@ -2960,9 +3013,14 @@ local function patch_step(cache, surface, tick)
     if cache.build or cache.dirty then patch_build_step(cache) end
     if tick - (cache.refreshed_tick or 0) < PATCH_REFRESH_TICKS then return end
     cache.refreshed_tick = tick
-    -- Round robin over the cached resource chunks.
+    -- Round robin over the cached resource chunks; one mined out everywhere
+    -- is read no more (its ore never returns).
     if #cache.refresh == 0 then
-      for key, chunk in pairs(cache.chunks) do cache.refresh[#cache.refresh + 1] = { key = key, x = chunk.cx, y = chunk.cy } end
+      for key, chunk in pairs(cache.chunks) do
+        for _, cell in pairs(chunk.cells) do
+          if cell.tiles > 0 then cache.refresh[#cache.refresh + 1] = { key = key, x = chunk.cx, y = chunk.cy }; break end
+        end
+      end
       table.sort(cache.refresh, function(a, b) return a.key > b.key end)
     end
     local next_chunk = table.remove(cache.refresh)

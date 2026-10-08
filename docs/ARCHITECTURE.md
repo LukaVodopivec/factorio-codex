@@ -106,6 +106,12 @@ about once a second:
    researched or queued.
 4. Record outcomes in `<run-dir>/package-queue.json`; a failure reaches both
    roles as `package_failed`.
+5. Measure a package's optional `verify` metrics (up to three: an item's
+   production per minute, or the state of the line at a position) once, two
+   minutes of game time after its plan ends, through `factory_status`'s
+   bridge-only `measure`. The outcome stays on the package's record and
+   reaches both roles as `package_verified` or `package_unmet`, with the
+   measured values. It is measurement only: nothing is fixed or queued again.
 
 Packages written before an emergency `stop` stay held until the planner
 rewrites the ledger, and a human hold parks everything. Every tool result

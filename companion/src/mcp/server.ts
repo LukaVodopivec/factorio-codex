@@ -9,6 +9,7 @@ import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSetti
 import { createOrdersTracker, createPackageQueue, packageFailures, packageVerifications, readPackageQueue, type RunDir } from "../coordination/orders.js";
 import { VERIFY_RULE } from "../coordination/ledger.js";
 import { currentRunDir } from "../server/server.js";
+import { createToolOutcomeLog, runRoot } from "../runs/telemetry.js";
 import { eventSummary, nextEventSchema, RESEARCH_IDLE, researchIdleProblem, waitForEvent, type FailureDelivery } from "./events.js";
 import { normalizeObservation } from "./observation.js";
 import { areaFields, areaIssue, blueprintName, blueprintPlaceFields, blueprintPlaceIssue, captureFields, configureFields, copySettingsFields,
@@ -199,7 +200,8 @@ function platformStatusSummary(value: any): string {
 
 /** Register the complete public surface against an injectable bridge provider.
  *  Tests use the same handlers with a fake Bridge to prove the exact Lua DTOs.
- *  runDir names the current run, whose ledger supplies the attached orders. */
+ *  runDir names the current run, whose ledger supplies the attached orders;
+ *  each call's outcome goes to that run's tool_outcomes.jsonl under runsRoot. */
 export function registerMcpTools(
   server: ToolRegistrar,
   bridge: () => Promise<Bridge>,
@@ -207,14 +209,28 @@ export function registerMcpTools(
   surface: McpSurface = "full",
   runDir: RunDir = () => null,
   role: SessionRole = "unknown",
+  runsRoot: () => string = () => runRoot(),
 ): void {
   if ((role === "strategist" || role === "advisor") && surface !== "read-only")
     throw new Error(`${role} requires the read-only MCP surface`);
   const orders = createOrdersTracker(runDir);
   const failureDelivery: FailureDelivery = { keys: null };
-  // Every result carries the strategist's orders once per new ledger revision.
+  const outcomes = createToolOutcomeLog(runDir, role, runsRoot);
+  // Every result carries the strategist's orders once per new ledger revision;
+  // its outcome is logged without waiting for the write.
   const tools: ToolRegistrar = { registerTool: (name, config, handler) =>
-    server.registerTool(name, config, async (args, extra) => orders.attach(await handler(args, extra))) };
+    server.registerTool(name, config, async (args, extra) => {
+      const started = performance.now();
+      let value: unknown;
+      try { value = await handler(args, extra); }
+      catch (error) {
+        void outcomes.record(name, performance.now() - started, { isError: true, structuredContent: { status: "thrown",
+          ...(typeof (error as { code?: unknown })?.code === "string" ? { code: (error as { code: string }).code } : {}) } });
+        throw error;
+      }
+      void outcomes.record(name, performance.now() - started, value);
+      return orders.attach(value);
+    }) };
   // signal (the MCP request's) stops the poll of a read the game runs as a job.
   const rpc = async (method: any, params: unknown = {}, signal?: AbortSignal, normalize = (value: any) => value) => {
     try { return result(normalize(await (await bridge()).call(method, params, signal))); }

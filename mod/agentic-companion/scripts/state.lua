@@ -58,6 +58,10 @@ function M.init()
     -- first: {key, plan_id, tick}, so a retried call returns the plan it
     -- queued; absent before the first.
     client_keys = tasks.client_keys,
+    -- Run telemetry (tasks.body_time): ticks per body state and idle gaps
+    -- since since_tick, and the state in force since state_since.
+    body_time = tasks.body_time or { since_tick = game and game.tick or 0, state = "idle",
+      state_since = game and game.tick or 0, ticks = {}, gaps = {} },
   }
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}

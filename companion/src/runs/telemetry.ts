@@ -8,7 +8,9 @@ import { companionVersion, dataDir, loadConfig } from "../config.js";
 import { operationsLedgerSchema } from "../coordination/ledger.js";
 import { RconClient } from "../rcon.js";
 import { atomicWriteFile } from "../setup/atomic.js";
-import { createThoughtFeed, type ThoughtFeed, type ThoughtRole } from "./thoughts.js";
+import { readLedger, type RunDir } from "../coordination/orders.js";
+import { BUILT_IN_MODS } from "../server/server.js";
+import { createThoughtFeed, createTimeSplit, type ThoughtFeed, type ThoughtRole } from "./thoughts.js";
 import { roleProfiles, runRolesSchema } from "./profiles.js";
 import { BENCHMARK_SECONDS, benchmarkEvidenceSchema, cutoffIssues } from "./benchmark.js";
 
@@ -18,6 +20,24 @@ const counters = z.object({ produced: z.array(countRow), consumed: z.array(count
 const snapshotBodySchema = z.object({ state: z.string(), surface_ref: z.string().optional(), platform_name: z.string().optional(),
   rebind_refused: z.object({ tick: z.number().int().nonnegative(), characters: z.number().int().nonnegative() }).strict().optional(),
 }).strict();
+const whole = z.number().int().nonnegative();
+/** What the body did by state, cumulative since since_tick (mod tasks.body_time). */
+export const bodyTimeSchema = z.object({ since_tick: whole,
+  /** The recorder baseline's mark: a gap open then counts from here when it closes. */
+  window_tick: whole.optional(), state: z.string(), state_since: whole,
+  ticks: z.record(z.string(), whole),
+  /** Idle gaps by the state that ended them. */
+  gaps: z.record(z.string(), z.object({ count: whole, ticks: whole, longest: whole,
+    longest_end_tick: whole.optional() }).strict()),
+}).strict();
+/** Facts for an unassisted run; bonuses lists only modifiers research does not explain. */
+export const attestationSchema = z.object({ game_speed: z.number().optional(), cheat_mode: z.boolean().optional(),
+  controller: z.string().optional(), physical_controller: z.string().optional(),
+  mods: z.record(z.string(), z.string()),
+  bonuses: z.array(z.object({ scope: z.enum(["force", "character"]), name: z.string(), value: z.number(),
+    from_research: z.number() }).strict()),
+}).strict();
+export type RunAttestation = z.infer<typeof attestationSchema>;
 export const runSnapshotSchema = z.object({
   // null while the body is aboard a platform or in a cargo pod without a readable character (mod 0.22.3 on).
   tick: z.number().int().nonnegative(), character: z.record(z.string(), z.unknown()).nullable(),
@@ -32,6 +52,9 @@ export const runSnapshotSchema = z.object({
   }).strict().optional(),
   lines: z.object({ line_count: z.number().int().nonnegative(), running_line_count: z.number().int().nonnegative(),
     self_sustaining_line_count: z.number().int().nonnegative(), hand_fed_line_count: z.number().int().nonnegative() }).strict().optional(),
+  /** Absent from samples recorded before the mod reported them. */
+  body_time: bodyTimeSchema.optional(),
+  attestation: attestationSchema.optional(),
   statistics: z.object({
     /** Summed over every surface with own buildings (from mod 0.22.3; the body's surface before). */
     items: counters,
@@ -64,10 +87,74 @@ export function parseRunSnapshot(value: any): RunSnapshot {
     value.statistics.raw_resources = luaArray(value.statistics.raw_resources);
     if (value.statistics.hand_crafted) value.statistics.hand_crafted.items = luaArray(value.statistics.hand_crafted.items);
   }
+  // An empty Lua table is a list here; these are records (and bonuses a list).
+  const record = (holder: any, key: string) => { if (Array.isArray(holder?.[key]) && holder[key].length === 0) holder[key] = {}; };
+  record(value?.body_time, "ticks"); record(value?.body_time, "gaps"); record(value?.attestation, "mods");
+  if (value?.attestation) value.attestation.bonuses = luaArray(value.attestation.bonuses);
   // Lua omits a nil character (the body away) and standing_on; a sample always states them.
   if (value && typeof value === "object" && value.character === undefined) value.character = null;
   if (value?.character && typeof value.character === "object" && value.character.standing_on === undefined) value.character.standing_on = null;
   return runSnapshotSchema.parse(value);
+}
+
+/** Mods a run may have active: the game's own set and the companion. */
+export const ALLOWED_MODS = [...BUILT_IN_MODS, "agentic-companion"] as const;
+const BYPASS_CONTROLLERS = new Set(["editor", "god"]);
+/** Each attested fact that differs from an unassisted run: game speed other
+ *  than 1, cheat mode not off, an editor or god controller, a mod outside
+ *  ALLOWED_MODS, or a modifier above what research grants. */
+export function attestationIssues(attestation: RunAttestation | undefined): string[] {
+  if (!attestation) return ["the snapshot carries no attestation"];
+  const issues: string[] = [];
+  if (attestation.game_speed !== 1) issues.push(`game.speed is ${attestation.game_speed ?? "unreadable"}`);
+  if (attestation.cheat_mode !== false) issues.push(`the Codex player's cheat_mode is ${attestation.cheat_mode ?? "unreadable"}`);
+  for (const [label, name] of [["controller", attestation.controller], ["physical controller", attestation.physical_controller]] as const)
+    if (name && BYPASS_CONTROLLERS.has(name)) issues.push(`the Codex player's ${label} is ${name}`);
+  for (const [name, version] of Object.entries(attestation.mods).sort(([a], [b]) => a.localeCompare(b)))
+    if (!(ALLOWED_MODS as readonly string[]).includes(name)) issues.push(`mod ${name} ${version} is active`);
+  for (const row of attestation.bonuses) if (row.value > row.from_research + 1e-9)
+    issues.push(`${row.scope} ${row.name} is ${row.value}; research grants ${row.from_research}`);
+  return issues;
+}
+
+const timeSplitSchema = z.object({ turns: whole, turn_ms: z.number().nonnegative(), model_ms: z.number().nonnegative(),
+  tool_ms: z.number().nonnegative(), compaction_ms: z.number().nonnegative(), tool_calls: whole, compactions: whole }).strict();
+const shareRow = z.object({ ticks: whole, share: z.number().nonnegative() }).strict();
+const bodySummarySchema = z.object({ window_ticks: whole, busy_share: z.number().nonnegative(),
+  states: z.record(z.string(), shareRow),
+  gaps: z.record(z.string(), z.object({ count: whole, total_seconds: z.number().nonnegative(),
+    mean_seconds: z.number().nonnegative(), longest_seconds: z.number().nonnegative().nullable() }).strict()),
+}).strict();
+/** The run summary's telemetry: each role's time split from its rollout and
+ *  the body's time by state between the baseline and final samples. */
+const runTelemetrySchema = z.object({ roles: z.record(z.string(), timeSplitSchema), body: bodySummarySchema.nullable() }).strict();
+const BUSY_STATES = ["pilot", "package", "upkeep", "crafting"];
+const round = (value: number, digits = 3) => Math.round(value * 10 ** digits) / 10 ** digits;
+const gapRow = (count: number, ticks: number, longest: number | null) => ({ count, total_seconds: round(ticks / 60, 2),
+  mean_seconds: round(ticks / count / 60, 2), longest_seconds: longest === null ? null : round(longest / 60, 2) });
+/** Body-busy share and idle gaps between two snapshots: the counters' deltas.
+ *  The baseline marked the window, so the gap open then counts only from
+ *  the baseline; a gap's longest counts only when it lies inside the window,
+ *  and idle still open at the final sample is the gap "open". */
+export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<typeof bodySummarySchema> | null {
+  const a = baseline.body_time, b = final.body_time;
+  if (!a || !b || a.since_tick !== b.since_tick || b.window_tick !== baseline.tick || final.tick <= baseline.tick) return null;
+  const window = final.tick - baseline.tick;
+  const states = Object.fromEntries(Object.keys(b.ticks).sort().flatMap((state) => {
+    const ticks = b.ticks[state]! - (a.ticks[state] ?? 0);
+    return ticks > 0 ? [[state, { ticks, share: round(ticks / window) }]] : [];
+  }));
+  const busy = BUSY_STATES.reduce((sum, state) => sum + (states[state]?.ticks ?? 0), 0);
+  const gaps = Object.fromEntries(Object.keys(b.gaps).sort().flatMap((by) => {
+    const now = b.gaps[by]!, then = a.gaps[by];
+    const count = now.count - (then?.count ?? 0), ticks = now.ticks - (then?.ticks ?? 0);
+    if (count <= 0) return [];
+    const inside = now.longest_end_tick !== undefined && now.longest_end_tick - now.longest >= baseline.tick;
+    return [[by, gapRow(count, ticks, inside ? now.longest : null)]];
+  }));
+  const open = b.state === "idle" ? final.tick - Math.max(b.state_since, baseline.tick) : 0;
+  if (open > 0) gaps.open = gapRow(1, open, open);
+  return { window_ticks: window, busy_share: round(busy / window), states, gaps };
 }
 
 // A manifest keeps the role profiles its run recorded, so runs from earlier
@@ -81,6 +168,7 @@ const manifestSchema = z.object({
   started_at: z.string(), start_tick: z.number().int().nonnegative(),
   ended_at: z.string().nullable(), end_tick: z.number().int().nonnegative().nullable(),
   benchmark: benchmarkEvidenceSchema.optional(),
+  telemetry: runTelemetrySchema.optional(),
 }).strict();
 export type RunManifest = z.infer<typeof manifestSchema>;
 
@@ -129,7 +217,7 @@ export function runRoot(root = path.join(dataDir(), "runs")): string { return ro
 function runPaths(root: string, id: string) {
   const dir = path.join(root, `run-${encodeURIComponent(id)}`);
   return { dir, manifest: path.join(dir, "manifest.json"), samples: path.join(dir, "samples.jsonl"), events: path.join(dir, "events.jsonl"),
-    thoughts: path.join(dir, "thoughts.jsonl") };
+    thoughts: path.join(dir, "thoughts.jsonl"), toolOutcomes: path.join(dir, "tool_outcomes.jsonl") };
 }
 function writeManifest(file: string, manifest: RunManifest): void {
   atomicWriteFile(file, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
@@ -170,6 +258,68 @@ export function interruptRun(root: string, id: string, reason: string, at = new 
   writeManifest(files.manifest, { ...manifest, status: "interrupted",
     ended_at: manifest.ended_at ?? at.toISOString(), end_tick: manifest.end_tick });
 }
+
+/** Run attestation for the recorder: each new deviation in the baseline or a
+ *  sample marks the run assisted (markRunAssisted), once per fact; returns
+ *  the new ones. A failed mark is reported, never thrown into the recorder. */
+export function createAttestor(root: string, id: string) {
+  const seen = new Set<string>();
+  return (snapshot: RunSnapshot): string[] => {
+    const fresh = attestationIssues(snapshot.attestation).filter((issue) => !seen.has(issue));
+    for (const issue of fresh) {
+      seen.add(issue);
+      try { markRunAssisted(root, id, `attestation: ${issue}`); }
+      catch (error) { console.error(`ATTESTATION RECORD ERROR ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    return fresh;
+  };
+}
+
+/** tool_outcomes.jsonl stops growing at this size. */
+export const TOOL_OUTCOMES_MAX_BYTES = 16 * 1024 * 1024;
+const TOOL_OUTCOMES_PENDING_MAX = 256;
+export interface ToolOutcome { at: string; role: string; tool: string; status: string; code: string | null; duration_ms: number }
+/** A tool result's status and code: the structured status, else ok or failed by isError. */
+export function toolOutcome(value: unknown): { status: string; code: string | null } {
+  const result = value as { isError?: unknown; structuredContent?: Record<string, unknown> } | null | undefined;
+  const structured = result?.structuredContent;
+  return { status: typeof structured?.status === "string" ? structured.status : result?.isError === true ? "failed" : "ok",
+    code: typeof structured?.code === "string" ? structured.code : null };
+}
+/** Appends one row per MCP tool call to tool_outcomes.jsonl beside the
+ *  samples of the run the current run directory's ledger names, while the
+ *  recorder's run directory exists (nothing is created). Writes are
+ *  asynchronous and in order; a full queue, a missing run, an oversized file
+ *  or a failed write drops the row, never the call. */
+export function createToolOutcomeLog(runDir: RunDir, role: string, root: () => string = () => runRoot()) {
+  const pending: Array<{ file: string; row: string }> = [];
+  let draining: Promise<void> | null = null;
+  // appendFile creates the file, never the run directory: no run, no row.
+  const drain = () => draining ??= (async () => {
+    try {
+      while (pending.length) {
+        const next = pending.shift()!;
+        try {
+          const size = await fs.promises.stat(next.file).then((stat) => stat.size, () => 0);
+          if (size + Buffer.byteLength(next.row) > TOOL_OUTCOMES_MAX_BYTES) continue;
+          await fs.promises.appendFile(next.file, next.row, { encoding: "utf8", mode: 0o600 });
+        } catch { /* evidence only */ }
+      }
+    } finally { draining = null; }
+  })();
+  return {
+    record(tool: string, durationMs: number, value: unknown, at = new Date()): Promise<void> {
+      try {
+        const dir = runDir(), id = dir ? readLedger(dir)?.run.id : undefined;
+        if (!id || pending.length >= TOOL_OUTCOMES_PENDING_MAX) return Promise.resolve();
+        const row: ToolOutcome = { at: at.toISOString(), role, tool, ...toolOutcome(value), duration_ms: Math.round(durationMs) };
+        pending.push({ file: runPaths(root(), id).toolOutcomes, row: `${JSON.stringify(row)}\n` });
+        return drain();
+      } catch { return Promise.resolve(); }
+    },
+  };
+}
+export type ToolOutcomeLog = ReturnType<typeof createToolOutcomeLog>;
 
 /** Resolves a role's rollout file from <run_dir>/rollouts.json. Only an absent
  *  pointer file falls back to the launch flag; any other read or parse error
@@ -221,7 +371,8 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     if (control) await control.call("benchmark_control", { action: "prepare", run_id: ledger.run.id,
       duration_seconds: duration, label: `${options.variant}: ${profiles.map(p => `${p.id} ${p.model}/${p.reasoning}${p.fast ? "/Fast" : "/normal"}`).join("; ")}`,
       summary: options.incumbentSummary });
-    const baseline = parseRunSnapshot(await bridge.call("run_snapshot"));
+    // The baseline marks the body-time window: idle before GO is not a gap of this run.
+    const baseline = parseRunSnapshot(await bridge.call("run_snapshot", { window: true }));
     const startedAt = new Date(), startedMono = performance.now();
     let manifest: RunManifest = { schema_version: 1, run: ledger.run, variant: options.variant, change: options.change,
       kind: options.kind, status: "recording", assisted: false, app_version: companionVersion(),
@@ -231,6 +382,13 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     appendJson(files.samples, { status: "ok", kind: "baseline", scheduled_elapsed_ms: 0, actual_elapsed_ms: 0,
       capture_started_at: startedAt.toISOString(), capture_completed_at: startedAt.toISOString(), capture_latency_ms: 0,
       tick: baseline.tick, tick_delta: 0, snapshot: baseline, delta: snapshotDelta(baseline, baseline) });
+    const attestor = createAttestor(root, ledger.run.id);
+    const attest = (snapshot: RunSnapshot) => {
+      const issues = attestor(snapshot);
+      if (issues.length) manifest.assisted = true;
+      for (const issue of issues) console.log(`ASSISTED attestation: ${issue}`);
+    };
+    attest(baseline);
     const stopped = new Promise<void>(resolve => { finishSignal = resolve; if (finishing) resolve(); });
     let freezeError: unknown;
     const freeze = () => {
@@ -247,7 +405,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
             start_tick: baseline.tick,
             frozen_tick: result.frozen_tick, reason: result.freeze_reason, metrics: result.metrics });
           const live = readManifest(root, ledger.run.id);
-          manifest.assisted = live.assisted || result.assisted === true;
+          manifest.assisted = manifest.assisted || live.assisted || result.assisted === true;
           // A terminal timestamp closes ledger updates before collecting heavy reads.
           manifest.ended_at = completed.toISOString(); manifest.end_tick = result.frozen_tick;
           writeManifest(files.manifest, manifest);
@@ -266,7 +424,9 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     const sources = profiles.map(p => ({ role: p.id as ThoughtRole,
       file: rolloutResolver(pointer, p.id, p.id === "pilot" ? options.pilotRollout : p.id === "strategist" ? options.strategistRollout : undefined) }));
     // The game shows only the ledger writer's thinking (the strategist; the pilot in a solo trial).
+    const splits = new Map(profiles.map(p => [p.id as ThoughtRole, createTimeSplit()]));
     feed = createThoughtFeed({ sources, out: files.thoughts, say: (role, text) => bridge.call("say", { role, text }),
+      onLine: (role, line) => splits.get(role)?.line(line),
       shown: role => profiles.some(p => p.id === role && p.ledger_writer),
       now: { read: () => {
         try { return operationsLedgerSchema.parse(JSON.parse(fs.readFileSync(options.ledger, "utf8"))).task_list.NOW.objective; }
@@ -293,6 +453,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
         nextCheckpoint++;
         chain = chain.then(async () => {
           const sample = await capture("checkpoint", deadline); appendJson(files.samples, sample);
+          if (sample.status === "ok") attest(sample.snapshot);
           console.log(sample.status === "ok" ? `CHECKPOINT +${deadline / 60_000}m tick=${sample.tick}` : `CHECKPOINT ERROR ${sample.error}`);
         });
         if (!finishing) schedule();
@@ -306,6 +467,9 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     await chain;
     const final = await capture("final", control ? duration * 1000 : performance.now() - startedMono);
     appendJson(files.samples, final);
+    if (final.status === "ok") attest(final.snapshot);
+    manifest.telemetry = { roles: Object.fromEntries([...splits].map(([role, split]) => [role, split.summary()])),
+      body: final.status === "ok" ? bodySummary(baseline, final.snapshot) : null };
     // Preserve the ordinary 20-minute comparison checkpoint using frozen state.
     if (control && final.status === "ok") appendJson(files.samples, { ...final, kind: "checkpoint" });
     const live = readManifest(root, ledger.run.id);

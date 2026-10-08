@@ -141,6 +141,33 @@ each reasoning summary and assistant message, never tool calls or outputs, to
 shows them in an always-visible panel on the Codex screen under the current NOW
 objective, never in game chat. The feed is output only.
 
+Run telemetry, all beside the samples and never shown to the bots:
+
+- `tool_outcomes.jsonl`: one row per MCP tool call (`at`, `role`, `tool`,
+  `status`, `code`, `duration_ms`), appended asynchronously by the MCP layer
+  for the run its current run directory's ledger names, only while the
+  recorder's run directory exists, capped at 16 MiB; a dropped row never
+  delays or fails the call.
+- `manifest.json` `telemetry.roles`: each role's turn time split into model,
+  tool and compaction time, from the rollout event times the feed reads
+  (tool items' own spans, tool calls to their outputs, and compaction
+  items; model items such as reasoning and plans are model time).
+- `manifest.json` `telemetry.body`: the body's time by state between the
+  baseline and final samples (`pilot`, `package`, `upkeep`, `crafting`,
+  `hold`, `dead`, `idle`), the busy share, and idle gaps by the state that
+  ended them, from the mod's `tasks.body_time` counters in `run_snapshot`.
+  The baseline (`run_snapshot {window = true}`) marks the window, so idle
+  before `GO` is no gap of the run; idle still open at the final sample is
+  the gap `open`.
+
+Run attestation: every `run_snapshot` (the baseline and each sample) carries
+`attestation`: `game.speed`, the Codex player's `cheat_mode` and controllers,
+the active mods, and each force or character modifier that research does not
+explain. Speed other than 1, cheat mode not off, an editor or god controller,
+a mod outside base, elevated-rails, quality, space-age and agentic-companion,
+or a modifier above what research grants marks the run assisted through
+`markRunAssisted`, once per fact, with the fact as the reason.
+
 ## Timelapse
 
 The `timelapse` RPC (`scripts/timelapse.lua`) makes the Codex client save a

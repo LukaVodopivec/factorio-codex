@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Bridge, ModError } from "../src/bridge.js";
+import { registerMcpTools } from "../src/mcp/server.js";
 import type { RconClient } from "../src/rcon.js";
-import { checkpointDelay, compareRuns, createRunStore, markRunAssisted, readManifest, resourceVerdict,
-  parseRunSnapshot, rolloutResolver, sampleSchema, snapshotDelta, type RunManifest, type RunSample, type RunSnapshot } from "../src/runs/telemetry.js";
+import { attestationIssues, bodySummary, checkpointDelay, compareRuns, createAttestor, createRunStore, createToolOutcomeLog, markRunAssisted, readManifest, resourceVerdict,
+  parseRunSnapshot, rolloutResolver, sampleSchema, snapshotDelta, TOOL_OUTCOMES_MAX_BYTES, toolOutcome,
+  type RunAttestation, type RunManifest, type RunSample, type RunSnapshot } from "../src/runs/telemetry.js";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => fs.rmSync(root, { recursive: true, force: true })));
@@ -208,5 +210,169 @@ describe("five-minute run telemetry", () => {
     storedRun(store, manifest("run-b", "new"), checkpoint(snapshot(36100, 20), zero, 10));
     expect(compareRuns(store, "run-a", "run-b")).toMatchObject({ eligible: false, verdict: "ineligible",
       reasons: ["no common successful five-minute checkpoints"], checkpoints: [] });
+  });
+});
+
+describe("run attestation", () => {
+  const clean: RunAttestation = { game_speed: 1, cheat_mode: false, controller: "remote", physical_controller: "character",
+    mods: { base: "2.0.77", "elevated-rails": "2.0.77", quality: "2.0.77", "space-age": "2.0.77", "agentic-companion": "0.32.0" },
+    bonuses: [] };
+  it("finds nothing in an unassisted game and names every deviating fact", () => {
+    expect(attestationIssues(clean)).toEqual([]);
+    expect(attestationIssues({ ...clean, controller: "map" as string, physical_controller: "ghost" })).toEqual([]);
+    expect(attestationIssues({ game_speed: 4, cheat_mode: true, controller: "editor", physical_controller: "god",
+      mods: { ...clean.mods, "even-distribution": "2.0.1" },
+      bonuses: [{ scope: "force", name: "manual_crafting_speed_modifier", value: 2, from_research: 0 },
+        { scope: "force", name: "laboratory_speed_modifier", value: 0.5, from_research: 0.6 },
+        { scope: "character", name: "character_reach_distance_bonus", value: 5, from_research: 0 }] })).toEqual([
+      "game.speed is 4", "the Codex player's cheat_mode is true", "the Codex player's controller is editor",
+      "the Codex player's physical controller is god", "mod even-distribution 2.0.1 is active",
+      "force manual_crafting_speed_modifier is 2; research grants 0",
+      "character character_reach_distance_bonus is 5; research grants 0"]);
+  });
+
+  it("treats a missing attestation or unreadable fact as a deviation", () => {
+    expect(attestationIssues(undefined)).toEqual(["the snapshot carries no attestation"]);
+    expect(attestationIssues({ ...clean, game_speed: undefined, cheat_mode: undefined })).toEqual([
+      "game.speed is unreadable", "the Codex player's cheat_mode is unreadable"]);
+  });
+
+  it("marks the recorded run assisted once per deviating fact, with the reason", () => {
+    const store = root();
+    createRunStore(store, { ...manifest("run-x", "v"), status: "recording", ended_at: null, end_tick: null });
+    const attest = createAttestor(store, "run-x");
+    expect(attest({ ...snapshot(100, 0), attestation: clean })).toEqual([]);
+    expect(readManifest(store, "run-x").assisted).toBe(false);
+    expect(attest({ ...snapshot(200, 0), attestation: { ...clean, game_speed: 2 } })).toEqual(["game.speed is 2"]);
+    expect(attest({ ...snapshot(300, 0), attestation: { ...clean, game_speed: 2, cheat_mode: true } }))
+      .toEqual(["the Codex player's cheat_mode is true"]);
+    expect(readManifest(store, "run-x").assisted).toBe(true);
+    const events = fs.readFileSync(path.join(store, "run-run-x", "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(events.map((row) => [row.type, row.reason])).toEqual([["supervisor_intervention", "attestation: game.speed is 2"],
+      ["supervisor_intervention", "attestation: the Codex player's cheat_mode is true"]]);
+  });
+
+  it("parses the mod's attestation and body time, empty Lua tables included", () => {
+    const parsed = parseRunSnapshot({ ...snapshot(100, 1),
+      attestation: { game_speed: 1, cheat_mode: false, controller: "character", physical_controller: "character", mods: [], bonuses: {} },
+      body_time: { since_tick: 0, state: "idle", state_since: 0, ticks: [], gaps: [] } });
+    expect(parsed.attestation).toMatchObject({ mods: {}, bonuses: [] });
+    expect(parsed.body_time).toMatchObject({ ticks: {}, gaps: {} });
+    expect(() => parseRunSnapshot({ ...snapshot(100, 1), attestation: { ...clean, extra: 1 } })).toThrow();
+  });
+});
+
+describe("body time summary", () => {
+  type BodyTime = NonNullable<RunSnapshot["body_time"]>;
+  // The baseline at tick 600 marked the window unless a test says otherwise.
+  const timed = (tick: number, ticks: Record<string, number>, gaps: BodyTime["gaps"], extra: Partial<BodyTime> = {}): RunSnapshot =>
+    ({ ...snapshot(tick, 0), body_time: { since_tick: 0, window_tick: 600, state: "idle", state_since: tick, ticks, gaps, ...extra } });
+  it("reports busy share and idle gaps by what ended them between the baseline and the final sample", () => {
+    const baseline = timed(600, { idle: 500, pilot: 100 }, { pilot: { count: 1, ticks: 500, longest: 500, longest_end_tick: 500 } });
+    const final = timed(72_600, { idle: 18_500, pilot: 30_100, package: 18_000, upkeep: 3_000, crafting: 2_400, hold: 600 }, {
+      pilot: { count: 7, ticks: 9_500, longest: 6_000, longest_end_tick: 40_000 },
+      package: { count: 4, ticks: 8_400, longest: 3_000, longest_end_tick: 30_000 },
+      hold: { count: 1, ticks: 100, longest: 100, longest_end_tick: 500 } });
+    expect(bodySummary(baseline, final)).toEqual({ window_ticks: 72_000, busy_share: 0.742,
+      states: { crafting: { ticks: 2_400, share: 0.033 }, hold: { ticks: 600, share: 0.008 }, idle: { ticks: 18_000, share: 0.25 },
+        package: { ticks: 18_000, share: 0.25 }, pilot: { ticks: 30_000, share: 0.417 }, upkeep: { ticks: 3_000, share: 0.042 } },
+      gaps: { package: { count: 4, total_seconds: 140, mean_seconds: 35, longest_seconds: 50 },
+        pilot: { count: 6, total_seconds: 150, mean_seconds: 25, longest_seconds: 100 },
+        hold: { count: 1, total_seconds: 1.67, mean_seconds: 1.67, longest_seconds: null } } });
+  });
+  it("counts the gap open at the baseline from the baseline, and idle still open at the end as the gap open", () => {
+    // Idle since tick 100 (before GO) at the baseline; the mod counts that gap from the window mark when it closes.
+    const baseline = timed(600, { idle: 600 }, {}, { state_since: 100 });
+    const final = timed(7_800, { idle: 600 + 300 + 1_200 + 1_800, pilot: 3_900 }, {
+      pilot: { count: 2, ticks: 300 + 1_200, longest: 1_200, longest_end_tick: 3_000 } }, { state_since: 6_000 });
+    expect(bodySummary(baseline, final)).toEqual({ window_ticks: 7_200, busy_share: 0.542,
+      states: { idle: { ticks: 3_300, share: 0.458 }, pilot: { ticks: 3_900, share: 0.542 } },
+      gaps: { pilot: { count: 2, total_seconds: 25, mean_seconds: 12.5, longest_seconds: 20 },
+        open: { count: 1, total_seconds: 30, mean_seconds: 30, longest_seconds: 30 } } });
+    // A longest gap that began before the baseline is not the window's.
+    const straddled = timed(7_800, { idle: 3_300, pilot: 3_900 }, { pilot: { count: 1, ticks: 1_000, longest: 1_000, longest_end_tick: 900 } },
+      { state: "pilot", state_since: 6_000 });
+    expect(bodySummary(timed(600, {}, {}), straddled)?.gaps).toEqual({ pilot: { count: 1, total_seconds: 16.67,
+      mean_seconds: 16.67, longest_seconds: null } });
+    // Idle the whole window is one open gap.
+    expect(bodySummary(baseline, timed(1_200, { idle: 1_200 }, {}, { state_since: 100 }))?.gaps)
+      .toEqual({ open: { count: 1, total_seconds: 10, mean_seconds: 10, longest_seconds: 10 } });
+  });
+  it("is kept in the run summary beside each role's time split", () => {
+    const store = root(), body = bodySummary(timed(0, {}, {}, { window_tick: 0 }), timed(600, { idle: 300, pilot: 300 }, {}, { window_tick: 0 }));
+    const telemetry = { roles: { pilot: { turns: 3, turn_ms: 9_000, model_ms: 6_000, tool_ms: 2_000, compaction_ms: 1_000,
+      tool_calls: 4, compactions: 1 } }, body };
+    createRunStore(store, { ...manifest("run-t", "v"), telemetry });
+    expect(readManifest(store, "run-t").telemetry).toEqual(telemetry);
+    expect(body).toMatchObject({ busy_share: 0.5, gaps: {} });
+  });
+
+  it("has no summary without both counters from one save and the baseline's window", () => {
+    expect(bodySummary(snapshot(100, 0), timed(200, {}, {}))).toBeNull();
+    expect(bodySummary(timed(100, {}, {}), { ...timed(200, {}, {}), body_time: { ...timed(200, {}, {}).body_time, since_tick: 150 } })).toBeNull();
+    // Without the baseline's window mark the gap open at GO would count its time before GO.
+    expect(bodySummary(timed(600, {}, {}), timed(900, {}, {}, { window_tick: 300 }))).toBeNull();
+  });
+});
+
+describe("tool outcomes", () => {
+  function writeLedger(dir: string, id: string) {
+    const priority = { objective: "o", strategic_reason: "r", completion_condition: "c", essential_prerequisite: null };
+    fs.writeFileSync(path.join(dir, "operations.json"), JSON.stringify({ schema_version: 2,
+      run: { id, release_sha: "a".repeat(40), baseline_save_sha256: "b".repeat(64), save_identity: "s", created_at: "2026-10-04T00:00:00Z",
+        roles: { pilot: { model: "gpt-6-luna", reasoning: "low", fast: true }, strategist: { model: "gpt-6.1-sol", reasoning: "medium", fast: false } } },
+      revision: 1, source_tick: 10, phase: "start", bottleneck: "iron", latest_measured_capacity: [],
+      task_list: { NOW: priority, NEXT: priority, LATER: priority }, assumptions: [], build_packages: [] }));
+  }
+  const rows = (store: string, id: string) => fs.readFileSync(path.join(store, `run-${id}`, "tool_outcomes.jsonl"), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line));
+
+  it("states each result's status and code", () => {
+    expect(toolOutcome({ structuredContent: { status: "failed", code: "OUT_OF_REACH" }, isError: true })).toEqual({ status: "failed", code: "OUT_OF_REACH" });
+    expect(toolOutcome({ structuredContent: { tick: 3 } })).toEqual({ status: "ok", code: null });
+    expect(toolOutcome({ isError: true })).toEqual({ status: "failed", code: null });
+  });
+
+  it("appends one row per call beside the samples of the ledger's run, and only while that run directory exists", async () => {
+    const dir = root(), store = root();
+    writeLedger(dir, "run-7");
+    const log = createToolOutcomeLog(() => dir, "pilot", () => store);
+    await log.record("observe_local", 12.4, { structuredContent: { tick: 5 } });
+    expect(fs.existsSync(path.join(store, "run-run-7"))).toBe(false);
+    createRunStore(store, { ...manifest("run-7", "v"), status: "recording", ended_at: null, end_tick: null });
+    void log.record("queue_plan", 3, { structuredContent: { status: "queued" } }, new Date("2026-10-04T10:00:00Z"));
+    await log.record("run_plan", 1500.6, { structuredContent: { status: "failed", code: "STEP_STALLED" }, isError: true },
+      new Date("2026-10-04T10:00:01Z"));
+    expect(rows(store, "run-7")).toEqual([
+      { at: "2026-10-04T10:00:00.000Z", role: "pilot", tool: "queue_plan", status: "queued", code: null, duration_ms: 3 },
+      { at: "2026-10-04T10:00:01.000Z", role: "pilot", tool: "run_plan", status: "failed", code: "STEP_STALLED", duration_ms: 1501 }]);
+    // No run directory pointer, or a ledger without a run: nothing written, nothing thrown.
+    await createToolOutcomeLog(() => null, "pilot", () => store).record("x", 1, {});
+    await createToolOutcomeLog(() => { throw new Error("pointer unreadable"); }, "pilot", () => store).record("x", 1, {});
+    expect(rows(store, "run-7")).toHaveLength(2);
+  });
+
+  it("stops at the size cap", async () => {
+    const dir = root(), store = root();
+    writeLedger(dir, "run-8");
+    createRunStore(store, { ...manifest("run-8", "v"), status: "recording", ended_at: null, end_tick: null });
+    const file = path.join(store, "run-run-8", "tool_outcomes.jsonl");
+    fs.writeFileSync(file, "x".repeat(TOOL_OUTCOMES_MAX_BYTES - 10));
+    await createToolOutcomeLog(() => dir, "pilot", () => store).record("observe_local", 1, {});
+    expect(fs.statSync(file).size).toBe(TOOL_OUTCOMES_MAX_BYTES - 10);
+  });
+
+  it("is written by every registered MCP tool without changing its result", async () => {
+    const dir = root(), store = root();
+    writeLedger(dir, "run-9");
+    createRunStore(store, { ...manifest("run-9", "v"), status: "recording", ended_at: null, end_tick: null });
+    const handlers: Record<string, (args: unknown) => Promise<any>> = {};
+    const call = async (method: string) => { if (method === "factory_status") return { tick: 9, lines: [] }; throw new Error(`unexpected ${method}`); };
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler as never; } }, async () => ({ call } as unknown as Bridge),
+      () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } }) as never,
+      "read-only", () => dir, "strategist", () => store);
+    const value = await handlers.factory_status!({});
+    expect(value.structuredContent).toMatchObject({ tick: 9 });
+    await vi.waitFor(() => expect(rows(store, "run-9")[0]).toMatchObject({ role: "strategist", tool: "factory_status", status: "ok", code: null }));
   });
 });

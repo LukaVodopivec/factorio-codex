@@ -1,10 +1,11 @@
 -- Error hygiene for every result. A raised Lua error starts with its chunk
 -- location ("__agentic-companion__/scripts/actions/mine.lua:294: "): the
 -- mod's source, never part of a message, so plain() drops it wherever it
--- stands. Errors the dispatchers catch (an RPC handler, a step runner, an
--- event handler) are kept, plain, in a ring in storage.handler_errors
--- (state.init): the last RING_SIZE and the count since the save gained the
--- ring, which ping (connect_status) shows.
+-- stands. Errors the dispatchers catch (an RPC handler or a job: a fault,
+-- not a deliberate refusal; a step runner, an event handler) are kept,
+-- plain, in a ring in storage.handler_errors (state.init): the last
+-- RING_SIZE and the count since the save gained the ring, which ping
+-- (connect_status) shows.
 local M = {}
 
 M.RING_SIZE = 20
@@ -15,6 +16,34 @@ local MAX_MESSAGE = 300 -- characters kept per error in the ring
 -- would also eat a detail's own words in front of an embedded location.
 function M.plain(err)
   return (tostring(err):gsub("%S-%.lua:%d+:%s*", ""))
+end
+
+-- A result table's strings, plain, in place: a runner's outcome can carry an
+-- inner error deep down (build_plan's failures[i].why). Bounded: SCRUB_DEPTH
+-- levels of tables, and userdata (a LuaEntity) is never entered.
+local SCRUB_DEPTH = 4
+function M.scrub(value, depth)
+  if type(value) == "string" then return M.plain(value) end
+  depth = depth or SCRUB_DEPTH
+  if type(value) ~= "table" or depth <= 0 then return value end
+  for key, item in pairs(value) do
+    if type(item) == "string" then
+      if item:find(".lua:", 1, true) then value[key] = M.plain(item) end
+    elseif type(item) == "table" then
+      M.scrub(item, depth - 1)
+    end
+  end
+  return value
+end
+
+-- A refusal raised on purpose (error(msg, 0): no location of its own, or a
+-- message that leads with a code, such as JOBS_BUSY), not a fault: the
+-- request dispatchers (rpc, jobs) answer it without filling the ring.
+-- Returns that verdict and the plain message.
+function M.deliberate(err)
+  local text = tostring(err)
+  local message = M.plain(text)
+  return message == text or message:match("^[A-Z][A-Z0-9_]+[A-Z0-9]:") ~= nil, message
 end
 
 -- Keeps a caught error, where naming its handler (rpc:<method>,

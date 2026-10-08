@@ -307,6 +307,15 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     expect(schemas.can_place.safeParse({ placements: [{ ...placement, rotation: 4 }] }).success).toBe(false);
     expect(schemas.inspect_entity.safeParse({ positions: [{ x: 1.5, y: 2.5, z: 0 }] }).success).toBe(false);
     expect(schemas.build_plan.safeParse({ steps: [{ ...placement, item: "inserter" }] }).success).toBe(false);
+    // The shared position: find_placement's points and connect_entities' ends.
+    const search = { item: "inserter", preferred: { x: 1.5, y: 2.5 } };
+    expect(schemas.find_placement.safeParse(search).success).toBe(true);
+    expect(schemas.find_placement.safeParse({ ...search, preferred: { x: 1.5, y: 2.5, z: 0 } }).success).toBe(false);
+    expect(schemas.find_placement.safeParse({ ...search, output_target: { x: 1, y: 1, surface: "nauvis" } }).success).toBe(false);
+    const route = { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 } };
+    expect(schemas.connect_entities.safeParse(route).success).toBe(true);
+    expect(schemas.connect_entities.safeParse({ ...route, from: { x: 0.5, y: 0.5, z: 0 } }).success).toBe(false);
+    expect(schemas.connect_entities.safeParse({ ...route, to: { x: 4.5, y: 0.5, dx: 1 } }).success).toBe(false);
 
     const call = vi.fn(async () => ({ results: [] }));
     const bridge = vi.fn(async () => ({ call } as unknown as Bridge));

@@ -229,6 +229,16 @@ local function upkeep_readback(plan)
     omitted_targets = math.max(0, #plan.steps - stop), preempted = plan.preempted or nil,
     active = plan.current_task and { step = plan.current_step, context = supply.diagnostics(plan.current_task) } or nil }
 end
+-- A step result's code: its outcome's, else one its detail names (the
+-- recoveries below key on it), else nil.
+local function result_code(result)
+  local outcome = type(result.outcome) == "table" and result.outcome or nil
+  if outcome and type(outcome.code) == "string" then return outcome.code end
+  local detail = type(result.detail) == "string" and result.detail or ""
+  if detail:find("CODEX_BODY_OVERLAP", 1, true) then return "CODEX_BODY_OVERLAP" end
+  if detail:find("couldn't get within physical reach", 1, true) then return "TARGET_OUT_OF_REACH" end
+  return detail:match("^([A-Z][A-Z0-9_]+[A-Z0-9])")
+end
 local function log_plan(plan, detail)
   -- After a walk back the last outcome is the walk's: report what ended the
   -- plan early (a pre-emption has no outcome). A cancel during the walk is
@@ -238,10 +248,16 @@ local function log_plan(plan, detail)
     or not ending and plan.outcomes[#plan.outcomes] or nil
   local result = last and type(last.result) == "table" and last.result or nil
   local reason = last and last.error or detail
+  -- Every step completed and only the final observation raised: that, not
+  -- the last step, failed the plan.
+  local observe_failed = plan.status == "failed" and plan.observation_error ~= nil
+    and last ~= nil and last.status == "completed"
+  if observe_failed then reason = plan.observation_error end
   -- A failed or partial plan always names a code: STEP_FAILED_UNCLASSIFIED
   -- (STEP_PARTIAL_UNCLASSIFIED) when nothing classified its end; the summary
   -- names the step's action.
-  local code = result and type(result.code) == "string" and result.code
+  local code = observe_failed and "FINAL_OBSERVATION_FAILED"
+    or result and type(result.code) == "string" and result.code
     or last and type(last.code) == "string" and last.code
     or plan.preempted and (ending or not plan.ending) and "PREEMPTED"
     or type(reason) == "string" and reason:match("^([A-Z][A-Z0-9_]+[A-Z0-9])") or nil
@@ -249,6 +265,9 @@ local function log_plan(plan, detail)
   local summary
   if plan.status == "completed" then
     summary = string.format("completed %d/%d steps", plan.completed_steps, #plan.steps)
+  elseif observe_failed then
+    summary = string.format("failed after %d/%d steps: the final observation raised: %s", plan.completed_steps,
+      #plan.steps, tostring(reason):sub(1, 160))
   else
     local step = last and last.step or ending and ending.step or plan.current_step
     local action = last and last.action or plan.steps[step] and plan.steps[step].action
@@ -271,11 +290,12 @@ end
 -- keep_crafting: a surface change cancels plans but never hand-crafting.
 local function finish(task, status, detail, preserve_body, outcome, keep_crafting)
   if type(detail) == "string" then detail = errors.plain(detail) end
+  errors.scrub(outcome)
   -- A direct task that failed names a code, as a plan step does.
   if task.type ~= "plan" and (status == "failed" or status == "partial")
     and not (type(outcome) == "table" and type(outcome.code) == "string") then
     outcome = type(outcome) == "table" and outcome or { action = task.type }
-    outcome.code = errors.code(status, nil, detail)
+    outcome.code = result_code({ detail = detail, outcome = outcome }) or errors.code(status)
   end
   if status == "cancelled" and not keep_crafting and task_crafts(task) then cancel_crafting() end
   if storage.tasks.active and storage.tasks.active.id == task.id then storage.tasks.active = nil end
@@ -735,16 +755,6 @@ local function walk_back(plan, status, detail, outcome_index)
     step = outcome_index and plan.current_step or plan.completed_steps + 1, outcome_index = outcome_index }
   return true
 end
--- A step result's code: its outcome's, else one its detail names (the
--- recoveries below key on it), else nil.
-local function result_code(result)
-  local outcome = type(result.outcome) == "table" and result.outcome or nil
-  if outcome and type(outcome.code) == "string" then return outcome.code end
-  local detail = type(result.detail) == "string" and result.detail or ""
-  if detail:find("CODEX_BODY_OVERLAP", 1, true) then return "CODEX_BODY_OVERLAP" end
-  if detail:find("couldn't get within physical reach", 1, true) then return "TARGET_OUT_OF_REACH" end
-  return detail:match("^([A-Z][A-Z0-9_]+[A-Z0-9])")
-end
 local function finish_step(plan, result)
   local kind = plan.current_task and plan.current_task.type
   factory_activity.record(kind, result.outcome)
@@ -768,6 +778,7 @@ local function finish_step(plan, result)
   local status = result.status == "done" and "completed" or result.status
   local recovery = plan._recovery
   if type(result.detail) == "string" then result.detail = errors.plain(result.detail) end
+  errors.scrub(result.outcome)
   plan.outcomes[#plan.outcomes + 1] = {
     step = plan.current_step, action = step.action, status = status,
     -- Every failed or partial step names a code (errors.code).
@@ -1163,7 +1174,9 @@ local function tick_plan(plan)
     if plan.current_task then
       local note = step_cancelled(plan)
       if plan._recovery and plan._recovery.phase == "fixing" then plan._recovery.phase = "failed" end
-      finish_step(plan, { status = "failed", detail = detail, outcome = note })
+      -- The budget ended the plan: its code, not the cancelled step's note's.
+      finish_step(plan, { status = "failed", detail = detail,
+        outcome = { code = "PLAN_BUDGET_EXCEEDED", cancelled = note } })
     else finish(plan, "failed", detail) end
     return
   end

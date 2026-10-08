@@ -44,6 +44,13 @@ check(not printed:find(LOCATION) and printed:find("refusing to recover a player-
 local ring = storage.handler_errors
 check(ring and ring.count == 2 and ring.recent[1].where == "rpc:raises_located" and ring.recent[2].tick == 7
   and not ring.recent[1].error:find(LOCATION), "RPC handler errors are kept, plain, in the error ring")
+rpc.register("refuses_busy", function() error("JOBS_BUSY: 8 jobs are pending or unread") end)
+rpc.register("refuses_input", function() error("radius must be a number", 0) end)
+rpc.dispatch("refuses_busy", "")
+check(printed:find("JOBS_BUSY: 8 jobs", 1, true) and not printed:find(LOCATION), "a coded refusal reaches the app plain")
+rpc.dispatch("refuses_input", "")
+check(printed:find("radius must be a number", 1, true) and ring.count == 2,
+  "deliberate refusals (coded, or raised without a location) do not fill the error ring")
 
 for i = 1, errors.RING_SIZE + 5 do errors.record("event:test", "x.lua:" .. i .. ": error " .. i) end
 local summary = errors.summary()
@@ -73,20 +80,31 @@ local insert = runner(nil, function() return { status = "partial", detail = "ins
 local extract = runner(nil, function() return { status = "failed", detail = "the chest is empty",
   outcome = { code = "NOTHING_TO_TAKE" } } end)
 local done = runner(nil, function() return { status = "done", detail = "done" } end)
+-- An inner error deep in an outcome, as build_plan's failures[i].why holds.
+local INNER = "couldn't clear rock: __agentic-companion__/scripts/actions/build.lua:159: no room"
+local place = runner(nil, function() return { status = "failed", detail = "1 of 1 placements failed",
+  outcome = { failures = { { index = 1, why = INNER } } } } end)
+local build_plan = runner(nil, function() return { status = "failed",
+  detail = "step 1: couldn't get within physical reach of (3, 4)", outcome = { failures = { { index = 1, why = INNER } } } } end)
+-- rotate never finishes (a deliberate wait, so the watchdog leaves it to the
+-- plan budget); its cancel note has its own code.
+local rotate = runner(nil, function() return nil end)
+rotate.waiting = function() return true end
+rotate.cancelled = function() return { code = "MOVE_ROBOT_CANCELLED", detail = "the robot move was cancelled" } end
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"] = walk, mine
 package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = pickup, done
-package.loaded["scripts.actions.build"] = { place = done, rotate = done,
+package.loaded["scripts.actions.build"] = { place = place, rotate = rotate,
   set_recipe_action = { runner = done, make_task = function() return {} end } }
 package.loaded["scripts.actions.transfer"] = { insert = insert, extract = extract,
   flush_action = { runner = done, make_task = function() return {} end } }
-package.loaded["scripts.actions.build_plan"] = done
+package.loaded["scripts.actions.build_plan"] = build_plan
 package.loaded["scripts.inspect"] = { MAX_TARGETS = 64, inspect = function() return { entities = {} } end }
 storage.tasks = { next_id = 1, records = {}, queue = {}, active = nil }
 storage.activity_log = {}
 local tasks = require("scripts.tasks")
 
-local function run(steps)
-  local plan = tasks.queue_plan({ steps = steps })
+local function run(steps, observation_detail)
+  local plan = tasks.queue_plan({ steps = steps, observation_detail = observation_detail })
   for _ = 1, 3 do game.tick = game.tick + 1; tasks.on_tick() end
   return tasks.plan_status({ plan_id = plan.plan_id })
 end
@@ -146,6 +164,34 @@ check(storage.handler_errors.count == 3 and storage.handler_errors.recent[1].whe
   and storage.handler_errors.recent[2].where == "task:walk_to:tick"
   and storage.handler_errors.recent[3].where == "task:mine:start" and no_location(storage.handler_errors),
   "each runner error the dispatcher caught is in the ring; returned failures are not")
+
+local placed = run({ { action = "place_entity", name = "inserter", x = 1.5, y = 2.5 } })
+check(placed.outcomes[1].code == "STEP_FAILED_UNCLASSIFIED" and placed.outcomes[1].result.failures[1].why
+  == "couldn't clear rock: no room" and no_location(placed) and no_location(storage.activity_log),
+  "an inner error nested in a step's outcome reaches plan_status and the activity log plain")
+local built = tasks.enqueue({ task = { type = "build_plan" } })
+game.tick = game.tick + 1; tasks.on_tick()
+record = storage.tasks.records[built.task_id]
+check(record.outcome.failures[1].why == "couldn't clear rock: no room" and record.outcome.code == "TARGET_OUT_OF_REACH",
+  "a direct task's nested outcome is plain and its code is classified as a plan step's would be")
+
+local budget = tasks.queue_plan({ steps = { { action = "rotate_entity", x = 1, y = 1 } } })
+for _ = 1, 2 do game.tick = game.tick + 1; tasks.on_tick() end
+game.tick = game.tick + 600 * 60; tasks.on_tick()
+local over = tasks.plan_status({ plan_id = budget.plan_id })
+check(over.status == "failed" and over.outcomes[1].code == "PLAN_BUDGET_EXCEEDED"
+  and over.outcomes[1].result.cancelled.code == "MOVE_ROBOT_CANCELLED"
+  and storage.activity_log[#storage.activity_log].code == "PLAN_BUDGET_EXCEEDED",
+  "a plan out of budget reports PLAN_BUDGET_EXCEEDED, the cancelled step's note kept beside it")
+
+tasks.set_observer(function() error("the observer broke") end)
+local observed = run({ { action = "craft_items", recipe = "gear", crafts = 1 } }, "compact")
+tasks.set_observer(nil)
+entry = storage.activity_log[#storage.activity_log]
+check(observed.status == "failed" and observed.outcomes[1].status == "completed" and entry.code == "FINAL_OBSERVATION_FAILED"
+  and entry.summary == "failed after 1/1 steps: the final observation raised: the observer broke"
+  and storage.handler_errors.recent[#storage.handler_errors.recent].where == "task:plan:observe",
+  "a plan whose steps completed but whose final observation raised names that, not its last step")
 
 -- The dispatchers never hand a caught error on raw: every one goes through
 -- errors.plain or errors.record.

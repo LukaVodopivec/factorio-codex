@@ -56,7 +56,7 @@ local function check_platform(step, label, modes, named)
   end
 end
 
-local function plain(err) return (tostring(err):gsub("^.-:%d+:%s*", "")) end
+local plain = require("scripts.errors").plain
 
 local function point(value)
   return type(value) == "table" and type(value.x) == "number" and type(value.y) == "number"

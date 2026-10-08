@@ -27,6 +27,7 @@ M.MIN_WORK = 100
 M.MAX_JOBS = 8
 M.RESULT_TTL_TICKS = 5 * 60 * 60
 M.RAW_JSON = require("scripts.rpc").RAW_JSON
+local errors = require("scripts.errors")
 
 local kinds = {}
 
@@ -261,7 +262,9 @@ local function work(jobs, job, budget, encode)
   if ok then
     job.status, job.result = "done", result
   else
-    job.status, job.result, job.json, job.error = "failed", nil, nil, (tostring(result):gsub("^.-:%d+:%s*", ""))
+    local deliberate, message = errors.deliberate(result)
+    if not deliberate then message = errors.record("job:" .. tostring(job.kind), result) end
+    job.status, job.result, job.json, job.error = "failed", nil, nil, message
   end
   return true
 end

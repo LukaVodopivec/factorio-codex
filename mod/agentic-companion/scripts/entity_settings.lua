@@ -28,7 +28,7 @@ local CHESTS = { container = true, ["logistic-container"] = true }
 local MAX_FILTERS = 5
 
 local function fail(code, text) error(code .. ": " .. text, 0) end
-local function plain(err) return (tostring(err):gsub("^.-:%d+:%s*", "")) end
+local plain = require("scripts.errors").plain
 
 local function read(fn)
   local ok, value = pcall(fn)

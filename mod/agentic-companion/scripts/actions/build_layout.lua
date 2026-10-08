@@ -83,7 +83,7 @@ local MAX_TILE_ENTRIES, MAX_TILES = 400, 1000
 local MAX_TILE_ROWS = 16      -- tile failures listed in a result
 local EMPTY = 0               -- a tile_state: empty space (never a tile name)
 
-local function plain(err) return (tostring(err):gsub("^.-:%d+:%s*", "")) end
+local plain = require("scripts.errors").plain
 
 -- ------------------------------------------------------------ validation
 

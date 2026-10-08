@@ -92,13 +92,15 @@ local function run(method, params_json)
   end
   local allowed, admission_error = pcall(benchmark.assert_action, method)
   -- An error reaches the app without its Lua source location; a handler's
-  -- raised error is also kept in the error ring (errors.lua).
+  -- fault (not a deliberate refusal) is also kept in the error ring
+  -- (errors.lua).
   if not allowed then respond({ ok = false, error = errors.plain(admission_error) }); return end
   local ok, result = pcall(handler, params)
   if ok then
     respond({ ok = true, data = result or {} }, method == "get_chunk")
   else
-    respond({ ok = false, error = errors.record("rpc:" .. tostring(method), result) })
+    local deliberate, message = errors.deliberate(result)
+    respond({ ok = false, error = deliberate and message or errors.record("rpc:" .. tostring(method), result) })
   end
 end
 

@@ -117,7 +117,7 @@ local log_event
 -- tasks.log_event, set by control.lua (tasks requires more than research may).
 function M.set_logger(logger) log_event = logger end
 
-local function bare(err) return (tostring(err):gsub("^.-:%d+:%s*", "")) end
+local bare = require("scripts.errors").plain
 
 local function known(force, name)
   local ok, tech = pcall(function() return force.technologies[name] end)

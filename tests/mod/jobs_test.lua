@@ -71,6 +71,9 @@ for _ = 1, 5 do game.tick = game.tick + 1; jobs.on_tick() end
 local failed = jobs.get({ job_id = job.job_id })
 check(failed.job_status == "failed" and failed.error:match("broke at") and failed.result == nil,
   "an error inside a job fails that job and is reported once")
+check(failed.error == "broke at 700" and storage.handler_errors.count == 1
+  and storage.handler_errors.recent[1].where == "job:count" and storage.handler_errors.recent[1].error == "broke at 700",
+  "a job's fault reaches its reader without its Lua location and is kept in the error ring")
 local bad_ok, bad_err = pcall(jobs.start, "count", { bad = true })
 check(not bad_ok and bad_err == "count needs a number" and #storage.jobs.order == 0,
   "a start error is the RPC's error and leaves no job behind")
@@ -146,6 +149,7 @@ for _ = 1, 10 do game.tick = game.tick + 1; jobs.on_tick() end
 local finished, retired = jobs.get({ job_id = kept.job_id }), jobs.get({ job_id = orphan_id })
 check(finished.result.counted == 4000 and retired.job_status == "failed" and retired.error:match("not known to this mod version"),
   "a job kept across an upgrade finishes; one of a retired kind fails with its reason")
+check(storage.handler_errors.count == 1, "a job refused on purpose (its kind retired) is not counted as a fault")
 
 -- A result finished on a tick is encoded over the ticks after it, a field
 -- or a slice of a list at a time within the allowance, and the RPC sends

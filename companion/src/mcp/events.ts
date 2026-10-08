@@ -37,7 +37,7 @@ export interface EventState {
   upkeep_off_since_tick?: number;
   /** The newest space event's tick and the last few entries, oldest first. */
   last_space_event_tick?: number; space_events?: SpaceEvent[];
-  /** The asking role's watch firings after the watch_since it passed, oldest first. */
+  /** The asking role's watch firings at or after the watch_since it passed, oldest first. */
   watch_fired?: WatchFiring[];
 }
 /** A watch the role set (set_watch) crossing its threshold. */

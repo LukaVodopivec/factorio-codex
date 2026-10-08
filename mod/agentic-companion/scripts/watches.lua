@@ -4,9 +4,9 @@
 -- numbers the role chose; it never chooses a threshold or says what to do.
 --
 -- Conditions (one per watch, on one surface):
---   rate_below                    the force's production of an item or
---                                 fluid on the surface, per minute over the
---                                 last minute, is below per_min
+--   rate_below                    the force's production of an item (all
+--                                 qualities) or fluid on the surface, per
+--                                 minute over the last minute, is below per_min
 --   consumption_above_production  the force consumes more of it there than
 --                                 it makes (per minute over the last minute)
 --   line_below                    a factory line (autonomy.lua; by id, or
@@ -66,15 +66,30 @@ local function statistics(watch, cache)
 end
 
 -- Per minute over the last minute: "input" is what the force made, "output"
--- what it consumed; nil when it cannot be read.
+-- what it consumed; nil when it cannot be read. An item's flow is summed
+-- over every quality: a plain name counts normal only, and a quality is
+-- named inside name ({name, quality}; a separate quality field is ignored).
+-- A fluid has none.
 local function flow(watch, category, cache)
   local stats = statistics(watch, cache)
   if not stats then return nil end
-  local ok, value = pcall(function()
-    return stats.get_flow_count({ name = watch.item, category = category,
-      precision_index = defines.flow_precision_index.one_minute, count = false })
-  end)
-  return ok and type(value) == "number" and value or nil
+  local function read(quality)
+    local ok, value = pcall(function()
+      local name = quality and { name = watch.item, quality = quality } or watch.item
+      return stats.get_flow_count({ name = name, category = category,
+        precision_index = defines.flow_precision_index.one_minute, count = false })
+    end)
+    return ok and type(value) == "number" and value or nil
+  end
+  if watch.fluid then return read(nil) end
+  local ok, qualities = pcall(function() return prototypes.quality end)
+  if not (ok and qualities) then return read(nil) end
+  local total
+  for quality in pairs(qualities) do
+    local value = read(quality)
+    if value then total = (total or 0) + value end
+  end
+  return total
 end
 
 -- A line watch's rate; a line id that is gone (lines merged or regrouped)
@@ -255,14 +270,16 @@ function M.clear(params)
   return { cleared = cleared, watches = of_role(w, role), limit = M.MAX_PER_ROLE }
 end
 
--- For event_state: the role's firings after since_tick, oldest first, or nil.
+-- For event_state: the role's firings at or after since_tick, oldest first, or nil.
 function M.fired_since(role, since_tick)
   local w = storage.watches
   local ring = w and type(role) == "string" and w.fired[role]
   since_tick = tonumber(since_tick)
-  if not (ring and since_tick) or (w.fired_tick[role] or -1) <= since_tick then return nil end
+  -- RCON commands run before the tick's on_tick, so a read at tick T has
+  -- seen firings up to T - 1 only: a firing stamped since_tick is new.
+  if not (ring and since_tick) or (w.fired_tick[role] or -1) < since_tick then return nil end
   local rows = {}
-  for _, firing in ipairs(ring) do if firing.tick > since_tick then rows[#rows + 1] = firing end end
+  for _, firing in ipairs(ring) do if firing.tick >= since_tick then rows[#rows + 1] = firing end end
   return rows
 end
 

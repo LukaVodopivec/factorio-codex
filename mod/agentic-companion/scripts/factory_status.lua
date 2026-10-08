@@ -436,8 +436,9 @@ local function pilot_work(task)
   return task ~= nil and not (task.type == "plan" and task.source == "upkeep")
 end
 
--- params (optional): {role, watch_since}: that role's watch firings after
--- watch_since come along as watch_fired (watches.lua).
+-- params (optional): {role, watch_since}: that role's watch firings at or
+-- after watch_since (a read at that tick had not seen them) come along as
+-- watch_fired (watches.lua).
 function M.event_state(params)
   params = type(params) == "table" and params or {}
   local t = storage.tasks
@@ -475,7 +476,7 @@ function M.event_state(params)
     -- rocket_ready).
     last_space_event_tick = space_tick, space_events = space_events,
     -- {id, condition, surface, value, produced_per_min, tick} rows, oldest
-    -- first; absent when none fired after watch_since.
+    -- first; absent when none fired since watch_since.
     watch_fired = watches.fired_since(params.role, params.watch_since),
   }
 end

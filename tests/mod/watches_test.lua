@@ -31,7 +31,11 @@ local function statistics(kind)
   return mock.flow_statistics({ get_flow_count = function(args)
     flow_reads = flow_reads + 1
     assert(args.precision_index == defines.flow_precision_index.one_minute and args.count == false)
-    return rates[args.category][kind .. ":" .. args.name] or 0
+    -- As in 2.0.77: a plain name reads normal quality; another quality is
+    -- named inside name, and a separate quality field is ignored.
+    local name, quality = args.name, "normal"
+    if type(name) == "table" then name, quality = name.name, name.quality end
+    return rates[args.category][kind .. ":" .. name .. (quality ~= "normal" and "@" .. quality or "")] or 0
   end })
 end
 local surface
@@ -161,6 +165,12 @@ check(storage.watches.list[1].armed == true, "10% above the threshold for 60 s r
 rates.input["item:iron-plate"] = 10
 run(30)
 check(#watches.fired_since("pilot", before) == 2, "a re-armed watch fires again")
+-- A read at tick T runs before T's on_tick, so a firing stamped T is new to
+-- a later call that passes since_tick = T.
+local stamped = storage.watches.fired_tick.pilot
+local same = watches.fired_since("pilot", stamped)
+check(same and #same == 1 and same[1].tick == stamped and watches.fired_since("pilot", stamped + 1) == nil,
+  "a firing stamped exactly since_tick is returned, and not to a later since_tick")
 
 -- consumption_above_production, on a fluid.
 rates.input["fluid:water"], rates.output["fluid:water"] = 1200, 600
@@ -228,6 +238,18 @@ check(storage.watches.next_id == kept.next_id and #storage.watches.list == #kept
 storage.watches = nil
 state.init()
 check(storage.watches and #storage.watches.list == 0, "an older save gains an empty watch store")
+
+-- An item watch sums every quality (a plain name counts normal only); a
+-- fluid watch reads once, by plain name.
+prototypes.quality = { normal = {}, rare = {} }
+rates.input["item:copper-plate"], rates.input["item:copper-plate@rare"] = 50, 100
+prototypes.item["copper-plate"] = {}
+watches.clear({ role = "strategist", all = true })
+check(watches.set({ role = "strategist", condition = { kind = "rate_below", item = "copper-plate", per_min = 10 } }).watch.value == 150,
+  "rate_below counts the item at every quality")
+flow_reads = 0
+check(watches.set({ role = "strategist", condition = { kind = "rate_below", item = "water", per_min = 10 } }).watch.value == 1200
+  and flow_reads == 1, "a fluid watch reads its flow once")
 
 check(#mock.violations == 0, "no Factorio API member outside 2.0.77 was used")
 if failures > 0 then error(failures .. " watches test(s) failed") end

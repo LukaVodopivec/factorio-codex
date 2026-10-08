@@ -1122,10 +1122,14 @@ check(plate.walk_s_lower_bound == 0.5 and gear.walk_s_lower_bound == nil and sto
 local covered = supply.bill(body, { { name = "iron-gear-wheel", count = 1 } })[1]
 check(covered.short == 0 and covered.hand_craftable == nil and covered.needs_machine == nil,
   "a carried item is no short")
+autonomy.producing = function(item) if item == "iron-plate" then return 4, 1 end return 0, 0 end
 local viewpoint = supply.bill({ valid = true, force = own_force, position = { x = 0, y = 0 } },
   { { name = "iron-plate", count = 3 } })[1]
+autonomy.producing = line_rates
 check(viewpoint.carried == 0 and viewpoint.in_stock == 8 and viewpoint.short == 0 and viewpoint.walk_s_lower_bound == nil,
   "a body-less viewpoint carries nothing and walks nowhere")
+check(viewpoint.made_per_min == 4 and viewpoint.minutes_at_rate == nil,
+  "a covered row still gives its own lines' rate, with no minutes for a short it has not")
 check(supply.expected_minutes(9, 4) == 2.3 and supply.expected_minutes(1, 0) == nil,
   "expected_minutes rounds up to a tenth and needs a rate")
 os.exit(failures == 0 and 0 or 1)

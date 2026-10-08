@@ -555,7 +555,7 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(described.build_layout).toMatch(/materials is the bill: .*in_stock .*short .*made_per_min .*minutes_at_rate .*hand_craftable with hand_craft_s .*gatherable .*needs_machine .*walk_s_lower_bound/);
     expect(described.connect_entities).toMatch(/A dry run's materials bills the pieces/);
     expect(described.queue_plan).toMatch(/It returns needs: .*queued_demand .*short_by .*nothing is reserved or ordered/);
-    expect(described.factory_status).toMatch(/stock \(with queued_demand and short_by, see queue_plan\)/);
+    expect(described.factory_status).toMatch(/stock \(what queued plans take against it: the fifo block's queued_demand and short_by, see queue_plan\)/);
     expect(described.queue_plan).not.toMatch(/build_block/);
     expect(described.run_plan).not.toMatch(/build_block/);
   });

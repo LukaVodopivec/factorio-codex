@@ -637,7 +637,7 @@ local function tenth_down(x) return math.floor(x * 10) / 10 end
 -- cursor last read them) and own line rates; nothing is reserved. For each
 -- want {name, count} on the viewpoint's surface: carried, in_stock (own
 -- holders), short (count less what is carried, queued in hand-crafting and
--- in stock), made_per_min (own lines) and minutes_at_rate for the short at
+-- in stock), made_per_min (own lines, any row) and minutes_at_rate for the short at
 -- that rate. The short splits into hand_craftable (with hand_craft_s for
 -- those crafts and the intermediate ones, at the body's crafting speed,
 -- within MAX_DEPTH recipe levels) and the items it then still lacks:
@@ -675,11 +675,12 @@ function M.bill(c, wants)
   end
   for _, row in ipairs(rows) do
     local short = row.short
+    local ok, rate = pcall(autonomy.producing, row.item, surface)
+    if ok and type(rate) == "number" and rate > 0 then
+      row.made_per_min = rate
+      if short > 0 then row.minutes_at_rate = M.expected_minutes(short, rate) end
+    end
     if short > 0 then
-      local ok, rate = pcall(autonomy.producing, row.item, surface)
-      if ok and type(rate) == "number" and rate > 0 then
-        row.made_per_min, row.minutes_at_rate = rate, M.expected_minutes(short, rate)
-      end
       local seconds, lacks = 0, {}
       local function lack(kind, name, n)
         lacks[kind] = lacks[kind] or {}

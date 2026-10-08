@@ -399,10 +399,11 @@ local function make_step_task(step)
   return task
 end
 -- What a step takes from the body's own items, read from the step alone at
--- queue time ({use?, fetch?}, each {[item] = count}): use is what it places
--- (a layout's entities by hand, tiles, equipment), starts entities with,
--- inserts (once per listed target) or crafts from; fetch is what a get_items
--- step makes the body carry. Pieces a connection, blueprint or area step
+-- queue time ({use?, fetch?, made?}, each {[item] = count}): use is what it
+-- places (a layout's entities by hand, tiles, equipment), starts entities
+-- with, inserts (once per listed target) or crafts from; fetch is what a
+-- get_items step makes the body carry; made is what a craft step yields.
+-- Pieces a connection, blueprint or area step
 -- resolves later are not in it, nor what ghosts and platforms take (robots
 -- and the hub supply those).
 local function placing_item(name)
@@ -432,10 +433,18 @@ local function step_needs(step)
     local targets = type(step.targets) == "table" and #step.targets > 0 and #step.targets or 1
     add_map(step.per_target or step.items, targets)
   elseif action == "craft_items" then
-    local ok, ingredients = pcall(function() return prototypes.recipe[step.recipe].ingredients end)
-    for _, ingredient in ipairs(ok and ingredients or {}) do
-      if ingredient.type ~= "fluid" then add(ingredient.name, (tonumber(ingredient.amount) or 0) * (tonumber(step.crafts) or 0)) end
+    local crafts = tonumber(step.crafts) or 0
+    local ok, recipe = pcall(function() return prototypes.recipe[step.recipe] end)
+    recipe = ok and recipe or nil
+    for _, ingredient in ipairs(recipe and recipe.ingredients or {}) do
+      if ingredient.type ~= "fluid" then add(ingredient.name, (tonumber(ingredient.amount) or 0) * crafts) end
     end
+    local made = {}
+    for _, product in ipairs(recipe and recipe.products or {}) do
+      local per_craft = product.type == "item" and not made[product.name] and supply.output_per_craft(recipe, product.name)
+      if per_craft and crafts > 0 then made[product.name] = per_craft * crafts end
+    end
+    if next(made) then return { use = next(use) and use or nil, made = made } end
   elseif action == "build_layout" and step.mode ~= "ghosts" and step.platform == nil then
     for _, entity in ipairs(type(step.entities) == "table" and step.entities or {}) do
       if type(entity) == "table" then add(placing_item(entity.name), 1); add_map(entity.insert, 1) end
@@ -457,16 +466,21 @@ local function step_needs(step)
 end
 -- A plan's needs from step `from` on, added into `total`: per item the
 -- larger of what its get_items steps fetch and what its other steps use
--- (a fetch usually brings what a later step uses).
+-- beyond what its craft steps make (a fetch usually brings what a later step
+-- uses; a crafted item is the plan's own, so a later step using it needs only
+-- the craft's ingredients).
 local function add_needs(plan, from, total)
-  local fetch, use = {}, {}
+  local fetch, use, made = {}, {}, {}
   for i = math.max(1, from), #plan.steps do
     local needs = type(plan.steps[i]) == "table" and plan.steps[i]._needs
-    for kind, into in pairs({ fetch = fetch, use = use }) do
+    for kind, into in pairs({ fetch = fetch, use = use, made = made }) do
       for name, n in pairs(needs and needs[kind] or {}) do into[name] = (into[name] or 0) + n end
     end
   end
-  for name, n in pairs(use) do total[name] = (total[name] or 0) + math.max(n, fetch[name] or 0) end
+  for name, n in pairs(use) do
+    local need = math.max(n - (made[name] or 0), fetch[name] or 0)
+    if need > 0 then total[name] = (total[name] or 0) + need end
+  end
   for name, n in pairs(fetch) do
     if not use[name] then total[name] = (total[name] or 0) + n end
   end

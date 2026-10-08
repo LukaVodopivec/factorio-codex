@@ -504,6 +504,11 @@ do
   check(bill["transport-belt"] and bill["transport-belt"].count == 2 and bill["transport-belt"].in_stock == 0
     and bill["transport-belt"].short == 2 - bill["transport-belt"].carried,
     "a dry run's materials rows are the bill (supply.bill): count, carried, in_stock and short")
+  local fuelled = dry({ anchor = { x = 900, y = 920 }, entities = { { name = "stone-furnace", dx = 0, dy = 0, insert = { coal = 5 } } } })
+  local started = {}
+  for _, row in ipairs(fuelled.materials or {}) do started[row.item] = row end
+  check(started.coal and started.coal.count == 5 and started["stone-furnace"].count == 1,
+    "a dry run's bill counts what an entity starts with (coal for a furnace) beside the entity")
   check(south.ok and unfed and unfed.picks_from == "stone-furnace" and unfed.drops_into == "wooden-chest",
     "turning the inserter round swaps its pickup and drop targets in the dry run")
   local belt_end = north.belt_ends and north.belt_ends[1]

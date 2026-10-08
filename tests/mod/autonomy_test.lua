@@ -370,8 +370,7 @@ local research_stub = { research_trigger = function(tech) return tech == trigger
 package.loaded["scripts.research"] = research_stub
 force.current_research, force.research_progress, force.research_queue = { name = "automation" }, 0.25, { { name = "automation" } }
 local active_plan = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "walk_to" } }, source = "package:p1" }
-local queued_demand_rows
-package.loaded["scripts.tasks"] = { queue_length = function() return 1 end, queued_demand = function() return queued_demand_rows end,
+package.loaded["scripts.tasks"] = { queue_length = function() return 1 end,
   active_summary = function() return { id = 4, type = "plan", current_step = 2, total_steps = 2, action = "walk_to", source = "package:p1" } end }
 body.get_main_inventory = function() return { get_contents = function() return { { name = "coal", count = 5 }, { name = "iron-plate", count = 9 } } end } end
 body.crafting_queue_size = 0
@@ -639,9 +638,6 @@ body.get_main_inventory = function() return { get_contents = function()
 end } end
 storage.tasks.active = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "build_layout" } },
   source = "package:" .. long(1) }
--- Queued plans take five long-named items beyond their caps, all short.
-queued_demand_rows = { queued_demand = {}, short_by = {}, omitted_queued_demand = 35, omitted_short_by = 35 }
-for i = 1, 5 do queued_demand_rows.queued_demand[long(i)], queued_demand_rows.short_by[long(i)] = 99999, 99999 end
 local full = factory_status.factory_status({})
 json_size = size(full)
 local starved_line
@@ -650,8 +646,7 @@ local max_id = 0
 for _, line in ipairs(autonomy.lines()) do if line.id > max_id then max_id = line.id end end
 check(full.omitted_lines and full.omitted_lines > 0 and full.omitted_problems and full.omitted_problems > 0
   and full.omitted_stock and full.omitted_power and full.omitted_patches and full.research.omitted_available
-  and full.body.inventory_omitted and full.omitted_queued_demand and full.omitted_short_by,
-  "the worst-case read fills every section past its cap")
+  and full.body.inventory_omitted, "the worst-case read fills every section past its cap")
 check(starved_line and starved_line.id == max_id and full.lines[#full.lines].state ~= "running" or false,
   "lines needing attention come first, so a starved line with the highest id survives the cap")
 local wide_feeds, in_line = 0, 0

@@ -49,8 +49,6 @@ local OPT_IN = { logistics = true }
 -- sources, accumulators and cover; omitted_power counts the other networks
 -- and map_summary include power lists them all).
 local MAX_LINES, MAX_PROBLEMS, MAX_POWER, MAX_STOCK_ITEMS = 10, 6, 1, 6
--- Queued-demand and short_by items shown beside the stock (largest first).
-local MAX_QUEUED_DEMAND = 5
 local MAX_PATCHES, MAX_AVAILABLE, MAX_INVENTORY = 4, 6, 8
 -- Other factory surfaces summed up, and the worst problems each names.
 local MAX_ELSEWHERE, MAX_ELSEWHERE_PROBLEMS = 8, 3
@@ -404,11 +402,6 @@ function M.factory_status(params)
     if want.stock then
       local rows, omitted = stock_section(index)
       result.stock, result.omitted_stock = rows, omitted > 0 and omitted or nil
-      -- What the queued plans take against that stock (tasks.queued_demand):
-      -- totals only, on the body's surface, absent with nothing queued.
-      local demand = target.here and tasks.queued_demand(MAX_QUEUED_DEMAND) or {}
-      result.queued_demand, result.omitted_queued_demand = demand.queued_demand, demand.omitted_queued_demand
-      result.short_by, result.omitted_short_by = demand.short_by, demand.omitted_short_by
     end
   end
   if want.research then result.research = research_section(target.force) end

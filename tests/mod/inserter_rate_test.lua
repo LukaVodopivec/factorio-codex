@@ -28,12 +28,13 @@ local force = { inserter_stack_size_bonus = 0, bulk_inserter_capacity_bonus = 0 
 
 -- Half a turn is 35.7 ticks for the basic inserter: a leg takes 35, a swing
 -- 70, 0.86 items a second; a fast inserter's 12.5 make 24 ticks a swing, 2.5
--- a second (2.0.77 measured chest to chest: 0.865 and 2.496).
+-- a second; a long-handed one's exactly 25 make 50, 1.2 a second (2.0.77
+-- measured chest to chest: 0.8585, 2.4996 and 1.1986).
 check(rate.max_items_per_second(basic, force) == 0.86, "an inserter moves at most 0.86 items a second")
 check(rate.max_items_per_second(burner, force) == 0.79, "a burner inserter at most 0.79")
-check(rate.max_items_per_second(long, force) == 1.25, "a long-handed inserter at most 1.25")
+check(rate.max_items_per_second(long, force) == 1.2, "a long-handed inserter at most 1.2")
 check(rate.max_items_per_second(fast, force) == 2.5, "a fast inserter at most 2.5")
-check(rate.max_items_per_second(fast, force, "legendary") == 7.5, "quality speeds the swing")
+check(rate.max_items_per_second(fast, force, "legendary") == 6, "quality speeds the swing (exactly 5 ticks a leg)")
 
 -- Hand size: the force's inserter bonus for ordinary inserters, its bulk
 -- capacity bonus for bulk ones, plus the prototype's own stack bonus.
@@ -54,6 +55,6 @@ check(rate.max_items_per_second(stretched, { inserter_stack_size_bonus = 0 }) ==
 check(rate.max_items_per_second({ name = "assembling-machine-1" }, force) == nil, "a non-inserter has no rate")
 
 local placed = { prototype = fast, force = force, quality = { name = "legendary" }, inserter_stack_size_override = 0 }
-check(rate.of_entity(placed) == 15, "a placed inserter uses its quality and force")
+check(rate.of_entity(placed) == 12, "a placed inserter uses its quality and force")
 
 os.exit(failures == 0 and 0 or 1)

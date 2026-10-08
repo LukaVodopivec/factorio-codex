@@ -1017,6 +1017,18 @@ local refuel = tasks.queue_plan({ steps = { { action = "get_items", item = "coal
   { action = "insert_items", x = 1, y = 1, items = { coal = 3 } } } })
 check(refuel.needs.coal == 5, "a fetch and a later use of the same item count once, the larger")
 check(tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } } }).needs == nil, "a plan that takes nothing has no needs")
+-- A plan that crafts what it places needs only the craft's ingredients; what
+-- it places beyond that still counts.
+prototypes.item.stone = {}
+prototypes.recipe["stone-furnace"] = { products = { { type = "item", name = "stone-furnace", amount = 1 } },
+  ingredients = { { type = "item", name = "stone", amount = 5 } } }
+local furnaces = {}
+for i = 1, 5 do furnaces[i] = { name = "stone-furnace", dx = 2 * i, dy = 0 } end
+local crafted = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "stone-furnace", crafts = 4 },
+  { action = "build_layout", anchor = { x = 0, y = 0 }, entities = furnaces } } }).needs
+check(crafted.stone == 20 and crafted["stone-furnace"] == 1,
+  "crafted items count against the plan's own use: 5 furnaces placed, 4 crafted, 1 needed")
+tasks.cancel({ origin = "test/plans", plan_id = storage.tasks.queue[#storage.tasks.queue].id })
 local demand = tasks.queued_demand(10)
 check(demand.queued_demand.coal == 23 and demand.queued_demand["stone-furnace"] == 3 and demand.short_by.coal == 3
   and demand.short_by["stone-furnace"] == 3 and demand.short_by["iron-gear-wheel"] == 10 and demand.omitted_short_by == nil,

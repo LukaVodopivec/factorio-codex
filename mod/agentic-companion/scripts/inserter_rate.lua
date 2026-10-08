@@ -8,11 +8,11 @@
 -- that is full.
 -- Adapted from RateCalculator by raiguard (MIT License): scripts/gui-util.lua
 -- calc_inserter_cycles_per_second and the inserter hand size in get_divisor.
--- Unlike its rounding (each leg up to whole ticks), 2.0.77 hands over a leg
--- earlier: chest to chest a fast inserter swings in 24 ticks, not 26, and an
--- inserter in about 70, not 72 (measured on a live server), so each leg here
--- is one tick less than the rounded-up count; a stack inserter's hand is 1 +
--- 4 + the bulk bonus there, as below.
+-- Unlike its rounding (each leg up to whole ticks), 2.0.77 counts a leg in
+-- whole ticks rounded down: chest to chest, measured on a live server, a
+-- burner inserter swings in 76 ticks, an inserter in 70, a long-handed one
+-- in 50 (half a turn is exactly 25 ticks) and a fast, bulk or stack one in
+-- 24; a stack inserter's hand is 1 + 4 + the bulk bonus there, as below.
 local M = {}
 
 local function vector(v)
@@ -38,9 +38,9 @@ function M.swings_per_second(proto, quality)
   if pickup_length == 0 or drop_length == 0 then return nil end
   -- Rounding can put the cosine a hair outside acos's domain.
   local cosine = math.max(-1, math.min(1, (px * dx + py * dy) / (pickup_length * drop_length)))
-  -- Rotation speed is in full turns a tick; a leg ends a tick before the
-  -- rounded-up count (at least one tick).
-  local function leg(x) return math.max(1, math.ceil(x) - 1) end
+  -- Rotation speed is in full turns a tick; a leg takes its whole ticks
+  -- (at least one), with a hair of slack for float error in exact counts.
+  local function leg(x) return math.max(1, math.floor(x + 1e-9)) end
   local ticks = 2 * leg(math.acos(cosine) / (2 * math.pi) / rotation)
   ticks = math.max(ticks, 2 * leg(math.abs(pickup_length - drop_length) / extension))
   if ticks <= 0 then return nil end

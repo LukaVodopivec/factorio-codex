@@ -11,9 +11,11 @@
 -- reports only its segment's ends), so the walk follows belt_neighbours and
 -- underground pairs (neighbours) and maps lanes as the game moves items
 -- (checked on 2.0.77): straight, curved, splitter and underground joins keep
--- left on left and right on right; a belt joining from the side puts both
--- its lanes onto the receiver's lane on that side (onto an underground belt
--- too, where the hood may hold back one of the feeder's lanes).
+-- left on left and right on right; a belt, splitter or loader joining from
+-- the side puts both its lanes onto the receiver's lane on that side. Onto
+-- an underground belt only the feeder lane over the open half passes (the
+-- back half of an entrance, the front half of an exit); the hood holds the
+-- other lane back.
 --
 --   lanes(entity)                   {left = {item = count}, right = ...}, mix
 --   start(entity, direction, c, cap) a trace of what feeds ("up") or is fed
@@ -80,33 +82,52 @@ local function line_count(e)
   return read(e.get_max_transport_line_index) or 2
 end
 
--- What one lane ("left" or "right") of a belt-like entity holds.
-local function lane_contents(e, lane, into)
+-- What one lane ("left" or "right") of a belt-like entity holds; `per_line`
+-- (optional) gets each line's own contents by line index.
+local function lane_contents(e, lane, into, per_line)
   into = into or {}
   for i = 1, line_count(e) do
     if lane_of(i) == lane then
       local line = read(function() return e.get_transport_line(i) end)
-      if line then add_contents(line, into) end
+      if line then
+        if per_line then
+          per_line[i] = {}
+          add_contents(line, per_line[i])
+          for k, count in pairs(per_line[i]) do into[k] = (into[k] or 0) + count end
+        else
+          add_contents(line, into)
+        end
+      end
     end
   end
   return into
 end
 
+local function count_keys(t)
+  local n = 0
+  for _ in pairs(t) do n = n + 1 end
+  return n
+end
+
 -- What each lane of a belt-like entity holds, and how they mix:
 -- empty; pure (one item kind on the belt); separated (each lane one kind,
--- not the same); mixed (a lane holds more than one kind).
+-- not the same); mixed (a lane holds more than one kind). A splitter's left
+-- and right sum the lanes of both its belts, inputs and outputs; its mix
+-- judges each of those lanes (each transport line) on its own.
 function M.lanes(e)
   if not M.BELT_TYPES[e.type] then return nil end
-  local lanes = { left = lane_contents(e, "left"), right = lane_contents(e, "right") }
-  local kinds, per_lane = {}, {}
-  for name, lane in pairs(lanes) do
-    per_lane[name] = 0
-    for key in pairs(lane) do per_lane[name] = per_lane[name] + 1; kinds[key] = true end
+  local per_line = {}
+  local lanes = { left = lane_contents(e, "left", nil, per_line), right = lane_contents(e, "right", nil, per_line) }
+  local kinds, mixed = {}, false
+  for _, lane in pairs(lanes) do
+    for key in pairs(lane) do kinds[key] = true end
+    if not SPLITTERS[e.type] and count_keys(lane) > 1 then mixed = true end
   end
-  local total = 0
-  for _ in pairs(kinds) do total = total + 1 end
-  local mix = total == 0 and "empty" or (per_lane.left > 1 or per_lane.right > 1) and "mixed"
-    or total == 1 and "pure" or "separated"
+  if SPLITTERS[e.type] then
+    for _, line in pairs(per_line) do if count_keys(line) > 1 then mixed = true end end
+  end
+  local total = count_keys(kinds)
+  local mix = total == 0 and "empty" or mixed and "mixed" or total == 1 and "pure" or "separated"
   return lanes, mix
 end
 
@@ -114,15 +135,16 @@ end
 
 local DIRECTION = { [0] = { 0, -1 }, [4] = { 1, 0 }, [8] = { 0, 1 }, [12] = { -1, 0 } }
 
--- The side of a belt a point lies on, along the belt's direction (nil when
--- it is in line with it).
-local function lateral(belt, point)
-  local d = DIRECTION[belt.direction]
+-- The side of a line through `origin` along `direction` a point lies on
+-- (nil when it is in line with it).
+local function side(direction, origin, point)
+  local d = DIRECTION[direction]
   if not d then return nil end
-  local s = (point.x - belt.position.x) * d[2] - (point.y - belt.position.y) * d[1]
+  local s = (point.x - origin.x) * d[2] - (point.y - origin.y) * d[1]
   if s > 0.1 then return "left" elseif s < -0.1 then return "right" end
   return nil
 end
+local function lateral(belt, point) return side(belt.direction, belt.position, point) end
 
 local function curved(belt)
   return belt.type == "transport-belt" and read(function() return belt.belt_shape end) ~= "straight"
@@ -136,14 +158,24 @@ local function drop_lane(belt, point)
 end
 
 -- How a feeder's lanes land on a receiver it feeds: "straight" (left to
--- left, right to right) or the receiver's lane both side-load onto.
+-- left, right to right) or the receiver's lane a side-load lands on, then,
+-- onto an underground belt, the one feeder lane that passes its hood (nil:
+-- both lanes land). Measured from the tile the feeder enters by, so a
+-- two-tile splitter or loader feeds as its touching half.
 local function join(feeder, receiver)
-  if SPLITTERS[feeder.type] or SPLITTERS[receiver.type] or LOADERS[feeder.type] or LOADERS[receiver.type]
-    or feeder.type == "underground-belt" and receiver.type == "underground-belt"
-    or feeder.direction == receiver.direction or curved(receiver) then
+  if feeder.direction == receiver.direction or SPLITTERS[receiver.type] or LOADERS[receiver.type]
+    or curved(receiver) then
     return "straight"
   end
-  return lateral(receiver, feeder.position) or "straight"
+  local f = DIRECTION[feeder.direction]
+  if not f then return "straight" end
+  local p = receiver.position
+  local onto = lateral(receiver, { x = p.x - f[1], y = p.y - f[2] })
+  if not onto then return "straight" end
+  if receiver.type ~= "underground-belt" then return onto end
+  local d = DIRECTION[receiver.direction]
+  local half = read(function() return receiver.belt_to_ground_type end) == "input" and -0.25 or 0.25
+  return onto, side(feeder.direction, p, { x = p.x + half * d[1], y = p.y + half * d[2] })
 end
 
 local function underground_pair(e, kind)
@@ -250,6 +282,19 @@ local function copy(row, steps)
   return out
 end
 
+-- Whether a belt may be read at all: own force, in a charted chunk. Each
+-- belt refused is counted once in stops.
+local function visible(state, c, e)
+  local id = e.unit_number
+  if state.belts[id] then return true end
+  if state.stopped[id] then return false end
+  local why = e.force ~= c.force and "other_force" or not chunk_visible(state, c, e.position) and "uncharted"
+  if not why then return true end
+  state.stopped[id] = true
+  state.stops[why] = state.stops[why] + 1
+  return false
+end
+
 -- Admits a belt to the walk: counts it, reads who drops onto it. False when
 -- the walk may not go there (cap, chart, force).
 local function admit(state, c, e, budget)
@@ -258,16 +303,7 @@ local function admit(state, c, e, budget)
   if state.stopped[id] then return false end
   if state.belt_count >= state.cap then state.truncated = true; return false end
   budget.left = budget.left - M.PER_BELT
-  if e.force ~= c.force then
-    state.stopped[id] = true
-    state.stops.other_force = state.stops.other_force + 1
-    return false
-  end
-  if not chunk_visible(state, c, e.position) then
-    state.stopped[id] = true
-    state.stops.uncharted = state.stops.uncharted + 1
-    return false
-  end
+  if not visible(state, c, e) then return false end
   state.belts[id] = true
   state.belt_count = state.belt_count + 1
   state.droppers[id] = droppers(state, c, e)
@@ -316,12 +352,19 @@ local function entity_rows(state, node, here)
   end
 end
 
-local function feeder_row(state, node, feeder, kind)
-  local contents = lane_contents(feeder, "left")
-  lane_contents(feeder, "right", contents)
+-- A belt feeding the walked lane; `only` is the one feeder lane that passes
+-- an underground's hood.
+local function feeder_row(state, node, feeder, kind, only)
+  local contents
+  if kind == "belt" or only then
+    contents = lane_contents(feeder, only or node.lane)
+  else
+    contents = lane_contents(feeder, "left")
+    lane_contents(feeder, "right", contents)
+  end
   source(state, node.label, "f" .. feeder.unit_number .. ":" .. node.entity.unit_number, { kind = kind,
     name = feeder.name, position = at(feeder.position), onto = at(node.entity.position), lane = node.lane,
-    items = kind == "side_load" and contents or lane_contents(feeder, node.lane), belts_from_start = node.steps })
+    feeder_lane = only, items = contents, belts_from_start = node.steps })
 end
 
 local function walk(state, c, node, budget)
@@ -340,12 +383,15 @@ local function walk(state, c, node, budget)
   entity_rows(state, node, here)
   if state.direction == "up" then
     for _, feeder in ipairs(feeders(e)) do
-      local onto = join(feeder, e)
+      local onto, only = join(feeder, e)
       if onto == "straight" then follow(state, c, node, feeder, node.lane, budget)
-      elseif onto == node.lane then
-        feeder_row(state, node, feeder, "side_load")
-        follow(state, c, node, feeder, "left", budget)
-        follow(state, c, node, feeder, "right", budget)
+      elseif onto == node.lane and visible(state, c, feeder) then
+        feeder_row(state, node, feeder, "side_load", only)
+        if only then follow(state, c, node, feeder, only, budget)
+        else
+          follow(state, c, node, feeder, "left", budget)
+          follow(state, c, node, feeder, "right", budget)
+        end
       end
     end
     return
@@ -354,18 +400,23 @@ local function walk(state, c, node, budget)
   -- start belt itself is upstream of it), then where the lane goes.
   if node.steps > 0 then
     for _, feeder in ipairs(feeders(e)) do
-      local onto = join(feeder, e)
-      if onto == "straight" and not state.seen[key(feeder, node.lane, node.label)] then
-        feeder_row(state, node, feeder, "belt")
-      elseif onto == node.lane and not (state.seen[key(feeder, "left", node.label)]
-        or state.seen[key(feeder, "right", node.label)]) then
-        feeder_row(state, node, feeder, "side_load")
+      local onto, only = join(feeder, e)
+      if onto == "straight" then
+        if not state.seen[key(feeder, node.lane, node.label)] and visible(state, c, feeder) then
+          feeder_row(state, node, feeder, "belt")
+        end
+      elseif onto == node.lane and not (state.seen[key(feeder, only or "left", node.label)]
+        or not only and state.seen[key(feeder, "right", node.label)]) and visible(state, c, feeder) then
+        feeder_row(state, node, feeder, "side_load", only)
       end
     end
   end
   for _, receiver in ipairs(receivers(e)) do
-    local onto = join(e, receiver)
-    follow(state, c, node, receiver, onto == "straight" and node.lane or onto, budget)
+    local onto, only = join(e, receiver)
+    -- Onto an underground, the lane the hood holds back goes no further.
+    if not only or only == node.lane then
+      follow(state, c, node, receiver, onto == "straight" and node.lane or onto, budget)
+    end
   end
 end
 

@@ -291,6 +291,108 @@ check(right_side.side_load and right_side.side_load.position.y == 131.5 and bent
   and #bent.lanes.left.sources == 0 and bent.lanes.left.items.sulfur == nil,
   "a side-load from the right side feeds only the right lane")
 
+-- ------------------------------ side-loaders the trace may not read
+
+-- East along y = 128 (chunk row 4), x = 0..3. A belt from the north at
+-- (1, 127) lies in chunk row 3, marked uncharted; a belt from the south at
+-- (2, 129) belongs to another force. Neither is read, up or down.
+local hidden_row = run(0, 3, 128)
+local from_uncharted, uncharted_lines = belt(1, 127, 8)
+local from_other, other_lines = belt(2, 129, 0)
+from_other.force = mock.force({ is_chunk_charted = function() return true end })
+link(from_uncharted, hidden_row[2].e); link(from_other, hidden_row[3].e)
+contents[uncharted_lines[1]] = { { name = "sulfur", count = 1, quality = "normal" } }
+contents[other_lines[1]] = { { name = "stone", count = 1, quality = "normal" } }
+uncharted["0,3"] = true
+local function hidden_rows(trace)
+  local n = 0
+  for _, lane in pairs(trace.lanes) do
+    for _, row in ipairs(lane.sources) do if row.kind == "side_load" then n = n + 1 end end
+    if lane.items.sulfur or lane.items.stone then n = n + 1 end
+  end
+  return n
+end
+for _, direction in ipairs({ "up", "down" }) do
+  local start = direction == "up" and hidden_row[4].e or hidden_row[1].e
+  local hidden = jobs.run_now(definition, { entity = start, direction = direction })
+  check(hidden_rows(hidden) == 0 and hidden.belts == 4 and hidden.stopped
+    and hidden.stopped.uncharted == 1 and hidden.stopped.other_force == 1,
+    "a side-loader uncharted or of another force is counted, never read (" .. direction .. ")")
+end
+uncharted["0,3"] = nil
+
+-- ------------------------------------------- side-loads onto undergrounds
+
+-- East along y = 140: an entrance at x = 2 fed from the north (iron left,
+-- copper right), its exit at x = 5 fed from the south (coal left, stone
+-- right), then a belt at 6. Only the feeder lane over the open half passes:
+-- the entrance's back half, the exit's front half (checked on 2.0.77).
+local hood_in, hood_in_lines = belt(2, 140, 4, "underground-belt", 4)
+local hood_out = belt(5, 140, 4, "underground-belt", 4)
+hood_in.belt_to_ground_type, hood_out.belt_to_ground_type = "input", "output"
+hood_in.neighbours, hood_out.neighbours = hood_out, hood_in
+local hood_after = belt(6, 140, 4)
+link(hood_out, hood_after)
+local north_feed, north_lines = belt(2, 139, 8)
+local south_feed, south_lines = belt(5, 141, 0)
+link(north_feed, hood_in); link(south_feed, hood_out)
+contents[north_lines[1]] = { { name = "iron-plate", count = 16, quality = "normal" } }
+contents[north_lines[2]] = { { name = "copper-plate", count = 2, quality = "normal" } }
+contents[south_lines[1]] = { { name = "coal", count = 16, quality = "normal" } }
+contents[south_lines[2]] = { { name = "stone", count = 2, quality = "normal" } }
+contents[hood_in_lines[1]] = { { name = "iron-gear-wheel", count = 1, quality = "normal" } }
+local hood_up = jobs.run_now(definition, { entity = hood_after, direction = "up" })
+local hood_rows = {}
+for name, lane in pairs(hood_up.lanes) do
+  for _, row in ipairs(lane.sources) do if row.kind == "side_load" then hood_rows[name] = row end end
+end
+check(hood_up.lanes.left.items["copper-plate"] == 2 and hood_up.lanes.left.items["iron-plate"] == nil
+  and hood_rows.left and hood_rows.left.feeder_lane == "right" and hood_rows.left.items["copper-plate"] == 2
+  and hood_rows.left.items["iron-plate"] == nil,
+  "onto an entrance only the feeder lane over its back half feeds the lane")
+check(hood_up.lanes.right.items.stone == 2 and hood_up.lanes.right.items.coal == nil
+  and hood_rows.right and hood_rows.right.feeder_lane == "right" and hood_rows.right.items.coal == nil,
+  "onto an exit only the feeder lane over its front half feeds the lane")
+local hood_down = jobs.run_now(definition, { entity = north_feed, direction = "down" })
+check(hood_down.lanes.left.items["iron-plate"] == 16 and hood_down.lanes.left.first_seen["iron-plate"].belts_from_start == 0
+  and hood_down.lanes.left.items["iron-gear-wheel"] == nil and hood_down.lanes.right.items["iron-gear-wheel"] == 1
+  and hood_down.belts == 4 and hood_down.lanes.right.items["copper-plate"] == 2,
+  "down, the lane the hood holds back goes no further")
+local held_back = 0
+for _, row in ipairs(hood_down.lanes.right.sources) do
+  if row.kind == "side_load" and row.position.y == 141.5 then held_back = held_back + 1 end
+end
+check(held_back == 0, "down, a side-load onto the exit's other lane is not a source of the walked lane")
+
+-- ------------------------------------------ a splitter side-loading a row
+
+-- A splitter facing south over tiles x = 10, 11 at y = 149 feeds the side
+-- of an east row y = 150, x = 9..12 (a belt behind each, so neither curves):
+-- all of it lands on the row's left (north) lane, whatever lane it rode on
+-- in the splitter (checked on 2.0.77).
+local side_splitter, splitter_lines = belt(10, 149, 8, "splitter", 8)
+side_splitter.position = { x = 11, y = 149.5 }
+side_splitter.bounding_box = { left_top = { x = 10.1, y = 149.1 }, right_bottom = { x = 11.9, y = 149.9 } }
+local split_row = run(9, 12, 150)
+link(side_splitter, split_row[2].e); link(side_splitter, split_row[3].e)
+contents[splitter_lines[5]] = { { name = "coal", count = 4, quality = "normal" } }
+contents[splitter_lines[6]] = { { name = "stone", count = 12, quality = "normal" } }
+local split_up = jobs.run_now(definition, { entity = split_row[4].e, direction = "up" })
+check(split_up.lanes.left.items.coal == 4 and split_up.lanes.left.items.stone == 12
+  and split_up.lanes.right.items.stone == nil and #split_up.lanes.right.sources == 0,
+  "a splitter side-loading a row feeds only the lane on its side")
+
+-- A splitter's lanes sum both its belts; its mix judges each lane alone.
+contents[splitter_lines[5]], contents[splitter_lines[6]] = nil, nil
+contents[splitter_lines[1]] = { { name = "coal", count = 1, quality = "normal" } }
+contents[splitter_lines[3]] = { { name = "stone", count = 1, quality = "normal" } }
+local split_lanes, split_mix = belt_trace.lanes(side_splitter)
+check(split_mix == "separated" and split_lanes.left.coal == 1 and split_lanes.left.stone == 1,
+  "a splitter with one kind on each of its belts' left lanes is not mixed")
+contents[splitter_lines[5]] = { { name = "coal", count = 1, quality = "normal" }, { name = "stone", count = 1, quality = "normal" } }
+split_lanes, split_mix = belt_trace.lanes(side_splitter)
+check(split_mix == "mixed", "a splitter lane holding two kinds is mixed")
+
 -- ------------------------------------------- inspect with trace (one call)
 
 body = mock.entity({ valid = true, position = { x = 0, y = 80 }, surface = surface, force = force })

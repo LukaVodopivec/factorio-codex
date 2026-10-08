@@ -51,7 +51,7 @@ local INPUTS = { ["assembling-machine"] = "crafter_input", furnace = "crafter_in
 -- Restored in this order, after the recipe.
 local GROUPS = { "modules", "fuel", "input" }
 
-local function plain(err) return (tostring(err):gsub("^.-:%d+:%s*", "")) end
+local plain = require("scripts.errors").plain
 
 local function point(value)
   return type(value) == "table" and type(value.x) == "number" and type(value.y) == "number"

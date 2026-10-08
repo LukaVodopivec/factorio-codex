@@ -285,6 +285,62 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     }
   });
 
+  it("rejects unknown keys instead of dropping them, so a typo never changes what is checked", async () => {
+    const schemas: Record<string, any> = {};
+    registerMcpTools({ registerTool(name, config) { schemas[name] = config.inputSchema; } },
+      async () => { throw new Error("schema inspection must not acquire the bridge"); }, validConfig);
+    const placement = { name: "inserter", x: 1.5, y: 2.5, direction: 4 };
+    const valid: Record<string, Record<string, unknown>> = {
+      connect_status: {}, progression_status: {}, stop: { keep_upkeep: true },
+      observe_local: { radius: 15, detail: "compact" }, inspect_entity: { positions: [{ x: 1.5, y: 2.5 }] },
+      describe_prototype: { names: ["inserter"] }, can_place: { placements: [placement] },
+      extract_items: { x: 1.5, y: 2.5 }, rotate_entity: { x: 1.5, y: 2.5, direction: 4 },
+      build_plan: { steps: [placement] },
+    };
+    for (const [name, input] of Object.entries(valid)) {
+      expect(schemas[name].safeParse(input).success, name).toBe(true);
+      const parsed = schemas[name].safeParse({ ...input, unexpected: true });
+      expect(parsed.success, name).toBe(false);
+      expect(parsed.error.issues).toContainEqual(expect.objectContaining({ code: "unrecognized_keys", keys: ["unexpected"] }));
+    }
+    // Nested objects too: each placement (its position fields included), each inspected position, each build step.
+    expect(schemas.can_place.safeParse({ placements: [{ ...placement, rotation: 4 }] }).success).toBe(false);
+    expect(schemas.inspect_entity.safeParse({ positions: [{ x: 1.5, y: 2.5, z: 0 }] }).success).toBe(false);
+    expect(schemas.build_plan.safeParse({ steps: [{ ...placement, item: "inserter" }] }).success).toBe(false);
+    // The shared position: find_placement's points and connect_entities' ends.
+    const search = { item: "inserter", preferred: { x: 1.5, y: 2.5 } };
+    expect(schemas.find_placement.safeParse(search).success).toBe(true);
+    expect(schemas.find_placement.safeParse({ ...search, preferred: { x: 1.5, y: 2.5, z: 0 } }).success).toBe(false);
+    expect(schemas.find_placement.safeParse({ ...search, output_target: { x: 1, y: 1, surface: "nauvis" } }).success).toBe(false);
+    const route = { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 } };
+    expect(schemas.connect_entities.safeParse(route).success).toBe(true);
+    expect(schemas.connect_entities.safeParse({ ...route, from: { x: 0.5, y: 0.5, z: 0 } }).success).toBe(false);
+    expect(schemas.connect_entities.safeParse({ ...route, to: { x: 4.5, y: 0.5, dx: 1 } }).success).toBe(false);
+
+    const call = vi.fn(async () => ({ results: [] }));
+    const bridge = vi.fn(async () => ({ call } as unknown as Bridge));
+    const server = new McpServer({ name: "strict-test", version: "1" });
+    registerMcpTools(server, bridge, validConfig);
+    const client = new Client({ name: "strict-test", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      // rotation is not a can_place field: dropped, the check would use direction 0.
+      const rotated = await client.callTool({ name: "can_place", arguments: { placements: [{ name: "inserter", x: 1.5, y: 2.5, rotation: 4 }] } });
+      expect(rotated.isError).toBe(true);
+      const text = JSON.stringify(rotated.content);
+      expect(text).toContain("rotation");
+      expect(text).toMatch(/unrecognized key/i);
+      expect(bridge).not.toHaveBeenCalled();
+      expect((await client.callTool({ name: "can_place", arguments: { placements: [placement] } })).isError).not.toBe(true);
+      expect(call).toHaveBeenCalledWith("can_place", toolPayloads.canPlace([placement]));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("preserves useful partial completion as a non-error structured terminal result", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "partial" as const,
@@ -368,7 +424,8 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     await handlers.observe_local({ radius: 15, center: { x: 999, y: 999 } });
     expect(call).toHaveBeenLastCalledWith("observe_local", { radius: 15, detail: undefined }, undefined);
     expect(schemas.observe_local.shape.center).toBeUndefined();
-    expect(schemas.observe_local.safeParse({ radius: 15, center: { x: 999, y: 999 } }).data).toEqual({ radius: 15, detail: "compact" });
+    expect(schemas.observe_local.safeParse({ radius: 15, center: { x: 999, y: 999 } }).success).toBe(false);
+    expect(schemas.observe_local.safeParse({ radius: 15 }).data).toEqual({ radius: 15, detail: "compact" });
     await handlers.describe_prototype({ names: ["transport-belt"] });
     expect(call).toHaveBeenLastCalledWith("describe_prototype", { names: ["transport-belt"] }, undefined);
     expect(schemas.describe_prototype.safeParse({ names: ["transport-belt"] }).data.kind).toBe("auto");
@@ -619,6 +676,16 @@ describe("connect_status body lifecycle", () => {
     expect((withErrors.structuredContent as any).world_policy_errors).toEqual(failed);
     const clean = await connectStatus(async () => ({ call: vi.fn().mockResolvedValue(ping) } as unknown as Bridge), validConfig);
     expect(clean.structuredContent).not.toHaveProperty("world_policy_errors");
+  });
+
+  it("reports the mod's caught handler errors from ping: their count and the newest few", async () => {
+    const ping = { companion_dead: false, companion_exists: true, companion_ever_created: true, protocol_version: 29, mod_version: "0.29.2", factorio_version: "2.0.0", tick: 5 };
+    const recent = [{ tick: 3, where: "rpc:inspect", error: "inspect positions must be within 30 tiles of Codex" },
+      { tick: 4, where: "task:mine:start", error: "refusing to recover a player-owned entity with fluids" }];
+    const withErrors = await connectStatus(async () => ({ call: vi.fn().mockResolvedValue({ ...ping, handler_errors: { count: 27, recent } }) } as unknown as Bridge), validConfig);
+    expect((withErrors.structuredContent as any).handler_errors).toEqual({ count: 27, recent });
+    const clean = await connectStatus(async () => ({ call: vi.fn().mockResolvedValue(ping) } as unknown as Bridge), validConfig);
+    expect(clean.structuredContent).not.toHaveProperty("handler_errors");
   });
 
   it("binds exact native Codex when a fresh save reports no body", async () => {

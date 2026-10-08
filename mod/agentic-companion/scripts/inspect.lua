@@ -6,6 +6,7 @@
 local companion = require("scripts.companion")
 local surfaces = require("scripts.surfaces")
 local items = require("scripts.items")
+local errors = require("scripts.errors")
 local fluid_connections = require("scripts.fluid_connections")
 local inventory_roles = require("scripts.inventory_roles")
 local entity_settings = require("scripts.entity_settings")
@@ -473,7 +474,7 @@ M.job = {
           position = { x = tonumber(target.x), y = tonumber(target.y) }
         end
         state.entities[i] = {
-          error = tostring(res):gsub("^.-:%d+:%s*", ""),
+          error = errors.plain(res),
           position = position,
         }
       end

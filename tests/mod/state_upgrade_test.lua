@@ -77,6 +77,9 @@ check(type(storage.space) == "table" and next(storage.space.created) == nil and 
   "the space platform store and event ring are created")
 check(type(storage.world_policy) == "table" and #storage.world_policy.errors == 0,
   "the world policy's error list is created")
+check(type(storage.handler_errors) == "table" and storage.handler_errors.count == 0 and #storage.handler_errors.recent == 0,
+  "an older save gains an empty handler error ring")
+storage.handler_errors.count, storage.handler_errors.recent[1] = 1, { tick = 3, where = "rpc:ping", error = "y" }
 check(type(storage.travel) == "table" and next(storage.travel.arrivals) == nil and storage.travel.active == nil
   and storage.tasks.surface_changed == nil and type(storage.patch_caches) == "table",
   "an older save gains the travel store and per-surface patch caches; no trip or surface change is invented")
@@ -95,6 +98,8 @@ check(#created_inventories == 1 and storage.blueprints.inventory == blueprint_in
 check(storage.space.created[3] == "nauvis" and #storage.space.events == 1,
   "a later configuration change keeps the platforms' planets and the event ring")
 check(#storage.world_policy.errors == 1, "a later configuration change keeps the world policy's errors")
+check(storage.handler_errors.count == 1 and #storage.handler_errors.recent == 1,
+  "a later configuration change keeps the handler error ring")
 storage.travel.active = { task_id = 7, to = "vulcanus", since_tick = 1 }
 storage.travel.arrivals[3] = { location = "vulcanus", tick = 2 }
 storage.tasks.surface_changed = { from = "nauvis", to = "platform:3" }

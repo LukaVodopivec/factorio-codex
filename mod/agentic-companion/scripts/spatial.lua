@@ -6,6 +6,7 @@
 local companion = require("scripts.companion")
 local surfaces = require("scripts.surfaces")
 local items = require("scripts.items")
+local errors = require("scripts.errors")
 local production_requirements = require("scripts.production_requirements")
 local tasks = require("scripts.tasks")
 local placement_geometry = require("scripts.placement_geometry")
@@ -822,7 +823,7 @@ function M.can_place(params)
   for i, p in ipairs(params.placements) do
     local ok, res = pcall(can_place_one, c, surface, p.item, p.position, p.direction)
     if not ok then
-      res = { can_place = false, reason = tostring(res):gsub("^.-:%d+:%s*", "") }
+      res = { can_place = false, reason = errors.plain(res) }
     end
     res.item = res.item or p.item
     res.direction = res.direction or math.floor(tonumber(p.direction) or 0) % 16

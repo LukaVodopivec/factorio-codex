@@ -701,7 +701,8 @@ game.tick=5000
 local budgeted=tasks.queue_plan({steps={{action="move_entity",mode="robots",from={x=1,y=1},to={x=5,y=1}}}})
 tasks.on_tick();game.tick=5000+570*60;tasks.on_tick()
 local exhausted=tasks.plan_status({plan_id=budgeted.plan_id})
-check(exhausted.status=="failed" and exhausted.outcomes[1].result.source_removed and robot_cancelled==2,
+check(exhausted.status=="failed" and exhausted.outcomes[1].result.code=="PLAN_BUDGET_EXCEEDED"
+ and exhausted.outcomes[1].result.cancelled.source_removed and robot_cancelled==2,
  "plan budget cancellation includes paid native partial state")
 game.tick=40000
 local offsurface=tasks.queue_plan({steps={{action="move_entity",mode="robots",from={x=1,y=1},to={x=5,y=1}}}})

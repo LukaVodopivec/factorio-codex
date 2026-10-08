@@ -15,6 +15,7 @@
 -- (M.get) only on_surface; reads anchor on M.anchor() in every state but
 -- absent.
 local human_inputs = require("scripts.human_inputs")
+local plain_error = require("scripts.errors").plain
 
 local M = {}
 
@@ -584,7 +585,7 @@ local function policy_error(surface, what, err)
   local errors = storage.world_policy.errors
   local ok, name = pcall(function() return surface.name end)
   errors[#errors + 1] = { tick = game.tick, surface = ok and name or nil, write = what,
-    error = tostring(err):gsub("^.-:%d+:%s*", "") }
+    error = plain_error(err) }
   while #errors > MAX_POLICY_ERRORS do table.remove(errors, 1) end
 end
 

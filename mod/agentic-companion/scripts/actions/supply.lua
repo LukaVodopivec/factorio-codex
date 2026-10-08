@@ -22,6 +22,7 @@
 local companion = require("scripts.companion")
 local walk = require("scripts.actions.walk")
 local mine = require("scripts.actions.mine")
+local errors = require("scripts.errors")
 local pickup = require("scripts.actions.pickup")
 local craft = require("scripts.actions.craft")
 local factory_activity = require("scripts.factory_activity")
@@ -839,7 +840,7 @@ local function advance(task, c, frame)
     frame.before = have(c, frame.name)
     local ok, err = pcall(M.begin, task, "_sub", { type = "craft", recipe = frame.recipe, count = crafts })
     if ok then frame.source_kind = "craft"; return true end
-    frame.error = tostring(err):gsub("^.-:%d+:%s*", "")
+    frame.error = errors.plain(err)
     return false
   end
 
@@ -1081,7 +1082,7 @@ function M.ensure(owner, needs, options)
     local s = { items = needs, exclude = options and options.exclude, bulk = options and options.bulk }
     s.id = owner.id
     local ok, err = pcall(M.start, s)
-    if not ok then return { status = "failed", detail = tostring(err):gsub("^.-:%d+:%s*", "") } end
+    if not ok then return { status = "failed", detail = errors.plain(err) } end
     owner._supply = s
   end
   local ok, result = pcall(M.tick, owner._supply)

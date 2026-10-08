@@ -255,6 +255,10 @@ function M.init()
   -- World policy write failures per surface (companion.lua), shown by ping.
   storage.world_policy = storage.world_policy or {}
   storage.world_policy.errors = storage.world_policy.errors or {}
+  -- Errors a handler raised and a dispatcher caught (errors.lua): count
+  -- since the save gained the ring, and recent, the last few {tick, where,
+  -- error}, oldest first. An older save starts it empty.
+  storage.handler_errors = storage.handler_errors or { count = 0, recent = {} }
   -- Heavy reads in progress and unread results (jobs.lua). Jobs are plain
   -- data and survive save, load and a mod upgrade: a kind this version no
   -- longer knows fails with its reason when it is next worked on.

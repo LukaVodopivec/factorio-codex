@@ -139,6 +139,16 @@ inserter.drop_target = nil
 local no_targets = inspect.inspect({ targets = { inserter.position } }).entities[1]
 check(no_targets.pickup_target == nil and no_targets.drop_target == nil,
   "inserter inspection omits invalid and absent targets")
+check(no_targets.holding == nil, "no hand reading, no holding field")
+
+-- What the inserter's hand holds now: item, count, quality; false when empty.
+inserter.held_stack = mock.item_stack({ valid_for_read = true, name = "iron-plate", count = 3, quality = { name = "rare" } })
+local holding = inspect.inspect({ targets = { inserter.position } }).entities[1].holding
+check(holding and holding.item == "iron-plate" and holding.count == 3 and holding.quality == "rare",
+  "an inserter reports the stack in its hand")
+inserter.held_stack = mock.item_stack({ valid_for_read = false })
+check(inspect.inspect({ targets = { inserter.position } }).entities[1].holding == false,
+  "an empty hand is holding false")
 
 local connected_pipe = mock.entity({ valid = true, name = "pipe", type = "pipe", position = { x = 2, y = 1 } })
 local fluidbox = { [1] = {} }
@@ -215,15 +225,16 @@ local belt = mock.entity({
   get_max_transport_line_index = function() return 2 end,
   get_transport_line = function(index)
     return { get_contents = function()
-      if index == 1 then return { { name = "iron-ore", count = 3 } } end
-      return { ["iron-ore"] = 2, ["coal"] = 1 }
+      if index == 1 then return { { name = "iron-ore", count = 3, quality = "normal" } } end
+      return { { name = "iron-ore", count = 2, quality = "normal" }, { name = "coal", count = 1, quality = "normal" } }
     end }
   end,
 })
 found_entity = belt
 local belt_result = inspect.inspect({ targets = { belt.position } }).entities[1]
-check(belt_result.belt_contents["iron-ore"] == 5 and belt_result.belt_contents.coal == 1,
-  "belt inspection retains contents from every transport line")
+check(belt_result.lanes.left["iron-ore"] == 3 and belt_result.lanes.right["iron-ore"] == 2
+  and belt_result.lanes.right.coal == 1 and belt_result.lane_mix == "mixed",
+  "belt inspection reports each lane's contents and their mix")
 
 -- Inventories by role: typed getters, and the type's own define only where
 -- no getter exists (never an alias probe).

@@ -3,6 +3,8 @@
 -- reads only own-force entities in charted chunks and marks them remote.
 -- inspect {surface?} reads another surface the same way: there everything is
 -- remote (no body stands there). Heated machines add temperature and frozen.
+-- Belts add their lanes, inserters what they hold; inspect {trace = "up" |
+-- "down"} then traces each belt read (belt_trace.lua) in the same job.
 local companion = require("scripts.companion")
 local surfaces = require("scripts.surfaces")
 local items = require("scripts.items")
@@ -14,6 +16,7 @@ local jobs = require("scripts.jobs")
 local rocket = require("scripts.actions.rocket")
 local requests = require("scripts.requests")
 local blueprints = require("scripts.blueprints")
+local belt_trace = require("scripts.belt_trace")
 
 local M = {}
 
@@ -64,44 +67,6 @@ local function collect_inventories(entity)
     if any or (#inventories > 0 and ALWAYS_SHOWN[role]) then result[role], found = bucket, true end
   end
   if found then return result end
-  return nil
-end
-
--- Items sitting on belt-like entities. Transport line contents come back as
--- an array of {name, count, quality} in 2.x (dict in older styles) — handle both.
-local BELT_TYPES = {
-  ["transport-belt"] = true,
-  ["underground-belt"] = true,
-  ["splitter"] = true,
-  ["loader"] = true,
-  ["loader-1x1"] = true,
-  ["linked-belt"] = true,
-}
-
-local function collect_belt_contents(e)
-  if not BELT_TYPES[e.type] then return nil end
-  local totals = {}
-  local found = false
-  local max_index = 2
-  pcall(function() max_index = e.get_max_transport_line_index() end)
-  for i = 1, max_index do
-    local ok, line = pcall(e.get_transport_line, i)
-    if ok and line then
-      local ok2, contents = pcall(line.get_contents)
-      if ok2 and type(contents) == "table" then
-        for k, v in pairs(contents) do
-          if type(v) == "table" and v.name then
-            totals[v.name] = (totals[v.name] or 0) + (v.count or 0)
-            found = true
-          elseif type(v) == "number" then
-            totals[k] = (totals[k] or 0) + v
-            found = true
-          end
-        end
-      end
-    end
-  end
-  if found then return totals end
   return nil
 end
 
@@ -293,6 +258,15 @@ local function inspect_one(position, c)
     if ok_pickup_target then out.pickup_target = entity_identity(pickup_target) end
     local ok_drop_target, drop_target = pcall(function() return e.drop_target end)
     if ok_drop_target then out.drop_target = entity_identity(drop_target) end
+    -- What is in the inserter's hand now (false: nothing).
+    local ok_held, held = pcall(function() return e.held_stack end)
+    if ok_held and held then
+      local ok_read, holding = pcall(function()
+        if not held.valid_for_read then return false end
+        return { item = held.name, count = held.count, quality = items.quality_name(held.quality) }
+      end)
+      if ok_read then out.holding = holding end
+    end
   end
 
   if e.type == "mining-drill" then
@@ -339,8 +313,9 @@ local function inspect_one(position, c)
     out.landing_pad = { inventory = stock, requests = requests.read(e) }
   end
 
-  local belt = collect_belt_contents(e)
-  if belt then out.belt_contents = belt end
+  -- Items on each lane (left and right along the belt) and how they mix.
+  local ok_lanes, lanes, mix = pcall(belt_trace.lanes, e)
+  if ok_lanes and lanes then out.lanes, out.lane_mix = lanes, mix end
   if e.type == "underground-belt" then
     local ok_end, end_type = pcall(function() return e.belt_to_ground_type end)
     if ok_end then out.belt_to_ground_type = end_type end
@@ -415,7 +390,7 @@ local function inspect_one(position, c)
   local connections = fluid_connections.live(e)
   if #connections > 0 then out.fluid_connections = connections end
 
-  return out
+  return out, e
 end
 
 -- Positions one call reads. Each costs about PER_TARGET work items (an area
@@ -447,21 +422,25 @@ M.job = {
     if type(targets) ~= "table" or #targets == 0 then
       error("targets must be a non-empty array of {x, y}")
     end
+    local trace = params.trace
+    if trace ~= nil and trace ~= "up" and trace ~= "down" then error("trace must be \"up\" or \"down\"", 0) end
     local omitted = math.max(0, #targets - M.MAX_TARGETS)
     local list = {}
     for i = 1, #targets - omitted do list[i] = targets[i] end
     return { targets = list, omitted = omitted, index = 1, entities = {}, first_tick = game.tick,
       surface_index = target.surface.index, surface = target.ref,
-      evidence_class = "fresh_local_exact", scope = "within_30_tiles_of_codex_at_source_tick" }
+      evidence_class = "fresh_local_exact", scope = "within_30_tiles_of_codex_at_source_tick",
+      trace = trace, traces = {}, trace_next = 1, trace_left = belt_trace.MAX_BELTS }
   end,
   step = function(state, budget)
     local c = context(state)
     while state.index <= #state.targets do
       if budget.left <= 0 then return nil end
       local i, target = state.index, state.targets[state.index]
-      local ok, res = pcall(inspect_one, target, c)
+      local ok, res, entity = pcall(inspect_one, target, c)
       if ok then
         state.entities[i] = res
+        if state.trace and res.lanes then state.traces[#state.traces + 1] = { i = i, entity = entity } end
         -- A remote entity is read through the chart: the envelope must not
         -- claim the whole result is local.
         if res.remote then
@@ -479,6 +458,31 @@ M.job = {
         }
       end
       state.index, budget.left = i + 1, budget.left - M.PER_TARGET
+    end
+    -- trace: then each belt read is traced in turn (belt_trace), all of
+    -- them together walking at most belt_trace.MAX_BELTS belts. A trace
+    -- reads own-force belts in charted chunks, so the envelope says so.
+    while state.trace and state.trace_next <= #state.traces do
+      if budget.left <= 0 then return nil end
+      local item = state.traces[state.trace_next]
+      local traced
+      if not item.walk and (state.trace_left <= 0 or not item.entity.valid) then
+        -- The call's belts are spent (or the belt is gone): nothing walked.
+        traced = { direction = state.trace, belts = 0, max_belts = 0, truncated = state.trace_left <= 0, loop = false }
+      else
+        if not item.walk then
+          item.walk = belt_trace.start(item.entity, state.trace, c, state.trace_left)
+          budget.left = budget.left - belt_trace.PER_BELT
+          state.evidence_class = "fresh_exact_local_and_charted_remote"
+          state.scope = "within_30_tiles_or_own_force_charted_at_source_tick"
+        end
+        traced = belt_trace.step(item.walk, budget, c)
+        if not traced then return nil end
+      end
+      state.entities[item.i].trace = traced
+      state.trace_left = state.trace_left - traced.belts
+      item.walk, item.entity = nil, nil
+      state.trace_next = state.trace_next + 1
     end
     return {
       tick = game.tick, surface = state.surface,

@@ -18,7 +18,8 @@ export const toolPayloads = {
   extract: ({ x, y, items: values, inventory }: { x: number; y: number; items?: Record<string, number>; inventory?: string }) => ({
     target: { x, y }, ...(values === undefined ? { all: true } : { items: values }), ...(inventory === undefined ? {} : { inventory }) }),
   rotate: ({ x, y, direction }: { x: number; y: number; direction?: number }) => ({ target: { x, y }, direction }),
-  inspect: (positions: Array<{ x: number; y: number }>, surface?: SurfaceRef) => ({ targets: positions, ...onSurface(surface) }),
+  inspect: (positions: Array<{ x: number; y: number }>, surface?: SurfaceRef, trace?: "up" | "down") => ({ targets: positions,
+    ...onSurface(surface), ...(trace ? { trace } : {}) }),
   placement: ({ x, y, name, direction }: { x: number; y: number; name: string; direction?: number }) => ({ item: name, position: { x, y }, direction }),
   canPlace: (placements: Array<{ x: number; y: number; name: string; direction?: number }>, surface?: SurfaceRef) => ({
     placements: placements.map((placement) => toolPayloads.placement(placement)), ...onSurface(surface) }),
@@ -298,11 +299,29 @@ export function normalizePhysicalRoute(value: any): any {
   return value && typeof value === "object" ? { ...value, steps: luaArray(value.steps) } : value;
 }
 
+/** Belt lanes, an inserter's hand and a belt trace: empty Lua tables are
+ *  empty objects or lists, and false (nothing held) is null. */
+function normalizeBeltReads(entity: any): any {
+  const lanePair = (lanes: any, each: (lane: any) => any) => lanes && typeof lanes === "object"
+    ? { left: each(lanes.left ?? {}), right: each(lanes.right ?? {}) } : lanes;
+  const source = (row: any) => !row || typeof row !== "object" ? row : { ...row,
+    ...(row.items !== undefined ? { items: record(row.items) } : {}), ...(row.adds !== undefined ? { adds: luaArray(row.adds) } : {}),
+    ...(row.holding === false ? { holding: null } : {}) };
+  let out = entity;
+  if (out.holding === false) out = { ...out, holding: null };
+  if (out.lanes !== undefined) out = { ...out, lanes: lanePair(out.lanes, record) };
+  if (out.trace && typeof out.trace === "object" && out.trace.lanes !== undefined) out = { ...out, trace: { ...out.trace,
+    lanes: lanePair(out.trace.lanes, (lane: any) => ({ ...lane, items: record(lane.items ?? {}), first_seen: record(lane.first_seen ?? {}),
+      sources: luaArray(lane.sources ?? []).map(source) })) } };
+  return out;
+}
+
 export function normalizeInspection(value: any): any {
   if (!value || !Array.isArray(value.entities)) return value;
   return { ...value, entities: value.entities.map((entity: any) => {
     if (!entity || entity.error) return entity;
     if (entity.drop_target === false) entity = { ...entity, drop_target: null };
+    entity = normalizeBeltReads(entity);
     // Contents by inventory role; an empty one is a Lua empty table.
     if (entity.inventories && typeof entity.inventories === "object") entity = { ...entity,
       inventories: Object.fromEntries(Object.entries(entity.inventories).map(([role, contents]) => [role, record(contents)])) };

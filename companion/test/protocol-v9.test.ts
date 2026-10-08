@@ -456,6 +456,11 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(call).toHaveBeenLastCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute", surface: "all" }, undefined);
     await handlers.inspect_entity(schemas.inspect_entity.parse({ positions: [{ x: 1, y: 2 }], surface: { platform: "Orbit" } }));
     expect(call).toHaveBeenLastCalledWith("inspect", { targets: [{ x: 1, y: 2 }], surface: { platform: "Orbit" } });
+    // trace (belt_trace.lua): up or down only; the schema stays strict.
+    await handlers.inspect_entity(schemas.inspect_entity.parse({ positions: [{ x: 1, y: 2 }], trace: "up" }));
+    expect(call).toHaveBeenLastCalledWith("inspect", { targets: [{ x: 1, y: 2 }], trace: "up" });
+    expect(schemas.inspect_entity.safeParse({ positions: [{ x: 1, y: 2 }], trace: "sideways" }).success).toBe(false);
+    expect(schemas.inspect_entity.safeParse({ positions: [{ x: 1, y: 2 }], traces: "up" }).success).toBe(false);
     await handlers.can_place(schemas.can_place.parse({ placements: [{ name: "foundry", x: 3.5, y: 3.5 }], surface: "vulcanus" }));
     expect(call).toHaveBeenLastCalledWith("can_place", { placements: [{ item: "foundry", position: { x: 3.5, y: 3.5 }, direction: undefined }], surface: "vulcanus" });
     await handlers.find_placement(schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 0, y: 0 }, fluid: "lava", surface: "vulcanus" }));
@@ -662,6 +667,17 @@ describe("protocol v29 DTO and tool registry", () => {
       .toEqual({ name: "drill", drop_target: null, drop_target_bound: false });
     expect(normalizeInspection({ entities: [{ name: "drill", drop_target: {}, drop_target_bound: false }] }).entities[0].drop_target)
       .toEqual({});
+    // Belt lanes, an inserter's hand and a trace: empty Lua tables and false.
+    expect(normalizeInspection({ entities: [{ name: "inserter", holding: false }] }).entities[0].holding).toBeNull();
+    const traced = normalizeInspection({ entities: [{ name: "transport-belt", lanes: { left: [], right: { coal: 2 } }, lane_mix: "pure",
+      trace: { direction: "up", belts: 3, lanes: { left: { items: [], first_seen: [], sources: {} },
+        right: { items: { coal: 2 }, first_seen: { coal: { position: { x: 1.5, y: 0.5 }, belts_from_start: 1 } },
+          sources: [{ kind: "inserter", holding: false, belts_from_start: 1 }, { kind: "mining_drill", adds: {}, belts_from_start: 2 },
+            { kind: "side_load", items: [], belts_from_start: 2 }] } } } }] }).entities[0];
+    expect(traced.lanes).toEqual({ left: {}, right: { coal: 2 } });
+    expect(traced.trace.lanes.left).toEqual({ items: {}, first_seen: {}, sources: [] });
+    expect(traced.trace.lanes.right.sources).toEqual([{ kind: "inserter", holding: null, belts_from_start: 1 },
+      { kind: "mining_drill", adds: [], belts_from_start: 2 }, { kind: "side_load", items: {}, belts_from_start: 2 }]);
     const diagnostics = normalizePlanDiagnostics({ outcomes: [{ step: 2, action: "place_entity", status: "failed", error: "blocked" }], observation: { entities: [{ name: "assembler", position: { x: 1, y: 1 }, status: "no_power" }] } });
     expect(diagnostics.diagnostics.route[0]).toMatchObject({ step: 2, detail: "blocked" });
     expect(diagnostics.diagnostics.machines[0]).toMatchObject({ entity: "assembler", status: "no_power" });

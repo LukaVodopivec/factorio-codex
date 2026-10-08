@@ -9,7 +9,7 @@ param(
 # dedicated GPU and must never run a Factorio GUI or client.
 # The very-low preset and low video memory were inherited from the retired
 # workstation launcher, which had no GPU; the couch PC renders at the highest
-# 2.0 quality in 4K, where the owner watches and may take over the Codex body.
+# 2.0 quality in 4K, where the human player watches and may take over the Codex body.
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 if (-not (Test-Path -LiteralPath $FactorioBinary -PathType Leaf)) {

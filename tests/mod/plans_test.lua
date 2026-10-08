@@ -335,7 +335,7 @@ insert_runner.tick = original_insert_tick
 
 local walk_tick, mine_tick = walk.tick, mine.tick
 do
--- the escape takes the blocker up, walks out and puts it back
+-- Enclosure escape: the escape takes the blocker up, walks out and puts it back
 -- (move_entity's escape, covered by move_entity_test); here a scripted
 -- runner stands in for it.
 local escape, escape_tick
@@ -406,7 +406,7 @@ check(tasks.plan_status({ plan_id = overlap.plan_id }).status == "completed" and
   "a body standing in the placement footprint walks clear (build.footprint_exit's spot) and places again")
 walk.start, place_runner.tick = walk_start, place_tick
 
--- review: a plain place step still in its footprint after walking
+-- Footprint step-out: a plain place step still in its footprint after walking
 -- clear walks to another spot beside it (a different one each time, as
 -- build_plan does), up to three, the step running again after each; a walk
 -- that fails tries the next spot.

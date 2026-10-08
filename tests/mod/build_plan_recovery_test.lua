@@ -78,7 +78,7 @@ for n = 2, 4 do
 end
 check(not spots.repeated, "each retry walks to a different spot")
 
--- a dense layout fills the four spots two tiles beside the
+-- Footprint step-out: a dense layout fills the four spots two tiles beside the
 -- footprint; a farther or corner spot still gets the body out.
 geometry.can_place = overlap_until_moved
 character.position = { x = 10, y = 10 }
@@ -95,7 +95,7 @@ for _ = 1, 10 do dense_result = build_plan.tick(dense); if dense_result then bre
 check(dense_result and dense_result.status == "done" and created == 1,
   "a body boxed in on its four near sides walks to a farther spot and places")
 
--- the first walk ends with the body still in the footprint; it
+-- Footprint step-out: the first walk ends with the body still in the footprint; it
 -- tries another spot instead of failing.
 character.surface.find_non_colliding_position = function(_, position) return { x = position.x, y = position.y } end
 character.position = { x = 10, y = 10 }
@@ -205,7 +205,7 @@ check(stopped and stopped.status == "failed" and attempts["0:0"] == 1 and create
   "a stop_on_error plan stops at the failure instead of retrying it")
 approach_mock.ensure = function() return "ok" end
 
--- enclosed by own entities at the first placement, the body steps
+-- Enclosure escape: enclosed by own entities at the first placement, the body steps
 -- out once (move_entity's escape: take the named blocker up, walk out, put
 -- it back), then places; the step's detail says what was moved and restored.
 local supply = require("scripts.actions.supply")
@@ -260,7 +260,7 @@ check(still and still.status == "failed" and #escapes == 1 and still.detail:matc
   "an enclosure still there after one escape fails the step: one escape per step")
 approach_mock.ensure = function() return "ok" end
 
--- review, end to end with move_entity's own escape: the body stands
+-- Enclosure escape, end to end with move_entity's own escape: the body stands
 -- in a room whose east wall (x 200-201) has one inserter as its only gap,
 -- and the step lies 11 tiles east, just beyond the build distance. The
 -- escape walks out through the gap with the step within build distance

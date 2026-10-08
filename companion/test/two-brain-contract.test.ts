@@ -211,8 +211,9 @@ describe("persistent two-brain coordination contract", () => {
   it("shows the thinking in the game as output only", () => {
     expect(agents).toMatch(/spawned with `-c model_reasoning_summary=detailed`/);
     expect(agents).toMatch(/game chat never controls the bot, and the panel never triggers a takeover hold/);
-    expect(live).toMatch(/session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on \\? ?-c model_reasoning_summary=detailed/);
-    expect(live).toMatch(/session-launcher --name factorio-strategist --model gpt-6\.1-sol --reasoning-effort medium --fast off \\? ?-c model_reasoning_summary=detailed/);
+    expect(live).toMatch(/codex --model gpt-6-luna -c model_reasoning_effort=low -c service_tier=fast -c features\.fast_mode=true \\? ?-c model_reasoning_summary=detailed/);
+    expect(live).toMatch(/codex --model gpt-6\.1-sol -c model_reasoning_effort=medium \\? ?-c model_reasoning_summary=detailed/);
+    expect(live).not.toMatch(/session-launcher|session-status|codex-real|relay_steer/);
     expect(live).toMatch(/mcp_servers\.factorio-readonly=\{command=[^}]*args=\["--surface","read-only"[^\]]*\][^}]*enabled_tools=/);
     expect(live).not.toMatch(/mcp_servers\.[a-z-]+\.enabled=/);
     for (const text of [readme, live]) expect(text).toMatch(/--pilot-rollout[\s\S]*--strategist-rollout/);
@@ -243,15 +244,15 @@ describe("persistent two-brain coordination contract", () => {
     expect(live).toMatch(/only then start the recorder/);
   });
 
-  it("treats a human_control hold as the owner playing, never idleness or failure", () => {
+  it("treats a human_control hold as the human playing, never idleness or failure", () => {
     expect(flat(skill)).toMatch(/`human_control: true` \([^)]*\) means the owner is playing the body/);
     expect(flat(skill)).toMatch(/A hold is neither idleness nor failure\. Never fight for the body; wait for `human_hold_ended`/);
     expect(flat(skill)).toMatch(/A direct tool call that fails with a human-hold reason is retried after the hold/);
     expect(strategist).toMatch(/A `human_control` hold is the owner playing the body; it is neither idleness nor failure/);
     expect(agents).toMatch(/A hold is neither idleness nor failure\. The supervisor never nudges or replaces during a hold, records it as the owner input/);
-    expect(live).toMatch(/### the owner takeover rehearsal before GO/);
-    expect(live).toMatch(/\| `human_control: true` \(the owner playing the body\) \| No idle claim, nudge, or replacement\./);
-    expect(live).toMatch(/The rehearsal needs the owner's real input, so it runs only when the supervisor's assignment says in so many words that the owner has agreed to do the takeover rehearsal now/);
+    expect(live).toMatch(/### Takeover rehearsal before GO/);
+    expect(live).toMatch(/\| `human_control: true` \(the human player playing the body\) \| No idle claim, nudge, or replacement\./);
+    expect(live).toMatch(/The rehearsal needs the human player's real input, so it runs only when the supervisor's assignment says in so many words that the human player has agreed to do the takeover rehearsal now/);
   });
 
   it("adapts idleness evidence so upkeep is not pilot activity", () => {

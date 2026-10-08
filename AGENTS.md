@@ -5,9 +5,9 @@
 - Lifecycle state: active
 - Lifecycle class: personal-tool
 - Repository owner: The owner
-- Human developers: The owner only
+- Contributors: maintainer-led; outside issues and pull requests are welcome
 - Engineering mode: agent-only
-- Human code review: never
+- Code review: the maintainer reviews outside pull requests before merging
 - Human decision scope: product outcomes and hard-authority approvals only
 - Project goal: Show how Codex bots think about and architect a Factorio
   factory: two reasoning sessions plan and direct one physically embodied
@@ -50,8 +50,7 @@
   takeover hold or fill his undo queue.
 - Use Node 22 and Factorio 2.0.x. Run the proportional offline suite before
   publication; live gameplay validation requires an installed Factorio game.
-- Complete private-repository changes on clean, pushed `main` with exact
-  remote-SHA readback.
+- Land changes on a clean `main` with the offline suite passing.
 
 ## Persistent two-brain gameplay
 
@@ -211,8 +210,8 @@ writer retirement and physical quiescence; unconfirmed retirement is a
 capability problem. Delivery is not consumption: replace only after the nudge's
 token appears in a pilot `userMessage`, or after one recorded interrupt of the
 exact stale pilot turn followed by a further two minutes of unchanged idleness.
-The observation helper that `docs/LIVE-VALIDATION.md` describes is the only
-nudge and replacement gate.
+Nudge and replacement decisions rest only on the sample-to-sample idle
+evidence that `docs/LIVE-VALIDATION.md` describes, never on a single read.
 
 Record every nudge or replacement intervention and invalidate affected state.
 Preserve the strategist, single body, FIFO, and write path; start the replacement
@@ -329,14 +328,3 @@ raw console, imported blueprints, or tutorial sequences. Reuse or adapt the
 smallest maintained compatible path; otherwise retain candidates only as design
 evidence, record why they do not fit, and patch the smallest existing active
 path. This is engineering guidance, not a service, gate, or report workflow.
-
-## Artifact conventions
-
-Durable agent output (plans, analyses, handoffs) lives in `./.agent/{plans,analysis,handoffs}/`: a symlink to a workspace-owned external artifact root keyed by repository and worktree. Private uses the XDG-backed store; client workspaces use their own `.agent-runtime/artifacts` root. This keeps artifacts outside `git clean -fdx` and worktree teardown blast radius without crossing workspace boundaries.
-
-Untracked or generated `.claude/` scratch is disposable. Committed `.claude/rules/` and other explicitly repo-owned files remain source; never use `.claude/reports/` or `.claude/analysis/` for durable task evidence.
-
-When concurrent work needs artifacts, use unique descriptive names to prevent
-clobbering. Routine work does not require an artifact.
-
-Discovery from cold start: `ls -t .agent/plans/ | head`.

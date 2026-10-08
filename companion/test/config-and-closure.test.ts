@@ -190,14 +190,12 @@ describe("exact local configuration", () => {
     expect(skill).toContain("[player knowledge v1](PLAYER-KNOWLEDGE-v1.md)");
     expect(skill).toContain("GOAL-STRATEGIST-v1.md");
     expect(liveValidation).toMatch(/Prior-release 0\.7\.0 live evidence/);
-    expect(liveValidation).toMatch(/At GO, release each pending submission with `thread\/queue\/start`/);
+    expect(liveValidation).toMatch(/Delivery is not consumption: a message counts as received only when its text\s+appears in a turn of the exact target session/);
     expect(liveValidation).toMatch(/The pilot's GO text names the strategist's exact thread ID/);
     expect(liveValidation).toMatch(/historical 0\.7\.0 evidence[\s\S]*not live validation of[\s\S]*0\.8\.0/);
-    expect(liveValidation).toMatch(/Optional couch UI navigation layer/);
-    expect(liveValidation).toMatch(/non-game couch UI, administration, or[\s\S]*reconnection steps that SSH cannot perform/);
-    expect(liveValidation).toMatch(/AutoHotkey-based `couch-ui` fallback/);
-    expect(liveValidation).toMatch(/gameplay pilot remains MCP-text-only[\s\S]*Screenshot capability must never be used for Factorio[\s\S]*perception or play/i);
-    expect(liveValidation).toMatch(/post-run screenshots are permitted only after the scored run is frozen[\s\S]*structured MCP evidence is insufficient[\s\S]*non-authoritative[\s\S]*must not contribute coordinates, routes, tactics, or[\s\S]*durable knowledge[\s\S]*revalidate every finding[\s\S]*structured in-game MCP data[\s\S]*does not authorize couch GUI control or expand the Windows-MCP boundary/i);
+    expect(liveValidation).toMatch(/gameplay pilot remains MCP-text-only[\s\S]*screenshot capability of any[\s\S]*must never be used for Factorio perception or play/i);
+    expect(liveValidation).toMatch(/post-run screenshots are permitted only after the scored run is frozen[\s\S]*structured MCP evidence is insufficient[\s\S]*non-authoritative[\s\S]*must not contribute coordinates, routes, tactics, or[\s\S]*durable knowledge[\s\S]*revalidate every finding[\s\S]*structured in-game MCP data[\s\S]*does not authorize desktop GUI control of the game/i);
+    expect(liveValidation).not.toMatch(/192\.168\.|DESKTOP-|Windows-MCP|couch-ui|VK-\d+/);
     expect(liveValidation).toMatch(/dedicated-server process arguments contain the RCON secret[\s\S]*never[\s\S]*`ps` full args[\s\S]*`\/proc` command-line[\s\S]*WMI `CommandLine`[\s\S]*user-service state, PID, executable basename, and `doctor`[\s\S]*secret-redacted/i);
     expect(liveValidation).toContain("%APPDATA%\\\\Factorio\\\\mods\\\\mod-list.json");
     expect(liveValidation).not.toContain("%APPDATA%\\\\Factorio\\\\mod-list.json");

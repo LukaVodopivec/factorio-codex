@@ -263,8 +263,8 @@ each segment one terminal buffer, and may remove owned obsolete entities
 through guarded package `mine` steps. Belt orientation in `find_placement` and
 other geometry helpers wait for cycle-6 data.
 
-The release folds in the parallel fixes for several issues that landed
-first. It keeps their quality-aware pole reach, their prototype-shaped burner
+The release folds in four parallel fixes that landed first. It keeps their
+quality-aware pole reach, their prototype-shaped burner
 reads and the empty-hand `burning_and_stocked_fuel` return identity. Their
 per-sample transport and fuel-return obligations are replaced by window rules.
 An inserter still waiting for source items at the end, past the path recency
@@ -282,7 +282,7 @@ quantities or runtime identities. It is an event reset, not a permanent exemptio
 one early refill cannot excuse later starvation. Saturation and a pending
 longer-window row at the exact drop target retain their existing meanings.
 
-For an earlier issue, the reported two 60-second windows had equal topology signatures
+For the divergent-throughput defect, the reported two 60-second windows had equal topology signatures
 and production totals, but neither those totals nor whole-window wait counts
 identify the final uninterrupted sampled source-wait streak. The rejection uses
 that streak, strictly older than 20 seconds at the end of a 60-second window.
@@ -387,9 +387,8 @@ totalled 101. No component was currently `autonomous_end_to_end` at the stop.
   out had been read as no delivery, although research was progressing.
 
 Two new tracker defects came from the replacement: `can_place` accepted an
-occupied coal belt that physical placement then refused, and
-same-topology productive windows got divergent throughput outcomes (an earlier issue,
-not yet diagnosed).
+occupied coal belt that physical placement then refused, and same-topology
+productive windows got divergent throughput outcomes (not yet diagnosed).
 
 Release 0.19.7 addresses these defects:
 

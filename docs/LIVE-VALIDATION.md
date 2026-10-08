@@ -1,19 +1,29 @@
 # Live validation
 
-This runbook validates release **0.29.2**. Prior live evidence remains historical
-until the 0.29.2 run is recorded. The Linux workstation has no dedicated
-GPU and is permanently headless: run only the dedicated server, Node bridge,
-and agent tooling there. Never start a Factorio GUI/client or any other visual
-GUI workload on that workstation during rollout, validation, or a benchmark.
-Both visual Factorio processes run exclusively on the couch PC. The
-`scripts/launch-native-client.ps1` entrypoint is couch-only; the repository does
-not provide a Linux visual client launcher.
+This guide validates release **0.29.2** against a real Factorio game: start a
+test server, connect a client, and check the tools and plans live. Offline
+tests (`npm test`) cover the same contracts with fixtures; only a live run
+shows the engine's own behaviour. Earlier live evidence below stays historical
+until a 0.29.2 run is recorded.
 
-1. On the couch PC, install the full standalone Factorio 2.0.x Space Age build under
-   `%LOCALAPPDATA%\factorio-codex\standalone-space-age`, or pass its executable as
-   `-FactorioBinary`. The Steam build is intentionally rejected for the Codex
-   client because it replaces the isolated LAN identity.
-2. Run `nvm use 22 && npm ci && npm run build && node companion/dist/cli.js setup`.
+The reference setup uses two machines. The server machine has no dedicated
+GPU and is permanently headless: it runs only the dedicated server, the Node
+bridge, and the agent sessions, and never a Factorio GUI or client.
+Both visual Factorio processes run exclusively on the couch PC, a separate
+Windows machine on the same trusted LAN. The `scripts/launch-native-client.ps1`
+entrypoint is for that Windows client; the repository provides no Linux
+visual client launcher. Any equivalent split works, as long as the server
+machine stays headless.
+
+## Start a test server and connect a client
+
+1. On the Windows client machine, install the full standalone Factorio 2.0.x
+   Space Age build under `%LOCALAPPDATA%\factorio-codex\standalone-space-age`,
+   or pass its executable as `-FactorioBinary`. The Steam build is
+   intentionally rejected for the Codex client because it replaces the
+   isolated LAN identity with the Steam account identity.
+2. On the server machine, run
+   `nvm use 22 && npm ci && npm run build && node companion/dist/cli.js setup`.
 3. Host a dedicated Space Age fresh freeplay save from one run directory with
    permanent peaceful mode and enemy bases disabled:
    `node companion/dist/cli.js server create <run-dir>`, then
@@ -22,21 +32,60 @@ not provide a Linux visual client launcher.
    with base, elevated-rails, quality, space-age, and the companion enabled, so
    stale global mods never load. `server start` refuses a protocol or mod
    version mismatch before `GO`; `server stop <run-dir>` saves over RCON and
-   shuts the server down at the run boundary instead of leaving it idle. Both
-   server and couch client run the identical Space Age mod set.
+   shuts the server down at the run boundary instead of leaving it idle. Server
+   and clients run the identical Space Age mod set.
    Console-backed RCON disables achievements for the save. Play reaches
    every planet: rockets, remotely built space platforms, and the body's own
    trips by rocket, platform and landing pod.
-4. From the couch PC, run
-   `scripts/launch-native-client.ps1 -Address <server:port>` to connect the
+4. Allow the game's UDP port (`34197` by default) through the server
+   machine's firewall from the trusted LAN only. RCON stays private on
+   `127.0.0.1:19015`; it is never the address a client uses.
+5. On the client machine, build or copy the mod archive
+   (`npm run package:mod`) and run
+   `scripts/launch-native-client.ps1 -Address <server-host>:34197`. `-Address`
+   is required; there is no default server address. The launcher connects the
    isolated native client (highest graphics quality at 3840x2160) as the real
-   player named `Codex`, before
-   starting the normal couch Factorio client as the viewer. Its write-data and
-   mod profile lives only in `%LOCALAPPDATA%\factorio-codex\native-client`. Run
-   `node companion/dist/cli.js doctor`, start Codex at the repository root,
-   then call `connect_status` and `observe_local`. Confirm the mod refuses an
-   absent or wrong player instead of creating a standalone character.
-5. Physically mine resources; place a burner mining drill and stone furnace;
+   player named `Codex`, with its write-data and mod profile only in
+   `%LOCALAPPDATA%\factorio-codex\native-client`. Then start the ordinary
+   Factorio client as the viewer. A manually installed client instead needs
+   the mod ZIP in `%APPDATA%\\Factorio\\mods` and an enabled `agentic-companion`
+   entry in `%APPDATA%\\Factorio\\mods\\mod-list.json`; the ZIP must match the
+   server archive hash. `--mp-connect <host:port>` is the Factorio launch
+   argument (`--connect-to-server` is not valid).
+6. On the server machine, run `node companion/dist/cli.js doctor`, start Codex
+   at the repository root, then call `connect_status` and `observe_local`.
+   Confirm the mod refuses an absent or wrong player instead of creating a
+   standalone character.
+
+Factorio dedicated-server process arguments contain the RCON secret. Never
+print or read full arguments through `ps` full args, `/proc` command-line
+data, WMI `CommandLine`, or an equivalent process-inspection surface. Verify
+health through user-service state, PID, executable basename, and `doctor`
+only, and keep all reported output secret-redacted.
+
+After changing the repository build or mod, run setup again, confirm both
+Factorio config files are mode `0600`, restart the dedicated server, and then
+reconnect the clients. A client left in Factorio's
+`WaitingForUserToSaveOrQuitAfterServerLeft` state must be exited or its
+Factorio process closed before a fresh connection. On Windows, wait for
+`factorio.exe` to exit completely before replacing the mod ZIP: Windows briefly
+keeps a lock on the old archive.
+
+Before upgrading an existing save, stop the server and keep an exact copy of
+both the save and its matching mod archive. Validate the new release on a copy
+first. Rollback means stopping the server, restoring that paired save and
+archive, and confirming the restored version through `doctor`; never open the
+only rollback save with the newer mod.
+
+A recorder may downscale the 3840x2160 client window to `1920x1080`, but it
+must fit the complete source without cropping or enlarging a lower-resolution
+viewport. Before a timed recording, verify the live client area, capture-source
+dimensions and aspect ratio, and representative framing; a non-black frame
+alone is not evidence of usable framing.
+
+## Check tools and plans live
+
+1. Physically mine resources; place a burner mining drill and stone furnace;
    insert legitimately acquired fuel; wait; inspect; extract. Confirm inventory
    changes, elapsed ticks, full footprints, honest reach and path failures.
    Verify `mine` count repeats cycles only on its initial exact resource and
@@ -44,17 +93,17 @@ not provide a Linux visual client launcher.
    `nearest_target`, not duplicate entity rows. Observe an exact `ground_items`
    stack, call `pickup_items` with its unchanged position/item/count, and verify
    ordinary walking/ticks, target depletion, and the matching inventory delta.
-6. Run a two-or-more-step `run_plan`. Confirm ordered fail-fast outcomes, no
+2. Run a two-or-more-step `run_plan`. Confirm ordered fail-fast outcomes, no
    later enqueue after failure, and a final observation on completed, failed,
    and cancelled paths. Confirm Codex walks at ordinary Factorio speed and no
    global game-speed setting changes.
-7. In the supervisor's recorded emergency-quiescence rehearsal, interrupt a
+3. In the supervisor's recorded emergency-quiescence rehearsal, interrupt a
    long action in the TUI, observe retained work, then have the supervisor call
    `stop` if cancellation is required. Verify active tasks, queued plans, and
    character crafting are cancelled and re-observe physical quiescence. The
    interruption alone grants no cancellation authority to the pilot; ordinary
    recovery retains committed effects and reconciles pending work.
-8. Exercise `find_placement` at a shoreline; confirm `map_summary` reads only
+4. Exercise `find_placement` at a shoreline; confirm `map_summary` reads only
    force-charted chunks; verify deterministic production arithmetic and
    ambiguity refusal. Find a cardinal inserter placement with an exact
    `output_target`, physically place it with that target, and distinguish its
@@ -86,11 +135,13 @@ not provide a Linux visual client launcher.
    applicable `waiting`, and truthful final transition after a fast successor.
    Then physically connect steam power to an
    electric drill and deliver mined ore through belt, pipe, and power routes.
-9. If bootstrap items are absent, use another fresh built-in freeplay save.
+5. If bootstrap items are absent, use another fresh built-in freeplay save.
    Gameplay roles never use console commands, editor mode, spawned items, or
    teleporting. A debug supervisor may use those surfaces only for recorded
    diagnosis or the smallest recovery intervention, after which the pilot must
    re-observe authoritative MCP state.
+
+## Release checklists
 
 For the 0.29.2 release (the bots do the thinking), record these observable
 checks on a copy of a running factory's save:
@@ -404,158 +455,256 @@ turning them into a fixed opening or map-specific sequence:
   state, or terminal result. A monitoring timeout does not cancel the plan and
   returns a self-describing continuation.
 
-## Persistent two-brain, one-writer contract
+## Two-brain live run
 
-The dedicated server and agent session run on the headless workstation, while
-the exact `Codex` client and characterless spectator/follower run only on the
-couch PC. Do not launch a local GUI as a recovery shortcut.
+`AGENTS.md` owns the two-brain contract (roles, ledger, packages, upkeep,
+idleness, stop, notebook). This section is the live procedure for one
+supervised run. The dedicated server and the agent sessions run on the
+headless server machine; the exact `Codex` client and the characterless
+spectator run only on the client machine. Do not launch a GUI on the server
+machine as a recovery shortcut.
 
-The fresh supervised-debug topology has exactly two persistent reasoning
-sessions and one physical writer. Start the sole gameplay pilot as
-`gpt-6-luna` with `low` reasoning and fast mode enabled. Start the persistent
-strategist as `gpt-6.1-sol` with `medium` reasoning at normal speed and expose
-only the disabled-by-default `factorio-readonly` MCP server to it; disable the
-full `factorio` server in that the strategist session. The strategist owns NOW/NEXT/LATER and the
-architecture, and is the sole atomic writer of one compact `operations.json`,
-including its initial revision. The ledger is the strategist's only channel to the
-pilot. The strategist designs build packages of its own layouts or this run's blueprints,
-dry-run with `check_only` (the only coordinates in the ledger).
+### Roles and the one-writer lane
+
+The supervised-debug topology has exactly two persistent reasoning sessions
+and one physical writer. Start the sole gameplay pilot as `gpt-6-luna` with
+`low` reasoning and fast mode enabled. Start the persistent strategist as
+`gpt-6.1-sol` with `medium` reasoning at normal speed and expose only the
+disabled-by-default `factorio-readonly` MCP server to it; disable the full
+`factorio` server in the strategist session. The strategist owns
+NOW/NEXT/LATER and the architecture, and is the sole atomic writer of one
+compact `operations.json`, including its initial revision. The ledger is the
+strategist's only channel to the pilot. The strategist designs build packages
+of its own layouts or this run's blueprints, dry-run with `check_only` (the
+only coordinates in the ledger).
+
 The pilot's full-surface bridge queues each new package into the FIFO by
 itself, as a plan with source `package:<id>` after the mod's placement check,
 with no pilot turn, and records outcomes in `<run_dir>/package-queue.json`.
 It never waits for a pilot plan: it holds packages only during a human hold
 and while the ledger file is older than the last `stop` it observed (persisted
 in `package-queue.json`), so packages written before a stop stay held until
-The strategist rewrites the ledger. Leading `blueprint_capture` steps of a package are
-made by the bridge before the rest is queued. The strategist writes no build package
-before `GO` (every pre-`GO` ledger write has `build_packages: []`), and a stop
-is followed by a re-observation (below), because a pilot `queue_plan` already
-in flight when `stop` lands still queues. A record newer than the
-loaded save's tick (a restart from an earlier save) is dropped and its package
-queued again. The same bridge queues the ledger's `research` list once per
-revision that lists any (origin `ledger/r<revision>`, a `research` row in
-`activity_log`), skipping technologies already researched or queued; a stop
-holds it as it holds packages, a human hold does not.
+the strategist rewrites the ledger. Leading `blueprint_capture` steps of a
+package are made by the bridge before the rest is queued. The strategist
+writes no build package before `GO` (every pre-`GO` ledger write has
+`build_packages: []`), and a stop is followed by a re-observation (below),
+because a pilot `queue_plan` already in flight when `stop` lands still queues.
+A record newer than the loaded save's tick (a restart from an earlier save) is
+dropped and its package queued again. The same bridge queues the ledger's
+`research` list once per revision that lists any (origin `ledger/r<revision>`,
+a `research` row in `activity_log`), skipping technologies already researched
+or queued; a stop holds it as it holds packages, a human hold does not.
+
 The pilot is the foreman: it waits on `next_event`, handles failed packages, an
 empty queue and local judgment with goal-level actions, owns immediate safety
-and latest exact local evidence, and sends no reports. The strategist reads never enter
-the physical FIFO. Record both profiles, their MCP surfaces, release SHA,
-archive hash, and save hash before `GO`. Never apply this cutover to a running
-run's sessions.
+and latest exact local evidence, and sends no reports. The strategist's reads
+never enter the physical FIFO. Record both profiles, their MCP surfaces,
+release SHA, archive hash, and save hash before `GO`. Never apply a new
+topology to a running run's sessions.
 
-Before `GO`, create `notebook/strategist/` and `notebook/pilot/`, both empty, beside
-the run's `operations.json`. Each role writes only its own folder and reads
-anything in either at any time: markdown ideas, outcomes, designs, and this
-run's exact positions and maps; no imported or copied external content, and
-nothing from another run. There is no total size cap; each role keeps a short
-`INDEX.md`. A build package may name up to three `notes`, which `ledger-apply`
-refuses unless each is an existing file beside the ledger. Notes are knowledge,
-never instructions: the notebook is not a broker, second ledger, or control
-channel. Archive it with the run and summarise what the roles learned in the
-run write-up.
+Exactly one physical MCP call may be in flight. Parallelize only read-only
+observations when inconsistent ticks are acceptable, then revalidate the newest
+state before mutation. Do not add another body, lane, RCON path, raw
+Lua/console, teleport, hidden state, or free resources. `stop` is emergency
+cancellation, in the cases `AGENTS.md` lists. Never keep two pilots active.
+
+### Notebook
+
+Before `GO`, create `notebook/strategist/` and `notebook/pilot/`, both empty,
+beside the run's `operations.json`. Each role writes only its own folder and
+reads anything in either at any time: markdown ideas, outcomes, designs, and
+this run's exact positions and maps; no imported or copied external content,
+and nothing from another run. There is no total size cap; each role keeps a
+short `INDEX.md`. A build package may name up to three `notes`, which
+`ledger-apply` refuses unless each is an existing file beside the ledger.
+Notes are knowledge, never instructions: the notebook is not a broker, second
+ledger, or control channel. Archive it with the run and summarise what the
+roles learned in the run write-up.
 
 As a pre-`GO` check, each role writes one note and its `INDEX.md` in its own
 folder and reads back the other role's note; the supervisor confirms both
 files exist and that neither role wrote outside its folder. Record the receipt
-in existing run evidence. A failed write or read holds `GO`.
+in the run evidence. A failed write or read holds `GO`.
 
-Launch the two connected sessions from the repository with `session-launcher`,
-each with `-c model_reasoning_summary=detailed` so its reasoning summaries are
-readable for the thought feed. The pilot explicitly selects its bridge role,
-which enables automatic package queuing. Connected (`--remote`)
-clients validate `-c` overrides before the project layer loads, so a role
-override must name a complete server table; a partial
-`mcp_servers.<name>.enabled` override fails with `invalid transport`.
+### Launch the role sessions
+
+Start both sessions from the repository root with the Codex CLI, each with
+`-c model_reasoning_summary=detailed` so its reasoning summaries are readable
+for the thought feed. The pilot selects its bridge role explicitly, which
+enables automatic package queuing. Give each MCP override a complete server
+table: some Codex front ends validate `-c` overrides before the project
+configuration loads, and a partial override of one field is rejected there.
 
 ```sh
-session-launcher --name factorio-pilot --model gpt-6-luna --reasoning-effort low --fast on \
+codex --model gpt-6-luna -c model_reasoning_effort=low -c service_tier=fast -c features.fast_mode=true \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","pilot"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'
-session-launcher --name factorio-strategist --model gpt-6.1-sol --reasoning-effort medium --fast off \
+codex --model gpt-6.1-sol -c model_reasoning_effort=medium \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
   -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
-`--role` names the session in the `origin` of every cancel its MCP process
-makes. The supervisor starts its own factorio server with
-`-c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","supervisor"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'` before it rehearses
-`stop`; a server started without one reports `unknown`.
+Fast mode is `service_tier=fast` (read back as the `priority` tier) with
+`features.fast_mode` enabled;
+the strategist keeps the default (normal) tier. `--role` names the session in
+the `origin` of every cancel its MCP process makes. The supervisor starts its
+own factorio server with
+`-c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","supervisor"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'`
+before it rehearses `stop`; a server started without one reports `unknown`.
 
-Before relying on the feed, confirm on a throwaway session that `gpt-6-luna`
-and `gpt-6.1-sol` emit reasoning summaries with that setting, and record the
-setting in the role-profile evidence. If a model emits none, its assistant
-messages are the feed.
+Before relying on the feed, confirm on a throwaway session that both models
+emit reasoning summaries with that setting, and record the setting in the
+role-profile evidence. If a model emits none, its assistant messages are the
+feed.
 
-The launch flags express requested settings. `--fast on` requests
-`service_tier="priority"` plus `features.fast_mode=true`; `--fast off` requests
-normal service. Neither a launch flag nor a successful update is role-profile
-confirmation. Follow the native readback procedure below before `GO`.
-Start each with its checked-in role goal; the pilot takes no physical action
-before `GO`. Confirm the strategist lists exactly the twenty-one configured read-only tools
-(`build_layout`, `connect_entities`, `blueprint_place` and `place_tiles` there are dry runs only) and cannot list any
-movement, transfer, crafting, placement, research mutation, plan
+Start each session with its checked-in role goal; the pilot takes no physical
+action before `GO`. Confirm the strategist lists exactly the twenty-one
+configured read-only tools (`build_layout`, `connect_entities`,
+`blueprint_place` and `place_tiles` there are dry runs only) and cannot list
+any movement, transfer, crafting, placement, research mutation, plan
 enqueue/run/cancel, or stop tool before `GO`, and that the pilot has the full
 surface and no read-only server.
+
+### Role-profile readback
+
+Launch flags express requested settings; neither a flag nor a successful
+settings update confirms a profile. Before `GO`, each role calls native
+`execution_settings({})` and sends the supervisor a compact projection copied
+verbatim from the result, under 1,000 bytes: the `current_turn` and
+`next_turn` model, reasoning effort and service tier, plus
+`fast_mode_enabled` and `fast_inherited_from_root` when available. Keep four
+kinds of evidence apart:
+
+- **Requested:** launch flags or the exact update values.
+- **Current turn:** the native current model, effort and tier; an update does
+  not change the turn that made it.
+- **Next turn:** the native next-turn values; an update with
+  `effective:"next_turn"` applies from the following turn.
+- **Availability/inheritance:** the fast-mode flags, recorded verbatim. In
+  the runtime validated so far, `fast_mode_enabled` follows the selection
+  feature, not the selected tier, so judge normal speed by the tiers.
+
+If preparation changes a profile, end that turn and read again in the next
+one. Require both turns to match pilot / low / `priority` and strategist /
+medium / default tier. Missing, stale, malformed or contradictory reports hold
+`GO`; a sent report is not a consumed one. These tiers describe the selected
+settings, not provider processing; never infer the latter from latency or a
+flag. Recheck the field semantics when the Codex runtime changes (see the
+[Codex configuration reference](https://developers.openai.com/codex/config-reference)).
+
+### Initialise the ledger
 
 Before `GO`, verify the requested fresh save and release hashes, permanent
 peaceful mode/enemy bases disabled, exact native player, viewer, and one
 body/lane/writer. Archive the previous run's `operations.json` and
 `package-queue.json` into that previous run's directory and verify the current
 destinations are absent. The bridge reads the ledger at
-`<run-dir>/operations.json` of the server `server start` started. Give the strategist
-that absolute path and the exact `run` object (`id`, `release_sha`,
+`<run-dir>/operations.json` of the server `server start` started. Give the
+strategist that absolute path and the exact `run` object (`id`, `release_sha`,
 `baseline_save_sha256`, `save_identity`, `created_at`, `roles` per the ledger
 schema: `{"pilot":{"model":"gpt-6-luna","reasoning":"low","fast":true},`
-`"strategist":{"model":"gpt-6.1-sol","reasoning":"medium","fast":false}}`; a ledger
-written before 2026-10-05 keeps its recorded `gpt-6-astra`), and
+`"strategist":{"model":"gpt-6.1-sol","reasoning":"medium","fast":false}}`), and
 have the strategist create it by piping an
 `{"init": true, "run": <that object>, "source_tick": null, "update": ...}`
 envelope to `node_modules/.bin/tsx companion/src/cli.ts ledger-apply --ledger
-<absolute operations.json path>` from its worktree. Fill `update` with the
+<absolute operations.json path>` from its checkout. Fill `update` with the
 mutable fields (`phase`, `bottleneck`, `latest_measured_capacity`, `task_list`
 with NOW/NEXT/LATER, `assumptions`, and `build_packages: []` (required for
 every write before `GO`; every later update restates the list). Verify the
 receipt returns `status: "applied"`, revision 1, and the submitted source
 tick, that the persisted schema-2 ledger has mode `0600` and an empty
 `build_packages`, and that `<run_dir>/package-queue.json` is absent or has no
-records. Initialization refuses every
-existing destination without replacement. Later updates use the
-`{run_id, save_identity, source_tick, update}` envelope and require a newer
-tick. Never hand-seed the ledger: The strategist is its sole atomic host writer.
+records. Initialization refuses every existing destination without
+replacement. Later updates use the `{run_id, save_identity, source_tick,
+update}` envelope and require a newer tick. Never hand-seed the ledger: the
+strategist is its sole atomic host writer.
 
-Rehearse the stop sequence below on the live role sessions without stopping the
-server; a role turn must end within about five seconds of pause plus
-interrupt. Then resume both role goals through the native procedure below,
-pass the notebook check above and the takeover rehearsal below or its recorded
-skip, on a resumed save repeat the retained-work reconciliation (`stop` with
-`keep_upkeep: true`, step 3 below) so the last `stop` before `GO` leaves
-upkeep on, and only then start the recorder; an active goal plus an idle thread
-does not prove that queued `GO` will start a turn. At `GO+20m` record the GO+20
-recorder checkpoint as the run's comparison snapshot without stopping
-anything; assisted debug progress is still not benchmark evidence. Continue
-past 20 minutes toward the assigned milestone (currently sustained Nauvis
-production: lines that `factory_status` reports `running` and
+### Session control checks before GO
+
+`AGENTS.md` requires the supervisor to prove, before `GO`, that it can deliver
+a message to the exact pilot session and can interrupt and retire that session
+so it cannot resume gameplay writes. Use whatever session mechanism launched
+the roles (the Codex TUI, or the Codex app-server's thread and turn controls
+for a connected session). Prove retirement on a disposable non-gameplay
+session through the same mechanism, and only confirm that the route is
+available for the exact pilot; never retire the prepared pilot as a test.
+Delivery is not consumption: a message counts as received only when its text
+appears in a turn of the exact target session. A queued message waits until
+the target's current turn ends, so deliver a stop or another deadline-sensitive
+instruction to a busy session by steering its active turn.
+
+### Stop rehearsal and GO
+
+Rehearse the explicit stop sequence (below) on the live role sessions without
+stopping the server; a role turn must end within about five seconds of pause
+plus interrupt. Then resume both role goals. A resumed goal can start a
+continuation turn by itself: interrupt that turn and confirm it did no
+physical work. Pass the notebook check above and the takeover rehearsal below
+or its recorded skip, on a resumed save repeat the retained-work
+reconciliation (`stop` with `keep_upkeep: true`, see the upgrade steps below)
+so the last `stop` before `GO` leaves upkeep on, and only then start the
+recorder:
+
+```sh
+node companion/dist/cli.js runs record --ledger <run-dir>/operations.json --variant <name> --change <description> \
+  --pilot-rollout <pilot rollout.jsonl> --strategist-rollout <strategist rollout.jsonl>
+```
+
+A replacement session writes its rollout path to `<run_dir>/rollouts.json` as
+`{"pilot": path, "strategist": path}`, which the recorder follows.
+
+Send one `GO` message to each role after the recorder baseline exists.
+The pilot's GO text names the strategist's exact thread ID, as does any
+replacement pilot's assignment, so neither role reads threads to find the
+other; the pilot still sends the strategist no reports. Each role's GO text
+also carries this line: "Never call list_threads, read_thread or
+wait_threads; after any compaction re-read your goal file and SKILL.md, then
+your notebook INDEX.md." No configuration filters those coordination tools
+per action, so this text rule is the control. Record the common GO timestamp
+and each role's first turn that contains its GO text. An active goal plus an
+idle session does not prove that GO will start a turn; read the session back
+instead of sending GO twice. Native goal continuation, not a supervisor
+message per batch, starts each later batch.
+
+At `GO+20m` record the recorder checkpoint as the run's comparison snapshot
+without stopping anything; assisted debug progress is still not benchmark
+evidence. Continue past 20 minutes toward the assigned milestone (currently
+sustained Nauvis production: lines that `factory_status` reports `running` and
 `self_sustaining` at the next two recorder checkpoints, plus research consuming
-produced science); Candidate B and R1-R7 freeze rules are historical unless
-The owner starts a benchmark.
+produced science). Measure each run at `GO+20m` and `GO+60m` against the
+cycle-10 targets in the release checklist above and the earlier cycles in
+`docs/AGENT-PLAY-PERFORMANCE.md`. Candidate B and R1-R7 freeze rules are
+historical unless the owner starts a benchmark.
+
+### Explicit stop
+
+For an explicit stop by the owner, record each step: call factorio `stop`
+(cancels the active task and every queued plan within seconds); in each role
+session run `/goal pause` and read back the paused state; interrupt any active
+role turn with the TUI stop control or the app-server `turn/interrupt` for
+that role's exact thread and turn, and read back the interrupted turn; check
+separately that no task-owned command or job is still running; confirm the
+strategist makes no further ledger write; wait at least 2 s (more than one 1 s
+bridge tick), call `observe_local`, and if it shows an `active_task` or
+`queue_depth > 0` (a pilot `queue_plan` in flight before the interrupt lands
+after `stop`), call factorio `stop` again and re-observe until idle; only then
+run recorder FINISH (interrupt `runs record` and wait for its `FINISH` line)
+and `server stop <run-dir>`. A steered cancel message reaches a busy role at
+its next step but stops nothing by itself.
 
 ### Resume with a mod upgrade
 
 To continue a run's factory with a new release instead of a fresh map:
 
-1. Stop the old run with the explicit-stop sequence below (factorio `stop`,
-   both goals paused, active turns interrupted, recorder finished, `server
-   stop <run-dir>`), recording each step. Its final `save.zip` holds the
-   factory.
+1. Stop the old run with the explicit-stop sequence above, recording each
+   step. Its final `save.zip` holds the factory.
 2. Build the new release (`npm ci && npm run build && npm run package:mod`)
    and create a new run directory with `server create <new-run-dir>`, which
    installs the new mod into its run-local mod directory. Replace its
    `save.zip` with the old run's final save, unchanged, and copy the old run's
-   `notebook/`. The supervisor tooling's resume path (`--resume <old-run-dir>
-   --allow-upgrade`) does exactly this and refuses an upgrade it was not told
-   to allow.
-3. Update the couch `Codex` client to the same mod version, then
+   `notebook/`.
+3. Update the `Codex` client to the same mod version, then
    `server start <new-run-dir>`; it refuses a protocol or mod version mismatch.
    Confirm `connect_status` versions and that `observe_local` shows an idle
    body. A plan step saved by an older release that no longer exists completes
@@ -566,149 +715,19 @@ To continue a run's factory with a new release instead of a fresh map:
    plain `stop` turns upkeep off until a plan finishes, so it is the last
    `stop` before `GO`.
 4. The old run's `operations.json` and `package-queue.json` stay archived in
-   its directory. The strategist initialises the new run's ledger from fresh reads
-   (packages from the old ledger are not queued again); the copied notebook
-   continues, because a resumed save of the same factory continues its run.
-5. Spawn the role sessions with this release's settings (for 0.22.3:
-   `-c model_reasoning_summary=detailed` and the twenty-one read-only tools
-   above) and their updated goal files, redo the role-profile readback, start
-   the recorder with `--pilot-rollout` and `--strategist-rollout` (a later
-   replacement writes its rollout path to `<run_dir>/rollouts.json` as
-   `{"pilot": path, "strategist": path}`, which the recorder follows), and release
-   `GO` through the native procedure below. Record the upgrade as an
-   intervention.
+   its directory. The strategist initialises the new run's ledger from fresh
+   reads (packages from the old ledger are not queued again); the copied
+   notebook continues, because a resumed save of the same factory continues
+   its run.
+5. Start the role sessions with this release's settings and their updated goal
+   files, redo the role-profile readback, start the recorder with
+   `--pilot-rollout` and `--strategist-rollout`, and send `GO` as above.
+   Record the upgrade as an intervention.
 
-### Native role-profile evidence before GO
+### Takeover rehearsal before GO
 
-Use the existing connected session transport, exact role thread/turn identities,
-and existing run evidence. Add no launcher wrapper, enforcement hook, evidence
-store, ledger field, or gameplay control channel. Apply this procedure only at
-the fresh-run preparation cutover; never reconfigure an active gameplay role.
-
-The [official configuration reference](https://developers.openai.com/codex/config-reference)
-defines `features.fast_mode` as enabling model-catalog service-tier selection
-controls. It describes `service_tier` as a preference for new turns, with `fast`
-mapping to `priority`. Separate four kinds of evidence:
-
-- **Requested:** launch flags or the exact `execution_settings` update values.
-- **Current turn:** native `current_turn.model`, `reasoning_effort`, and
-  `service_tier`; an update does not retroactively change this turn.
-- **Next turn:** native `next_turn` model, effort and tier; a successful update
-  with `effective:"next_turn"` establishes a request for subsequent turns.
-- **Availability/inheritance:** `fast_mode_enabled` and
-  `fast_inherited_from_root` when available, preserved verbatim. Verify their
-  semantics in the installed runtime, rather than equating similarly named
-  fields. The disposable 0.159.2 probes below establish that its enabled flag
-  follows the selection feature, independently of the selected Fast tier.
-
-Each exact role calls native `execution_settings({})` in preparation and sends
-a compact structured projection copied verbatim from the native result to the
-supervisor: both model/effort/tier triples and the availability/inheritance
-fields, plus exact thread/turn identity and separate requested values. Keep the
-message below the existing 1,000-byte transport limit; exclude unrelated
-context, usage and model-catalog fields. Keep requested values separate;
-do not reconstruct readback from a launch command or substitute the supervisor's
-own settings. Record session and turn identity, native runtime version,
-observation receipt time, requested values, reported values and interpretation
-in existing run evidence. This preparation report uses the existing session
-transport to the supervisor; the strategist's only channel to the pilot remains the ledger.
-All required profile fields fit this compact projection. If fuller native output
-is needed, the supervisor reads it through the existing session transport and
-records it in existing run evidence; do not add a store or channel.
-
-If preparation changes a role profile, retain the update receipt, end that
-turn, and obtain a fresh native read in the subsequent turn. Require both
-`current_turn` and `next_turn` to match the pilot / low / Fast (`priority` in the
-validated runtime) or the strategist / medium / normal (`default` in these probes,
-`standard` only when the installed runtime establishes that mapping).
-`changed:false` on a read means no update was requested, not failed preparation.
-Missing fields, unresolved null tiers, wrong identity, malformed or stale
-reports, delayed delivery and unexplained contradictions hold `GO`. Resolve
-with the exact role and a fresh read; never silently treat them as confirmation.
-Any later settings update invalidates the earlier report.
-
-The supervisor explicitly consumes and records its assessment of **both** fresh
-reports before authorizing `GO`. Sending or queuing a report does not prove
-consumption. A report that arrives after this assessment requires reassessment;
-if it arrives after `GO`, record the missed preparation evidence and qualify the
-run rather than retroactively claiming compliant preparation. A true selection
-feature flag with current/next normal tiers is consistent in the validated
-runtime: preserve it as capability evidence and judge selected normal speed by
-the tiers. Any other unexplained conflict must be resolved before `GO`; the flag
-alone does not establish a native bug.
-
-These tiers describe native selected thread/turn settings. They do not by
-themselves prove provider processing. Record provider-confirmed processing tier
-separately if the transport exposes it; otherwise state it is unavailable and
-claim only the selected profile. Never infer provider confirmation from latency,
-a feature flag, a model catalog, or a role's prose summary.
-
-**Verification evidence and limits (2026-10-02).** Disposable persistent
-native 0.159.2 app-server sessions used the existing stdio JSON-RPC mechanism,
-with configured MCP servers disabled, a read-only sandbox, and no gameplay
-goals. Experimental raw tool-output events supplied actual `execution_settings`
-results, not inferred launch values. Receipt times below are UTC:
-
-| Probe / receipt | Native current turn | Native next turn | Enabled / inherited | Supervisor interpretation |
-| --- | --- | --- | --- | --- |
-| the pilot, 01:14:15 | the pilot / low / priority | the pilot / low / priority | true / false | Pilot selected Fast profile confirmed; no GO while Sol report absent. |
-| Sol delayed until 01:14:42 | Sol / medium / default | Sol / medium / default | true / false | Both reports now consumed; normal tier and true flag retained separately, not classified as a bug. No gameplay GO was sent. |
-| Sol requests the pilot/low/fast:true, 01:14:49; same-turn read | Sol / medium / default | the pilot / low / priority | true / false | `changed:true`, `effective:next_turn`; preparation incomplete despite update success. |
-| Subsequent turn, 01:14:54 | the pilot / low / priority | the pilot / low / priority | true / false | Fresh native read confirms application after the turn boundary. |
-| Requests Sol/medium/fast:false, 01:14:56; same-turn read | the pilot / low / priority | Sol / medium / default | true / false | Disabling Fast selects default for next turn while selection capability remains enabled. |
-| Subsequent turn, 01:15:00 | Sol / medium / default | Sol / medium / default | true / false | Fresh normal profile consumed; true flag is capability evidence. |
-| Separate session with features.fast_mode=false, 01:15:05 | Sol / medium / null | Sol / medium / null | false / false | Controlled feature-off probe changes the enabled flag; null tier remains qualified, not normal-profile confirmation. |
-
-The supervisor withheld profile approval while Sol's report was outstanding
-for 27 seconds, then consumed both structured reports. The delay was controlled
-by requesting Sol's read after the pilot's; it does not test transport congestion.
-The supervisor withheld confirmation across each mismatched current/next update until the subsequent-turn read. This
-is a disposable preparation exercise, not a live GO test. The feature-on/off
-comparison verifies the installed flag's capability meaning for these probes;
-it does not prove identical semantics in other versions or inheritance behavior
-for child sessions. Recheck after runtime changes. Provider processing tiers
-were not exposed in these settings results, so only native selected tiers are
-confirmed. Cleanup read all three test threads idle, archived them through native
-session controls, and observed the test app-server exit successfully. Initial
-transport-reader sampling was corrected before these complete probes; two
-preliminary sessions were also archived. No active gameplay role, shared native
-setting or credential was changed; no live run, mod deployment, server restart,
-or gameplay-performance claim follows from this validation.
-
-Repository-native offline verification used Node 22.23.2: the two-brain contract
-passed all 10 tests, the focused verifier passed all 15 Python tests, and quick
-and full passed all four and ten declared checks in a standalone checkout with
-byte-identical source at the time of those runs and the existing installed
-dependency tree. Subsequent changes were documentation only (compact-report
-wording and this evidence record); the two-brain and diff checks were rerun
-afterward.
-Initial preserved-worktree quick/full attempts reported an owning-checkout
-dependency-descriptor mismatch or missing descriptors; they did not establish
-which condition caused it. The standalone check supplied a matching real owning
-checkout without altering the verifier.
-an earlier issue remains separately owned; this correction changes no verifier code or
-suppresses any check. Fresh independent read-only review found a preparation
-message-size conflict; the compact projection above resolves it (a representative
-message with native Sol values and UUID identities is 417 bytes), and the
-reviewer confirmed the transport fix. A subsequent evidence-coverage finding
-was resolved by qualifying which source the broad checks covered, as above.
-Offline results do not prove
-live role preparation, provider processing tiers, or improved gameplay.
-
-After integrating the advanced 0.19.2 target, the instruction patch remained
-unchanged. The preserved worktree's own quick/full verification then passed all
-four/ten declared checks under Node 22.23.2; an exact committed standalone clone
-also passed both profiles. The integrated two-brain contract passed all 10 tests.
-A fresh independent read-only review found no integration conflict: upstream
-idle reporting, plan sizing and native GO resumption remained intact. These
-checks covered the integrated source before this evidence-only update; the
-final focused contract and diff checks were rerun afterward. The earlier
-prerequisite failure remains historical, not a current readiness failure.
-
-### The owner takeover rehearsal before GO
-
-The owner may take the Codex body over by mouse and keyboard at any time, through
-the native `Codex` client window on the couch PC. Real control input on that
+The human player may take the Codex body over by mouse and keyboard at any
+time, through the native `Codex` client window. Real control input on that
 client while it is in its character (movement, mining, building, rotating,
 crafting, item transfers, opening a GUI, holding an item in the cursor) parks
 the FIFO dispatcher, and the mod writes no walking, mining, or picking state.
@@ -721,296 +740,59 @@ from the current position. `afk_time` is not the signal: on native 2.0.77 the
 bot's own walking resets it whenever the view scrolls under a resting mouse
 cursor.
 
-The rehearsal needs the owner's real input, so it runs only when the supervisor's
-assignment says in so many words that the owner has agreed to do the takeover
-rehearsal now; "The owner is watching" is not that. This applies to fresh and
-resumed runs alike. Otherwise the supervisor verifies
-`character.human_control: false` on one fresh `observe_local`, records `human_idle_ticks` and the rehearsal as skipped in
-existing run evidence, and does not hold `GO`; the takeover acceptance item
-stays unproven for that run. Never simulate the owner's input.
+The rehearsal needs the human player's real input, so it runs only when the
+supervisor's assignment says in so many words that the human player has agreed
+to do the takeover rehearsal now; "the human player is watching" is not that.
+This applies to fresh and resumed runs alike. Otherwise the supervisor
+verifies `character.human_control: false` on one fresh `observe_local`,
+records `human_idle_ticks` and the rehearsal as skipped in the run evidence,
+and does not hold `GO`; the takeover acceptance item stays unproven for that
+run. Never simulate the human player's input.
 
-When it runs, rehearse it once before that run's `GO` on the live server with the supervisor driving the plan, since the pilot acts only
-after `GO`:
+When it runs, rehearse it once before that run's `GO` on the live server with
+the supervisor driving the plan, since the pilot acts only after `GO`:
 
 1. Queue one harmless bounded plan (a short `walk_to` and return) and confirm
    `fifo.human_control: false`.
-2. The owner moves the character in the `Codex` client. Within about one second an
-   `observe_local` shows `character.human_control: true`, a small
-   `human_idle_ticks`, the plan still queued or active, and no position change
-   the mod caused.
+2. The human player moves the character in the `Codex` client. Within about
+   one second an `observe_local` shows `character.human_control: true`, a
+   small `human_idle_ticks`, the plan still queued or active, and no position
+   change the mod caused.
 3. Queue a second plan during the hold; it is accepted and queued.
-4. The owner releases input. Within about ten seconds `human_control` is false and
-   both plans finish in order, with `human_control` on their results and
-   neither lost, cancelled, or failed.
+4. The human player releases input. Within about ten seconds `human_control`
+   is false and both plans finish in order, with `human_control` on their
+   results and neither lost, cancelled, or failed.
 
-Record the four receipts in existing run evidence and hold `GO` on any miss of
-a rehearsal that ran. End it with one recorded factorio `stop` and a fresh
-`observe_local` showing no active task and queue depth 0. A `run_plan` that returns nonterminal with
-`human_control: true` is not a failure, in the rehearsal or during a run: the
-plan is still queued or active behind the hold, so read it with `plan_status`
-after release instead of requeueing it. A direct tool call that fails with a
-human-hold reason is retried after the hold.
-During a run a hold is the owner input, not idleness: the supervisor records it,
-never nudges or replaces during it, and restarts idle timing from fresh
-evidence afterwards.
+Record the four receipts in the run evidence and hold `GO` on any miss of a
+rehearsal that ran. End it with one recorded factorio `stop` and a fresh
+`observe_local` showing no active task and queue depth 0. A `run_plan` that
+returns nonterminal with `human_control: true` is not a failure, in the
+rehearsal or during a run: the plan is still queued or active behind the hold,
+so read it with `plan_status` after release instead of requeueing it. A direct
+tool call that fails with a human-hold reason is retried after the hold.
+During a run a hold is the human player's input, not idleness: the supervisor
+records it, never nudges or replaces during it, and restarts idle timing from
+fresh evidence afterwards.
 
-### Native resumption after the stop rehearsal
+### Idle evidence
 
-Use the existing connected app-server session controls for each exact role,
-not a new session or gameplay path. Discover the installed protocol with
-`codex-real app-server generate-json-schema --experimental --out <scratch-dir>`
-and use the role daemon's existing connection (or `codex-real app-server proxy
---sock <role-daemon-socket>`). Initialize the JSON-RPC connection with
-`capabilities.experimentalApi=true`. Retain the exact `threadId` from the role
-session and every returned `turn.id`; names, the latest roster entry, and a
-supervisor's own thread are not substitutes. The installed 0.159.2 protocol
-provides `thread/resume`, `thread/goal/get`, `thread/goal/set`, `thread/read`,
-`thread/queue/add`, `thread/queue/list`, `thread/queue/start`, `turn/steer`,
-`turn/interrupt`, and `turn/started` / `turn/completed` notifications. A
-connection receives a thread's turn notifications only after `thread/resume`
-subscribes it to that thread. Recheck the installed
-schemas when the runtime changes; a schema establishes capability, not success.
+While milestone goals remain open, a fresh valid `observe_local.character`
+with `active_task` absent or with `source: "upkeep"`, numeric
+`queue_depth == 0`, and numeric `crafting.queue_size == 0` proves the pilot
+idle, and only while `human_control` is false. Upkeep is the mod's own
+refuelling, not pilot work; a package plan (`source: "package:<id>"`) is
+work. A missing character or required field, malformed response, stale sample,
+or failed call is uncertain, not idle. Inspect a known plan only with its
+exact `plan_id`; `plan_status {}` is invalid.
 
-1. Preserve the rehearsal's physical stop, goal pause, turn interruption,
-   settled task-owned commands, stopped the strategist ledger writes, and fresh physical
-   quiescence. Read back each exact paused goal and interrupted/completed turn.
-   Pause may itself settle a turn: if an interrupt reports no active turn,
-   inspect that exact turn before deciding whether anything remains to stop.
-   An interrupt response alone does not prove settlement; retain the matching
-   `turn/completed` notification and current thread readback.
-2. While each role's goal is still paused, subscribe that exact thread with
-   `thread/resume` on the connection that will release GO, and keep that
-   connection open through GO. On a thread whose goal is active, with a
-   queued GO, `thread/resume` can itself start a turn that consumes the GO; the
-   later `thread/queue/start` then fails with `-32600` ("thread already has an
-   active or pending turn", 2026-10-02).
-   Resume each existing goal with `thread/goal/set` using
-   `{threadId, status: "active"}`. Resume can immediately start a continuation
-   turn. Interrupt that exact resumed turn as part of the rehearsal and await
-   its settlement; it must perform no pilot physical action. Read back the
-   active goal and idle thread. Do not start a separate reconciliation turn to
-   test readiness. First prove this release procedure on disposable
-   non-gameplay sessions through the same native connection mechanism, with
-   no Factorio tools; preserve the exact-role capability checks above.
-3. Start the recorder and obtain its baseline before releasing either role.
-   Submit one `GO` per role with `thread/queue/add` using
-   `{threadId, clientUserMessageId, input: [{type: "text", text: <GO>}]}`.
-   The pilot's GO text names the strategist's exact thread ID, as does any replacement
-   pilot's assignment, so neither role reads threads to find the other; the
-   pilot still sends the strategist no reports.
-   Each role's GO text also carries this line: "Never call list_threads,
-   read_thread or wait_threads; after any compaction re-read your goal file and
-   SKILL.md, then your notebook INDEX.md." No configuration or
-   `session-launcher` option filters those coordination tools per action, so
-   this text rule is the control.
-   Choose and retain one unique client message ID for each role's GO. The
-   response's `queuedSubmission.id` proves acceptance only. Read
-   `thread/queue/list` for that thread to identify the pending submission;
-   queued delivery is not consumption and does not prove a turn will start.
-4. At GO, release each pending submission with `thread/queue/start` using
-   `{threadId, queuedSubmissionId: <returned id>}`. This consumes the existing
-   GO; do not send another GO or an empty `turn/start` reconciliation request.
-   Record the common GO timestamp at the first release dispatch, plus each
-   role's actual start receipt and recorder tick. Record any assigned absolute
-   stop deadline once from that GO boundary. Retries, delayed role starts,
-   resumption, and recovery never reset or extend it. If the deadline arrives
-   during recovery, execute the explicit-stop sequence, not another release.
-   If a connection must subscribe after the goals are active, treat its
-   `thread/resume` as a possible start. Read the thread and
-   `thread/queue/list` before releasing. If a started turn's `userMessage`
-   carries the GO `clientId`, record that as consumption and do not release
-   it again. Otherwise interrupt that exact turn, await its `turn/completed`,
-   confirm the GO is still listed, and only then release it.
-5. Match the returned turn ID and `turn/started` notification to that thread.
-   Confirm the pending submission disappears from `thread/queue/list` and the
-   turn's `userMessage` item contains the same `clientId` and GO text; retain
-   the role's response acknowledging consumption. These are distinct receipts
-   for acceptance, pending delivery, consumption, and turn start. Before any
-   retry after a timeout or uncertain effect, read the goal, thread, queue,
-   and exact turn history (`thread/read` with `includeTurns:true`, or the
-   installed paginated turn/item reads). If GO was consumed or a turn started,
-   do not enqueue or start it again. If an active/pending turn is reported,
-   resolve its identity and settlement before release; never overlap role
-   turns or treat an idle roster sample as proof that no start is pending.
-6. Observe a later native goal continuation turn after the GO turn ends while
-   the milestone remains open. The supervisor does not assign every batch.
-   Keep exactly the two persistent roles, one body and FIFO lane: the pilot alone
-   writes gameplay, the strategist keeps its read-only surface and alone writes the
-   ledger. The supervisor's native session control is not a gameplay writer.
-
-**Verification evidence and limits (2026-10-02).** The installed Codex CLI
-0.159.2 generated the experimental native schemas. Disposable persistent
-app-server sessions, using native stdio and connected Unix WebSocket JSON-RPC
-transports with every configured MCP server disabled and a read-only sandbox, exercised
-`gpt-6-luna` / low and `gpt-6.1-sol` / medium separately. Both rehearsed pause,
-interruption, resume, and interruption of the automatically resumed turn.
-Their goals read active and threads idle, yet each GO remained in
-`thread/queue/list`. Exact `thread/queue/start` removed that submission,
-returned a turn ID, emitted the matching `turn/started`, and recorded a
-`userMessage` with the submitted client ID. Both answered `GO_CONSUMED`,
-completed that turn, and then automatically started and completed a distinct
-native goal continuation answering `CONTINUATION`, without another start
-request. In the stdio samples, rehearsal/resume interrupted-turn durations
-were 6/8 ms for the pilot and
-4/13 ms for Sol; these disposable timings do not establish live-role stop
-latency. Cleanup read both goals paused and threads idle, archived the test
-sessions, and observed the test app-server processes exit successfully.
-
-This proves native session resumption and continuation over those transports,
-not the running human daemon, live gameplay, physical stop latency, recorder
-behavior, or ledger quiescence. Rehearse through the actual connected role route before a live GO.
-The release 0.19.1 cycle-2 queued-GO incident is the reported motivation, not
-new live validation evidence. Claim live success only after an authorized
-supervised run records both roles consuming GO and subsequent pilot physical
-work through the ordinary lane. No mod release or deployment is required for
-this documentation correction.
-
-Measure each run at `GO+20m` and `GO+60m` against the cycle-10 targets in the
-release checklist above and the earlier cycles in
-`docs/AGENT-PLAY-PERFORMANCE.md`.
-
-The parent is the debug supervisor and may diagnose or recover through its
-separate surfaces. That authority does not pass to the pilot. Record each
-intervention and obtain a fresh structured observation before ordinary play.
-Mirror every intervention that touches the game process into the recorder's
-events with `runs mark-assisted <run-id> --reason <text>`, the existing
-intervention event. That includes raw RCON or console, a temporary surface,
-emergency `stop`, teleport, and server or client replacement. Pre-`GO`
-interventions made before the recorder exists stay in `supervision.json` only.
-The supervisor yields its own turn between recorder checkpoints and records the
-structural-growth deltas defined in `AGENTS.md` at each one. No single
-supervisor tool call waits longer than 15 s (`write_stdin` included), and a
-checkpoint turn ends as soon as its checkpoint is recorded. A steer reaches a
-busy turn only at its next step boundary.
-
-For an explicit the owner stop, record each step: call factorio `stop` (cancels the
-active task and every queued plan within seconds); in each role TUI run
-`/goal pause` and read back the paused state; interrupt any active role turn
-with the native TUI stop control or app-server `turn/interrupt` for that role's
-exact `threadId` and `turnId`, and read back the interrupted turn; check
-separately that no task-owned command or job is still running; confirm the strategist
-makes no further ledger write; wait at least 2 s (more than one 1 s bridge
-tick), call `observe_local`, and if it shows an `active_task` or
-`queue_depth > 0` (a pilot `queue_plan` in flight before the interrupt lands
-after `stop`), call factorio `stop` again and
-re-observe until idle; only then run recorder FINISH and
-`server stop <run-dir>`. The debug supervisor of this contract may use these
-native controls on its own role sessions as recorded interventions. A steered
-`CANCEL` reaches a busy role at its next step but stops nothing by itself.
-
-Deliver deadline-sensitive or the owner-relayed instructions, such as a stop or a
-keep-running decision, with native `turn/steer`
-`{threadId, expectedTurnId, input, clientUserMessageId}`. Address the exact
-target's current active turn, read with `thread/turns/list` (limit 1). On an expected-turn
-mismatch, re-read and steer the new turn; if no turn is active, start one with
-that input. Queued delivery waits until the target's turn ends.
-`session-status send` has no steer option: for a Codex target it runs
-`codex queue`, which is `thread/queue/add`. On 2026-10-02 a keep-running
-instruction waited 10.5 minutes behind a busy supervisor turn and arrived after
-the stop it was meant to prevent. In debug cycle 7, the owner's stop took 94.5 s to
-reach the supervisor and 114.6 s to reach factorio `stop`.
-
-The setup session therefore relays the owner's instructions with the supervisor
-tooling's `relay_steer.py`. It resolves the target's daemon socket and thread
-from the same managed session status that `send` uses, and keeps the same
-`<agent_peer_message>` envelope. It reads the active turn with
-`thread/turns/list` and steers it with that `expectedTurnId`. It re-reads once
-on a mismatch, and uses `turn/start` only when no turn is active. The relayed
-text carries `owner_message_at` and `relay_sent_at`. Confirm delivery by the
-`clientUserMessageId` in that turn's `userMessage`. An unconfirmed relay is
-read back before any resend.
-
-For an explicit stop, record these fields on the supervisor's `stop_steps`:
-
-- `owner_message_at` and `relay_sent_at`, from the relayed text;
-- `delivered_at`, the supervisor's receipt time;
-- `factorio_stop_at`, the factorio `stop` receipt;
-- `roles_interrupted_at`.
-
-The target is under 30 s from the owner's message to factorio `stop`. Before `GO`,
-the setup session steers one no-op token into the supervisor while a tool call
-is running. Record its consumption within 15 s in `capability_evidence`. Add no
-control file or message store for this.
-
-### Supervisor stall and replacement validation
-
-Follow the authoritative stall contract in `AGENTS.md`; this is a manual
-supervised procedure gated by one observation helper, not an executable
-supervisor. Before `GO`, record a
-confirmed message delivery from the current supervisor to the exact pilot
-session. Verify interrupt/retirement and observable inability to resume using
-a disposable non-gameplay session with the same session mechanism; confirm
-that the route is available for the exact pilot. Do not retire the prepared
-pilot as a capability test. Missing delivery or retirement capability must be
-resolved before `GO`.
-
-While milestone goals remain open, use fresh valid `observe_local.character`:
-`active_task` absent or with `source: "upkeep"`, numeric `queue_depth == 0`,
-and numeric `crafting.queue_size == 0` together prove idle, and only while
-`human_control` is false: a hold is the owner playing, never idle. Upkeep is the
-mod's own refuelling, not pilot work; a package plan (`source:
-"package:<id>"`) is work. A missing character or required
-queue/crafting field, malformed response, stale sample, or failed call is
-uncertain, not idle. An absent `active_task` in an otherwise valid complete
-character observation is the normal no-task representation. Parked waiting
-plans, predecessor-blocked queued plans, and queued packages count as pending
-work. A pilot waiting on `next_event` while a package runs is not idle. Inspect a
-known plan only with its exact `plan_id`; `plan_status {}` is invalid.
-
-Record receipt timestamps and character position, carried inventory,
-task/queue state, and crafting state/progress in existing run evidence. Retain
-the last evidenced physical-change/idle-transition timestamp that establishes
-the current idle interval across unchanged samples. Advancing ticks and
-unrelated factory output do not reset it. If the transition is unknown, such
-as between an active sample and an idle sample, report a conservative observed
-lower bound starting at the first valid idle sample, not an invented exact
-start or the next unchanged sample. Renewed activity resets timing and the
-single-nudge state; a run change or uncertain observation invalidates timing.
-Re-establish a fresh lower bound after uncertainty rather than counting the gap.
-
-The supervisor's observation helper is the only nudge and replacement gate;
-never dispatch on an inline idle predicate. In the same step that may
-dispatch, pipe every fresh `observe_local` result together with a fresh
-`activity_log` read (`limit: 64`) and its receipt time through the helper
-(`{"observe_local": ..., "activity_log": ...}`). The helper compares the full
-physical signature (position, carried inventory, `active_task`, `queue_depth`,
-crafting state) with the retained one and keeps the conservative idle lower
-bound across unchanged samples. It discounts position, inventory and task
+Time an idle interval from observation receipt timestamps. Compare each
+sample's physical signature (position, carried inventory, `active_task`,
+`queue_depth`, crafting state) with the last one, and keep the start of the
+interval across unchanged samples. Discount position, inventory and task
 changes when either sample shows an `upkeep` task, or when every
-`activity_log` plan overlapping the ticks between the two samples was an
-`upkeep` plan (an upkeep refuel that started and ended between samples is
-visible only there); any other plan in that window is activity. It
-returns `eligible_nudge` only when the signature has stayed unchanged for at
-least 120 s from that bound and no nudge was sent in this interval. It returns
-`eligible_replace` from 300 s, under the conditions below.
-Reserve the interval's single nudge in the helper (`nudge_sent`, set
-atomically) immediately before dispatch, send its unique interval token, and
-record the delivery receipt. Failed or uncertain delivery is a capability
-problem; read back delivery state before retrying the same nudge and do not
-claim a nudge succeeded.
-
-Delivery is not consumption. A `steered:<id>` receipt names the target's
-active turn, not a message, and a steer reaches the pilot only at that turn's
-next step boundary. Record consumption only when the token appears in a
-`userMessage` of the exact pilot turn (`thread/read` or its rollout). At five
-minutes, replacement requires either recorded consumption of the token or,
-first, one recorded `turn/interrupt` of the exact stale pilot turn. After that
-interrupt, native goal continuation starts a fresh turn that sees the queued
-nudge, and replacement waits a further 120 s with the signature still
-unchanged. Then freshly revalidate continued idleness, interrupt and retire the
-old pilot, and confirm it cannot resume gameplay writes. Settle any in-flight
-physical call: wait for its definitive outcome or resolve uncertainty
-through structured state before proceeding. Interruption does not roll back
-committed plans. If emergency cancellation is necessary, record `stop` and its
-effects. Then freshly prove absent active work, zero queued work, and zero
-crafting. Without both retirement proof and physical quiescence, do not launch
-the replacement. Once it runs, write its rollout file to `pilot` in
-`<run_dir>/rollouts.json` so the thought feed follows it. Preserve the strategist, the one body/FIFO/write path, invalidate affected
-state, and give the replacement latest structured state and the open milestone.
-Record all interventions; assisted progress and timing are not benchmark proof.
-
-Validate these scenarios against the schema offline, then exercise live
-delivery/replacement only in an authorized supervised run:
+`activity_log` plan between the two samples' ticks was an `upkeep` plan (an
+upkeep refuel that started and ended between samples is visible only there).
+Nudge and replacement thresholds and steps are in `AGENTS.md`.
 
 | Scenario | Required result |
 | --- | --- |
@@ -1019,51 +801,61 @@ delivery/replacement only in an authorized supervised run:
 | Character crafting with no active task or queued plans | No idle claim; crafting queue size greater than 0 is work. |
 | Only an `upkeep` plan active (the mod refuelling), no queued plans or crafting | Idle evidence continues: upkeep is not pilot work, and its movement or inventory changes do not reset the interval. |
 | A package plan (`source: "package:<id>"`) active or queued while the pilot waits on `next_event` | No idle claim; the body is working. |
-| Parked waiting plan or predecessor-blocked queued plan, body still | Queue depth greater than 0 means pending work; no idle claim. Read status only with a known exact plan ID. |
-| Repeated unchanged character samples while ticks/factory output advance | Retain the original idle timestamp. For an evidenced idle transition at 00:00, unchanged samples at 02:03 and 03:12 report 123 s and 192 s; they do not restart timing. |
+| Parked waiting plan or predecessor-blocked queued plan, body still | Queue depth greater than 0 means pending work; no idle claim. |
+| Repeated unchanged samples while ticks and factory output advance | Keep the original idle start; for an idle transition at 00:00, unchanged samples at 02:03 and 03:12 report 123 s and 192 s. |
 | Unknown transition, first idle observation at 02:03 and unchanged sample at 03:12 | Report at least 69 s observed idle, not an exact start before 02:03. |
-| Renewed movement, carried-inventory, task/queue, or crafting activity | Reset idle timing and nudge state; a later interval needs fresh evidence. |
 | Missing, malformed, failed, stale observation, or run change | Invalidate timing; no intervention based on the uncertain interval. |
-| `human_control: true` (the owner playing the body) | No idle claim, nudge, or replacement. Record the hold as the owner input, invalidate timing, and require fresh idle evidence after it. |
-| Body moved after the last eligible sample, before dispatch (2026-10-02 13:05) | No nudge: the helper sees the changed signature on the fresh sample and restarts the interval at its receipt. |
-| Failed or uncertain exact-pilot message delivery | Record a capability problem, never successful nudge evidence; establish delivery state before retry. |
-| Nudge delivered (`steered:<turn id>`) but its token is in no pilot `userMessage` at five minutes | No replacement. Interrupt the exact stale turn once, then replace only after a further 120 s of unchanged idle. |
-| Interrupted pilot without confirmed retirement, or unresolved physical call/work | No replacement writer starts. Obtain retirement proof, settle the call, and freshly prove all three idle fields first. |
-| Consumed nudge or recorded exact-turn interrupt, confirmed retirement and fresh physical quiescence after five idle minutes | Record replacement intervention; preserve strategist/body/FIFO, invalidate affected state, and resume from latest structured evidence. |
+| `human_control: true` (the human player playing the body) | No idle claim, nudge, or replacement. Record the hold as the human player's input, invalidate timing, and require fresh idle evidence after it. |
 
-Offline verification proves neither message delivery nor live
-retirement/replacement. Claim live behavior only with an authorized supervised
-validation and confirmed delivery and retirement receipts.
+Offline tests prove neither message delivery nor live retirement or
+replacement; claim live behaviour only from a supervised run with delivery
+and retirement receipts.
 
-The native `/goal` owns continuation. Waypoints, batches, and plans are
-nonterminal. While later-tick milestone proof is absent, immediately continue
-whenever productive work or bounded recovery exists. Keep the current plan and
-one grounded successor when safe; native goal continuation starts the next
-batch. Growth and gameplay policy lives in
-`.agents/skills/factorio-player/SKILL.md`.
+### Supervisor interventions and watching
 
-Exactly one physical MCP call may be in flight. Parallelize only read-only
-observations when inconsistent ticks are acceptable, then revalidate the newest
-state before mutation. Do not add another body, lane, RCON path, raw Lua/console,
-teleport, hidden state, or free resources. `stop` is emergency cancellation, in the cases `AGENTS.md` lists.
-If a pilot goal terminates after an intervention, retire it before starting one
-replacement; never keep two pilots active.
+The supervisor may diagnose or recover through its own surfaces; that
+authority does not pass to the pilot. Record each intervention and obtain a
+fresh structured observation before ordinary play. Mirror every intervention
+that touches the game process into the recorder's events with
+`runs mark-assisted <run-id> --reason <text>`: raw RCON or console, a
+temporary surface, emergency `stop`, teleport, and server or client
+replacement. The supervisor yields its own turn between recorder checkpoints
+and records the structural-growth deltas defined in `AGENTS.md` at each one.
 
-Use the current public schema shown by `tools/list`. Keep the same persistent
-pilot across packets. An empty intermediate turn does not satisfy the
-goal and must not add another action writer.
-
-Watch the run through the ordinary couch viewer client, which the mod makes a
+Watch the run through the ordinary viewer client, which the mod makes a
 characterless spectator that follows Codex, not through the native `Codex`
 client window. The `Codex` client's own character is moved by the mod, and
 Factorio client latency hiding mispredicts script-driven walking of a client's
 own character, which shows as stutter and snapping on that window only. The
-`Codex` client must remain connected; it is also the window the owner takes the
-body over from, so any real input in it parks the FIFO. During a debug
-run, keep the couch client log's `Latency changed to (N)` values below 60 ticks;
-a spike to the 254-tick ceiling marks a long server tick.
+`Codex` client must remain connected; it is also the window the human player
+takes the body over from, so any real input in it parks the FIFO. During a
+debug run, keep the client log's `Latency changed to (N)` values below 60
+ticks; a spike to the 254-tick ceiling marks a long server tick.
 
-## Historical Candidate B R7 verified live result
+The gameplay pilot remains MCP-text-only: the screenshot capability of any
+desktop or UI tool must never be used for Factorio perception or play.
+Post-run screenshots are permitted only after the scored run is frozen and only
+when structured MCP evidence is insufficient for review. Review all relevant
+map areas where items or machines were placed, but treat images as
+non-authoritative: they must not contribute coordinates, routes, tactics, or
+durable knowledge, and they never support live perception, navigation,
+targeting, placement choice, or action selection. Revalidate every finding that
+could affect a later run through structured in-game MCP data. This permission
+does not authorize desktop GUI control of the game.
+
+### Viewer-only session
+
+The exact `Codex` client must join first. Every other connected identity is
+made characterless and placed in spectator mode by the mod; there is no second
+body and no administrator or console step. The current mod makes each connected
+spectator camera follow the sole Codex body automatically. Codex itself still
+walks physically; only the characterless viewer camera follows. Confirm the
+viewer identity has no body or inventory and remains aligned with Codex
+during a physical `walk_to` action.
+
+## Historical live evidence
+
+### Historical Candidate B R7 verified live result
 
 R7 ran the immutable baseline SHA-256
 `616de9daf11ffdc03f946dd1f76732f4544539801f0f28db62959bcf8f1eea8e` with
@@ -1108,7 +900,7 @@ pending-first-output plus fueled `build_plan` waiting semantics, but it was not
 deployed or benchmarked in R7. This result used no map-coordinate evidence,
 fixed route or order, screenshot, raw console, or gameplay cheat.
 
-## Prior verified 0.8.0 live result
+### Prior verified 0.8.0 live result
 
 - `doctor` passed the complete config, authenticated RCON, protocol, and mod
   checks on Linux Factorio 2.0.77. `connect_status` reported app/mod 0.8.0.
@@ -1134,81 +926,7 @@ used the plan's final observation without a redundant read. These are completed
 live results, not a claim of ongoing gameplay. Gameplay used no screenshots,
 raw console, Lua, cheats, or teleportation.
 
-Post-run screenshots are permitted only after the scored run is frozen and only
-when structured MCP evidence is insufficient for review. Review all relevant
-map areas where items or machines were placed, but treat images as
-non-authoritative: they must not contribute coordinates, routes, tactics, or
-durable knowledge, and they never support live perception, navigation,
-targeting, placement choice, or action selection. Revalidate every finding that
-could affect a later run through structured in-game MCP data. This permission
-does not authorize couch GUI control or expand the Windows-MCP boundary.
-
-## Observed two-machine setup
-
-The following was verified during the September 2026 live run. Treat the LAN
-addresses as runtime inputs, not permanent configuration: confirm them with
-`ip address`/DHCP leases before each session.
-
-- The Linux workstation hosted Factorio on its LAN address `192.0.2.117`
-  and game UDP port `34197`.
-- The couch PC was `COUCH-PC` at `192.0.2.119` and connected with
-  Steam's Factorio launch argument `--mp-connect 192.0.2.117:34197`.
-  `--connect-to-server` is not a valid Factorio argument.
-- The Linux firewall must allow UDP `34197` from the trusted LAN. The tested
-  rule was `ufw allow from 192.0.2.0/24 to any port 34197 proto udp`.
-  Apply this only through the workstation's supervised firewall procedure;
-  do not change router DHCP settings for this validation.
-- The prior verified couch install used `agentic-companion_0.8.0.zip` in
-  `%APPDATA%\\Factorio\\mods` and an enabled `agentic-companion` entry in
-  `%APPDATA%\\Factorio\\mods\\mod-list.json` before joining. The verified couch
-  ZIP matched the server archive hash, was enabled, and joined successfully.
-- The server's RCON remains private and local: `127.0.0.1:19015`. It is not
-  the address the couch client uses.
-- Factorio dedicated-server process arguments contain the RCON secret. Never
-  print or read full arguments through `ps` full args, `/proc` command-line
-  data, WMI `CommandLine`, or an equivalent process-inspection surface. Verify
-  health through user-service state, PID, executable basename, and `doctor`
-  only, and keep all reported output secret-redacted.
-
-After changing the repository build or mod, run setup again, confirm both
-Factorio config files are mode `0600`, restart the dedicated server, and then
-reconnect the couch client. A client left in Factorio's
-`WaitingForUserToSaveOrQuitAfterServerLeft` state must be exited or its
-Factorio process closed before Steam will launch a fresh connection. Wait for
-`factorio.exe` to exit completely before replacing the ZIP: Windows briefly
-retained a lock on the old archive during the verified rollout.
-
-Before upgrading an existing 0.9.x save, stop the server and retain an exact
-copy of both the save and its matching 0.9.x mod archive. Validate 0.22.3 on a
-copy first. Rollback means stopping the server, restoring that paired save and
-archive, and confirming the restored version through `doctor`; never open the
-only rollback save with the newer mod.
-
-An ordinary SSH `Start-Process` did not place Steam in the interactive console
-session. The verified fallback used one limited, interactive, one-shot
-Scheduled Task to launch Steam, then removed that task. Without screenshots,
-confirm that the Factorio client process has `SessionId 1` and that its log
-reaches `InGame`.
-
-The couch display runs at `3840x2160`, and `scripts/launch-native-client.ps1`
-renders the isolated client at that native 16:9 size. A recorder may downscale
-the captured window to `1920x1080`, but it must fit the complete source without
-cropping or enlarging a lower-resolution viewport. Before a timed recording,
-verify the live Factorio client area, capture-source dimensions and aspect
-ratio, crop/transform state, and representative framing. A non-black Factorio
-frame alone is not sufficient evidence of usable framing.
-
-## Viewer-only couch session
-
-The exact `Codex` client must join first. Every other connected identity is
-made characterless and placed in spectator mode by the mod; there is no second
-body and no administrator or console step. The current mod makes each connected
-spectator camera follow the sole Codex body automatically. Codex itself still
-walks physically; only the characterless viewer camera follows. Confirm the
-normal couch identity has no body or inventory and remains aligned with Codex
-during a physical `walk_to` action.
-
-## Prior-release 0.7.0 live evidence and known failure signatures
+### Prior-release 0.7.0 live evidence and known failure signatures
 
 The successful observations below were collected before release 0.22.3. They
 are historical 0.7.0 evidence and diagnostic guidance, not live validation of
@@ -1235,48 +953,16 @@ current-release result.
   `mining_state` is enabled. A task that approaches indefinitely with no
   inventory gain indicates a stale mod build; reinstall the current archive
   and restart Factorio.
-- The observed couch launch reached `InGame` and the server logged the join.
+- The observed client launch reached `InGame` and the server logged the join.
   A successful network join alone does not prove spectator mode; verify the
   controller in the Factorio UI as described above.
 
-## Optional couch UI navigation layer
+## Engineering investigations
 
-For semantic Windows UI navigation, the couch PC was tested with
-[CursorTouch Windows-MCP 0.8.5](https://pypi.org/project/windows-mcp/0.8.5/).
-This is an optional fallback for non-game couch UI, administration, or
-reconnection steps that SSH cannot perform, alongside the existing
-AutoHotkey-based `couch-ui` fallback. Neither UI path controls Factorio through
-the Codex MCP server. The gameplay pilot remains MCP-text-only: Windows-MCP's
-Screenshot capability must never be used for Factorio perception or play.
+These engineering records explain retained mod and instruction behaviour.
+None of them is gameplay or benchmark evidence.
 
-The tested deployment details are:
-
-- Python 3.12 and `windows-mcp==0.8.5` installed for the Windows user.
-- A per-user Scheduled Task named `windows-mcp-server`, running at logon with
-  limited (non-elevated) privileges.
-- Streamable HTTP bound only to `127.0.0.1:8000`; never expose this listener
-  directly on the LAN. If remote use is needed, carry it through the existing
-  authenticated SSH connection with a local port forward.
-- Telemetry disabled with `ANONYMIZED_TELEMETRY=false` and an empty
-  `POSTHOG_API_KEY`.
-- The launcher passes this explicit UI-only allowlist:
-  `Screenshot,Snapshot,Click,Type,Scroll,Move,Shortcut,Wait,WaitFor,DisplayInventory,App`.
-  PowerShell, FileSystem, Registry, Process, Clipboard, Scrape, Notification,
-  MultiSelect, and MultiEdit are excluded. Screenshot remains unavailable to
-  the Factorio gameplay pilot regardless of this UI administration allowlist.
-
-The installer rewrites `~/.windows-mcp/start-server.cmd`; apply the allowlist
-to that launcher after installation and restart only the `windows-mcp-server`
-task. If using `config.toml`, write it as UTF-8 without a BOM: Windows
-PowerShell's default UTF-8 writer can otherwise cause `Invalid statement` at
-startup. Verify with a local MCP `initialize`/`tools/list` request and confirm
-exactly 11 tools before adding the server to a client.
-
-The tested endpoint reported Windows-MCP 4.0.1 internally even though the
-installed package was 0.8.5; use the package version for pinning and retain
-the scheduled-task launcher as the source of the effective runtime options.
-
-## Occupied-belt placement agreement (2026-10-02)
+### Occupied-belt placement agreement (2026-10-02)
 
 An isolated Factorio **2.0.77** headless reproduction establishes a manual
 replacement-check mismatch in the retained shared helper. It does not reconstruct
@@ -1307,7 +993,7 @@ accounts for the additional check. MCP fields, range/list limits, FIFO routing,
 body checks, reach and item requirements remain unchanged. Occupied-footprint
 explanations use at most 65 local entity rows.
 
-### Isolated physical comparison and limits
+#### Isolated physical comparison and limits
 
 Two fresh peaceful saves with enemy bases disabled loaded separate instrumented
 copies of the predecessor and candidate scripts. Each dedicated server bound
@@ -1354,7 +1040,7 @@ Prechecks observe current state; they reserve nothing. The earlier-step conflict
 case demonstrates execution revalidation, not transactionality or rollback.
 The original incident's exact intervening state remains unknown.
 
-### Source and archive identities
+#### Source and archive identities
 
 Predecessor source: `65a61fa962a175fb0ab65d6b73a7055bafa406a0`, version 0.19.6.
 The candidate's exact mod content is identified by its source archive and helper
@@ -1381,7 +1067,7 @@ neighbors, and the range harness still verifies rejection before any engine
 queries for invalid or out-of-range requests.
 
 
-## Adjacent burner-inserter fuel feed (2026-10-02)
+### Adjacent burner-inserter fuel feed (2026-10-02)
 
 Isolated Factorio **2.0.77** headless fixtures reproduced the exact reported
 producer `(46.5,-40.5)`, direction `12`, and recipient `(47.5,-40.5)`,
@@ -1406,7 +1092,7 @@ and five-coal transfer, with no character transfers during the measured interval
 | 8 | `(0,-1.19921875)` | `(0,-1)` | 4 |
 | 12 | `(1.19921875,0)` | `(1,0)` | 8 |
 
-### Native recipient query and limits
+#### Native recipient query and limits
 
 Collision-box containment rejects these fuel edges: the drop overhang is
 `13/256`, exceeding the predecessor's `1/128` rounding allowance. Selection-box
@@ -1435,7 +1121,7 @@ nor geometry proves acceptance of an arbitrary item, factory connectivity, or
 autonomy. Later-tick exact runtime identity still determines physical success;
 nil, wrong or invalidated inserter targets fail while committed effects remain.
 
-### Fixture identity and source readiness
+#### Fixture identity and source readiness
 
 The minimal diagnostic mod depended only on base 2.0.77. It created peaceful dry
 ground with enemy bases disabled, test entities and finite fixture inventory.
@@ -1481,11 +1167,11 @@ and planned ambiguity, and same-name replacement of an earlier committed pickup
 or drop recipient. Build plans retain that exact created entity and refuse a
 replacement before committing the producer; prior effects remain recorded.
 
-## Release 0.19.7 cycle-7 accidental pilot cancellation
+### Release 0.19.7 cycle-7 accidental pilot cancellation
 
-The captured incident evidence for an earlier issue reports a supervised debug run on
+The captured incident evidence reports a supervised debug run on
 release 0.19.7, source commit `0777538bb4eaadef6bea89eb18b44d5fbcf27845`.
-The pilot invoked `stop` during ordinary gameplay without a the owner stop request.
+The pilot invoked `stop` during ordinary gameplay without an owner stop request.
 The native completed result at `2026-10-02T18:45:04.326Z` was `cancelled2`;
 the pilot then reported plans 31/32 cancelled. A subsequent fresh structured
 character observation at tick `141409` showed pending physical work and resumed
@@ -1504,8 +1190,8 @@ retained effects, and remaining safe FIFO work without rollback.
 Offline verification covers contract consistency and retained cancellation
 mechanics, not improved live model behavior. Review ordinary continuation,
 monitoring timeout, and partial-plan recovery as non-cancelling pilot paths;
-review explicit the owner stop, pre-`GO` retained-work reconciliation, and emergency
-replacement as the existing recorded supervisor paths. Startup still loads the
+review an explicit owner stop, pre-`GO` retained-work reconciliation, and
+emergency replacement as the existing recorded supervisor paths. Startup still loads the
 role goal and hard skill; after compaction roles re-read them before other calls.
 
 Source publication, loaded role guidance, installation, and observed gameplay
@@ -1516,7 +1202,7 @@ exact loaded source/runtime identity and all interventions; it remains excluded
 from benchmark evidence. Publishing corrected source does not establish that
 an existing role or MCP process has loaded it.
 
-## burner fuel delivery versus plate cargo
+### Burner fuel delivery versus plate cargo (2026-10-03)
 
 The 2026-10-03 isolated Factorio **2.0.77, build 84539, linux64 headless**
 comparison reproduced the suspected validator defects at predecessor
@@ -1599,7 +1285,7 @@ checking; those attempts are diagnostic evidence, not the final comparison.
 These are isolated engineering results, separate from source publication,
 active installation, gameplay autonomy and benchmark evidence.
 
-### Native negative controls
+#### Native negative controls
 
 The same candidate source was loaded into five fresh peaceful fixture saves.
 The short case used a one-second window without a gameplay intervention. The
@@ -1629,21 +1315,18 @@ server exited zero, and its separate write-data directory was removed and
 absence verified. Native negative controls do not replace the broader offline
 rejection cases or prove a gameplay milestone.
 
-### Offline verification and review
+#### Offline verification and review
 
 Both affected Lua suites passed with the repository-supported `texlua` runner.
 The full `scripts/agent-app verify --profile full` profile passed all ten checks,
 covering application contract tests, dependency consistency, TypeScript,
 companion tests, all Lua tests, offline writable and read-only MCP smoke tests,
 build, built MCP smoke and mod package layout. These checks remain offline.
-A local Semgrep MCP candidate scan with `p/default` reported all three changed
-Lua files scanned, with no findings, errors or skipped rules. The workspace
-scan route could not resolve its managed key; the temporary local adapter used
-Semgrep MCP 0.8.0 and reported Semgrep 1.135.0.
+A local Semgrep 1.135.0 scan with `p/default` reported all three changed Lua
+files scanned, with no findings, errors or skipped rules.
 
 A fresh independent read-only review checked the complete candidate and native
 receipts, independently reran both Lua suites, and reported no code finding.
 It found an incorrect topology signature in this appendix; the identifier was
 corrected to the final receipts' `6cd5ddcf14d50687`. Review did not perform live
-gameplay or publication. Source publication and exact remote readback belong
-to the trusted host completion path; no active-run installation is requested.
+gameplay or publication, and no active-run installation was requested.

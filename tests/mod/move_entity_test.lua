@@ -298,7 +298,7 @@ local ok,why=pcall(move.start,move.action.make_task({from={x=0,y=0},to={x=4,y=0}
 check(not ok and tostring(why):match("source selection exceeds 16"),"a crowded source fails before unbounded selection or robot ordering")
 surface.find_entities_filtered=old_find
 
--- escape: enclosed beside its own filtered inserter, the body takes
+-- Enclosure escape: enclosed beside its own filtered inserter, the body takes
 -- it up, walks out through the opening, and puts the same inserter back on
 -- its spot with its direction and filters once it stands a tile clear.
 local approach_mock = package.loaded["scripts.actions.approach"]
@@ -361,7 +361,7 @@ local function clear_of_gate(at)
     { left_top = { x = at.x - 0.2, y = at.y - 0.2 }, right_bottom = { x = at.x + 0.2, y = at.y + 0.2 } })
 end
 
--- review: the step lies within the build distance of the opening
+-- Enclosure escape at the reach edge: the step lies within the build distance of the opening
 -- (build_plan used to pass its build_distance as the escape's reach) and
 -- just past it. Coming within that reach, or reaching the step's spot, is
 -- not stepping out: the body walks on past the gap, and only then is the

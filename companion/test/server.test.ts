@@ -55,7 +55,7 @@ describe("run-local server lifecycle", () => {
     const paths = runPaths(tempDir());
     fs.writeFileSync(paths.pid, "4242\n");
     expect(serverPid(paths, () => ({ exe: "/opt/Factorio/bin/x64/factorio", cwd: paths.dir }))).toBe(4242);
-    expect(serverPid(paths, () => ({ exe: "/opt/Factorio/bin/x64/factorio", cwd: "/home/elsewhere" }))).toBeNull();
+    expect(serverPid(paths, () => ({ exe: "/opt/Factorio/bin/x64/factorio", cwd: "/srv/elsewhere" }))).toBeNull();
     expect(serverPid(paths, () => ({ exe: "/usr/bin/bash", cwd: paths.dir }))).toBeNull();
     expect(serverPid(paths, () => { throw new Error("gone"); })).toBeNull();
   });

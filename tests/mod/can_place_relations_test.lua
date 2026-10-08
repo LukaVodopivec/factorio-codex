@@ -1,5 +1,6 @@
 -- can_place reports where each planned output and pickup lands, inside the
--- batch or on an existing entity, without reading beyond Codex's 30-tile range.
+-- batch or on an existing entity, without reading beyond Codex's 30-tile range,
+-- and answers nothing about a footprint that reaches uncharted terrain.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
@@ -115,6 +116,38 @@ local chart_edge = spatial.can_place({ placements = {
 } }).results
 check(chart_edge[2].output_lands_on == false,
   "planned recipient centre in an uncharted adjacent chunk remains omitted")
+force.is_chunk_charted = function() return true end
+
+-- A furnace centred on charted land whose footprint reaches into an uncharted
+-- chunk is refused without asking the engine or reading entities there.
+force.is_chunk_charted = function(_, chunk) return chunk.x == 0 end
+local engine_checks, plain_check = 0, surface.can_place_entity
+surface.can_place_entity = function(...) engine_checks = engine_checks + 1; return plain_check(...) end
+before = lookups
+local straddle = spatial.can_place({ placements = { { item = "stone-furnace", position = { x = 0.5, y = 10 } } } }).results[1]
+check(straddle.can_place == false and straddle.code == "UNCHARTED" and straddle.reason:match("uncharted")
+  and engine_checks == 0 and lookups == before,
+  "a footprint reaching an uncharted chunk is refused before any terrain or entity read")
+local inside = spatial.can_place({ placements = { { item = "stone-furnace", position = { x = 1, y = 10 } } } }).results[1]
+check(inside.can_place == true and engine_checks > 0, "the same furnace wholly inside the charted chunk is checked")
+surface.can_place_entity = plain_check
+force.is_chunk_charted = function() return true end
+
+-- An offshore pump's water lies behind its box (tile_buildability_rules): a
+-- pump on charted land facing uncharted water says nothing about that water.
+prototypes.item["offshore-pump"] = { place_result = { name = "offshore-pump", type = "offshore-pump", tile_width = 1,
+  tile_height = 1, collision_box = box(0.4),
+  tile_buildability_rules = { { area = { left_top = { x = -0.4, y = -3.4 }, right_bottom = { x = 0.4, y = -0.6 } } } } } }
+force.is_chunk_charted = function(_, chunk) return chunk.y == 1 end
+engine_checks = 0
+surface.can_place_entity = function(...) engine_checks = engine_checks + 1; return plain_check(...) end
+before = lookups
+local shore = spatial.can_place({ placements = { { item = "offshore-pump", position = { x = 0.5, y = 32.5 } } } }).results[1]
+check(shore.can_place == false and shore.code == "UNCHARTED" and engine_checks == 0 and lookups == before,
+  "an offshore pump whose water lies in an uncharted chunk is refused before the engine reads it")
+local turned = spatial.can_place({ placements = { { item = "offshore-pump", position = { x = 0.5, y = 32.5 }, direction = 8 } } }).results[1]
+check(turned.can_place == true and engine_checks > 0, "the same pump facing its charted side is checked")
+surface.can_place_entity = plain_check
 force.is_chunk_charted = function() return true end
 
 if failures > 0 then error(failures .. " can_place relation checks failed") end

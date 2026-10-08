@@ -36,16 +36,7 @@ local function charted(force, surface, pos, platform)
   return surfaces.charted(force, surface, math.floor(pos.x / 32), math.floor(pos.y / 32), platform)
 end
 
-local function footprint_charted(force, surface, area, platform)
-  local chunks = {
-    { x = area.left_top.x, y = area.left_top.y },
-    { x = area.right_bottom.x - 0.001, y = area.left_top.y },
-    { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
-    { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 },
-  }
-  for _, corner in ipairs(chunks) do if not charted(force, surface, corner, platform) then return false end end
-  return true
-end
+local footprint_charted = surfaces.footprint_charted
 
 local function terrain(force, surface, proto, area, platform)
   if proto.type == "offshore-pump" then return "offshore" end
@@ -412,7 +403,9 @@ local function evaluate_spot(S, X, c, spot)
     S.engine_calls = S.engine_calls + COST_DIRECTION
     local pos = { x = x, y = y }
     local area = placement_geometry.footprint(proto, pos, direction)
-    if not footprint_charted(X.force, X.surface, area, X.platform) then reject(S, "uncharted", pos, direction); goto continue end
+    if not footprint_charted(X.force, X.surface, placement_geometry.placement_area(proto, pos, direction), X.platform) then
+      reject(S, "uncharted", pos, direction); goto continue
+    end
     do
       local output_position = output_targets.output_position(proto, pos, direction)
       local pickup_offset = X.inserter_pickup_offset and rotate(X.inserter_pickup_offset, direction) or nil

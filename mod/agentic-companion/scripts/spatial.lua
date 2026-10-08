@@ -714,6 +714,14 @@ local function can_place_one(c, surface, item, position, direction)
     position = { x = pos.x, y = pos.y },
     direction = direction,
   }
+  -- Everything the check reads, not only the centre, must be charted: an
+  -- answer about a box or a pump's water reaching into uncharted land would
+  -- reveal its terrain.
+  if not surfaces.footprint_charted(c.force, surface, placement_geometry.placement_area(entity_proto, pos, direction)) then
+    identity.can_place, identity.code = false, "UNCHARTED"
+    identity.reason = "the footprint reaches uncharted terrain — chart it first"
+    return identity
+  end
   -- The planet's (or platform's) conditions come first: no spot there helps.
   local broken = placement_geometry.surface_condition(surface, entity_proto.surface_conditions)
   if broken then
@@ -741,7 +749,8 @@ local function can_place_one(c, surface, item, position, direction)
   -- Best-effort explanation: name whatever occupies the would-be footprint.
   local area = placement_geometry.footprint(entity_proto, pos, direction)
   local blocker, companion_in_way, only_natural = nil, nil, true
-  for _, e in ipairs(surface.find_entities_filtered({ area = placement_geometry.touching(area), limit = 65 })) do
+  local near = placement_geometry.touching(area)
+  for _, e in ipairs(surface.find_entities_filtered({ area = near, limit = 65 + placement_geometry.tile_count(near) })) do
     if e.valid then
       if e == c then
         companion_in_way = true

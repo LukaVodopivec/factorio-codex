@@ -210,6 +210,7 @@ local surface = {
         if b.position.x > filter.area.left_top.x and b.position.x < filter.area.right_bottom.x
           and b.position.y > filter.area.left_top.y and b.position.y < filter.area.right_bottom.y
           and (filter.type == nil or b.type == filter.type) then out[#out + 1] = b end
+        if filter.limit and #out >= filter.limit then break end
       end
       return out
     end
@@ -397,6 +398,20 @@ check(trees.ok and trees.clears == 1, "trees in a footprint pass the check: plac
 blockers = { { valid = true, name = "stone-wall", type = "wall", position = { x = 20.5, y = 20.5 } } }
 local walled = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
 check(not walled.ok and walled.failed[1].reason:match("blocked by stone%-wall") ~= nil, "an owned blocker is named")
+-- Ore under every tile of a 9x9 footprint, read before a belt on it: the
+-- capped blocker search still reaches the belt.
+entities["test-silo"] = entity("test-silo", "container", 9, 9)
+items["test-silo"] = { name = "test-silo", place_result = entities["test-silo"], stack_size = 1 }
+prototypes.entity["test-silo"] = entities["test-silo"]
+blockers = {}
+for x = 16, 24 do for y = 16, 24 do
+  blockers[#blockers + 1] = { valid = true, name = "iron-ore", type = "resource", position = { x = x + 0.5, y = y + 0.5 } }
+end end
+blockers[#blockers + 1] = { valid = true, name = "transport-belt", type = "transport-belt", position = { x = 24.5, y = 24.5 } }
+local on_ore = dry({ anchor = { x = 16, y = 16 }, entities = { { name = "test-silo", dx = 4.5, dy = 4.5 } } })
+check(not on_ore.ok and on_ore.failed[1].reason:match("blocked by transport%-belt") ~= nil,
+  "a belt under a large footprint on ore is named, not hidden behind the ore")
+entities["test-silo"], items["test-silo"], prototypes.entity["test-silo"] = nil, nil, nil
 blockers = {}
 -- An own belt already standing on a layout tile, facing another way: the
 -- build takes it as placed and turns it, so the check passes it too.

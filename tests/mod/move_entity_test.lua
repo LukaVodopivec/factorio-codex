@@ -98,12 +98,28 @@ local surface = {
   can_place_entity = function(args)
     local area = geometry.footprint(entities[args.name], args.position, args.direction)
     if wet_tiles(area) > 0 then return false end
-    for _, e in ipairs(live()) do if geometry.overlaps(area, e.bounding_box) then return false end end
+    for _, e in ipairs(live()) do
+      if geometry.overlaps(area, e.bounding_box)
+        and geometry.mask_overlap(entities[args.name].collision_mask, e.prototype.collision_mask, false) ~= false then
+        return false
+      end
+    end
     return true
   end,
-  count_tiles_filtered = function(filter)
-    assert(filter.area and filter.collision_mask and filter.limit, "a bounded tile count by collision mask")
-    return math.min(wet_tiles(filter.area), filter.limit)
+  -- Water and land tiles with their 2.0 collision layers.
+  find_tiles_filtered = function(filter)
+    assert(filter.area and filter.limit and not filter.collision_mask, "a bounded tile search, matched in Lua")
+    local out = {}
+    for x = math.floor(filter.area.left_top.x), math.ceil(filter.area.right_bottom.x) - 1 do
+      for y = math.floor(filter.area.left_top.y), math.ceil(filter.area.right_bottom.y) - 1 do
+        local wet = water[x .. "," .. y]
+        out[#out + 1] = { name = wet and "water" or "grass-1", position = { x = x, y = y }, prototype = { collision_mask = wet
+          and { layers = { water_tile = true, resource = true, item = true, player = true, doodad = true } }
+          or { layers = { ground_tile = true } } } }
+      end
+    end
+    assert(#out <= filter.limit, "the limit covers every footprint tile")
+    return out
   end,
   find_entities_filtered = function(filter)
     assert(filter.area or filter.position, "no entity query may search the whole surface")
@@ -111,6 +127,12 @@ local surface = {
     for _, e in ipairs(live()) do
       local hit = filter.area and geometry.overlaps(filter.area, e.bounding_box)
         or filter.position and geometry.overlaps({ left_top = filter.position, right_bottom = filter.position }, e.bounding_box)
+      -- A layer filter keeps only entities with every listed layer, which
+      -- drops a transport belt under a chest's layers, as a live trial did.
+      for layer in pairs(filter.collision_mask or {}) do
+        local mask = e.prototype.collision_mask
+        if not (mask and mask.layers[layer]) then hit = false end
+      end
       local types = type(filter.type) == "table" and filter.type or filter.type and { filter.type } or nil
       local type_ok = not types
       for _, t in ipairs(types or {}) do if t == e.type then type_ok = true end end
@@ -278,6 +300,41 @@ local ok_tree, err_tree = pcall(move.start, move.action.make_task({ from = { x =
 check(not ok_tree and tostring(err_tree):match("water") and #mines == 0, "a tree on water does not hide the water")
 local carried = run({ from = { x = 72, y = 41 }, to = { x = 71, y = 41 } })
 check(carried.status == "done", "the furnace moves back")
+
+-- Collision masks decide what blocks the target: a transport belt there is
+-- named with its position, and an entity on another layer never blocks.
+local function layers(...)
+  local set = {}
+  for _, layer in ipairs({ ... }) do set[layer] = true end
+  return { layers = set }
+end
+entities["wooden-chest"].collision_mask = layers("item", "object", "player", "water_tile", "is_object", "is_lower_object")
+entities["stone-furnace"].collision_mask = layers("item", "meltable", "object", "player", "water_tile", "is_object", "is_lower_object")
+entities["transport-belt"] = proto("transport-belt", "transport-belt", 1, 1)
+entities["transport-belt"].collision_mask = layers("floor", "meltable", "object", "transport_belt", "water_tile")
+entities["elevated-straight-rail"] = proto("elevated-straight-rail", "elevated-straight-rail", 2, 2)
+entities["elevated-straight-rail"].collision_mask = layers("elevated_rail")
+mines = {}
+local crate = spawn("wooden-chest", { x = 110.5, y = 40.5 })
+local belt = spawn("transport-belt", { x = 112.5, y = 40.5 })
+local ok_belt, err_belt = pcall(move.start, move.action.make_task({ from = { x = 110.5, y = 40.5 }, to = { x = 112.5, y = 40.5 } }))
+check(not ok_belt and tostring(err_belt):match("transport%-belt stands at %(112%.5, 40%.5%)")
+  and not tostring(err_belt):match("water") and #mines == 0 and crate.valid,
+  "a transport belt on the target is named with its position, not blamed on water")
+-- Water under a shift that overlaps the furnace's own spot is matched by its
+-- tile's layers against the furnace's, before anything is mined.
+water["72,40"] = true
+local ok_layered, err_layered = pcall(move.start, move.action.make_task({ from = { x = 71, y = 41 }, to = { x = 72, y = 41 } }))
+check(not ok_layered and tostring(err_layered):match("water") and #mines == 0,
+  "water under a shift is matched by collision layers before mining")
+water["72,40"] = nil
+local rail = spawn("elevated-straight-rail", { x = 72, y = 41 })
+local under_rail = run({ from = { x = 71, y = 41 }, to = { x = 72, y = 41 } })
+check(under_rail.status == "done" and find("stone-furnace").position.x == 72,
+  "the unfiltered blocker search still lets an elevated rail, on another layer, stand over the target")
+crate.valid, belt.valid, rail.valid = false, false, false
+local rail_back = run({ from = { x = 72, y = 41 }, to = { x = 71, y = 41 } })
+check(rail_back.status == "done", "and the furnace moves back")
 
 -- A furnace's current recipe follows its input: it is not set again.
 local smelting = find("stone-furnace")

@@ -505,6 +505,9 @@ HH:MM:SS, from its tick, at a fixed top-left spot in a monospace font
 each caption on the frames in its range, wrapped to two centred lines at the
 bottom; that video is written as `<folder>-timelapse-captions.mp4`, so the plain
 video and the frames are kept.
+On Linux or macOS, `scripts/timelapse-video.sh <frames-dir>` does the same
+with libx265 (`--x264` for H.264), taking `--every`, `--skip-idle`,
+`--no-clock`, `--captions`, `--fps` and `--out`.
 
 ## Verification
 

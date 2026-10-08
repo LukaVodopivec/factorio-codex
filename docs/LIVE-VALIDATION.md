@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.29.2** against a real Factorio game: start a
+This guide validates release **0.30.0** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.29.2 run is recorded.
+until a 0.30.0 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node
@@ -146,6 +146,27 @@ alone is not evidence of usable framing.
    re-observe authoritative MCP state.
 
 ## Release checklists
+
+For the 0.30.0 release (honest moves and plain failures), record these
+observable checks on a copy of a running factory's save:
+
+- Inserting or taking a partly used science pack, a magazine with spent
+  rounds, a half-spoiled stack or a rare-quality item keeps its durability,
+  ammo, spoil and quality, and no move creates items; a belt pickup of
+  several items takes them off the line one stack at a time.
+- Overflow is spilled onto the ground, never onto a belt and never marked for
+  deconstruction, and the step outcome names the spilled count and position.
+- `can_place` refuses a footprint that reaches into an uncharted chunk with
+  `UNCHARTED`, revealing nothing about that terrain; a placement blocked by a
+  belt names the belt instead of "water or otherwise unbuildable".
+- Every failed step carries a code (else `STEP_FAILED_UNCLASSIFIED`), no
+  message contains a Lua source location, and `connect_status` counts recent
+  handler errors. A tool call with an unknown key is rejected.
+- A walk that ends on a belt tries the native path off it before
+  `BODY_ON_CONVEYOR`; stepped off but still out of reach is `PATH_STALLED`.
+
+These 0.30.0 behaviours were exercised live on a headless 2.0.77 server
+(stack moves, partial and refused moves, belt pickup, spills).
 
 For the 0.29.2 release (the bots do the thinking), record these observable
 checks on a copy of a running factory's save:

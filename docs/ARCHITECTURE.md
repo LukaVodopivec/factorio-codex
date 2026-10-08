@@ -60,7 +60,10 @@ is `factorio-codex`.
 
 - **RCON bridge** (`rcon.ts`, `bridge.ts`): one serialized RCON connection per
   process, calling the mod's RPC with JSON payloads and polling jobs to their
-  result.
+  result. Replies up to 256 KiB come in one piece. The pilot's process sends
+  its writer generation with every write (the writer fence in
+  `docs/LIVE-VALIDATION.md`); a write whose answer is lost is reported as
+  `OUTCOME_UNKNOWN`, never retried silently.
 - **MCP server** (`mcp/server.ts`): a stdio MCP server started by Codex from the
   committed `.codex/config.toml` through `scripts/start-factorio-mcp`. The
   `full` surface has every tool; `read-only` has only reads and dry runs.

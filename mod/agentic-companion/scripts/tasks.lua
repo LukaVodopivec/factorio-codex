@@ -35,6 +35,8 @@ local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 -- A plan's active budget: 570 s, or 12 s per step for long build packages.
 local PLAN_BUDGET_TICKS, STEP_BUDGET_TICKS = 570 * 60, 12 * 60
 local MAX_PLAN_STEPS = 200
+-- Pilot queue_plan client keys kept (storage.tasks.client_keys).
+M.MAX_CLIENT_KEYS = 32
 local ACTIVITY_LOG_SIZE = 64
 local INSPECT_PER_TICK = 16 -- positions an inspect_entities step reads a tick
 -- Watchdog: a running step with no progress for 60 s fails with STEP_STALLED.
@@ -629,6 +631,16 @@ function M.queue_plan(params, upkeep_selection)
     end
     if existing then return { plan_id = existing, duplicate = true } end
   end
+  -- client_key: the MCP layer's key for one queue_plan call, sent again when
+  -- it retries after losing the answer; the same key returns the plan the
+  -- first call queued.
+  local key = params.client_key
+  if key ~= nil and (type(key) ~= "string" or #key < 1 or #key > 64) then
+    error("client_key must be a string of 1-64 characters")
+  end
+  for _, row in ipairs(key and storage.tasks.client_keys or {}) do
+    if row.key == key then return { plan_id = row.plan_id, duplicate = true, tick = row.tick } end
+  end
   -- A terminal observation runs inside the tick that ends the plan; full
   -- detail is never taken there (observe_local is the read for it).
   if params.observation_detail ~= nil and params.observation_detail ~= "none"
@@ -740,7 +752,14 @@ function M.queue_plan(params, upkeep_selection)
   -- starts still returns plan_ended, not an empty queue.
   -- needs: item totals its steps take (add_needs), nothing reserved.
   local needs = add_needs(plan, 1, {})
-  return { plan_id = assign(plan), after_plan_id = predecessor, body_idle_ticks = body_idle_ticks,
+  local plan_id = assign(plan)
+  if key then
+    local keys = storage.tasks.client_keys or {}
+    storage.tasks.client_keys = keys
+    keys[#keys + 1] = { key = key, plan_id = plan_id, tick = game.tick }
+    if #keys > M.MAX_CLIENT_KEYS then table.remove(keys, 1) end
+  end
+  return { plan_id = plan_id, after_plan_id = predecessor, body_idle_ticks = body_idle_ticks,
     human_control = plan.human_control, tick = game.tick, needs = next(needs) and needs or nil }
 end
 local function plan_payload(plan)

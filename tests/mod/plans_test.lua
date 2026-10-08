@@ -1043,4 +1043,26 @@ check(running.queued_demand.coal == 13 and running.queued_demand["stone-furnace"
   and running.queued_demand["iron-gear-wheel"] == nil, "the running plan counts from its current step on")
 storage.tasks.queue, storage.tasks.active = {}, nil
 check(tasks.queued_demand(10) == nil, "an empty FIFO has no queued demand")
+
+-- A pilot queue_plan sent again with its client_key (the MCP layer's retry
+-- after a lost answer) gets the plan the first call queued.
+;(function() -- a function of its own: the main chunk is at its local limit
+local walk_step = function() return { { action = "walk_to", x = 3, y = 3 } } end
+local keyed = tasks.queue_plan({ steps = walk_step(), client_key = "key-1" })
+game.tick = game.tick + 5
+local retried = tasks.queue_plan({ steps = walk_step(), client_key = "key-1" })
+local other = tasks.queue_plan({ steps = walk_step(), client_key = "key-2" })
+local unkeyed = tasks.queue_plan({ steps = walk_step() })
+check(retried.plan_id == keyed.plan_id and retried.duplicate == true and retried.tick == keyed.tick
+  and other.plan_id ~= keyed.plan_id and unkeyed.plan_id ~= other.plan_id and #storage.tasks.queue == 3,
+  "a queue_plan sent again with its client_key returns the first plan, queued once; other keys and none queue anew")
+for i = 1, tasks.MAX_CLIENT_KEYS do tasks.queue_plan({ steps = walk_step(), client_key = "fill-" .. i }) end
+local evicted = tasks.queue_plan({ steps = walk_step(), client_key = "key-1" })
+check(#storage.tasks.client_keys == tasks.MAX_CLIENT_KEYS and evicted.plan_id ~= keyed.plan_id
+  and storage.tasks.client_keys[1].key == "fill-2",
+  "the client keys are a bounded ring: the oldest is forgotten first")
+check(not pcall(tasks.queue_plan, { steps = walk_step(), client_key = string.rep("k", 65) })
+  and not pcall(tasks.queue_plan, { steps = walk_step(), client_key = 7 }), "a client_key is a string of 1-64 characters")
+storage.tasks.queue, storage.tasks.active = {}, nil
+end)()
 os.exit(failures == 0 and 0 or 1)

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JobBusyError, ModError, type Bridge } from "../src/bridge.js";
+import { JobBusyError, ModError, WriterRetiredError, type Bridge } from "../src/bridge.js";
 import { createOrdersTracker, createPackageQueue, holdLock, packageFailures, packageVerifications, readPackageQueue } from "../src/coordination/orders.js";
 import { registerMcpTools, result, runMcpServer, type McpSurface, type SessionRole } from "../src/mcp/server.js";
 import * as coordination from "../src/coordination/orders.js";
@@ -311,6 +311,44 @@ describe("package auto-queue", () => {
     fs.writeFileSync(path.join(dir, "package-queue.lock"), "999999999\n");
     await createPackageQueue(() => dir, present.bridge).tick();
     expect(queuedPlans(present.call)).toHaveLength(1);
+  });
+
+  it("retires for good at a newer writer generation, giving up its lock, and never fails a package for it", async () => {
+    const dir = runDir();
+    const lock = path.join(dir, "package-queue.lock");
+    writeLedger(dir, 1, [furnaces("iron-a")]);
+    let generation = 1;
+    const ping = () => ({ companion_exists: true, tick: 900, writer_generation: generation, body: { state: "on_surface", surface_ref: "nauvis" } });
+    const old = fakeBridge({ ping });
+    const queue = createPackageQueue(() => dir, async () => ({ call: old.call, writerGeneration: 1 } as unknown as Bridge));
+    await queue.tick();
+    expect(queuedPlans(old.call)).toHaveLength(1);
+    expect(fs.readFileSync(lock, "utf8").trim()).toBe(String(process.pid));
+    // A replacement pilot claimed generation 2: the old process stops and frees the run.
+    generation = 2;
+    writeLedger(dir, 2, [furnaces("iron-a"), furnaces("iron-b")]);
+    await queue.tick();
+    old.call.mockClear();
+    await queue.tick();
+    expect(old.call).not.toHaveBeenCalled();
+    expect(queuedPlans(old.call)).toEqual([]);
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(readPackageQueue(dir)?.packages["iron-b"]).toBeUndefined();
+    // Claimed between its ping and its write: the mod refuses, the record stays queuing, and the new pilot's bridge sends it.
+    const raced = runDir();
+    writeLedger(raced, 1, [furnaces("iron-a")]);
+    const refused = fakeBridge({ ping, queue_plan: () => { throw new WriterRetiredError("WRITER_RETIRED: writer generation 2 was replaced by generation 3"); } });
+    const racing = createPackageQueue(() => raced, async () => ({ call: refused.call, writerGeneration: 2 } as unknown as Bridge));
+    await racing.tick();
+    expect(readPackageQueue(raced)?.packages["iron-a"]).toMatchObject({ status: "queuing" });
+    expect(fs.existsSync(path.join(raced, "package-queue.lock"))).toBe(false);
+    refused.call.mockClear();
+    await racing.tick();
+    expect(refused.call).not.toHaveBeenCalled();
+    const next = fakeBridge({ ping: () => ({ ...ping(), writer_generation: 3 }) });
+    await createPackageQueue(() => raced, async () => ({ call: next.call, writerGeneration: 3 } as unknown as Bridge)).tick();
+    expect(queuedPlans(next.call)).toHaveLength(1);
+    expect(readPackageQueue(raced)?.packages["iron-a"]).toMatchObject({ status: "queued" });
   });
 
   it("queues a package only while the body is on its surface; elsewhere it waits, never fails", async () => {

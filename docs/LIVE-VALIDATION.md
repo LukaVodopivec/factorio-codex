@@ -917,6 +917,38 @@ Offline tests prove neither message delivery nor live retirement or
 replacement; claim live behaviour only from a supervised run with delivery
 and retirement receipts.
 
+### Writer fence on replacement
+
+The pilot's MCP process (`--role pilot`, full surface) claims a writer
+generation from the mod (`claim_writer`) when it starts, once per process,
+and sends it with each of its writes: the gameplay writes (`enqueue`,
+`queue_plan`, `start_research`, `travel`, the platform, request, settings,
+recipe and blueprint writes) and `cancel`. Reads are never fenced. When a
+replacement pilot's process claims the next generation, the mod refuses every
+write that carries an older one with `WRITER_RETIRED`: the old pilot's write
+tools fail with code `WRITER_RETIRED`, and its bridge stops queuing packages
+and gives up the run's package lock, so the replacement's bridge queues them.
+`ping` reports the newest `writer_generation`, and `factorio-codex doctor`
+shows it. A write without a generation
+(an older companion, or another full-surface session) passes only while no
+generation has ever been claimed in the save; after that only `cancel` does,
+so the supervisor's `stop` always works. A save loaded from before the newest
+claim takes the newer generation from the first write that carries it.
+
+So once the replacement's process has connected (its `ping` shows its
+generation as the newest), the old pilot can no longer write, whatever its
+session does. The fence cancels nothing: plans the old pilot already queued
+stay committed, so settle and observe them as above before the replacement
+starts.
+
+A transport fault during a write (an RCON timeout, or the connection closing
+before the whole reply arrived) returns `status: "outcome_unknown"` with code
+`OUTCOME_UNKNOWN`: the call may or may not have run in the game. Nothing is
+retried except the `queue_plan` tool, which sends the call once more with the
+same `client_key`. The mod answers a key it has seen (it keeps the last 32)
+with the plan that call queued (`duplicate: true`), so the retry never queues
+a second plan.
+
 ### Supervisor interventions and watching
 
 The supervisor may diagnose or recover through its own surfaces; that

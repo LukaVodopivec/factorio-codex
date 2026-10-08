@@ -7,7 +7,7 @@
 // once its plan has ended and settled.
 import fs from "node:fs";
 import path from "node:path";
-import { ModError, type Bridge } from "../bridge.js";
+import { ModError, WriterRetiredError, type Bridge } from "../bridge.js";
 import type { PackageVerificationEvent } from "../mcp/events.js";
 import { queuePlanSchema } from "../mcp/runPlan.js";
 import { luaArray, toolPayloads } from "../mcp/toolPayloads.js";
@@ -166,6 +166,11 @@ export function createOrdersTracker(runDir: RunDir) {
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+/** Gives up this process's package lock, if it holds it. */
+export function releaseLock(dir: string, pid = process.pid): void {
+  const file = lockFile(dir);
+  try { if (Number(fs.readFileSync(file, "utf8").trim()) === pid) fs.rmSync(file); } catch { /* none */ }
 }
 /** One process per run queues packages: whoever holds the lock while alive.
  *  A dead owner's lock is taken over atomically: it is moved aside, and if
@@ -422,7 +427,9 @@ async function verifyPackages(b: Bridge, state: PackageQueueState, tick: number,
  *  the last emergency stop (packages written before a stop stay held until
  *  the strategist rewrites the ledger). The ledger's research is queued once
  *  per revision that lists any (origin ledger/r<revision>, a row in
- *  activity_log), held only by a stop, as packages are. */
+ *  activity_log), held only by a stop, as packages are. A newer writer
+ *  generation (a replacement pilot claimed one) retires it for good: it
+ *  gives up its lock, so the new pilot's bridge queues from then on. */
 export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>, now = () => new Date()) {
   // Directories whose queued records this process has checked against the loaded save.
   const verified = new Set<string>();
@@ -441,8 +448,11 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
     // Every pass reads the game, even with no package yet: an emergency stop
     // is recorded when it happens, not when the first package after it appears.
     const b = await bridge();
-    const ping = await b.call<{ companion_exists?: boolean; tick?: number;
+    const ping = await b.call<{ companion_exists?: boolean; tick?: number; writer_generation?: number;
       body?: { state?: string; surface_ref?: string; bound_for?: string } }>("ping");
+    if (b.writerGeneration !== undefined && typeof ping.writer_generation === "number" && ping.writer_generation > b.writerGeneration) {
+      throw new WriterRetiredError(`writer generation ${b.writerGeneration} was replaced by generation ${ping.writer_generation}`);
+    }
     if (!ping.companion_exists || !holdLock(dir)) return;
     const state = readPackageQueue(dir);
     if (!state) return;
@@ -624,11 +634,20 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
     }
   };
   let busy = false;
+  let retired = false;
   return {
     async tick(): Promise<void> {
-      if (busy) return;
+      if (busy || retired) return;
       busy = true;
-      try { await process_(); } catch { /* offline or interrupted: retried next tick */ } finally { busy = false; }
+      try { await process_(); }
+      catch (error) {
+        // Otherwise offline or interrupted: retried next tick.
+        if (error instanceof WriterRetiredError) {
+          retired = true;
+          const dir = runDir();
+          if (dir) releaseLock(dir);
+        }
+      } finally { busy = false; }
     },
   };
 }

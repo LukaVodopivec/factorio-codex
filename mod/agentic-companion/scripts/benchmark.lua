@@ -9,7 +9,9 @@ local RAW = { "iron-ore", "copper-ore", "coal", "stone" }
 local MADE = { "iron-plate", "copper-plate", "steel-plate", "iron-gear-wheel", "electronic-circuit",
   "automation-science-pack", "logistic-science-pack" }
 local PACKS = { "automation-science-pack", "logistic-science-pack" }
-local MUTATIONS = { enqueue = true, queue_plan = true, start_research = true, travel = true,
+-- The gameplay writes: refused outside a running trial here, and fenced by
+-- writer generation (rpc.lua).
+M.MUTATIONS = { enqueue = true, queue_plan = true, start_research = true, travel = true,
   create_platform = true, set_platform_route = true, set_requests = true, configure_entity = true,
   set_recipe = true, blueprint_capture = true, blueprint_create = true, blueprint_delete = true }
 
@@ -46,7 +48,7 @@ end
 
 function M.assert_action(method)
   local b = storage.benchmark
-  if b and b.status ~= "running" and MUTATIONS[method] then
+  if b and b.status ~= "running" and M.MUTATIONS[method] then
     error("BENCHMARK_CLOSED: no physical or package writes before GO or after cutoff", 0)
   end
 end

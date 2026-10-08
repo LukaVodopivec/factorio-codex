@@ -3,6 +3,9 @@
 -- connection as a {ok, data|error} JSON envelope. Envelopes larger than
 -- CHUNK_SIZE are stored in storage.rpc_outbox and streamed back to the
 -- app part by part via get_chunk.
+-- Measured against 2.0.77 through the companion's RCON client: a 4 MB reply
+-- arrives intact in one command, and rcon.print of 1 MB takes about 0.26 ms
+-- of Lua time (256 KB: 0.06 ms), so nearly every reply goes in one piece.
 local timing = require("scripts.profiler")
 local benchmark = require("scripts.benchmark")
 local errors = require("scripts.errors")
@@ -11,7 +14,7 @@ local M = {}
 
 M.handlers = {}
 
-local CHUNK_SIZE = 3400
+M.CHUNK_SIZE = 256 * 1024
 -- A handler's result may carry, under this key, {field = JSON string}:
 -- fields already encoded (a job's result, encoded over earlier ticks) that
 -- replace the same fields of the result, so they are not encoded again.
@@ -53,13 +56,13 @@ end
 
 local function respond(tbl, never_chunk)
   local json = encode(tbl)
-  if never_chunk or #json <= CHUNK_SIZE then
+  if never_chunk or #json <= M.CHUNK_SIZE then
     rcon.print(json)
     return
   end
   local parts = {}
-  for i = 1, #json, CHUNK_SIZE do
-    parts[#parts + 1] = string.sub(json, i, i + CHUNK_SIZE - 1)
+  for i = 1, #json, M.CHUNK_SIZE do
+    parts[#parts + 1] = string.sub(json, i, i + M.CHUNK_SIZE - 1)
   end
   local box = storage.rpc_outbox
   local id = box.next_id
@@ -83,6 +86,36 @@ local function prune_outbox()
   end
 end
 
+-- The writer fence. claim_writer gives the pilot's MCP process a new writer
+-- generation, which it sends with each of its writes (writer_generation): a
+-- write carrying an older generation is refused WRITER_RETIRED, so a
+-- replaced pilot can no longer write. The writes are benchmark.MUTATIONS and
+-- cancel; reads are never fenced. A write without a generation (an older
+-- companion, the supervisor's stop) passes while none was ever claimed;
+-- after a claim only cancel still does, so an emergency stop always works.
+local function fence(method, params)
+  local stamp = params.writer_generation
+  params.writer_generation = nil
+  if not (benchmark.MUTATIONS[method] or method == "cancel") then return end
+  local writer = storage.writer
+  if stamp == nil then
+    if writer.generation > 0 and method ~= "cancel" then
+      error("WRITER_RETIRED: " .. method .. " carries no writer generation; generation "
+        .. writer.generation .. " holds the writes", 0)
+    end
+    return
+  end
+  if type(stamp) ~= "number" or stamp % 1 ~= 0 or stamp < 1 then
+    error("writer_generation must be a positive integer", 0)
+  end
+  if stamp < writer.generation then
+    error("WRITER_RETIRED: writer generation " .. stamp .. " was replaced by generation " .. writer.generation, 0)
+  end
+  -- A save from before that claim was loaded: the newer generation becomes
+  -- current, so the next claim is newer than every one handed out.
+  writer.generation = stamp
+end
+
 local function run(method, params_json)
   prune_outbox()
   local handler = M.handlers[method]
@@ -99,6 +132,8 @@ local function run(method, params_json)
     end
     params = decoded
   end
+  local unfenced, fence_error = pcall(fence, method, params)
+  if not unfenced then respond({ ok = false, error = errors.plain(fence_error) }); return end
   local allowed, admission_error = pcall(benchmark.assert_action, method)
   -- An error reaches the app without its Lua source location; a handler's
   -- fault (not a deliberate refusal) is also kept in the error ring
@@ -122,6 +157,16 @@ function M.dispatch(method, params_json)
 end
 
 -- Built-in transport helpers; everything else registers from control.lua.
+
+-- A new writer generation (the fence above), claimed once by the pilot's
+-- MCP process as it first connects.
+M.register("claim_writer", function(params)
+  local writer = storage.writer
+  writer.generation = writer.generation + 1
+  writer.claimed_tick = game.tick
+  log("writer generation " .. writer.generation .. " claimed by " .. tostring(params.role):sub(1, 40))
+  return { generation = writer.generation }
+end)
 
 M.register("get_chunk", function(params)
   local id = tonumber(params.id)

@@ -1,7 +1,7 @@
 // Typed wrapper over RCON → remote.call("agentic","rpc",...).
-import { RconClient } from "./rcon.js";
+import { RconClient, RconError, RconReplyLostError } from "./rcon.js";
 import type { ChunkedEnvelope, GetTaskResult, Task } from "./types.js";
-import { JOB_METHODS, parseRpcEnvelope, type RpcMethod } from "./protocol/contract.js";
+import { JOB_METHODS, WRITE_METHODS, parseRpcEnvelope, type RpcMethod } from "./protocol/contract.js";
 
 export class ModError extends Error {}
 export class TaskCancelledError extends ModError {}
@@ -11,6 +11,15 @@ export class TaskCancelledError extends ModError {}
  *  ModError: a caller retries instead of recording a failure. */
 export class JobBusyError extends Error {}
 export const JOBS_BUSY = "JOBS_BUSY:";
+/** A write whose answer was lost to a transport fault (a timeout, or the
+ *  connection closing mid-call): the game may or may not have run it. Not a
+ *  ModError, and never retried here. */
+export class OutcomeUnknownError extends Error {}
+/** The mod refused a write because a newer writer generation was claimed
+ *  (rpc.lua's fence): this process no longer writes. Not a ModError: it is
+ *  no refusal of the call's content. */
+export class WriterRetiredError extends Error {}
+export const WRITER_RETIRED = "WRITER_RETIRED:";
 
 /** Escapes a string for inclusion in a double-quoted Lua string literal.
  *  JSON.stringify output never contains raw control characters, so escaping
@@ -52,12 +61,21 @@ export const JOB_TIMEOUT_MS = 120_000;
 interface JobStatus { job_id: number; kind?: string; job_status: "pending" | "done" | "failed";
   result?: unknown; error?: string; ticks?: number; fifo?: unknown }
 const jobMethods = new Set<string>(JOB_METHODS);
+const writeMethods = new Set<string>(WRITE_METHODS);
+export function outcomeUnknown(what: string, error: unknown): OutcomeUnknownError {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new OutcomeUnknownError(`the connection to the game failed during ${what} (${reason}); it may or may not have run in the game`);
+}
 function pendingJob(value: unknown): value is JobStatus {
   const job = value as JobStatus | undefined;
   return !!job && typeof job === "object" && job.job_status === "pending" && typeof job.job_id === "number";
 }
 
 export class Bridge {
+  /** This process's writer generation (claim_writer), sent with every write
+   *  once set; absent for a process that never claimed one. */
+  writerGeneration?: number;
+
   constructor(private readonly rcon: RconClient, private readonly clock: TaskClock = realClock) {}
 
   /** One RPC. A read the mod runs as a job over several ticks is polled
@@ -109,9 +127,18 @@ export class Bridge {
   }
 
   private async callUnchecked<T>(method: RpcMethod, params?: unknown): Promise<T> {
-    const json = escapeLuaString(JSON.stringify(params ?? {}));
+    const write = writeMethods.has(method);
+    const stamped = write && this.writerGeneration !== undefined
+      ? { ...(params as Record<string, unknown> | undefined), writer_generation: this.writerGeneration } : params;
+    const json = escapeLuaString(JSON.stringify(stamped ?? {}));
     const cmd = `/silent-command remote.call("agentic","rpc","${method}","${json}")`;
-    const raw = (await this.rcon.exec(cmd)).trim();
+    let reply: string;
+    try { reply = await this.rcon.exec(cmd); }
+    catch (error) {
+      if (write && error instanceof RconReplyLostError) throw outcomeUnknown(method, error);
+      throw error;
+    }
+    const raw = reply.trim();
     if (!raw) {
       throw new ModError(
         "empty response from the game — is the agentic-companion mod installed and enabled on this save?",
@@ -142,6 +169,7 @@ export class Bridge {
       }
     }
     if (!envelope.ok) {
+      if (envelope.error?.startsWith(WRITER_RETIRED)) throw new WriterRetiredError(envelope.error);
       throw new ModError(envelope.error ?? "unknown mod error");
     }
     return envelope.data as T;
@@ -215,6 +243,8 @@ export class Bridge {
       // session role; anything else is the bridge giving up at its deadline.
       const role = opts.signal?.aborted ? opts.role ?? "unknown" : "direct-task-timeout";
       await this.call("cancel", { task_id, origin: `${opts.tool ?? task.type}/${role}` }).catch(() => {});
+      // The task was queued and its status could not be read: it may still run.
+      if (error instanceof RconError) throw outcomeUnknown(`${opts.tool ?? task.type} (task ${task_id})`, error);
       throw error;
     }
   }

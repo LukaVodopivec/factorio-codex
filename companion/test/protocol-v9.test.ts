@@ -11,7 +11,7 @@ describe("protocol v29 DTO and tool registry", () => {
   it("declares v29 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(29);
     expect(MCP_SERVER_VERSION).toBe("0.32.0");
-    expect(RPC_METHODS).toHaveLength(45);
+    expect(RPC_METHODS).toHaveLength(46);
     expect(RPC_METHODS).not.toContain("build_block");
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
       "factory_status", "activity_log", "event_state", "build_layout", "say", "say_now", "get_job",

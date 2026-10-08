@@ -34,7 +34,8 @@ describe("current queued-plan protocol", () => {
     const output = await handlers.queue_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "compact" });
     expect(output.structuredContent).toMatchObject({ plan_id: 8, status: "queued", terminal: false,
       next_action: { tool: "next_event", arguments: { timeout_seconds: 60 } } });
-    expect(call).toHaveBeenCalledWith("queue_plan", queuePlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "compact" }));
+    expect(call).toHaveBeenCalledWith("queue_plan", { ...queuePlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "compact" }),
+      client_key: expect.stringMatching(/^[0-9a-f-]{36}$/) });
   });
 
   it("accepts exact grounded pickup steps and rejects incomplete targets", () => {

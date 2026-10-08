@@ -86,7 +86,7 @@ local function reset()
   player.opened_gui_type, player.cursor_stack = defines.gui_type.none, { valid_for_read = false }
   game.tick = 0
   _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil },
-    companion = { player_index = 1, entity = body } }
+    companion = { player_index = 1, entity = body }, writer = { generation = 0 } }
 end
 local function tick()
   game.tick = game.tick + 1

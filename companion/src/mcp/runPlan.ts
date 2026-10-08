@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, TaskCancelledError, type TaskClock } from "../bridge.js";
+import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, outcomeUnknown, TaskCancelledError, type TaskClock } from "../bridge.js";
+import { RconError } from "../rcon.js";
 import type { Bridge } from "../bridge.js";
 import { normalizeObservation } from "./observation.js";
 
@@ -460,6 +461,8 @@ export async function executeRunPlan(bridge: Bridge, input: RunPlanInput, signal
         execution: { mode: "sequential_nontransactional", rollback: "none", effects_state: "unknown",
           incomplete_step: { step: 1, status: "cancelled", effects: "unknown" } } };
     }
+    // The plan was queued and its status could not be read: it may still run.
+    if (error instanceof RconError) throw outcomeUnknown(`${tool} (plan ${plan_id})`, error);
     throw error;
   }
 }

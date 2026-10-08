@@ -111,6 +111,8 @@ rpc.register("ping", read(function()
     -- Errors a handler raised and a dispatcher caught: {count, recent}
     -- (errors.summary), absent before the first.
     handler_errors = errors.summary(),
+    -- The newest writer generation (rpc.lua's fence), 0 before the first claim.
+    writer_generation = storage.writer.generation,
     -- Where the body is (body_summary).
     body = body_summary(),
   }

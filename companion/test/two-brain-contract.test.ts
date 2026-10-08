@@ -112,6 +112,14 @@ describe("persistent two-brain coordination contract", () => {
     expect(live).toMatch(/wait at least 2 s[\s\S]*call factorio `stop` again and re-observe until idle; only then run recorder FINISH/);
   });
 
+  it("documents the writer fence and unknown outcomes for a replacement, and keeps them out of the gameplay rules", () => {
+    expect(live).toMatch(/refuses every write that carries an older one with `WRITER_RETIRED`/);
+    expect(live).toMatch(/after that only `cancel` does, so the supervisor's `stop` always works/);
+    expect(live).toMatch(/The fence cancels nothing: plans the old pilot already queued stay committed/);
+    expect(live).toMatch(/`status: "outcome_unknown"` with code `OUTCOME_UNKNOWN`: the call may or may not have run in the game/);
+    expect(active).not.toMatch(/writer generation|WRITER_RETIRED|client_key/);
+  });
+
   it("lets packages queue themselves while the strategist stays the sole ledger writer", () => {
     expect(flat(skill)).toMatch(/The pilot's bridge queues each new package into the FIFO itself, in ledger order, after the mod's placement check, with no pilot turn/);
     expect(flat(skill)).toMatch(/the ledger is the strategist's only channel to the pilot/);

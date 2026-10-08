@@ -6,6 +6,10 @@
 // from overtaking a command whose response is emitted later by Factorio.
 // The sentinel body is a single space: Factorio sends NO response at all to a
 // zero-length command (verified against 2.0.77), but replies to " ".
+// A reply of several megabytes arrives intact this way (measured against
+// 2.0.77 up to 4 MB); MAX_REPLY_BYTES bounds what one command may buffer.
+// Packet bodies are joined as bytes and decoded once, so a UTF-8 character
+// split across packets survives.
 import net from "node:net";
 import { EventEmitter } from "node:events";
 
@@ -14,6 +18,15 @@ const EXEC_COMMAND = 2;
 const AUTH_RESPONSE = 2;
 
 export class RconError extends Error {}
+/** The command was sent and its answer was lost: it timed out, or the
+ *  connection failed before the whole reply arrived. The game may or may
+ *  not have run it. */
+export class RconReplyLostError extends RconError {}
+
+/** The most one command's reply may buffer: well above the mod's largest
+ *  single reply (rpc.lua CHUNK_SIZE, 256 KiB, or a get_chunk part with its
+ *  JSON escapes). A larger one closes the connection. */
+export const MAX_REPLY_BYTES = 2 * 1024 * 1024;
 
 export interface RconOptions {
   host: string;
@@ -27,7 +40,8 @@ interface PendingExec {
   id: number;
   sentinelId: number;
   sentinelSent: boolean;
-  chunks: string[];
+  chunks: Buffer[];
+  bytes: number;
   resolve: (body: string) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
@@ -79,6 +93,8 @@ export class RconClient extends EventEmitter {
       socket.once("error", onError);
       socket.once("connect", () => {
         socket.off("error", onError);
+        // Small commands go out at once instead of waiting on Nagle's algorithm.
+        socket.setNoDelay(true);
         this.socket = socket;
         socket.on("data", (data: Buffer) => this.onData(data));
         socket.on("error", (err) => this.teardown(new RconError(`RCON socket error: ${err.message}`)));
@@ -123,17 +139,16 @@ export class RconClient extends EventEmitter {
     const id = this.allocId();
     const sentinelId = this.allocId();
     return new Promise<string>((resolve, reject) => {
+      // A reply without its sentinel may be cut short: part of a reply is
+      // never returned as if it were the whole. A late reply is ignored (its
+      // id is no longer pending).
       const timer = setTimeout(() => {
-        const pending = this.pendingExec;
-        this.pendingExec = null;
-        if (pending && pending.chunks.length > 0) {
-          // Sentinel response never arrived but data did (server variant quirk).
-          resolve(pending.chunks.join(""));
-        } else {
-          reject(new RconError(`RCON command timed out after ${this.opts.timeoutMs ?? 10_000}ms`));
-        }
+        const received = this.pendingExec?.id === id ? this.pendingExec.bytes : 0;
+        if (this.pendingExec?.id === id) this.pendingExec = null;
+        reject(new RconReplyLostError(`RCON command timed out after ${this.opts.timeoutMs ?? 10_000}ms`
+          + (received > 0 ? ` with ${received} bytes of its reply received` : "")));
       }, this.opts.timeoutMs ?? 10_000);
-      this.pendingExec = { id, sentinelId, sentinelSent: false, chunks: [], resolve, reject, timer };
+      this.pendingExec = { id, sentinelId, sentinelSent: false, chunks: [], bytes: 0, resolve, reject, timer };
       this.socket!.write(encodePacket(id, EXEC_COMMAND, command));
     });
   }
@@ -155,13 +170,14 @@ export class RconClient extends EventEmitter {
       if (this.recvBuf.length < 4 + size) break;
       const id = this.recvBuf.readInt32LE(4);
       const type = this.recvBuf.readInt32LE(8);
-      const body = this.recvBuf.toString("utf8", 12, 4 + size - 2);
+      const body = this.recvBuf.subarray(12, 4 + size - 2);
       this.recvBuf = this.recvBuf.subarray(4 + size);
       this.handlePacket(id, type, body);
+      if (!this.socket) return;
     }
   }
 
-  private handlePacket(id: number, type: number, body: string): void {
+  private handlePacket(id: number, type: number, body: Buffer): void {
     if (this.pendingAuth) {
       if (type !== AUTH_RESPONSE) return; // some servers send an empty RESPONSE_VALUE first
       const auth = this.pendingAuth;
@@ -179,7 +195,13 @@ export class RconClient extends EventEmitter {
     const pending = this.pendingExec;
     if (!pending) return;
     if (id === pending.id) {
-      pending.chunks.push(body);
+      pending.bytes += body.length;
+      if (pending.bytes > MAX_REPLY_BYTES) {
+        this.teardown(new RconError(`RCON reply exceeded ${MAX_REPLY_BYTES} bytes`));
+        return;
+      }
+      // A copy, so the whole receive buffer is not kept alive with it.
+      pending.chunks.push(Buffer.from(body));
       if (!pending.sentinelSent) {
         pending.sentinelSent = true;
         this.socket!.write(encodePacket(pending.sentinelId, EXEC_COMMAND, " "));
@@ -187,7 +209,7 @@ export class RconClient extends EventEmitter {
     } else if (id === pending.sentinelId) {
       clearTimeout(pending.timer);
       this.pendingExec = null;
-      pending.resolve(pending.chunks.join(""));
+      pending.resolve(Buffer.concat(pending.chunks).toString("utf8"));
     }
   }
 
@@ -198,8 +220,9 @@ export class RconClient extends EventEmitter {
       this.pendingAuth = null;
     }
     if (this.pendingExec) {
+      // The command was sent: its outcome in the game is unknown.
       clearTimeout(this.pendingExec.timer);
-      this.pendingExec.reject(err);
+      this.pendingExec.reject(new RconReplyLostError(err.message));
       this.pendingExec = null;
     }
     this.emit("close", err);

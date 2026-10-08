@@ -15,7 +15,7 @@ local function check(cond, what)
 end
 
 _G.storage = { rpc_outbox = { next_id = 1, by_id = {} }, space = { created = {}, events = {} }, travel = { arrivals = {} },
-  tasks = { queue = {} } }
+  tasks = { queue = {} }, writer = { generation = 0 } }
 _G.defines = { events = setmetatable({}, { __index = function(_, key) return key end }),
   controllers = { character = 1, spectator = 4, remote = 7 } }
 local events = {}

@@ -54,6 +54,10 @@ function M.init()
     -- first, at most four {surface_index, x, y} (tasks.note_work_site),
     -- absent before one: idle upkeep serves near them.
     work_sites = tasks.work_sites,
+    -- The last few pilot queue_plan client keys (tasks.queue_plan), oldest
+    -- first: {key, plan_id, tick}, so a retried call returns the plan it
+    -- queued; absent before the first.
+    client_keys = tasks.client_keys,
   }
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}
@@ -74,6 +78,9 @@ function M.init()
   storage.path_request = nil
   -- chunked RPC responses: { next_id, by_id = { [id] = { parts = {...}, created_tick } } }
   storage.rpc_outbox = storage.rpc_outbox or { next_id = 1, by_id = {} }
+  -- The writer fence (rpc.lua): generation, the newest writer generation
+  -- (0 before the first claim_writer), and claimed_tick, when it was claimed.
+  storage.writer = storage.writer or { generation = 0 }
   storage.factory_activity = storage.factory_activity or {
     epoch_tick = game and game.tick or 0, events = {}, events_omitted = 0,
   }

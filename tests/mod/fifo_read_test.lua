@@ -7,7 +7,7 @@ local function check(cond, what)
   if cond then print("ok   " .. what) else failures = failures + 1 print("FAIL " .. what) end
 end
 
-_G.storage = { rpc_outbox = { next_id = 1, by_id = {} } }
+_G.storage = { rpc_outbox = { next_id = 1, by_id = {} }, writer = { generation = 0 } }
 _G.game = { tick = 6000 }
 _G.defines = { events = setmetatable({}, { __index = function(_, key) return key end }) }
 _G.script = {

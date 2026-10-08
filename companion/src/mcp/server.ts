@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { Bridge, DEFAULT_TASK_TIMEOUT_MS } from "../bridge.js";
+import { Bridge, DEFAULT_TASK_TIMEOUT_MS, ModError, OutcomeUnknownError, WriterRetiredError } from "../bridge.js";
 import { RconClient } from "../rcon.js";
 import { assertConnectionCompatibility, assertRuntimeCompatibility } from "../compatibility.js";
 import { companionVersion, diagnoseConfig, type ConfigDiagnostic, type RconSettings } from "../config.js";
@@ -61,9 +62,16 @@ export function result(value: unknown, isError = false) {
   return { content: [{ type: "text" as const, text: text.slice(0, 500) }], structuredContent: structured, isError };
 }
 
+// A write whose answer a transport fault lost has no known outcome
+// (OUTCOME_UNKNOWN); a write from a replaced pilot's process is refused
+// (WRITER_RETIRED).
 function failure(error: unknown, prefix = "Error") {
   const message = error instanceof Error ? error.message : String(error);
-  return result({ status: "failed", terminal: true, code: "TOOL_ERROR", summary: `${prefix}: ${message}`, next_action: null }, true);
+  if (error instanceof OutcomeUnknownError) {
+    return result({ status: "outcome_unknown", terminal: true, code: "OUTCOME_UNKNOWN", summary: message, next_action: null }, true);
+  }
+  const code = error instanceof WriterRetiredError ? "WRITER_RETIRED" : "TOOL_ERROR";
+  return result({ status: "failed", terminal: true, code, summary: `${prefix}: ${message}`, next_action: null }, true);
 }
 
 /** Optional map_summary sections; each adds a top-level key of the same name
@@ -241,6 +249,7 @@ export function registerMcpTools(
         : nextEventAfter(outcome.source_tick) }),
       outcome.status === "failed" || outcome.status === "cancelled");
     } catch (error) {
+      if (error instanceof OutcomeUnknownError || error instanceof WriterRetiredError) return failure(error);
       const message = error instanceof Error ? error.message : String(error);
       const status = signal?.aborted ? "cancelled" : "failed";
       const outcome: RunPlanResult = {
@@ -689,7 +698,17 @@ export function registerMcpTools(
     step("copy_settings")(copyInput.parse(p), extra?.signal));
   tools.registerTool("queue_plan", { description: "Queue a plan of 1-200 steps and return at once, so the body works while you think. Prefer goal-level steps: get_items, build_layout, blueprint_place. equip and flush_fluid are plan steps only. Steps on a space platform (platform set) need no body. Positions are on the body's surface, or after a travel step on its destination; surface names another. A plan for a surface the body leaves is cancelled (SURFACE_LEFT). after_plan_id runs it only after that plan completes. Wait with next_action's next_event: its since_tick still catches a plan that already ended. It returns needs: item totals its steps take (placed and starter items, inserts once per listed target (a query target counts once), craft ingredients less what its craft steps make, tiles, equipment; per item the larger of that and what its get_items steps fetch; not connection, blueprint or area pieces, nor what ghosts or a platform take). Every read's fifo block (factory_status's too) carries queued_demand (needs summed over the plans still queued, the running one from its current step) and short_by (what of it carried items plus stock on the body's surface do not cover), the largest few each: totals only, nothing is reserved or ordered.", inputSchema: queuePlanSchema }, async (input) => {
     try {
-      const queued: any = await (await bridge()).call("queue_plan", queuePlanSchema.parse(input));
+      // client_key: the mod answers a call sent again with the same key with
+      // the plan the first one queued, so a lost answer is asked for once more.
+      const plan = { ...queuePlanSchema.parse(input), client_key: randomUUID() };
+      let queued: any;
+      try { queued = await (await bridge()).call("queue_plan", plan); }
+      catch (error) {
+        if (!(error instanceof OutcomeUnknownError)) throw error;
+        // Only an answer of the mod settles it; anything else keeps the outcome unknown.
+        try { queued = await (await bridge()).call("queue_plan", plan); }
+        catch (retryError) { throw retryError instanceof ModError ? retryError : error; }
+      }
       return result({ ...queued, status: "queued", terminal: false, summary: queuedPlanSummary(queued),
         next_action: nextEventAfter(queued.tick) });
     } catch (error) { return failure(error); }
@@ -708,13 +727,18 @@ type Connection = { rcon: RconClient; bridge: Bridge };
 type RconFactory = (opts: RconSettings) => RconClient;
 type ConnectionSettings = RconSettings | (() => ConfigDiagnostic);
 
-/** Lazy, singleflight RCON handshake shared by every MCP handler. */
+/** Lazy, singleflight RCON handshake shared by every MCP handler. With
+ *  writerRole (the pilot's process) the first connection claims a writer
+ *  generation, once per process: every later connection sends the same one
+ *  with its writes, so a replacement pilot's claim retires this process. */
 export function createBridgeProvider(
   settings: ConnectionSettings,
   createRcon: RconFactory = (settings) => new RconClient(settings),
+  writerRole?: SessionRole,
 ): () => Promise<Bridge> {
   let connection: Connection | undefined;
   let connecting: Promise<Bridge> | undefined;
+  let generation: number | undefined;
 
   return async () => {
     const diagnostic = typeof settings === "function" ? settings() : undefined;
@@ -738,6 +762,10 @@ export function createBridgeProvider(
         const bridge = new Bridge(rcon);
         await bridge.unlock();
         assertConnectionCompatibility(opts, await bridge.call("ping"), companionVersion());
+        if (writerRole !== undefined && generation === undefined) {
+          generation = (await bridge.call<{ generation: number }>("claim_writer", { role: writerRole })).generation;
+        }
+        bridge.writerGeneration = generation;
         const owned = { rcon, bridge };
         connection = owned;
         rcon.on("close", () => {
@@ -767,9 +795,13 @@ export async function runMcpServer(
     ? "Read Factorio state without moving, mutating, queueing, cancelling, or controlling the Codex character."
     : "Control one physical Factorio character named Codex. queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot until they finish. Wait with next_event instead of polling. Never use screenshots or screen capture.";
   const server = new McpServer({ name: "factorio-codex", version: MCP_SERVER_VERSION }, { instructions });
-  const bridge = createBridgeProvider(configDiagnostic);
+  const pilot = surface === "full" && role === "pilot";
+  const bridge = createBridgeProvider(configDiagnostic, undefined, pilot ? role : undefined);
   registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface, currentRunDir, role);
-  if (surface === "full" && role === "pilot") {
+  if (pilot) {
+    // The pilot claims its writer generation as it starts (or at its first
+    // connection, when the game is not up yet).
+    void bridge().catch(() => {});
     // Only the explicitly labelled pilot bridge queues the strategist's packages.
     // Supervisor and unlabelled full-surface sessions may read or stop.
     const packages = createPackageQueue(currentRunDir, bridge);

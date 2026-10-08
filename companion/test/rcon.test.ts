@@ -1,14 +1,14 @@
 import net from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RconClient, RconError } from "../src/rcon.js";
+import { MAX_REPLY_BYTES, RconClient, RconError, RconReplyLostError } from "../src/rcon.js";
 
 const AUTH = 3;
 const EXEC = 2;
 const RESPONSE_VALUE = 0;
 const AUTH_RESPONSE = 2;
 
-function packet(id: number, type: number, body: string): Buffer {
-  const bodyBuf = Buffer.from(body, "utf8");
+function packet(id: number, type: number, body: string | Buffer): Buffer {
+  const bodyBuf = typeof body === "string" ? Buffer.from(body, "utf8") : body;
   const buf = Buffer.alloc(14 + bodyBuf.length);
   buf.writeInt32LE(10 + bodyBuf.length, 0);
   buf.writeInt32LE(id, 4);
@@ -29,7 +29,11 @@ class FakeRconServer {
   respondToAuth = true;
   responseDelayMs = 0;
   activeConnections = 0;
-  handler: (cmd: string) => string[] = () => [""];
+  /** Sentinels go unanswered (a reply cut off before its end). */
+  answerSentinel = true;
+  /** Close the connection after a command's first reply packet. */
+  closeMidReply = false;
+  handler: (cmd: string) => Array<string | Buffer> = () => [""];
 
   constructor() {
     this.server = net.createServer((socket) => {
@@ -52,9 +56,13 @@ class FakeRconServer {
             socket.write(packet(body === this.password ? id : -1, AUTH_RESPONSE, ""));
           } else if (type === EXEC) {
             if (body === "") continue; // Factorio sends nothing back for empty commands
+            if (body === " " && !this.answerSentinel) continue;
             const parts = body === " " ? [""] : this.handler(body);
             const respond = () => {
-              for (const part of parts) socket.write(packet(id, RESPONSE_VALUE, part));
+              for (const part of parts) {
+                socket.write(packet(id, RESPONSE_VALUE, part));
+                if (this.closeMidReply) { socket.destroy(); return; }
+              }
             };
             if (body !== " " && this.responseDelayMs > 0) setTimeout(respond, this.responseDelayMs);
             else respond();
@@ -145,6 +153,59 @@ describe("RconClient", () => {
 
   it("fails cleanly when not connected", async () => {
     client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
-    await expect(client.exec("x")).rejects.toThrow(RconError);
+    const error = await client.exec("x").catch((e) => e);
+    expect(error).toBeInstanceOf(RconError);
+    expect(error).not.toBeInstanceOf(RconReplyLostError);
+  });
+
+  it("rejects a timed-out command even when part of its reply arrived, never resolving with the fragment", async () => {
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret", timeoutMs: 100 });
+    await client.connect();
+    server.answerSentinel = false;
+    server.handler = () => ['{"ok":true,"data":{"plan'];
+    const error = await client.exec("cut").catch((e) => e);
+    expect(error).toBeInstanceOf(RconReplyLostError);
+    expect(error.message).toBe("RCON command timed out after 100ms with 24 bytes of its reply received");
+    // The connection stays usable; the old command's late packets are ignored.
+    server.answerSentinel = true;
+    server.handler = (cmd) => [`next:${cmd}`];
+    await expect(client.exec("after")).resolves.toBe("next:after");
+  });
+
+  it("reports a connection closed mid-reply as a lost reply", async () => {
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
+    await client.connect();
+    server.closeMidReply = true;
+    server.handler = () => ["first part", "second part"];
+    await expect(client.exec("cut")).rejects.toThrow(RconReplyLostError);
+    expect(client.connected).toBe(false);
+  });
+
+  it("joins packet bodies as bytes, so a character split across packets survives", async () => {
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
+    await client.connect();
+    const text = Buffer.from("platform \u00e9toile", "utf8");
+    const cut = text.indexOf(0xc3) + 1; // inside the two-byte character
+    server.handler = () => [text.subarray(0, cut), text.subarray(cut)];
+    await expect(client.exec("name")).resolves.toBe("platform \u00e9toile");
+  });
+
+  it("closes the connection when one reply exceeds the byte cap", async () => {
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
+    await client.connect();
+    const piece = "z".repeat(1024 * 1024);
+    server.handler = () => [piece, piece, piece];
+    const error = await client.exec("huge").catch((e) => e);
+    expect(error).toBeInstanceOf(RconReplyLostError);
+    expect(error.message).toBe(`RCON reply exceeded ${MAX_REPLY_BYTES} bytes`);
+    expect(client.connected).toBe(false);
+  });
+
+  it("disables Nagle's algorithm on the socket", async () => {
+    const noDelay = vi.spyOn(net.Socket.prototype, "setNoDelay");
+    client = new RconClient({ host: "127.0.0.1", port: server.port, password: "secret" });
+    await client.connect();
+    expect(noDelay).toHaveBeenCalledWith(true);
+    noDelay.mockRestore();
   });
 });

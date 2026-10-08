@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { JOB_METHODS, PROTOCOL_VERSION, RPC_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
+import { JOB_METHODS, PROTOCOL_VERSION, RPC_METHODS, WRITE_METHODS, assertProtocolCompatibility, parseRpcEnvelope } from "../src/protocol/contract.js";
 import { planStepSchema } from "../src/mcp/runPlan.js";
 
 describe("bridge protocol v29", () => {
@@ -10,7 +10,8 @@ describe("bridge protocol v29", () => {
     expect(PROTOCOL_VERSION).toBe(29);
     expect([...RPC_METHODS]).toEqual(["ping", "spawn_companion", "observe_local", "inspect", "start_research", "can_place", "find_placement", "map_summary", "production_requirements", "run_snapshot", "benchmark_control", "timelapse", "connect_entities", "describe_prototype", "progression_status", "enqueue", "get_task", "queue_plan", "plan_status", "cancel", "get_chunk", "factory_status", "activity_log", "event_state", "build_layout", "say", "say_now",
       "get_job", "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles",
-      "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel", "set_watch", "clear_watch"]);
+      "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel", "set_watch", "clear_watch",
+      "claim_writer"]);
   });
   it("matches the exact Lua registrations", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -26,6 +27,13 @@ describe("bridge protocol v29", () => {
     const jobs = [...sources.matchAll(/jobs\.register\("([^"]+)"/g)].map((match) => match[1]!);
     expect(jobs.sort()).toEqual([...JOB_METHODS].sort());
     expect([...registered, ...looped].sort()).toEqual([...RPC_METHODS].sort());
+  });
+  it("fences the same writes the mod does: its gameplay writes and cancel", () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const benchmark = fs.readFileSync(path.join(root, "mod/agentic-companion/scripts/benchmark.lua"), "utf8");
+    const table = /M\.MUTATIONS = \{([^}]*)\}/.exec(benchmark)?.[1] ?? "";
+    const mutations = [...table.matchAll(/([a-z_]+) = true/g)].map((match) => match[1]!);
+    expect([...WRITE_METHODS].sort()).toEqual([...mutations, "cancel"].sort());
   });
   it("dispatches every plan step action the bridge accepts", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");

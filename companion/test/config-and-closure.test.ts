@@ -120,6 +120,15 @@ describe("exact local configuration", () => {
     expect(report.checks.filter((check) => check.name === "rcon")).toEqual([{ name: "rcon", ok: true, detail: "authenticated" }]);
     expect(report.checks).toContainEqual(expect.objectContaining({ name: failedCheck, ok: false, fix: expect.stringContaining("install Factorio Codex Companion") }));
   });
+  it("names the writer generation that holds the gameplay writes", async () => {
+    const settings = validDoctorSettings();
+    vi.spyOn(RconClient.prototype, "connect").mockResolvedValue();
+    vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
+    const call = vi.spyOn(Bridge.prototype, "call").mockResolvedValueOnce({ protocol_version: 29, mod_version: "0.32.0", writer_generation: 4 } as never);
+    expect((await collectDoctorReport(settings)).checks).toContainEqual({ name: "writer", ok: true, detail: "writer generation 4 holds the gameplay writes" });
+    call.mockResolvedValueOnce({ protocol_version: 29, mod_version: "0.32.0", writer_generation: 0 } as never);
+    expect((await collectDoctorReport(settings)).checks).toContainEqual({ name: "writer", ok: true, detail: "no writer generation claimed" });
+  });
   it("doctor reuses exact endpoint validation and never connects to a remote or wrong port", async () => {
     const home = isolatedHome(); const userDir = path.join(home, "factorio"); fs.mkdirSync(userDir);
     saveConfig({ factorioUserDir: userDir, rcon: { host: "127.0.0.1", port: 19015, password: "secret" } });

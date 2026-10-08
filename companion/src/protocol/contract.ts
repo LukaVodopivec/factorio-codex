@@ -49,6 +49,7 @@ export const RPC_METHODS = [
   "travel",
   "set_watch",
   "clear_watch",
+  "claim_writer",
 ] as const;
 
 export type RpcMethod = (typeof RPC_METHODS)[number];
@@ -59,6 +60,15 @@ export type RpcMethod = (typeof RPC_METHODS)[number];
 export const JOB_METHODS = [
   "observe_local", "inspect", "find_placement", "map_summary", "connect_entities", "build_layout",
   "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status", "run_snapshot",
+] as const satisfies readonly RpcMethod[];
+
+/** The gameplay writes (the mod's benchmark.MUTATIONS) and cancel: a
+ *  bridge holding a writer generation sends it with each, and the mod
+ *  refuses one carrying an older generation (WRITER_RETIRED). A transport
+ *  fault during one of these leaves its outcome unknown. */
+export const WRITE_METHODS = [
+  "enqueue", "queue_plan", "start_research", "travel", "create_platform", "set_platform_route", "set_requests",
+  "configure_entity", "set_recipe", "blueprint_capture", "blueprint_create", "blueprint_delete", "cancel",
 ] as const satisfies readonly RpcMethod[];
 
 export function assertProtocolCompatibility(value: { protocol_version?: number }): void {

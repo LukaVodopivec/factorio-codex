@@ -206,9 +206,9 @@ end
 -- not input: afk_time also resets when the bot's own walking scrolls the view
 -- under a resting cursor (native 2.0.77). Everything counts only for the
 -- connected Codex player in its character: map or remote view moves the view,
--- so the bot keeps working while the owner looks around. Aboard a platform the
+-- so the bot keeps working while the player looks around. Aboard a platform the
 -- client is in the remote view, yet a GUI, a held item or any control but
--- the movement keys (which only pan the camera there) is still his input on
+-- the movement keys (which only pan the camera there) is still their input on
 -- the Codex client.
 local HUMAN_RELEASE_IDLE_TICKS = 300
 local NEVER_ACTIVE_IDLE_TICKS = 2147483647
@@ -217,7 +217,7 @@ local function in_character(player)
   return player.controller_type == defines.controllers.character and on_surface(player, storage.companion)
 end
 -- In the character, or aboard a platform: where the client's own input is
--- The owner's (map and remote view on a surface move only the view).
+-- the player's (map and remote view on a surface move only the view).
 local function takes_input(player)
   return in_character(player) or classify(player, storage.companion) == "aboard_platform"
 end

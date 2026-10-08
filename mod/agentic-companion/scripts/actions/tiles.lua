@@ -316,7 +316,7 @@ function Runner.tick(task)
   for k = 1, math.min(PLACE_PER_TICK, #near) do
     local index = near[k].i
     local tile = s.eligible[index]
-    -- The tile may have changed since it was classified (the owner, a robot).
+    -- The tile may have changed since it was classified (the player, a robot).
     local now = surface.get_tile(tile.x, tile.y)
     local class = class_of(s, now)
     if class == "already" then

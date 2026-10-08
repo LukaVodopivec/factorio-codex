@@ -565,7 +565,7 @@ function M.character_state(c)
   local path_start = placement_geometry.path_start(c)
   -- A belt under the body carries it while idle; the recorder samples this too.
   local conveyor = placement_geometry.conveyor_under(c)
-  -- The owner's input holds the body and parks the FIFO; a failed read never holds.
+  -- The player's input holds the body and parks the FIFO; a failed read never holds.
   local human_ok, human_control, human_idle_ticks = pcall(companion.human_control)
   human_control = human_ok and human_control == true
   if not human_ok then human_idle_ticks = nil end

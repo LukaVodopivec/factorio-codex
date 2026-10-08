@@ -3,12 +3,10 @@
 ## Project contract
 
 - Lifecycle state: active
-- Lifecycle class: personal-tool
-- Repository owner: The owner
+- Repository owner: the maintainer (@LukaVodopivec)
 - Contributors: maintainer-led; outside issues and pull requests are welcome
-- Engineering mode: agent-only
 - Code review: the maintainer reviews outside pull requests before merging
-- Human decision scope: product outcomes and hard-authority approvals only
+- Maintainer decision scope: product outcomes and hard-authority approvals
 - Project goal: Show how Codex bots think about and architect a Factorio
   factory: two reasoning sessions plan and direct one physically embodied
   character through text-only tools, the mod does every deterministic chore,
@@ -46,11 +44,11 @@
   clock, so every handler budgets a fixed count of work items per tick and
   spreads the rest across ticks as a job.
 - Mod actions never use the cursor, open a GUI, or pass the player to
-  `set_tiles`, `put`, `take`, or `copy_settings`: that would start the owner's
-  takeover hold or fill his undo queue.
-- Use Node 22 and Factorio 2.0.x. Run the proportional offline suite before
-  publication; live gameplay validation requires an installed Factorio game.
-- Land changes on a clean `main` with the offline suite passing.
+  `set_tiles`, `put`, `take`, or `copy_settings`: that would start a human player's
+  takeover hold or fill their undo queue.
+- Use Node 22 and Factorio 2.0.x. Land changes on a clean `main` with the
+  offline suite passing; live gameplay validation requires an installed
+  Factorio game.
 
 ## Persistent two-brain gameplay
 
@@ -165,14 +163,14 @@ aboard a platform or in a cargo pod is neither a hold nor idle.
 `plan_status` is only a per-plan read with an exact known `plan_id`, never a
 global work query.
 
-The owner may take the body over by mouse and keyboard at any time. A
+A human player may take the body over by mouse and keyboard at any time. A
 `human_control: true` hold (`observe_local.character`, `factory_status.body`,
-and every `fifo` block) is the owner playing: real control input on the Codex client
+and every `fifo` block) is that player playing: real control input on the Codex client
 (movement, mining, building, opening a GUI, holding an item) parks the FIFO
 without cancelling plans; mouse hovering, map view, and camera movement do not.
 The mod resumes about five seconds after the last such input. A hold is neither
 idleness nor failure. The supervisor never nudges or replaces during a hold,
-records it as the owner input, invalidates idle timing, and needs fresh idle
+records it as human input, invalidates idle timing, and needs fresh idle
 evidence after it.
 
 Measure elapsed idle time with observation receipt timestamps in the current
@@ -226,11 +224,11 @@ not the supervisor, turns low growth into NOW; the supervisor never replaces a
 pilot for low growth alone.
 
 `stop` is the supervisor's recorded emergency cancellation (the pilot never
-calls it), used only for an explicit the owner stop, retained-work reconciliation,
+calls it), used only for an explicit owner stop, retained-work reconciliation,
 or a replacement that cannot otherwise reach physical quiescence. It ends a
 `travel` wait (the body stays aboard), but a rocket launch or landing already
 under way finishes natively. For an
-explicit the owner stop the supervisor, recording each step: calls factorio `stop`;
+explicit owner stop the supervisor, recording each step: calls factorio `stop`;
 pauses both role goals natively (`/goal pause`, read back) and interrupts any
 active role turn (TUI stop control or app-server `turn/interrupt` for the exact
 thread and turn, read back); checks that no task-owned command still runs;
@@ -281,7 +279,7 @@ and `SKILL.md` before any other call, then its notebook index. The native
 `/goal` owns continuation: plan results and batches are nonterminal, and
 native goal continuation, not a supervisor assignment per batch, starts the
 next batch. The supervisor yields between checkpoints instead of sleeping
-inside one turn. Complete only on milestone proof, explicit the owner stop, or a
+inside one turn. Complete only on milestone proof, explicit owner stop, or a
 genuine exhausted blocker; a stop never marks a goal complete.
 
 **Gameplay rules** live in `.agents/skills/factorio-player/`: `SKILL.md` holds

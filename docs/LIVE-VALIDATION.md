@@ -37,19 +37,20 @@ machine stays headless.
    Console-backed RCON disables achievements for the save. Play reaches
    every planet: rockets, remotely built space platforms, and the body's own
    trips by rocket, platform and landing pod.
-4. Allow the game's UDP port (`34197` by default) through the server
+4. Allow the game's UDP port `34197` through the server
    machine's firewall from the trusted LAN only. RCON stays private on
    `127.0.0.1:19015`; it is never the address a client uses.
-5. On the client machine, build or copy the mod archive
-   (`npm run package:mod`) and run
+5. Build the mod archive on the server (`npm run package:mod`, which needs
+   bash and `zip`), copy `dist/agentic-companion_<version>.zip` into the
+   client checkout's `dist\` folder, and run
    `scripts/launch-native-client.ps1 -Address <server-host>:34197`. `-Address`
    is required; there is no default server address. The launcher connects the
    isolated native client (highest graphics quality at 3840x2160) as the real
    player named `Codex`, with its write-data and mod profile only in
    `%LOCALAPPDATA%\factorio-codex\native-client`. Then start the ordinary
    Factorio client as the viewer. A manually installed client instead needs
-   the mod ZIP in `%APPDATA%\\Factorio\\mods` and an enabled `agentic-companion`
-   entry in `%APPDATA%\\Factorio\\mods\\mod-list.json`; the ZIP must match the
+   the mod ZIP in `%APPDATA%\Factorio\mods` and an enabled `agentic-companion`
+   entry in `%APPDATA%\Factorio\mods\mod-list.json`; the ZIP must match the
    server archive hash. `--mp-connect <host:port>` is the Factorio launch
    argument (`--connect-to-server` is not valid).
 6. On the server machine, run `node companion/dist/cli.js doctor`, start Codex
@@ -928,14 +929,12 @@ raw console, Lua, cheats, or teleportation.
 
 ### Prior-release 0.7.0 live evidence and known failure signatures
 
-The successful observations below were collected before release 0.22.3. They
-are historical 0.7.0 evidence and diagnostic guidance, not live validation of
-0.22.3. Complete the fresh run above after installing 0.22.3 before recording a
-current-release result.
+The successful observations below are historical 0.7.0 evidence and
+diagnostic guidance, not live validation of the current release.
 
 - `doctor --json` is the quickest preflight: the historical run reported exact
   config shape/mode `0600`, authenticated RCON, protocol/mod v5, and mod/app
-  0.8.0. A 0.22.3 run must instead report protocol v28 and mod/app 0.22.3.
+  0.8.0. A current run reports the current protocol and mod/app version.
 - A fresh MCP process should be used after rebuilding the CLI. The tested
   sequence was `connect_status`, `observe_local`, then an exact-coordinate
   `mine`; the successful physical result increased Codex inventory and
@@ -1180,7 +1179,7 @@ or proof of physical quiescence. The run remains assisted; its progress and
 timing are excluded from benchmark evidence.
 
 The source guidance offered ambiguous cues: the shared skill said “Stop only
-on an explicit the owner request,” while the tool description suggested cancellation
+on an explicit owner request,” while the tool description suggested cancellation
 after a TUI interruption. Those are instruction defects; whether either caused
 this model's tool selection is a hypothesis, not established by the cancellation
 receipt. The correction reserves the tool to the supervisor, prohibits its

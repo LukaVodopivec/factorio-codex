@@ -104,7 +104,7 @@ and next hypothesis in the campaign evidence. The in-game panel displays the
 profile, remaining time, research, machine-made and raw totals and the incumbent reference; the
 panel shows the ledger writer's reasoning, and every role's lines are saved to `thoughts.jsonl`.
 
-An explicit the owner stop pauses the campaign and follows LIVE-VALIDATION.md's
+An explicit owner stop pauses the campaign and follows LIVE-VALIDATION.md's
 recorded stop procedure: stop FIFO, pause/interrupt roles, settle in-flight
 writes, re-observe, finish recording and save/stop the owned server. Human
 takeover or supervisor repair excludes that trial. No scored run is nudged,

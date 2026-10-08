@@ -10,7 +10,7 @@ param(
   [string]$Out
 )
 
-# Couch-PC-only: joins the 4K timelapse frames the mod saved for run $Run
+# Windows: joins the 4K timelapse frames the mod saved for run $Run
 # (script-output\timelapse\<run>\frame_NNNNNN_t<tick>.jpg) into an HEVC
 # video with the GPU encoder. -Every 2 keeps every second frame (twice as
 # fast); -SkipIdle drops frames where nothing changed. Frames the client could

@@ -1,5 +1,5 @@
 -- The 0.22 stage A, B and C modules never touch the cursor, a GUI or a player:
--- The owner's undo queue and the human-hold detector stay untouched (contract 0.2).
+-- The player's undo queue and the human-hold detector stay untouched (contract 0.2).
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 local root = here .. "/../../mod/agentic-companion/scripts/"
 local FORBIDDEN = { "cursor_stack", "build_from_cursor", "can_build_from_cursor", "centered_on", "%.opened", "by_player",

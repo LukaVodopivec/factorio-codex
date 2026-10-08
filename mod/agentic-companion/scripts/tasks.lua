@@ -140,7 +140,7 @@ function M.bound_for()
   local into = fifo_travel()
   return into[#into]
 end
--- The owner's real control input on the Codex client holds the body (companion.human_control
+-- The player's real control input on the Codex client holds the body (companion.human_control
 -- owns the rule). A failed read never holds.
 local function human_control()
   local ok, held, idle = pcall(companion.human_control)
@@ -1464,10 +1464,10 @@ local function watchdog(tasks)
   else finish(task, "failed", detail, nil, outcome) end
   return true
 end
--- Human takeover. While the owner's input holds the body the dispatcher is parked:
+-- Human takeover. While the player's input holds the body the dispatcher is parked:
 -- no step starts or ticks, nothing is cancelled or reordered, and the mod
 -- writes no walking, mining or picking state after one release on entry, so
--- he can move freely. Hold ticks are not charged to any deadline.
+-- they can move freely. Hold ticks are not charged to any deadline.
 local function mark_held(task)
   if task and task.type == "plan" then task.human_control = true end
 end
@@ -1492,7 +1492,7 @@ local function release_plan(plan, held_ticks)
   -- A running step's own deadline (a travel phase's).
   local current = plan.current_task
   if current._deadline_tick then current._deadline_tick = current._deadline_tick + held_ticks end
-  -- A hold is the owner's time, never a line's hand service.
+  -- A hold is the player's time, never a line's hand service.
   if current.started_tick then current.started_tick = current.started_tick + held_ticks end
   local recovery = plan._recovery
   if recovery and recovery.started_tick then recovery.started_tick = recovery.started_tick + held_ticks end
@@ -1612,7 +1612,7 @@ function M.on_tick()
   pcall(companion.poll_human_activity, tasks.human_hold ~= nil)
   if human_control() then
     if not tasks.human_hold then enter_hold(tasks) end
-    -- The owner playing the body is not idle time.
+    -- A human playing the body is not idle time.
     if tasks.last_finished_tick then tasks.last_finished_tick = game.tick end
     return
   end

@@ -10,7 +10,9 @@
 # "text": "..."} on that same clock: each frame in [from, to) gets the text,
 # wrapped to two centred lines at the bottom, and the video goes to
 # <run>-timelapse-captions.mp4 so the plain video is kept. The frames
-# themselves are only read. Needs ffmpeg (with libx265, or libx264 for
+# themselves are only read. --music FILE (repeatable) plays the files in
+# order with 3 s crossfades, trimmed to the video with a 4 s fade-out and
+# loudness-normalised; the name gains -music. Needs ffmpeg (with libx265, or libx264 for
 # --x264), fc-match for the DejaVu fonts, and node for --captions.
 set -euo pipefail
 
@@ -24,8 +26,9 @@ Usage: scripts/timelapse-video.sh [options] <frames-dir>
   --skip-idle         drop frames where nothing changed
   --no-clock          leave out the HH:MM:SS clock
   --captions FILE     burn timed captions from a JSON list into the video
+  --music FILE        background music; repeat to play several files in order
   --out FILE          output path (default: next to <frames-dir>,
-                      <run>-timelapse.mp4 or <run>-timelapse-captions.mp4)
+                      <run>-timelapse[-captions][-music].mp4)
   --x264              encode H.264 with libx264 instead of HEVC with libx265
 EOF
 }
@@ -33,6 +36,7 @@ EOF
 die() { echo "timelapse-video: $*" >&2; exit 1; }
 
 fps=30 every=1 skip_idle=0 no_clock=0 captions="" out="" x264=0 frames=""
+music=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --fps) [ $# -ge 2 ] || die "--fps needs a value"; fps=$2; shift 2 ;;
@@ -40,6 +44,7 @@ while [ $# -gt 0 ]; do
     --skip-idle) skip_idle=1; shift ;;
     --no-clock) no_clock=1; shift ;;
     --captions) [ $# -ge 2 ] || die "--captions needs a file"; captions=$2; shift 2 ;;
+    --music) [ $# -ge 2 ] || die "--music needs a file"; [ -f "$2" ] || die "no music file: $2"; music+=("$2"); shift 2 ;;
     --out) [ $# -ge 2 ] || die "--out needs a path"; out=$2; shift 2 ;;
     --x264) x264=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -57,6 +62,7 @@ frames=$(cd "$frames" && pwd -P)
 run=$(basename "$frames")
 if [ -z "$out" ]; then
   suffix=""; [ -z "$captions" ] || suffix="-captions"
+  [ ${#music[@]} -eq 0 ] || suffix="$suffix-music"
   out="$(dirname "$frames")/$run-timelapse$suffix.mp4"
 fi
 
@@ -94,7 +100,7 @@ wrap() {
   local text=$1 word count=1
   local -a words
   line1="" line2=""
-  read -r -a words <<<"$text" || true
+  read -r -a words <<<"${text//$'\n'/ }" || true
   for word in ${words[@]+"${words[@]}"}; do
     if [ "$count" -eq 1 ]; then
       if [ -n "$line1" ] && [ $((${#line1} + 1 + ${#word})) -gt 90 ]; then count=2; line2=$word
@@ -192,6 +198,21 @@ if [ ${#chain[@]} -gt 0 ]; then
   filter=(-vf "$joined")
 fi
 
+audio=()
+if [ ${#music[@]} -gt 0 ]; then
+  length=$(awk -v n="${#kept[@]}" -v f="$fps" 'BEGIN { printf "%.3f", n / f }')
+  fade_at=$(awk -v n="${#kept[@]}" -v f="$fps" 'BEGIN { t = n / f - 4; printf "%.3f", (t > 0 ? t : 0) }')
+  if [ ${#music[@]} -eq 1 ]; then graph="[1:a]anull[m0]" last=m0
+  else
+    graph="[1:a][2:a]acrossfade=d=3[m1]"
+    for ((i = 3; i <= ${#music[@]}; i++)); do graph+=";[m$((i - 2))][$i:a]acrossfade=d=3[m$((i - 1))]"; done
+    last="m$((${#music[@]} - 1))"
+  fi
+  graph+=";[$last]atrim=0:$length,afade=t=out:st=$fade_at:d=4,loudnorm=I=-16:TP=-1.5:LRA=11[a]"
+  for track in "${music[@]}"; do audio+=(-i "$track"); done
+  audio+=(-filter_complex "$graph" -map 0:v -map "[a]" -c:a aac -b:a 192k -ar 48000)
+fi
+
 if [ "$x264" -eq 1 ]; then codec=(-c:v libx264 -preset medium -crf 20)
 else codec=(-c:v libx265 -preset medium -crf 20 -tag:v hvc1); fi
 encoder=${codec[1]}
@@ -202,7 +223,7 @@ case "$encoders" in
 esac
 
 ffmpeg -hide_banner -loglevel warning -stats -y -f concat -safe 0 -i "$list" \
-  ${filter[@]+"${filter[@]}"} -r "$fps" "${codec[@]}" -pix_fmt yuv420p "$out" ||
+  ${audio[@]+"${audio[@]}"} ${filter[@]+"${filter[@]}"} -r "$fps" "${codec[@]}" -pix_fmt yuv420p "$out" ||
   die "ffmpeg failed with exit code $?"
 seconds_out=$(awk -v n="${#kept[@]}" -v f="$fps" 'BEGIN { printf "%.1f", n / f }')
 echo "${#kept[@]} frames of ${#files[@]} -> $out ($seconds_out s at $fps fps)"

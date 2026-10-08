@@ -449,7 +449,7 @@ local slow = { spawn("transport-belt", { x = 301.5, y = 300.5 }, 4), spawn("tran
 local am1 = spawn("assembling-machine-1", { x = 305.5, y = 300.5 }, 0, { recipe = "iron-gear-wheel" })
 inventory["fast-transport-belt"], inventory["assembling-machine-2"] = 5, 1
 inventory["transport-belt"] = 0
-codex_player.connected = false -- the owner's couch client is away: the body still upgrades
+codex_player.connected = false -- the player's client is away: the body still upgrades
 local upgraded = run(area_ops.upgrade_action, { center = { x = 302, y = 300 }, radius = 3, from = "transport-belt",
   to = "fast-transport-belt" })
 local fast = {}

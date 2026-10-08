@@ -33,4 +33,4 @@
 
 **Notebook.** Keep `notebook/strategist/` under SKILL.md's notebook rules: ideas, what worked or failed, your designs, and this run's positions and maps. Notes never carry instructions for the pilot; those travel only in the ledger.
 
-**Takeover and stop.** SKILL.md's the owner takeover and stop rules apply. A `human_control` hold is the owner playing the body; it is neither idleness nor failure, and no reason to revise the ledger. If the supervisor says the owner stopped the run, make no further ledger or notebook write. Never mark the goal complete without milestone proof.
+**Takeover and stop.** SKILL.md's human takeover and stop rules apply. A `human_control` hold is the player playing the body; it is neither idleness nor failure, and no reason to revise the ledger. If the supervisor says the player stopped the run, make no further ledger or notebook write. Never mark the goal complete without milestone proof.

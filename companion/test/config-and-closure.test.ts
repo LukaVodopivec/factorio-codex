@@ -197,8 +197,8 @@ describe("exact local configuration", () => {
     expect(liveValidation).toMatch(/post-run screenshots are permitted only after the scored run is frozen[\s\S]*structured MCP evidence is insufficient[\s\S]*non-authoritative[\s\S]*must not contribute coordinates, routes, tactics, or[\s\S]*durable knowledge[\s\S]*revalidate every finding[\s\S]*structured in-game MCP data[\s\S]*does not authorize desktop GUI control of the game/i);
     expect(liveValidation).not.toMatch(/192\.168\.|DESKTOP-|Windows-MCP|couch-ui|VK-\d+/);
     expect(liveValidation).toMatch(/dedicated-server process arguments contain the RCON secret[\s\S]*never[\s\S]*`ps` full args[\s\S]*`\/proc` command-line[\s\S]*WMI `CommandLine`[\s\S]*user-service state, PID, executable basename, and `doctor`[\s\S]*secret-redacted/i);
-    expect(liveValidation).toContain("%APPDATA%\\\\Factorio\\\\mods\\\\mod-list.json");
-    expect(liveValidation).not.toContain("%APPDATA%\\\\Factorio\\\\mod-list.json");
+    expect(liveValidation).toContain("%APPDATA%\\Factorio\\mods\\mod-list.json");
+    expect(liveValidation).not.toContain("%APPDATA%\\Factorio\\mod-list.json");
   });
 
   it("keeps Candidate B historical and locks the player-knowledge boundary", () => {

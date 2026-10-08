@@ -21,7 +21,7 @@ local cached_chunk = { cx = 1, cy = 0, cells = { ["iron-ore"] = { cx = 1, cy = 0
 -- What 0.21.0 kept.
 _G.storage = {
   tasks = { next_id = 300, records = { [243] = active }, queue = { { id = 244, type = "plan" } }, active = active,
-    -- The owner held the body when the save was made.
+    -- The player held the body when the save was made.
     human_hold = { since = 499000 } },
   patch_cache = { version = 1, seeded = true, filled = true,
     chunks = { ["1,0"] = cached_chunk }, known = { ["0,0"] = true, ["1,0"] = true, ["-1,-2"] = true },

@@ -20,8 +20,10 @@ confirmed.
 ## Security model
 
 - The RCON password is generated locally by the setup wizard (random bytes,
-  never a fixed default), stored only in the local configuration, and the
-  companion connects to RCON on `127.0.0.1` only. Nothing in this repository
+  never a fixed default). It is stored in the companion's mode-0600
+  configuration and in Factorio's `config.ini`, and `server start` passes it to
+  the headless server as `--rcon-password`, so other users on the same machine
+  can read it from the process list. RCON listens on `127.0.0.1` only. Nothing in this repository
   ships or needs a shared secret.
 - The MCP companion exposes typed game tools only. It never exposes raw Lua,
   arbitrary console commands, images, credentials, or uncharted terrain.

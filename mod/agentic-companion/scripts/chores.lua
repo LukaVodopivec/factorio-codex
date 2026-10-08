@@ -3,7 +3,7 @@
 --   only parked waits or plans whose predecessor is pending, or the running
 --   plan's step only waits on hand-crafting: tasks.upkeep_room), never after
 --   an emergency stop before a plan has finished (a stop with keep_upkeep,
---   the supervisor's reconciliation, leaves upkeep on), while the owner is not holding
+--   the supervisor's reconciliation, leaves upkeep on), while the player is not holding
 --   the body and the body stands on a surface (nothing aboard or in
 --   transit), the body refuels own burner machines on its surface within
 --   96 tiles of it (UPKEEP_RADIUS; after two idle minutes, also within 96

@@ -41,7 +41,7 @@ describe("persistent two-brain coordination contract", () => {
     }
     expect(bytes(reference)).toBeLessThan(10_500);
     expect(skill).not.toMatch(/## Engineering reuse/);
-    for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's the owner takeover and stop rules apply/);
+    for (const text of [pilot, strategist]) expect(flat(text)).toMatch(/SKILL\.md's human takeover and stop rules apply/);
   });
 
   it("tells the benchmark strategist that ledger order needs no chaining and a partial predecessor cancels its successor", () => {
@@ -245,11 +245,11 @@ describe("persistent two-brain coordination contract", () => {
   });
 
   it("treats a human_control hold as the human playing, never idleness or failure", () => {
-    expect(flat(skill)).toMatch(/`human_control: true` \([^)]*\) means the owner is playing the body/);
+    expect(flat(skill)).toMatch(/`human_control: true` \([^)]*\) means the player is playing the body/);
     expect(flat(skill)).toMatch(/A hold is neither idleness nor failure\. Never fight for the body; wait for `human_hold_ended`/);
     expect(flat(skill)).toMatch(/A direct tool call that fails with a human-hold reason is retried after the hold/);
-    expect(strategist).toMatch(/A `human_control` hold is the owner playing the body; it is neither idleness nor failure/);
-    expect(agents).toMatch(/A hold is neither idleness nor failure\. The supervisor never nudges or replaces during a hold, records it as the owner input/);
+    expect(strategist).toMatch(/A `human_control` hold is the player playing the body; it is neither idleness nor failure/);
+    expect(agents).toMatch(/A hold is neither idleness nor failure\. The supervisor never nudges or replaces during a hold, records it as human input/);
     expect(live).toMatch(/### Takeover rehearsal before GO/);
     expect(live).toMatch(/\| `human_control: true` \(the human player playing the body\) \| No idle claim, nudge, or replacement\./);
     expect(live).toMatch(/The rehearsal needs the human player's real input, so it runs only when the supervisor's assignment says in so many words that the human player has agreed to do the takeover rehearsal now/);

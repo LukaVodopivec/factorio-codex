@@ -117,7 +117,7 @@ check(#queued == 2, "upkeep waits while tasks.upkeep_room gives it no room")
 room = "idle"
 holding = true
 chores.upkeep(game.tick)
-check(#queued == 2, "upkeep never starts while the owner holds the body")
+check(#queued == 2, "upkeep never starts while the player holds the body")
 holding = false
 -- Beside pending work (parked waits, a running craft) the plan ends with a
 -- walk back to where the body stood.

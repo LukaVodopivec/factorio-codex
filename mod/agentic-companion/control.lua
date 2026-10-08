@@ -61,7 +61,7 @@ local function fifo_state()
   elseif t.last_finished_tick then
     idle_seconds = math.floor(math.max(0, game.tick - t.last_finished_tick) / 60)
   end
-  -- human_control: The owner's control input holds the body and the FIFO is parked,
+  -- human_control: the player's control input holds the body and the FIFO is parked,
   -- which is neither idleness nor failure; human_idle_ticks counts since it.
   -- A failed read never holds.
   local ok, human_control, human_idle_ticks = pcall(companion.human_control)

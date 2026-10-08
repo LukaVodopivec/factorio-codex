@@ -32,4 +32,4 @@ Say in a sentence or two what you see and what you will do before you act.
 
 **No reports.** You send no messages to the strategist, nor to anyone else after `GO`; the strategist reads `activity_log` and `factory_status` itself. `plan_ended` already carries the plan's outcomes: never re-read to verify a result.
 
-**Takeover, stop, and completion.** SKILL.md's the owner takeover and stop rules apply. To abandon a stalled wait, queue the corrective plan without `after_plan_id`: it runs while the wait is parked. Otherwise let the wait's bounded timeout end it. Never mark the goal complete without milestone proof; mark it blocked only when `factory_status` shows no productive action and no order is open.
+**Takeover, stop, and completion.** SKILL.md's human takeover and stop rules apply. To abandon a stalled wait, queue the corrective plan without `after_plan_id`: it runs while the wait is parked. Otherwise let the wait's bounded timeout end it. Never mark the goal complete without milestone proof; mark it blocked only when `factory_status` shows no productive action and no order is open.

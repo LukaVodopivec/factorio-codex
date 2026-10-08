@@ -114,7 +114,9 @@ echo '{"mods":[{"name":"base","enabled":true},{"name":"elevated-rails","enabled"
 
 On Windows, `scripts/launch-native-client.ps1 -Address <server-host>:34197
 [-FactorioBinary <path to factorio.exe>]` prepares the same isolated client
-(after `npm run package:mod`) and starts it at 4K with maximum graphics
+(it takes the mod from the Windows checkout's `dist\` folder: build the zip
+with `npm run package:mod` on the server, which needs bash and `zip`, and copy
+it there) and starts it at 4K with maximum graphics
 quality. The server log shows `[JOIN] Codex joined`; the server pauses while
 nobody is connected, so the game clock runs only while the Codex client is in.
 
@@ -138,8 +140,8 @@ which installs locked dependencies on first use). Ask it to call
 One Codex session with the full surface can play alone. Paste the solo prompt
 from [prompts/pilot.md](prompts/pilot.md#solo-one-session): the session reads
 the `factorio-player` skill, chooses its own priorities and research, and
-queues its own plans. Nothing else is needed; the ledger and packages below are
-for the two-session setup.
+queues its own plans. Without a ledger there is no run recorder and no thought
+panel in the game; for those, use the two-session setup below.
 
 ### 7. Two sessions: planner and pilot
 
@@ -199,7 +201,8 @@ codex -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' \
 
 The read-only surface registers only the 21 read-only tools; the four that
 build (`build_layout`, `connect_entities`, `blueprint_place`, `place_tiles`)
-are dry runs there. Fast mode for the pilot is optional.
+are dry runs there. Fast mode for the pilot is optional; set the pilot's
+`fast` in `run-identity.json` to what you actually run.
 
 1. Paste each session's preparation prompt from
    [prompts/planner.md](prompts/planner.md) and
@@ -207,15 +210,21 @@ are dry runs there. Fast mode for the pilot is optional.
    filled in. The planner initializes the ledger at revision 1 with no
    packages; neither session acts in the game.
 2. Optionally start the [run recorder](#run-recorder) in a third terminal; it
-   prints `GO` when its baseline is taken and runs the thought feed.
+   prints `GO` when its baseline is taken. `--variant` and `--change` are
+   required labels. The thought panel needs `--pilot-rollout` and
+   `--strategist-rollout`: each session's rollout file under
+   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (the newest one when you
+   start that session).
 3. Paste each session's `GO` message. From then on the planner writes packages
    and research into the ledger, and the pilot's bridge queues them; the pilot
    handles failures, an empty queue and anything needing local judgment.
 
 Stop by interrupting both sessions, then `server stop "$RUN_DIR"`. Before you
 resume a stopped run, call the `stop` tool once with `keep_upkeep: true` from a
-full-surface session so no old package moves the body; the full supervised
-procedure is in [live validation](docs/LIVE-VALIDATION.md).
+full-surface session so no old package moves the body. Packages written
+before that stop stay held until the planner writes a new ledger revision, so
+ask it for one when you resume. The full supervised procedure is in
+[live validation](docs/LIVE-VALIDATION.md).
 
 ## Install and use
 
@@ -484,10 +493,9 @@ historical evidence in [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md).
 
 ## Timelapse
 
-For a video of the run, the supervisor can start a 4K timelapse over the
-`timelapse` RPC (`{"action":"start","folder":"<run id>"}`; `status`, `stop`),
-sent through the companion's `Bridge` (`bridge.call("timelapse", ...)` on an
-unlocked RCON connection, as `server start` does for `ping`). It is output
+For a video of the run, start a 4K timelapse with
+`factorio-codex server timelapse start <folder>` (`status`, `stop`), which
+sends the mod's `timelapse` RPC over RCON. It is output
 only: no MCP tool reads or starts it, and no image reaches the bots. Every five
 game seconds the Codex client renders a 3840x2160 JPG (`take_screenshot` with
 `by_player`; the headless server renders nothing) into
@@ -504,10 +512,13 @@ HH:MM:SS, from its tick, at a fixed top-left spot in a monospace font
 `{"from": "H:MM:SS", "to": "H:MM:SS", "text": "..."}` on that clock and draws
 each caption on the frames in its range, wrapped to two centred lines at the
 bottom; that video is written as `<folder>-timelapse-captions.mp4`, so the plain
-video and the frames are kept.
+video and the frames are kept. `-Music a.ogg,b.ogg` plays audio files in order
+with 3 s crossfades, trimmed to the video with a 4 s fade-out and
+loudness-normalised (the name gains `-music`). Use only music you may publish;
+never commit or redistribute game audio files.
 On Linux or macOS, `scripts/timelapse-video.sh <frames-dir>` does the same
 with libx265 (`--x264` for H.264), taking `--every`, `--skip-idle`,
-`--no-clock`, `--captions`, `--fps` and `--out`.
+`--no-clock`, `--captions`, `--music`, `--fps` and `--out`.
 
 ## Verification
 

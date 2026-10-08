@@ -258,7 +258,7 @@ check(result and result.status == "failed" and result.detail:match("inventory") 
   "a full inventory refuses the belt pickup before walking")
 
 -- A human hold mid-pickup: the body approaches again and only the pickup's
--- own transfers count. The owner's gains of the same item during the hold are not
+-- own transfers count. The player's gains of the same item during the hold are not
 -- belt pickups, and the remaining requested items are still taken.
 north = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 6 })
 reset(north)

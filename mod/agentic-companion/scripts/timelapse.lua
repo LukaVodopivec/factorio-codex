@@ -1,4 +1,4 @@
--- Timelapse: 4K frames of the growing factory for the owner's video, from GO to
+-- Timelapse: 4K frames of the growing factory for a timelapse video, from GO to
 -- the first rocket launch. The Codex client renders each frame
 -- (take_screenshot by_player; a headless server renders nothing) into its
 -- script-output/timelapse/<folder>/. Output only: no frame or camera state

@@ -48,7 +48,7 @@ end
 -- Belt pickup. Items ride a belt's two lanes a quarter tile either side of its
 -- centre line. Native picking would take every item kind within
 -- item_pickup_distance, on either lane and on neighbouring belts, and its
--- inventory gain cannot be told apart from hand-crafting or the owner's own gains.
+-- inventory gain cannot be told apart from hand-crafting or the player's own gains.
 -- So the body stands beside the lane that carries the item (never on the
 -- belt, which would carry it away) and, while the belt's centre is within
 -- item_pickup_distance of the body, the requested item moves from the tile's
@@ -121,7 +121,7 @@ function M.start(task)
 end
 
 -- After a human hold the body stands somewhere else and its inventory is
--- whatever the owner left: approach again and count nothing gained during the
+-- whatever the player left: approach again and count nothing gained during the
 -- hold. A belt pickup keeps only what its own transfers moved. A ground
 -- pickup takes its inventory baseline when picking starts again; one whose
 -- stack was already taken, with exactly its count gained, is left to finish.

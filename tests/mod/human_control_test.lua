@@ -54,7 +54,7 @@ end
 local player = { index = 1, valid = true, connected = true, name = "Codex", character = body, force = state.force,
   controller_type = defines.controllers.character, physical_controller_type = defines.controllers.character, afk_time = 100000,
   opened_gui_type = defines.gui_type.none, cursor_stack = { valid_for_read = false } }
-local viewer = { index = 2, valid = true, connected = true, name = "The owner",
+local viewer = { index = 2, valid = true, connected = true, name = "Human",
   controller_type = defines.controllers.spectator, afk_time = 0, opened_gui_type = defines.gui_type.none }
 local players = { player, viewer }
 _G.game = { tick = 0, get_player = function(index) return players[index] end, connected_players = players }
@@ -98,7 +98,7 @@ local function press(index)
   companion.on_human_input({ player_index = index or 1 })
 end
 local EAST, SOUTH = defines.direction.east, defines.direction.south
--- The owner keeps a movement key down: the game, not the mod, sets walking_state.
+-- The player keeps a movement key down: the game, not the mod, sets walking_state.
 local function hold_key() state.walking_state = { walking = true, direction = SOUTH } end
 local function release_key() state.walking_state = { walking = false } end
 local function queue_walk(x)
@@ -178,7 +178,7 @@ check(storage.tasks.human_hold ~= nil and state.walking_state.walking == false a
 writes = {}
 local requests_before = #path_requests
 for step = 1, 200 do
-  -- The owner walks the body himself; the game, not the mod, moves it.
+  -- The player walks the body themself; the game, not the mod, moves it.
   state.position = { x = 2, y = step / 20 }
   hold_key()
   tick()
@@ -206,7 +206,7 @@ for _ = 1, 299 do tick() end
 check(storage.tasks.human_hold ~= nil and body_writes() == 0 and #path_requests == requests_before,
   "renewed input keeps the dispatcher parked until 300 idle ticks")
 
--- Idle for 300 ticks: the walk re-plans from where the owner left the body.
+-- Idle for 300 ticks: the walk re-plans from where the player left the body.
 tick()
 check(select(2, companion.human_control()) == 300 and storage.tasks.human_hold == nil,
   "300 ticks after the last input release the hold")
@@ -262,7 +262,7 @@ local finished = storage.tasks.last_finished_tick
 press()
 for _ = 1, 50 do tick() end
 check(storage.tasks.last_finished_tick == game.tick and finished < game.tick,
-  "time the owner plays the body with an empty queue is not counted as body idle time")
+  "time the player plays the body with an empty queue is not counted as body idle time")
 check(queue_walk(10).body_idle_ticks == 0, "a plan queued during the hold reports no body idle time")
 
 -- An in-place mod upgrade (on_configuration_changed: state.init, then
@@ -525,7 +525,7 @@ do
     "walking the mod did not command starts a hold while the bot is idle")
   local queued = queue_walk(10)
   check(queued.human_control == true and tasks.plan_status({ plan_id = queued.plan_id }).status == "queued",
-    "a plan queued while the owner walks the idle body is parked")
+    "a plan queued while the player walks the idle body is parked")
   release_key()
   check(ticks_held(1000) == 300, "that hold releases 300 ticks after the walking stops")
 
@@ -641,7 +641,7 @@ do
 end
 
 -- A ground pickup takes its inventory baseline when picking starts, so what
--- The owner did to that item's count during a hold never fails the resumed step.
+-- the player did to that item's count during a hold never fails the resumed step.
 do
   reset()
   local pickup, approach = require("scripts.actions.pickup"), require("scripts.actions.approach")
@@ -655,7 +655,7 @@ do
   local ground = { target = { x = 1, y = 0 }, item = "coal", count = 5 }
   pickup.start(ground)
   check(pickup.tick(ground) == nil and state.picking_state == false, "fixture: the ground pickup is still approaching")
-  coal = 2 -- the owner burns coal during the hold
+  coal = 2 -- the player burns coal during the hold
   pickup.resume(ground)
   reached = "ok"
   check(pickup.tick(ground) == nil and state.picking_state == true, "the resumed ground pickup starts picking")
@@ -686,7 +686,7 @@ do
   approach.ensure, state.surface.find_entities_filtered = real_ensure, real_find
 end
 
--- Craft completion is the products gained, not an empty queue: a queue the owner
+-- Craft completion is the products gained, not an empty queue: a queue the player
 -- cancelled during a hold is not reported as completed crafts.
 do
   reset()
@@ -823,7 +823,7 @@ check(task._deadline_tick==deadline+299 and tasks.plan_status({plan_id=moving.pl
  "the native relocation deadline excludes the human hold and retains FIFO ownership")
 tasks.cancel({all=true,origin="test/robots"})
 
--- A hold during an insert step is the owner's time, never the line's hand service.
+-- A hold during an insert step is the player's time, never the line's hand service.
 reset()
 local autonomy = require("scripts.autonomy")
 local charged, on_body_time = {}, autonomy.on_body_time

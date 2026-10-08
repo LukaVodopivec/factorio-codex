@@ -423,7 +423,7 @@ Release 0.19.7 addresses these defects:
 - **Supervision.** One observation helper gates every nudge and replacement,
   and replacement needs a consumed nudge or one exact-turn interrupt first.
   Roles are subscribed with `thread/resume` while their goals are paused,
-  deadline-sensitive or the owner-relayed instructions go by `turn/steer`, and the
+  deadline-sensitive or owner-relayed instructions go by `turn/steer`, and the
   `GO+20m` checkpoint is a snapshot, not a stop. The couch-client deploy stop,
   JOIN restart and InGame check are only dry-run tested.
 
@@ -558,7 +558,7 @@ Release 0.19.8 addresses these defects:
   extraction and smelting NOW; hauled capital is not service; the strategist reuses its
   own proven templates, leaves packages until the next publish replaces them,
   and re-validates a proven component it extends.
-- **Supervision.** the owner's instructions are relayed by `turn/steer` rather than
+- **Supervision.** The owner's instructions are relayed by `turn/steer` rather than
   queued, every supervisor tool wait is capped at 15 s, `stop_steps` record the
   relay and stop timestamps, and game-touching interventions are mirrored into
   recorder events.

@@ -180,7 +180,7 @@ function M.tick(task)
   if c.crafting_queue_size > 0 then mark_wait(); return nil end
 
   -- An empty queue is not completion: the queue can be cancelled, or the
-  -- products taken, while the owner holds the body. Count the crafts whose
+  -- products taken, while the player holds the body. Count the crafts whose
   -- fixed-amount products are actually carried.
   local parts, produced = {}, nil
   for _, name in ipairs(s.product_names) do

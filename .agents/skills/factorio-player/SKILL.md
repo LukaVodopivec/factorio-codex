@@ -48,7 +48,7 @@ Edge. Never prescribe a fixed planetary order. Research normally consumes
 surplus. The game is won when any of our platforms reaches the solar system
 edge; the body need not be aboard. The edge unlocks with the
 `promethium-science-pack` technology (all ten science packs, the fusion
-reactor, and capturing a biter spawner, which this save lacks: The owner decides
+reactor, and capturing a biter spawner, which this save lacks: the human decides
 that step once captivity is researched).
 
 Run the state-driven growth loop at each decision: observe fresh exact state
@@ -82,10 +82,10 @@ more proof than that.
 - Peaceful save: no Nauvis enemy bases and no Vulcanus demolishers; Gleba
   keeps its pentapod spawners (peaceful until attacked).
 
-## The owner takeover
+## Human takeover
 
 `human_control: true` (in `fifo`, `factory_status.body`, and
-`observe_local.character`) means the owner is playing the body. The FIFO is parked;
+`observe_local.character`) means the player is playing the body. The FIFO is parked;
 nothing is cancelled. A hold is neither idleness nor failure. Never fight for
 the body; wait for `human_hold_ended`, then read fresh state before targeting
 anything. A held `run_plan` stays queued: read it with `plan_status`, never
@@ -290,6 +290,6 @@ broker, a second ledger, or a control channel.
 - After any context compaction, re-read your goal file and this file before
   any other call, then your notebook index.
 - Never call the `stop` tool: it is the supervisor's emergency cancellation.
-  If the supervisor says the owner stopped the run, make no further write, answer
+  If the supervisor says the player stopped the run, make no further write, answer
   in one line, end your turn, and never mark the goal complete.
 - Complete only on later-tick milestone proof.

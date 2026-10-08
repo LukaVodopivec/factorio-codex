@@ -67,7 +67,7 @@ local function make_player(index, name, connected)
 end
 
 local codex = make_player(1, "Codex", true)
-local viewer = make_player(2, "The owner", true)
+local viewer = make_player(2, "Human", true)
 local players = { codex, viewer }
 local printed = {}
 _G.game = {

@@ -42,7 +42,7 @@ local VECTORS = { [0] = { 0, -1 }, [2] = { 1, -1 }, [4] = { 1, 0 }, [6] = { 1, 1
 local entities, inventory = {}, {}
 local pinned = false                 -- the world refuses every movement
 local wall = function() return false end -- positions the world refuses, unseen by any evidence
-local held = false                   -- the owner holds the body
+local held = false                   -- the player holds the body
 local path_requests = 0
 local function water(_, y) return y >= 0 end
 local function overlaps(a, b)
@@ -645,7 +645,7 @@ for _ = 1, 3000 do tick() end
 held = true
 for _ = 1, 6000 do tick() end
 check(storage.tasks.active and storage.tasks.active.id == plan and not storage.tasks.records[plan],
-  "a step is never stalled while the owner holds the body")
+  "a step is never stalled while the player holds the body")
 held = false
 for _ = 1, 3000 do tick() end
 check(not storage.tasks.records[plan], "the ticks before a hold do not count after it")

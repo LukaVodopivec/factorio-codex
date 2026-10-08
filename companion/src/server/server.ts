@@ -164,6 +164,17 @@ export async function startServer(runDir: string, options: { factorio?: string; 
   }
 }
 
+/** Start, read or stop the mod's 4K timelapse; the frames are written by the connected Codex client. */
+export async function serverTimelapse(action: "start" | "status" | "stop", folder?: string): Promise<unknown> {
+  const rcon = new RconClient(requireConfig().rcon);
+  try {
+    await rcon.connect();
+    const bridge = new Bridge(rcon);
+    await bridge.unlock();
+    return await bridge.call("timelapse", action === "start" ? { action, folder } : { action });
+  } finally { rcon.close(); }
+}
+
 /** Save over RCON, then interrupt the headless server and wait for it to exit. */
 export async function stopServer(runDir: string): Promise<{ stopped: boolean; saved: boolean }> {
   const paths = runPaths(runDir), pid = serverPid(paths);

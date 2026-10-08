@@ -90,7 +90,7 @@ file per role).
 `<run-dir>/operations.json` is the planner's only channel to the pilot. The
 planner writes it only through `factorio-codex ledger-apply --ledger <file>`,
 which validates the update (`coordination/ledger.ts`), rejects stale or
-duplicate revisions and reused package ids, and writes it atomically with mode
+duplicate reports (by `source_tick`) and reused package ids, and writes it atomically with mode
 0600. A ledger holds the run identity, the priorities, at most two build
 packages and up to seven research technologies.
 

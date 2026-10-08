@@ -109,7 +109,7 @@ companion.follow_spectators()
 check(#teleports == 1 and teleports[1].surface == platform_surface, "spectators follow the body to the platform")
 
 -- Human hold aboard: being aboard holds nothing; a GUI on the Codex client
--- is still the owner's input.
+-- is still the player's input.
 game.tick = 200
 local held = companion.human_control()
 check(held == false, "aboard, the body is not held by itself")
@@ -122,10 +122,10 @@ game.tick = 600
 companion.on_human_input({ player_index = 1, input_name = "agentic-companion-move-up" })
 check(storage.tasks.human_activity_tick == 200, "aboard, the movement keys only pan the camera: no hold")
 companion.on_human_input({ player_index = 1 })
-check(storage.tasks.human_activity_tick == 600, "aboard, opening a GUI is the owner's input")
+check(storage.tasks.human_activity_tick == 600, "aboard, opening a GUI is the player's input")
 game.tick = 700
 companion.on_human_input({ player_index = 1, input_name = "agentic-companion-build" })
-check(storage.tasks.human_activity_tick == 700, "aboard, any other linked control is the owner's input too")
+check(storage.tasks.human_activity_tick == 700, "aboard, any other linked control is the player's input too")
 game.tick = 1000
 
 -- In a cargo pod: in transit, anchored on the pod.

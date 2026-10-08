@@ -50,6 +50,13 @@ text, got = call("start_research", { technology = "automation" })
 check(not got and retired(text), "after a claim a write without a generation is refused")
 text, got = call("cancel", { all = true, origin = "stop/supervisor" })
 check(got and got.params.origin == "stop/supervisor", "an unstamped cancel (the supervisor's stop) always runs")
+text, got = call("queue_plan", { steps = {}, writer_role = "supervisor" })
+check(got and got.params.writer_role == nil and text:find('"ok":true', 1, true),
+  "the supervisor's labelled write passes without a generation; the handler never sees the label")
+text, got = call("queue_plan", { steps = {}, writer_role = "pilot" })
+check(not got and retired(text), "only the supervisor label passes unstamped")
+text, got = call("queue_plan", { steps = {}, writer_generation = 1, writer_role = "supervisor" })
+check(not got and retired(text), "a retired generation stays refused whatever label it carries")
 text, got = call("factory_status", { writer_generation = 1 })
 check(got and got.params.writer_generation == nil and text:find('"ok":true', 1, true), "reads are never fenced")
 text, got = call("queue_plan", { steps = {}, writer_generation = "2" })
@@ -61,6 +68,24 @@ storage.writer.generation = 1
 text, got = call("queue_plan", { steps = {}, writer_generation = 2 })
 rpc.dispatch("claim_writer", "")
 check(got and printed:find('"generation":3', 1, true), "a stamp newer than the save's generation becomes current")
+
+-- floor (the host clock) keeps generations rising across a reloaded save:
+-- P1 claims, the save is rolled back to before that claim, P2 claims later.
+decoded.floor100 = { role = "pilot", floor = 100 }
+rpc.dispatch("claim_writer", "floor100")
+check(printed:find('"generation":100', 1, true), "a claim takes the floor when it is above the next generation")
+storage.writer.generation = 3
+decoded.floor101 = { role = "pilot", floor = 101 }
+rpc.dispatch("claim_writer", "floor101")
+text, got = call("queue_plan", { steps = {}, writer_generation = 100 })
+check(storage.writer.generation == 101 and not got and retired(text),
+  "after a rollback the next claim is still newer, so the earlier pilot is fenced")
+decoded.floor5 = { role = "pilot", floor = 5 }
+rpc.dispatch("claim_writer", "floor5")
+check(printed:find('"generation":102', 1, true), "a floor below the next generation changes nothing")
+decoded.badfloor = { floor = "7" }
+rpc.dispatch("claim_writer", "badfloor")
+check(printed:find("floor must be a positive integer", 1, true) and storage.writer.generation == 102, "a malformed floor is refused")
 
 -- Reply size: one piece up to CHUNK_SIZE, chunked parts beyond it.
 check(rpc.CHUNK_SIZE == 256 * 1024, "replies go in one piece up to 256 KiB")

@@ -124,8 +124,8 @@ describe("exact local configuration", () => {
     const settings = validDoctorSettings();
     vi.spyOn(RconClient.prototype, "connect").mockResolvedValue();
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
-    const call = vi.spyOn(Bridge.prototype, "call").mockResolvedValueOnce({ protocol_version: 29, mod_version: "0.32.0", writer_generation: 4 } as never);
-    expect((await collectDoctorReport(settings)).checks).toContainEqual({ name: "writer", ok: true, detail: "writer generation 4 holds the gameplay writes" });
+    const call = vi.spyOn(Bridge.prototype, "call").mockResolvedValueOnce({ protocol_version: 29, mod_version: "0.32.0", writer_generation: 4, writer_claimed_tick: 3600 } as never);
+    expect((await collectDoctorReport(settings)).checks).toContainEqual({ name: "writer", ok: true, detail: "writer generation 4 (claimed at tick 3600) holds the gameplay writes" });
     call.mockResolvedValueOnce({ protocol_version: 29, mod_version: "0.32.0", writer_generation: 0 } as never);
     expect((await collectDoctorReport(settings)).checks).toContainEqual({ name: "writer", ok: true, detail: "no writer generation claimed" });
   });

@@ -113,6 +113,8 @@ rpc.register("ping", read(function()
     handler_errors = errors.summary(),
     -- The newest writer generation (rpc.lua's fence), 0 before the first claim.
     writer_generation = storage.writer.generation,
+    -- The tick it was claimed at, absent before the first claim.
+    writer_claimed_tick = storage.writer.claimed_tick,
     -- Where the body is (body_summary).
     body = body_summary(),
   }

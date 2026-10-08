@@ -64,7 +64,7 @@ const jobMethods = new Set<string>(JOB_METHODS);
 const writeMethods = new Set<string>(WRITE_METHODS);
 export function outcomeUnknown(what: string, error: unknown): OutcomeUnknownError {
   const reason = error instanceof Error ? error.message : String(error);
-  return new OutcomeUnknownError(`the connection to the game failed during ${what} (${reason}); it may or may not have run in the game`);
+  return new OutcomeUnknownError(`the connection to the game failed during ${what} (${reason}); it may or may not have run in the game; read observe_local (or plan_status for a plan_id you hold) to see whether it did before repeating it`);
 }
 function pendingJob(value: unknown): value is JobStatus {
   const job = value as JobStatus | undefined;
@@ -75,6 +75,10 @@ export class Bridge {
   /** This process's writer generation (claim_writer), sent with every write
    *  once set; absent for a process that never claimed one. */
   writerGeneration?: number;
+  /** Set on the supervisor's process: its writes are labelled
+   *  writer_role "supervisor", which the fence lets through without a
+   *  generation, so the supervisor can drive rehearsals and rescues. */
+  supervisor = false;
 
   constructor(private readonly rcon: RconClient, private readonly clock: TaskClock = realClock) {}
 
@@ -128,8 +132,10 @@ export class Bridge {
 
   private async callUnchecked<T>(method: RpcMethod, params?: unknown): Promise<T> {
     const write = writeMethods.has(method);
-    const stamped = write && this.writerGeneration !== undefined
-      ? { ...(params as Record<string, unknown> | undefined), writer_generation: this.writerGeneration } : params;
+    const label = !write ? undefined
+      : this.writerGeneration !== undefined ? { writer_generation: this.writerGeneration }
+      : this.supervisor ? { writer_role: "supervisor" } : undefined;
+    const stamped = label ? { ...(params as Record<string, unknown> | undefined), ...label } : params;
     const json = escapeLuaString(JSON.stringify(stamped ?? {}));
     const cmd = `/silent-command remote.call("agentic","rpc","${method}","${json}")`;
     let reply: string;

@@ -43,6 +43,16 @@ describe("writer generation on the bridge", () => {
       ["queue_plan", undefined], ["queue_plan", 3], ["cancel", 3], ["factory_status", undefined], ["ping", undefined]]);
   });
 
+  it("labels the supervisor's writes, never its reads, and claims no generation for them", async () => {
+    const { rcon, sent } = fakeRcon(() => ({}));
+    const bridge = new Bridge(rcon, clock);
+    bridge.supervisor = true;
+    await bridge.call("queue_plan", { steps: [] });
+    await bridge.call("factory_status", {});
+    expect(sent.map(({ method, params }) => [method, params.writer_role, params.writer_generation])).toEqual([
+      ["queue_plan", "supervisor", undefined], ["factory_status", undefined, undefined]]);
+  });
+
   it("turns the mod's WRITER_RETIRED into WriterRetiredError, not a ModError", async () => {
     const { rcon } = fakeRcon(() => "WRITER_RETIRED: writer generation 1 was replaced by generation 2");
     const error = await new Bridge(rcon, clock).call("queue_plan", { steps: [] }).catch((e) => e);
@@ -59,7 +69,8 @@ describe("a lost answer", () => {
     const write = await bridge.call("start_research", { technology: "automation" }).catch((e) => e);
     expect(write).toBeInstanceOf(OutcomeUnknownError);
     expect(write.message).toBe("the connection to the game failed during start_research (RCON command timed out after 10000ms"
-      + " with 12 bytes of its reply received); it may or may not have run in the game");
+      + " with 12 bytes of its reply received); it may or may not have run in the game;"
+      + " read observe_local (or plan_status for a plan_id you hold) to see whether it did before repeating it");
     expect(await bridge.call("factory_status", {}).catch((e) => e)).toBe(lost);
     // A command never sent (no connection) is no unknown outcome.
     const { rcon: offline } = fakeRcon(() => new RconError("not connected — call connect() first"));
@@ -109,7 +120,7 @@ describe("MCP results", () => {
     expect(keys[2]).not.toBe(keys[0]);
   });
 
-  it("reports OUTCOME_UNKNOWN, advice-free, when the retry settles nothing", async () => {
+  it("reports OUTCOME_UNKNOWN when the retry settles nothing", async () => {
     for (const second of [unknown(), new Error("cannot connect to RCON at 127.0.0.1:19015")]) {
       let calls = 0;
       const handlers = tools(async () => { throw ++calls === 1 ? unknown() : second; });
@@ -154,11 +165,13 @@ describe("claiming a writer generation", () => {
     vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
     const call = vi.spyOn(Bridge.prototype, "call").mockImplementation(async (method: string) =>
       method === "claim_writer" ? { generation: 7 } : { protocol_version: 29, mod_version: companionVersion() });
+    vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_500);
     const getBridge = createBridgeProvider(settings, factory, "pilot");
     expect((await getBridge()).writerGeneration).toBe(7);
     first.close();
     expect((await getBridge()).writerGeneration).toBe(7);
-    expect(call.mock.calls.filter(([method]) => method === "claim_writer")).toEqual([["claim_writer", { role: "pilot" }]]);
+    // The host clock in seconds is the floor that keeps generations rising across a reloaded save.
+    expect(call.mock.calls.filter(([method]) => method === "claim_writer")).toEqual([["claim_writer", { role: "pilot", floor: 1_790_000_000 }]]);
     second.close();
   });
 
@@ -168,6 +181,18 @@ describe("claiming a writer generation", () => {
     const rcon = new FakeRcon();
     const bridge = await createBridgeProvider(settings, () => rcon as unknown as RconClient)();
     expect(bridge.writerGeneration).toBeUndefined();
+    expect(bridge.supervisor).toBe(false);
+    expect(call.mock.calls.map(([method]) => method)).toEqual(["ping"]);
+    rcon.close();
+  });
+
+  it("claims nothing for the supervisor's process and labels its writes", async () => {
+    vi.spyOn(Bridge.prototype, "unlock").mockResolvedValue();
+    const call = vi.spyOn(Bridge.prototype, "call").mockResolvedValue({ protocol_version: 29, mod_version: companionVersion() });
+    const rcon = new FakeRcon();
+    const bridge = await createBridgeProvider(settings, () => rcon as unknown as RconClient, "supervisor")();
+    expect(bridge.writerGeneration).toBeUndefined();
+    expect(bridge.supervisor).toBe(true);
     expect(call.mock.calls.map(([method]) => method)).toEqual(["ping"]);
     rcon.close();
   });

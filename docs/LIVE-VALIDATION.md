@@ -735,6 +735,9 @@ the roles (the Codex TUI, or the Codex app-server's thread and turn controls
 for a connected session). Prove retirement on a disposable non-gameplay
 session through the same mechanism, and only confirm that the route is
 available for the exact pilot; never retire the prepared pilot as a test.
+That disposable session must not start the factorio MCP with `--role pilot`
+or inherit `FACTORIO_CODEX_ROLE=pilot`: a pilot-role process claims a new
+writer generation and so retires the prepared pilot's writes.
 Delivery is not consumption: a message counts as received only when its text
 appears in a turn of the exact target session. A queued message waits until
 the target's current turn ends, so deliver a stop or another deadline-sensitive
@@ -856,7 +859,10 @@ and does not hold `GO`; the takeover acceptance item stays unproven for that
 run. Never simulate the human player's input.
 
 When it runs, rehearse it once before that run's `GO` on the live server with
-the supervisor driving the plan, since the pilot acts only after `GO`:
+the supervisor driving the plan, since the pilot acts only after `GO`. The
+supervisor's factorio MCP runs with `--role supervisor` on the full surface:
+its writes carry the supervisor label, which the writer fence lets through
+after a pilot has claimed a generation, on a fresh or a resumed save:
 
 1. Queue one harmless bounded plan (a short `walk_to` and return) and confirm
    `fifo.human_control: false`.
@@ -929,11 +935,18 @@ write that carries an older one with `WRITER_RETIRED`: the old pilot's write
 tools fail with code `WRITER_RETIRED`, and its bridge stops queuing packages
 and gives up the run's package lock, so the replacement's bridge queues them.
 `ping` reports the newest `writer_generation`, and `factorio-codex doctor`
-shows it. A write without a generation
-(an older companion, or another full-surface session) passes only while no
-generation has ever been claimed in the save; after that only `cancel` does,
-so the supervisor's `stop` always works. A save loaded from before the newest
-claim takes the newer generation from the first write that carries it.
+shows it with the tick it was claimed at, so a claim nobody expected shows.
+The supervisor's process (`--role supervisor`, full surface) claims nothing
+and labels its writes as the supervisor's; the fence lets them through, so
+the supervisor can drive the takeover rehearsal and debug rescues. A write
+with neither a generation nor that label (an older companion, or an
+unlabelled full-surface session) passes only while no generation has ever
+been claimed in the save; after that only `cancel` does, so the supervisor's
+`stop` always works. A claim sends the host clock in seconds as a floor, and
+the new generation is at least that, so after a save from before a claim is
+reloaded the next claim on the same host is still newer than the one the
+earlier pilot holds. A save loaded from before the newest claim also takes
+the newer generation from the first write that carries it.
 
 So once the replacement's process has connected (its `ping` shows its
 generation as the newest), the old pilot can no longer write, whatever its
@@ -943,7 +956,9 @@ starts.
 
 A transport fault during a write (an RCON timeout, or the connection closing
 before the whole reply arrived) returns `status: "outcome_unknown"` with code
-`OUTCOME_UNKNOWN`: the call may or may not have run in the game. Nothing is
+`OUTCOME_UNKNOWN`: the call may or may not have run in the game, and its
+summary says to read `observe_local` (or `plan_status` for a known plan) to
+see whether it did before repeating it. Nothing is
 retried except the `queue_plan` tool, which sends the call once more with the
 same `client_key`. The mod answers a key it has seen (it keeps the last 32)
 with the plan that call queued (`duplicate: true`), so the retry never queues

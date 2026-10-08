@@ -728,9 +728,10 @@ type RconFactory = (opts: RconSettings) => RconClient;
 type ConnectionSettings = RconSettings | (() => ConfigDiagnostic);
 
 /** Lazy, singleflight RCON handshake shared by every MCP handler. With
- *  writerRole (the pilot's process) the first connection claims a writer
- *  generation, once per process: every later connection sends the same one
- *  with its writes, so a replacement pilot's claim retires this process. */
+ *  writerRole "pilot" the first connection claims a writer generation, once
+ *  per process: every later connection sends the same one with its writes,
+ *  so a replacement pilot's claim retires this process. With "supervisor"
+ *  the writes are labelled as the supervisor's and nothing is claimed. */
 export function createBridgeProvider(
   settings: ConnectionSettings,
   createRcon: RconFactory = (settings) => new RconClient(settings),
@@ -762,10 +763,13 @@ export function createBridgeProvider(
         const bridge = new Bridge(rcon);
         await bridge.unlock();
         assertConnectionCompatibility(opts, await bridge.call("ping"), companionVersion());
-        if (writerRole !== undefined && generation === undefined) {
-          generation = (await bridge.call<{ generation: number }>("claim_writer", { role: writerRole })).generation;
+        if (writerRole === "pilot" && generation === undefined) {
+          // The host clock as a floor keeps generations rising across a reloaded save.
+          const floor = Math.floor(Date.now() / 1000);
+          generation = (await bridge.call<{ generation: number }>("claim_writer", { role: writerRole, floor })).generation;
         }
         bridge.writerGeneration = generation;
+        bridge.supervisor = writerRole === "supervisor";
         const owned = { rcon, bridge };
         connection = owned;
         rcon.on("close", () => {
@@ -796,7 +800,8 @@ export async function runMcpServer(
     : "Control one physical Factorio character named Codex. queue_plan returns immediately, while run_plan and single physical tools hold the only physical slot until they finish. Wait with next_event instead of polling. Never use screenshots or screen capture.";
   const server = new McpServer({ name: "factorio-codex", version: MCP_SERVER_VERSION }, { instructions });
   const pilot = surface === "full" && role === "pilot";
-  const bridge = createBridgeProvider(configDiagnostic, undefined, pilot ? role : undefined);
+  const writer = surface === "full" && (role === "pilot" || role === "supervisor") ? role : undefined;
+  const bridge = createBridgeProvider(configDiagnostic, undefined, writer);
   registerMcpTools(server as unknown as ToolRegistrar, bridge, configDiagnostic, surface, currentRunDir, role);
   if (pilot) {
     // The pilot claims its writer generation as it starts (or at its first

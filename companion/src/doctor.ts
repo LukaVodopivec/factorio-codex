@@ -42,9 +42,11 @@ export async function collectDoctorReport(settings: Settings): Promise<DoctorRep
     const compatible = connectionCompatibility(settings.rcon, ping, companionVersion());
     checks.push({ name: "protocol", ok: compatible.protocol === true, detail: `mod v${ping.protocol_version}, app v${PROTOCOL_VERSION}`, ...compatible.protocol === true ? {} : { fix: `install Factorio Codex Companion v${companionVersion()} and restart Factorio` } });
     checks.push({ name: "mod", ok: compatible.mod === true, detail: `mod v${ping.mod_version}, app v${companionVersion()}`, ...compatible.mod === true ? {} : { fix: `install Factorio Codex Companion v${companionVersion()} and restart Factorio` } });
-    // The writer fence: the newest generation, the one pilot process whose writes the mod accepts.
-    const writer = (ping as { writer_generation?: number }).writer_generation;
-    checks.push({ name: "writer", ok: true, detail: writer ? `writer generation ${writer} holds the gameplay writes` : "no writer generation claimed" });
+    // The writer fence: the newest generation, the one pilot process whose writes the mod accepts,
+    // and when it was claimed, so a claim nobody expected shows.
+    const { writer_generation: writer, writer_claimed_tick: claimed } = ping as { writer_generation?: number; writer_claimed_tick?: number };
+    checks.push({ name: "writer", ok: true, detail: writer
+      ? `writer generation ${writer}${claimed !== undefined ? ` (claimed at tick ${claimed})` : ""} holds the gameplay writes` : "no writer generation claimed" });
   } finally {
     rcon.close();
   }

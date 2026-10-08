@@ -91,15 +91,18 @@ end
 -- write carrying an older generation is refused WRITER_RETIRED, so a
 -- replaced pilot can no longer write. The writes are benchmark.MUTATIONS and
 -- cancel; reads are never fenced. A write without a generation (an older
--- companion, the supervisor's stop) passes while none was ever claimed;
--- after a claim only cancel still does, so an emergency stop always works.
+-- companion, an unlabelled session) passes while none was ever claimed;
+-- after a claim only cancel still does, so an emergency stop always works,
+-- and so does every write of the supervisor's process, which labels its
+-- writes writer_role = "supervisor" and claims nothing.
 local function fence(method, params)
   local stamp = params.writer_generation
-  params.writer_generation = nil
+  local supervisor = params.writer_role == "supervisor"
+  params.writer_generation, params.writer_role = nil, nil
   if not (benchmark.MUTATIONS[method] or method == "cancel") then return end
   local writer = storage.writer
   if stamp == nil then
-    if writer.generation > 0 and method ~= "cancel" then
+    if writer.generation > 0 and method ~= "cancel" and not supervisor then
       error("WRITER_RETIRED: " .. method .. " carries no writer generation; generation "
         .. writer.generation .. " holds the writes", 0)
     end
@@ -159,12 +162,20 @@ end
 -- Built-in transport helpers; everything else registers from control.lua.
 
 -- A new writer generation (the fence above), claimed once by the pilot's
--- MCP process as it first connects.
+-- MCP process as it first connects. floor (the host's clock in seconds)
+-- keeps generations rising when a save from before a claim is reloaded:
+-- the next claim is then still newer than the one the earlier process holds.
 M.register("claim_writer", function(params)
+  local floor = params.floor
+  if floor ~= nil and (type(floor) ~= "number" or floor % 1 ~= 0 or floor < 1) then
+    error("floor must be a positive integer", 0)
+  end
   local writer = storage.writer
-  writer.generation = writer.generation + 1
+  local previous, previous_tick = writer.generation, writer.claimed_tick
+  writer.generation = math.max(previous + 1, floor or 0)
   writer.claimed_tick = game.tick
-  log("writer generation " .. writer.generation .. " claimed by " .. tostring(params.role):sub(1, 40))
+  log("writer generation " .. writer.generation .. " claimed by " .. tostring(params.role):sub(1, 40)
+    .. "; generation " .. previous .. " was claimed at tick " .. tostring(previous_tick))
   return { generation = writer.generation }
 end)
 

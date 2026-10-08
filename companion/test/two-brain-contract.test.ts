@@ -114,7 +114,10 @@ describe("persistent two-brain coordination contract", () => {
 
   it("documents the writer fence and unknown outcomes for a replacement, and keeps them out of the gameplay rules", () => {
     expect(live).toMatch(/refuses every write that carries an older one with `WRITER_RETIRED`/);
-    expect(live).toMatch(/after that only `cancel` does, so the supervisor's `stop` always works/);
+    expect(live).toMatch(/after that only `cancel` does, so the supervisor's\s+`stop` always works/);
+    expect(live).toMatch(/The supervisor's process \(`--role supervisor`, full surface\) claims nothing\s+and labels its writes/);
+    expect(live).toMatch(/must not start the factorio MCP with `--role pilot`\s+or inherit `FACTORIO_CODEX_ROLE=pilot`/);
+    expect(live).toMatch(/supervisor's factorio MCP runs with `--role supervisor`/);
     expect(live).toMatch(/The fence cancels nothing: plans the old pilot already queued stay committed/);
     expect(live).toMatch(/`status: "outcome_unknown"` with code `OUTCOME_UNKNOWN`: the call may or may not have run in the game/);
     expect(active).not.toMatch(/writer generation|WRITER_RETIRED|client_key/);

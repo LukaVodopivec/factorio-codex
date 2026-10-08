@@ -1462,7 +1462,7 @@ end
 -- The line of the own machine centred at `position` on a surface (an
 -- index): {line_id, product, state, cause, rate_per_min, machines, working},
 -- or nil when no line machine stands there (a package's verify metric).
-function M.line_at(surface, position)
+function M.line_summary_at(surface, position)
   local a = data()
   local unit = a and a.machine_at and a.machine_at[position_key(surface, position)]
   local rec = unit and a.machines[unit]

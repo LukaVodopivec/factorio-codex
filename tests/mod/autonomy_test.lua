@@ -526,7 +526,7 @@ storage.tasks.last_cancel_all_tick = nil
 -- fuel runway on every line row and three supply states on the power row
 -- and on one line row about 2.3 KB, research at its widest about 2.1 KB:
 -- twelve packs needed and made, labs lacking each and eight positions on a
--- platform).
+-- platform; three alert rows and two destroyed problem rows about 0.8 KB).
 _G.storage = {}
 state.init()
 storage.registry.ready = true
@@ -797,7 +797,7 @@ for _, row in ipairs(full.lines) do if row.supply_states then supplied = row end
 check(supplied and supplied.network_id == 2001 and #supplied.supply_states == 3 and supplied.supply_omitted == 1
   and supplied.supply_states[1].degraded == "no_fuel" and full.power[1].supply_states,
   "the worst case has a no_power line row with three degraded supply states beside the power row's")
-check(json_size < 12800, "a worst-case factory_status at 200 machines stays under 12.5 KB (" .. json_size .. " bytes)")
+check(json_size < 13824, "a worst-case factory_status at 200 machines stays under 13.5 KB (" .. json_size .. " bytes)")
 do
   local destroyed = 0
   for _, row in ipairs(full.problems) do if row.status == "destroyed" then destroyed = destroyed + 1 end end

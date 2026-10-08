@@ -569,7 +569,7 @@ local function measure_section(target, metrics)
         local ok, found = pcall(target.surface.find_entities_filtered, { position = { x = p.x, y = p.y }, force = target.force })
         local line
         for _, entity in ipairs(ok and found or {}) do
-          line = line or autonomy.line_at(target.surface.index, entity.position)
+          line = line or autonomy.line_summary_at(target.surface.index, entity.position)
         end
         if line then line.met = line.state == metric.state end
         rows[i] = line or { error = "NO_LINE", met = false }

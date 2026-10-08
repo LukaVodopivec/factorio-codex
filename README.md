@@ -337,7 +337,11 @@ ends the capture. On the couch PC, `scripts/timelapse-video.ps1 -Run <folder>`
 joins the frames into an HEVC video (`-Every 2` doubles the speed, `-SkipIdle`
 drops unchanged frames). Each frame shows the time since the first frame as
 HH:MM:SS, from its tick, at a fixed top-left spot in a monospace font
-(`-NoClock` leaves it out).
+(`-NoClock` leaves it out). `-Captions <file.json>` takes a list of
+`{"from": "H:MM:SS", "to": "H:MM:SS", "text": "..."}` on that clock and draws
+each caption on the frames in its range, wrapped to two centred lines at the
+bottom; that video is written as `<folder>-timelapse-captions.mp4`, so the plain
+video and the frames are kept.
 
 ## Verification
 

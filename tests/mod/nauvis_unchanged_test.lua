@@ -100,7 +100,7 @@ package.loaded["scripts.companion"] = { get = function() return body end, requir
   burning_item = function() return nil end }
 local queued = {}
 package.loaded["scripts.tasks"] = { queue_length = function() return 0 end, active_summary = function() return nil end,
-  upkeep_room = function() return "idle" end, queue_plan = function(params) queued[#queued + 1] = params; return { plan_id = #queued } end }
+  queued_demand = function() return nil end, upkeep_room = function() return "idle" end, queue_plan = function(params) queued[#queued + 1] = params; return { plan_id = #queued } end }
 package.loaded["scripts.research"] = { research_trigger = function() return nil end, unit_time_s = function() return nil end,
   progression_status = function() return { researched = {} } end }
 

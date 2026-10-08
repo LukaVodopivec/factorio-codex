@@ -51,6 +51,13 @@ for _, step in ipairs(route.steps) do
   check(step.name == "transport-belt" and step.x ~= nil and step.y ~= nil, "route steps are public build_plan DTOs")
 end
 check(uses_detour, "belt route obeys authoritative placement rejection and finds a charted detour")
+check(route.materials == nil, "a build's route carries no bill")
+force.recipes = {}
+local dry = connect_entities({ kind = "belt", prototype = "transport-belt", from = { x = 0.5, y = 0.5 }, to = { x = 4.5, y = 0.5 },
+  max_length = 10, check_only = true })
+check(#dry.materials == 1 and dry.materials[1].item == "transport-belt" and dry.materials[1].count == dry.length
+  and dry.materials[1].short == dry.length and dry.materials[1].needs_machine["transport-belt"] == dry.length,
+  "a dry run bills its pieces (supply.bill): none carried or stocked here, and no hand recipe")
 ores[6.5] = { valid = true, name = "copper-ore", type = "resource", position = { x = 6.5, y = 0.5 } }
 local onto_ore = connect_entities({ kind = "belt", prototype = "transport-belt", from = { x = 0.5, y = 0.5 }, to = { x = 6.5, y = 0.5 }, max_length = 10 })
 local last_belt = onto_ore.steps[#onto_ore.steps]

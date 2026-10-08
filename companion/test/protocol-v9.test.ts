@@ -62,9 +62,9 @@ describe("protocol v29 DTO and tool registry", () => {
       type: "build_plan", auto_craft: true, stop_on_error: true,
       steps: [{ item: "transport-belt", position: { x: 1.5, y: 0.5 }, direction: 4 }],
     }, expect.objectContaining({ tool: "connect_entities", role: "unknown" }));
-    // Only a dry run asks the mod for belt joins: a build skips their reads.
+    // Only a dry run asks the mod for belt joins and the bill: a build skips their reads.
     await handlers.connect_entities({ ...route, check_only: true });
-    expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, max_length: 200, joins: true }, undefined);
+    expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, max_length: 200, joins: true, check_only: true }, undefined);
     expect(schemas.find_placement.safeParse({ item: "x", preferred: { x: 0, y: 0 }, radius: 31 }).success).toBe(false);
     expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 200 }).success).toBe(true);
     expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 201 }).success).toBe(false);
@@ -138,7 +138,7 @@ describe("protocol v29 DTO and tool registry", () => {
     const routed = await handlers.connect_entities(schemas.connect_entities.parse({ kind: "pipe", prototype: "pipe", from: { x: 0.5, y: 0.5 },
       to: { x: 2.5, y: 0.5 }, fluid: "water", underground: false, check_only: true }));
     expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "pipe", prototype: "pipe", from: { x: 0.5, y: 0.5 }, to: { x: 2.5, y: 0.5 },
-      max_length: 200, fluid: "water", underground: false }, undefined);
+      max_length: 200, fluid: "water", underground: false, check_only: true }, undefined);
     expect(routed.structuredContent).toMatchObject({ check_only: true, steps: [{ name: "pipe" }] });
     expect(enqueueAndWait).not.toHaveBeenCalled();
 
@@ -549,6 +549,13 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(described.find_placement).toMatch(/nearest first for every type \(a drill candidate's resource_coverage is data to compare\)/);
     expect(described.factory_status).toMatch(/add_to_cover with both ways to cover the deficit \(steam: steam_engine, plus the boiler and offshore_pump the surface's engines need beyond those standing anywhere on the surface \(a pump feeding chemistry counts too\), no offshore_pump where its tiles give no water; solar where the sun gives power: solar_panel, accumulator\), for you to choose/);
     expect(described.factory_status).toMatch(/resource patches with their outline \(bbox: left_top, right_bottom\)/);
+    // Inserter throughput and the dry-run bill: facts and arithmetic, nothing reserved.
+    for (const tool of ["describe_prototype", "inspect_entity"]) expect(described[tool]).toMatch(/max_items_per_second: an upper bound/);
+    expect(described.build_layout).toMatch(/max_items_per_second, the prototype's upper bound/);
+    expect(described.build_layout).toMatch(/materials is the bill: .*in_stock .*short .*made_per_min .*minutes_at_rate .*hand_craftable with hand_craft_s .*gatherable .*needs_machine .*walk_s_lower_bound/);
+    expect(described.connect_entities).toMatch(/A dry run's materials bills the pieces/);
+    expect(described.queue_plan).toMatch(/It returns needs: .*queued_demand .*short_by .*nothing is reserved or ordered/);
+    expect(described.factory_status).toMatch(/stock \(what queued plans take against it: the fifo block's queued_demand and short_by, see queue_plan\)/);
     expect(described.queue_plan).not.toMatch(/build_block/);
     expect(described.run_plan).not.toMatch(/build_block/);
   });

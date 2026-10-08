@@ -24,6 +24,10 @@ local function entity(name, type, w, h, extra)
   for k, v in pairs(extra or {}) do proto[k] = v end
   -- The live prototype fields the dry run's survey reads.
   if proto.pickup then proto.inserter_pickup_position, proto.inserter_drop_position = proto.pickup, proto.drop end
+  if proto.rotation then
+    proto.get_inserter_rotation_speed = function() return proto.rotation end
+    proto.get_inserter_extension_speed = function() return proto.extension end
+  end
   if proto.electric then
     proto.electric_energy_source_prototype = { usage_priority = type == "generator" and "secondary-output" or "secondary-input" }
   end
@@ -41,7 +45,8 @@ local entities = {
   ["stone-furnace"] = entity("stone-furnace", "furnace", 2, 2),
   ["steel-furnace"] = entity("steel-furnace", "furnace", 2, 2),
   ["electric-furnace"] = entity("electric-furnace", "furnace", 3, 3, { electric = true }),
-  ["burner-inserter"] = entity("burner-inserter", "inserter", 1, 1, { pickup = { 0, -1 }, drop = { 0, 1.2 } }),
+  ["burner-inserter"] = entity("burner-inserter", "inserter", 1, 1, { pickup = { 0, -1 }, drop = { 0, 1.2 },
+    rotation = 0.013, extension = 0.035 }),
   ["inserter"] = entity("inserter", "inserter", 1, 1, { pickup = { 0, -1 }, drop = { 0, 1.2 }, electric = true }),
   ["transport-belt"] = entity("transport-belt", "transport-belt", 1, 1),
   ["wooden-chest"] = entity("wooden-chest", "container", 1, 1),
@@ -493,6 +498,17 @@ do
   local fed, unfed = north.inserters and north.inserters[1], south.inserters and south.inserters[1]
   check(north.ok and fed and fed.x == 900.5 and fed.y == 898.5 and fed.picks_from == "wooden-chest" and fed.drops_into == "stone-furnace",
     "a dry run names what an inserter picks from (an existing chest) and drops into (a planned furnace)")
+  check(fed and fed.max_items_per_second == 0.79, "a dry run's inserter row gives its prototype's upper bound")
+  local bill = {}
+  for _, row in ipairs(north.materials or {}) do bill[row.item] = row end
+  check(bill["transport-belt"] and bill["transport-belt"].count == 2 and bill["transport-belt"].in_stock == 0
+    and bill["transport-belt"].short == 2 - bill["transport-belt"].carried,
+    "a dry run's materials rows are the bill (supply.bill): count, carried, in_stock and short")
+  local fuelled = dry({ anchor = { x = 900, y = 920 }, entities = { { name = "stone-furnace", dx = 0, dy = 0, insert = { coal = 5 } } } })
+  local started = {}
+  for _, row in ipairs(fuelled.materials or {}) do started[row.item] = row end
+  check(started.coal and started.coal.count == 5 and started["stone-furnace"].count == 1,
+    "a dry run's bill counts what an entity starts with (coal for a furnace) beside the entity")
   check(south.ok and unfed and unfed.picks_from == "stone-furnace" and unfed.drops_into == "wooden-chest",
     "turning the inserter round swaps its pickup and drop targets in the dry run")
   local belt_end = north.belt_ends and north.belt_ends[1]

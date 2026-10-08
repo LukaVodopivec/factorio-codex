@@ -30,8 +30,9 @@
 -- belt's end.
 -- Result: {anchor, placed:[{name,x,y,direction}], failed:[{index|connection,
 -- code, reason}], shortfall?}; indexes are 0-based into entities/connections.
--- A dry run whose layout fits also reports, as data and never as a failure,
--- inserters [{name,x,y,direction,picks_from,drops_into}], belt_ends
+-- A dry run gives its bill as materials (supply.bill). One whose layout fits
+-- also reports, as data and never as a failure, inserters [{name,x,y,
+-- direction,picks_from,drops_into,max_items_per_second}], belt_ends
 -- [{name,x,y,direction,faces}], unpowered [{name,x,y}], isolated_poles
 -- [{name,x,y}], on_ore [{name,x,y,ore}], mixed_ore [{name,x,y,mines,also}],
 -- open_fluid_ports [{name,x,y,port}], belt_joins (belt_joins.lua) and port_fluids (see
@@ -63,6 +64,7 @@ local blueprints = require("scripts.blueprints")
 local platforms = require("scripts.platforms")
 local surfaces = require("scripts.surfaces")
 local supply = require("scripts.actions.supply")
+local inserter_rate = require("scripts.inserter_rate")
 
 -- The liquids a site may be near (site.near_liquid); near_water is water.
 local LIQUIDS = { water = true, lava = true, ["heavy-oil"] = true, ["ammoniacal-solution"] = true }
@@ -1259,21 +1261,23 @@ local function placed_row(step)
   return row
 end
 
+-- The dry run's bill: each item the steps place or start an entity with
+-- (an adopted entity stands already), as supply.bill rows. A viewpoint on
+-- another surface carries nothing.
 local function materials(c, steps)
   local counts, names = {}, {}
+  local function add(name, n)
+    if not counts[name] then names[#names + 1] = name end
+    counts[name] = (counts[name] or 0) + n
+  end
   for _, step in ipairs(steps) do
-    if not step._adopt then
-      if not counts[step.item] then names[#names + 1] = step.item end
-      counts[step.item] = (counts[step.item] or 0) + 1
-    end
+    if not step._adopt then add(step.item, 1) end
+    for name, n in pairs(step.insert or {}) do add(name, n) end
   end
   table.sort(names)
-  local out = {}
-  -- A viewpoint on another surface carries nothing.
-  for _, name in ipairs(names) do
-    out[#out + 1] = { item = name, count = counts[name], carried = c.get_item_count and c.get_item_count(name) or 0 }
-  end
-  return out
+  local wants = {}
+  for i, name in ipairs(names) do wants[i] = { name = name, count = counts[name] } end
+  return supply.bill(c, wants)
 end
 
 -- ---------------------------------------------------------------- ghosts
@@ -2411,7 +2415,8 @@ local function survey_item(ctx, V, item)
   elseif item.kind == "inserter" then
     rows.inserters[#rows.inserters + 1] = { name = p.name, x = p.position.x, y = p.position.y, direction = p.direction,
       picks_from = endpoint_name(ctx, V, output_target.input_position(p.proto, p.position, p.direction), "input"),
-      drops_into = endpoint_name(ctx, V, output_target.output_position(p.proto, p.position, p.direction), "output") }
+      drops_into = endpoint_name(ctx, V, output_target.output_position(p.proto, p.position, p.direction), "output"),
+      max_items_per_second = inserter_rate.max_items_per_second(p.proto, select(2, where(ctx))) }
   elseif item.kind == "belt" then
     local front, faces = item.front, nil
     for _, j in ipairs(planned_at(V, front.x, front.y)) do faces = faces or V.planned[j].name end

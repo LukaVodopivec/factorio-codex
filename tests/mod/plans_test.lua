@@ -990,4 +990,57 @@ tasks.cancel({ all = true, origin = "stop/supervisor", keep_upkeep = true })
 check(tasks.upkeep_room() == "idle" and storage.tasks.last_finished_tick == 60101
   and storage.tasks.last_cancel_all_tick == 60101,
   "a stop with keep_upkeep cancels like any stop but leaves upkeep its room")
+
+-- needs and queued demand: item totals read from the steps at queue time,
+-- summed over the plans the FIFO holds against carried items; nothing reserved.
+_G.prototypes = { item = { ["stone-furnace"] = {}, coal = {}, ["iron-gear-wheel"] = {}, ["burner-mining-drill"] = {} },
+  entity = { ["stone-furnace"] = { items_to_place_this = { { name = "stone-furnace", count = 1 } } } },
+  recipe = { ["iron-gear-wheel"] = { ingredients = { { type = "item", name = "iron-plate", amount = 2 } } } } }
+storage.tasks.queue, storage.tasks.active = {}, nil
+body.get_item_count = function(name) return name == "coal" and 20 or 0 end
+local smelting = tasks.queue_plan({ steps = {
+  { action = "get_items", item = "iron-gear-wheel", count = 10 },
+  { action = "build_layout", anchor = { x = 0, y = 0 }, entities = { { name = "stone-furnace", dx = 0, dy = 0, insert = { coal = 5 } },
+    { name = "stone-furnace", dx = 2, dy = 0, insert = { coal = 5 } }, { name = "burner-mining-drill", dx = 0, dy = 2 } },
+    connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0, dy = 0 }, to = { dx = 9, dy = 0 } } } },
+  { action = "craft_items", recipe = "iron-gear-wheel", crafts = 3 },
+  { action = "insert_items", targets = { { x = 1, y = 1 }, { x = 3, y = 1 } }, per_target = { coal = 4 } },
+  { action = "place_entity", name = "stone-furnace", x = 6, y = 6 },
+  { action = "build_layout", anchor = { x = 0, y = 0 }, mode = "ghosts", entities = { { name = "stone-furnace", dx = 0, dy = 0 } } },
+} })
+local n = smelting.needs or {}
+check(n["iron-gear-wheel"] == 10 and n["stone-furnace"] == 3 and n.coal == 18 and n["burner-mining-drill"] == 1
+  and n["iron-plate"] == 6 and n["transport-belt"] == nil,
+  "queue_plan returns needs: placed, starter, inserted (per target) and crafted-from items, a fetch's count; "
+    .. "no connection pieces, no ghosts")
+local refuel = tasks.queue_plan({ steps = { { action = "get_items", item = "coal", count = 5 },
+  { action = "insert_items", x = 1, y = 1, items = { coal = 3 } } } })
+check(refuel.needs.coal == 5, "a fetch and a later use of the same item count once, the larger")
+check(tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 } } }).needs == nil, "a plan that takes nothing has no needs")
+-- A plan that crafts what it places needs only the craft's ingredients; what
+-- it places beyond that still counts.
+prototypes.item.stone = {}
+prototypes.recipe["stone-furnace"] = { products = { { type = "item", name = "stone-furnace", amount = 1 } },
+  ingredients = { { type = "item", name = "stone", amount = 5 } } }
+local furnaces = {}
+for i = 1, 5 do furnaces[i] = { name = "stone-furnace", dx = 2 * i, dy = 0 } end
+local crafted = tasks.queue_plan({ steps = { { action = "craft_items", recipe = "stone-furnace", crafts = 4 },
+  { action = "build_layout", anchor = { x = 0, y = 0 }, entities = furnaces } } }).needs
+check(crafted.stone == 20 and crafted["stone-furnace"] == 1,
+  "crafted items count against the plan's own use: 5 furnaces placed, 4 crafted, 1 needed")
+tasks.cancel({ origin = "test/plans", plan_id = storage.tasks.queue[#storage.tasks.queue].id })
+local demand = tasks.queued_demand(10)
+check(demand.queued_demand.coal == 23 and demand.queued_demand["stone-furnace"] == 3 and demand.short_by.coal == 3
+  and demand.short_by["stone-furnace"] == 3 and demand.short_by["iron-gear-wheel"] == 10 and demand.omitted_short_by == nil,
+  "queued_demand sums every queued plan; short_by is what carried items and stock leave uncovered")
+local top = tasks.queued_demand(2)
+check(top.queued_demand.coal == 23 and top.queued_demand["iron-gear-wheel"] == 10 and top.omitted_queued_demand == 3,
+  "each total keeps its largest items and counts the rest")
+storage.tasks.active = table.remove(storage.tasks.queue, 1)
+storage.tasks.active.current_step = 4
+local running = tasks.queued_demand(10)
+check(running.queued_demand.coal == 13 and running.queued_demand["stone-furnace"] == 1
+  and running.queued_demand["iron-gear-wheel"] == nil, "the running plan counts from its current step on")
+storage.tasks.queue, storage.tasks.active = {}, nil
+check(tasks.queued_demand(10) == nil, "an empty FIFO has no queued demand")
 os.exit(failures == 0 and 0 or 1)

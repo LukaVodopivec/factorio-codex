@@ -88,7 +88,8 @@ local body = mock.entity({ valid = true, name = "character", type = "character",
   get_main_inventory = function() return main end, get_health_ratio = function() return 0.75 end })
 package.loaded["scripts.companion"] = { human_control = function() return false, 999 end }
 dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
-package.loaded["scripts.tasks"] = { queue_length = function() return 0 end, active_summary = function() return nil end }
+package.loaded["scripts.tasks"] = { queue_length = function() return 0 end, active_summary = function() return nil end,
+  queued_demand = function() return nil end }
 
 local next_unit = 100
 local state = require("scripts.state")

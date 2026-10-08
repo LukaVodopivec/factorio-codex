@@ -19,6 +19,9 @@ export interface FluidConnection {
   fluidbox_index: number; production_type?: string; filter?: string; connection_type?: string;
   flow_direction?: string; position: Position; target_position?: Position;
   connected_target?: { name: string; type: string; position: Position } | null;
+  /** inspect_entity: the fluid this box takes (recipe filter, else locked fluid), the fluid the connection
+   *  meets (what the box it reaches holds, else that segment's fluid), and mismatch when both differ. */
+  takes?: string; meets?: string; mismatch?: true;
 }
 export interface PlacementSearchResult {
   item: string; entity: string; preferred: Position;
@@ -86,6 +89,8 @@ export interface FactoryLine {
    *  a starved machine's game status (e.g. no_ingredients) when no missing input can be named,
    *  outlet_no_fuel (cause_position is the dry burner inserter taking from it), a depleted drill's ore. */
   cause?: string; cause_position?: Position;
+  /** A fluid cause: the other fluid the lacking box's connection meets (heavy oil at a crude-oil inlet). */
+  meets?: string;
   /** Running lines only: the worst member problem past its threshold. */
   degraded?: { state: LineState; cause_position: Position };
   /** Lowest heat-source temperature on a line with a reactor or heat exchanger. */

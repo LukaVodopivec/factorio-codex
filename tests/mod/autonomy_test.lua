@@ -9,7 +9,7 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 
 local RAW = { working = 1, no_fuel = 2, no_ingredients = 3, item_ingredient_shortage = 4,
   waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8, no_minable_resources = 9,
-  waiting_to_launch_rocket = 10 }
+  waiting_to_launch_rocket = 10, missing_required_fluid = 11, fluid_ingredient_shortage = 12 }
 _G.defines = { entity_status = RAW, inventory = { crafter_input = 2, lab_input = 3 },
   rocket_silo_status = { building_rocket = 1, rocket_ready = 10 } }
 local PLATE = { name = "iron-plate", ingredients = { { name = "iron-ore", type = "item", amount = 1 } },
@@ -729,6 +729,48 @@ mock.state(low_drill).status = RAW.no_fuel
 sample_silo(1)
 check(not low_set() and storage.autonomy.waiting.no_fuel[1][low_drill.unit_number] == true,
   "a dry burner is in the no_fuel set, not the low_fuel one")
+
+-- A fluid-starved refinery names the fluid its first input box takes and,
+-- when that box's connection meets another fluid (heavy oil piped to the
+-- crude-oil inlet), meets: that fluid. Fixed, meets goes.
+local REFINING = { name = "advanced-oil-processing", ingredients = { { name = "crude-oil", type = "fluid", amount = 100 } },
+  products = { { name = "heavy-oil", type = "fluid", amount = 25 } } }
+local inlet = mock.entity({ valid = true, name = "pipe", type = "pipe", position = { x = 501, y = 3.5 },
+  fluidbox = setmetatable({ [1] = { name = "heavy-oil", amount = 100 } }, { __len = function() return 1 end }) })
+local refinery = machine("assembling-machine", "oil-refinery", 500.5, 0.5, { products_finished = 0,
+  status = RAW.missing_required_fluid, get_recipe = function() return REFINING end,
+  get_inventory = function() return inventory({}) end, get_fluid_count = function() return 0 end,
+  fluidbox = setmetatable({
+    get_filter = function(index) return index == 1 and { name = "crude-oil" } or { name = "heavy-oil" } end,
+    get_prototype = function(index) return { production_type = index == 1 and "input" or "output" } end,
+    get_pipe_connections = function(index)
+      if index ~= 1 then return {} end
+      return { { connection_type = "normal", target = mock.fluidbox({ owner = inlet }), target_fluidbox_index = 1 } }
+    end,
+  }, { __len = function() return 2 end }) })
+autonomy.refresh()
+sample_silo(25)
+local function refinery_line()
+  for _, line in ipairs(autonomy.lines()) do if line.entity == nil and line.product == "heavy-oil" then return line end end
+end
+local oil = refinery_line()
+check(oil and oil.state == "starved" and oil.cause == "crude-oil" and oil.meets == "heavy-oil",
+  "a refinery starved of crude oil whose inlet meets heavy oil says cause crude-oil, meets heavy-oil")
+inlet.fluidbox[1] = { name = "crude-oil", amount = 100 }
+sample_silo(25)
+oil = refinery_line()
+check(oil and oil.cause == "crude-oil" and oil.meets == nil,
+  "once the inlet meets crude oil the cause has no meets")
+-- 2.0.77 reports such a refinery as fluid_ingredient_shortage: the lacking
+-- ingredient is read from the recipe, and its inlet's meets the same way.
+inlet.fluidbox[1] = { name = "heavy-oil", amount = 100 }
+mock.state(refinery).status = RAW.fluid_ingredient_shortage
+sample_silo(25)
+oil = refinery_line()
+check(oil and oil.state == "starved" and oil.cause == "crude-oil" and oil.meets == "heavy-oil",
+  "a fluid_ingredient_shortage refinery names the crude oil it lacks and the heavy oil its inlet meets")
+refinery.valid = false
+autonomy.refresh()
 
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

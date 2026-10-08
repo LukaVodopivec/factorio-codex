@@ -1553,6 +1553,9 @@ end
 -- no planned entity answers takes one small query, charged to the dry run's
 -- work (SURVEY_QUERY plus what it reads) and spread over ticks. A query
 -- counts only what stands on charted chunks.
+-- Each port of a planned crafting machine on a fluid recipe is also a
+-- port_fluids row: the fluid its recipe puts there against what it meets
+-- (see port_rows).
 local SURVEY_QUERY = 2
 local BELT_FLOW = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true }
 local AHEAD = { [0] = { 0, -1 }, [4] = { 1, 0 }, [8] = { 0, 1 }, [12] = { -1, 0 } }
@@ -1695,35 +1698,48 @@ local function by_box(a, b)
   return a.target.x < b.target.x
 end
 
--- Each planned entity's fluid ports (one prototype read per name and
--- direction) as tile cells, indexed by the tile each leaves from. A
+-- Each planned entity's fluid ports (one prototype read per name,
+-- direction and recipe) as tile cells, indexed by the tile each leaves from.
+-- A crafting machine's ports carry their recipe role and fluid
+-- (fluid_connections.recipe_ports); a port of a box its recipe leaves out
+-- connects nothing in the game, so it is kept apart in V.closed[i]. A
 -- mirrored entity's ports are not worked out: its tiles take any port.
 local function fluid_ports(ctx, V)
   local cache, count = {}, 0
+  V.closed = V.closed or {}
   for i, p in ipairs(V.planned) do
-    local key = p.name .. "|" .. p.direction
+    local recipe = CRAFTERS[p.proto.type] and p.recipe or nil
+    local key = p.name .. "|" .. p.direction .. "|" .. tostring(recipe)
     local rel = cache[key]
     if rel == nil then
       ctx.calls = ctx.calls + 1
-      rel = fluid_connections.ports(p.proto, p.direction, placement_geometry.footprint(p.proto, { x = 0, y = 0 }, p.direction))
+      local area = placement_geometry.footprint(p.proto, { x = 0, y = 0 }, p.direction)
+      rel = recipe and fluid_connections.recipe_ports(p.proto, recipe, p.direction, area)
+        or fluid_connections.ports(p.proto, p.direction, area)
       table.sort(rel, by_box)
       cache[key] = rel
     end
     if #rel > 0 and p.mirror then
       each_tile(p.area, function(x, y) V.wild[cell(x, y)] = true end)
     elseif #rel > 0 then
-      local list = {}
-      for k, r in ipairs(rel) do
+      local list, closed = {}, {}
+      for _, r in ipairs(rel) do
         local x, y = p.position.x, p.position.y
         local port = { box = r.box, at = cell(math.floor(x + r.at.x), math.floor(y + r.at.y)),
           target = cell(math.floor(x + r.target.x), math.floor(y + r.target.y)),
-          tx = math.floor(x + r.target.x) + 0.5, ty = math.floor(y + r.target.y) + 0.5 }
-        list[k] = port
-        local here = V.port_at[port.at]
-        if here then here[#here + 1] = { i = i, port = port } else V.port_at[port.at] = { { i = i, port = port } } end
+          tx = math.floor(x + r.target.x) + 0.5, ty = math.floor(y + r.target.y) + 0.5, role = r.role, fluid = r.fluid }
+        if r.fluid == false then
+          port.fluid = nil
+          closed[#closed + 1] = port
+        else
+          list[#list + 1] = port
+          local here = V.port_at[port.at]
+          if here then here[#here + 1] = { i = i, port = port } else V.port_at[port.at] = { { i = i, port = port } } end
+        end
       end
-      V.ports[i] = list
-      count = count + #list
+      V.ports[i] = #list > 0 and list or nil
+      V.closed[i] = #closed > 0 and closed or nil
+      count = count + #rel
     end
   end
   ctx.calls = ctx.calls + math.ceil(count / LOAD_PER_ITEM)
@@ -1741,10 +1757,12 @@ local function survey_start(ctx, result, only)
   end
   ctx.calls = ctx.calls + math.ceil(#planned / LOAD_PER_ITEM)
   local V = { planned = planned, tiles = tiles, items = {}, i = 1, widest = widest_supply(), group = {}, linked = {},
-    ports = {}, port_at = {}, wild = {}, seeds = {}, mixes = {}, unders = {},
+    ports = {}, port_at = {}, wild = {}, seeds = {}, mixes = {}, unders = {}, closed = {}, carry = {}, met = {}, sources = {},
     rows = { inserters = {}, belt_ends = {}, unpowered = {}, on_ore = {}, mixed_ore = {}, open_fluid_ports = {} } }
+  if not only or only.port_fluids then V.rows.port_fluids = {} end
   local function add(item)
-    if not only or only[ROW_OF[item.kind]] then V.items[#V.items + 1] = item end
+    local row = ROW_OF[item.kind]
+    if not only or only[row] or (row == "fluid_mixes" and only.port_fluids) then V.items[#V.items + 1] = item end
   end
   -- Planned poles within wire reach of each other share a group; a group
   -- whose supply area takes in a planned generator has a source.
@@ -1797,7 +1815,7 @@ local function survey_start(ctx, result, only)
   if not ctx.space then
     for i, p in ipairs(planned) do add({ kind = p.proto.type == "mining-drill" and "drill" or "ore", i = i }) end
   end
-  if not only or only.open_fluid_ports or only.fluid_mixes then fluid_ports(ctx, V) end
+  if not only or only.open_fluid_ports or only.fluid_mixes or only.port_fluids then fluid_ports(ctx, V) end
   if not only or only.open_fluid_ports then
     for i, p in ipairs(planned) do
       local rule = V.ports[i] and fluid_rule(p)
@@ -1807,9 +1825,9 @@ local function survey_start(ctx, result, only)
   -- The fluids standing entities feed into each planned fluid entity, then
   -- one pass over them in build order.
   for i in ipairs(planned) do
-    if V.ports[i] then add({ kind = "seed", i = i }) end
+    if V.ports[i] or V.closed[i] then add({ kind = "seed", i = i }) end
   end
-  if next(V.ports) ~= nil then add({ kind = "mix", i = 1 }) end
+  if next(V.ports) ~= nil or next(V.closed) ~= nil then add({ kind = "mix", i = 1 }) end
   return V
 end
 
@@ -1964,16 +1982,31 @@ local function fluid_open(ctx, V, i, rule)
   return open
 end
 
+-- A fluid a planned entity's box meets (V.seeds or V.carry, by key).
+local function seed(V, key, i, box, fluid)
+  V[key] = V[key] or {}
+  local seeds = V[key][i] or {}
+  V[key][i] = seeds
+  seeds[box] = seeds[box] or {}
+  seeds[box][fluid] = true
+end
+
 -- The fluids own standing entities feed into planned entity i's boxes
 -- (V.seeds[i][box] = {fluid = true}): a live normal connection of theirs
 -- from the tile a planned port points at into the tile it leaves from,
--- whose box holds a fluid (what fluid_mix reads). One small query around
--- the footprint (at most MIX_READS entities) and one connection read each.
+-- whose box holds a fluid (what fluid_mix reads). V.carry adds the fluid an
+-- empty standing output box is set to make (a refinery's), and V.met names
+-- the entity each port meets ("p<k>" for V.ports, "c<k>" for V.closed) with
+-- what it holds or makes. One small query around the footprint (at most
+-- MIX_READS entities) and one connection read each.
 local MIX_READS = 32
 local function fluid_seeds(ctx, V, i)
   local p, want = V.planned[i], {}
-  for _, port in ipairs(V.ports[i]) do
-    if not V.tiles[port.target] then want[port.target .. ">" .. port.at] = port.box or 0 end
+  for k, port in ipairs(V.ports[i] or {}) do
+    if not V.tiles[port.target] then want[port.target .. ">" .. port.at] = { box = port.box or 0, slot = "p" .. k } end
+  end
+  for k, port in ipairs(V.closed and V.closed[i] or {}) do
+    if not V.tiles[port.target] then want[port.target .. ">" .. port.at] = { slot = "c" .. k } end
   end
   if next(want) == nil then return end
   local surface, force = where(ctx)
@@ -1986,14 +2019,19 @@ local function fluid_seeds(ctx, V, i)
     if e.valid and e.type ~= "character" and charted_at(ctx, e.position) then
       ctx.calls = ctx.calls + 1
       for _, row in ipairs(fluid_connections.live(e)) do
-        local box = row.connection_type == "normal" and want[cell(math.floor(row.position.x), math.floor(row.position.y))
+        local w = row.connection_type == "normal" and want[cell(math.floor(row.position.x), math.floor(row.position.y))
           .. ">" .. cell(math.floor(row.target_position.x), math.floor(row.target_position.y))]
-        local held_ok, fluid = pcall(function() return box and e.fluidbox[row.fluidbox_index] end)
-        if held_ok and type(fluid) == "table" and type(fluid.name) == "string" then
-          local seeds = V.seeds[i] or {}
-          V.seeds[i] = seeds
-          seeds[box] = seeds[box] or {}
-          seeds[box][fluid.name] = true
+        local held_ok, fluid = pcall(function() return w and e.fluidbox[row.fluidbox_index] end)
+        local held = held_ok and type(fluid) == "table" and type(fluid.name) == "string" and fluid.name or nil
+        if w then
+          local makes = held or fluid_connections.live_role(e, row.fluidbox_index) == "output"
+            and fluid_connections.takes(e, row.fluidbox_index) or nil
+          V.met = V.met or {}
+          V.met[i] = V.met[i] or {}
+          V.met[i][w.slot] = V.met[i][w.slot] or { name = e.name, fluids = {} }
+          if makes then V.met[i][w.slot].fluids[makes] = true end
+          if w.box and held then seed(V, "seeds", i, w.box, held) end
+          if w.box and makes then seed(V, "carry", i, w.box, makes) end
         end
       end
     end
@@ -2071,11 +2109,121 @@ local function underground_seed(ctx, V, i)
   if not best then return end
   local held_ok, fluid = pcall(function() return best.fluidbox[best_box or 1] end)
   if held_ok and type(fluid) == "table" and type(fluid.name) == "string" then
-    local seeds = V.seeds[i] or {}
-    V.seeds[i] = seeds
-    local box = u.box or 0
-    seeds[box] = seeds[box] or {}
-    seeds[box][fluid.name] = true
+    seed(V, "seeds", i, u.box or 0, fluid.name)
+    seed(V, "carry", i, u.box or 0, fluid.name)
+  end
+end
+
+-- The fluid a resource yields when mined (crude oil's), else nil.
+local function resource_fluid(name)
+  local ok, fluid = pcall(function()
+    for _, product in ipairs(prototypes.entity[name].mineable_properties.products or {}) do
+      if product.type == "fluid" then return product.name end
+    end
+  end)
+  return ok and fluid or nil
+end
+
+-- The fluid each box of planned entity i puts into what it meets, where the
+-- plan and the charted map already say (V.sources[i][box]): a crafting
+-- machine's recipe products, an output box with a prototype filter (a
+-- boiler's steam), an offshore pump's liquid at its source tile, the fluid
+-- of a resource under a drill with an output box (a pumpjack's crude oil).
+local function planned_sources(ctx, V, i)
+  local p, out = V.planned[i], {}
+  local ports = V.ports[i] or {}
+  for _, port in ipairs(ports) do
+    if port.role == "output" and port.fluid then out[port.box or 0] = port.fluid end
+  end
+  local kind = p.proto.type
+  if not CRAFTERS[kind] then
+    ctx.calls = ctx.calls + 1
+    pcall(function()
+      for index, box in pairs(p.proto.fluidbox_prototypes) do
+        local filter = box.production_type == "output" and box.filter
+        local name = filter and (type(filter) == "string" and filter or filter.name)
+        if type(name) == "string" then out[tonumber(box.index) or tonumber(index)] = name end
+      end
+    end)
+  end
+  if kind == "offshore-pump" and ports[1] and not ctx.space then
+    ctx.calls = ctx.calls + SURVEY_QUERY
+    local fluid = placement_geometry.pumped_fluid(where(ctx), p.proto, p.position, p.direction)
+    local around = { left_top = { x = p.position.x - 2, y = p.position.y - 2 }, right_bottom = { x = p.position.x + 2, y = p.position.y + 2 } }
+    if fluid and charted(ctx, around) then out[ports[1].box or 0] = fluid end
+  elseif kind == "mining-drill" and ports[1] and fluid_rule(p) == "box" then
+    local r = read_number(function() return p.proto.mining_drill_radius end)
+    local found = r and resources_in(ctx, supply_box(p.position, r), function(name) return mines(p.proto, name) end)
+    local names = {}
+    for name in pairs(found or {}) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+      local fluid = resource_fluid(name)
+      if fluid then out[ports[1].box or 0] = fluid; break end
+    end
+  end
+  if next(out) ~= nil then
+    V.sources = V.sources or {}
+    V.sources[i] = out
+  end
+end
+
+-- The port_fluids rows (V.rows.port_fluids): each port of a planned
+-- crafting machine whose recipe takes or makes a fluid, with its role, the
+-- fluid the recipe puts there (fluid, absent when not known), what it meets
+-- (a planned or standing entity's name, else "nothing") and the fluids that
+-- entity's system carries once built, the port's own output aside: what
+-- standing boxes hold or make and what planned sources put in
+-- (planned_sources); mismatch when one of those is another fluid. A port of
+-- a box the recipe leaves out (closed) is a row only when something meets
+-- it. carry(node) reads a built node's system.
+local function port_rows(ctx, V, carry)
+  local rows = V.rows.port_fluids
+  if not rows then return end
+  local order = {}
+  for i in pairs(V.ports) do order[#order + 1] = i end
+  for i in pairs(V.closed or {}) do if not V.ports[i] then order[#order + 1] = i end end
+  table.sort(order)
+  for _, i in ipairs(order) do
+    local p = V.planned[i]
+    if CRAFTERS[p.proto.type] and p.recipe and uses_fluid(p.recipe) then
+      local met = V.met and V.met[i] or {}
+      local function row(port, slot, closed, own_node)
+        ctx.calls = ctx.calls + 1
+        local name, set, other_node = nil, {}, nil
+        for _, other in ipairs(V.port_at[port.target] or {}) do
+          if other.i ~= i and other.port.target == port.at then
+            name, other_node = V.planned[other.i].name, other.i .. "|" .. (other.port.box or 0)
+            break
+          end
+        end
+        if not name and V.wild[port.target] then name = V.planned[V.tiles[port.target][1]].name end
+        if not name and met[slot] then name = met[slot].name end
+        local own_set = own_node and carry(own_node)
+        if own_set then
+          -- Built, the port's system holds what it meets.
+          local own = V.sources and V.sources[i] and V.sources[i][port.box or 0]
+          for fluid, count in pairs(own_set) do
+            if fluid ~= own or count > 1 then set[fluid] = true end
+          end
+        else
+          for fluid in pairs(other_node and carry(other_node) or {}) do set[fluid] = true end
+          for fluid in pairs(met[slot] and met[slot].fluids or {}) do set[fluid] = true end
+        end
+        if closed and not name then return end
+        local carries, mismatch = {}, nil
+        for fluid in pairs(set) do
+          carries[#carries + 1] = fluid
+          if port.fluid and fluid ~= port.fluid then mismatch = true end
+        end
+        table.sort(carries)
+        rows[#rows + 1] = { name = p.name, x = p.position.x, y = p.position.y, port = { x = port.tx, y = port.ty },
+          role = port.role, fluid = port.fluid or nil, closed = closed or nil, meets = name or "nothing",
+          carries = #carries > 0 and carries or nil, mismatch = mismatch }
+      end
+      for k, port in ipairs(V.ports[i] or {}) do row(port, "p" .. k, false, i .. "|" .. (port.box or 0)) end
+      for k, port in ipairs(V.closed and V.closed[i] or {}) do row(port, "c" .. k, true, nil) end
+    end
   end
 end
 
@@ -2085,6 +2233,10 @@ end
 -- game refuses one that would join two fluids; it is a fluid_mixes failure
 -- and stays out of every system, as the refused placement does. Linear in
 -- the planned ports, charged per entity and per underground tile scanned.
+-- Each system also counts the fluids it will carry (V.carry and
+-- planned_sources), which port_rows reads. A recipe's fluid is no refusal:
+-- 2.0.77 builds a pipe that joins boxes filtered to two fluids (only what
+-- they hold decides), and a filtered box just takes nothing else.
 local function mix_check(ctx, V)
   local order = {}
   for i in pairs(V.ports) do order[#order + 1] = i end
@@ -2094,7 +2246,7 @@ local function mix_check(ctx, V)
     return a < b
   end)
   ctx.calls = ctx.calls + #order
-  local parent, fluids, built = {}, {}, {}
+  local parent, fluids, built, carries = {}, {}, {}, {}
   local function find(k)
     while parent[k] ~= k do k = parent[k] end
     return k
@@ -2142,20 +2294,25 @@ local function mix_check(ctx, V)
       for _, box in ipairs(boxes) do
         local node = i .. "|" .. box
         parent[node] = node
-        local set = {}
+        local set, carried = {}, {}
         for name in pairs(V.seeds[i] and V.seeds[i][box] or {}) do set[name] = true end
+        for name in pairs(V.carry and V.carry[i] and V.carry[i][box] or {}) do carried[name] = 1 end
+        local source = V.sources and V.sources[i] and V.sources[i][box]
+        if source then carried[source] = (carried[source] or 0) + 1 end
         for _, other in ipairs(joins[box]) do
           -- An earlier box of this entity may have taken that system in.
           local r = find(other)
           if r ~= node then
             for name in pairs(fluids[r] or {}) do set[name] = true end
-            parent[r], fluids[r] = node, nil
+            for name, count in pairs(carries[r] or {}) do carried[name] = (carried[name] or 0) + count end
+            parent[r], fluids[r], carries[r] = node, nil, nil
           end
         end
-        fluids[node] = set
+        fluids[node], carries[node] = set, carried
       end
     end
   end
+  port_rows(ctx, V, function(node) return parent[node] and carries[find(node)] end)
 end
 
 local function survey_item(ctx, V, item)
@@ -2163,7 +2320,8 @@ local function survey_item(ctx, V, item)
   local rows = V.rows
   if item.kind == "seed" then
     fluid_seeds(ctx, V, item.i)
-    underground_seed(ctx, V, item.i)
+    if V.ports[item.i] then underground_seed(ctx, V, item.i) end
+    if V.ports[item.i] and V.rows.port_fluids then planned_sources(ctx, V, item.i) end
   elseif item.kind == "mix" then
     mix_check(ctx, V)
   elseif item.kind == "ore" then

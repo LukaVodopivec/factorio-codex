@@ -255,19 +255,24 @@ local function tile(position)
     return math.floor(position.x) .. "," .. math.floor(position.y)
   end
 end
--- What a step acts on: its tile, else the item, recipe, entity or
--- technology it names.
+-- What a step acts on: its tile (or its targets' near point or first
+-- position), else the item, recipe, entity or technology it names; nil when
+-- it names none, so unrelated steps never share a count.
 local function step_target(step)
   local area = type(step.area) == "table" and step.area or nil
+  local targets = type(step.targets) == "table" and step.targets or nil
+  local positions = type(step.positions) == "table" and step.positions or nil
   local named = step.item or step.recipe or step.name or step.technology or step.to
   return tile(step) or tile(step.position) or tile(step.anchor) or tile(step.from) or tile(step.center)
     or tile(type(step.site) == "table" and step.site.near or nil) or tile(area and area.left_top)
-    or (type(named) == "string" and named or "")
+    or tile(targets and (targets.near or targets[1])) or tile(positions and positions[1])
+    or (type(named) == "string" and named or nil)
 end
 local function count_repeat(step, code)
   local repeats = storage.repeats
-  if not (repeats and step and step.action) then return nil end
-  local key = step.action .. "|" .. step_target(step)
+  local target = repeats and step and step.action and step_target(step)
+  if not target then return nil end
+  local key = step.action .. "|" .. target
   local row = repeats.by_key[key]
   if not code then
     if row then repeats.by_key[key], repeats.size = nil, repeats.size - 1 end
@@ -295,6 +300,7 @@ end
 -- journal's row names the step's action.
 local CHANGE_STEPS = { rotate_entity = "rotated", set_recipe = "changed", configure_entity = "changed",
   copy_settings = "changed" }
+-- A direct rotate_entity tool call is the pilot's (journal_step(nil, ...)).
 local function journal_step(plan, step)
   local op = CHANGE_STEPS[step.action]
   if not op or step.platform ~= nil or not storage.journal then return end
@@ -303,7 +309,8 @@ local function journal_step(plan, step)
   local positions = step.action == "copy_settings" and type(step.to) == "table" and step.to or { step }
   for _, at in ipairs(positions) do
     if type(at.x) == "number" and type(at.y) == "number" then
-      journal.note(op, nil, { x = at.x, y = at.y }, surface, plan.source or "pilot", plan.id, step.action)
+      journal.note(op, nil, { x = at.x, y = at.y }, surface, plan and plan.source or "pilot", plan and plan.id,
+        step.action)
     end
   end
 end
@@ -1478,6 +1485,10 @@ local function dispatch(tasks)
   if not ok then finish(task, "failed", errors.record("task:" .. task.type .. ":tick", result)) elseif result then
     factory_activity.record(task.type, result.outcome)
     if TOPOLOGY_TASKS[task.type] then autonomy.mark_dirty() end
+    -- No game event names the mod's own rotation.
+    if task.type == "rotate" and result.status == "done" and type(task.target) == "table" then
+      journal_step(nil, { action = "rotate_entity", x = task.target.x, y = task.target.y })
+    end
     finish(task, result.status, result.detail, nil, result.outcome)
   end
 end

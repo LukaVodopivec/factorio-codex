@@ -638,7 +638,7 @@ body.get_main_inventory = function() return { get_contents = function()
 end } end
 storage.tasks.active = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "build_layout" } },
   source = "package:" .. long(1) }
--- Every alert type the game has, each with many alerts (four rows shown),
+-- Every alert type the game has, each with many alerts (three rows shown),
 -- and own losses on the read surface, each killed by a long-named entity.
 local worst = { reads = 0, stub = package.loaded["scripts.companion"] }
 worst.plain_present = worst.stub.require_present

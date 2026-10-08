@@ -24,8 +24,10 @@ export interface PackageRecord {
   captured?: string[];
   /** Its steps lay tiles or remove entities: a successor waits for its end even after the ledger drops it. */
   changes_ground?: boolean;
-  /** Own buildings in its footprint that changed after its source_tick, read
-   *  from the mod's change journal as it was queued: a fact, never a refusal. */
+  /** Changes to own buildings in its footprint after its source_tick, read
+   *  from the mod's change journal as it was queued: count is at least how
+   *  many (a merged row counts each change it covers, an omitted row one);
+   *  a fact, never a refusal. */
   footprint_changed?: FootprintChanged;
 }
 export interface FootprintChanged { count: number; changes: unknown[] }
@@ -299,16 +301,17 @@ export function packageFootprint(entry: BuildPackage): { left_top: Point; right_
   return { left_top: { x: Math.min(...xs) - FOOTPRINT_PAD, y: Math.min(...ys) - FOOTPRINT_PAD },
     right_bottom: { x: Math.max(...xs) + FOOTPRINT_PAD, y: Math.max(...ys) + FOOTPRINT_PAD } };
 }
-/** Own buildings in a package's footprint that changed after its
- *  source_tick (the mod's change journal: up to three rows, and how many
- *  matched), or undefined when none did or the journal could not be read:
+/** Changes to own buildings in a package's footprint after its source_tick
+ *  (the mod's change journal: up to three rows, and at least how many
+ *  changes matched), or undefined when none did or the journal could not be read:
  *  the check only reports, it never holds a package. */
 async function footprintChanges(b: Bridge, entry: BuildPackage): Promise<FootprintChanged | undefined> {
   try {
     const answer = await b.call<{ changes?: { rows?: unknown; omitted?: number } }>("activity_log", { limit: 1,
       changes: { since_tick: entry.source_tick, area: packageFootprint(entry), surface: entry.surface, limit: 3 } });
-    const rows = luaArray(answer?.changes?.rows ?? []) as unknown[];
-    return rows.length > 0 ? { count: rows.length + (answer?.changes?.omitted ?? 0), changes: rows } : undefined;
+    const rows = luaArray(answer?.changes?.rows ?? []) as Array<{ count?: number }>;
+    const count = rows.reduce((sum, row) => sum + (typeof row?.count === "number" ? row.count : 1), answer?.changes?.omitted ?? 0);
+    return rows.length > 0 ? { count, changes: rows } : undefined;
   } catch { return undefined; }
 }
 

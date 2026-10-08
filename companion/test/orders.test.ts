@@ -130,10 +130,13 @@ describe("package auto-queue", () => {
     const dir = runDir();
     writeLedger(dir, 1, [furnaces("iron-a"), furnaces("iron-b")]);
     const row = { tick: 50, op: "removed", name: "stone-furnace", by: "human", surface: "nauvis", position: { x: 1.5, y: 2.5 } };
+    // A merged row stands for each change it covers.
+    const merged = { tick: 60, op: "built", name: "transport-belt", by: "human", surface: "nauvis", count: 5,
+      area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 4, y: 0 } } };
     const asked: unknown[] = [];
     const { call, bridge } = fakeBridge({ activity_log: (params) => {
       asked.push(params);
-      return asked.length === 1 ? { tick: 900, entries: {}, omitted: 0, changes: { rows: [row], omitted: 2, size: 200 } }
+      return asked.length === 1 ? { tick: 900, entries: {}, omitted: 0, changes: { rows: [row, merged], omitted: 2, size: 200 } }
         : (() => { throw new ModError("unknown method"); })();
     } });
     await createPackageQueue(() => dir, bridge).tick();
@@ -141,7 +144,7 @@ describe("package auto-queue", () => {
       area: { left_top: { x: -3, y: -3 }, right_bottom: { x: 4.5, y: 5.5 } } } });
     expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:iron-a", "package:iron-b"]);
     const records = readPackageQueue(dir)!.packages;
-    expect(records["iron-a"]).toMatchObject({ status: "queued", footprint_changed: { count: 3, changes: [row] } });
+    expect(records["iron-a"]).toMatchObject({ status: "queued", footprint_changed: { count: 8, changes: [row, merged] } });
     // A journal that cannot be read (an older mod) records nothing and holds nothing.
     expect(records["iron-b"]).toMatchObject({ status: "queued" });
     expect(records["iron-b"]).not.toHaveProperty("footprint_changed");

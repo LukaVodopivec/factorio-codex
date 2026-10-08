@@ -39,6 +39,15 @@ local function get(ring, size, back)
   return ring.rows[(ring.n - 1 - back) % size + 1]
 end
 
+-- A merge moves a row's tick forward, so reads order rows (given oldest
+-- slot first, at most a ring's size) by tick, keeping slot order on a tie.
+local function by_tick(rows)
+  local slot = {}
+  for index, row in ipairs(rows) do slot[row] = index end
+  table.sort(rows, function(a, b) return a.tick < b.tick or a.tick == b.tick and slot[a] < slot[b] end)
+  return rows
+end
+
 local function read(fn)
   local ok, value = pcall(fn)
   if ok then return value end
@@ -125,7 +134,8 @@ end
 function M.on_removed(event)
   if event.entity then M.record("removed", event.entity, event) end
 end
--- on_player_rotated_entity, on_player_flipped_entity: always a player's.
+-- on_player_rotated_entity, on_player_flipped_entity (a flip is a rotated
+-- row too): always a player's.
 function M.on_rotated(event)
   if event.entity then M.record("rotated", event.entity, event) end
 end
@@ -134,8 +144,7 @@ function M.on_settings_pasted(event)
   if event.destination then M.record("changed", event.destination, event) end
 end
 
--- on_entity_died, registered for the player force and no ghosts: an own
--- entity was destroyed. Kept as a loss and a journal row whose by is what
+-- on_entity_died (no ghosts): an own entity was destroyed. Kept as a loss and a journal row whose by is what
 -- killed it (the cause's name, else the killing force, else unknown).
 function M.on_entity_died(event)
   local entity = event.entity
@@ -189,7 +198,7 @@ function M.losses(since_tick, surface_index)
       rows[#rows + 1] = loss_row(row, names)
     end
   end
-  return rows
+  return by_tick(rows)
 end
 
 -- event_state's fields: the newest loss's tick and the last few losses.
@@ -198,15 +207,17 @@ function M.loss_state()
   if not (ring and ring.last_tick) then return nil, nil end
   local rows, names = {}, {}
   for back = math.min(ring.n, M.SHOWN_LOSSES) - 1, 0, -1 do rows[#rows + 1] = loss_row(get(ring, M.LOSS_SIZE, back), names) end
-  return ring.last_tick, rows
+  return ring.last_tick, by_tick(rows)
 end
 
 -- factory_status problem rows for one surface's losses: status destroyed,
--- newer than since_tick (else the last LOSS_WINDOW_TICKS), the newest
+-- at or after since_tick as autonomy's problems (else the last
+-- LOSS_WINDOW_TICKS), the newest
 -- `limit` (default all) newest first, killed_by the killer's name (else its
 -- force). Returns the rows and how many were left out.
 function M.problem_rows(surface_index, since_tick, limit)
-  local rows, losses = {}, M.losses(since_tick or math.max(-1, game.tick - M.LOSS_WINDOW_TICKS), surface_index)
+  local rows, losses = {}, M.losses(since_tick and since_tick - 1 or math.max(-1, game.tick - M.LOSS_WINDOW_TICKS),
+    surface_index)
   for index = #losses, math.max(1, #losses - (limit or #losses) + 1), -1 do
     local row = losses[index]
     rows[#rows + 1] = { status = "destroyed", name = row.name, position = row.position, count = row.count,
@@ -251,6 +262,7 @@ function M.changes(params)
       matched[#matched + 1] = row
     end
   end
+  by_tick(matched)
   local omitted = math.max(0, #matched - limit)
   local rows = {}
   for index = omitted + 1, #matched do

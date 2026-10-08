@@ -286,10 +286,9 @@ script.on_event(defines.events.on_robot_pre_mined, tasks.on_robot_pre_mined)
 -- Own entities built, cloned, mined or destroyed by anyone keep the registry
 -- current; machines among them refresh the factory lines; the change journal
 -- notes who did it (journal.lua). Ghosts are filtered out: none of these
--- keeps them. Deaths are filtered to the player force (the own force), and
--- are also the own losses.
+-- keeps them. An own entity's death is also an own loss; the handlers check
+-- the own force themselves, since it is the registry's, not fixed at load.
 local NO_GHOSTS = { { filter = "ghost", invert = true } }
-local OWN_DEATHS = { { filter = "force", force = "player" }, { filter = "ghost", invert = true, mode = "and" } }
 local function journaled(where, handler, event)
   local ok, err = pcall(handler, event)
   if not ok then errors.record("event:" .. where, err) end
@@ -314,10 +313,11 @@ for _, name in ipairs({ "on_player_mined_entity", "on_robot_mined_entity", "on_s
       registry.on_removed(event)
       autonomy.on_entity_changed(event)
       journaled(name, died and journal.on_entity_died or journal.on_removed, event)
-    end, died and OWN_DEATHS or NO_GHOSTS)
+    end, NO_GHOSTS)
   end
 end
--- A player's rotation, flip or settings paste: changes the journal notes.
+-- A player's rotation, flip (journaled as rotated) or settings paste:
+-- changes the journal notes.
 for name, handler in pairs({ on_player_rotated_entity = journal.on_rotated, on_player_flipped_entity = journal.on_rotated,
   on_entity_settings_pasted = journal.on_settings_pasted }) do
   if defines.events[name] then

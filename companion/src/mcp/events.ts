@@ -87,11 +87,17 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   // Space events after since_tick, or (without it) after the call started.
   const spaceSeen = since ?? previous.last_space_event_tick ?? -1;
   const newSpace = (state: EventState) => (luaArray(state.space_events ?? []) as SpaceEvent[]).filter((row) => row.tick > spaceSeen);
-  // Space events never get lost behind another event: they ride along, since
-  // the caller's next since_tick is the returned tick.
+  // Own losses after since_tick, or (without it) after the call started; a
+  // merged row comes again with its new count.
+  const lossSeen = since ?? previous.last_loss_tick ?? -1;
+  const newLosses = (state: EventState) => (luaArray(state.losses ?? []) as LossRow[]).filter((row) => row.tick > lossSeen);
+  // Space events and losses never get lost behind another event: they ride
+  // along, since the caller's next since_tick is the returned tick.
   const done = (event: string, state: EventState, details: Record<string, unknown> = {}) => {
     const space = (SPACE_EVENTS as readonly string[]).includes(event) ? [] : newSpace(state);
-    return { event, ...details, ...(space.length > 0 ? { space_events: space } : {}), tick: state.tick,
+    const losses = event === "entities_lost" ? [] : newLosses(state);
+    return { event, ...details, ...(space.length > 0 ? { space_events: space } : {}),
+      ...(losses.length > 0 ? { losses } : {}), tick: state.tick,
       body: { active_plan_id: state.active_plan_id ?? null, queue_depth: state.queue_depth,
         fifo_empty: state.fifo_empty, human_hold: state.human_hold } };
   };
@@ -115,10 +121,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
         outcomes: luaArray(status?.outcomes ?? []), inventory_delta: record(status?.inventory_delta), ...finished });
     } catch { return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...surface, ...finished }); }
   };
-  // Own losses after a tick: the rows of the mod's ring changed since then
-  // (a merged row comes again with its new count).
-  const lost = (after: number, state: EventState) =>
-    done("entities_lost", state, { losses: (luaArray(state.losses ?? []) as LossRow[]).filter((row) => row.tick > after) });
+  const lost = (state: EventState) => done("entities_lost", state, { losses: newLosses(state) });
   const researched = (state: EventState) => done("research_finished", state, { technology: state.last_research_finished!.technology,
     research_tick: state.last_research_finished!.tick, ...idleResearch(state) });
   // The problem tick counts machines on every surface: the body's surface's
@@ -156,7 +159,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if (last && last.tick > since) return ended(previous, last, research);
     if ((previous.last_research_finished?.tick ?? -1) > since) return researched(previous);
     if ((previous.last_problem_tick ?? -1) > since) return problems(since, previous);
-    if ((previous.last_loss_tick ?? -1) > since) return lost(since, previous);
+    if ((previous.last_loss_tick ?? -1) > since) return lost(previous);
     const space = spaceEvent(previous);
     if (space) return space;
   }
@@ -182,7 +185,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if (newResearch) return researched(state);
     if (state.human_hold !== previous.human_hold) return done(state.human_hold ? "human_hold_started" : "human_hold_ended", state);
     if ((state.last_problem_tick ?? -1) > (previous.last_problem_tick ?? -1)) return problems(previous.tick, state);
-    if ((state.last_loss_tick ?? -1) > (previous.last_loss_tick ?? -1)) return lost(previous.last_loss_tick ?? -1, state);
+    if ((state.last_loss_tick ?? -1) > (previous.last_loss_tick ?? -1)) return lost(state);
     const space = spaceEvent(state);
     if (space) return space;
     const failed = undelivered(state);
@@ -234,6 +237,8 @@ export function lossText(row: LossRow): string {
   const by = row.killed_by?.name ?? row.killed_by?.force;
   return `${row.count} ${row.name} at ${at(row.position)}${row.surface ? ` on ${row.surface}` : ""}${by ? ` by ${by}` : ""}`;
 }
+const lossesText = (rows: LossRow[]) => `own entities destroyed: ${rows.slice(0, 2).map(lossText).join("; ") || "?"}`
+  + (rows.length > 2 ? `; ${rows.length - 2} more rows` : "");
 /** A plan's outcomes that repeat an earlier step's code at the same action
  *  and target: "<code> again at <action> (<n>th time)". */
 function repeatText(outcomes: unknown): string {
@@ -255,10 +260,7 @@ function eventText(value: Record<string, unknown>): string {
       return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`
         + (researchIdleProblem(value.problems) ? `; ${RESEARCH_IDLE}` : "") + facts.map((text) => `; ${text}`).join("");
     }
-    case "entities_lost": {
-      const rows = Array.isArray(value.losses) ? value.losses as LossRow[] : [];
-      return `own entities destroyed: ${rows.slice(0, 2).map(lossText).join("; ") || "?"}${rows.length > 2 ? `; ${rows.length - 2} more rows` : ""}`;
-    }
+    case "entities_lost": return lossesText(Array.isArray(value.losses) ? value.losses as LossRow[] : []);
     case "queue_empty": return typeof value.upkeep_off_since_tick === "number"
       ? `${IDLE_NOW}; upkeep off since stop at tick ${value.upkeep_off_since_tick} until a plan finishes` : IDLE_NOW;
     case "orders_changed": return "the strategist's orders changed";
@@ -282,7 +284,9 @@ function eventText(value: Record<string, unknown>): string {
 export function eventSummary(value: Record<string, unknown>): string {
   const space = Array.isArray(value.space_events) ? value.space_events.length : 0;
   const along = space > 0 && !(SPACE_EVENTS as readonly string[]).includes(String(value.event));
-  const text = `${eventText(value)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`;
+  const lost = value.event !== "entities_lost" && Array.isArray(value.losses) ? value.losses as LossRow[] : [];
+  const text = `${eventText(value)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`
+    + (lost.length > 0 ? `; ${lossesText(lost)}` : "");
   const body = value.body as { fifo_empty?: boolean; human_hold?: boolean } | undefined;
   const idle = body?.fifo_empty === true && body.human_hold !== true;
   return idle && !["queue_empty", "cancelled", "human_hold_started"].includes(String(value.event)) ? `${text}; ${IDLE_NOW}` : text;

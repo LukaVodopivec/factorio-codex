@@ -413,11 +413,22 @@ describe("next_event own losses and repeated outcomes", () => {
     expect(await waitForEvent(game([state]).bridge, input({ since_tick: 220 }), quiet(), undefined, fakeClock()))
       .toMatchObject({ event: "entities_lost", losses: [panel] });
     const ended = { ...state, last_plan_ended: { plan_id: 5, status: "completed", tick: 235 } };
-    expect(await waitForEvent(game([ended]).bridge, input({ since_tick: 220 }), quiet(), undefined, fakeClock()))
-      .toMatchObject({ event: "plan_ended", plan_id: 5 });
+    const first = await waitForEvent(game([ended]).bridge, input({ since_tick: 220 }), quiet(), undefined, fakeClock());
+    expect(first).toMatchObject({ event: "plan_ended", plan_id: 5, losses: [panel] });
+    expect(eventSummary(first)).toContain("; own entities destroyed: 1 solar-panel at (0, 0) on platform:1 by enemy");
     // An older mod has no loss fields: nothing changes.
     expect(await waitForEvent(game([busy]).bridge, { timeout_seconds: 1, since_tick: 100 }, quiet(), undefined, fakeClock()))
       .toMatchObject({ event: "timeout" });
+  });
+
+  it("carries losses on another event in the same poll, so the next since_tick cannot skip them", async () => {
+    let index = 0;
+    const before = { ...busy, last_loss_tick: 120, losses: [{ ...belts, tick: 120 }] };
+    const samples = [before, { ...before, tick: 240, last_problem_tick: 230, last_loss_tick: 230, losses: [{ ...belts, tick: 120 }, panel] }];
+    const call = vi.fn(async (method: string) => method === "factory_status" ? { tick: 240, problems: [] }
+      : samples[Math.min(index++, samples.length - 1)]);
+    const event = await waitForEvent({ call } as unknown as Bridge, input(), quiet(), undefined, fakeClock());
+    expect(event).toMatchObject({ event: "new_problem", losses: [panel], tick: 240 });
   });
 
   it("says when a plan's step repeats the same code at the same target", () => {

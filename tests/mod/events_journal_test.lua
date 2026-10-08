@@ -30,7 +30,7 @@ dofile(here .. "/body_stub.lua")(stub, function() return body end)
 -- from own stores is reported to the draw listener tasks.lua set.
 local results = {}
 local function runner(kind) return { start = function() end, tick = function()
-  local result = kind == "place" and table.remove(results, 1) or { status = "done", detail = kind .. " done" }
+  local result = (kind == "place" or kind == "insert") and table.remove(results, 1) or { status = "done", detail = kind .. " done" }
   if result.take then draw(result.take[1], result.take[2]); result.take = nil end
   if result.use then carried[result.use[1]] = carried[result.use[1]] - result.use[2]; result.use = nil end
   return result
@@ -99,6 +99,19 @@ for i = 1, tasks.MAX_REPEAT_KEYS + 5 do
   run({ steps = { { action = "place_entity", name = "pipe", x = 100 + i, y = 1 } } })
 end
 check(storage.repeats.size == tasks.MAX_REPEAT_KEYS, "the counter keeps at most MAX_REPEAT_KEYS targets")
+local function feed(targets)
+  results = { shortfall() }
+  return run({ steps = { { action = "insert_items", targets = targets, items = { coal = 5 } } } }).outcomes[1]["repeat"]
+end
+local furnaces_a = { name = "stone-furnace", near = { x = 40, y = 40 }, radius = 5 }
+check(feed(furnaces_a) == nil and feed({ name = "stone-furnace", near = { x = -40, y = 40 }, radius = 5 }) == nil
+  and feed(furnaces_a) == 2 and feed({ { x = 60, y = 1 }, { x = 61, y = 1 } }) == nil
+  and feed({ { x = 60.5, y = 1.5 } }) == 2,
+  "multi-target steps count at their near point or first position, never sharing one counter")
+local size = storage.repeats.size
+results = { shortfall() }
+check(run({ steps = { { action = "insert_items", items = { coal = 5 } } } }).outcomes[1]["repeat"] == nil
+  and storage.repeats.size == size, "a step naming no target is not counted")
 
 -- The journal: a plan step's change names the plan and its action.
 local rotate = run({ steps = { { action = "rotate_entity", x = 4.5, y = 4.5 } }, source = "package:belts" })
@@ -107,6 +120,12 @@ check(#changes.rows == 1 and changes.rows[1].op == "rotated" and changes.rows[1]
   and changes.rows[1].by == "package:belts" and changes.rows[1].plan_id == rotate.plan_id
   and changes.rows[1].surface == "nauvis" and changes.rows[1].position.x == 4.5 and changes.size == journal.SIZE,
   "a rotate step's change names its package and plan in the journal")
+
+tasks.enqueue({ task = { type = "rotate", target = { x = 6.5, y = 4.5 } } })
+for _ = 1, 3 do game.tick = game.tick + 1; tasks.on_tick() end
+local direct = tasks.activity_log({ limit = 1, changes = { limit = 1 } }).changes.rows[1]
+check(direct and direct.op == "rotated" and direct.by == "pilot" and direct.plan_id == nil and direct.position.x == 6.5,
+  "a direct rotate_entity call is journaled as the pilot's")
 
 local function entity(name, x, y, force, surface)
   return { valid = true, name = name, type = name, position = { x = x, y = y }, surface = surface or nauvis,
@@ -151,6 +170,14 @@ for i = 1, journal.SIZE + 10 do journal.note("built", "pipe-" .. i, { x = i, y =
 local all = tasks.activity_log({ limit = 1, changes = { limit = 64 } }).changes
 check(#all.rows == 64 and all.omitted == journal.SIZE - 64 and all.rows[64].name == "pipe-" .. (journal.SIZE + 10),
   "the journal is a fixed ring of SIZE rows, newest kept")
+game.tick = game.tick + 1
+journal.note("built", "wall", { x = 0, y = 9 }, 1, "human")
+journal.note("built", "gate", { x = 1, y = 9 }, 1, "human")
+game.tick = game.tick + 1
+journal.note("built", "wall", { x = 2, y = 9 }, 1, "human")
+local ordered = tasks.activity_log({ limit = 1, changes = { limit = 2 } }).changes.rows
+check(ordered[1].name == "gate" and ordered[2].name == "wall" and ordered[2].count == 2 and ordered[2].tick == game.tick,
+  "a row a merge moved forward reads in tick order")
 
 -- Losses: own deaths only, merged, with what killed them.
 local train = { valid = true, name = "locomotive", type = "locomotive" }
@@ -168,8 +195,9 @@ check(loss_tick == 1020 and #losses == 2 and losses[1].name == "transport-belt" 
   and losses[2].surface == "platform:1" and losses[2].killed_by.force == "enemy",
   "own deaths are kept as merged losses with what killed them; another force's are not")
 local problem = journal.problem_rows(1, nil)
-check(#problem == 1 and problem[1].status == "destroyed" and problem[1].count == 2 and #journal.problem_rows(1, 1010) == 0
-  and #journal.problem_rows(2, nil) == 1, "losses are destroyed problem rows of their own surface, since a tick")
+check(#problem == 1 and problem[1].status == "destroyed" and problem[1].count == 2 and #journal.problem_rows(1, 1010) == 1
+  and #journal.problem_rows(1, 1011) == 0 and #journal.problem_rows(2, nil) == 1,
+  "losses are destroyed problem rows of their own surface, at or after since_tick as other problems")
 game.tick = 1020 + journal.LOSS_WINDOW_TICKS + 1
 check(#journal.problem_rows(1, nil) == 0, "without since_tick only the last five minutes of losses are problems")
 local died = tasks.activity_log({ limit = 1, changes = { since_tick = 999 } }).changes.rows

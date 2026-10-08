@@ -36,16 +36,7 @@ local function charted(force, surface, pos, platform)
   return surfaces.charted(force, surface, math.floor(pos.x / 32), math.floor(pos.y / 32), platform)
 end
 
-local function footprint_charted(force, surface, area, platform)
-  local chunks = {
-    { x = area.left_top.x, y = area.left_top.y },
-    { x = area.right_bottom.x - 0.001, y = area.left_top.y },
-    { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
-    { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 },
-  }
-  for _, corner in ipairs(chunks) do if not charted(force, surface, corner, platform) then return false end end
-  return true
-end
+local footprint_charted = surfaces.footprint_charted
 
 local function terrain(force, surface, proto, area, platform)
   if proto.type == "offshore-pump" then return "offshore" end

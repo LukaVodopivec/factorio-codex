@@ -714,6 +714,13 @@ local function can_place_one(c, surface, item, position, direction)
     position = { x = pos.x, y = pos.y },
     direction = direction,
   }
+  -- The whole footprint, not only its centre, must be charted: an answer
+  -- about a box reaching into uncharted land would reveal its terrain.
+  if not surfaces.footprint_charted(c.force, surface, placement_geometry.footprint(entity_proto, pos, direction)) then
+    identity.can_place, identity.code = false, "UNCHARTED"
+    identity.reason = "the footprint reaches uncharted terrain — chart it first"
+    return identity
+  end
   -- The planet's (or platform's) conditions come first: no spot there helps.
   local broken = placement_geometry.surface_condition(surface, entity_proto.surface_conditions)
   if broken then

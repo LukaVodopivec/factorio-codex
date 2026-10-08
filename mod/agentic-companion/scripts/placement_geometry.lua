@@ -261,6 +261,9 @@ local function mask_overlap(a, b, tile)
   for layer in pairs(a.layers) do if b.layers[layer] then return true end end
   return false
 end
+-- Whether two CollisionMasks collide (entity against entity, or tile with
+-- `tile`); nil when either mask is unknown.
+M.mask_overlap = mask_overlap
 
 function M.path_start(c)
   local result = { clear = false, state = "unknown", collisions = {} }

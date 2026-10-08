@@ -10,6 +10,7 @@
 --                     at `at` (an empty box overlaps nothing)
 --   charted(...)      the force's chart, where a space platform's surface
 --                     counts as charted (the platform window shows all of it)
+--   footprint_charted whether every chunk an area touches is charted
 -- Factory surfaces (every surface with own entities) come from the registry
 -- (registry.surfaces); this module reads no entity.
 local companion = require("scripts.companion")
@@ -48,6 +49,21 @@ function M.charted(force, surface, cx, cy, platform)
   if platform == nil then platform = M.is_platform(surface) end
   if platform then return true end
   return read(function() return force.is_chunk_charted(surface, { x = cx, y = cy }) end) == true
+end
+
+-- Whether every chunk an area ({left_top, right_bottom}) touches is charted:
+-- its four corners, which cover all of an area at most 32 tiles a side.
+function M.footprint_charted(force, surface, area, platform)
+  local corners = {
+    { x = area.left_top.x, y = area.left_top.y },
+    { x = area.right_bottom.x - 0.001, y = area.left_top.y },
+    { x = area.left_top.x, y = area.right_bottom.y - 0.001 },
+    { x = area.right_bottom.x - 0.001, y = area.right_bottom.y - 0.001 },
+  }
+  for _, corner in ipairs(corners) do
+    if not M.charted(force, surface, math.floor(corner.x / 32), math.floor(corner.y / 32), platform) then return false end
+  end
+  return true
 end
 
 -- The canonical reference of a surface ("nauvis", "platform:3").

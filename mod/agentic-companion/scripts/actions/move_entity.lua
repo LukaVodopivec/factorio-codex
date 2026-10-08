@@ -104,12 +104,21 @@ local function blocked(c, e, proto, to, direction)
     local ok, why = placement_geometry.can_place(c, proto, to, direction)
     if ok or why == "CODEX_BODY_OVERLAP" then return nil end
   end
-  local mask_ok, layers = pcall(function() return proto.collision_mask.layers end)
-  layers = mask_ok and type(layers) == "table" and layers or nil
-  local found_ok, found = pcall(c.surface.find_entities_filtered, { area = area, collision_mask = layers, limit = 33 })
+  local mask_ok, mask = pcall(function() return proto.collision_mask end)
+  mask = mask_ok and type(mask) == "table" and mask or nil
+  local layers = mask and type(mask.layers) == "table" and mask.layers or nil
+  local tiles = { left_top = { x = math.floor(area.left_top.x), y = math.floor(area.left_top.y) },
+    right_bottom = { x = math.ceil(area.right_bottom.x), y = math.ceil(area.right_bottom.y) } }
+  -- Every entity on the footprint, then only those whose mask collides with
+  -- the entity's: the engine's layer filter once dropped a belt standing there.
+  -- An unknown mask counts as colliding. Ore adds at most one row a tile.
+  local found_ok, found = pcall(c.surface.find_entities_filtered, { area = area,
+    limit = 33 + (tiles.right_bottom.x - tiles.left_top.x) * (tiles.right_bottom.y - tiles.left_top.y) })
   local natural = false
   for _, other in ipairs(found_ok and found or {}) do
-    if other.valid and other ~= c and other ~= e and not placement_geometry.NON_BLOCKING_TYPES[other.type] then
+    local other_ok, other_mask = pcall(function() return other.prototype.collision_mask end)
+    if other.valid and other ~= c and other ~= e and not placement_geometry.NON_BLOCKING_TYPES[other.type]
+      and placement_geometry.mask_overlap(mask, other_ok and other_mask or nil, false) ~= false then
       if not NATURAL[other.type] then
         return string.format("%s stands at (%.1f, %.1f)", other.name, other.position.x, other.position.y)
       end
@@ -117,8 +126,6 @@ local function blocked(c, e, proto, to, direction)
     end
   end
   -- Water or other tiles the entity collides with, over every tile it covers.
-  local tiles = { left_top = { x = math.floor(area.left_top.x), y = math.floor(area.left_top.y) },
-    right_bottom = { x = math.ceil(area.right_bottom.x), y = math.ceil(area.right_bottom.y) } }
   local tiles_ok, wet = pcall(c.surface.count_tiles_filtered, { area = tiles,
     collision_mask = layers or "water_tile", limit = 1 })
   if tiles_ok and wet > 0 then return "the ground there is water or otherwise unbuildable" end

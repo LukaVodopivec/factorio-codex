@@ -129,6 +129,8 @@ retried after the hold.
   that meets nothing).
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
+- `inspect_entity` gives belt `lanes` and `lane_mix`, inserter `holding`;
+  `trace: up|down` walks belt lanes to their sources.
 - `platform_status` is your platform screen: state, location, hub slots and
   requests. `detail: "full"` for one platform adds its foundation, hub
   contents, entities, and `ghosts.missing`: what must still go up.

@@ -54,7 +54,8 @@ class AgentAppContractTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["schema"], "repo-agent-app-describe/v2")
         self.assertEqual(payload["resource_identity"], "factorio-codex")
-        self.assertEqual(set(payload["profiles"]), {"focused", "quick", "full"})
+        self.assertEqual(set(payload["profiles"]), {"focused", "quick", "full", "live"})
+        self.assertNotIn("scheduled_safe", payload["profiles"]["live"])
         quick = payload["profiles"]["quick"]
         self.assertIs(quick["scheduled_safe"], True)
         self.assertEqual(quick["evidence_tier"], "readiness")
@@ -119,6 +120,29 @@ class AgentAppContractTests(unittest.TestCase):
                 ["npm", "run", "test:package"],
             ],
         )
+
+    def test_live_runs_the_opt_in_suite_with_a_required_executable(self) -> None:
+        app = load_agent_app()
+        self.assertEqual(app.PROFILE_COMMANDS["live"], [["npm", "run", "test:live"]])
+        prepared = ROOT / "prepared-snapshot"
+        npm = (["/node", "/npm-cli.js"], Path("/npm-bin"))
+        for executable in ("/opt/factorio/bin/x64/factorio", None):
+            with self.subTest(executable=executable):
+                with (
+                    mock.patch.object(app, "resolve_native_root", return_value=ROOT),
+                    mock.patch.object(app, "resolve_npm_command", return_value=npm),
+                    mock.patch.object(app, "prepare_workspace", return_value=prepared),
+                    mock.patch.object(app, "factorio_executable", return_value=executable),
+                    mock.patch.object(app, "execute_command", return_value=0) as execute,
+                ):
+                    payload, code = app.verify_payload("live", None)
+                self.assertEqual(code, 0)
+                self.assertEqual(payload["status"], "pass")
+                command, environment, cwd = execute.call_args.args
+                self.assertEqual(command, ["/node", "/npm-cli.js", "run", "test:live"])
+                self.assertEqual(cwd, prepared)
+                self.assertEqual(environment["FACTORIO_LIVE_REQUIRED"], "1")
+                self.assertEqual(environment.get("FACTORIO_BIN"), executable)
 
     def test_quick_executes_all_commands_from_prepared_snapshot(self) -> None:
         app = load_agent_app()
@@ -253,7 +277,7 @@ class AgentAppContractTests(unittest.TestCase):
                         (owner / relative).write_text("same\n", encoding="utf-8")
 
     def test_targeted_verification_is_rejected_without_running_checks(self) -> None:
-        for profile in ("focused", "quick", "full"):
+        for profile in ("focused", "quick", "full", "live"):
             with self.subTest(profile=profile):
                 completed = run_app("verify", "--profile", profile, "--target", "README.md")
                 self.assertEqual(completed.returncode, 2, completed.stderr)

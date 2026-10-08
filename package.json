@@ -11,6 +11,7 @@
     "test": "npm run test:unit && npm run test:mod && npm run test:package",
     "test:unit": "npm run test -w companion",
     "test:mcp": "npm run test:mcp -w companion",
+    "test:live": "npm run test:live -w companion",
     "typecheck": "npm run typecheck -w companion",
     "package:mod": "bash scripts/package-mod.sh",
     "test:mod": "bash scripts/run-mod-tests.sh",

@@ -53,7 +53,16 @@ PROFILE_COMMANDS = {
         ["npm", "run", "test:mcp:built", "-w", "companion"],
         ["npm", "run", "test:package"],
     ],
+    # Opt-in: a throwaway headless Factorio server; never scheduled or in CI.
+    "live": [["npm", "run", "test:live"]],
 }
+# The Linux Steam installs companion/src/setup/locate.ts also tries, under the
+# account home (verification runs with a temporary HOME).
+FACTORIO_STEAM_EXECUTABLES = (
+    ".steam/debian-installation/steamapps/common/Factorio/bin/x64/factorio",
+    ".local/share/Steam/steamapps/common/Factorio/bin/x64/factorio",
+    ".steam/steam/steamapps/common/Factorio/bin/x64/factorio",
+)
 QUICK_NOT_EXERCISED = [
     "live Factorio game and native client behavior",
     "live RCON, MCP clients, and network services",
@@ -106,6 +115,19 @@ PROFILE_METADATA = {
         ],
         "not_exercised": [
             item for item in QUICK_NOT_EXERCISED if item != "mod package archive layout"
+        ],
+    },
+    "live": {
+        "typical_runtime_seconds": 90,
+        "required_services": ["factorio-2.0-executable"],
+        "target_mode": "forbidden",
+        "scope_selection": "opt-in-headless-live-smoke",
+        "evidence_tier": "readiness",
+        "evidence_classes": ["headless-factorio-live-scenarios"],
+        "not_exercised": [
+            "native client, Codex character and charting",
+            "MCP clients and role sessions",
+            "persistent gameplay state",
         ],
     },
 }
@@ -250,6 +272,17 @@ def owner_dependencies_ready(native_root: Path | None) -> bool:
         and os.access(modules / ".bin" / executable, os.X_OK)
         for executable in REQUIRED_DEPENDENCY_EXECUTABLES
     )
+
+
+def factorio_executable() -> str | None:
+    """FACTORIO_BIN, else a standard Linux Steam install of the account."""
+    candidates = [os.environ.get("FACTORIO_BIN", "")]
+    try:
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        candidates += [str(home / relative) for relative in FACTORIO_STEAM_EXECUTABLES]
+    except KeyError:
+        pass
+    return next((candidate for candidate in candidates if candidate and Path(candidate).is_file()), None)
 
 
 def describe_payload() -> dict[str, object]:
@@ -547,7 +580,7 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
     with tempfile.TemporaryDirectory(prefix="factorio-agent-app-") as temporary_name:
         temporary = Path(temporary_name)
         npm_bin: Path | None = None
-        if profile in ("quick", "full"):
+        if profile in ("quick", "full", "live"):
             native_root = resolve_native_root()
             npm = resolve_npm_command()
             try:
@@ -580,6 +613,12 @@ def verify_payload(profile: str, target: str | None) -> tuple[dict[str, object],
                     1,
                 )
         environment = verification_environment(temporary, npm_bin)
+        if profile == "live":
+            # A missing executable fails the profile instead of skipping.
+            environment["FACTORIO_LIVE_REQUIRED"] = "1"
+            executable = factorio_executable()
+            if executable is not None:
+                environment["FACTORIO_BIN"] = executable
         last_exit = 0
         for index, command in enumerate(PROFILE_COMMANDS[profile], start=1):
             resolved = [*npm_command, *command[1:]] if command[0] == "npm" and npm_command else command

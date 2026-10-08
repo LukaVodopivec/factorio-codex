@@ -40,7 +40,7 @@ export const toolPayloads = {
     ...(location ? { location } : {}), ...(recipe_choices ? { recipe_choices } : {}),
     ...(flow_precision ? { flow_precision } : {}), ...(planet ? { planet } : {}),
     ...(per_minute ? { per_minute } : {}), ...(fuel ? { fuel } : {}) }),
-  connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground, joins, check_only }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false; joins?: boolean; check_only?: boolean }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }), ...(joins ? { joins: true } : {}), ...(check_only ? { check_only: true } : {}) }),
+  connectEntities: ({ kind, prototype, from, to, via, max_length, fluid, underground, joins, check_only }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; via?: Array<{ x: number; y: number }>; max_length: number; fluid?: string; underground?: string | false; joins?: boolean; check_only?: boolean }) => ({ kind, prototype, from, to, ...(via === undefined ? {} : { via }), max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }), ...(joins ? { joins: true } : {}), ...(check_only ? { check_only: true } : {}) }),
 };
 
 export function normalizeCanPlace(value: any, placements: Array<{ name: string; x: number; y: number; direction?: number }>): any {
@@ -322,7 +322,11 @@ export function normalizeProductionRequirements(value: any): any {
 }
 
 export function normalizePhysicalRoute(value: any): any {
-  return value && typeof value === "object" ? normalizeBeltJoins({ ...value, steps: luaArray(value.steps) }) : value;
+  if (!value || typeof value !== "object") return value;
+  // A failed route (failure: the typed code and its facts) has no steps.
+  return normalizeBeltJoins({ ...value, ...(value.steps === undefined ? {} : { steps: luaArray(value.steps) }),
+    ...(value.via === undefined ? {} : { via: luaArray(value.via) }),
+    ...(value.fluid_segments === undefined ? {} : { fluid_segments: luaArray(value.fluid_segments) }) });
 }
 
 // A dry run's belt_joins rows as JSON lists, with null where the mod leaves

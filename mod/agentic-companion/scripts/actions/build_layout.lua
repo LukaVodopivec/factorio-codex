@@ -19,7 +19,9 @@
 -- SURFACE_CONDITION before any site is searched.
 -- Belt and pipe connections are searched by connect_entities' resumable A*
 -- (up to 200 tiles, underground hops where the way is blocked), spread over
--- ticks like the site search.
+-- ticks like the site search; one that finds no route (power included)
+-- fails with the route's typed code (ROUTE_TOO_LONG, ROUTE_BLOCKED,
+-- SEARCH_BUDGET and their fields), any other route error as ROUTE_FAILED.
 --
 -- Offsets are entity centres; each entity snaps to its own tile grid, so a
 -- layout written for an integer anchor (top-left tile corner) is exact. An
@@ -654,8 +656,13 @@ local function routing(placements)
   return { next = 1, occupied = occupied, poles = poles, routes = {} }
 end
 
-local function route_failed(failed, route, reason)
-  failed[#failed + 1] = { connection = route.index, code = "ROUTE_FAILED", reason = reason }
+-- A connection that found no route: the search's typed failure
+-- (connect_entities.failure: ROUTE_TOO_LONG, ROUTE_BLOCKED, SEARCH_BUDGET,
+-- with their fields) or ROUTE_FAILED with the error's reason.
+local function route_failed(failed, route, reason, typed)
+  local row = { connection = route.index, code = "ROUTE_FAILED", reason = reason }
+  for k, v in pairs(typed or {}) do row[k] = v end
+  failed[#failed + 1] = row
 end
 
 -- Routes the connections one after another around the planned footprints
@@ -673,7 +680,7 @@ local function route_more(ctx, variant, anchor, result, soft)
     end
     local from = { x = snapped(anchor.x + route.from.dx, 1), y = snapped(anchor.y + route.from.dy, 1) }
     local to = { x = snapped(anchor.x + route.to.dx, 1), y = snapped(anchor.y + route.to.dy, 1) }
-    local ok, steps
+    local ok, steps, typed
     if route.kind == "power" then
       -- Linear in the poles it places: one step.
       local function has_pole(pos)
@@ -683,7 +690,9 @@ local function route_more(ctx, variant, anchor, result, soft)
           { position = pos, radius = 0.5, type = "electric-pole", force = force })
         return found_ok and type(found) == "table" and #found > 0
       end
-      ok, steps = pcall(connect_entities.route_poles, route.item, route.proto, from, to, MAX_ROUTE, free, has_pole)
+      local P = {}
+      ok, steps = pcall(connect_entities.route_poles, route.item, route.proto, from, to, MAX_ROUTE, free, has_pole, P)
+      if not ok then typed = connect_entities.failure(steps, P) end
     else
       if not r.search then
         -- An endpoint tile that is not free is the entity the route ends at.
@@ -709,12 +718,15 @@ local function route_more(ctx, variant, anchor, result, soft)
       ok, steps = pcall(connect_entities.search_step, r.search, env)
       if ok and steps == nil then
         if ctx.calls < r.limit and ctx.calls < MAX_WORK then return false end
-        ok, steps = false, "no route found before its search budget ran out (is an endpoint walled in?)"
+        typed = connect_entities.spent(r.search)
+        ok, steps = false, typed.reason
+      elseif not ok then
+        typed = connect_entities.failure(steps, r.search)
       end
       r.search, r.limit = nil, nil
     end
     if not ok then
-      route_failed(result.failed, route, plain(steps))
+      route_failed(result.failed, route, typed and typed.reason or plain(steps), typed)
     else
       for _, step in ipairs(steps) do
         local key = tile_key(math.floor(step.x), math.floor(step.y))

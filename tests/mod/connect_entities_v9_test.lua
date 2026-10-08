@@ -109,9 +109,11 @@ local function power_route(max_length)
   return connect_entities({ kind = "power", prototype = "small-electric-pole",
     from = from_entity.position, to = to_entity.position, max_length = max_length or 10 })
 end
-local function rejects_power(max_length, message)
-  local ok, err = pcall(power_route, max_length)
-  return not ok and tostring(err):find(message, 1, true) ~= nil
+-- A power route that fits no poles fails typed: the route's failure row.
+local function rejects_power(max_length, code, message)
+  local ok, result = pcall(power_route, max_length)
+  local failure = ok and result.failure
+  return failure and failure.code == code and failure.reason:find(message, 1, true) ~= nil and not result.steps and failure
 end
 local function within_wire_reach(route, from_reach, to_reach)
   local previous, reach = from_entity.position, from_reach
@@ -146,9 +148,13 @@ local unequal_power = power_route()
 check(unequal_power.length == 3 and unequal_power.steps[1].x == 3.5
   and unequal_power.steps[2].x == 5.5 and unequal_power.steps[3].x == 8.5
   and within_wire_reach(unequal_power, 5, 3), "different endpoint qualities and reaches produce deterministic bounded wire spans")
-check(rejects_power(2, "beyond max_length"), "power routes reject too few allowed poles")
+local few = rejects_power(2, "ROUTE_TOO_LONG", "needs at least 3 poles; max_length is 2")
+check(few and few.min_length == 3 and few.lower_bound == true and few.limit == 2,
+  "too few allowed poles: ROUTE_TOO_LONG with the least poles wire reach needs")
 blocked_position = { x = 5.5, y = 0.5 }
-check(rejects_power(10, "power route is blocked"), "power routes reject blocked intermediate placement")
+local pole_blocked = rejects_power(10, "ROUTE_BLOCKED", "power route is blocked at (5.5, 0.5)")
+check(pole_blocked and pole_blocked.at.x == 5.5 and pole_blocked.at.y == 0.5,
+  "a blocked intermediate pole: ROUTE_BLOCKED at the pole position")
 blocked_position = nil
 from_entity.prototype = pole_prototype(from_entity.quality, 3)
 to_entity.prototype = pole_prototype(to_entity.quality, 5)
@@ -177,16 +183,18 @@ for index = 2, #machine_power.steps do
   local a, b = machine_power.steps[index - 1], machine_power.steps[index]
   check((b.x - a.x)^2 + (b.y - a.y)^2 <= 25, "machine route pole spans fit normal wire reach")
 end
-check(rejects_power(1, "endpoint coverage needs more poles"), "endpoint-covering poles count toward max_length")
+local coverage = rejects_power(1, "ROUTE_TOO_LONG", "needs at least 2 poles; max_length is 1")
+check(coverage and coverage.min_length == 2, "endpoint-covering poles count toward max_length")
 proposed_supply = 0.25
-check(rejects_power(10, "no charted physical pole placement covers"), "machine endpoint coverage refuses placements outside supply area")
+local uncovered = rejects_power(10, "ROUTE_BLOCKED", "no charted physical pole placement covers the power endpoint at (0.5, 0.5)")
+check(uncovered and uncovered.at.x == 0.5, "machine endpoint coverage refuses placements outside supply area")
 proposed_supply = 2.5
 -- The job steps on a later tick: an endpoint mined in between is reported, not read.
 local pending = connect.job.start({ kind = "power", prototype = "small-electric-pole",
   from = from_entity.position, to = to_entity.position, max_length = 10 })
 to_entity.valid = false
 local gone_ok, gone_error = pcall(connect.job.step, pending, { left = 600 })
-check(not gone_ok and tostring(gone_error) == "the power endpoint at (10.5, 0.5) is gone; connect again",
+check(not gone_ok and tostring(gone_error) == "the power endpoint at (10.5, 0.5) is gone",
   "a power endpoint gone before the job steps fails with a route answer")
 to_entity.valid = true
 check(connect.job.start({ kind = "power", prototype = "small-electric-pole", from = from_entity.position,
@@ -219,6 +227,11 @@ for index = 2, diagonal_ok and #diagonal or 0 do
   if (b.x - a.x)^2 + (b.y - a.y)^2 > 7.5 * 7.5 then diagonal_fits = false end
 end
 check(diagonal_fits, "a diagonal pole route keeps every snapped span within wire reach")
-check(not pcall(connect.route_poles, "small-electric-pole", small_pole, long_from, long_to, 16,
-  function() return true end, function() return false end), "a pole route that needs more poles than max_length fails")
+local layout_failure = {}
+local layout_ok, layout_err = pcall(connect.route_poles, "small-electric-pole", small_pole, long_from, long_to, 16,
+  function() return true end, function() return false end, layout_failure)
+local layout_typed = connect.failure(layout_err, layout_failure)
+check(not layout_ok and layout_typed and layout_typed.code == "ROUTE_TOO_LONG" and layout_typed.min_length > 16
+  and layout_typed.limit == 16 and layout_typed.lower_bound == true,
+  "a pole route that needs more poles than max_length fails ROUTE_TOO_LONG (build_layout's typed row)")
 os.exit(failures == 0 and 0 or 1)

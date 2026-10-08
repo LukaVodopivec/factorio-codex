@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest a new tool, mod behaviour, or improvement.
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Features follow the project rule "Enable thinking, never replace it":
+        the mod may execute a bot's decision, report honest player-visible
+        information, and do deterministic arithmetic, but never chooses a
+        design, site, order, quantity or timing, and never grants free items
+        or uncharted map knowledge.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What a bot or the human player cannot do well today, with an example from play if you have one.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The behaviour or tool you would like, and which part decides what (the bot or the mod).
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing tools, mods, or workarounds you tried.
+  - type: input
+    id: factorio-version
+    attributes:
+      label: Factorio version
+      placeholder: 2.0.x, Space Age on
+  - type: input
+    id: mod-version
+    attributes:
+      label: Mod version
+      placeholder: 0.29.2 or a commit SHA
+  - type: input
+    id: codex-model
+    attributes:
+      label: Codex version and model
+      placeholder: codex-cli x.y.z, model and effort
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or examples
+      description: Optional supporting output. Remove passwords, tokens, and personal paths first.
+      render: text

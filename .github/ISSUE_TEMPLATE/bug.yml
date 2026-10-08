@@ -1,0 +1,61 @@
+name: Bug report
+description: Something in the mod, the MCP companion, or the scripts does not work as documented.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please search existing issues first, and report
+        security problems privately as described in SECURITY.md instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence of tool calls, game actions, or commands that shows the problem.
+      placeholder: |
+        1. Start the server with ...
+        2. Call the tool ... with ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: factorio-version
+    attributes:
+      label: Factorio version
+      description: From the main menu or `factorio --version`; say whether Space Age is enabled.
+      placeholder: 2.0.x, Space Age on
+    validations:
+      required: true
+  - type: input
+    id: mod-version
+    attributes:
+      label: Mod version
+      description: The `agentic-companion` version, or the commit you built from.
+      placeholder: 0.29.2 or a commit SHA
+    validations:
+      required: true
+  - type: input
+    id: codex-model
+    attributes:
+      label: Codex version and model
+      description: The Codex CLI version and the model and reasoning effort of each session involved, if the problem involves a bot.
+      placeholder: codex-cli x.y.z, model and effort
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and Node version
+      placeholder: Ubuntu 24.04, Node 22.x
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from the Factorio log, the companion output, or `activity_log`. Remove passwords, tokens, and personal paths first.
+      render: text

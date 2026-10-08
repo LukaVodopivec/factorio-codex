@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,8 +19,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install Lua 5.4
-        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      # scripts/run-mod-tests.sh runs the Lua suite with texlua, which
+      # Ubuntu ships in texlive-binaries.
+      - name: Install texlua
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends texlive-binaries
       - run: npm ci
       - run: npm ls --all
       - name: Audit production dependencies

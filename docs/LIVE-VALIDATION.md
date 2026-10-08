@@ -616,7 +616,7 @@ codex --model gpt-6-luna -c model_reasoning_effort=low -c service_tier=fast -c f
 codex --model gpt-6.1-sol -c model_reasoning_effort=medium \
   -c model_reasoning_summary=detailed \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
-  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status","set_watch","clear_watch"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
 Fast mode is `service_tier=fast` (read back as the `priority` tier) with

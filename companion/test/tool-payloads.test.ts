@@ -521,7 +521,7 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     await handlers.get_items({ item: "iron-plate", count: 20 });
     const queued = call.mock.calls.filter(([method]) => method === "queue_plan").map(([, params]) => (params as any).steps);
     expect(queued).toEqual([[{ action: "build_layout", ...layout }], [{ action: "get_items", item: "iron-plate", count: 20 }]]);
-    expect(Object.keys(handlers)).toHaveLength(51);
+    expect(Object.keys(handlers)).toHaveLength(53);
   });
 });
 
@@ -539,6 +539,7 @@ describe("read-only FIFO state", () => {
     blueprint_list: {}, blueprint_describe: { name: "smelter" }, blueprint_export: { name: "smelter" },
     blueprint_place: { name: "smelter", position: { x: 0, y: 0 } },
     place_tiles: { item: "landfill", positions: [{ x: 0, y: 0 }] }, platform_status: {},
+    set_watch: { condition: { kind: "rate_below", item: "iron-plate", per_min: 1 } }, clear_watch: { all: true },
   };
   // next_event reports the body in its own block from the cheap event probe.
   const fifoTools = READ_ONLY_TOOLS.filter((name) => name !== "next_event");

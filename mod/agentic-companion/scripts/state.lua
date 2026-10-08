@@ -259,6 +259,16 @@ function M.init()
   -- since the save gained the ring, and recent, the last few {tick, where,
   -- error}, oldest first. An older save starts it empty.
   storage.handler_errors = storage.handler_errors or { count = 0, recent = {} }
+  -- Bot-set watches (watches.lua): next_id; list, every role's watches in
+  -- the order set ({id, role, kind, item, fluid, per_min, line, at, force,
+  -- surface, armed, value, made, fired_tick, clear_since});
+  -- cursor, the next one to evaluate; per role, fired: a ring of the last
+  -- firings ({id, condition, surface, value, produced_per_min, tick}, oldest
+  -- first) and fired_tick: the newest one's tick. A save from before
+  -- watches starts with none.
+  local watches = storage.watches or {}
+  storage.watches = { next_id = watches.next_id or 1, list = watches.list or {}, cursor = watches.cursor or 1,
+    fired = watches.fired or {}, fired_tick = watches.fired_tick or {} }
   -- Heavy reads in progress and unread results (jobs.lua). Jobs are plain
   -- data and survive save, load and a mod upgrade: a kind this version no
   -- longer knows fails with its reason when it is next worked on.

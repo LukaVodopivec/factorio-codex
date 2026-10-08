@@ -13,7 +13,7 @@ import { areaFields, areaIssue, blueprintName, blueprintPlaceFields, blueprintPl
   createPlatformFields, deconstructFields, deconstructIssue, entitySettings, executeRunPlan, exploreFields, INSPECT_LIMIT, insertFields, insertIssue, inventoryRole,
   launchRocketFields, layoutFields, layoutIssue, moveEntityFields, planStatusSchema, platformRouteFields, platformSelector, queuePlanSchema, requestsFields, requestsIssue,
   routeIssue, runPlanSchema, settingsIssue, surfaceRef, tilesFields, tilesIssue, travelFields, upgradeFields, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
-import { normalizeActivityLog, normalizeBeltJoins, normalizeCanPlace, normalizeConfigured, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, normalizeRequests, normalizeRoute, luaArray, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
+import { normalizeActivityLog, normalizeBeltJoins, normalizeCanPlace, normalizeConfigured, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, normalizeRequests, normalizeRoute, normalizeWatches, luaArray, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
 export const MCP_SERVER_VERSION = companionVersion();
@@ -78,6 +78,7 @@ export const READ_ONLY_TOOLS = [
   "describe_prototype", "observe_local", "inspect_entity", "plan_status", "can_place", "find_placement",
   "factory_status", "activity_log", "next_event", "build_layout", "connect_entities",
   "blueprint_list", "blueprint_describe", "blueprint_export", "blueprint_place", "place_tiles", "platform_status",
+  "set_watch", "clear_watch",
 ] as const;
 
 export async function connectStatus(
@@ -475,12 +476,12 @@ export function registerMcpTools(
         summary: `${entries.length} row${entries.length === 1 ? "" : "s"}${last ? `; last: ${lastText.trim()}` : ""}` });
     } catch (error) { return failure(error); }
   });
-  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended (with the plan's step outcomes and inventory change), research_finished, queue_empty, new_problem, package_failed, orders_changed, human_hold_started, human_hold_ended, rocket_ready, rocket_launched, cargo_delivered, platform_state_changed, platform_arrived, travel_phase, body_surface_changed, or timeout. new_problem rows carry factory_status's feed facts, and its summary states the first two. For plan_ended, status is the native plan outcome; read_status describes completion, cancellation or failure of this wait. Cancelling the wait leaves physical plans unchanged. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, research, problem, rocket, platform or travel event or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
+  tools.registerTool("next_event", { description: "Wait up to timeout_seconds for the next thing to act on: plan_ended (with the plan's step outcomes and inventory change), research_finished, queue_empty, new_problem, watch_fired, package_failed, orders_changed, human_hold_started, human_hold_ended, rocket_ready, rocket_launched, cargo_delivered, platform_state_changed, platform_arrived, travel_phase, body_surface_changed, or timeout. new_problem rows carry factory_status's feed facts, and its summary states the first two. watch_fired lists your watches (set_watch) that crossed their threshold: id, condition, surface, value, tick; firings read beside another event come along in its watches. For plan_ended, status is the native plan outcome; read_status describes completion, cancellation or failure of this wait. Cancelling the wait leaves physical plans unchanged. Without since_tick an already empty queue returns queue_empty at once; with since_tick, a plan end, research, problem, watch firing, rocket, platform or travel event or package failure after that tick returns at once.", inputSchema: nextEventSchema }, async (input, extra) => {
     try {
       const value = await waitForEvent(await bridge(), nextEventSchema.parse(input), {
         ordersChanged: orders.changed,
         packageFailures: () => { const dir = runDir(); return dir ? packageFailures(dir) : []; },
-        delivery: failureDelivery,
+        delivery: failureDelivery, role,
       }, extra?.signal);
       const readStatus = value.event === "cancelled" ? "cancelled" : "completed";
       return result({ ...value, status: value.event === "plan_ended" ? value.status : readStatus,
@@ -517,6 +518,26 @@ export function registerMcpTools(
       return result({ ...value, summary: platformStatusSummary(value) });
     } catch (error) { return failure(error); }
   });
+  // Watches are reads: each role keeps its own (the mod scopes them by role).
+  const watchCondition = z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("rate_below"), item: z.string().min(1), per_min: z.number().positive() }).strict(),
+    z.object({ kind: z.literal("consumption_above_production"), item: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal("line_below"), line: z.union([z.number().int().positive(), position]), per_min: z.number().positive() }).strict(),
+  ]);
+  const setWatchInput = z.object({ condition: watchCondition, surface: surfaceRef.optional() }).strict();
+  const clearWatchInput = z.object({ id: z.number().int().positive().optional(), all: z.literal(true).optional() }).strict()
+    .refine((p) => (p.id === undefined) !== (p.all === undefined), { message: "give id or all: true" });
+  tools.registerTool("set_watch", { description: "Be woken by next_event when a rate crosses your threshold, instead of reading factory_status to notice. condition {kind:\"rate_below\", item, per_min}: the force's production of that item (all qualities) or fluid on the surface (default the body's), per minute over the last minute, is below per_min; {kind:\"consumption_above_production\", item}: the force consumes more of it there than it makes; {kind:\"line_below\", line, per_min}: a factory_status line (its id, its position, or a member machine's position) makes less than per_min. Checked from rates the mod already keeps, 16 watches (of all roles) each half second, so every half second to a few seconds. A watch arms once its value is on the safe side (armed: false while it is already past the threshold), fires once when crossed (next_event watch_fired: id, condition, surface, value, produced_per_min for consumption, tick), and re-arms after 60 s at least 10% clear (production at least 1.1 times consumption). Each role keeps its own, at most 16; the same kind on the same item or line and surface replaces the threshold and keeps its id. Returns the watch with its value now and all your watches (line_gone: that line no longer exists).", inputSchema: setWatchInput }, async (p) =>
+    rpc("set_watch", { role, ...setWatchInput.parse(p) }, undefined, (value) => {
+      const watches = normalizeWatches(value);
+      const watch = watches?.watch;
+      return { ...watches, summary: watch ? `watch ${watch.id} ${watches.replaced ? "replaced" : "set"}, ${watch.armed ? "armed" : "not armed: already past the threshold"}; value ${watch.value ?? "unread"}/min; ${watches.watches.length} of ${watches.limit} watches` : "watch set" };
+    }));
+  tools.registerTool("clear_watch", { description: "Remove one of your watches (id) or all of them (all: true). Returns the ids cleared and the watches left; firings already made still come through next_event.", inputSchema: clearWatchInput }, async (p) =>
+    rpc("clear_watch", { role, ...clearWatchInput.parse(p) }, undefined, (value) => {
+      const watches = normalizeWatches(value);
+      return { ...watches, summary: `cleared ${watches?.cleared?.length ?? 0}; ${watches?.watches?.length ?? 0} watches left` };
+    }));
   if (surface === "read-only") return;
   tools.registerTool("get_items", { description: "Get count of an item into the inventory: from the nearest own chest, machine output, loose items at a drill's drop position or belt, else by smelting ore in an own furnace or crafting it with its intermediates, else by hand-gathering a raw resource, also one own drills mine when none of their output can be taken now. The result names any shortfall and when more is expected.", inputSchema: z.object({ item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict() }, async (p, extra) =>
     runPlan({ steps: [{ action: "get_items", ...p }] }, extra?.signal, "get_items"));

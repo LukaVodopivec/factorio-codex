@@ -235,6 +235,13 @@ export function normalizeRequests(value: any): any {
   return value && typeof value === "object" ? { ...value, sections: requestSections(value.sections) } : value;
 }
 
+/** set_watch and clear_watch: the role's watches (and the ids cleared) as
+ *  arrays, also when Lua sent an empty table. */
+export function normalizeWatches(value: any): any {
+  if (!value || typeof value !== "object") return value;
+  return { ...value, watches: luaArray(value.watches ?? []), ...(value.cleared !== undefined ? { cleared: luaArray(value.cleared) } : {}) };
+}
+
 /** A platform's schedule: the stop it heads for and its records, each with
  *  its wait conditions in full detail. */
 function schedule(value: any): any {

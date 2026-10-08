@@ -80,6 +80,7 @@ local fluid_connections = require("scripts.fluid_connections")
 local M = {}
 
 local SAMPLE_PERIOD = 30
+M.SAMPLE_PERIOD = SAMPLE_PERIOD
 local REFRESH_DEBOUNCE_TICKS = 300
 local REFRESH_SAFETY_TICKS = 3600
 local REFRESH_PER_TICK = 32 -- machines a refresh identifies a tick
@@ -1595,6 +1596,34 @@ function M.labs_working()
     if line.product == "research" then working = working + (line.working or 0) end
   end
   return working
+end
+
+-- Watches (watches.lua) read lines through these two, pure Lua: a line's
+-- rate per minute (as factory_status shows it), its surface index and a
+-- member machine's position, or nil once the id is gone.
+function M.line_rate(id)
+  local a = data()
+  local line = a and a.lines[id]
+  if not line then return nil end
+  local rec = a.machines[line.machines[1]]
+  return rate_per_min(line, game.tick), line_surface(a, line), rec and { x = rec.position.x, y = rec.position.y }
+end
+
+-- The id of the line with a machine at this position on this surface (an
+-- index), else (unless machines_only) of the line whose factory_status
+-- position it is, else nil.
+function M.line_at(surface, position, machines_only)
+  local a = data()
+  if not (a and type(position) == "table" and tonumber(position.x) and tonumber(position.y)) then return nil end
+  local unit = a.machine_at[position_key(surface, position)]
+  local rec = unit and a.machines[unit]
+  if rec and a.lines[rec.line_id] then return rec.line_id end
+  if machines_only then return nil end
+  for _, id in ipairs(a.line_order) do
+    local line = a.lines[id]
+    if line.position and line.position.x == position.x and line.position.y == position.y
+      and line_surface(a, line) == surface then return id end
+  end
 end
 
 -- Line counts of one surface (an index), or of every surface when nil.

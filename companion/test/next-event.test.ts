@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge, TaskClock } from "../src/bridge.js";
-import { eventSummary, feedText, IDLE_NOW, RESEARCH_IDLE, waitForEvent, type EventState, type PackageFailure } from "../src/mcp/events.js";
+import { eventSummary, feedText, IDLE_NOW, RESEARCH_IDLE, waitForEvent, watchText, type EventState, type PackageFailure, type WatchFiring } from "../src/mcp/events.js";
 import { registerMcpTools, type McpSurface } from "../src/mcp/server.js";
 
 const idle: EventState = { tick: 100, queue_depth: 0, fifo_empty: true, human_hold: false };
@@ -388,5 +388,78 @@ describe("next_event", () => {
     const clock = fakeClock();
     const aborting = { now: clock.now, sleep: async (ms: number) => { await clock.sleep(ms); controller.abort(); } };
     expect(await waitForEvent(game([busy]).bridge, input(), quiet(), controller.signal, aborting)).toMatchObject({ event: "cancelled" });
+  });
+});
+
+describe("next_event watch firings", () => {
+  const plates: WatchFiring = { id: 3, tick: 120, surface: "nauvis", value: 42.5,
+    condition: { kind: "rate_below", item: "iron-plate", per_min: 60 } };
+  const water: WatchFiring = { id: 4, tick: 120, surface: "nauvis", value: 1300, produced_per_min: 1200,
+    condition: { kind: "consumption_above_production", item: "water" } };
+  const sources = (role?: string) => ({ ...quiet(), ...(role ? { role } : {}) });
+
+  it("asks event_state for the role's firings after since_tick and returns them at once", async () => {
+    const { bridge, call } = game([{ ...busy, tick: 130, watch_fired: [plates, water] }]);
+    const value = await waitForEvent(bridge, input({ since_tick: 110 }), sources("strategist"), undefined, fakeClock());
+    expect(call).toHaveBeenCalledWith("event_state", { role: "strategist", watch_since: 110 });
+    expect(value).toMatchObject({ event: "watch_fired", tick: 130, watches: [plates, water] });
+    expect(eventSummary(value)).toBe("2 watches fired: watch 3: iron-plate made 42.5/min on nauvis, below 60/min; "
+      + "watch 4: water consumed 1300/min on nauvis, above 1200/min made");
+  });
+
+  it("without since_tick, waits for firings after the first read's tick", async () => {
+    const { bridge, call } = game([busy, busy, { ...busy, tick: 160, watch_fired: [plates] }]);
+    const value = await waitForEvent(bridge, input(), sources("pilot"), undefined, fakeClock());
+    expect(call.mock.calls[0]).toEqual(["event_state"]);
+    expect(call.mock.calls[1]).toEqual(["event_state", { role: "pilot", watch_since: 100 }]);
+    expect(value).toMatchObject({ event: "watch_fired", watches: [plates] });
+  });
+
+  it("asks for no firings without a role, and Lua's empty table is no firing", async () => {
+    const { bridge, call } = game([busy, { ...busy, watch_fired: {} as unknown as WatchFiring[] }]);
+    expect(await waitForEvent(bridge, { timeout_seconds: 1, since_tick: 90 }, sources(), undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
+    expect(call.mock.calls.every((args) => args.length === 1)).toBe(true);
+    const empty = game([{ ...busy, watch_fired: {} as unknown as WatchFiring[] }]);
+    expect(await waitForEvent(empty.bridge, { timeout_seconds: 1, since_tick: 90 }, sources("pilot"), undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
+  });
+
+  it("carries firings read beside a plan end, which a later since_tick call would miss", async () => {
+    const both = { ...idle, tick: 170, last_plan_ended: { plan_id: 5, status: "completed", tick: 160 }, watch_fired: [plates] };
+    const value = await waitForEvent(game([busy, both]).bridge, input(), sources("pilot"), undefined, fakeClock());
+    expect(value).toMatchObject({ event: "plan_ended", plan_id: 5, watches: [plates] });
+    expect(eventSummary(value)).toBe(`plan 5 ended completed; 1 watch fired too, in watches; ${IDLE_NOW}`);
+  });
+
+  it("states a line watch's numbers", () => {
+    expect(watchText({ id: 7, tick: 1, value: 12, condition: { kind: "line_below", line: 5, per_min: 30 } }))
+      .toBe("watch 7: line 5 makes 12/min, below 30/min");
+  });
+});
+
+describe.each(["full", "read-only"] as McpSurface[])("set_watch and clear_watch (%s)", (surface) => {
+  it("forwards the session's role with the condition, and returns the role's watches", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const call = vi.fn(async (method: string) => method === "set_watch"
+      ? { watch: { id: 2, armed: false, value: 0 }, watches: [{ id: 2 }], limit: 16 }
+      : { cleared: [2], watches: {}, limit: 16 });
+    const role = surface === "full" ? "pilot" : "strategist";
+    registerMcpTools({ registerTool(name, config: any, run) { handlers[name] = run; schemas[name] = config.inputSchema; } },
+      async () => ({ call } as unknown as Bridge), () => ({ ok: false, error: "offline fixture" }), surface, () => null, role);
+    const condition = { kind: "line_below", line: { x: 10.5, y: 3.5 }, per_min: 30 };
+    const set = await handlers.set_watch!({ condition });
+    expect(call).toHaveBeenLastCalledWith("set_watch", { role, condition }, undefined);
+    expect(set.structuredContent).toMatchObject({ watch: { id: 2, armed: false }, watches: [{ id: 2 }] });
+    expect(set.content[0].text).toBe("watch 2 set, not armed: already past the threshold; value 0/min; 1 of 16 watches");
+    const cleared = await handlers.clear_watch!({ all: true });
+    expect(call).toHaveBeenLastCalledWith("clear_watch", { role, all: true }, undefined);
+    expect(cleared.structuredContent).toMatchObject({ cleared: [2], watches: [] });
+    expect(schemas.set_watch.safeParse({ condition: { kind: "rate_below", item: "iron-plate" } }).success).toBe(false);
+    expect(schemas.set_watch.safeParse({ condition: { kind: "consumption_above_production", item: "water", per_min: 3 } }).success).toBe(false);
+    expect(schemas.set_watch.safeParse({ condition: { kind: "rate_below", item: "iron-plate", per_min: 60 }, surface: "vulcanus" }).success).toBe(true);
+    expect(schemas.clear_watch.safeParse({}).success).toBe(false);
+    expect(schemas.clear_watch.safeParse({ id: 1, all: true }).success).toBe(false);
   });
 });

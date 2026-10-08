@@ -400,7 +400,7 @@ replacement.
 
 ## MCP tools
 
-The full surface has 51 tools; the read-only surface used by the strategist has 21.
+The full surface has 53 tools; the read-only surface used by the strategist has 23.
 Every read-only result carries `fifo` (`active_plan_id`, `queue_depth`,
 `idle_seconds`, `human_control`). Heavy reads (`map_summary`, a full
 `observe_local`, route and site searches, dry runs, blueprint capture and
@@ -411,13 +411,14 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | --- | --- | --- |
 | `connect_status` | both | config, RCON, mod and protocol check; binds the `Codex` player |
 | `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover` (steam and solar) and, short of power, `supply_states` (the generating lines on that network), stock, research, body (state, surface, health), patches with their `bbox` outline, one line per space platform, `elsewhere` (one line per other surface with buildings), `unlocked_locations`; `surface`, `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
-| `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change), `research_finished`, `queue_empty`, `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, `rocket_ready`, `rocket_launched`, `cargo_delivered`, `platform_state_changed`, `platform_arrived`, `travel_phase`, `body_surface_changed`, or `timeout` |
+| `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change), `research_finished`, `queue_empty`, `new_problem`, `watch_fired`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, `rocket_ready`, `rocket_launched`, `cargo_delivered`, `platform_state_changed`, `platform_arrived`, `travel_phase`, `body_surface_changed`, or `timeout` |
 | `activity_log` | both | recent plan outcomes with `source` (`pilot`, `upkeep`, `package:<id>`), cancels with their `origin`, blueprint changes, and package statuses |
 | `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections; `mode: ghosts` for robots; `platform` marks ghosts and foundation tiles on a space platform for its hub to build; a dry run also reports, as data, inserters, belt ends, unpowered machines, isolated poles, `on_ore` (non-drill buildings over ore), `mixed_ore` (drills whose area holds another resource), `open_fluid_ports` (fluid connections that meet nothing) and `port_fluids` (each fluid-recipe crafter port's recipe fluid and what its system carries) |
 | `connect_entities` | both (read-only: dry run) | belt, pipe or power route of up to 200 pieces between entities or free tiles, underground past obstacles |
 | `blueprint_list`, `blueprint_describe`, `blueprint_export` | both | this run's stored blueprints; export is a string for notes, never imported |
 | `blueprint_place` | both (read-only: dry run) | build a stored blueprint by hand or as ghosts, or as ghosts on a space platform; its dry run also reports `on_ore`, `mixed_ore`, `open_fluid_ports` and `port_fluids` |
 | `place_tiles` | both (read-only: dry run) | lay landfill, stone path, concrete, foundation or ice platform over an area or up to 1,024 positions, nearest first; a dry run counts the items |
+| `set_watch`, `clear_watch` | both | up to 16 watches per role on a force production rate, consumption above production, or a line's rate; one fires once as `watch_fired` in `next_event` when crossed and re-arms after 60 s at least 10% clear |
 | `platform_status` | both | space platforms: state, location, trip, speed, schedule, hub slots and requests; `detail: full` for one platform adds foundation, hub contents, entities, thrusters and `ghosts.missing` |
 | `map_summary` | both | full flow graph of the charted factory on one surface (`surface`; `"all"` sums flows); `include` adds `stockpiles`, `sites`, `patches`, `power`, `problems`, `flows_all` |
 | `observe_local`, `inspect_entity` | both | nearby entities and exact entity state with settings, temperature and `frozen`, up to 64 positions (own entities anywhere charted; `surface` on `inspect_entity`); belts give `lanes` and `lane_mix`, inserters `holding`, and `trace: up\|down` walks belt lanes to their sources over own belts in charted chunks |

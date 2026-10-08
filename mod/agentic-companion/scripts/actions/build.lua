@@ -12,6 +12,7 @@ local supply = require("scripts.actions.supply")
 local transfer = require("scripts.actions.transfer")
 local craft = require("scripts.actions.craft")
 local platforms = require("scripts.platforms")
+local items = require("scripts.items")
 
 local M = {}
 
@@ -648,8 +649,9 @@ local function recipe_refusal(e, recipe)
 end
 
 -- Puts items back somewhere real: into `into`'s inventory, the rest spilled
--- at `at` on `surface`. Returns the count taken in.
-local function take_back(removed, into, surface, at, force)
+-- at `at` on `surface` (items.spill, recorded in `spilled`). Returns the
+-- count taken in.
+local function take_back(removed, into, surface, at, spilled)
   local taken = 0
   for _, stack in ipairs(type(removed) == "table" and removed or {}) do
     if stack.name and (stack.count or 0) > 0 then
@@ -658,7 +660,7 @@ local function take_back(removed, into, surface, at, force)
       taken = taken + inserted
       if inserted < stack.count then
         item.count = stack.count - inserted
-        pcall(surface.spill_item_stack, { position = at, stack = item, force = force })
+        items.spill(surface, at, item, spilled)
       end
     end
   end
@@ -666,12 +668,13 @@ local function take_back(removed, into, surface, at, force)
 end
 
 -- Sets the recipe on a reached machine; `into` takes what it held.
-local function apply_recipe(task, e, recipe, into, surface, at, force, where)
+local function apply_recipe(task, e, recipe, into, surface, at, where)
   if not recipe then return { status = "failed", detail = "unknown recipe: '" .. task.recipe .. "'" } end
   local refused = recipe_refusal(e, recipe)
   if refused then return refused end
   local ok, removed = pcall(e.set_recipe, task.recipe)
-  local taken = ok and take_back(removed, into, surface, at, force) or 0
+  local spilled = {}
+  local taken = ok and take_back(removed, into, surface, at, spilled) or 0
   local read_ok, assigned = pcall(e.get_recipe)
   if not ok or not read_ok or not assigned or assigned.name ~= task.recipe then
     return {
@@ -682,8 +685,11 @@ local function apply_recipe(task, e, recipe, into, surface, at, force, where)
   end
   return {
     status = "done",
-    detail = string.format("set %s's recipe to %s%s", e.name, task.recipe,
-      taken > 0 and string.format(" (took %d leftover items into %s)", taken, where) or ""),
+    detail = string.format("set %s's recipe to %s%s%s", e.name, task.recipe,
+      taken > 0 and string.format(" (took %d leftover items into %s)", taken, where) or "",
+      spilled.count and string.format(" (spilled %d that did not fit at (%.1f, %.1f))", spilled.count,
+        spilled.position.x, spilled.position.y) or ""),
+    outcome = spilled.count and { code = "RECIPE_SET", spilled = spilled } or nil,
   }
 end
 
@@ -716,7 +722,7 @@ local function set_recipe_remote(task, c)
   end
   local hub = p.hub
   local into = hub and hub.valid and hub.get_inventory(defines.inventory.hub_main) or nil
-  local result = apply_recipe(task, e, c.force.recipes[task.recipe], into, p.surface, e.position, c.force, "the hub")
+  local result = apply_recipe(task, e, c.force.recipes[task.recipe], into, p.surface, e.position, "the hub")
   result.outcome = result.outcome or { code = result.status == "done" and "RECIPE_SET" or "RECIPE_NOT_SET" }
   result.outcome.entity = { name = e.name, position = { x = e.position.x, y = e.position.y },
     surface = platforms.surface_ref(p) }
@@ -743,7 +749,7 @@ function M.set_recipe.tick(task)
   if type(entity_reached) == "table" then return entity_reached end
   if entity_reached ~= "ok" then return nil end
   -- Ingredients of the previous recipe come back to us; overflow spills.
-  return apply_recipe(task, e, c.force.recipes[task.recipe], c, c.surface, c.position, c.force, "my inventory")
+  return apply_recipe(task, e, c.force.recipes[task.recipe], c, c.surface, c.position, "my inventory")
 end
 
 local function recipe_task(step)

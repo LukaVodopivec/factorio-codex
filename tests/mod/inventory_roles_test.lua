@@ -14,43 +14,26 @@ local function check(cond, what)
 end
 
 local mock = dofile(here .. "/factorio_api_mock.lua")
-_G.storage, _G.game = {}, { tick = 1 }
+local stacks = dofile(here .. "/item_stack_mock.lua")
+_G.storage, _G.game = {}, { tick = 1, create_inventory = stacks.create_inventory }
 _G.defines = { inventory = { chest = 1, fuel = 1, crafter_input = 2, crafter_output = 3, crafter_modules = 4,
   crafter_trash = 5, assembling_machine_dump = 6, burnt_result = 6, lab_input = 2, roboport_robot = 1,
   roboport_material = 2, logistic_container_trash = 2 } }
 _G.prototypes = { item = { coal = {}, ["iron-ore"] = {}, ["iron-plate"] = {}, ["speed-module"] = {} },
   fluid = { ["crude-oil"] = {}, water = {} } }
 
--- The body: a plain character that keeps what it is given.
+-- The body: a plain character whose main inventory keeps what it is given;
+-- items move as real stacks (item_stack_mock), one per name over these counts.
 local held = {}
 local body = { valid = true, reach_distance = 10 }
-function body.insert(stack) held[stack.name] = (held[stack.name] or 0) + stack.count; return stack.count end
-function body.remove_item(stack)
-  local n = math.min(stack.count, held[stack.name] or 0)
-  held[stack.name] = (held[stack.name] or 0) - n
-  return n
-end
 function body.get_item_count(name) return held[type(name) == "table" and name.name or name] or 0 end
-function body.get_main_inventory() return { get_insertable_count = function() return 1000 end } end
+local function main_view() return stacks.view(held) end
+body.get_main_inventory = main_view
 local own = { name = "player" }
 body.force = own
 
 local function inventory(contents)
-  local inv = mock.inventory({
-    get_contents = function()
-      local rows = {}
-      for name, count in pairs(contents) do if count > 0 then rows[#rows + 1] = { name = name, count = count, quality = "normal" } end end
-      table.sort(rows, function(a, b) return a.name < b.name end)
-      return rows
-    end,
-    remove = function(stack)
-      local n = math.min(stack.count, contents[stack.name] or 0)
-      contents[stack.name] = (contents[stack.name] or 0) - n
-      return n
-    end,
-    insert = function(stack) contents[stack.name] = (contents[stack.name] or 0) + stack.count; return stack.count end,
-  })
-  return inv, contents
+  return stacks.view(contents), contents
 end
 
 local target
@@ -143,28 +126,22 @@ local put = run(transfer.insert, { target = { x = 5, y = 5 }, items = { ["speed-
   auto_supply = false })
 check(put.status == "done" and modules_held["speed-module"] == 2 and held["speed-module"] == 0 and put.outcome.inventory == "modules",
   "insert inventory modules puts modules into the module slots")
--- Only normal quality is handed over; whatever the body did not really give
--- is taken back from the target, so no item is ever made.
-local real_count, real_remove = body.get_item_count, body.remove_item
-body.get_item_count = function(filter)
-  assert(type(filter) == "table" and filter.quality == "normal", "insert counts normal-quality items")
-  return 0
-end
+-- Only normal quality is handed over by name: a rare module the body
+-- carries stays with it, and the count inserted is what left the body.
+local carried = stacks.inventory(4)
+stacks.put(carried, 1, { name = "speed-module", count = 1, quality = "rare" })
+body.get_main_inventory = function() return carried end
 local rare = run(transfer.insert, { target = { x = 5, y = 5 }, items = { ["speed-module"] = 1 }, inventory = "modules",
   auto_supply = false })
-check(rare.status == "failed" and modules_held["speed-module"] == 2,
+check(rare.status == "failed" and modules_held["speed-module"] == 2 and carried[1].count == 1,
   "carrying no normal-quality module inserts nothing")
-held["speed-module"] = 2
-body.get_item_count = real_count
-body.remove_item = function(stack)
-  assert(stack.quality == "normal", "insert removes normal-quality items")
-  return real_remove({ name = stack.name, count = 1 })
-end
+stacks.put(carried, 2, { name = "speed-module", count = 1 })
 local short_give = run(transfer.insert, { target = { x = 5, y = 5 }, items = { ["speed-module"] = 2 }, inventory = "modules",
   auto_supply = false })
-check(short_give.outcome.total_inserted == 1 and modules_held["speed-module"] == 3 and held["speed-module"] == 1,
-  "an insert the body could only half pay is taken back to what it gave")
-body.remove_item = real_remove
+check(short_give.outcome.total_inserted == 1 and modules_held["speed-module"] == 3 and not carried[2].valid_for_read
+  and carried[1].quality.name == "rare",
+  "an insert of two carrying one normal module hands over that one and keeps the rare one")
+body.get_main_inventory = main_view
 
 -- flush_fluid: pipes and tanks only, every fluidbox of the entity.
 local flushes = {}

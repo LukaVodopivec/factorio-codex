@@ -6,6 +6,7 @@
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
+local stacks = dofile(here .. "/item_stack_mock.lua")
 
 local failures = 0
 local function check(cond, what)
@@ -13,7 +14,7 @@ local function check(cond, what)
 end
 
 _G.storage = {}
-_G.game = { tick = 100 }
+_G.game = { tick = 100, create_inventory = stacks.create_inventory }
 _G.defines = { build_check_type = { manual = 1, ghost_revive = 2 }, inventory = { chest = 1 } }
 
 -- Factorio 2.0.77 base geometry for the layout entities.
@@ -259,7 +260,8 @@ character = {
   force = { recipes = recipes, is_chunk_charted = function() return true end },
   surface = surface, build_distance = 10, crafting_queue_size = 0,
   get_item_count = function(name) return inventory[type(name) == "table" and name.name or name] or 0 end,
-  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
+  -- Inserts hand over real stacks (item_stack_mock), one per name over `inventory`.
+  get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end,
   remove_item = function(args) inventory[args.name] = (inventory[args.name] or 0) - args.count; return args.count end,
   begin_crafting = function() crafted = crafted + 1; return 0 end,
   can_reach_entity = function() return true end,

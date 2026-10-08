@@ -17,6 +17,7 @@ local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local supply = require("scripts.actions.supply")
 local craft = require("scripts.actions.craft")
+local items = require("scripts.items")
 
 local M = {}
 
@@ -213,14 +214,15 @@ local function covered_products(s, t)
   return products
 end
 
--- Gives the covered tile's items to the body, spilling what does not fit.
+-- Gives the covered tile's items to the body, spilling what does not fit
+-- (items.spill, recorded in task._spilled).
 local function give_back(task, c, products)
   task._returned = task._returned or {}
   for _, product in ipairs(products) do
     local kept = c.insert({ name = product.name, count = product.count })
     if kept < product.count then
-      pcall(c.surface.spill_item_stack, { position = c.position,
-        stack = { name = product.name, count = product.count - kept }, force = c.force, allow_belts = false })
+      task._spilled = task._spilled or {}
+      items.spill(c.surface, c.position, { name = product.name, count = product.count - kept }, task._spilled)
     end
     task._returned[product.name] = (task._returned[product.name] or 0) + product.count
   end
@@ -257,7 +259,8 @@ local function result(task, ended)
     or s.rows[1] and s.rows[1].code or "TILES_NOT_PLACED")
   local outcome = { code = code, tile = s.tile, requested = requested, placed = task._placed, already = s.already,
     ineligible = s.rows, omitted_ineligible = math.max(0, s.ineligible_count - #s.rows), consumed = consumed,
-    returned = task._returned, shortfall = task._shortfall, remaining = remaining > 0 and remaining or nil }
+    returned = task._returned, spilled = task._spilled and task._spilled.count and task._spilled or nil,
+    shortfall = task._shortfall, remaining = remaining > 0 and remaining or nil }
   local detail = string.format("place_tiles %s: placed %d, already %d, ineligible %d of %d tiles", s.tile,
     task._placed, s.already, s.ineligible_count, requested)
   if remaining > 0 then detail = detail .. string.format(" — %d not placed (%s)", remaining, ended or "no items left") end

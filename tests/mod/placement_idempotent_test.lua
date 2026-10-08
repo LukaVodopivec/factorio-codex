@@ -5,12 +5,13 @@
 -- in the crafting queue is waited for at the placement.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
+local stacks = dofile(here .. "/item_stack_mock.lua")
 
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
 _G.storage = {}
-_G.game = { tick = 10 }
+_G.game = { tick = 10, create_inventory = stacks.create_inventory }
 _G.defines = { build_check_type = { manual = 1, ghost_revive = 2 }, inventory = { chest = 1 },
   direction = { north = 0, east = 4, south = 8, west = 12 } }
 local half = { left_top = { x = -0.4, y = -0.4 }, right_bottom = { x = 0.4, y = 0.4 } }
@@ -43,7 +44,8 @@ body = {
   crafting_queue = {}, crafting_queue_size = 0,
   get_item_count = function(name) return inventory[type(name) == "table" and name.name or name] or 0 end,
   remove_item = function(stack) inventory[stack.name] = inventory[stack.name] - stack.count; return stack.count end,
-  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
+  -- Inserts hand over real stacks (item_stack_mock), one per name over `inventory`.
+  get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end,
   surface = {
     find_entity = function(name, position)
       for _, e in ipairs(world) do

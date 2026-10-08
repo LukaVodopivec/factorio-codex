@@ -4,13 +4,14 @@
 -- move items in a small simulated world.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 local mock = dofile(here .. "/factorio_api_mock.lua")
+local stacks = dofile(here .. "/item_stack_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
 _G.storage = {}
-_G.game = { tick = 100 }
+_G.game = { tick = 100, create_inventory = stacks.create_inventory }
 _G.defines = { inventory = { chest = 1, furnace_source = 2, furnace_result = 3 } }
 _G.prototypes = { item = {
   ["iron-plate"] = { stack_size = 100 }, ["iron-gear-wheel"] = { stack_size = 100 },
@@ -49,7 +50,8 @@ body = {
   valid = true, position = { x = 0, y = 0 }, force = own_force,
   prototype = { crafting_categories = { crafting = true } },
   get_item_count = function(name) return inventory[type(name) == "table" and name.name or name] or 0 end,
-  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
+  -- Inserts hand over real stacks (item_stack_mock), one per name over `inventory`.
+  get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end,
 }
 own_force.recipes = recipes
 own_force.is_chunk_charted = function(_, chunk) return chunk.x < 4 end
@@ -574,7 +576,7 @@ chest({ x = 2.5, y = 0.5 }, { ["iron-plate"] = 100 })
 local full = run({ items = { { name = "iron-plate", count = 10 } } })
 check(#calls == 0 and full.status == "failed" and full.detail:match("my inventory is full"),
   "with a full inventory no source is visited and the shortfall says why")
-body.get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end
+body.get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end
 
 -- Smelted items are not hand-craftable: the shortfall names why.
 reset()

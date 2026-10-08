@@ -1,5 +1,6 @@
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
+local stacks = dofile(here .. "/item_stack_mock.lua")
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 local force = { is_chunk_charted = function() return true end }
@@ -44,13 +45,22 @@ surface = {
 }
 local body = { valid = true, position = { x = 0.5, y = 0.5 }, build_distance = 6, force = force, surface = surface,
   get_item_count = function() return 1 end, remove_item = function(args) removed = removed + args.count; return args.count end }
+-- Starter inserts hand over real stacks (item_stack_mock) over whatever
+-- get_item_count and remove_item the case sets.
+body.get_main_inventory = function()
+  local names = {}
+  for name in pairs(prototypes.item) do names[#names + 1] = name end
+  table.sort(names)
+  return stacks.counted(names, function(name) return body.get_item_count(name) end,
+    function(stack) return body.remove_item(stack) end)
+end
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 package.loaded["scripts.actions.approach"] = {
   ensure = function() return "ok" end,
   ensure_entity = function() return "ok" end,
 }
 _G.defines = { direction = { north = 0 }, build_check_type = { manual = 1 } }
-_G.game = { tick = 100 }
+_G.game = { tick = 100, create_inventory = stacks.create_inventory }
 _G.storage = {}
 local activity = require("scripts.factory_activity")
 _G.prototypes = { item = {

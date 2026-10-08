@@ -2,10 +2,11 @@
 -- when no own stock holds them) and its bounded follow-up recoveries.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
+local stacks = dofile(here .. "/item_stack_mock.lua")
 
 local failures = 0
 _G.storage = {}
-_G.game = { tick = 100 }
+_G.game = { tick = 100, create_inventory = stacks.create_inventory }
 local function check(cond, what)
   if cond then print("ok   " .. what) else failures = failures + 1 print("FAIL " .. what) end
 end
@@ -30,7 +31,8 @@ character = {
       products = { { type = "item", name = "uncertain-machine", amount = 3, probability = 0.5 } } },
   } },
   get_item_count = function(name) return inventory[type(name) == "table" and name.name or name] or 0 end,
-  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
+  -- Inserts hand over real stacks (item_stack_mock), one per name over `inventory`.
+  get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end,
   begin_crafting = function(args)
     crafted[args.recipe] = (crafted[args.recipe] or 0) + args.count
     character.crafting_queue_size = character.crafting_queue_size + args.count

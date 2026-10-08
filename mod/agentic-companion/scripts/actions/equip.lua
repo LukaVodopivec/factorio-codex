@@ -14,6 +14,7 @@
 local companion = require("scripts.companion")
 local supply = require("scripts.actions.supply")
 local craft = require("scripts.actions.craft")
+local items = require("scripts.items")
 
 local M = {}
 
@@ -222,8 +223,12 @@ local function take_one(c, grid, entry)
   if taken then
     local kept = c.insert(taken)
     if kept < taken.count then
-      pcall(c.surface.spill_item_stack, { position = c.position, stack = { name = taken.name, count = taken.count - kept,
-        quality = taken.quality }, force = c.force, allow_belts = false })
+      local spilled = items.spill(c.surface, c.position, { name = taken.name, count = taken.count - kept,
+        quality = taken.quality })
+      if spilled > 0 then
+        return string.format("took %s (spilled %d %s at (%.1f, %.1f): no room)", eq.name, spilled, taken.name,
+          c.position.x, c.position.y)
+      end
     end
   end
   return "took " .. eq.name

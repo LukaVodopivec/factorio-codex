@@ -90,12 +90,11 @@ describe("bridge protocol v29", () => {
     expect(pickupSource).toMatch(/selected\s*~=\s*task\._entity/);
     expect(pickupSource).toMatch(/picking_state\s*=\s*true/);
     expect(pickupSource).not.toMatch(/\bdestroy\s*\(|\bmine\s*\(|\bstack\.count\s*=|spill_item_stack|create_entity|give_item|teleport/);
-    // Belt pickup is an exact conserved transfer: an inventory insert appears
-    // only where the transport line's remove_item feeds it, in the same function.
-    expect(pickupSource).toMatch(/remove_item\s*\(/);
-    const inserts = [...pickupSource.matchAll(/(?<!table)[.:]insert\s*\(/g)].map((match) => match.index!);
-    expect(inserts.length).toBeGreaterThan(0);
-    for (const at of inserts) expect(pickupSource.slice(pickupSource.lastIndexOf("function", at), at)).toMatch(/remove_item\s*\(/);
+    // Belt pickup is an exact conserved transfer of the line's own item stacks
+    // (items.move_stacks): pickup itself never inserts an item by name.
+    expect(pickupSource).toMatch(/get_detailed_contents\s*\(/);
+    expect(pickupSource).toMatch(/items\.move_stacks\s*\(/);
+    expect(pickupSource).not.toMatch(/(?<!table)[.:]insert\s*\(/);
     expect(read("mod/agentic-companion/scripts/actions/build_plan.lua")).not.toMatch(/step\.entity/);
     expect(luaSources).not.toMatch(/register\(["']run_plan/);
     expect(read("mod/agentic-companion/scripts/tasks.lua")).toMatch(/wait_for_item/);

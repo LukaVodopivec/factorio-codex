@@ -7,50 +7,27 @@ local function check(ok, name)
   if not ok then failures = failures + 1 end
 end
 
+-- Items move as real stacks (item_stack_mock): the body's main inventory and
+-- the chest are one stack per item name over these counts.
+local stacks = dofile(here .. "/item_stack_mock.lua")
+_G.game = { tick = 1, create_inventory = stacks.create_inventory }
 local body = { valid = true, reach_distance = 6, received = {}, capacity = 100 }
 local function received_total()
   local total = 0
   for _, count in pairs(body.received) do total = total + count end
   return total
 end
-function body.insert(stack)
-  local inserted = math.min(stack.count, math.max(body.capacity - received_total(), 0))
-  body.received[stack.name] = (body.received[stack.name] or 0) + inserted
-  return inserted
-end
+function body.insert() error("extraction inserts into the main inventory only") end
 function body.get_main_inventory()
-  return { get_insertable_count = function() return math.max(body.capacity - received_total(), 0) end }
-end
-function body.remove_item(stack)
-  local removed = math.min(stack.count, body.received[stack.name] or 0)
-  body.received[stack.name] = (body.received[stack.name] or 0) - removed
-  return removed
+  return stacks.view(body.received, function() return math.max(body.capacity - received_total(), 0) end)
 end
 
 local contents = { coal = 7, stone = 3 }
-local inventory = {}
-function inventory.get_contents()
-  local result = {}
-  for name, count in pairs(contents) do
-    result[#result + 1] = { name = name, count = count }
-  end
-  return result
-end
-function inventory.remove(stack)
-  local removed = math.min(contents[stack.name] or 0, stack.count)
-  contents[stack.name] = (contents[stack.name] or 0) - removed
-  return removed
-end
-function inventory.insert(stack)
-  contents[stack.name] = (contents[stack.name] or 0) + stack.count
-  return stack.count
-end
+local inventory = stacks.view(contents)
 
 local entity = { valid = true, name = "wooden-chest", type = "container" }
 function entity.get_output_inventory() return nil end
 function entity.get_inventory() return inventory end
-function entity.remove_item(stack) return inventory.remove(stack) end
-function entity.insert(stack) return inventory.insert(stack) end
 
 package.loaded["scripts.companion"] = {
   require_companion = function() return body end,
@@ -116,13 +93,9 @@ body.capacity = 100
 local result_slot = { ["iron-plate"] = 100 }
 local spilled = 0
 body.surface = { spill_item_stack = function(args) spilled = spilled + args.stack.count end }
-local furnace = { valid = true, name = "stone-furnace" }
-function furnace.remove_item(stack)
-  local n = math.min(result_slot[stack.name] or 0, stack.count)
-  result_slot[stack.name] = (result_slot[stack.name] or 0) - n
-  return n
-end
-function furnace.insert() return 0 end
+local furnace = { valid = true, name = "stone-furnace", type = "furnace" }
+local result_inventory = stacks.view(result_slot, function() return 0 end)
+function furnace.get_output_inventory() return result_inventory end
 prototypes.item["iron-plate"] = {}
 local real_find = package.loaded["scripts.actions.approach"].find_entity_near
 package.loaded["scripts.actions.approach"].find_entity_near = function() return furnace end

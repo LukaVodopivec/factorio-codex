@@ -1,5 +1,7 @@
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
+local stacks = dofile(here .. "/item_stack_mock.lua")
+_G.game = { create_inventory = stacks.create_inventory }
 
 local failures = 0
 local function check(ok, name)
@@ -75,13 +77,17 @@ local entity = {
   position = { x = 7.5, y = 0 },
   direction = 0,
 }
-local mutations = { rotate = 0, recipe = 0, insert = 0, extract = 0 }
+-- Extraction takes real stacks from the machine's output: its mutation count
+-- is the coal that left it.
+local output_stock = { coal = 100 }
+local mutations = setmetatable({ rotate = 0, recipe = 0, insert = 0 }, { __index = function(_, key)
+  if key == "extract" then return 100 - output_stock.coal end
+end })
 entity.rotate = function() mutations.rotate = mutations.rotate + 1 return true end
 entity.set_recipe = function() mutations.recipe = mutations.recipe + 1 return {} end
 entity.get_recipe = function() return { name = "iron-gear-wheel" } end
 entity.insert = function(stack) mutations.insert = mutations.insert + 1 return stack.count end
-entity.remove_item = function(stack) mutations.extract = mutations.extract + 1 return stack.count end
-entity.get_output_inventory = function() return nil end
+entity.get_output_inventory = function() return stacks.view(output_stock, function() return 0 end) end
 entity.get_inventory = function() return nil end
 
 package.loaded["scripts.actions.approach"] = real_approach
@@ -99,6 +105,8 @@ body.force = { recipes = { ["iron-gear-wheel"] = { enabled = true } } }
 body.get_item_count = function() return 1 end
 body.remove_item = function() return 1 end
 body.insert = function(stack) return stack.count end
+-- The body always carries one coal, handed over as a real stack.
+body.get_main_inventory = function() return stacks.view({ coal = 1 }, function() return 1000 end) end
 package.loaded["scripts.companion"] = {
   require_companion = function() return body end,
   get = function() return body end,

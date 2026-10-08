@@ -35,6 +35,7 @@ local entity_settings = require("scripts.entity_settings")
 local supply = require("scripts.actions.supply")
 local transfer = require("scripts.actions.transfer")
 local craft = require("scripts.actions.craft")
+local items = require("scripts.items")
 require("scripts.actions.move_entity") -- registers the escape runner
 
 local M = {}
@@ -301,7 +302,7 @@ local blocked_reason = build.blocked_reason
 
 -- Same rules as build.lua's set_recipe, applied to the freshly placed entity.
 -- Returns nil on success, else a reason string.
-local function apply_recipe(c, e, recipe_name)
+local function apply_recipe(c, e, recipe_name, spilled)
   local r = c.force.recipes[recipe_name]
   if not r then
     return "unknown recipe: '" .. recipe_name .. "'"
@@ -323,17 +324,16 @@ local function apply_recipe(c, e, recipe_name)
     return string.format("couldn't set recipe %s on the %s — that machine probably can't craft it",
       recipe_name, e.name)
   end
-  -- Anything the recipe change hands back goes to us; overflow spills.
+  -- Anything the recipe change hands back goes to us; overflow spills
+  -- (items.spill, recorded in `spilled`).
   if type(removed) == "table" then
     for _, stack in ipairs(removed) do
       if stack.name and (stack.count or 0) > 0 then
-        local kept = c.insert({ name = stack.name, count = stack.count })
+        local item = { name = stack.name, count = stack.count, quality = items.quality_name(stack.quality) }
+        local kept = c.insert(item)
         if kept < stack.count then
-          pcall(c.surface.spill_item_stack, {
-            position = c.position,
-            stack = { name = stack.name, count = stack.count - kept },
-            force = c.force,
-          })
+          item.count = stack.count - kept
+          items.spill(c.surface, c.position, item, spilled)
         end
       end
     end
@@ -521,8 +521,14 @@ local function finish_placed_step(task, c, step, built)
     else
       if step.recipe and not task._recipe_applied then
         task._recipe_applied = true
-        local why = apply_recipe(c, built, step.recipe)
+        local spilled = {}
+        local why = apply_recipe(c, built, step.recipe, spilled)
         if why then issues[#issues + 1] = why end
+        if spilled.count then
+          task._note = (task._note and (task._note .. "; ") or "") .. string.format(
+            "the old recipe's items did not all fit: spilled %d at (%.1f, %.1f)", spilled.count,
+            spilled.position.x, spilled.position.y)
+        end
       end
       if step.settings and not task._settings_applied then
         -- A setting the entity does not take is a note, never a failure.

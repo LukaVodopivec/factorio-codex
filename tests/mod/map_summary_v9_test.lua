@@ -1,5 +1,6 @@
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 local mock = dofile(here .. "/factorio_api_mock.lua")
+local stacks = dofile(here .. "/item_stack_mock.lua")
 -- Keep mock/locator in an outer scope: this suite reaches Lua's local limit.
 -- map_summary is a job; this runs one to its end, a tick's budget at a time.
 local function summarize(params)
@@ -65,7 +66,7 @@ _G.prototypes = { tile = {
   land = { collision_mask = { layers = {} } },
   water = { collision_mask = { layers = { water_tile = true, player = true } } },
 } }
-_G.game = { tick = 777 }
+_G.game = { tick = 777, create_inventory = stacks.create_inventory }
 _G.storage = {}
 _G.defines = { entity_status = { no_power = 1 }, flow_precision_index = { one_minute = 1 } }
 local summary = summarize({ detail = "full" })
@@ -302,6 +303,8 @@ body.build_distance = 6
 local starter_stock = { processor = 1, ore = 2 }
 body.get_item_count = function(name) return starter_stock[type(name) == "table" and name.name or name] or 0 end
 body.remove_item = function(stack) starter_stock[stack.name] = starter_stock[stack.name] - stack.count; return stack.count end
+-- Starter inserts hand over real stacks (item_stack_mock) over the same stock.
+body.get_main_inventory = function() return stacks.view(starter_stock) end
 surface.can_place_entity = function() return true end
 surface.create_entity = function() return flow_processor end
 flow_processor.insert = function(stack) return stack.count end

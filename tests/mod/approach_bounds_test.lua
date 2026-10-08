@@ -7,6 +7,7 @@
 -- That the native game moves and collides this way is live evidence.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
+local stacks = dofile(here .. "/item_stack_mock.lua")
 
 local failures = 0
 local function check(ok, name)
@@ -106,18 +107,8 @@ body = {
     inventory[stack.name] = count_of(stack.name) - n
     return n
   end,
-  get_main_inventory = function()
-    return {
-      get_contents = function()
-        local out = {}
-        for name, count in pairs(inventory) do if count > 0 then out[#out + 1] = { name = name, count = count } end end
-        table.sort(out, function(a, b) return a.name < b.name end)
-        return out
-      end,
-      get_insertable_count = function() return 1000 end,
-      get_item_count = count_of,
-    }
-  end,
+  -- Inserts hand over real stacks (item_stack_mock), one per name over `inventory`.
+  get_main_inventory = function() return stacks.view(inventory, function() return 1000 end) end,
   cancel_crafting = function() end,
 }
 body.can_reach_entity = function(e)
@@ -189,7 +180,7 @@ local function reset(x, y)
   wall, shore_route, detour = function() return false end, true, nil
   body.position, body.walking_state, body.mining_state = { x = x, y = y }, {}, {}
   body.crafting_queue, body.crafting_queue_size, body.crafting_queue_progress = {}, 0, 0
-  _G.game = { tick = 0 }
+  _G.game = { tick = 0, create_inventory = stacks.create_inventory }
   _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil } }
 end
 local function tick()

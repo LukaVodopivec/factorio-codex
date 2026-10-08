@@ -1,17 +1,19 @@
 -- pickup_items on a transport belt: the body stands beside the lane carrying
 -- the item and, while the belt's centre is within item_pickup_distance, the
 -- action moves the requested item from the tile's transport lines into the
--- inventory by an exact, conserved transfer (remove N from the line, insert
--- exactly N), only when the inventory can hold the whole outstanding count. Native picking_state stays off: it would take every item kind in
+-- inventory by an exact, conserved transfer of the line's own item stacks
+-- (exactly what leaves the line goes in), only when the inventory can hold
+-- the whole outstanding count. Native picking_state stays off: it would take every item kind in
 -- reach. The fixture plays the game: were picking_state ever on, one item of
 -- any kind per tick would leave every lane within reach.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
+local stacks = dofile(here .. "/item_stack_mock.lua")
 
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
-_G.game = { tick = 1 }
+_G.game = { tick = 1, create_inventory = stacks.create_inventory }
 _G.defines = { direction = { north = 0, east = 4, south = 8, west = 12 } }
 
 local contents, capacity, insert_shortfall = {}, 100, 0
@@ -32,8 +34,9 @@ local inventory = {
 }
 
 -- A belt holds a count per item per lane; lane 1 is left of its direction.
--- removed counts what the action took off transport lines and line_writes
--- what it put back; any other line write is an error.
+-- Each item kind on a lane is one real item stack (item_stack_mock). removed
+-- counts what the action took off transport lines and line_writes what it
+-- put back at the line's end; any other line write is an error.
 local line_writes, removed = 0, {}
 local function belt(x, y, direction, left, right)
   local lanes = { left or {}, right or {} }
@@ -42,6 +45,18 @@ local function belt(x, y, direction, left, right)
   entity.get_transport_line = function(index)
     return {
       get_item_count = function(name) return lanes[index][name] or 0 end,
+      get_detailed_contents = function()
+        local names = {}
+        for name in pairs(lanes[index]) do names[#names + 1] = name end
+        table.sort(names)
+        local line = stacks.counted(names, function(name) return lanes[index][name] or 0 end, function(stack)
+          lanes[index][stack.name] = (lanes[index][stack.name] or 0) - stack.count
+          removed[stack.name] = (removed[stack.name] or 0) + stack.count
+        end)
+        local rows = {}
+        for i = 1, #line do rows[i] = { stack = line[i], position = i / 4, unique_id = i } end
+        return rows
+      end,
       remove_item = function(stack)
         local count = math.min(stack.count, lanes[index][stack.name] or 0)
         lanes[index][stack.name] = (lanes[index][stack.name] or 0) - count
@@ -364,18 +379,19 @@ check(result and result.status == "failed" and result.detail:match("picked up 2 
   and contents["iron-plate"] == 2 and on_belt(north, "iron-plate") == 3 and removed["iron-plate"] == 2
   and result.outcome.picked_up == 2 and result.outcome.removed_from_belt == 2,
   "an inventory that lost its room stops the pickup before removing anything more")
--- Conservation even if the inventory takes fewer than it accepted: the
--- remainder goes back onto the line, nothing is spilled, lost or created.
+-- Conservation even if the inventory takes fewer than it said it could hold:
+-- the remainder goes back onto its own stack, nothing is spilled, lost or created.
 north = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 5 })
 reset(north)
 approach_result, insert_shortfall = "ok", 1
 task = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 3 }
 pickup.start(task)
 result = run(task, 10)
-check(result and result.status == "failed" and result.detail:match("picked up 2") and result.detail:match("1 went back onto the belt and 0 could not")
-  and contents["iron-plate"] == 2 and on_belt(north, "iron-plate") == 3 and line_writes == 1
+check(result and result.status == "failed" and result.detail:match("picked up 2")
+  and result.detail:match("refused 1 iron%-plate it said it could hold; they stayed on the belt")
+  and contents["iron-plate"] == 2 and on_belt(north, "iron-plate") == 3 and line_writes == 0 and removed["iron-plate"] == 2
   and result.outcome.picked_up == 2 and result.outcome.removed_from_belt == 2,
-  "an insert that returns fewer than removed puts the remainder back on the line: belt plus inventory is unchanged")
+  "an insert that takes fewer than offered leaves the rest on its belt stack: belt plus inventory is unchanged")
 local source = io.open(here .. "/../../mod/agentic-companion/scripts/actions/pickup.lua"):read("a")
 check(not source:find("spill_item_stack", 1, true), "the pickup action never calls spill_item_stack")
 

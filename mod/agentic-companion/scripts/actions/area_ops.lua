@@ -31,6 +31,7 @@ local build_layout = require("scripts.actions.build_layout")
 local supply = require("scripts.actions.supply")
 local craft = require("scripts.actions.craft")
 local platforms = require("scripts.platforms")
+local items = require("scripts.items")
 
 local M = {}
 
@@ -440,7 +441,8 @@ local function ghost_result(task)
   return finish(task, status, code, string.format("build_ghosts: built %d/%d ghosts by hand%s", task._built, task._total,
     task._truncated and " (the area holds more: build_ghosts again)" or ""),
     { built = task._built, total = task._total, truncated = task._truncated or nil,
-      item_requests_pending = task._pending, shortfall = task._shortfall })
+      item_requests_pending = task._pending, shortfall = task._shortfall,
+      spilled = task._spilled and task._spilled.count and task._spilled or nil })
 end
 
 function Ghosts.tick(task)
@@ -519,9 +521,12 @@ function Ghosts.tick(task)
   pcall(registry.add, built)
   -- Items lying in the footprint are the body's now.
   for _, stack in ipairs(type(collided) == "table" and collided or {}) do
-    local kept = c.insert({ name = stack.name, count = stack.count })
+    local item = { name = stack.name, count = stack.count, quality = items.quality_name(stack.quality) }
+    local kept = c.insert(item)
     if kept < stack.count then
-      pcall(c.surface.spill_item_stack, { position = c.position, stack = { name = stack.name, count = stack.count - kept } })
+      item.count = stack.count - kept
+      task._spilled = task._spilled or {}
+      items.spill(c.surface, c.position, item, task._spilled)
     end
   end
   if had_requests and proxy then task._pending = (task._pending or 0) + 1 end
@@ -893,7 +898,8 @@ function Copy.tick(task)
     local status = task._copied == #task.to and "done" or task._copied > 0 and "partial" or "failed"
     return finish(task, status, status == "done" and "SETTINGS_COPIED" or "SETTINGS_PARTIAL",
       string.format("copy_settings: copied %s's settings to %d/%d entities", source.name, task._copied, #task.to),
-      { source = row(source), copied = task._copied, returned = next(task._returned) and task._returned or nil })
+      { source = row(source), copied = task._copied, returned = next(task._returned) and task._returned or nil,
+        spilled = task._spilled and task._spilled.count and task._spilled or nil })
   end
   local target = task._target
   if not target then
@@ -917,10 +923,13 @@ function Copy.tick(task)
     task._copied = task._copied + 1
     -- What the new settings pushed out (old recipe ingredients) is the body's.
     for _, stack in ipairs(type(removed) == "table" and removed or {}) do
-      local kept = c.insert({ name = stack.name, count = stack.count })
+      local item = { name = stack.name, count = stack.count, quality = items.quality_name(stack.quality) }
+      local kept = c.insert(item)
       task._returned[stack.name] = (task._returned[stack.name] or 0) + stack.count
       if kept < stack.count then
-        pcall(c.surface.spill_item_stack, { position = c.position, stack = { name = stack.name, count = stack.count - kept } })
+        item.count = stack.count - kept
+        task._spilled = task._spilled or {}
+        items.spill(c.surface, c.position, item, task._spilled)
       end
     end
   else

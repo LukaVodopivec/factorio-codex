@@ -5,7 +5,9 @@
 -- receiving the same items. Both take an inventory role (inventory_roles:
 -- main, input, output, fuel, burnt_result, modules, trash, robots,
 -- material); without one, insert routes like shift-click and extract takes
--- the output (or a chest's contents). flush_fluid empties a pipe system or
+-- the output (or a chest's contents). Items move as real stacks
+-- (items.move): spoil, durability, ammo and quality go with them, and the
+-- count moved is what left the source. flush_fluid empties a pipe system or
 -- tank; the fluid is lost.
 local companion = require("scripts.companion")
 local inventory_roles = require("scripts.inventory_roles")
@@ -13,6 +15,7 @@ local approach = require("scripts.actions.approach")
 local supply = require("scripts.actions.supply")
 local craft = require("scripts.actions.craft")
 local factory_activity = require("scripts.factory_activity")
+local items = require("scripts.items")
 
 local M = {}
 
@@ -84,22 +87,19 @@ local function role_inventories(e, role)
     outcome = { code = "INVENTORY_NOT_PRESENT", inventory = role, present = present, target = target_identity(e) } }
 end
 
--- Normal-quality items of `name` the body carries: the quality an insert
--- names and remove_item takes.
-local function carried_normal(c, name) return c.get_item_count({ name = name, quality = "normal" }) end
+-- Normal-quality items of `name` in the body's main inventory: what an
+-- insert of a named item hands over.
+local function carried_normal(c, name)
+  local main = c.get_main_inventory()
+  return main and main.get_item_count({ name = name, quality = "normal" }) or 0
+end
 
--- Hands up to n normal-quality `name` from the body to `into` (an entity, or
--- an inventory when is_inventory) and returns how many moved: what the body
--- really gave, with any surplus the target took taken back.
-local function hand_over(c, into, is_inventory, name, n)
-  local inserted = into.insert({ name = name, count = n, quality = "normal" })
-  if inserted <= 0 then return 0 end
-  local removed = c.remove_item({ name = name, count = inserted, quality = "normal" })
-  if removed < inserted then
-    local back = { name = name, count = inserted - removed, quality = "normal" }
-    if is_inventory then into.remove(back) else into.remove_item(back) end
-  end
-  return removed
+-- Hands up to n normal-quality `name` from the body's own stacks to `into`
+-- (an entity or an inventory) and returns how many left the body: spoil,
+-- durability and ammo go with them.
+local function hand_over(c, into, name, n)
+  local main = c.get_main_inventory()
+  return main and items.move(main, into, name, "normal", n) or 0
 end
 
 -- Moves each listed {name, count} from the companion into the entity,
@@ -113,7 +113,7 @@ function M.insert_list(c, e, list)
     else
       local have = carried_normal(c, it.name)
       local n = math.min(it.count, have)
-      local inserted = n > 0 and hand_over(c, e, false, it.name, n) or 0
+      local inserted = n > 0 and hand_over(c, e, it.name, n) or 0
       total = total + inserted
       transfers[#transfers + 1] = { item = it.name, requested = it.count,
         available = have, inserted = inserted, remainder = it.count - inserted }
@@ -233,7 +233,7 @@ local function insert_one(task, c)
   for _, it in ipairs(task._items) do
     local have = carried_normal(c, it.name)
     local n = math.min(it.count, have)
-    local inserted = n > 0 and hand_over(c, into, into ~= e, it.name, n) or 0
+    local inserted = n > 0 and hand_over(c, into, it.name, n) or 0
     total = total + inserted
     local reason
     if inserted >= it.count then
@@ -369,36 +369,31 @@ function M.extract.start(task)
   end
 end
 
--- Move `count` of `name` from an entity/inventory into the companion;
--- overflow that doesn't fit goes straight back. Returns kept, removed.
--- (LuaObjects error on unknown members, so the source kind is explicit.)
--- Moves up to count of name from source into the body. Never removes more
--- than the body has room for: an entity's insert works like an inserter and
--- cannot put a furnace's or assembler's products back into its output, so
--- an overflow would be lost. What still fails to go back is spilled at the
--- body, never deleted. Returns kept, removed, and whether room capped it.
-local function pull(c, source, is_inventory, name, count)
+-- Moves up to count of name (of quality; any when nil) from a source
+-- inventory's own stacks into the body's main inventory, never more than it
+-- has room for: what does not fit never leaves the source (a furnace's
+-- output could not take it back), so nothing returns, spills or is lost.
+-- Returns the count moved and whether room capped it.
+local function pull(c, source, name, quality, count)
   local inventory = c.get_main_inventory()
-  local room = inventory and inventory.get_insertable_count(name) or 0
+  local room = inventory and inventory.get_insertable_count({ name = name, quality = quality or "normal" }) or 0
   local full = room < count
-  if room <= 0 then return 0, 0, true end
-  if full then count = room end
-  local removed
-  if is_inventory then
-    removed = source.remove({ name = name, count = count })
-  else
-    removed = source.remove_item({ name = name, count = count })
-  end
-  if removed == 0 then return 0, 0, full end
-  local kept = c.insert({ name = name, count = removed })
-  if kept < removed then
-    local back = source.insert({ name = name, count = removed - kept })
-    if back < removed - kept then
-      pcall(c.surface.spill_item_stack, { position = c.position,
-        stack = { name = name, count = removed - kept - back }, force = c.force, allow_belts = false })
+  if room <= 0 then return 0, true end
+  return items.move(source, inventory, name, quality, math.min(count, room)), full
+end
+
+-- Every inventory an entity holds items in, in role order, each once (by
+-- its define index: two reads of one inventory are different objects).
+local function all_inventories(e)
+  local list, seen = {}, {}
+  for _, role in ipairs(inventory_roles.ORDER) do
+    for _, inventory in ipairs(inventory_roles.get(e, role)) do
+      local ok, index = pcall(function() return inventory.index end)
+      local id = ok and index or inventory
+      if not seen[id] then seen[id], list[#list + 1] = true, inventory end
     end
   end
-  return kept, removed, full
+  return list
 end
 
 -- The inventories an extract takes from: the named role's, else the output
@@ -413,41 +408,46 @@ local function sources(task, e)
   return { inv }
 end
 
+-- Every item of every quality: a rare plate is its own row (items.key),
+-- never counted or moved as a normal one.
 local function extract_all(task, c, e, inventories)
-  local seen, names, held = {}, {}, {}
+  local kinds, keys, held = {}, {}, {}
   for i, inv in ipairs(inventories) do
     held[i] = {}
     for _, s in ipairs(inv.get_contents()) do
-      if not seen[s.name] then seen[s.name], names[#names + 1] = true, s.name end
-      held[i][s.name] = (held[i][s.name] or 0) + s.count
+      local quality = items.quality_name(s.quality)
+      local key = items.key(s.name, quality)
+      if not kinds[key] then kinds[key], keys[#keys + 1] = { name = s.name, quality = quality }, key end
+      held[i][key] = (held[i][key] or 0) + s.count
     end
   end
-  if #names == 0 then
+  if #keys == 0 then
     return { status = "failed", detail = string.format("the %s%s is empty — nothing to take", e.name,
       task.inventory and ("'s " .. task.inventory .. " inventory") or "") }
   end
-  table.sort(names)
+  table.sort(keys)
 
+  -- A failed full extraction hands back what it took, as the body's own
+  -- stacks of the same item and quality.
   local moved = {}
   local function restore_moved()
+    local main = c.get_main_inventory()
     for i = #moved, 1, -1 do
-      local stack = moved[i]
-      local removed = c.remove_item({ name = stack.name, count = stack.count })
-      local restored = removed > 0 and stack.inventory.insert({ name = stack.name, count = removed }) or 0
-      if removed ~= stack.count or restored ~= removed then
+      local m = moved[i]
+      if items.move(main, m.inventory, m.name, m.quality, m.count) ~= m.count then
         error("full extraction could not restore the source inventory")
       end
     end
   end
 
   local taken, transfers, total = {}, {}, 0
-  for _, name in ipairs(names) do
-    local got = 0
+  for _, key in ipairs(keys) do
+    local kind, got = kinds[key], 0
     for i, inv in ipairs(inventories) do
-      local count = held[i][name] or 0
+      local count = held[i][key] or 0
       if count > 0 then
-        local kept = pull(c, inv, true, name, count)
-        if kept > 0 then moved[#moved + 1] = { name = name, count = kept, inventory = inv } end
+        local kept = pull(c, inv, kind.name, kind.quality, count)
+        if kept > 0 then moved[#moved + 1] = { name = kind.name, quality = kind.quality, count = kept, inventory = inv } end
         got = got + kept
         if kept < count then
           restore_moved()
@@ -458,8 +458,9 @@ local function extract_all(task, c, e, inventories)
         end
       end
     end
-    taken[#taken + 1] = string.format("%d %s", got, name)
-    transfers[#transfers + 1] = { item = name, extracted = got }
+    taken[#taken + 1] = string.format("%d %s", got, key)
+    transfers[#transfers + 1] = { item = kind.name, quality = kind.quality ~= "normal" and kind.quality or nil,
+      extracted = got }
     total = total + got
   end
   return {
@@ -469,17 +470,17 @@ local function extract_all(task, c, e, inventories)
   }
 end
 
--- From the named inventories, or (no role) from wherever the entity holds
--- the items, as before roles.
+-- From the named inventories, or (no role) from every inventory the entity
+-- holds items in, as before roles. A named item is its normal quality.
 local function extract_items(task, c, e, inventories)
-  local from_entity = inventories == nil
+  inventories = inventories or all_inventories(e)
   local taken, problems, total, transfers = {}, {}, 0, {}
   for _, it in ipairs(task._items) do
-    local kept, removed, full = 0, 0, false
-    for _, source in ipairs(inventories or { e }) do
+    local kept, full = 0, false
+    for _, source in ipairs(inventories) do
       if kept >= it.count or full then break end
-      local k, r, f = pull(c, source, not from_entity, it.name, it.count - kept)
-      kept, removed, full = kept + k, removed + r, f
+      local k, f = pull(c, source, it.name, "normal", it.count - kept)
+      kept, full = kept + k, f
     end
     total = total + kept
     transfers[#transfers + 1] = { item = it.name, requested = it.count, extracted = kept,
@@ -487,9 +488,9 @@ local function extract_items(task, c, e, inventories)
     if kept >= it.count then
       taken[#taken + 1] = string.format("%d %s", kept, it.name)
     elseif kept > 0 then
-      local why = (full or kept < removed) and "my inventory is full" or "that's all it had"
+      local why = full and "my inventory is full" or "that's all it had"
       taken[#taken + 1] = string.format("%d of %d %s (%s)", kept, it.count, it.name, why)
-    elseif full or removed > 0 then
+    elseif full then
       problems[#problems + 1] = "my inventory is full"
     else
       problems[#problems + 1] = "it has no " .. it.name

@@ -6,6 +6,7 @@
 local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local placement_geometry = require("scripts.placement_geometry")
+local items = require("scripts.items")
 
 local M = {}
 local TARGET_RADIUS = 0.01
@@ -52,10 +53,11 @@ end
 -- So the body stands beside the lane that carries the item (never on the
 -- belt, which would carry it away) and, while the belt's centre is within
 -- item_pickup_distance of the body, the requested item moves from the tile's
--- transport lines into the inventory: what the lines give up is exactly what
--- the inventory takes, and that is the reported count. The inventory must be
--- able to hold the whole outstanding count before anything leaves the belt;
--- nothing is ever spilled or created.
+-- transport lines into the inventory as the line's own item stacks (spoil and
+-- quality ride along): what the lines give up is exactly what the inventory
+-- takes, and that is the reported count. The inventory must be able to hold
+-- the whole outstanding count before anything leaves the belt; nothing is
+-- ever spilled or created.
 local LANE_OFFSET = 0.25
 local UNSUPPORTED_BELT_TYPES = { "underground-belt", "splitter", "loader", "loader-1x1", "linked-belt" }
 local LANE_NAMES = { "left", "right" }
@@ -144,7 +146,7 @@ end
 
 local function belt_outcome(task, belt)
   return { source = "belt", item = task.item, requested = task.count, picked_up = task._picked,
-    removed_from_belt = task._picked + (task._lost or 0),
+    removed_from_belt = task._picked,
     belt = { name = belt.name, position = { x = belt.position.x, y = belt.position.y } } }
 end
 
@@ -161,23 +163,24 @@ local function within(a, b, distance)
 end
 
 -- Moves up to `want` of the item from one lane into the inventory and returns
--- the count moved. Nothing leaves the line unless the inventory can take it,
--- and what the line gives up is what the inventory is given. Should the
--- inventory still take fewer, the remainder goes back onto the same line;
--- an item the line will not take back is counted, never hidden.
+-- the count moved: the line's own stacks are handed over and only what the
+-- inventory took leaves the line (items.move_stacks). Should the inventory
+-- take fewer than it said it could hold, the rest never left the belt; the
+-- refusal is counted and stops the pickup.
 local function take(task, inventory, lane, want)
   local line = task._belt.get_transport_line(lane)
   -- can_insert is true when any part fits; only the insertable count bounds a removal.
   want = math.min(want, line.get_item_count(task.item), inventory.get_insertable_count(task.item))
   if want < 1 then return 0 end
-  local removed = line.remove_item({ name = task.item, count = want })
-  if removed < 1 then return 0 end
-  local inserted = inventory.insert({ name = task.item, count = removed })
-  for _ = inserted + 1, removed do
-    task._refused = (task._refused or 0) + 1
-    if not line.insert_at_back({ name = task.item, count = 1 }) then task._lost = (task._lost or 0) + 1 end
-  end
-  return inserted
+  local stacks = {}
+  for _, row in ipairs(line.get_detailed_contents()) do stacks[#stacks + 1] = row.stack end
+  local moved, short = items.move_stacks(stacks, inventory, task.item, nil, want, { remove = line.remove_item,
+    put_back = function(stack)
+      local count = stack.count
+      return line.insert_at_back(stack) and count or 0
+    end })
+  if short then task._refused = (task._refused or 0) + want - moved end
+  return moved
 end
 
 -- Switches once to the other lane when it carries the item.
@@ -280,8 +283,8 @@ local function belt_tick(task, c)
     end
   end
   if task._refused then
-    return belt_stopped(c, task, string.format("the inventory refused %d %s it had accepted; %d went back onto the belt and %d could not be returned",
-      task._refused, task.item, task._refused - (task._lost or 0), task._lost or 0))
+    return belt_stopped(c, task, string.format("the inventory refused %d %s it said it could hold; they stayed on the belt",
+      task._refused, task.item))
   end
   if task._picked >= task.count then
     stop(c)

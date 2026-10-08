@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.31.0** against a real Factorio game: start a
+This guide validates release **0.32.0** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.31.0 run is recorded.
+until a 0.32.0 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node
@@ -146,6 +146,38 @@ alone is not evidence of usable framing.
    re-observe authoritative MCP state.
 
 ## Release checklists
+
+For the 0.32.0 release (can it keep up), record these observable checks on
+a copy of a running factory's save:
+
+- `factory_status` line rows carry `max_per_min` (full-duty output with
+  modules, beacons, quality and research productivity), `utilisation`, and
+  `share_10m` once a line was not running nearly all of the last ten
+  minutes; burner and steam lines carry `fuel_s`; a row short of power names
+  its network's generating lines in `supply_states`.
+- `production_requirements` with `per_minute` gives each stage's
+  `standing_per_min`, `standing_lines` and `short_per_min`; the research
+  section gives `packs_per_minute_made` and `labs.starved_by`.
+- `describe_prototype`, dry-run inserter rows and `inspect_entity` give an
+  inserter's `max_items_per_second`; dry-run materials carry `in_stock`,
+  `made_per_min`, `short`, `minutes_at_rate`, the hand-craft split and a walk
+  lower bound; `queue_plan` returns `needs` and the fifo block shows
+  `queued_demand` and `short_by`.
+- `set_watch`/`clear_watch` (both surfaces, 16 a role) fire `watch_fired`
+  through `next_event` once per crossing, re-arming after hysteresis.
+- `connect_entities` fails typed (`ROUTE_TOO_LONG`, `ROUTE_BLOCKED`,
+  `SEARCH_BUDGET`), routes through bot-chosen `via` waypoints, and a pipe
+  dry run reports its segment against the pipeline extent.
+- `next_event` delivers `entities_lost`, `repeat` and `recent_draws` on
+  outcomes, and package `verify` metrics as `package_verified` or
+  `package_unmet`; `activity_log` reads the change journal; patches carry
+  `minutes_left` and `remaining_fraction` (crude oil `yield_percent`);
+  `factory_status` shows the game's own alerts when the Codex player has
+  them.
+
+These 0.32.0 behaviours were exercised live on a headless 2.0.77 server
+(line capacity and utilisation, a dry boiler's fuel and supply states, watch
+firings, an own building destroyed, patch depletion, package verify).
 
 For the 0.31.0 release (why a machine stops), record these observable checks
 on a copy of a running factory's save:

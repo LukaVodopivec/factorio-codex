@@ -15,8 +15,9 @@
 -- upgraded save's bootstrap or first pass still runs. The default read
 -- stays under about 6 KB in ordinary play (feed facts on up to three stalled
 -- rows add up to about 1.6 KB; line capacity, state shares, fuel runway and
--- supply states about 2.3 KB more at their widest; under 10.5 KB in all, the
--- worst case autonomy_test measures). logistics
+-- supply states about 2.3 KB, research, alerts and losses about 2.9 KB more
+-- at their widest; under 13.5 KB in all, the worst case autonomy_test
+-- measures). logistics
 -- (robot networks) is opt-in through sections. platforms lists the force's
 -- space platforms, one attribute-read line each (platforms.lua).
 --
@@ -551,9 +552,19 @@ local function measure_section(target, metrics)
         or prototypes.fluid[metric.item] and "get_fluid_production_statistics"
       local ok, rate = false, nil
       if getter then
+        -- An item counts at every quality, as rate_below watches do.
         ok, rate = pcall(function()
-          return target.force[getter](target.surface).get_flow_count({ name = metric.item, category = "input",
-            precision_index = defines.flow_precision_index.one_minute, count = false })
+          local stats = target.force[getter](target.surface)
+          local function flow(name)
+            return stats.get_flow_count({ name = name, category = "input",
+              precision_index = defines.flow_precision_index.one_minute, count = false })
+          end
+          if getter == "get_fluid_production_statistics" then return flow(metric.item) end
+          local read, qualities = pcall(function() return prototypes.quality end)
+          if not (read and qualities) then return flow(metric.item) end
+          local total = 0
+          for quality in pairs(qualities) do total = total + flow({ name = metric.item, quality = quality }) end
+          return total
         end)
       end
       if ok and type(rate) == "number" then

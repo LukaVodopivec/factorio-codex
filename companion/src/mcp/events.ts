@@ -112,7 +112,9 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   const newSpace = (state: EventState) => (luaArray(state.space_events ?? []) as SpaceEvent[]).filter((row) => row.tick > spaceSeen);
   // Own losses after since_tick, or (without it) after the call started; a
   // merged row comes again with its new count.
-  const lossSeen = since ?? previous.last_loss_tick ?? -1;
+  // An RCON read at tick T runs before that tick's update, so a loss
+  // stamped T is after the read that returned since_tick T: it counts.
+  const lossSeen = since !== undefined ? since - 1 : previous.last_loss_tick ?? -1;
   const newLosses = (state: EventState) => (luaArray(state.losses ?? []) as LossRow[]).filter((row) => row.tick > lossSeen);
   // Space events, watch firings and losses never get lost behind another
   // event: they ride along, since the caller's next since_tick is the
@@ -162,7 +164,9 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
         { sections: ["problems", "elsewhere"], since_tick: since });
       const away = luaArray(status?.elsewhere ?? []).flatMap((row: any) => row && typeof row === "object" && row.problems > 0
         ? luaArray(row.top_problems ?? []).map((problem: any) => ({ ...problem, surface: row.surface })) : []);
-      return done("new_problem", state, { problems: [...luaArray(status?.problems ?? []).map(withFeedFacts), ...away] });
+      // Destroyed buildings arrive in losses (they ride along), not twice.
+      const here = luaArray(status?.problems ?? []).filter((row: any) => row?.status !== "destroyed").map(withFeedFacts);
+      return done("new_problem", state, { problems: [...here, ...away] });
     } catch { return done("new_problem", state); }
   };
   // A package failure or verify outcome is delivered once per session, by
@@ -196,7 +200,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if ((previous.last_problem_tick ?? -1) > since) return problems(since, previous);
     const fired = watched(previous);
     if (fired) return fired;
-    if ((previous.last_loss_tick ?? -1) > since) return lost(previous);
+    if ((previous.last_loss_tick ?? -1) >= since) return lost(previous);
     const space = spaceEvent(previous);
     if (space) return space;
   }

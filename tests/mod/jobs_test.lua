@@ -331,5 +331,14 @@ check(result.job_status == "done" and result.result.counted == 900 and polls > 1
   "snapshot jobs finish while entity simulation is frozen")
 game.tick_paused = false
 
+-- NaN and infinities, which table_to_json writes bare, reach the bridge as null.
+do
+  local rpc = require("scripts.rpc")
+  check(rpc.to_json({ demand_w = 0 / 0 }) == '{"demand_w":null}' and rpc.to_json({ 1 / 0, 2 }) == "[null,2]"
+    and rpc.to_json({ -(1 / 0) }) == "[null]" and rpc.to_json({ name = "banana info" }) == '{"name":"banana info"}',
+    "NaN and infinities encode as null; text holding nan or inf is untouched")
+end
+
 print(failures == 0 and "\nALL JOB TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)
+

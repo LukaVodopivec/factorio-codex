@@ -95,12 +95,14 @@ end
 -- A line watch's rate; a line id that is gone (lines merged or regrouped)
 -- is found again through the member machine position it kept.
 local function line_value(watch)
+  -- A regrouped line reads 0/min until its first samples: unread for 10 s.
+  if watch.settle_until and game.tick < watch.settle_until then return nil end
   local rate, surface, at = autonomy.line_rate(watch.line)
   if rate == nil and watch.at then
     local id = autonomy.line_at(watch.surface, watch.at, true)
     if id then
-      watch.line = id
-      rate, surface, at = autonomy.line_rate(id)
+      watch.line, watch.settle_until = id, game.tick + 600
+      return nil
     end
   end
   if rate == nil then return nil end

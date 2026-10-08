@@ -507,6 +507,22 @@ describe("next_event own losses and repeated outcomes", () => {
       .toMatchObject({ event: "timeout" });
   });
 
+  it("delivers a loss stamped at the since_tick a read returned: that read ran before that tick's update", async () => {
+    const state = { ...busy, tick: 240, last_loss_tick: 230, losses: [panel] };
+    expect(await waitForEvent(game([state]).bridge, input({ since_tick: 230 }), quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "entities_lost", losses: [panel] });
+  });
+
+  it("keeps destroyed rows out of new_problem: they arrive in losses", async () => {
+    const state = { ...busy, tick: 240, last_problem_tick: 235 };
+    const call = vi.fn(async (method: string) => method === "factory_status"
+      ? { tick: 240, problems: [{ status: "destroyed", name: "wall", position: { x: 1, y: 1 } }, { status: "no_power", name: "lab", position: { x: 2, y: 2 } }] }
+      : state);
+    const event: any = await waitForEvent({ call } as unknown as Bridge, input({ since_tick: 230 }), quiet(), undefined, fakeClock());
+    expect(event.event).toBe("new_problem");
+    expect(event.problems.map((row: any) => row.status)).toEqual(["no_power"]);
+  });
+
   it("returns losses after since_tick at once, after plan ends, research and problems", async () => {
     const state = { ...busy, tick: 240, last_loss_tick: 230, losses: [belts, panel] };
     expect(await waitForEvent(game([state]).bridge, input({ since_tick: 220 }), quiet(), undefined, fakeClock()))

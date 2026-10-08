@@ -26,7 +26,8 @@ M.WORK_PER_TICK = 600
 M.MIN_WORK = 100
 M.MAX_JOBS = 8
 M.RESULT_TTL_TICKS = 5 * 60 * 60
-M.RAW_JSON = require("scripts.rpc").RAW_JSON
+local rpc = require("scripts.rpc")
+M.RAW_JSON = rpc.RAW_JSON
 local errors = require("scripts.errors")
 
 local kinds = {}
@@ -117,8 +118,8 @@ end
 
 local function strip(json) return string.sub(json, 2, -2) end
 local function value_json(value)
-  if type(value) == "table" then return helpers.table_to_json(value) end
-  return strip(helpers.table_to_json({ value }))
+  if type(value) == "table" then return rpc.to_json(value) end
+  return strip(rpc.to_json({ value }))
 end
 
 local function child_path(path, key)
@@ -193,7 +194,7 @@ local function encode_step(e, result, budget)
           if not fits(f, 1 + f.size, budget) then return nil end
           local slice = {}
           for k = f.i, f.to do slice[#slice + 1] = value[k] end
-          pieces[#pieces + 1] = (f.i > 1 and "," or "") .. strip(helpers.table_to_json(slice))
+          pieces[#pieces + 1] = (f.i > 1 and "," or "") .. strip(rpc.to_json(slice))
           budget.left = budget.left - 1 - f.size
           f.i, f.to, f.size, f.sized = f.to + 1, nil, nil, nil
         end

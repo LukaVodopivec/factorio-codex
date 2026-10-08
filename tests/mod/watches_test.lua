@@ -200,6 +200,24 @@ for _, row in ipairs(watches.fired_since("pilot", line_since) or {}) do
 end
 check(stalled and stalled.condition.line == line.id and stalled.value < 30, "a stalled line fires its watch")
 
+-- A regrouped line (its id gone) is found again through its machines and
+-- read only 10 s later: a fresh line's first 0/min never fires the watch.
+period = 60
+run(3700)
+local regrouped = watches.set({ role = "pilot", condition = { kind = "line_below", line = line.position, per_min = 30 } }).watch
+check(regrouped.armed == true, "a line watch set while the line makes enough is armed")
+for _, watch in ipairs(storage.watches.list) do if watch.id == regrouped.id then watch.line = -1 end end
+local regroup_since = game.tick
+period = 0
+run(570)
+local early = false
+for _, row in ipairs(watches.fired_since("pilot", regroup_since) or {}) do if row.id == regrouped.id then early = true end end
+check(not early, "a regrouped line is not read for 10 s, so its watch does not fire on the new line's first samples")
+run(3700)
+local late = false
+for _, row in ipairs(watches.fired_since("pilot", regroup_since) or {}) do if row.id == regrouped.id then late = true end end
+check(late, "after 10 s the regrouped line is read and a real stall fires")
+
 -- The cap: 16 per role; clear by id and all.
 local w = storage.watches
 for i = #watches.clear({ role = "pilot", all = true }).watches, 15 do

@@ -25,10 +25,19 @@ end
 -- never_chunk: get_chunk replies must always arrive whole — chunking a chunk
 -- would recurse from the companion's point of view. A single part plus the
 -- envelope stays well within what RCON's multi-packet responses handle.
+-- helpers.table_to_json writes NaN and infinities as bare nan/inf, which no
+-- JSON parser reads: one such number would make the whole reply unreadable.
+-- They become null.
+function M.to_json(value)
+  local json = helpers.table_to_json(value)
+  if not (json:find("nan", 1, true) or json:find("inf", 1, true)) then return json end
+  return (json:gsub("([%[,:])%-?nan([,%]}])", "%1null%2"):gsub("([%[,:])%-?inf([,%]}])", "%1null%2"))
+end
+
 local function encode(tbl)
   local data = tbl.data
   local raw = type(data) == "table" and data[M.RAW_JSON]
-  if not raw then return helpers.table_to_json(tbl) end
+  if not raw then return M.to_json(tbl) end
   data[M.RAW_JSON] = nil
   local fields = {}
   for field, json in pairs(raw) do
@@ -36,7 +45,7 @@ local function encode(tbl)
     fields[#fields + 1] = string.format("%q", field) .. ":" .. json
   end
   table.sort(fields)
-  local body = helpers.table_to_json(data)
+  local body = M.to_json(data)
   body = body == "{}" and "{" .. table.concat(fields, ",") .. "}"
     or string.sub(body, 1, -2) .. "," .. table.concat(fields, ",") .. "}"
   return '{"ok":true,"data":' .. body .. "}"

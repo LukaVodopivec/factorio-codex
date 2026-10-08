@@ -623,6 +623,108 @@ function M.unobtainable(c, wants)
   return rows
 end
 
+-- Minutes own lines making an item at rate_per_min need for `missing` more,
+-- rounded up to a tenth; nil without a rate.
+function M.expected_minutes(missing, rate)
+  if not (type(rate) == "number" and rate > 0) then return nil end
+  return math.ceil(missing / rate * 10) / 10
+end
+
+local function tenth_down(x) return math.floor(x * 10) / 10 end
+
+-- The dry-run bill (build_layout and connect_entities check_only), as
+-- arithmetic over what the body carries, the registry's stock totals (as its
+-- cursor last read them) and own line rates; nothing is reserved. For each
+-- want {name, count} on the viewpoint's surface: carried, in_stock (own
+-- holders), short (count less what is carried, queued in hand-crafting and
+-- in stock), made_per_min (own lines) and minutes_at_rate for the short at
+-- that rate. The short splits into hand_craftable (with hand_craft_s for
+-- those crafts and the intermediate ones, at the body's crafting speed,
+-- within MAX_DEPTH recipe levels) and the items it then still lacks:
+-- gatherable (nature yields them: mined or gathered) and needs_machine (no
+-- hand recipe makes them: smelted, fluid or machine-only recipes, not yet
+-- researched, or deeper than those levels). One pool of carried and stocked
+-- items serves every row, direct counts first, so no stock counts twice.
+-- walk_s_lower_bound: straight-line distance from the body to the nearest
+-- own holder of an item it must fetch, at its running speed now.
+function M.bill(c, wants)
+  local body = c.get_item_count ~= nil
+  local surface
+  pcall(function() surface = c.surface.index end)
+  local pool, stock = {}, {}
+  local function available(name)
+    if pool[name] == nil then
+      local ok, totals = pcall(registry.stock_totals, { name }, surface)
+      stock[name] = ok and totals[name] or 0
+      pool[name] = (body and have(c, name) or 0) + stock[name]
+    end
+    return pool[name]
+  end
+  local speed = 1
+  pcall(function() speed = speed + (tonumber(c.force.manual_crafting_speed_modifier) or 0) end)
+  if body then pcall(function() speed = speed + (tonumber(c.character_crafting_speed_modifier) or 0) end) end
+  speed = math.max(speed, 0.01)
+  local rows, fetch = {}, {}
+  for _, want in ipairs(wants) do
+    local name, count = want.name, want.count
+    local take = math.min(available(name), count)
+    pool[name] = pool[name] - take
+    local carried_now = body and carried(c, name) or 0
+    rows[#rows + 1] = { item = name, count = count, carried = carried_now, in_stock = stock[name], short = count - take }
+    if body and count > carried_now and stock[name] > 0 then fetch[name] = true end
+  end
+  for _, row in ipairs(rows) do
+    local short = row.short
+    if short > 0 then
+      local ok, rate = pcall(autonomy.producing, row.item, surface)
+      if ok and type(rate) == "number" and rate > 0 then
+        row.made_per_min, row.minutes_at_rate = rate, M.expected_minutes(short, rate)
+      end
+      local seconds, lacks = 0, {}
+      local function lack(kind, name, n)
+        lacks[kind] = lacks[kind] or {}
+        lacks[kind][name] = (lacks[kind][name] or 0) + n
+      end
+      local function expand(name, need, depth, path)
+        local recipe, per_craft = hand_recipe(c, name)
+        if not recipe or depth >= MAX_DEPTH or path[name] then
+          lack(#natural_names(name) > 0 and "gatherable" or "needs_machine", name, need)
+          return false
+        end
+        local crafts = math.ceil(need / per_craft)
+        seconds = seconds + crafts * (tonumber(recipe.energy) or 0.5) / speed
+        path[name] = true
+        for _, ingredient in ipairs(recipe.ingredients or {}) do
+          local n = math.ceil((tonumber(ingredient.amount) or 1) * crafts)
+          local take = math.min(available(ingredient.name), n)
+          pool[ingredient.name] = pool[ingredient.name] - take
+          if n > take then expand(ingredient.name, n - take, depth + 1, path) end
+        end
+        path[name] = nil
+        pool[name] = available(name) + crafts * per_craft - need
+        return true
+      end
+      if expand(row.item, short, 0, {}) then
+        row.hand_craftable, row.hand_craft_s = short, math.ceil(seconds * 10) / 10
+      end
+      row.gatherable, row.needs_machine = lacks.gatherable, lacks.needs_machine
+    end
+  end
+  local position = body and c.position
+  if position and next(fetch) then
+    local running
+    pcall(function() running = tonumber(c.character_running_speed) end)
+    local ok, nearest = pcall(registry.nearest_holders, fetch, position)
+    if running and running > 0 and ok then
+      for _, row in ipairs(rows) do
+        local d2 = nearest[row.item]
+        if d2 then row.walk_s_lower_bound = tenth_down(math.sqrt(d2) / (running * 60)) end
+      end
+    end
+  end
+  return rows
+end
+
 local function inventory_of(entity, id)
   local ok, inventory = pcall(entity.get_inventory, defines.inventory[id])
   return ok and inventory or nil
@@ -1023,7 +1125,7 @@ local function finish(task, c)
     local rate = autonomy.producing(row.item)
     if rate > 0 then
       row.rate_per_min = rate
-      row.expected_minutes = math.ceil(row.missing / rate * 10) / 10
+      row.expected_minutes = M.expected_minutes(row.missing, rate)
       expected[#expected + 1] = string.format("%s at %s/min (the missing %d in about %s min)", row.item,
         rate, row.missing, row.expected_minutes)
     end

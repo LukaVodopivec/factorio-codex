@@ -40,7 +40,7 @@ export const toolPayloads = {
     ...(location ? { location } : {}), ...(recipe_choices ? { recipe_choices } : {}),
     ...(flow_precision ? { flow_precision } : {}), ...(planet ? { planet } : {}),
     ...(per_minute ? { per_minute } : {}), ...(fuel ? { fuel } : {}) }),
-  connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground, joins }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false; joins?: boolean }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }), ...(joins ? { joins: true } : {}) }),
+  connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground, joins, check_only }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false; joins?: boolean; check_only?: boolean }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }), ...(joins ? { joins: true } : {}), ...(check_only ? { check_only: true } : {}) }),
 };
 
 export function normalizeCanPlace(value: any, placements: Array<{ name: string; x: number; y: number; direction?: number }>): any {
@@ -430,7 +430,19 @@ export interface FifoState { active_plan_id: number | null; queue_depth: number 
   /** The emergency stop's tick while it keeps upkeep off (until a plan finishes). */
   upkeep_off_since_tick?: number;
   /** Where the body is: {state, surface_ref, platform_name?}. */
-  body?: { state: string; surface_ref?: string; platform_name?: string } }
+  body?: { state: string; surface_ref?: string; platform_name?: string };
+  /** Item totals the queued plans take, and what of them carried and stocked items do not cover (largest few). */
+  queued_demand?: Record<string, number>; omitted_queued_demand?: number;
+  short_by?: Record<string, number>; omitted_short_by?: number }
+
+// An {item: count} map and its omitted count, as sent when present.
+function itemTotals(fifo: Record<string, unknown>, key: "queued_demand" | "short_by"): Partial<FifoState> {
+  const map = fifo[key];
+  if (!map || typeof map !== "object" || Array.isArray(map)) return {};
+  const omitted = fifo[`omitted_${key}`];
+  return { [key]: map as Record<string, number>,
+    ...(typeof omitted === "number" ? { [`omitted_${key}`]: omitted } : {}) };
+}
 
 // Lua omits nil fields; every read result states all three, plus the idle hint.
 // A human hold is reported as sent and replaces the idle hint: a parked FIFO is not idle.
@@ -447,6 +459,7 @@ export function normalizeFifo(value: unknown): FifoState | undefined {
     ...(humanIdle !== null ? { human_idle_ticks: humanIdle } : {}),
     ...(upkeepOff !== null ? { upkeep_off_since_tick: upkeepOff } : {}),
     ...(fifo.body && typeof fifo.body === "object" && !Array.isArray(fifo.body) ? { body: fifo.body as FifoState["body"] } : {}),
+    ...itemTotals(fifo, "queued_demand"), ...itemTotals(fifo, "short_by"),
     ...(held ? { hint: FIFO_HUMAN_HINT } : idle !== null && idle > FIFO_IDLE_HINT_SECONDS ? { hint: FIFO_IDLE_HINT } : {}) };
 }
 

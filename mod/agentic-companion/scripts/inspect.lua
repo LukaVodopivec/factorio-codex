@@ -17,6 +17,7 @@ local rocket = require("scripts.actions.rocket")
 local requests = require("scripts.requests")
 local blueprints = require("scripts.blueprints")
 local belt_trace = require("scripts.belt_trace")
+local inserter_rate = require("scripts.inserter_rate")
 
 local M = {}
 
@@ -267,6 +268,8 @@ local function inspect_one(position, c)
       end)
       if ok_read then out.holding = holding end
     end
+    -- An upper bound: its quality, the force's stack bonus, any override.
+    out.max_items_per_second = inserter_rate.of_entity(e)
   end
 
   if e.type == "mining-drill" then

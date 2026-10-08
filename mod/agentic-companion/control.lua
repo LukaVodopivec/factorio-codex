@@ -44,6 +44,9 @@ local function body_summary()
   return summary
 end
 
+-- Items each of the FIFO block's queued_demand and short_by shows.
+local QUEUED_DEMAND_ROWS = 6
+
 -- Every read-only RPC result carries the body's FIFO state from the same Lua
 -- read, so a reader sees an idle body without another round trip.
 -- idle_seconds is 0 while work or hand-crafting runs, counts from when the
@@ -68,8 +71,13 @@ local function fifo_state()
   local ok, human_control, human_idle_ticks = pcall(companion.human_control)
   human_control = ok and human_control == true
   if not ok then human_idle_ticks = nil end
+  -- queued_demand and short_by: item totals the queued plans take and what
+  -- of them carried and stocked items do not cover (tasks.queued_demand).
+  local demand = (active or depth > 0) and tasks.queued_demand(QUEUED_DEMAND_ROWS) or {}
   return { active_plan_id = active and active.type == "plan" and active.id or nil,
     queue_depth = depth, idle_seconds = idle_seconds,
+    queued_demand = demand.queued_demand, omitted_queued_demand = demand.omitted_queued_demand,
+    short_by = demand.short_by, omitted_short_by = demand.omitted_short_by,
     upkeep_off_since_tick = not t.last_finished_tick and t.last_cancel_all_tick or nil,
     human_control = human_control, human_idle_ticks = human_idle_ticks,
     -- Where the body is (body_summary).

@@ -33,7 +33,8 @@ end
 local function job_reader(name)
   return { start = function() return {} end, step = reader(name) }
 end
-stub("scripts.tasks", { set_observer = function() end, set_upkeep_listener = function() end, set_boundary_upkeep = function() end, on_tick = function() end, bound_for = function() return nil end,
+local fifo_demand
+stub("scripts.tasks", { queued_demand = function() return fifo_demand end, set_observer = function() end, set_upkeep_listener = function() end, set_boundary_upkeep = function() end, on_tick = function() end, bound_for = function() return nil end,
   plan_status = reader("plan_status"), enqueue = reader("enqueue"), get = reader("get_task"),
   queue_plan = reader("queue_plan"), cancel = reader("cancel") })
 stub("scripts.inspect", { job = job_reader("inspect") })
@@ -103,6 +104,11 @@ storage.tasks = { queue = { { id = 8, type = "plan" } }, records = {}, active = 
 local fifo = call("observe_local").fifo
 check(fifo.active_plan_id == 7 and fifo.queue_depth == 1 and fifo.idle_seconds == 0,
   "an active plan reports its id, the queue depth, and zero idle seconds")
+fifo_demand = { queued_demand = { coal = 23 }, short_by = { coal = 3 }, omitted_queued_demand = 2 }
+fifo = call("observe_local").fifo
+fifo_demand = nil
+check(fifo.queued_demand.coal == 23 and fifo.short_by.coal == 3 and fifo.omitted_queued_demand == 2
+  and fifo.omitted_short_by == nil, "with plans queued the fifo block carries queued_demand and short_by")
 
 storage.tasks = { queue = {}, records = {}, active = { id = 9, type = "place" }, last_finished_tick = game.tick - 600 }
 fifo = call("map_summary").fifo

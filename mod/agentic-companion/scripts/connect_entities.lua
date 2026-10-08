@@ -13,6 +13,7 @@ local companion = require("scripts.companion")
 local placement_geometry = require("scripts.placement_geometry")
 local fluid_connections = require("scripts.fluid_connections")
 local belt_joins = require("scripts.belt_joins")
+local supply = require("scripts.actions.supply")
 
 local M = {}
 M.MAX_LENGTH = 200
@@ -628,8 +629,9 @@ end
 
 -- connect_entities {kind, prototype, from, to, max_length? (1-200, default
 -- 25), fluid? (pipe), underground? (item name, or false for none), joins?
--- (true for a dry run)} -> {kind, prototype, from, to, length, steps,
--- physical, ghosts, belt_joins?}. Steps are build_plan placements;
+-- (true for a dry run), check_only? (true for a dry run's bill)} -> {kind,
+-- prototype, from, to, length, steps, physical, ghosts, belt_joins?,
+-- materials?}. Steps are build_plan placements;
 -- underground belt ends carry belt_to_ground_type. With joins, a belt route
 -- also lists where it joins standing belts (belt_joins.lua), surveyed after
 -- the search within the same job budget. Nothing is built: the caller
@@ -661,6 +663,9 @@ local function start(params)
   if params.joins ~= nil and type(params.joins) ~= "boolean" then
     error("connect_entities joins is true for a dry run's belt joins", 0)
   end
+  if params.check_only ~= nil and type(params.check_only) ~= "boolean" then
+    error("connect_entities check_only is true for a dry run's bill", 0)
+  end
   if not charted(c.force, c.surface, from) or not charted(c.force, c.surface, to) then
     error("connect_entities endpoints must both be force-charted", 0)
   end
@@ -674,7 +679,8 @@ local function start(params)
   end
   local function tile(p) return { x = math.floor(p.x) + 0.5, y = math.floor(p.y) + 0.5 } end
   local state = { kind = kind, prototype = params.prototype, proto = proto, from = from, to = to, max_length = max_length,
-    from_entity = from_entity, to_entity = to_entity, report_joins = params.joins == true }
+    from_entity = from_entity, to_entity = to_entity, report_joins = params.joins == true,
+    check_only = params.check_only == true }
   if kind == "power" then
     state.from, state.to = from_entity and from or tile(from), to_entity and to or tile(to)
     return state
@@ -702,6 +708,22 @@ local function start(params)
   state.search = M.new_search({ kind = kind, item = params.prototype, max_length = max_length,
     under = M.underground(c, kind, proto, params.underground), starts = starts, goals = goals })
   return state
+end
+
+-- A dry run's bill of the route's pieces (supply.bill), read once the
+-- route is final.
+local function with_bill(state, c, out)
+  if not state.check_only then return out end
+  local counts, names = {}, {}
+  for _, s in ipairs(out.steps) do
+    if not counts[s.name] then names[#names + 1] = s.name end
+    counts[s.name] = (counts[s.name] or 0) + 1
+  end
+  table.sort(names)
+  local wants = {}
+  for i, name in ipairs(names) do wants[i] = { name = name, count = counts[name] } end
+  out.materials = supply.bill(c, wants)
+  return out
 end
 
 local function step(state, budget)
@@ -741,7 +763,7 @@ local function step(state, budget)
   end
   local out = { kind = state.kind, prototype = state.prototype, from = state.from, to = state.to, fluid = state.fluid,
     length = #steps, steps = steps, physical = true, ghosts = false }
-  if state.kind ~= "belt" or #steps == 0 or not state.report_joins then return out end
+  if state.kind ~= "belt" or #steps == 0 or not state.report_joins then return with_bill(state, c, out) end
   -- The route's belt joins, a scan per piece within the budget, over ticks.
   if not state.joins then
     local planned = {}
@@ -778,7 +800,7 @@ local function step(state, budget)
   end
   local rows = belt_joins.finish(state.joins, state.planned, state.tiles, io)
   if #rows > 0 then out.belt_joins = rows end
-  return out
+  return with_bill(state, c, out)
 end
 
 M.job = { start = start, step = step }

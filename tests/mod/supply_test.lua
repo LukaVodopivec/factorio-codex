@@ -175,6 +175,16 @@ package.loaded["scripts.registry"] = {
   holder_kind = function(e)
     return e.type == "cargo-landing-pad" and "landing_pad" or e.type == "container" and "chest" or "machine_output"
   end,
+  nearest_holders = function(wanted, position)
+    local out = {}
+    for _, row in ipairs(own_entries(function(e) return HOLDER_TYPES[e.type] end)) do
+      local d = (row.position.x - position.x) ^ 2 + (row.position.y - position.y) ^ 2
+      for name in pairs(wanted) do
+        if (row.entity.items[name] or 0) > 0 and (not out[name] or d < out[name]) then out[name] = d end
+      end
+    end
+    return out
+  end,
   stock_totals = function(names)
     local totals = {}
     for _, name in ipairs(names) do
@@ -1079,4 +1089,43 @@ local cycle={phase="following"};cycle.walker=cycle
 observed._approach={walk=cycle}
 check(supply.diagnostics(observed).route.phase=="following",
   "readback terminates on a cyclic nested walker without advancing or scanning native state")
+
+-- The dry-run bill: arithmetic over carried items, registry stock and own
+-- line rates, one pool for every row; nothing moves and nothing is reserved.
+reset()
+crafting = {}
+body.character_running_speed, body.character_crafting_speed_modifier = 0.15, 0
+own_force.manual_crafting_speed_modifier = 0
+recipes["iron-gear-wheel"].energy = 0.5
+chest({ x = 30, y = 40 }, { ["iron-plate"] = 6 })
+chest({ x = 3, y = 4 }, { ["iron-plate"] = 2 })
+inventory["iron-gear-wheel"] = 1
+local line_rates = autonomy.producing
+autonomy.producing = function(item) if item == "iron-plate" then return 4, 1 end return 0, 0 end
+local bill = supply.bill(body, { { name = "iron-gear-wheel", count = 10 }, { name = "iron-plate", count = 12 },
+  { name = "stone", count = 3 }, { name = "uranium-ore", count = 2 } })
+autonomy.producing = line_rates
+local by_item = {}
+for _, row in ipairs(bill) do by_item[row.item] = row end
+local gear, plate, stone, uranium = by_item["iron-gear-wheel"], by_item["iron-plate"], by_item.stone, by_item["uranium-ore"]
+check(#calls == 0 and #bill == 4 and inventory["iron-gear-wheel"] == 1, "the bill is a read: nothing moves")
+check(plate.in_stock == 8 and plate.carried == 0 and plate.short == 4 and plate.made_per_min == 4
+  and plate.minutes_at_rate == 1 and plate.needs_machine["iron-plate"] == 4 and plate.hand_craftable == nil,
+  "a row gives in_stock, the short beyond carried and stock, own lines' rate and minutes at it; a smelted item needs a machine")
+check(gear.carried == 1 and gear.in_stock == 0 and gear.short == 9 and gear.hand_craftable == 9 and gear.hand_craft_s == 4.5
+  and gear.needs_machine["iron-plate"] == 18 and gear.made_per_min == nil and gear.minutes_at_rate == nil,
+  "a hand-craftable short gives its craft seconds and the ingredients stock no longer covers (the plates went to their own row)")
+check(stone.gatherable.stone == 3 and stone.needs_machine == nil and uranium.needs_machine["uranium-ore"] == 2
+  and uranium.gatherable == nil, "nature's items are gatherable; one that needs a fluid to mine needs a machine")
+check(plate.walk_s_lower_bound == 0.5 and gear.walk_s_lower_bound == nil and stone.walk_s_lower_bound == nil,
+  "walk_s_lower_bound: straight line to the nearest holder at running speed, only for an item to fetch from stock")
+local covered = supply.bill(body, { { name = "iron-gear-wheel", count = 1 } })[1]
+check(covered.short == 0 and covered.hand_craftable == nil and covered.needs_machine == nil,
+  "a carried item is no short")
+local viewpoint = supply.bill({ valid = true, force = own_force, position = { x = 0, y = 0 } },
+  { { name = "iron-plate", count = 3 } })[1]
+check(viewpoint.carried == 0 and viewpoint.in_stock == 8 and viewpoint.short == 0 and viewpoint.walk_s_lower_bound == nil,
+  "a body-less viewpoint carries nothing and walks nowhere")
+check(supply.expected_minutes(9, 4) == 2.3 and supply.expected_minutes(1, 0) == nil,
+  "expected_minutes rounds up to a tenth and needs a rate")
 os.exit(failures == 0 and 0 or 1)

@@ -570,6 +570,13 @@ describe("read-only FIFO state", () => {
     expect(normalizeFifo({ queue_depth: 0, upkeep_off_since_tick: 900 })?.upkeep_off_since_tick).toBe(900);
   });
 
+  it("passes the queued plans' demand totals through the FIFO block", () => {
+    expect(normalizeFifo({ queue_depth: 2, idle_seconds: 0, queued_demand: { coal: 23, "stone-furnace": 3 },
+      omitted_queued_demand: 2, short_by: { coal: 3 } })).toEqual({ active_plan_id: null, queue_depth: 2, idle_seconds: 0,
+      queued_demand: { coal: 23, "stone-furnace": 3 }, omitted_queued_demand: 2, short_by: { coal: 3 } });
+    expect(normalizeFifo({ queue_depth: 0, idle_seconds: 5, short_by: [] })).toEqual({ active_plan_id: null, queue_depth: 0, idle_seconds: 5 });
+  });
+
   it("reports a human hold on every read-only tool, replacing the idle hint", async () => {
     const held = register(fifoValue({ active_plan_id: 7, queue_depth: 2, idle_seconds: 45, human_control: true, human_idle_ticks: 12 }));
     for (const name of fifoTools) {

@@ -28,6 +28,7 @@ local set_walking = require("scripts.human_inputs").set_walking
 local factory_activity = require("scripts.factory_activity")
 local autonomy = require("scripts.autonomy")
 local errors = require("scripts.errors")
+local registry = require("scripts.registry")
 local M = {}
 local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 -- A plan's active budget: 570 s, or 12 s per step for long build packages.
@@ -397,6 +398,80 @@ local function make_step_task(step)
   if kind == "rotate" then task.target, task.direction = { x = step.x, y = step.y }, step.direction end
   return task
 end
+-- What a step takes from the body's own items, read from the step alone at
+-- queue time ({use?, fetch?}, each {[item] = count}): use is what it places
+-- (a layout's entities by hand, tiles, equipment), starts entities with,
+-- inserts (once per listed target) or crafts from; fetch is what a get_items
+-- step makes the body carry. Pieces a connection, blueprint or area step
+-- resolves later are not in it, nor what ghosts and platforms take (robots
+-- and the hub supply those).
+local function placing_item(name)
+  local ok, item = pcall(function()
+    if prototypes.item[name] then return name end
+    local first = prototypes.entity[name].items_to_place_this[1]
+    return first and first.name
+  end)
+  return ok and type(item) == "string" and item or name
+end
+local function step_needs(step)
+  local use = {}
+  local function add(name, n)
+    n = tonumber(n)
+    if type(name) == "string" and n and n > 0 then use[name] = (use[name] or 0) + n end
+  end
+  local function add_map(map, times)
+    for name, n in pairs(type(map) == "table" and map or {}) do add(name, (tonumber(n) or 0) * times) end
+  end
+  local action = step.action
+  if action == "get_items" then
+    add(step.item, step.count)
+    return next(use) and { fetch = use } or nil
+  elseif action == "place_entity" then
+    add(placing_item(step.name), 1); add_map(step.insert, 1)
+  elseif action == "insert_items" then
+    local targets = type(step.targets) == "table" and #step.targets > 0 and #step.targets or 1
+    add_map(step.per_target or step.items, targets)
+  elseif action == "craft_items" then
+    local ok, ingredients = pcall(function() return prototypes.recipe[step.recipe].ingredients end)
+    for _, ingredient in ipairs(ok and ingredients or {}) do
+      if ingredient.type ~= "fluid" then add(ingredient.name, (tonumber(ingredient.amount) or 0) * (tonumber(step.crafts) or 0)) end
+    end
+  elseif action == "build_layout" and step.mode ~= "ghosts" and step.platform == nil then
+    for _, entity in ipairs(type(step.entities) == "table" and step.entities or {}) do
+      if type(entity) == "table" then add(placing_item(entity.name), 1); add_map(entity.insert, 1) end
+    end
+  elseif action == "place_tiles" then
+    local area, count = step.area, type(step.positions) == "table" and #step.positions or 0
+    if type(area) == "table" and type(area.left_top) == "table" and type(area.right_bottom) == "table" then
+      count = count + math.max(0, math.ceil(area.right_bottom.x) - math.floor(area.left_top.x))
+        * math.max(0, math.ceil(area.right_bottom.y) - math.floor(area.left_top.y))
+    end
+    add(step.item, count)
+  elseif action == "equip" then
+    if type(step.armor) == "string" then add(step.armor, 1) end
+    for _, row in ipairs(type(step.put) == "table" and step.put or {}) do
+      if type(row) == "table" then add(row.name, 1) end
+    end
+  end
+  return next(use) and { use = use } or nil
+end
+-- A plan's needs from step `from` on, added into `total`: per item the
+-- larger of what its get_items steps fetch and what its other steps use
+-- (a fetch usually brings what a later step uses).
+local function add_needs(plan, from, total)
+  local fetch, use = {}, {}
+  for i = math.max(1, from), #plan.steps do
+    local needs = type(plan.steps[i]) == "table" and plan.steps[i]._needs
+    for kind, into in pairs({ fetch = fetch, use = use }) do
+      for name, n in pairs(needs and needs[kind] or {}) do into[name] = (into[name] or 0) + n end
+    end
+  end
+  for name, n in pairs(use) do total[name] = (total[name] or 0) + math.max(n, fetch[name] or 0) end
+  for name, n in pairs(fetch) do
+    if not use[name] then total[name] = (total[name] or 0) + n end
+  end
+  return total
+end
 function M.queue_plan(params, upkeep_selection)
   -- Plans may be queued in every body state but absent (aboard, for the
   -- planet the body is about to land on); their steps check the body.
@@ -494,6 +569,7 @@ function M.queue_plan(params, upkeep_selection)
       first_tag = first_tag or current
     end
   end
+  for _, step in ipairs(params.steps) do step._needs = step_needs(step) end
   local budget_steps = 0
   for _, step in ipairs(params.steps) do
     local extension = extensions[step.action]
@@ -530,8 +606,10 @@ function M.queue_plan(params, upkeep_selection)
     and math.max(0, game.tick - tasks.last_finished_tick) or 0
   -- tick anchors the caller's next_event: a plan that ends before that wait
   -- starts still returns plan_ended, not an empty queue.
+  -- needs: item totals its steps take (add_needs), nothing reserved.
+  local needs = add_needs(plan, 1, {})
   return { plan_id = assign(plan), after_plan_id = predecessor, body_idle_ticks = body_idle_ticks,
-    human_control = plan.human_control, tick = game.tick }
+    human_control = plan.human_control, tick = game.tick, needs = next(needs) and needs or nil }
 end
 local function plan_payload(plan)
   local c = companion.get()
@@ -735,6 +813,48 @@ function M.activity_log(params)
   return { tick = game.tick, entries = rows, omitted = omitted }
 end
 function M.queue_length() return #storage.tasks.queue end
+
+-- Totals over the plans the FIFO still holds (the running one from its
+-- current step): queued_demand (add_needs per plan) and short_by, what of it
+-- the body's carried items plus own stock on its surface (registry totals)
+-- do not cover; each the `limit` largest, with omitted_* counting the rest.
+-- Totals only: nothing is reserved or ordered. nil with nothing queued.
+local function largest(map, limit)
+  local names = {}
+  for name in pairs(map) do names[#names + 1] = name end
+  if #names == 0 then return nil, nil end
+  table.sort(names, function(a, b)
+    if map[a] ~= map[b] then return map[a] > map[b] end
+    return a < b
+  end)
+  local out = {}
+  for i = 1, math.min(limit, #names) do out[names[i]] = map[names[i]] end
+  return out, #names > limit and #names - limit or nil
+end
+function M.queued_demand(limit)
+  local tasks = storage.tasks
+  if not tasks then return nil end
+  local total = {}
+  local active = tasks.active
+  if active and active.type == "plan" then add_needs(active, active.current_step or 1, total) end
+  for _, queued in ipairs(tasks.queue) do
+    if queued.type == "plan" then add_needs(queued, 1, total) end
+  end
+  if not next(total) then return nil end
+  local names = {}
+  for name in pairs(total) do names[#names + 1] = name end
+  local ok, stock = pcall(registry.stock_totals, names)
+  local c = companion.get()
+  local short = {}
+  for _, name in ipairs(names) do
+    local have = (ok and stock[name] or 0) + (c and c.valid and c.get_item_count(name) or 0)
+    if total[name] > have then short[name] = total[name] - have end
+  end
+  local out = {}
+  out.queued_demand, out.omitted_queued_demand = largest(total, limit)
+  out.short_by, out.omitted_short_by = largest(short, limit)
+  return out
+end
 
 -- Steps that can add, remove or reconfigure machines refresh the factory
 -- lines (script-created entities raise no player build event).

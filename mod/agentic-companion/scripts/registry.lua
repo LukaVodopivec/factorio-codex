@@ -789,6 +789,33 @@ function M.holders_with(item, position, cap, skip)
   return entries
 end
 
+-- {[item] = squared distance} from `position` to the nearest registered
+-- holder on the body's surface whose last read held the item, for each item
+-- of the set `wanted` ({[item] = true}): one Lua pass over the holder set
+-- and their read contents, with no engine read.
+function M.nearest_holders(wanted, position)
+  local r = data()
+  local out = {}
+  local surface = anchor_index()
+  if not (r and surface) then return out end
+  for unit in pairs(r.holders) do
+    local entry = r.entries[unit]
+    if entry and entry.stock and (entry.surface == nil or entry.surface == surface) then
+      local d
+      for item, held in pairs(entry.stock) do
+        if wanted[item] and held > 0 then
+          if not d then
+            local dx, dy = entry.position.x - position.x, entry.position.y - position.y
+            d = dx * dx + dy * dy
+          end
+          if not out[item] or d < out[item] then out[item] = d end
+        end
+      end
+    end
+  end
+  return out
+end
+
 -- {[item] = count} held by own holders (chests and crafting outputs; belts
 -- are not counted) on a surface (index, or nil for the body's: items on
 -- another planet are not in its reach), as the maintenance cursor last read

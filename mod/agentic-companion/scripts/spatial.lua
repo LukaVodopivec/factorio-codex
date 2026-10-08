@@ -12,6 +12,7 @@ local tasks = require("scripts.tasks")
 local placement_geometry = require("scripts.placement_geometry")
 local output_targets = require("scripts.output_target")
 local jobs = require("scripts.jobs")
+local inserter_rate = require("scripts.inserter_rate")
 
 local M = {}
 
@@ -887,7 +888,7 @@ end
 
 -- -------------------------------------------------------- describe_prototype
 
-local function describe_entity(ent, item_name)
+local function describe_entity(ent, item_name, force)
   local out = { kind = "entity", entity = ent.name }
 
   if not item_name then
@@ -989,6 +990,8 @@ local function describe_entity(ent, item_name)
     local offset = vec_xy(v)
     if offset then out.inserter_drop_offset = offset end
   end
+  -- An upper bound with the force's stack bonus now (inserter_rate.lua).
+  out.max_items_per_second = inserter_rate.max_items_per_second(ent, force)
 
   ok, v = pcall(function() return ent.belt_speed end)
   if ok and type(v) == "number" then out.belt_speed = v end
@@ -1062,13 +1065,13 @@ function M.describe_prototype(params)
       elseif kind == "item" and item then
         out[key] = describe_item(item)
       elseif kind == "entity" and prototypes.entity[name] then
-        out[key] = describe_entity(prototypes.entity[name], nil)
+        out[key] = describe_entity(prototypes.entity[name], nil, force)
       elseif kind == "entity" and placed then
-        out[key] = describe_entity(placed, name)
+        out[key] = describe_entity(placed, name, force)
       elseif kind == "auto" and placed then
-        out[key] = describe_entity(placed, name)
+        out[key] = describe_entity(placed, name, force)
       elseif kind == "auto" and prototypes.entity[name] then
-        out[key] = describe_entity(prototypes.entity[name], nil)
+        out[key] = describe_entity(prototypes.entity[name], nil, force)
       elseif kind == "auto" and item then
         out[key] = describe_item(item)
       elseif kind == "auto" and prototypes.recipe[name] then

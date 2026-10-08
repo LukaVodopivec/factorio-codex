@@ -909,8 +909,9 @@ local walled_route = dry({ anchor = { x = 300, y = 300 }, entities = {
   { name = "wooden-chest", dx = 19.5, dy = 0.5 }, { name = "wooden-chest", dx = 21.5, dy = 0.5 },
   { name = "wooden-chest", dx = 20.5, dy = -0.5 }, { name = "wooden-chest", dx = 20.5, dy = 1.5 } },
   connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 20.5, dy = 0.5 } } } })
-check(not walled_route.ok and walled_route.failed[1].code == "ROUTE_FAILED" and engine.can_place <= per_tick_engine,
-  string.format("a walled-in route fails as ROUTE_FAILED within one tick's work (%d placement checks)", engine.can_place))
+check(not walled_route.ok and walled_route.failed[1].code == "ROUTE_BLOCKED" and walled_route.failed[1].connection == 0
+  and walled_route.failed[1].reason:match("walled in") and engine.can_place <= per_tick_engine,
+  string.format("a walled-in route fails as ROUTE_BLOCKED within one tick's work (%d placement checks)", engine.can_place))
 engine.can_place = 0
 -- A route-only layout joins what already stands: no entities, connections from an anchor.
 local route_only = dry({ anchor = { x = 600, y = 600 }, entities = {},

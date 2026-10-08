@@ -260,8 +260,10 @@ export function registerMcpTools(
   const placeBlueprintSchema = z.object({ ...blueprintPlaceFields, check_only: checkOnly }).strict().superRefine(issue(blueprintPlaceIssue));
   const tilesSchema = z.object({ ...tilesFields, check_only: checkOnly }).strict().superRefine(issue(tilesIssue));
   const routeSchema = z.object({ kind: z.enum(["belt", "pipe", "power"]), prototype: z.string().min(1), from: position, to: position,
+    via: z.array(position).min(1).max(8).optional(),
     max_length: z.number().int().min(1).max(200).default(200), fluid: z.string().min(1).optional(),
-    underground: z.union([z.string().min(1), z.literal(false)]).optional(), check_only: checkOnly }).strict();
+    underground: z.union([z.string().min(1), z.literal(false)]).optional(), check_only: checkOnly }).strict()
+    .refine((p) => p.via === undefined || p.kind !== "power", { message: "via routes belts and pipes", path: ["via"] });
   const areaSchema = (fields: Record<string, z.ZodType>) => z.object({ ...areaFields, ...fields }).strict().superRefine(issue(areaIssue));
   const named = z.object({ name: blueprintName }).strict();
   const dryRun = surface === "full" ? " check_only: true is a dry run that builds nothing." : " Dry run only: checks without building.";
@@ -311,6 +313,12 @@ export function registerMcpTools(
     const b = await bridge();
     // Belt joins are a belt dry run's data: a build skips their reads.
     const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities({ ...p, joins: check_only === true && p.kind === "belt" }), signal));
+    // No route fits: the search's typed failure, and nothing is built.
+    if (route.failure) {
+      const { failure: { reason, ...failure }, ...rest } = route;
+      return result({ ...rest, ...failure, ...(check_only ? { check_only: true } : {}), status: "failed", terminal: true,
+        summary: reason, next_action: null }, true);
+    }
     if (check_only) return result({ ...route, check_only: true, status: "completed", terminal: true,
       summary: `route of ${route.steps.length} pieces planned; nothing built`, next_action: null });
     const detail = route.steps.length === 0
@@ -481,7 +489,17 @@ export function registerMcpTools(
     try { return await step("build_layout")(layoutSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun} A belt route's dry run also lists ${joinReport}.`, inputSchema: routeSchema }, async (p, extra) => {
+  // Route failures and pipe segments: facts and arithmetic, never a fix.
+  const routeReport = " via: up to 8 waypoints you choose, passed in order with a piece on each, each leg its own search;"
+    + " max_length (tiles, an underground hop counting its span) bounds the whole route. When no route fits, the result"
+    + " fails with code ROUTE_TOO_LONG (min_length: the shortest route's tiles, or with lower_bound: true the least it"
+    + " needs when the search budget ended first; limit: max_length), ROUTE_BLOCKED (nothing reachable meets the end:"
+    + " closest, the reached tile nearest it, and remaining, its Manhattan tiles to the end) or SEARCH_BUDGET (the search"
+    + " spent its budget: explored tiles, closest, remaining); with via, leg is the via index the failed leg ends at (the"
+    + " via count for the leg to `to`). A pipe route lists fluid_segments [{extent: the larger side, in tiles, of the"
+    + " bounding box of the segment it makes, its pieces and the standing pipe segments its ends join (standing: how"
+    + " many), hops included; limit: the game's pipeline extent; over_extent: true when extent exceeds limit}].";
+  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun}${routeReport} A belt route's dry run also lists ${joinReport}.`, inputSchema: routeSchema }, async (p, extra) => {
     try { return await connectRoute(routeSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });

@@ -70,6 +70,41 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 201 }).success).toBe(false);
   });
 
+  it("forwards connect_entities via waypoints and answers a typed route failure without building", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    let reply: any = { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 9.5, y: 0.5 }, via: [{ x: 4.5, y: 4.5 }],
+      failure: { code: "ROUTE_TOO_LONG", reason: "the shortest charted belt route is 19 tiles; max_length is 12 (the leg to `to`)",
+        min_length: 19, limit: 12, leg: 1 } };
+    const call = vi.fn(async () => reply);
+    const enqueueAndWait = vi.fn(async () => "built");
+    registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } },
+      async () => ({ call, enqueueAndWait } as unknown as Bridge), validConfig);
+    const args = { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 9.5, y: 0.5 }, via: [{ x: 4.5, y: 4.5 }], max_length: 12 };
+    const failed = await handlers.connect_entities(schemas.connect_entities.parse(args));
+    expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 },
+      to: { x: 9.5, y: 0.5 }, via: [{ x: 4.5, y: 4.5 }], max_length: 12 }, undefined);
+    expect(failed.isError).toBe(true);
+    expect(failed.structuredContent).toMatchObject({ status: "failed", code: "ROUTE_TOO_LONG", min_length: 19, limit: 12, leg: 1,
+      summary: expect.stringContaining("19 tiles") });
+    expect(failed.structuredContent).not.toHaveProperty("failure");
+    expect(enqueueAndWait).not.toHaveBeenCalled();
+    reply = { kind: "belt", from: { x: 0.5, y: 0.5 }, to: { x: 9.5, y: 0.5 },
+      failure: { code: "ROUTE_BLOCKED", reason: "no charted belt route reaches the end", closest: { x: 3.5, y: 0.5 }, remaining: 6 } };
+    const blocked = await handlers.connect_entities(schemas.connect_entities.parse({ ...args, check_only: true }));
+    expect(blocked.structuredContent).toMatchObject({ status: "failed", check_only: true, code: "ROUTE_BLOCKED",
+      closest: { x: 3.5, y: 0.5 }, remaining: 6 });
+    reply = { kind: "pipe", from: { x: 0.5, y: 0.5 }, to: { x: 30.5, y: 0.5 }, length: 31,
+      steps: [{ name: "pipe", x: 1.5, y: 0.5 }], fluid_segments: [{ extent: 401, limit: 320, over_extent: true, standing: 1 }] };
+    const piped = await handlers.connect_entities(schemas.connect_entities.parse({ kind: "pipe", prototype: "pipe",
+      from: { x: 0.5, y: 0.5 }, to: { x: 30.5, y: 0.5 }, check_only: true }));
+    expect(piped.structuredContent.fluid_segments).toEqual([{ extent: 401, limit: 320, over_extent: true, standing: 1 }]);
+    expect(normalizePhysicalRoute({ kind: "pipe", steps: {}, fluid_segments: {}, via: {} })).toMatchObject({ steps: [], fluid_segments: [], via: [] });
+    expect(schemas.connect_entities.safeParse({ ...args, kind: "power", prototype: "small-electric-pole" }).success).toBe(false);
+    expect(schemas.connect_entities.safeParse({ ...args, via: Array(9).fill({ x: 1, y: 1 }) }).success).toBe(false);
+    expect(schemas.connect_entities.safeParse({ ...args, via: [] }).success).toBe(false);
+  });
+
   it("accepts a route-only layout (connections from an anchor) as a tool call and as a package step", () => {
     const schemas: Record<string, any> = {};
     registerMcpTools({ registerTool(name: string, config: any) { schemas[name] = config.inputSchema; } },

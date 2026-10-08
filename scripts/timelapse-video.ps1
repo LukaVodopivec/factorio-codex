@@ -5,6 +5,7 @@ param(
   [switch]$SkipIdle,
   [switch]$NoClock,
   [string]$Captions,
+  [string[]]$Music,
   [string]$StateRoot = "$env:LOCALAPPDATA\factorio-codex\native-client",
   [string]$Out
 )
@@ -20,11 +21,16 @@ param(
 # on that same clock: each frame in [from, to) gets the text, wrapped to two
 # centred lines at the bottom, and the video goes to <run>-timelapse-captions.mp4
 # so the plain video is kept. The frames themselves are only read.
+# -Music takes audio files played in order with 3 s crossfades, trimmed to the
+# video with a 4 s fade-out and loudness-normalised; the name gains -music.
 $ErrorActionPreference = "Stop"
 $frames = Join-Path $StateRoot "script-output\timelapse\$Run"
 if (-not (Test-Path -LiteralPath $frames -PathType Container)) { throw "No timelapse frames for run ${Run}: $frames" }
 if ($Every -lt 1 -or $Fps -lt 1) { throw "-Fps and -Every must be at least 1" }
-if (-not $Out) { $Out = Join-Path $frames ("..\$Run-timelapse" + $(if ($Captions) { "-captions" } else { "" }) + ".mp4") }
+if (-not $Out) { $Out = Join-Path $frames ("..\$Run-timelapse" + $(if ($Captions) { "-captions" } else { "" }) + $(if ($Music) { "-music" } else { "" }) + ".mp4") }
+# powershell -File passes "a.ogg,b.ogg" as one string.
+if ($Music.Count -eq 1 -and $Music[0] -like "*,*") { $Music = $Music[0].Split(",") }
+foreach ($track in $Music) { if (-not (Test-Path -LiteralPath $track -PathType Leaf)) { throw "No music file: $track" } }
 
 $files = @(Get-ChildItem -LiteralPath $frames -Filter "frame_*.jpg" -File | Sort-Object Name)
 if ($files.Count -eq 0) { throw "No frame_*.jpg files in $frames" }
@@ -99,9 +105,25 @@ if ($Captions) {
 $filterFile = Join-Path $frames "filter.txt"
 [IO.File]::WriteAllText($filterFile, ($chain -join ","))
 $filter = if ($chain.Count -gt 0) { @("-/filter:v", $filterFile) } else { @() }
+$audio = @()
+if ($Music) {
+  $inv = [Globalization.CultureInfo]::InvariantCulture
+  $length = ($kept.Count / $Fps).ToString("0.###", $inv)
+  $fadeAt = ([math]::Max(0, $kept.Count / $Fps - 4)).ToString("0.###", $inv)
+  $graph = if ($Music.Count -eq 1) { "[1:a]anull[m0]" } else {
+    $parts = @("[1:a][2:a]acrossfade=d=3[m1]")
+    for ($i = 3; $i -le $Music.Count; $i++) { $parts += "[m$($i - 2)][$($i):a]acrossfade=d=3[m$($i - 1)]" }
+    $parts -join ";"
+  }
+  $last = if ($Music.Count -eq 1) { "m0" } else { "m$($Music.Count - 1)" }
+  $graph += ";[$last]atrim=0:$length,afade=t=out:st=$($fadeAt):d=4,loudnorm=I=-16:TP=-1.5:LRA=11[a]"
+  $audioFile = Join-Path $frames "audio-filter.txt"
+  [IO.File]::WriteAllText($audioFile, $graph)
+  $audio = @(foreach ($track in $Music) { "-i"; $track }) + @("-/filter_complex", $audioFile, "-map", "0:v", "-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ar", "48000")
+}
 # Windows PowerShell treats ffmpeg's stderr progress as errors: judge by exit code.
 $ErrorActionPreference = "Continue"
-& ffmpeg -hide_banner -y -f concat -safe 0 -i $list @filter -r $Fps `
+& ffmpeg -hide_banner -y -f concat -safe 0 -i $list @audio @filter -r $Fps `
   -c:v hevc_nvenc -preset p7 -rc vbr -cq 19 -b:v 0 -pix_fmt yuv420p -tag:v hvc1 $Out
 $code = $LASTEXITCODE
 $ErrorActionPreference = "Stop"

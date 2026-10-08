@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { AFTER_PACKAGE_ID_RULE, applyLedgerFile, operationsLedgerSchema, reduceLedger } from "../src/coordination/ledger.js";
+import { AFTER_PACKAGE_ID_RULE, VERIFY_RULE, applyLedgerFile, operationsLedgerSchema, reduceLedger } from "../src/coordination/ledger.js";
 
 const temporary: string[] = [];
 afterEach(() => {
@@ -513,6 +513,34 @@ describe("build packages the bridge queues", () => {
     const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), notes }])).result;
     expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(issuePath))).toBe(true);
+  });
+
+  it("lets a package declare up to three verify metrics, stated in the schema and the ledger-apply help", () => {
+    const verify = [{ item: "iron-plate", per_min_at_least: 30 }, { line_at: { x: 10.5, y: -4.5 }, state: "running" }];
+    const reduced = reduceLedger(ledger(), withPackages([{ ...drillPair(), verify }]));
+    expect(reduced.result).toMatchObject({ status: "applied" });
+    expect(reduced.ledger?.build_packages[0]?.verify).toEqual(verify);
+    expect(VERIFY_RULE).toMatch(/2 minutes of game time after the package's plan ends/);
+    expect(VERIFY_RULE).toMatch(/Measurement only: nothing is fixed or queued again/);
+    const schema = z.toJSONSchema(operationsLedgerSchema, { io: "input" }) as {
+      properties: { build_packages: { items: { properties: { verify: { description?: string } } } } } };
+    expect(schema.properties.build_packages.items.properties.verify.description).toBe(VERIFY_RULE);
+    const root = path.resolve(import.meta.dirname, "../..");
+    const help = execFileSync(path.join(root, "node_modules/.bin/tsx"), [path.join(root, "companion/src/cli.ts"), "--help"], { encoding: "utf8" });
+    expect(help).toContain(VERIFY_RULE);
+  });
+
+  it.each([
+    [[], "build_packages.0.verify"],
+    [Array(4).fill({ item: "iron-plate", per_min_at_least: 1 }), "build_packages.0.verify"],
+    [[{ item: "iron-plate", per_min_at_least: 0 }], "build_packages.0.verify.0"],
+    [[{ item: "iron-plate", per_min_at_least: 5, fix: true }], "build_packages.0.verify.0"],
+    [[{ line_at: { x: 1, y: 2 }, state: "fine" }], "build_packages.0.verify.0"],
+    [[{ line_at: { x: 1 }, state: "running" }], "build_packages.0.verify.0"],
+  ])("rejects verify %j outside its two metric shapes", (verify, issuePath) => {
+    const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), verify }])).result;
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result.status === "discarded" && result.issues?.some((issue) => issue.startsWith(`update.${issuePath}`))).toBe(true);
   });
 
   it("rejects a package note that does not exist without changing the ledger", () => {

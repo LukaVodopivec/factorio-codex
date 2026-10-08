@@ -49,6 +49,24 @@ export const AFTER_PACKAGE_ID_RULE = "after_package_id: set it only when a packa
   + " (a capture of it, its landfill, its machines to connect, or items it makes that this package's first step needs:"
   + " only then is that first step's ITEM_UNOBTAINABLE left to run time); the FIFO already runs packages in ledger order,"
   + " and a package whose predecessor ends partial, failed or cancelled is cancelled, never run";
+/** Factory line states (autonomy.lua), as factory_status names them. */
+export const LINE_STATES = ["running", "starved", "output_full", "depleted", "no_fuel", "no_power", "frozen",
+  "no_heat", "disabled", "idle"] as const;
+/** What a package's verify declares, for the schema, the ledger-apply help and the tool descriptions. */
+export const VERIFY_RULE = "verify (optional): 1-3 metrics the pilot's bridge measures once, 2 minutes of game time after"
+  + " the package's plan ends, on the package's surface: {item, per_min_at_least} (that item or fluid made there over"
+  + " the last minute, from the game's production statistics) or {line_at: {x, y}, state} (the factory line of the"
+  + " machine whose box holds that position, with its state, cause and rate). All met: a package_verified event, else"
+  + " package_unmet, each with the measured values (next_event; activity_log's packages keep them as verification)."
+  + " Measurement only: nothing is fixed or queued again";
+const itemName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/, "items are names such as \"iron-plate\"");
+export const verifyMetricSchema = z.union([
+  z.object({ item: itemName, per_min_at_least: z.number().finite().positive() }).strict(),
+  z.object({ line_at: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
+    state: z.enum(LINE_STATES) }).strict(),
+]);
+export const verifySchema = z.array(verifyMetricSchema).min(1).max(3);
+export type VerifyMetric = z.infer<typeof verifyMetricSchema>;
 const packageFields = z.object({
   package_id: packageId,
   serves: z.enum(["NOW", "NEXT"]),
@@ -61,6 +79,7 @@ const packageFields = z.object({
   steps: z.array(packageStepSchema).min(1).max(MAX_PLAN_STEPS),
   success_check: text(240),
   notes: z.array(notePath).max(3).optional(),
+  verify: verifySchema.optional().describe(VERIFY_RULE),
 }).strict();
 const buildPackage = packageFields.extend({ surface: packageSurface.default("nauvis") });
 const writtenPackage = packageFields.extend({ surface: packageSurface });

@@ -186,9 +186,12 @@ local function patches_section(index, from)
   for _, patch in ipairs(cached) do
     -- bbox: the patch's outline, so a site beside it can be chosen off the ore.
     local box = patch.bbox
+    -- minutes_left, remaining_fraction (mined patches) or yield_percent (an
+    -- infinite resource): map_summary's patch cache depletion.
     local row = { name = patch.name, amount = patch.amount, tiles = patch.tiles, position = patch.centroid,
       bbox = box and { left_top = { x = box.left_top.x, y = box.left_top.y },
-        right_bottom = { x = box.right_bottom.x, y = box.right_bottom.y } } or nil }
+        right_bottom = { x = box.right_bottom.x, y = box.right_bottom.y } } or nil,
+      minutes_left = patch.minutes_left, remaining_fraction = patch.remaining_fraction, yield_percent = patch.yield_percent }
     if from then
       local dx, dy = patch.centroid.x - from.x, patch.centroid.y - from.y
       row.distance = math.floor(math.sqrt(dx * dx + dy * dy) + 0.5)
@@ -370,12 +373,68 @@ end
 M.RESEARCH_EVENTS = { "on_research_started", "on_research_finished", "on_research_cancelled", "on_research_reversed",
   "on_research_queued", "on_research_moved", "on_technology_effects_reset" }
 
+-- measure (the pilot's bridge only, never a tool): a build package's verify
+-- metrics, 1-3, measured now on the read's surface, as `measured` rows in
+-- their order. Measurement only: nothing is fixed, chosen or queued.
+--   {item, per_min_at_least}  per_min: that item or fluid made on the
+--                             surface over the last minute (the force's
+--                             production statistics)
+--   {line_at = {x, y}, state} the factory line of the own machine whose box
+--                             holds that position: line_id, product, state,
+--                             cause, rate_per_min, machines, working
+-- Each row adds met (the measured value against the stated one); a metric
+-- that cannot be measured has error (UNKNOWN_ITEM, UNCHARTED or NO_LINE)
+-- and met false.
+local MAX_MEASURE = 3
+local function measure_section(target, metrics)
+  if type(metrics) ~= "table" or #metrics == 0 or #metrics > MAX_MEASURE then
+    error("measure lists 1-" .. MAX_MEASURE .. " metrics", 0)
+  end
+  local rows = {}
+  for i, metric in ipairs(metrics) do
+    local p = type(metric) == "table" and metric.line_at
+    if type(metric) == "table" and type(metric.item) == "string" and type(metric.per_min_at_least) == "number" then
+      local getter = prototypes.item[metric.item] and "get_item_production_statistics"
+        or prototypes.fluid[metric.item] and "get_fluid_production_statistics"
+      local ok, rate = false, nil
+      if getter then
+        ok, rate = pcall(function()
+          return target.force[getter](target.surface).get_flow_count({ name = metric.item, category = "input",
+            precision_index = defines.flow_precision_index.one_minute, count = false })
+        end)
+      end
+      if ok and type(rate) == "number" then
+        local per_min = math.floor(rate * 10 + 0.5) / 10
+        rows[i] = { per_min = per_min, met = per_min >= metric.per_min_at_least }
+      else
+        rows[i] = { error = "UNKNOWN_ITEM", met = false }
+      end
+    elseif type(p) == "table" and type(p.x) == "number" and type(p.y) == "number" and type(metric.state) == "string" then
+      if not surfaces.charted(target.force, target.surface, math.floor(p.x / 32), math.floor(p.y / 32)) then
+        rows[i] = { error = "UNCHARTED", met = false }
+      else
+        local ok, found = pcall(target.surface.find_entities_filtered, { position = { x = p.x, y = p.y }, force = target.force })
+        local line
+        for _, entity in ipairs(ok and found or {}) do
+          line = line or autonomy.line_at(target.surface.index, entity.position)
+        end
+        if line then line.met = line.state == metric.state end
+        rows[i] = line or { error = "NO_LINE", met = false }
+      end
+    else
+      error("measure " .. i .. " is neither {item, per_min_at_least} nor {line_at = {x, y}, state}", 0)
+    end
+  end
+  return rows
+end
+
 function M.factory_status(params)
   local since, want = parse(params or {})
   local target = surfaces.target(params and params.surface)
   local index, body = target.surface.index, target.body
   local result = { tick = game.tick, since_tick = since, registry_ready = registry.ready(), surface = target.ref,
     unlocked_locations = unlocked_locations(target.force), trial = benchmark.trial() }
+  if params and params.measure ~= nil then result.measured = measure_section(target, params.measure) end
   if want.lines then
     result.lines = autonomy.lines(since, index)
     table.sort(result.lines, function(x, y)

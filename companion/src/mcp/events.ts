@@ -39,6 +39,11 @@ export interface EventState {
   last_space_event_tick?: number; space_events?: SpaceEvent[];
 }
 export interface PackageFailure { package_id: string; reason?: string; tick?: number; at?: string }
+/** A package's measured verify metrics (coordination/orders.ts). */
+export interface PackageVerificationEvent {
+  event: "package_verified" | "package_unmet"; package_id: string; plan_status?: string;
+  metrics: unknown[]; reason?: string; tick?: number; at?: string;
+}
 /** Package failures one session already received, kept across its calls:
  *  null until its first next_event, which treats earlier ones as history. */
 export interface FailureDelivery { keys: Set<string> | null }
@@ -47,6 +52,8 @@ export interface EventSources {
   ordersChanged(): boolean;
   /** Packages the bridge failed to queue. */
   packageFailures(): PackageFailure[];
+  /** Packages whose verify metrics the bridge measured. */
+  packageVerifications?(): PackageVerificationEvent[];
   /** This session's delivery record; without one, failures present when the
    *  call starts count as delivered. */
   delivery?: FailureDelivery;
@@ -65,7 +72,8 @@ export const EVENT_POLL_MS = 500;
 
 /** Blocks until something the pilot should act on happens: a plan ends, a
  *  research finishes, the FIFO empties, a machine problem appears, a package
- *  fails its check, the orders change, a human hold starts or ends; otherwise
+ *  fails its check or has its verify measured, the orders change, a human
+ *  hold starts or ends; otherwise
  *  times out. A plan_ended event carries the plan's step outcomes and
  *  inventory change, so no follow-up read is needed. */
 export async function waitForEvent(bridge: Bridge, input: NextEventInput, sources: EventSources,
@@ -119,21 +127,27 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
       return done("new_problem", state, { problems: [...luaArray(status?.problems ?? []).map(withFeedFacts), ...away] });
     } catch { return done("new_problem", state); }
   };
-  // A package failure is delivered once per session, by its record, never by
-  // comparing ticks: the bridge may record it after this session already saw
-  // a later tick.
+  // A package failure or verify outcome is delivered once per session, by
+  // its record, never by comparing ticks: the bridge may record it after this
+  // session already saw a later tick.
   const delivery = sources.delivery ?? { keys: null };
-  const keyOf = (failure: PackageFailure) => `${failure.package_id}@${failure.at ?? failure.tick ?? ""}`;
+  const keyOf = (failure: PackageFailure | PackageVerificationEvent) =>
+    `${"event" in failure ? `${failure.event}:` : ""}${failure.package_id}@${failure.at ?? failure.tick ?? ""}`;
+  const packageEvents = () => [...sources.packageFailures(), ...(sources.packageVerifications?.() ?? [])];
   if (!delivery.keys) {
-    delivery.keys = new Set(sources.packageFailures()
+    delivery.keys = new Set(packageEvents()
       .filter((failure) => since === undefined || (failure.tick ?? -1) <= since).map(keyOf));
   }
   const keys = delivery.keys;
   const undelivered = (state: EventState) => {
-    const failed = sources.packageFailures().find((failure) => !keys.has(keyOf(failure)));
-    if (!failed) return null;
-    keys.add(keyOf(failed));
-    const { at: _at, ...details } = failed;
+    const next = packageEvents().find((failure) => !keys.has(keyOf(failure)));
+    if (!next) return null;
+    keys.add(keyOf(next));
+    if ("event" in next) {
+      const { at: _at, event, tick, ...details } = next as PackageVerificationEvent;
+      return done(event, state, { ...details, ...(tick === undefined ? {} : { measured_tick: tick }) });
+    }
+    const { at: _at, ...details } = next;
     return done("package_failed", state, { ...details });
   };
   if (since !== undefined) {
@@ -211,6 +225,16 @@ export function feedText(row: any): string | null {
     default: return `${where}: ${missing} is at the pickup of ${its} (${source}), which is ${inserter.status}${hand}`;
   }
 }
+/** One measured verify metric in words: the value against the stated one. */
+function metricText(row: any): string {
+  const what = typeof row?.item === "string" ? `${row.item} at least ${row.per_min_at_least}/min`
+    : `line at ${at(row?.line_at)} ${row?.state}`;
+  const values = row?.measured ?? {};
+  if (typeof values.error === "string") return `${what}: ${values.error}`;
+  const measured = typeof row?.item === "string" ? `${values.per_min}/min`
+    : `line ${values.line_id} ${values.state}${values.cause ? ` (${values.cause})` : ""}, ${values.rate_per_min}/min`;
+  return `${what}: ${measured}${row?.met === true ? " (met)" : " (not met)"}`;
+}
 const platformName = (value: Record<string, unknown>) => (value.platform as { name?: string } | undefined)?.name;
 
 function eventText(value: Record<string, unknown>): string {
@@ -222,6 +246,12 @@ function eventText(value: Record<string, unknown>): string {
     }
     case "research_finished": return `research ${value.technology} finished${value.research_idle ? `: ${RESEARCH_IDLE}` : ""}`;
     case "package_failed": return `package ${value.package_id} was not queued: ${value.reason ?? "unknown reason"}`;
+    case "package_verified":
+    case "package_unmet": {
+      const metrics = (Array.isArray(value.metrics) ? value.metrics : []).map(metricText);
+      return `package ${value.package_id} ${value.event === "package_verified" ? "verified" : "unmet"}`
+        + (value.reason ? `: ${value.reason}` : metrics.length > 0 ? `: ${metrics.join("; ")}` : "");
+    }
     case "new_problem": {
       const facts = (Array.isArray(value.problems) ? value.problems : []).map(feedText).filter((text) => text !== null).slice(0, 2);
       return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge, TaskClock } from "../src/bridge.js";
-import { eventSummary, feedText, IDLE_NOW, RESEARCH_IDLE, waitForEvent, type EventState, type PackageFailure } from "../src/mcp/events.js";
+import { eventSummary, feedText, IDLE_NOW, RESEARCH_IDLE, waitForEvent, type EventState, type PackageFailure, type PackageVerificationEvent } from "../src/mcp/events.js";
 import { registerMcpTools, type McpSurface } from "../src/mcp/server.js";
 
 const idle: EventState = { tick: 100, queue_depth: 0, fifo_empty: true, human_hold: false };
@@ -102,6 +102,32 @@ describe("next_event package failures", () => {
     failures[0] = { ...failures[0]!, at: "2026-10-04T00:05:00Z", tick: 50 };
     expect(await waitForEvent(game([{ ...ended, fifo_empty: false, queue_depth: 1 }]).bridge, input({ since_tick: 160 }), sources,
       undefined, fakeClock())).toMatchObject({ event: "package_failed", package_id: "p2" });
+  });
+});
+
+describe("next_event package verify outcomes", () => {
+  it("delivers package_verified and package_unmet once each, with the measured values in the summary", async () => {
+    const verifications: PackageVerificationEvent[] = [];
+    const delivery = { keys: null as Set<string> | null };
+    const sources = { ordersChanged: () => false, packageFailures: () => [], packageVerifications: () => verifications, delivery };
+    const working = { ...idle, fifo_empty: false, queue_depth: 1 };
+    expect(await waitForEvent(game([working]).bridge, { timeout_seconds: 1 }, sources, undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
+    verifications.push({ event: "package_unmet", package_id: "smelt", plan_status: "completed", tick: 7400, at: "2026-10-08T00:00:01Z",
+      metrics: [{ item: "iron-plate", per_min_at_least: 30, measured: { per_min: 12 }, met: false },
+        { line_at: { x: 1.5, y: 2.5 }, state: "running", measured: { line_id: 4, state: "starved", cause: "iron-ore", rate_per_min: 12 }, met: false }] });
+    const unmet = await waitForEvent(game([working]).bridge, input(), sources, undefined, fakeClock());
+    expect(unmet).toMatchObject({ event: "package_unmet", package_id: "smelt", plan_status: "completed", measured_tick: 7400 });
+    expect(unmet).not.toHaveProperty("at");
+    expect(eventSummary(unmet)).toBe("package smelt unmet: iron-plate at least 30/min: 12/min (not met); "
+      + "line at (1.5, 2.5) running: line 4 starved (iron-ore), 12/min (not met)");
+    // The next outcome follows; neither is delivered again.
+    verifications.push({ event: "package_verified", package_id: "smelt-b", tick: 7500, at: "2026-10-08T00:00:02Z",
+      metrics: [{ item: "iron-plate", per_min_at_least: 30, measured: { per_min: 31 }, met: true }] });
+    const verified = await waitForEvent(game([working]).bridge, input(), sources, undefined, fakeClock());
+    expect(eventSummary(verified)).toBe("package smelt-b verified: iron-plate at least 30/min: 31/min (met)");
+    expect(await waitForEvent(game([working]).bridge, { timeout_seconds: 1 }, sources, undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
   });
 });
 

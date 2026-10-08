@@ -571,6 +571,8 @@ local function plan_payload(plan)
   return {
     plan_id = plan.id, after_plan_id = plan.after_plan_id, source = plan.source,
     status = plan.status, source_tick = game.tick,
+    -- When it ended (the package bridge times a package's verify from it).
+    finished_tick = plan.finished_tick,
     -- Where the plan's next positional step acts (its first tag once done).
     surface = plan.status ~= "completed" and next_surface(plan) or plan.surface,
     -- Present only when a human hold delayed this plan: delayed, not failed.

@@ -1,7 +1,7 @@
 local M = {}
 M.AUTONOMY_VERSION = 1
 M.REGISTRY_VERSION = 1
-M.PATCH_CACHE_VERSION = 1
+M.PATCH_CACHE_VERSION = 2
 -- Machine types the registry gained in 0.22 (a 0.21 registry holds these
 -- entities in its other sets, not yet as machines).
 M.MACHINE_TYPES_0_22 = { reactor = true, beacon = true, roboport = true }
@@ -208,13 +208,16 @@ function M.init()
   -- chunk read once; pending chunks (re)read a few per tick from head;
   -- charted: every charted chunk once, in the order it became known, and
   -- charted_set its keys (map_summary's chunk list, read without a query)}.
+  -- Version 2 cells also keep initial, base_amount, base_tick and rate
+  -- (map_summary's depletion); a version 1 cache gains them from its
+  -- current amounts, so its patches count as unmined from the upgrade on.
   -- map_summary makes a surface's cache when the body first stands there or
   -- the force charts a chunk of it. Up to 0.22.2 the one cache
   -- (storage.patch_cache) was Nauvis's: it is kept as Nauvis's.
   storage.patch_caches = storage.patch_caches or {}
   local legacy = storage.patch_cache
   if legacy then
-    if legacy.version == M.PATCH_CACHE_VERSION then
+    if legacy.version == 1 then
       if not legacy.charted then
         -- A 0.21.0 cache: its known and queued chunks are the charted ones.
         local keys = {}
@@ -236,6 +239,16 @@ function M.init()
     storage.patch_cache = nil
   end
   for index, cache in pairs(storage.patch_caches) do
+    if cache.version == 1 then
+      local tick = game and game.tick or 0
+      for _, chunk in pairs(cache.chunks or {}) do
+        for _, cell in pairs(chunk.cells or {}) do
+          cell.initial, cell.base_amount, cell.base_tick = cell.amount, cell.amount, tick
+        end
+      end
+      -- The rows are rebuilt with the new fields; a build under way restarts.
+      cache.version, cache.dirty, cache.build = M.PATCH_CACHE_VERSION, true, nil
+    end
     if cache.version ~= M.PATCH_CACHE_VERSION then storage.patch_caches[index] = nil end
   end
   -- Space platforms (platforms.lua): the planet of each platform

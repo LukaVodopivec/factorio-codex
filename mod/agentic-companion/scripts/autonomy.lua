@@ -1068,22 +1068,129 @@ local function on(a, line, surface)
   return surface == nil or surface == "all" or line_surface(a, line) == surface
 end
 
+-- Mining time of the resource whose first product is this item, once per
+-- load from prototypes (false when none, or resources that disagree).
+local mining_times = {}
+local function mining_time(product)
+  local known = mining_times[product]
+  if known ~= nil then return known or nil end
+  known = false
+  local ok, resources = pcall(prototypes.get_entity_filtered, { { filter = "type", type = "resource" } })
+  for _, proto in pairs(ok and resources or {}) do
+    local mining = proto.mineable_properties
+    local first = mining and mining.products and mining.products[1]
+    local time = mining and tonumber(mining.mining_time)
+    if first and first.name == product and first.type ~= "fluid" and time and time > 0 then
+      if known and known ~= time then known = false; break end
+      known = time
+    end
+  end
+  mining_times[product] = known
+  return known or nil
+end
+
+-- Items a minute one machine makes at full duty from prototypes alone:
+-- crafting speed (normal quality) x (1 + built-in and researched recipe
+-- productivity) / recipe energy x yield, or a drill's mining speed x (1 +
+-- the force's mining productivity, for drills that use it) / mining time x
+-- yield. Modules, beacons and quality are not counted. nil when unknown (a
+-- furnace that never smelted, a fluid, a pumpjack).
+local function nameplate(rec, force)
+  local proto = prototypes.entity[rec.name]
+  if not (proto and rec.yield and rec.yield > 0) then return nil end
+  if rec.type == "mining-drill" then
+    local time = rec.product and mining_time(rec.product)
+    local speed = tonumber(proto.mining_speed)
+    if not (time and speed) then return nil end
+    local bonus = proto.uses_force_mining_productivity_bonus ~= false
+      and tonumber(force and force.mining_drill_productivity_bonus) or 0
+    return speed * (1 + bonus) / time * rec.yield * 60
+  end
+  local recipe = CRAFTING_TYPES[rec.type] and rec.recipe and prototypes.recipe[rec.recipe]
+  local energy = recipe and tonumber(recipe.energy)
+  local speed = recipe and tonumber(proto.get_crafting_speed())
+  if not (energy and energy > 0 and speed) then return nil end
+  local effect = proto.effect_receiver and proto.effect_receiver.base_effect
+  local researched = force and force.recipes[rec.recipe]
+  local productivity = (tonumber(effect and effect.productivity) or 0)
+    + (tonumber(researched and researched.productivity_bonus) or 0)
+  return speed * (1 + productivity) / energy * rec.yield * 60
+end
+
 -- What own lines on a surface (default the body's: products elsewhere are
--- not in its reach) make of this item a minute (summed rates) and how many
--- lines make it: one pass over the lines, no entity read.
-function M.producing(item, surface)
+-- not in its reach) make of this item a minute (summed rates), how many
+-- lines make it and, when `nameplate_too` and every member's is known,
+-- their summed nameplate a minute (see nameplate): one pass over the lines,
+-- prototype reads once per machine kind, no entity read.
+function M.producing(item, surface, nameplate_too)
   local a = data()
-  local rate, count = 0, 0
-  if not a then return rate, count end
+  local rate, count, max = 0, 0, nameplate_too and 0 or nil
+  if not a then return rate, count, max end
   surface = surface or body_surface()
+  local force = nameplate_too and registry.own_force()
+  local per_kind = {}
   for _, id in ipairs(a.line_order) do
     local line = a.lines[id]
     if line.product == item and on(a, line, surface) then
       count = count + 1
       rate = rate + rate_per_min(line, game.tick)
+      for _, unit in ipairs(max and line.machines or {}) do
+        local rec = a.machines[unit]
+        local key = rec and rec.name .. "\0" .. tostring(rec.recipe)
+        if key and per_kind[key] == nil then
+          local ok, value = pcall(nameplate, rec, force)
+          per_kind[key] = ok and value or false
+        end
+        if not (key and per_kind[key]) then max = nil; break end
+        max = max + per_kind[key]
+      end
     end
   end
-  return rate, count
+  return rate, count, max and math.floor(max * 10 + 0.5) / 10
+end
+
+-- Labs on every surface (research is the force's) whose status lacks
+-- science packs and that have not progressed in the last 10 s, with which
+-- of `packs` (names) each holds none of: reads each such lab's input
+-- inventory, at most `limit` labs. Returns rows {position, surface, lacks =
+-- {names}}, the inventory reads made and how many such labs were not read.
+function M.labs_lacking(packs, limit)
+  local a = data()
+  local rows, reads, read_labs, unread = {}, 0, 0, 0
+  local by_surface = a and a.waiting and a.waiting.missing_science_packs
+  if not by_surface or #packs == 0 then return rows, reads, unread end
+  local surfaces_sorted = {}
+  for index in pairs(by_surface) do surfaces_sorted[#surfaces_sorted + 1] = index end
+  table.sort(surfaces_sorted)
+  local input = defines.inventory.lab_input
+  for _, index in ipairs(surfaces_sorted) do
+    local units = {}
+    for unit in pairs(by_surface[index]) do units[#units + 1] = unit end
+    table.sort(units)
+    for _, unit in ipairs(units) do
+      local rec = a.machines[unit]
+      if rec and rec.type == "lab" and rec.raw == "missing_science_packs"
+        and not (rec.productive_tick and game.tick - rec.productive_tick <= PRODUCTIVE_TICKS) then
+        if read_labs >= limit then unread = unread + 1
+        else
+          read_labs = read_labs + 1
+          local ok, lacks = pcall(function()
+            local inventory = rec.entity.get_inventory(input)
+            local out = {}
+            for _, name in ipairs(packs) do
+              if not inventory or inventory.get_item_count(name) == 0 then out[#out + 1] = name end
+            end
+            return out
+          end)
+          reads = reads + 1 + #packs
+          if ok and #lacks > 0 then
+            rows[#rows + 1] = { position = { x = rec.position.x, y = rec.position.y }, surface = rec.surface, lacks = lacks }
+          end
+        end
+      end
+    end
+  end
+  return rows, reads, unread
 end
 
 -- Public line rows of one surface (an index; nil or "all": every surface),

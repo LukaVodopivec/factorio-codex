@@ -201,7 +201,10 @@ export function normalizeFactoryStatus(value: any): any {
     row && typeof row === "object" ? { ...row, holders: luaArray(row.holders) } : row);
   if (value.research && typeof value.research === "object") out.research = { ...value.research,
     available: luaArray(value.research.available),
-    ...(value.research.queue === undefined ? {} : { queue: luaArray(value.research.queue) }) };
+    ...(value.research.queue === undefined ? {} : { queue: luaArray(value.research.queue) }),
+    ...(value.research.labs?.starved_at === undefined ? {} : { labs: { ...value.research.labs,
+      starved_at: Object.fromEntries(Object.entries(record(value.research.labs.starved_at) as Record<string, unknown>)
+        .map(([pack, at]) => [pack, luaArray(at)])) } }) };
   if (value.body && typeof value.body === "object") out.body = { ...value.body, inventory_summary: record(value.body.inventory_summary),
     ...(value.body.upkeep_selection === undefined ? {} : { upkeep_selection: upkeepSelection(value.body.upkeep_selection) }) };
   if (value.platforms !== undefined) out.platforms = platformRows(value.platforms);

@@ -176,6 +176,39 @@ check(plate_row().hand_seconds == 30, "the body time spent serving a line by han
 local rate, making = autonomy.producing("iron-plate")
 check(making == 2 and rate >= plate_line.rate_per_min and select(2, autonomy.producing("copper-plate")) == 0,
   "producing sums the rate of every own line making an item (" .. rate .. "/min)")
+-- Nameplate (production_requirements' standing_max_per_min): from
+-- prototypes only, once per machine kind. A stone furnace (speed 1) on the
+-- 3.2 s plate recipe makes 18.75 a minute: four furnaces in two lines make
+-- 75; a burner drill (0.25) on 1 s iron ore makes 15, with the force's +10%
+-- mining productivity 16.5: two make 33. A kind with no known nameplate
+-- leaves the sum unknown.
+do
+  local proto_reads = 0
+  _G.prototypes.entity = setmetatable({
+    ["stone-furnace"] = { get_crafting_speed = function() proto_reads = proto_reads + 1; return 1 end },
+    ["burner-mining-drill"] = { mining_speed = 0.25 },
+  }, { __index = function() return nil end })
+  _G.prototypes.get_entity_filtered = function()
+    return { ["iron-ore"] = { mineable_properties = { mining_time = 1, products = { { type = "item", name = "iron-ore", amount = 1 } } } } }
+  end
+  PLATE.energy = 3.2
+  force.mining_drill_productivity_bonus = 0.1
+  force.recipes = { ["iron-plate"] = { productivity_bonus = 0 } }
+  local _, plate_lines, plate_max = autonomy.producing("iron-plate", nil, true)
+  local _, ore_lines, ore_max = autonomy.producing("iron-ore", nil, true)
+  check(plate_lines == 2 and plate_max == 75 and proto_reads == 1 and ore_lines == 1 and ore_max == 33
+    and select(3, autonomy.producing("iron-plate")) == nil,
+    "nameplate a minute sums each member's from prototypes, read once per kind (plates " .. tostring(plate_max)
+      .. ", ore " .. tostring(ore_max) .. "), and only when asked")
+  force.recipes["iron-plate"].productivity_bonus = 0.2
+  check(select(3, autonomy.producing("iron-plate", nil, true)) == 90, "researched recipe productivity raises the nameplate")
+  _G.prototypes.entity["stone-furnace"] = nil
+  check(select(3, autonomy.producing("iron-plate", nil, true)) == nil, "a member with no known nameplate leaves the sum unknown")
+  _G.prototypes.entity = nil
+  _G.prototypes.get_entity_filtered = nil
+  PLATE.energy = nil
+  force.recipes, force.mining_drill_productivity_bonus = nil, nil
+end
 run(10 * 3600, smelt)
 for _, line in ipairs(autonomy.lines()) do if line.id == plate_line.id then plate_line = line end end
 check(plate_line.hand_transfers == nil and plate_line.hand_seconds == nil, "hand transfers and hand time older than ten minutes no longer count")
@@ -487,9 +520,10 @@ check(factory_status.event_state().last_cancel_all_tick == 450, "event_state car
 storage.tasks.last_cancel_all_tick = nil
 
 -- Cost and size at 200 machines: about seven machine samples a tick, no
--- entity query, and a status read under 8.5 KB (patch outlines and both
+-- entity query, and a status read under 10 KB (patch outlines and both
 -- ways to cover a power deficit took it past 6 KB, three rows of feed facts
--- at their widest add about 1.6 KB).
+-- at their widest add about 1.6 KB, research at its widest about 1.9 KB:
+-- twelve packs needed and made, labs lacking each and eight positions).
 _G.storage = {}
 state.init()
 storage.registry.ready = true
@@ -638,8 +672,33 @@ body.get_main_inventory = function() return { get_contents = function()
 end } end
 storage.tasks.active = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "build_layout" } },
   source = "package:" .. long(1) }
+-- Research at its widest: twelve long-named packs needed by 48 stalled labs
+-- that lack every one (packs made, starved_by at its position cap).
+local packs, lab_recs, lab_waiting = {}, {}, {}
+for i = 1, 12 do packs[i] = { type = "item", name = long(i), amount = 1 } end
+force.current_research = { name = long(1), research_unit_ingredients = packs, research_unit_count = 1000000 }
+force.research_progress = 0.123456
+research_stub.unit_time_s = function() return 60 end
+local real_labs = registry.labs
+registry.labs = function() return { count = 999, speed = 1234.567, pack_rate = 1234.567, progress_rate = 1234.567 } end
+_G.defines.flow_precision_index = { one_minute = 1 }
+force.get_item_production_statistics = function()
+  return { get_flow_count = function() return 1234.5678 end }
+end
+for i = 1, 60 do
+  local unit = 50000 + i
+  lab_recs[unit] = { unit = unit, type = "lab", name = "lab", raw = "missing_science_packs", surface = 1,
+    position = { x = -1234.5 - i, y = 1234.5 + i },
+    entity = { get_inventory = function() return { get_item_count = function() return 0 end } end } }
+  lab_waiting[unit] = true
+  storage.autonomy.machines[unit] = lab_recs[unit]
+end
+storage.autonomy.waiting.missing_science_packs = { [1] = lab_waiting }
 local full = factory_status.factory_status({})
 json_size = size(full)
+registry.labs = real_labs
+check(full.research.packs_per_minute_made[long(12)] and full.research.labs.starved_by[long(12)] == 48
+  and full.research.labs.starved_unread == 12, "the worst case includes research at its widest")
 local starved_line
 for _, line in ipairs(full.lines) do if line.state == "starved" then starved_line = line end end
 local max_id = 0
@@ -658,7 +717,7 @@ end
 check(wide_feeds == 3 and full.omitted_feeds and full.omitted_feeds > 0 and in_line > 0,
   "the worst case shows three stalled rows' feed facts, a problem row whose line shows them says feed_in_line, "
     .. "and omitted_feeds counts the rest")
-check(json_size < 8704, "a worst-case factory_status at 200 machines stays under 8.5 KB (" .. json_size .. " bytes)")
+check(json_size < 10240, "a worst-case factory_status at 200 machines stays under 10 KB (" .. json_size .. " bytes)")
 
 -- A machine mined while a refresh is still identifying the snapshot is left
 -- out; the refresh completes and the removal's dirty mark is kept.

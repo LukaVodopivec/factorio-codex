@@ -12,7 +12,7 @@ local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
 _G.defines = { entity_status = { working = 1, missing_science_packs = 2 }, inventory = { chest = 1, lab_input = 3 },
-  target_type = { entity = 7 } }
+  target_type = { entity = 7 }, flow_precision_index = { five_seconds = 0, one_minute = 1 } }
 _G.storage = {}
 _G.script = { register_on_object_destroyed = function() return 1 end }
 _G.prototypes = { item = {}, recipe = {}, space_location = {} }
@@ -22,10 +22,21 @@ local nauvis = mock.surface({ index = 1, name = "nauvis", valid = true,
   find_entities_filtered = function() finds = finds + 1; return {} end })
 local automation = { name = "automation", research_unit_energy = 600, research_unit_count = 10,
   research_unit_ingredients = { { type = "item", name = "automation-science-pack", amount = 1 } } }
+-- Packs made: the force's one-minute flow statistics per factory surface.
+local made_rates, flow_reads = {}, {}
 local force = mock.force({ name = "player", technologies = {}, research_queue = {}, research_progress = 0.3,
   laboratory_productivity_bonus = 0, is_chunk_charted = function() return true end,
-  is_space_location_unlocked = function() return false end })
-_G.game = { tick = 0, forces = { player = force }, get_surface = function(index) return index == 1 and nauvis or nil end }
+  is_space_location_unlocked = function() return false end,
+  get_item_production_statistics = function(surface)
+    return mock.flow_statistics({ get_flow_count = function(spec)
+      flow_reads[#flow_reads + 1] = { surface = surface, name = spec.name, category = spec.category,
+        precision_index = spec.precision_index, count = spec.count }
+      return (made_rates[surface] or {})[spec.name] or 0
+    end })
+  end })
+local vulcanus = mock.surface({ index = 2, name = "vulcanus", valid = true })
+_G.game = { tick = 0, forces = { player = force },
+  get_surface = function(index) return index == 1 and nauvis or index == 2 and vulcanus or nil end }
 
 local body = mock.entity({ valid = true, name = "character", type = "character", position = { x = 0, y = 0 },
   surface = nauvis, surface_index = 1, force = force })
@@ -144,6 +155,77 @@ check(survived.labs.count == 1 and math.abs(survived.labs.speed - 1.5) < 1e-9
   and math.abs(survived.packs_per_minute_needed["automation-science-pack"] - 9) < 1e-9
   and storage.registry.types[3] == nil,
   "removing a deleted surface's lab keeps the remaining speed 1.5 and recreates no row")
+
+-- Packs made next to packs needed: one one-minute production read per
+-- needed pack and factory surface, summed (hand-crafting counts).
+made_rates[1] = { ["automation-science-pack"] = 4.25 }
+flow_reads = {}
+local made = read()
+check(made.packs_per_minute_made["automation-science-pack"] == 4.25 and #flow_reads == 1
+  and flow_reads[1].surface == 1 and flow_reads[1].category == "input" and flow_reads[1].precision_index == 1
+  and flow_reads[1].count == false,
+  "packs_per_minute_made reads the one-minute production of each needed pack on each factory surface")
+
+-- Labs lacking packs: the line sampler's labs whose status misses packs and
+-- that have not progressed in 10 s, each one's input inventory read.
+local three = { name = "military", research_unit_energy = 900, research_unit_count = 100, research_unit_ingredients = {
+  { type = "item", name = "automation-science-pack", amount = 1 }, { type = "item", name = "logistic-science-pack", amount = 1 },
+  { type = "item", name = "military-science-pack", amount = 1 } } }
+force.current_research = three
+local inventory_reads = 0
+local function stocked(x, surface_index, holds, status, productive_tick)
+  next_unit = next_unit + 1
+  local e = mock.entity({ valid = true, name = "lab", type = "lab", position = { x = x, y = 7 }, unit_number = next_unit,
+    get_inventory = function(id)
+      assert(id == 3, "only a lab's input inventory is read")
+      inventory_reads = inventory_reads + 1
+      return mock.inventory({ get_item_count = function(name) return holds[name] or 0 end })
+    end })
+  return { unit = next_unit, type = "lab", name = "lab", entity = e, position = { x = x, y = 7 }, surface = surface_index,
+    raw = status or "missing_science_packs", productive_tick = productive_tick }
+end
+local function sampled(recs)
+  local machines, waiting = {}, {}
+  for _, rec in ipairs(recs) do
+    machines[rec.unit] = rec
+    if rec.raw == "missing_science_packs" then
+      waiting[rec.surface] = waiting[rec.surface] or {}
+      waiting[rec.surface][rec.unit] = true
+    end
+  end
+  storage.autonomy = { line_order = {}, lines = {}, machines = machines, waiting = { missing_science_packs = waiting } }
+end
+local red, green, mil = "automation-science-pack", "logistic-science-pack", "military-science-pack"
+game.tick = 10000
+sampled({
+  stocked(0, 1, { [red] = 2, [mil] = 1 }),
+  stocked(3, 1, { [red] = 2 }),
+  stocked(6, 2, { [red] = 1, [mil] = 3 }),
+  stocked(9, 1, {}, nil, game.tick - 300), -- progressed 5 s ago: still busy
+  stocked(12, 1, { [red] = 1, [green] = 1, [mil] = 1 }), -- holds every pack
+  stocked(15, 1, {}, "working"),
+})
+local lacking = read().labs
+check(lacking.starved_by[green] == 3 and lacking.starved_by[mil] == 1 and lacking.starved_by[red] == nil
+  and #lacking.starved_at[green] == 3 and lacking.starved_at[green][1].x == 0
+  and lacking.starved_at[green][3].surface == "vulcanus" and lacking.starved_at[green][1].surface == nil
+  and lacking.starved_at[mil][1].x == 3 and lacking.starved_unread == nil and inventory_reads == 4,
+  "starved_by counts the stalled labs lacking each pack with their positions (another surface named), "
+    .. "reading only stalled labs (" .. inventory_reads .. " inventories)")
+local many = {}
+for i = 1, 50 do many[i] = stocked(i * 3, 1, {}) end
+sampled(many)
+inventory_reads = 0
+local crowded = read().labs
+check(crowded.starved_by[red] == 48 and crowded.starved_by[mil] == 48 and crowded.starved_unread == 2
+  and #crowded.starved_at[green] == 4 and #crowded.starved_at[red] == 4 and crowded.starved_at[mil] == nil
+  and inventory_reads == 48,
+  "at most 48 labs are read (starved_unread counts the rest); four positions a pack, eight in all")
+sampled({ stocked(0, 1, { [red] = 1, [green] = 1, [mil] = 1 }) })
+local stocked_up = read().labs
+check(stocked_up.starved_by == nil and stocked_up.starved_at == nil, "no lab lacking a pack: no starved_by or starved_at")
+storage.autonomy = nil
+force.current_research = automation
 
 -- No current research: labs only.
 force.current_research = nil

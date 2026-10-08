@@ -190,6 +190,10 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(descriptions.progression_status).not.toMatch(/science_time/);
     expect(descriptions.factory_status).toMatch(/packs_per_minute_needed/);
     expect(descriptions.factory_status).toMatch(/eta_seconds/);
+    expect(descriptions.factory_status).toMatch(/packs_per_minute_made/);
+    expect(descriptions.factory_status).toMatch(/labs\.starved_by: \{pack: labs lacking it\}/);
+    expect(descriptions.production_requirements).toMatch(/short_per_min = max\(0, demand - standing_per_min\)/);
+    expect(descriptions.production_requirements).toMatch(/standing_max_per_min/);
     for (const section of MAP_SUMMARY_SECTIONS) expect(descriptions.map_summary, section).toContain(section);
   });
 

@@ -7,7 +7,9 @@
 -- statistics read per power row shown, patches from map_summary's per-chunk
 -- cache, research from a set of available technologies kept by the research
 -- events (live current/progress/queue) and labs from the registry's lab
--- aggregate and the line sampler's lab lines. The only scan is rebuilding
+-- aggregate and the line sampler's lab lines (plus the inventories of the
+-- sampled labs that lack packs, and one flow statistics read per pack and
+-- factory surface for packs made). The only scan is rebuilding
 -- that set once after a load, an upgrade or a reversed research.
 -- registry_ready, stock_power_ready and patches_ready are false while an
 -- upgraded save's bootstrap or first pass still runs. The default read
@@ -287,15 +289,89 @@ local function round(value, places)
   return math.floor(value * scale + 0.5) / scale
 end
 
+-- Packs a minute each needed pack was made in the last minute on every
+-- factory surface (force flow statistics: machines and hand-crafting), one
+-- statistics read per pack and surface.
+local function packs_made(force, needed)
+  local made, reads, statistics = {}, 0, {}
+  local precision = defines.flow_precision_index and defines.flow_precision_index.one_minute
+  if precision == nil then return nil end
+  for _, index in ipairs(registry.surfaces()) do
+    local ok, stats = pcall(function() return force.get_item_production_statistics(index) end)
+    if ok and stats then statistics[#statistics + 1] = stats end
+  end
+  for name in pairs(needed) do
+    local total = 0
+    for _, stats in ipairs(statistics) do
+      reads = reads + 1
+      local ok, rate = pcall(function()
+        return stats.get_flow_count({ name = name, category = "input", precision_index = precision, count = false })
+      end)
+      total = total + (ok and tonumber(rate) or 0)
+    end
+    made[name] = round(total, 2)
+  end
+  jobs.charge(reads)
+  return made
+end
+
+-- Labs lacking each needed pack: starved_by {pack = count of labs}, nil
+-- while none lacks one, from the sampler's labs whose status misses packs
+-- and that have not progressed in 10 s, each one's inventory read (at most
+-- MAX_LACKING_LABS labs; starved_unread counts the rest); starved_at {pack =
+-- positions}: up to MAX_LACKING_AT lab positions per pack,
+-- MAX_LACKING_POSITIONS in all (the packs most labs lack first); a lab on
+-- another surface than the read names its surface.
+local MAX_LACKING_LABS, MAX_LACKING_AT, MAX_LACKING_POSITIONS = 48, 4, 8
+local function starved_labs(needed, read_surface)
+  local packs = {}
+  for name in pairs(needed) do packs[#packs + 1] = name end
+  table.sort(packs)
+  local rows, reads, unread = autonomy.labs_lacking(packs, MAX_LACKING_LABS)
+  jobs.charge(reads)
+  if #rows == 0 then return {} end
+  local by_pack, order = {}, {}
+  for _, row in ipairs(rows) do
+    for _, name in ipairs(row.lacks) do
+      local entry = by_pack[name]
+      if not entry then
+        entry = { count = 0, labs = {} }
+        by_pack[name], order[#order + 1] = entry, name
+      end
+      entry.count = entry.count + 1
+      entry.labs[#entry.labs + 1] = row
+    end
+  end
+  table.sort(order, function(x, y)
+    if by_pack[x].count ~= by_pack[y].count then return by_pack[x].count > by_pack[y].count end
+    return x < y
+  end)
+  local starved_by, starved_at, left = {}, {}, MAX_LACKING_POSITIONS
+  for _, name in ipairs(order) do
+    local entry = by_pack[name]
+    starved_by[name] = entry.count
+    local at = {}
+    for i = 1, math.min(MAX_LACKING_AT, left, #entry.labs) do
+      local lab = entry.labs[i]
+      local surface = lab.surface ~= read_surface and surfaces.by_index(lab.surface)
+      at[i] = { x = lab.position.x, y = lab.position.y, surface = surface and surfaces.ref(surface) or nil }
+    end
+    left = left - #at
+    if #at > 0 then starved_at[name] = at end
+  end
+  return { starved_by = starved_by, starved_at = starved_at, starved_unread = unread > 0 and unread or nil }
+end
+
 -- Labs on every surface (absent until the force has one): count, working
 -- (progressed in the last 10 s) and speed (summed research speed, force
 -- bonus, modules and beacons included).
 -- With speed, what the current research needs to keep them all busy: packs
 -- a minute (pack_rate x 60 / unit_time_s x amount: a biolab drains half a
 -- pack a unit, productivity does not change consumption) and eta_seconds
--- (remaining units at full speed, each lab's productivity counted). A few
--- reads of the current technology.
-local function labs_section(force, out)
+-- (remaining units at full speed, each lab's productivity counted), next to
+-- packs_per_minute_made and labs.starved_by. A few reads of the current
+-- technology.
+local function labs_section(force, out, read_surface)
   local labs = registry.labs()
   if labs.count > 0 then
     out.labs = { count = labs.count, working = autonomy.labs_working(), speed = round(labs.speed, 3) }
@@ -312,7 +388,11 @@ local function labs_section(force, out)
   for _, ingredient in ipairs(ok and ingredients or {}) do
     needed[ingredient.name] = round(per_minute * (ingredient.amount or 1), 2)
   end
-  if next(needed) then out.packs_per_minute_needed = needed end
+  if next(needed) then
+    out.packs_per_minute_needed = needed
+    out.packs_per_minute_made = packs_made(force, needed)
+    for key, value in pairs(starved_labs(needed, read_surface)) do out.labs[key] = value end
+  end
   local count_ok, count = pcall(function() return current.research_unit_count end)
   if count_ok and type(count) == "number" and labs.progress_rate > 0 then
     local remaining = count * (1 - (force.research_progress or 0))
@@ -324,7 +404,7 @@ end
 
 -- Current research, progress and queue are cheap live reads; available is
 -- the kept set, sorted.
-local function research_section(force)
+local function research_section(force, read_surface)
   local cache = storage.research_cache
   if not (cache and cache.force == force.name) then cache = rebuild_available(force) end
   local queue = {}
@@ -335,7 +415,7 @@ local function research_section(force)
   local out = { current = force.current_research and force.current_research.name or nil,
     progress = force.research_progress or 0, queue = queue, available = available,
     omitted_available = cap(available, MAX_AVAILABLE) }
-  labs_section(force, out)
+  labs_section(force, out, read_surface)
   return out
 end
 
@@ -404,7 +484,7 @@ function M.factory_status(params)
       result.stock, result.omitted_stock = rows, omitted > 0 and omitted or nil
     end
   end
-  if want.research then result.research = research_section(target.force) end
+  if want.research then result.research = research_section(target.force, index) end
   if want.body then result.body = body_section(body, target.ref) end
   if want.patches then
     result.patches, result.omitted_patches, result.patches_ready =

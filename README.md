@@ -8,7 +8,8 @@ Codex through text-only tools; the mod does every deterministic chore, and the
 strategist's thinking appears on a panel on the Codex screen.
 The only active path is the project MCP server → serialized RCON bridge →
 Factorio mod. Movement, reach, inventory, crafting, placement, research and
-elapsed game time remain real.
+elapsed game time remain real. [Architecture](docs/ARCHITECTURE.md) explains
+how the pieces fit together.
 
 Requirements: Factorio 2.0.x with the Space Age expansion, Node.js 22.12+,
 and a dedicated save. The fixed `/silent-command remote.call` bridge means
@@ -25,23 +26,198 @@ rocket up to a platform, aboard while it flies its route, and down by pod.
 Everything on a planet keeps physical reach. The game is won when a platform
 reaches the solar system edge (the `promethium-science-pack` technology,
 whose spawner-capture prerequisite this peaceful save cannot meet yet, is
-The owner's later decision).
+left for later).
 
 The owner can explicitly run a [fresh twenty-minute benchmark campaign](docs/BENCHMARK-CAMPAIGN.md)
 with one to four reasoning sessions, varied GPT-6 profiles and a fixed native
 cutoff. The normal two-brain setup remains the default.
 
-## Install and use
+## Quickstart
+
+You need Factorio 2.0 with Space Age, Node.js 22.12 or newer, and the
+[Codex CLI](https://github.com/openai/codex). The server commands run on
+Linux; the game client that plays the Codex body can run on the same machine
+or another one on your network.
+
+### 1. Install and build
 
 ```sh
-nvm use 22
+git clone <this repository> factorio-codex && cd factorio-codex
 npm ci
-npm run build
-node companion/dist/cli.js setup
-node companion/dist/cli.js server create <run-dir>
-node companion/dist/cli.js server start <run-dir> [--bind <lan-address>]
-node companion/dist/cli.js server stop <run-dir>
+npm run build          # companion/dist/cli.js, the factorio-codex CLI
+npm run package:mod    # dist/agentic-companion_<version>.zip, for a client on another machine
 ```
+
+`node companion/dist/cli.js` is the `factorio-codex` CLI; later sections
+write it as `factorio-codex`.
+
+### 2. Configure
+
+Start Factorio once so it creates its user-data folder, then:
+
+```sh
+node companion/dist/cli.js setup     # loopback RCON settings, installs and enables the mod
+node companion/dist/cli.js doctor    # checks config, RCON, mod and protocol
+```
+
+`setup` writes `~/.config/factorio-codex/config.json` (mode 0600) with a
+generated RCON password, installs the `agentic-companion` mod into your
+Factorio `mods/` folder, and enables loopback RCON in Factorio's `config.ini`.
+`doctor` reports RCON as unreachable until a server is running.
+
+### 3. Create and start a server
+
+Each run lives in its own directory. `server create` makes a fresh peaceful
+Space Age save there with a run-local mod set; `server start` launches the
+headless server (game port 34197, RCON on 127.0.0.1:19015) and returns once the
+mod protocol and version check pass.
+
+```sh
+RUN_DIR="$HOME/factorio-codex-runs/first-run"
+node companion/dist/cli.js server create "$RUN_DIR" [--seed <n>] [--factorio <path>]
+node companion/dist/cli.js server start "$RUN_DIR" [--bind <address>] [--factorio <path>]
+```
+
+The Factorio executable is found through `FACTORIO_BIN`, the standard Steam
+locations, or `--factorio <path>` (the full game or the headless build, with
+Space Age data). `server start` also records `$RUN_DIR` as the current run: the
+MCP bridge reads the ledger at `$RUN_DIR/operations.json` while that server is
+running. `server stop "$RUN_DIR"` saves over RCON and shuts it down; starting
+the same directory again resumes the save.
+
+### 4. Join as the Codex player
+
+The mod binds the connected player named exactly `Codex` and uses that
+player's own character as the body; it never creates one. Any other player who
+joins becomes a characterless spectator that follows Codex. The server does
+not verify user names, so join with a client whose multiplayer name is `Codex`:
+
+- Use the standalone (non-Steam) Factorio build. The Steam build replaces the
+  name with your account's.
+- Give that client its own write-data folder with a `player-data.json` of
+  `{"service-username":"Codex"}`, and a `mods/` folder with the
+  `agentic-companion` mod of the same version as the server (the folder `setup`
+  installed, or the zip from `npm run package:mod`) enabled beside `base`,
+  `elevated-rails`, `quality` and `space-age`.
+
+On Linux, with a standalone install at `<factorio>`:
+
+```sh
+CLIENT="$HOME/factorio-codex-client"
+mkdir -p "$CLIENT/config" "$CLIENT/mods"
+printf '[path]\nread-data=__PATH__executable__/../../data\nwrite-data=%s\n' "$CLIENT" > "$CLIENT/config/config.ini"
+echo '{"service-username":"Codex"}' > "$CLIENT/player-data.json"
+cp dist/agentic-companion_*.zip "$CLIENT/mods/"
+echo '{"mods":[{"name":"base","enabled":true},{"name":"elevated-rails","enabled":true},{"name":"quality","enabled":true},{"name":"space-age","enabled":true},{"name":"agentic-companion","enabled":true}]}' > "$CLIENT/mods/mod-list.json"
+<factorio>/bin/x64/factorio --config "$CLIENT/config/config.ini" --mod-directory "$CLIENT/mods" --mp-connect <server-host>:34197
+```
+
+On Windows, `scripts/launch-native-client.ps1 -Address <server-host>:34197
+[-FactorioBinary <path to factorio.exe>]` prepares the same isolated client
+(after `npm run package:mod`) and starts it at 4K with maximum graphics
+quality. The server log shows `[JOIN] Codex joined`; the server pauses while
+nobody is connected, so the game clock runs only while the Codex client is in.
+
+You can take the body over with mouse and keyboard at any time: real control
+input parks the bot's queue, which resumes about five seconds after your last
+input.
+
+### 5. Start Codex in the repository
+
+```sh
+codex
+```
+
+Trust the project when Codex asks: the committed `.codex/config.toml` then
+starts the full-surface `factorio` MCP server (`scripts/start-factorio-mcp`,
+which installs locked dependencies on first use). Ask it to call
+`connect_status`; it should report `connected` with the Codex body.
+
+### 6. Play with one bot
+
+One Codex session with the full surface can play alone. Paste the solo prompt
+from [prompts/pilot.md](prompts/pilot.md#solo-one-session): the session reads
+the `factorio-player` skill, chooses its own priorities and research, and
+queues its own plans. Nothing else is needed; the ledger and packages below are
+for the two-session setup.
+
+### 7. Two sessions: planner and pilot
+
+The normal setup runs two sessions around the one body:
+
+- **The planner** (the strategist role) uses only the read-only MCP surface and
+  is the sole writer of the run's ledger, `$RUN_DIR/operations.json`, through
+  the `ledger-apply` CLI. It sets NOW/NEXT/LATER priorities, picks research,
+  and publishes build packages that it designed and dry-ran.
+- **The pilot** uses the full surface and is the only gameplay writer. Its MCP
+  process, started with `--role pilot`, also runs the package bridge: about once
+  a second it reads the ledger and queues each new package into the body's
+  FIFO, in ledger order, after the mod's placement check, and queues the
+  ledger's research list. Packages wait as `waiting_surface` while the body is
+  on another surface; outcomes go to `$RUN_DIR/package-queue.json`, and a
+  failure reaches both roles as `package_failed`.
+
+Prepare the run directory, with a unique run `id` for every run:
+
+```sh
+mkdir -p "$RUN_DIR/notebook/strategist" "$RUN_DIR/notebook/pilot"
+cat > "$RUN_DIR/run-identity.json" <<EOF
+{
+  "id": "first-run",
+  "release_sha": "$(git rev-parse HEAD)",
+  "baseline_save_sha256": "$(sha256sum "$RUN_DIR/save.zip" | cut -d' ' -f1)",
+  "save_identity": "fresh peaceful Space Age save",
+  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "roles": [
+    {"id": "pilot", "role": "pilot", "model": "gpt-6-luna", "reasoning": "low", "fast": true, "ledger_writer": false},
+    {"id": "strategist", "role": "strategist", "model": "gpt-6.1-sol", "reasoning": "medium", "fast": false, "ledger_writer": true}
+  ]
+}
+EOF
+```
+
+The `run` object becomes part of the ledger: `baseline_save_sha256` is the
+hash of the starting save (take it before a `server stop` rewrites it), and
+`roles` records the profiles (`model` is one of `gpt-6-luna`, `gpt-6.1-sol`,
+`gpt-6-sol`, `gpt-6-astra`).
+Then start the two sessions from the repository root in two terminals. Each
+override names a complete MCP server table, and `--add-dir` lets each session
+write its notebook folder (and the planner its ledger) outside the repository:
+
+```sh
+# pilot: full surface, package bridge on
+codex -m gpt-6-luna -c 'model_reasoning_effort="low"' \
+  -c 'model_reasoning_summary="detailed"' --add-dir "$RUN_DIR" \
+  -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","pilot"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'
+
+# planner: read-only surface only
+codex -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' \
+  -c 'model_reasoning_summary="detailed"' --add-dir "$RUN_DIR" \
+  -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
+  -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
+```
+
+The read-only surface registers only the 21 read-only tools; the four that
+build (`build_layout`, `connect_entities`, `blueprint_place`, `place_tiles`)
+are dry runs there. Fast mode for the pilot is optional.
+
+1. Paste each session's preparation prompt from
+   [prompts/planner.md](prompts/planner.md) and
+   [prompts/pilot.md](prompts/pilot.md), with `<run-dir>` and `<run-id>`
+   filled in. The planner initializes the ledger at revision 1 with no
+   packages; neither session acts in the game.
+2. Optionally start the [run recorder](#run-recorder) in a third terminal; it
+   prints `GO` when its baseline is taken and runs the thought feed.
+3. Paste each session's `GO` message. From then on the planner writes packages
+   and research into the ledger, and the pilot's bridge queues them; the pilot
+   handles failures, an empty queue and anything needing local judgment.
+
+Stop by interrupting both sessions, then `server stop "$RUN_DIR"`. Before you
+resume a stopped run, call the `stop` tool once with `keep_upkeep: true` from a
+full-surface session so no old package moves the body; the full supervised
+procedure is in [live validation](docs/LIVE-VALIDATION.md).
+
+## Install and use
 
 Each run directory owns its fresh peaceful Space Age save, logs, PID, a
 run-local mod directory (base, elevated-rails, quality, space-age, and the
@@ -49,22 +225,6 @@ companion), the ledger `operations.json`, the package queue record
 `package-queue.json`, and the role notebook. `server start` verifies the mod
 protocol and version before returning; `server stop` saves over RCON before
 shutting down.
-
-The server-and-agent workstation has no dedicated GPU and is permanently
-headless. Run only the dedicated server, Node bridge, and agent tooling there;
-never start a Factorio GUI/client or any other visual GUI workload on it during
-rollout, validation, or benchmarks. All visual workloads run on the couch PC.
-There, install the full standalone Factorio Space Age build under
-`%LOCALAPPDATA%\factorio-codex\standalone-space-age` and run the couch-only
-`scripts/launch-native-client.ps1 -Address <server:port>` to connect its
-isolated maximum-quality 4K client as the real player named `Codex`. Then
-connect the separate normal couch Factorio client as the characterless
-spectator. The native launcher rejects the Steam build because Steam replaces
-the isolated LAN identity with the account identity. There is intentionally no
-Linux visual client launcher in this repository. The mod never creates a
-standalone fallback character. Run `node companion/dist/cli.js doctor`, then
-start `codex` at this root; the committed project config starts MCP
-automatically.
 
 The CLI supports `setup`, `doctor [--json]`, `mcp [--surface full|read-only]`,
 `ledger-apply`, `server`, and `runs` (record, mark-assisted, compare).
@@ -110,7 +270,7 @@ rules live in the repo-local `factorio-player` skill: `SKILL.md`, a short
 Factorio intro with mechanics, rates and generic principles (`PLAYER-KNOWLEDGE-v1.md`), a reference for
 rates and layout geometry (`FACTORIO-REFERENCE.md`), and one goal file per role.
 
-**the owner takeover.** Real control input on the native `Codex` client (movement,
+**Human takeover.** Real control input on the native `Codex` client (movement,
 mining, building, opening a GUI, holding an item) parks the FIFO; nothing is
 cancelled and `queue_plan` still queues. Every `fifo` block,
 `factory_status.body` and `observe_local.character` report `human_control`.
@@ -137,7 +297,7 @@ takeover hold.
 character crafting; committed physical effects remain. Upkeep then stays off
 until a plan finishes, unless the call passes `keep_upkeep: true` (the
 retained-work reconciliation does). Neither role calls it.
-Under `AGENTS.md` the supervisor alone uses it for an explicit the owner stop,
+Under `AGENTS.md` the supervisor alone uses it for an explicit stop by the human player,
 retained-work reconciliation, or recorded emergency quiescence during
 replacement.
 
@@ -324,17 +484,20 @@ historical evidence in [agent play performance](docs/AGENT-PLAY-PERFORMANCE.md).
 
 ## Timelapse
 
-For the owner's video, the supervisor can start a 4K timelapse over the `timelapse`
-RPC (`{"action":"start","folder":"<run id>"}`; `status`, `stop`). It is output
+For a video of the run, the supervisor can start a 4K timelapse over the
+`timelapse` RPC (`{"action":"start","folder":"<run id>"}`; `status`, `stop`),
+sent through the companion's `Bridge` (`bridge.call("timelapse", ...)` on an
+unlocked RCON connection, as `server start` does for `ping`). It is output
 only: no MCP tool reads or starts it, and no image reaches the bots. Every five
 game seconds the Codex client renders a 3840x2160 JPG (`take_screenshot` with
 `by_player`; the headless server renders nothing) into
-`script-output\timelapse\<folder>\frame_NNNNNN_t<tick>.jpg`. The camera frames the largest cluster
+its `script-output/timelapse/<folder>/frame_NNNNNN_t<tick>.jpg`. The camera frames the largest cluster
 of production machines on Nauvis, ignores outposts and long lines, and only
 zooms out (from 1 to 0.25) as that cluster grows; the first rocket launch on
 Nauvis is caught every four ticks close on the silo, then a short pull-back
-ends the capture. On the couch PC, `scripts/timelapse-video.ps1 -Run <folder>`
-joins the frames into an HEVC video (`-Every 2` doubles the speed, `-SkipIdle`
+ends the capture. On a Windows client prepared by
+`scripts/launch-native-client.ps1`, `scripts/timelapse-video.ps1 -Run <folder>`
+joins the frames into an HEVC video with ffmpeg's NVIDIA encoder (`hevc_nvenc`) (`-Every 2` doubles the speed, `-SkipIdle`
 drops unchanged frames). Each frame shows the time since the first frame as
 HH:MM:SS, from its tick, at a fixed top-left spot in a monospace font
 (`-NoClock` leaves it out). `-Captions <file.json>` takes a list of

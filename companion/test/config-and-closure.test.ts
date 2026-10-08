@@ -258,7 +258,8 @@ describe("exact local configuration", () => {
     expect(couchLauncher).not.toContain("--disable-audio");
     const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
     const liveValidation = fs.readFileSync(path.join(root, "docs/LIVE-VALIDATION.md"), "utf8");
-    expect(readme).toMatch(/no dedicated GPU[\s\S]*permanently[\s\S]*headless[\s\S]*All visual workloads run on the couch PC/);
+    // The public README documents the isolated standalone Codex client, not one machine layout.
+    expect(readme).toMatch(/standalone \(non-Steam\) Factorio build[\s\S]*launch-native-client\.ps1/);
     expect(liveValidation).toMatch(/no dedicated[\s\S]*GPU[\s\S]*permanently headless[\s\S]*Both visual Factorio processes run exclusively on the couch PC/);
   });
 

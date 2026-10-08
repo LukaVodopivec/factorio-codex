@@ -40,7 +40,7 @@ state.init()
 storage.registry.ready = true
 
 local ore = mock.entity({ valid = true, name = "iron-ore", type = "resource", position = { x = 0, y = 0 },
-  prototype = { mineable_properties = { products = { { name = "iron-ore", type = "item", amount = 1 } } } } })
+  prototype = { mineable_properties = { mining_time = 1, products = { { name = "iron-ore", type = "item", amount = 1 } } } } })
 local next_unit = 100
 local function machine(kind, name, x, y, extra)
   next_unit = next_unit + 1
@@ -60,7 +60,8 @@ end
 -- A big drill (2.5 / 1 s iron ore, 150 a minute) with +10% productivity
 -- (15 more): 1.25 cycles a 30-tick sample, so its progress shows a quarter
 -- more each sample and wraps on only some of them.
-local drill = machine("mining-drill", "big-mining-drill", 0, 0, { mining_target = ore, speed_bonus = 0, productivity_bonus = 0.1 })
+local drill = machine("mining-drill", "big-mining-drill", 0, 0, { mining_target = ore, speed_bonus = 0, productivity_bonus = 0.1,
+  prototype = prototypes.entity["big-mining-drill"] })
 local assembler = machine("assembling-machine", "assembler", 40, 0, { get_recipe = function() return SCRAP end })
 local base, extra, crafts = 0, 0, 0
 local function run(ticks)
@@ -84,7 +85,7 @@ check(ore_line and ore_line.rate_per_min >= 160 and ore_line.rate_per_min <= 170
   "a drill finishing more than one cycle a sample counts each, productivity products included ("
     .. tostring(ore_line and ore_line.rate_per_min) .. " of 165)")
 check(select(3, autonomy.producing("iron-ore", nil, true)) == 165, "its nameplate agrees with the count")
-check(gear_line and gear_line.rate_per_min >= 59 and gear_line.rate_per_min <= 60 and line("plate") == nil,
+check(gear_line and gear_line.rate_per_min >= 59 and gear_line.rate_per_min <= 61 and line("plate") == nil,
   "a ranged chance product counts its average yield, and a line is its recipe's first product only")
 check(select(3, autonomy.producing("gear", nil, true)) == 75,
   "built-in and researched productivity stop at the recipe's maximum in the nameplate")

@@ -461,6 +461,9 @@ describe.each(["full", "read-only"] as McpSurface[])("set_watch and clear_watch 
     expect(schemas.set_watch.safeParse({ condition: { kind: "rate_below", item: "iron-plate", per_min: 60 }, surface: "vulcanus" }).success).toBe(true);
     expect(schemas.clear_watch.safeParse({}).success).toBe(false);
     expect(schemas.clear_watch.safeParse({ id: 1, all: true }).success).toBe(false);
+  });
+});
+
 describe("next_event own losses and repeated outcomes", () => {
   const belts = { name: "transport-belt", position: { x: 11, y: 10 }, surface: "nauvis", count: 2, tick: 210,
     killed_by: { name: "locomotive", type: "locomotive", force: "player" } };

@@ -11,9 +11,10 @@
 -- that set once after a load, an upgrade or a reversed research.
 -- registry_ready, stock_power_ready and patches_ready are false while an
 -- upgraded save's bootstrap or first pass still runs. The default read
--- stays under about 6 KB: one RCON chunk pair, not a multi-part answer.
--- logistics (robot networks) is opt-in through sections. platforms lists the
--- force's space platforms, one attribute-read line each (platforms.lua).
+-- stays under about 6 KB: one RCON chunk pair, not a multi-part answer (feed
+-- facts on up to three stalled rows add up to about 1.6 KB). logistics
+-- (robot networks) is opt-in through sections. platforms lists the force's
+-- space platforms, one attribute-read line each (platforms.lua).
 --
 -- Surfaces (multi-surface rule 6): `surface` names the surface the detailed
 -- sections (lines, problems, power, stock, patches, logistics) describe, the
@@ -66,6 +67,28 @@ local function cap(rows, limit)
   local omitted = math.max(0, #rows - limit)
   while #rows > limit do table.remove(rows) end
   return omitted > 0 and omitted or nil
+end
+
+-- Feed facts (autonomy.lua read_feed) ride on at most MAX_FEEDS rows a read,
+-- lines first in their order; a problem row whose machine's feed its line row
+-- already shows says feed_in_line instead. omitted_feeds counts the rest.
+local MAX_FEEDS = 3
+local function cap_feeds(result)
+  local shown, omitted, at = 0, 0, {}
+  local function key(position) return position and (position.x .. "," .. position.y) end
+  local function keep(holder)
+    if shown < MAX_FEEDS then shown = shown + 1; return true end
+    holder.feed, omitted = nil, omitted + 1
+  end
+  for _, row in ipairs(result.lines or {}) do
+    if row.feed and keep(row) then at[key(row.cause_position)] = true end
+    if row.degraded and row.degraded.feed and keep(row.degraded) then at[key(row.degraded.cause_position)] = true end
+  end
+  for _, row in ipairs(result.problems or {}) do
+    if row.feed and at[key(row.position)] then row.feed, row.feed_in_line = nil, true
+    elseif row.feed then keep(row) end
+  end
+  if omitted > 0 then result.omitted_feeds = omitted end
 end
 
 local function xy(position) return { x = position.x, y = position.y } end
@@ -368,6 +391,7 @@ function M.factory_status(params)
     table.sort(rows, problem_before)
     result.problems, result.omitted_problems = rows, cap(rows, MAX_PROBLEMS)
   end
+  cap_feeds(result)
   if want.power or want.stock then
     local maintenance = registry.maintenance()
     result.stock_power_tick, result.stock_power_ready = maintenance.pass_tick, maintenance.ready

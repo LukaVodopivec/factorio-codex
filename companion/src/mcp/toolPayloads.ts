@@ -154,6 +154,21 @@ export function normalizeMapSummary(value: any): any {
 // A Lua record serialized empty may arrive as [].
 const record = (value: unknown) => Array.isArray(value) && value.length === 0 ? {} : value;
 
+/** Feed facts (the inserters that drop into a starved or dry machine): its
+ *  inserters, and each one's lanes and items, may arrive as {} when empty. */
+function feedFacts(feed: any): any {
+  if (!feed || typeof feed !== "object") return feed;
+  return { ...feed, inserters: luaArray(feed.inserters ?? []).map((row: any) => row && typeof row === "object" ? { ...row,
+    ...(row.lanes === undefined ? {} : { lanes: luaArray(row.lanes).map((lane) => luaArray(lane)) }),
+    ...(row.items === undefined ? {} : { items: luaArray(row.items) }) } : row) };
+}
+/** A line or problem row with its feed facts (and a degraded member's). */
+export function withFeedFacts(row: any): any {
+  if (!row || typeof row !== "object") return row;
+  return { ...row, ...(row.feed === undefined ? {} : { feed: feedFacts(row.feed) }),
+    ...(row.degraded?.feed === undefined ? {} : { degraded: { ...row.degraded, feed: feedFacts(row.degraded.feed) } }) };
+}
+
 /** Power rows (factory_status power, map_summary include power); accumulators
  *  is null on a network without any. */
 function powerRows(value: unknown): unknown {
@@ -176,6 +191,7 @@ export function normalizeFactoryStatus(value: any): any {
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = { ...value };
   for (const key of ["lines", "problems", "patches"]) if (value[key] !== undefined) out[key] = luaArray(value[key]);
+  for (const key of ["lines", "problems"]) if (Array.isArray(out[key])) out[key] = (out[key] as unknown[]).map(withFeedFacts);
   if (value.power !== undefined) out.power = powerRows(value.power);
   if (value.logistics && typeof value.logistics === "object") out.logistics = { ...value.logistics,
     networks: luaArray(value.logistics.networks ?? []).map((network: any) => network && typeof network === "object"

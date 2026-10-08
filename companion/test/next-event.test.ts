@@ -141,6 +141,33 @@ describe("next_event research beside a plan end", () => {
     expect(eventSummary({ event: "new_problem", problems: [{ status: "no_fuel", name: "stone-furnace" }] }))
       .toBe("new machine problem (1 rows)");
   });
+
+  it("states a new problem's feed facts in words, never advice", async () => {
+    const boiler = { status: "no_fuel", name: "boiler", position: { x: 0, y: 0 }, count: 1, feed: { class: "foreign_item",
+      missing: "fuel", feeders: 1, inserters: [{ position: { x: 0, y: 2 }, status: "waiting_for_source_items",
+        from: "transport-belt", from_position: { x: 0, y: 3 }, lanes: [["copper-ore"], {}] }] } };
+    let index = 0;
+    const samples = [busy, { ...busy, tick: 130, last_problem_tick: 120 }];
+    const call = vi.fn(async (method: string) => method === "factory_status" ? { tick: 130, problems: [boiler] }
+      : samples[Math.min(index++, samples.length - 1)]);
+    const event = await waitForEvent({ call } as unknown as Bridge, input(), quiet(), undefined, fakeClock());
+    expect((event as any).problems[0].feed.inserters[0].lanes).toEqual([["copper-ore"], []]);
+    expect(eventSummary(event)).toBe("new machine problem (1 rows); boiler (0, 0) no_fuel: its inserter at (0, 2) picks from "
+      + "a transport-belt at (0, 3) carrying copper-ore only, which boiler does not take");
+    const row = (feed: object) => ({ status: "no_fuel", name: "boiler", position: { x: 5, y: 5 }, feed });
+    const inserter = { position: { x: 5, y: 7 }, status: "working", holding: "iron-ore", from: "wooden-chest",
+      from_position: { x: 5, y: 8 }, items: ["iron-ore"] };
+    expect(eventSummary({ event: "new_problem", problems: [row({ feeders: 0, missing: "fuel" }),
+      row({ class: "source_empty", missing: "fuel", feeders: 2, inserters: [{ ...inserter, holding: undefined, items: [] }] }),
+      row({ class: "inserter_bound", missing: "iron-ore", feeders: 1, inserters: [inserter] })] }))
+      .toBe("new machine problem (3 rows); boiler (5, 5) no_fuel: no inserter drops into it; boiler (5, 5) no_fuel: one of its 2 "
+        + "inserters, at (5, 7), picks from a wooden-chest at (5, 8) holding nothing; no fuel it burns there");
+    const bound = eventSummary({ event: "new_problem", problems: [row({ class: "inserter_bound", missing: "iron-ore", feeders: 1,
+      inserters: [inserter] })] });
+    expect(bound).toBe("new machine problem (1 rows); boiler (5, 5) no_fuel: iron-ore is at the pickup of its inserter at (5, 7) "
+      + "(a wooden-chest at (5, 8) holding iron-ore), which is working, holding iron-ore");
+    expect(bound).not.toMatch(/\b(add|move|should|filter|split|replace)\b/);
+  });
 });
 
 describe("next_event rocket and platform events", () => {

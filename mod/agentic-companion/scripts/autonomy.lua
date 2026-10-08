@@ -52,8 +52,13 @@
 --   hand_seconds    body time those insert/extract steps took in the last 10
 --                   minutes (walking and fetching included), shown from 10 s:
 --                   what keeping the line running by hand costs
+--   feed            (a starved line lacking an item, a no_fuel line, a
+--                   degraded no_fuel member and each no_fuel problem row) the
+--                   inserters that drop into that machine, read once per
+--                   episode (see read_feed)
 local registry = require("scripts.registry")
 local platforms = require("scripts.platforms")
+local surfaces = require("scripts.surfaces")
 
 local M = {}
 
@@ -525,11 +530,27 @@ local function missing_input(rec)
   for _, ingredient in ipairs(ingredients or {}) do
     if ingredient.type == "fluid" then
       local ok, amount = pcall(entity.get_fluid_count, ingredient.name)
-      if ok and (amount or 0) < (ingredient.amount or 1) then return ingredient.name end
+      if ok and (amount or 0) < (ingredient.amount or 1) then return ingredient.name, false end
     elseif inventory and inventory.get_item_count(ingredient.name) < (ingredient.amount or 1) then
-      return ingredient.name
+      return ingredient.name, true
     end
   end
+end
+
+-- The item names a machine's recipe (a lab's current research) takes.
+local function ingredient_names(rec)
+  local entity, names, ingredients = rec.entity, {}, nil
+  if rec.type == "lab" then
+    local research = entity.force.current_research
+    ingredients = research and research.research_unit_ingredients
+  elseif CRAFTING_TYPES[rec.type] then
+    local recipe = current_recipe(entity)
+    ingredients = recipe and recipe.ingredients
+  end
+  for _, ingredient in ipairs(ingredients or {}) do
+    if ingredient.type ~= "fluid" then names[ingredient.name] = true end
+  end
+  return names
 end
 
 -- The fluid a fluid-starved machine lacks: the filter of its first input
@@ -549,13 +570,21 @@ local function fluid_cause(entity)
   return first or "fluid"
 end
 
--- Why a line's worst machine stalls (see the header), or nil.
+-- What a dry machine's feed lacks: any fuel its burner burns.
+local FUEL = "fuel"
+
+-- Why a line's worst machine stalls (see the header), or nil, and the item
+-- its feeders are read for (read_feed): the item a starved one lacks, FUEL
+-- for a dry one.
 local function cause_of(rec, state)
   local raw = rec.raw
   if state == "starved" then
     if FLUID_STATUS[raw] then return fluid_cause(rec.entity) end
     if raw == "no_spot_seedable_by_inputs" then return "seed" end
-    return missing_input(rec)
+    local name, item = missing_input(rec)
+    return name, item and name or nil
+  elseif state == "no_fuel" then
+    return nil, FUEL
   elseif state == "idle" and (raw == "no_recipe" or raw == "recipe_not_researched"
     or raw == "not_connected_to_hub_or_pad") then
     return raw
@@ -581,6 +610,152 @@ local function dry_outlet(a, unit, rec)
   rec.dry_picker = nil
 end
 
+-- Feed facts. Once per episode of a starved machine lacking an item or of a
+-- dry machine (inside the cause refresh and its MAX_CAUSES cap), one bounded
+-- query finds the inserters within FEED_MARGIN tiles of its footprint that
+-- drop into it (feeders); the first MAX_FEEDERS are read: status, the item
+-- in hand (holding) and their pickup target, with the item names on each lane
+-- of a belt (lanes) or in another entity's output inventory (items), at most
+-- MAX_FEED_NAMES each (omitted_names counts the rest). Facts only, in a
+-- charted area: an inserter or pickup in an uncharted chunk is not read. The
+-- class says what the read found:
+--   inserter_bound  the lacking item (any fuel the burner burns, for a dry
+--                   one) is at a feeder's pickup and that feeder is working
+--   foreign_item    no pickup has it, and a feeder's pickup holds only items
+--                   the machine takes for neither its recipe nor its fuel
+--   source_empty    no pickup has it (and none holds only such items)
+-- and is absent when the item is at a pickup whose feeder is not working
+-- (its status says why) or nothing feeds the machine (feeders = 0). Rows
+-- show the feeder that decided the class (inserters), to stay small.
+-- The search box reaches a long-handed inserter's centre.
+local FEED_MARGIN = 2.5
+local MAX_FEEDERS, MAX_FEED_NAMES = 4, 3
+local BELT_TYPES = { ["transport-belt"] = true, ["underground-belt"] = true, splitter = true,
+  loader = true, ["loader-1x1"] = true, ["linked-belt"] = true, ["lane-splitter"] = true }
+
+-- The episode a feed read belongs to: a dry machine's problem episode (it
+-- outlasts short refuels, see sample), a starved one's last progress.
+local function feed_episode(rec, state)
+  if state == "no_fuel" then return rec.problem_since or 0 end
+  return rec.productive_tick or 0
+end
+
+-- The machine's feed read for this episode and lacking item, or nil.
+local function current_feed(rec, state, wanted)
+  local feed = rec.feed
+  if feed and feed.state == state and feed.episode == feed_episode(rec, state)
+    and (wanted == nil or feed.missing == wanted) then return feed end
+end
+
+local function xy_of(position) return { x = position.x, y = position.y } end
+
+-- Sorted item names of get_contents rows, all of them (for the class) and
+-- at most MAX_FEED_NAMES shown.
+local function content_names(contents, all)
+  local names, seen = {}, {}
+  for _, row in pairs(contents or {}) do
+    local name = type(row) == "table" and row.name
+    if name and not seen[name] then seen[name] = true; names[#names + 1] = name end
+  end
+  table.sort(names)
+  for _, name in ipairs(names) do all[name] = true end
+  local shown = {}
+  for i = 1, math.min(#names, MAX_FEED_NAMES) do shown[i] = names[i] end
+  return shown, #names - #shown
+end
+
+-- One feeder's facts, and the item names at its pickup (a set).
+local function feeder_row(inserter, force, surface, platform)
+  local row = { position = xy_of(inserter.position), status = status_name(inserter) }
+  local held = inserter.held_stack
+  if held and held.valid_for_read then row.holding = held.name end
+  local names, omitted = {}, 0
+  local pickup = inserter.pickup_target
+  local at = pickup and pickup.position
+  if at and surfaces.charted(force, surface, math.floor(at.x / 32), math.floor(at.y / 32), platform) then
+    row.from, row.from_position = pickup.name, xy_of(at)
+    if BELT_TYPES[pickup.type] then
+      row.lanes = {}
+      for lane = 1, 2 do
+        local shown, more = content_names(pickup.get_transport_line(lane).get_contents(), names)
+        row.lanes[lane], omitted = shown, omitted + more
+      end
+    else
+      local ok, inventory = pcall(pickup.get_output_inventory)
+      if ok and inventory then
+        local shown, more = content_names(inventory.get_contents(), names)
+        row.items, omitted = shown, more
+      end
+    end
+  end
+  if omitted > 0 then row.omitted_names = omitted end
+  return row, names
+end
+
+-- Reads a machine's feed (see above) for this episode onto its record.
+local function read_feed(rec, state, wanted, tick)
+  local entity = rec.entity
+  local feed = { state = state, missing = wanted, episode = feed_episode(rec, state), tick = tick }
+  rec.feed = feed
+  local box = entity.bounding_box
+  local area = { left_top = { x = box.left_top.x - FEED_MARGIN, y = box.left_top.y - FEED_MARGIN },
+    right_bottom = { x = box.right_bottom.x + FEED_MARGIN, y = box.right_bottom.y + FEED_MARGIN } }
+  local surface, force = entity.surface, entity.force
+  local platform = surfaces.is_platform(surface)
+  if not surfaces.footprint_charted(force, surface, area, platform) then return feed end
+  -- What the machine takes: its recipe's items, any fuel its burner burns,
+  -- and (a furnace picks its recipe from its input) what it accepts now.
+  local takes = ingredient_names(rec)
+  local burner = entity.burner
+  local categories = burner and burner.fuel_categories or {}
+  local function fuel(name)
+    local ok, category = pcall(function() return prototypes.item[name].fuel_category end)
+    return ok and category ~= nil and categories[category] == true
+  end
+  local function taken(name)
+    if takes[name] == nil then
+      takes[name] = fuel(name) or rec.type == "furnace" and entity.can_insert({ name = name, count = 1 }) or false
+    end
+    return takes[name]
+  end
+  local rows, feeders = {}, 0
+  for _, inserter in ipairs(surface.find_entities_filtered({ area = area, type = { "inserter" }, force = force })) do
+    local target = inserter.drop_target
+    if target and target.unit_number == rec.unit then
+      feeders = feeders + 1
+      if feeders <= MAX_FEEDERS then
+        local row, names = feeder_row(inserter, force, surface, platform)
+        local has, only_foreign = false, next(names) ~= nil
+        for name in pairs(names) do
+          if (wanted == FUEL and fuel(name)) or name == wanted then has = true end
+          if taken(name) then only_foreign = false end
+        end
+        rows[#rows + 1] = { row = row, has = has, foreign = only_foreign, working = row.status == "working" }
+      end
+    end
+  end
+  feed.feeders = feeders
+  if #rows == 0 then return feed end
+  local first
+  for _, test in ipairs({
+    function(r) return r.has and r.working end, function(r) return r.has end, function(r) return r.foreign end }) do
+    for i, r in ipairs(rows) do if not first and test(r) then first = i end end
+  end
+  local deciding = rows[first or 1]
+  if deciding.has then feed.class = deciding.working and "inserter_bound" or nil
+  elseif deciding.foreign then feed.class = "foreign_item"
+  else feed.class = "source_empty" end
+  feed.inserters = { deciding.row }
+  return feed
+end
+
+-- The public facts of a current feed (nil for an uncharted area or a
+-- failed read: only a finished read sets feeders).
+local function feed_row(feed)
+  if not (feed and feed.feeders) then return nil end
+  return { class = feed.class, missing = feed.missing, feeders = feed.feeders, inserters = feed.inserters }
+end
+
 local function evaluate(a, tick)
   local problems = 0
   for _, unit in ipairs(a.problem_only) do
@@ -600,10 +775,24 @@ local function evaluate(a, tick)
     -- The worst member problem past its threshold, productive or not, and
     -- whether a member is out of fuel or power.
     local degraded, degraded_rank, degraded_unit, dead, worst_outlet = nil, nil, nil, false, nil
+    local dry_names = {}
     for _, unit in ipairs(line.machines) do
       local rec = a.machines[unit]
       if rec then
         count = count + 1
+        -- The first dry machine of each kind (the one its problem row names)
+        -- gets its feed read before the problem is announced.
+        if rec.raw == "no_fuel" and rec.problem == "no_fuel" and not dry_names[rec.name] then
+          dry_names[rec.name] = true
+          if not current_feed(rec, "no_fuel", FUEL) then
+            if causes_left > 0 then
+              causes_left = causes_left - 1
+              if pcall(read_feed, rec, "no_fuel", FUEL, tick) then line.changed_tick = tick end
+            elseif not cursor then
+              cursor = index
+            end
+          end
+        end
         if rec.temperature and (not temperature or rec.temperature < temperature) then temperature = rec.temperature end
         if rec.problem_counted then
           problems = problems + 1
@@ -649,8 +838,13 @@ local function evaluate(a, tick)
     elseif cause_unit ~= line.cause_for or cause_rec.raw ~= line.cause_raw or tick - line.cause_tick >= CAUSE_TICKS then
       if causes_left > 0 then
         causes_left = causes_left - 1
-        local ok, cause = pcall(cause_of, cause_rec, state)
+        local ok, cause, wanted = pcall(cause_of, cause_rec, state)
         cause = ok and cause or nil
+        -- Its feeders, once per episode (in the same cause unit).
+        if ok and wanted and not current_feed(cause_rec, state, wanted)
+          and pcall(read_feed, cause_rec, state, wanted, tick) then
+          line.changed_tick = tick
+        end
         -- A starved machine whose lack cannot be named (a furnace that never
         -- smelted has no recipe to read) gives the game's own status.
         if not cause and state == "starved" then cause = cause_rec.raw end
@@ -829,10 +1023,12 @@ function M.lines(since_tick, surface)
       if rec then
         row.cause_position = { x = rec.position.x, y = rec.position.y }
         row.cause = line.cause
+        row.feed = feed_row(current_feed(rec, line.state, line.state == "no_fuel" and FUEL or line.cause))
       end
       local member = line.degraded_unit and a.machines[line.degraded_unit]
       if line.state == "running" and line.degraded and member then
-        row.degraded = { state = line.degraded, cause_position = { x = member.position.x, y = member.position.y } }
+        row.degraded = { state = line.degraded, cause_position = { x = member.position.x, y = member.position.y },
+          feed = line.degraded == "no_fuel" and feed_row(current_feed(member, "no_fuel", FUEL)) or nil }
       end
       if line.temperature then row.temperature = math.floor(line.temperature * 10 + 0.5) / 10 end
       if not line.product then
@@ -857,7 +1053,8 @@ local function add_problem(rows, by_key, id, rec)
   if row then row.count = row.count + 1
   else
     row = { status = rec.problem, name = rec.name, position = { x = rec.position.x, y = rec.position.y },
-      count = 1, line = id, cause = PROBLEM_CAUSE[rec.problem] }
+      count = 1, line = id, cause = PROBLEM_CAUSE[rec.problem],
+      feed = rec.problem == "no_fuel" and feed_row(current_feed(rec, "no_fuel", FUEL)) or nil }
     by_key[key] = row
     rows[#rows + 1] = row
   end

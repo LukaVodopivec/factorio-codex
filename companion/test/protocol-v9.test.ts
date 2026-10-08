@@ -357,6 +357,16 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(enqueueAndWaitResult).not.toHaveBeenCalled();
   });
 
+  it("normalizes factory_status feed facts, whose empty lists arrive as {}", () => {
+    const inserter = { position: { x: 0, y: 2 }, status: "waiting_for_source_items", from: "transport-belt", lanes: [{}, ["coal"]] };
+    const status = normalizeFactoryStatus({ lines: [{ id: 1, state: "no_fuel", feed: { feeders: 0, missing: "fuel" } },
+      { id: 2, state: "running", degraded: { state: "no_fuel", feed: { feeders: 1, class: "source_empty", inserters: [inserter] } } }],
+      problems: [{ status: "no_fuel", feed: { feeders: 1, class: "foreign_item", inserters: [{ ...inserter, lanes: undefined, items: {} }] } }] });
+    expect(status.lines[0].feed).toEqual({ feeders: 0, missing: "fuel", inserters: [] });
+    expect(status.lines[1].degraded.feed.inserters[0].lanes).toEqual([[], ["coal"]]);
+    expect(status.problems[0].feed.inserters[0].items).toEqual([]);
+  });
+
   it("normalizes platform screens and factory_status platform rows", () => {
     expect(normalizeFactoryStatus({ platforms: {} })).toEqual({ platforms: [] });
     expect(normalizePlatformStatus({ tick: 5, platforms: {} })).toEqual({ tick: 5, platforms: [] });

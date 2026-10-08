@@ -9,7 +9,7 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 
 local RAW = { working = 1, no_fuel = 2, no_ingredients = 3, item_ingredient_shortage = 4,
   waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8, no_minable_resources = 9,
-  waiting_to_launch_rocket = 10 }
+  waiting_to_launch_rocket = 10, waiting_for_source_items = 11 }
 _G.defines = { entity_status = RAW, inventory = { crafter_input = 2, lab_input = 3 },
   rocket_silo_status = { building_rocket = 1, rocket_ready = 10 } }
 local PLATE = { name = "iron-plate", ingredients = { { name = "iron-ore", type = "item", amount = 1 } },
@@ -487,8 +487,9 @@ check(factory_status.event_state().last_cancel_all_tick == 450, "event_state car
 storage.tasks.last_cancel_all_tick = nil
 
 -- Cost and size at 200 machines: about seven machine samples a tick, no
--- entity query, and a status read under 7 KB (patch outlines and both
--- ways to cover a power deficit took it past 6 KB).
+-- entity query, and a status read under 8.5 KB (patch outlines and both
+-- ways to cover a power deficit took it past 6 KB, three rows of feed facts
+-- at their widest add about 1.6 KB).
 _G.storage = {}
 state.init()
 storage.registry.ready = true
@@ -571,6 +572,23 @@ for _, entity in ipairs(entities) do furnaces_by_unit[#furnaces_by_unit + 1] = e
 local last_furnace = furnaces_by_unit[#furnaces_by_unit]
 mock.state(last_furnace).status = RAW.no_ingredients
 for i = 1, 4 do mock.state(furnaces_by_unit[i]).status = RAW.no_fuel end
+-- Each stalled furnace has four feeders, each picking from a belt whose
+-- lanes carry five long item names: every feed row at its widest.
+local wide_lane = {}
+for i = 1, 5 do wide_lane[i] = { name = string.format("electromagnetic-science-%03d", i), count = 1, quality = "normal" } end
+for _, f in ipairs({ furnaces_by_unit[1], furnaces_by_unit[2], furnaces_by_unit[3], furnaces_by_unit[4], last_furnace }) do
+  local x, y = f.position.x, f.position.y
+  f.bounding_box = { left_top = { x = x - 1, y = y - 1 }, right_bottom = { x = x + 1, y = y + 1 } }
+  f.can_insert = function() return false end
+  for k = 1, 4 do
+    local wide_belt = mock.entity({ valid = true, name = "express-transport-belt", type = "transport-belt",
+      position = { x = x - 1234.5, y = y + 1234.5 },
+      get_transport_line = function() return mock.transport_line({ get_contents = function() return wide_lane end }) end })
+    entities[#entities + 1] = mock.entity({ valid = true, name = "stack-inserter", type = "inserter",
+      position = { x = x - 1234.5 - k, y = y + 1234.5 }, status = RAW.waiting_for_source_items, drop_target = f,
+      pickup_target = wide_belt, held_stack = mock.item_stack({ valid_for_read = true, name = "electromagnetic-science-pack" }) })
+  end
+end
 for i = 5, 12 do mock.state(furnaces_by_unit[i]).status = RAW.full_output end
 for _ = 1, 700 do
   game.tick = game.tick + 1
@@ -631,7 +649,16 @@ check(full.omitted_lines and full.omitted_lines > 0 and full.omitted_problems an
   and full.body.inventory_omitted, "the worst-case read fills every section past its cap")
 check(starved_line and starved_line.id == max_id and full.lines[#full.lines].state ~= "running" or false,
   "lines needing attention come first, so a starved line with the highest id survives the cap")
-check(json_size < 7168, "a worst-case factory_status at 200 machines stays under 7 KB (" .. json_size .. " bytes)")
+local wide_feeds, in_line = 0, 0
+for _, row in ipairs(full.lines) do if row.feed and row.feed.inserters then wide_feeds = wide_feeds + 1 end end
+for _, row in ipairs(full.problems) do
+  if row.feed and row.feed.inserters then wide_feeds = wide_feeds + 1 end
+  if row.feed_in_line and not row.feed then in_line = in_line + 1 end
+end
+check(wide_feeds == 3 and full.omitted_feeds and full.omitted_feeds > 0 and in_line > 0,
+  "the worst case shows three stalled rows' feed facts, a problem row whose line shows them says feed_in_line, "
+    .. "and omitted_feeds counts the rest")
+check(json_size < 8704, "a worst-case factory_status at 200 machines stays under 8.5 KB (" .. json_size .. " bytes)")
 
 -- A machine mined while a refresh is still identifying the snapshot is left
 -- out; the refresh completes and the removal's dirty mark is kept.
@@ -729,6 +756,150 @@ mock.state(low_drill).status = RAW.no_fuel
 sample_silo(1)
 check(not low_set() and storage.autonomy.waiting.no_fuel[1][low_drill.unit_number] == true,
   "a dry burner is in the no_fuel set, not the low_fuel one")
+
+-- Feed facts: the inserters that drop into a dry or starved machine, read
+-- once per episode inside the cause budget, with what they hold and what
+-- their pickup carries (per belt lane), and a class of what the read found.
+_G.storage = {}
+state.init()
+storage.registry.ready = true
+entities = {}
+prototypes.item = { coal = { fuel_category = "chemical" }, ["copper-ore"] = {}, ["iron-ore"] = {} }
+local function box(x, y, half)
+  return { left_top = { x = x - half, y = y - half }, right_bottom = { x = x + half, y = y + half } }
+end
+local function boiler(x, y)
+  return machine("boiler", "boiler", x, y, { status = RAW.no_fuel, bounding_box = box(x, y, 1.5),
+    burner = { fuel_categories = { chemical = true } } })
+end
+local function belt_at(x, y, lanes)
+  local entity = mock.entity({ valid = true, name = "transport-belt", type = "transport-belt", position = { x = x, y = y },
+    get_transport_line = function(i) return mock.transport_line({ get_contents = function() return lanes[i] end }) end })
+  return entity
+end
+local function feeder(x, y, target, pickup, status, holding)
+  local stack = mock.item_stack({ valid_for_read = holding ~= nil, name = holding })
+  local entity = mock.entity({ valid = true, name = "inserter", type = "inserter", position = { x = x, y = y },
+    status = status or RAW.waiting_for_source_items, drop_target = target, pickup_target = pickup, held_stack = stack })
+  entities[#entities + 1] = entity
+  return entity
+end
+local function row_at(rows, x)
+  for _, row in ipairs(rows) do if row.position.x == x then return row end end
+end
+local function line_at(x)
+  for _, line in ipairs(autonomy.lines()) do if line.position.x == x then return line end end
+end
+-- A dry boiler whose inserter picks from a belt carrying copper ore only.
+local copper_boiler = boiler(0, 0)
+local copper_belt = belt_at(0, 3, { { { name = "copper-ore", count = 3, quality = "normal" } }, { { name = "copper-ore", count = 4, quality = "normal" } } })
+feeder(0, 2, copper_boiler, copper_belt)
+-- A dry boiler whose inserter picks from an empty belt.
+local empty_boiler = boiler(20, 0)
+feeder(20, 2, empty_boiler, belt_at(20, 3, { {}, {} }))
+-- A starved furnace whose busy inserter takes iron ore from a chest.
+local chest = mock.entity({ valid = true, name = "wooden-chest", type = "container", position = { x = 40, y = 3 },
+  get_output_inventory = function() return mock.inventory({ get_contents = function()
+    return { { name = "iron-ore", count = 50, quality = "normal" } } end }) end })
+local busy_furnace = machine("furnace", "stone-furnace", 40, 0, { products_finished = 0, status = RAW.no_ingredients,
+  bounding_box = box(40, 0, 1), get_recipe = function() return PLATE end, get_inventory = function() return inventory({}) end,
+  can_insert = function() return true end })
+feeder(40, 2, busy_furnace, chest, RAW.working, "iron-ore")
+-- A dry boiler nothing feeds.
+boiler(60, 0)
+-- A dry boiler whose unpowered inserter takes from a chest holding coal.
+local coal_chest = mock.entity({ valid = true, name = "wooden-chest", type = "container", position = { x = 80, y = 3 },
+  get_output_inventory = function() return mock.inventory({ get_contents = function()
+    return { { name = "coal", count = 20, quality = "normal" } } end }) end })
+feeder(80, 2, boiler(80, 0), coal_chest, RAW.no_power)
+queries = 0
+autonomy.refresh()
+local query_ticks = {}
+local function count_queries(ticks)
+  for _ = 1, ticks do
+    local before = queries
+    game.tick = game.tick + 1
+    autonomy.on_tick(game.tick)
+    if queries > before then query_ticks[#query_ticks + 1] = queries - before end
+  end
+end
+local announce_from = game.tick
+count_queries(90)
+local dry_rows = autonomy.problems(announce_from)
+local copper_row, empty_row, lonely_row = row_at(dry_rows, 0), row_at(dry_rows, 20), row_at(dry_rows, 60)
+local copper_feed = copper_row and copper_row.feed
+check(copper_feed and copper_feed.class == "foreign_item" and copper_feed.missing == "fuel" and copper_feed.feeders == 1
+  and copper_feed.inserters[1].from == "transport-belt" and copper_feed.inserters[1].from_position.y == 3
+  and copper_feed.inserters[1].lanes[1][1] == "copper-ore" and copper_feed.inserters[1].lanes[2][1] == "copper-ore"
+  and copper_feed.inserters[1].status == "waiting_for_source_items" and copper_feed.inserters[1].holding == nil,
+  "a dry boiler's problem row says its inserter picks from a belt whose lanes carry copper ore only (foreign_item)")
+check(empty_row and empty_row.feed and empty_row.feed.class == "source_empty" and #empty_row.feed.inserters[1].lanes[1] == 0,
+  "a dry boiler fed from an empty belt is source_empty, already on the announced problem row")
+local unpowered = row_at(dry_rows, 80)
+check(unpowered and unpowered.feed and unpowered.feed.class == nil and unpowered.feed.feeders == 1
+  and unpowered.feed.inserters[1].status == "no_power" and unpowered.feed.inserters[1].items[1] == "coal",
+  "fuel at the pickup of an inserter that is not working gives no class; its status says why")
+check(lonely_row and lonely_row.feed and lonely_row.feed.feeders == 0 and lonely_row.feed.class == nil,
+  "a dry boiler no inserter drops into says feeders 0 and no class")
+count_queries(700)
+local busy_line = line_at(40)
+check(busy_line and busy_line.state == "starved" and busy_line.cause == "iron-ore" and busy_line.feed
+  and busy_line.feed.class == "inserter_bound" and busy_line.feed.missing == "iron-ore"
+  and busy_line.feed.inserters[1].holding == "iron-ore" and busy_line.feed.inserters[1].items[1] == "iron-ore"
+  and busy_line.feed.inserters[1].from == "wooden-chest",
+  "a starved furnace whose working inserter holds the ore it lacks, from a chest that has it, is inserter_bound")
+local copper_line = line_at(0)
+check(copper_line and copper_line.state == "no_fuel" and copper_line.feed and copper_line.feed.class == "foreign_item",
+  "the dry boiler's line row carries the same feed facts")
+check(queries == 5, "each machine's feeders are found with one query per episode, not on every cause refresh ("
+  .. queries .. " queries)")
+-- Refuelled and running past the recovery window, then dry again: a new
+-- episode reads its feed once more.
+mock.state(copper_boiler).status = RAW.working
+count_queries(700)
+check(row_at(autonomy.problems(), 0) == nil and queries == 5, "a refuelled boiler's episode ends without another read")
+mock.state(copper_boiler).status = RAW.no_fuel
+count_queries(90)
+check(queries == 6 and row_at(autonomy.problems(), 0).feed.class == "foreign_item",
+  "a new dry episode reads its feeders again")
+-- A dry boiler whose feeder search reaches an uncharted chunk gets no feed
+-- facts (no query either): nothing uncharted is read.
+local charted_before = force.is_chunk_charted
+force.is_chunk_charted = function(_, chunk) return not (chunk.x >= 15 and chunk.y < 0) end
+local edge_boiler = boiler(500, 0)
+feeder(500, 2, edge_boiler, belt_at(500, 3, { { { name = "copper-ore", count = 1, quality = "normal" } }, {} }))
+autonomy.refresh()
+local queries_before = queries
+count_queries(700)
+local edge_line = line_at(500)
+check(edge_line and edge_line.state == "no_fuel" and edge_line.feed == nil and row_at(autonomy.problems(), 500).feed == nil
+  and queries == queries_before, "a feeder search reaching an uncharted chunk reads nothing and shows no feed")
+force.is_chunk_charted = charted_before
+edge_boiler.valid = false
+
+-- Twenty boilers drying at once: at most MAX_CAUSES (16) feed queries an
+-- evaluate (a budget shared with the other lines' causes); the rest follow
+-- on the next.
+local burning = {}
+for i = 1, 20 do
+  local b = boiler(100 + i * 20, 0)
+  mock.state(b).status = RAW.working
+  burning[i] = b
+  feeder(100 + i * 20, 2, b, belt_at(100 + i * 20, 3, { {}, {} }))
+end
+autonomy.refresh()
+-- Every boiler is sampled dry before the same evaluate.
+count_queries(30 - (game.tick + 1) % 30)
+for _, b in ipairs(burning) do mock.state(b).status = RAW.no_fuel end
+query_ticks = {}
+local spread_from = game.tick
+count_queries(120)
+local fed = 0
+for _, row in ipairs(autonomy.problems(spread_from)) do if row.feed and row.position.x > 100 then fed = fed + 1 end end
+local most = 0
+for _, n in ipairs(query_ticks) do most = math.max(most, n) end
+check(most <= 16 and #query_ticks >= 2 and fed == 20,
+  "20 boilers drying together get their feeds at most 16 an evaluate (" .. most .. "), all " .. fed .. " by the announcement")
 
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

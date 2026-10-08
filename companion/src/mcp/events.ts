@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Bridge, TaskClock } from "../bridge.js";
-import { luaArray } from "./toolPayloads.js";
+import { luaArray, withFeedFacts } from "./toolPayloads.js";
 
 // A Lua record serialized empty may arrive as [].
 const record = (value: unknown) => value === undefined || (Array.isArray(value) && value.length === 0) ? {} : value;
@@ -116,7 +116,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
         { sections: ["problems", "elsewhere"], since_tick: since });
       const away = luaArray(status?.elsewhere ?? []).flatMap((row: any) => row && typeof row === "object" && row.problems > 0
         ? luaArray(row.top_problems ?? []).map((problem: any) => ({ ...problem, surface: row.surface })) : []);
-      return done("new_problem", state, { problems: [...luaArray(status?.problems ?? []), ...away] });
+      return done("new_problem", state, { problems: [...luaArray(status?.problems ?? []).map(withFeedFacts), ...away] });
     } catch { return done("new_problem", state); }
   };
   // A package failure is delivered once per session, by its record, never by
@@ -181,6 +181,32 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
 export const IDLE_NOW = "the FIFO is empty and the body is idle: queue work now";
 
 const at = (point: unknown) => { const p = point as { x?: number; y?: number } | undefined; return `(${p?.x}, ${p?.y})`; };
+
+const itemNames = (list: unknown): string[] => (Array.isArray(list) ? list : []).filter((name): name is string => typeof name === "string");
+/** A problem row's feed facts in words, from the inserter that decided its
+ *  class: what it holds and what its pickup carries. Facts, never advice. */
+export function feedText(row: any): string | null {
+  const feed = row?.feed;
+  if (!feed || typeof feed !== "object") return null;
+  const where = `${row.name} ${at(row.position)} ${row.status}`;
+  if (feed.feeders === 0) return `${where}: no inserter drops into it`;
+  const inserter = Array.isArray(feed.inserters) ? feed.inserters[0] : undefined;
+  if (!inserter || typeof inserter !== "object") return null;
+  const missing = feed.missing === "fuel" ? "fuel it burns" : String(feed.missing);
+  const its = feed.feeders > 1 ? `one of its ${feed.feeders} inserters, at ${at(inserter.position)},` : `its inserter at ${at(inserter.position)}`;
+  const hand = inserter.holding ? `, holding ${inserter.holding}` : "";
+  if (inserter.from === undefined) return `${where}: ${its} has no pickup entity in a charted chunk (${inserter.status}${hand})`;
+  const lanes = Array.isArray(inserter.lanes) ? inserter.lanes.map(itemNames) : null;
+  const carried = lanes ? [...new Set(lanes.flat())] : itemNames(inserter.items);
+  const what = carried.length === 0 ? "nothing"
+    : `${carried.join(", ")}${inserter.omitted_names ? ` and ${inserter.omitted_names} more` : ""}`;
+  const source = `a ${inserter.from} at ${at(inserter.from_position)} ${lanes ? "carrying" : "holding"} ${what}`;
+  switch (feed.class) {
+    case "foreign_item": return `${where}: ${its} picks from ${source} only, which ${row.name} does not take`;
+    case "source_empty": return `${where}: ${its} picks from ${source}; no ${missing} there`;
+    default: return `${where}: ${missing} is at the pickup of ${its} (${source}), which is ${inserter.status}${hand}`;
+  }
+}
 const platformName = (value: Record<string, unknown>) => (value.platform as { name?: string } | undefined)?.name;
 
 function eventText(value: Record<string, unknown>): string {
@@ -192,8 +218,11 @@ function eventText(value: Record<string, unknown>): string {
     }
     case "research_finished": return `research ${value.technology} finished${value.research_idle ? `: ${RESEARCH_IDLE}` : ""}`;
     case "package_failed": return `package ${value.package_id} was not queued: ${value.reason ?? "unknown reason"}`;
-    case "new_problem": return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`
-      + (researchIdleProblem(value.problems) ? `; ${RESEARCH_IDLE}` : "");
+    case "new_problem": {
+      const facts = (Array.isArray(value.problems) ? value.problems : []).map(feedText).filter((text) => text !== null).slice(0, 2);
+      return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`
+        + (researchIdleProblem(value.problems) ? `; ${RESEARCH_IDLE}` : "") + facts.map((text) => `; ${text}`).join("");
+    }
     case "queue_empty": return typeof value.upkeep_off_since_tick === "number"
       ? `${IDLE_NOW}; upkeep off since stop at tick ${value.upkeep_off_since_tick} until a plan finishes` : IDLE_NOW;
     case "orders_changed": return "the strategist's orders changed";

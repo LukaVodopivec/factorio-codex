@@ -246,6 +246,7 @@ local function snapshot_finish(S, budget)
     end
   end
   budget.left = budget.left - 30 - #read * 8 - #bonus_technologies()
+  if S.window then tasks.mark_body_window() end
   return {
     tick = game.tick,
     character = character(body),
@@ -274,9 +275,15 @@ local function snapshot_finish(S, budget)
   }
 end
 
--- run_snapshot {}: the job definition (control.lua registers it).
+-- run_snapshot {window?}: the job definition (control.lua registers it).
+-- window = true (the recorder's baseline) marks the body-time window as
+-- the sample is taken (tasks.mark_body_window).
 M.job = {
-  start = function() return snapshot_start() end,
+  start = function(params)
+    local S = snapshot_start()
+    S.window = params and params.window == true
+    return S
+  end,
   step = function(S, budget)
     local force = companion.require_present().force
     while S.cursor <= #S.surfaces do

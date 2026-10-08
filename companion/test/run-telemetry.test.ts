@@ -263,8 +263,10 @@ describe("run attestation", () => {
 });
 
 describe("body time summary", () => {
-  const timed = (tick: number, ticks: Record<string, number>, gaps: NonNullable<RunSnapshot["body_time"]>["gaps"]): RunSnapshot =>
-    ({ ...snapshot(tick, 0), body_time: { since_tick: 0, state: "idle", state_since: tick, ticks, gaps } });
+  type BodyTime = NonNullable<RunSnapshot["body_time"]>;
+  // The baseline at tick 600 marked the window unless a test says otherwise.
+  const timed = (tick: number, ticks: Record<string, number>, gaps: BodyTime["gaps"], extra: Partial<BodyTime> = {}): RunSnapshot =>
+    ({ ...snapshot(tick, 0), body_time: { since_tick: 0, window_tick: 600, state: "idle", state_since: tick, ticks, gaps, ...extra } });
   it("reports busy share and idle gaps by what ended them between the baseline and the final sample", () => {
     const baseline = timed(600, { idle: 500, pilot: 100 }, { pilot: { count: 1, ticks: 500, longest: 500, longest_end_tick: 500 } });
     const final = timed(72_600, { idle: 18_500, pilot: 30_100, package: 18_000, upkeep: 3_000, crafting: 2_400, hold: 600 }, {
@@ -278,8 +280,26 @@ describe("body time summary", () => {
         pilot: { count: 6, total_seconds: 150, mean_seconds: 25, longest_seconds: 100 },
         hold: { count: 1, total_seconds: 1.67, mean_seconds: 1.67, longest_seconds: null } } });
   });
+  it("counts the gap open at the baseline from the baseline, and idle still open at the end as the gap open", () => {
+    // Idle since tick 100 (before GO) at the baseline; the mod counts that gap from the window mark when it closes.
+    const baseline = timed(600, { idle: 600 }, {}, { state_since: 100 });
+    const final = timed(7_800, { idle: 600 + 300 + 1_200 + 1_800, pilot: 3_900 }, {
+      pilot: { count: 2, ticks: 300 + 1_200, longest: 1_200, longest_end_tick: 3_000 } }, { state_since: 6_000 });
+    expect(bodySummary(baseline, final)).toEqual({ window_ticks: 7_200, busy_share: 0.542,
+      states: { idle: { ticks: 3_300, share: 0.458 }, pilot: { ticks: 3_900, share: 0.542 } },
+      gaps: { pilot: { count: 2, total_seconds: 25, mean_seconds: 12.5, longest_seconds: 20 },
+        open: { count: 1, total_seconds: 30, mean_seconds: 30, longest_seconds: 30 } } });
+    // A longest gap that began before the baseline is not the window's.
+    const straddled = timed(7_800, { idle: 3_300, pilot: 3_900 }, { pilot: { count: 1, ticks: 1_000, longest: 1_000, longest_end_tick: 900 } },
+      { state: "pilot", state_since: 6_000 });
+    expect(bodySummary(timed(600, {}, {}), straddled)?.gaps).toEqual({ pilot: { count: 1, total_seconds: 16.67,
+      mean_seconds: 16.67, longest_seconds: null } });
+    // Idle the whole window is one open gap.
+    expect(bodySummary(baseline, timed(1_200, { idle: 1_200 }, {}, { state_since: 100 }))?.gaps)
+      .toEqual({ open: { count: 1, total_seconds: 10, mean_seconds: 10, longest_seconds: 10 } });
+  });
   it("is kept in the run summary beside each role's time split", () => {
-    const store = root(), body = bodySummary(timed(0, {}, {}), timed(600, { idle: 300, pilot: 300 }, {}));
+    const store = root(), body = bodySummary(timed(0, {}, {}, { window_tick: 0 }), timed(600, { idle: 300, pilot: 300 }, {}, { window_tick: 0 }));
     const telemetry = { roles: { pilot: { turns: 3, turn_ms: 9_000, model_ms: 6_000, tool_ms: 2_000, compaction_ms: 1_000,
       tool_calls: 4, compactions: 1 } }, body };
     createRunStore(store, { ...manifest("run-t", "v"), telemetry });
@@ -287,9 +307,11 @@ describe("body time summary", () => {
     expect(body).toMatchObject({ busy_share: 0.5, gaps: {} });
   });
 
-  it("has no summary without both counters from one save", () => {
+  it("has no summary without both counters from one save and the baseline's window", () => {
     expect(bodySummary(snapshot(100, 0), timed(200, {}, {}))).toBeNull();
     expect(bodySummary(timed(100, {}, {}), { ...timed(200, {}, {}), body_time: { ...timed(200, {}, {}).body_time, since_tick: 150 } })).toBeNull();
+    // Without the baseline's window mark the gap open at GO would count its time before GO.
+    expect(bodySummary(timed(600, {}, {}), timed(900, {}, {}, { window_tick: 300 }))).toBeNull();
   });
 });
 

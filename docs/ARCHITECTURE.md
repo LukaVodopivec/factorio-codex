@@ -147,12 +147,15 @@ Run telemetry, all beside the samples and never shown to the bots:
   delays or fails the call.
 - `manifest.json` `telemetry.roles`: each role's turn time split into model,
   tool and compaction time, from the rollout event times the feed reads
-  (tool items' own spans, tool calls to their outputs, compaction items and
-  the gap before each `compacted` line).
+  (tool items' own spans, tool calls to their outputs, and compaction
+  items; model items such as reasoning and plans are model time).
 - `manifest.json` `telemetry.body`: the body's time by state between the
   baseline and final samples (`pilot`, `package`, `upkeep`, `crafting`,
   `hold`, `dead`, `idle`), the busy share, and idle gaps by the state that
   ended them, from the mod's `tasks.body_time` counters in `run_snapshot`.
+  The baseline (`run_snapshot {window = true}`) marks the window, so idle
+  before `GO` is no gap of the run; idle still open at the final sample is
+  the gap `open`.
 
 Run attestation: every `run_snapshot` (the baseline and each sample) carries
 `attestation`: `game.speed`, the Codex player's `cheat_mode` and controllers,

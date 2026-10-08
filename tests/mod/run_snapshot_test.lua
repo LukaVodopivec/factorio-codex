@@ -130,6 +130,16 @@ _G.prototypes = { entity = setmetatable({}, { __pairs = function() walked = walk
 local again = jobs.run_now(run_snapshot.job, {})
 check(walked == 0 and #again.statistics.raw_resources == 3, "a later snapshot reuses the raw resource rows without a prototype walk")
 
+-- Only the recorder's baseline (window = true) marks the body-time window, at the sample's tick.
+storage.tasks = storage.tasks or {}
+storage.tasks.body_time = { since_tick = 0, state = "idle", state_since = 100, ticks = {}, gaps = {} }
+local plain = jobs.run_now(run_snapshot.job, {})
+check(plain.body_time.window_tick == nil and storage.tasks.body_time.window_tick == nil, "an ordinary sample marks no window")
+local marked = jobs.run_now(run_snapshot.job, { window = true })
+check(marked.body_time.window_tick == marked.tick and storage.tasks.body_time.window_tick == marked.tick,
+  "the baseline sample marks the window at its own tick")
+
 print("ok   run snapshots retain cumulative resources and bounded diagnostic context")
 print("ok   run snapshots count the Codex player's hand-crafted items from the upgrade tick")
 print("ok   run snapshots attest game speed, cheat mode, controllers, active mods and modifiers research does not explain")
+print("ok   only the recorder baseline marks the body-time window, at its own tick")

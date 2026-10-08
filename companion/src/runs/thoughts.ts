@@ -32,29 +32,40 @@ export function extractThoughts(line: string): Array<{ ts: string; kind: Thought
 
 /** A role's wall time inside its turns, from rollout event times: tool time
  *  (tool items' own start and end, and each model tool call to its output),
- *  compaction time (context compaction items, and the gap before each
- *  compacted line), and model time (the rest of the turn). Turns run from
- *  task_started to task_complete or turn_aborted; a turn already running
- *  when the tail began counts from its first line seen, and one still open
- *  counts to its last line. */
+ *  compaction time (context compaction items), and model time (the rest of
+ *  the turn). Turns run from task_started to task_complete or turn_aborted;
+ *  a turn already running when the tail began counts from its first
+ *  response item seen, and one still open counts to its last line. Events
+ *  after a turn closed (a late item_completed) open no turn. */
 export interface TimeSplit { turns: number; turn_ms: number; model_ms: number; tool_ms: number; compaction_ms: number;
   tool_calls: number; compactions: number }
 type Span = [number, number];
-const MODEL_ITEMS = new Set(["Reasoning", "AgentMessage", "UserMessage"]);
+// Model-generated items: their time is model time, not tool time.
+const MODEL_ITEMS = new Set(["Reasoning", "AgentMessage", "UserMessage", "Plan"]);
 const CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call"]);
 const OUTPUTS = new Set(["function_call_output", "custom_tool_call_output", "local_shell_call_output"]);
 const IN_TURN_EVENTS = new Set(["item_completed", "token_count", "agent_message", "agent_reasoning"]);
-const SPANS_MAX = 512;
 
-/** Total length of the spans' union, clipped to [from, to]. */
-function covered(spans: Span[], from: number, to: number): number {
-  const clipped = spans.map(([a, b]): Span => [Math.max(a, from), Math.min(b, to)]).filter(([a, b]) => b > a);
-  return merged(clipped).reduce((total, [a, b]) => total + b - a, 0);
+/** Adds [a, b] to a start-sorted list of disjoint spans, merging what it
+ *  overlaps. Spans arrive nearly in order, so this works at the tail. */
+function insert(list: Span[], [a, b]: Span): void {
+  if (b <= a) return;
+  let i = list.length;
+  while (i > 0 && list[i - 1]![0] > a) i--;
+  if (i > 0 && list[i - 1]![1] >= a) i--;
+  let j = i;
+  while (j < list.length && list[j]![0] <= b) { a = Math.min(a, list[j]![0]); b = Math.max(b, list[j]![1]); j++; }
+  list.splice(i, j - i, [a, b]);
 }
-/** The union as disjoint spans (a long turn's lists stay small). */
-function merged(spans: Span[]): Span[] {
+/** Total length of disjoint spans, clipped to [from, to]. */
+function covered(spans: readonly Span[], from: number, to: number): number {
+  return spans.reduce((total, [a, b]) => total + Math.max(0, Math.min(b, to) - Math.max(a, from)), 0);
+}
+/** The union of two start-sorted disjoint lists, in one pass. */
+function union(x: readonly Span[], y: readonly Span[]): Span[] {
   const out: Span[] = [];
-  for (const [a, b] of [...spans].sort((x, y) => x[0] - y[0])) {
+  for (let i = 0, j = 0; i < x.length || j < y.length;) {
+    const [a, b] = j >= y.length || (i < x.length && x[i]![0] <= y[j]![0]) ? x[i++]! : y[j++]!;
     const last = out[out.length - 1];
     if (last && a <= last[1]) last[1] = Math.max(last[1], b); else out.push([a, b]);
   }
@@ -65,16 +76,10 @@ export function createTimeSplit() {
   const totals: TimeSplit = { turns: 0, turn_ms: 0, model_ms: 0, tool_ms: 0, compaction_ms: 0, tool_calls: 0, compactions: 0 };
   let turn: { start: number; last: number; tools: Span[]; compactions: Span[] } | null = null;
   const calls = new Map<string, number>();
-  let previous: number | null = null;
-  const add = (list: Span[], span: Span) => {
-    if (span[1] <= span[0]) return;
-    list.push(span);
-    if (list.length > SPANS_MAX) list.splice(0, list.length, ...merged(list));
-  };
   const fold = (into: TimeSplit, open: NonNullable<typeof turn>, end: number) => {
     const length = Math.max(0, end - open.start);
     const tool = covered(open.tools, open.start, end), compaction = covered(open.compactions, open.start, end);
-    const both = covered([...open.tools, ...open.compactions], open.start, end);
+    const both = covered(union(open.tools, open.compactions), open.start, end);
     into.turns++; into.turn_ms += length; into.tool_ms += tool; into.compaction_ms += compaction;
     into.model_ms += Math.max(0, length - both);
   };
@@ -87,8 +92,6 @@ export function createTimeSplit() {
       if (!Number.isFinite(ts)) return;
       const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : {};
       const event = entry.type === "event_msg" ? payload.type : undefined;
-      const before = previous;
-      previous = ts;
       if (event === "task_started") {
         if (turn) fold(totals, turn, turn.last);
         turn = { start: ts, last: ts, tools: [], compactions: [] }; calls.clear();
@@ -99,29 +102,33 @@ export function createTimeSplit() {
         turn = null; calls.clear();
         return;
       }
-      const inTurn = entry.type === "response_item" || entry.type === "compacted" || IN_TURN_EVENTS.has(event);
-      if (!inTurn) return;
+      const opens = entry.type === "response_item" || entry.type === "compacted";
+      if (!turn && !opens) return;
+      if (!opens && !IN_TURN_EVENTS.has(event)) return;
       turn ??= { start: ts, last: ts, tools: [], compactions: [] };
       turn.last = Math.max(turn.last, ts);
       if (entry.type === "compacted") {
         totals.compactions++;
-        if (before !== null) add(turn.compactions, [before, ts]);
       } else if (entry.type === "response_item" && CALLS.has(payload.type) && typeof payload.call_id === "string") {
         totals.tool_calls++;
         calls.set(payload.call_id, ts);
       } else if (entry.type === "response_item" && OUTPUTS.has(payload.type) && calls.has(payload.call_id)) {
-        add(turn.tools, [calls.get(payload.call_id)!, ts]);
+        insert(turn.tools, [calls.get(payload.call_id)!, ts]);
         calls.delete(payload.call_id);
       } else if (event === "item_completed" && typeof payload.started_at_ms === "number" && typeof payload.completed_at_ms === "number") {
         const kind = payload.item?.type;
-        if (kind === "ContextCompaction") add(turn.compactions, [payload.started_at_ms, payload.completed_at_ms]);
-        else if (typeof kind === "string" && !MODEL_ITEMS.has(kind)) add(turn.tools, [payload.started_at_ms, payload.completed_at_ms]);
+        if (kind === "ContextCompaction") insert(turn.compactions, [payload.started_at_ms, payload.completed_at_ms]);
+        else if (typeof kind === "string" && !MODEL_ITEMS.has(kind)) insert(turn.tools, [payload.started_at_ms, payload.completed_at_ms]);
       }
     },
     /** The totals so far, an open turn (and its unanswered calls) counted to its last line. */
     summary(): TimeSplit {
       const out = { ...totals };
-      if (turn) fold(out, { ...turn, tools: [...turn.tools, ...[...calls.values()].map((start): Span => [start, turn!.last])] }, turn.last);
+      if (turn) {
+        const tools = [...turn.tools];
+        for (const start of calls.values()) insert(tools, [start, turn.last]);
+        fold(out, { ...turn, tools }, turn.last);
+      }
       return out;
     },
   };

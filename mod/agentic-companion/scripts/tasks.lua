@@ -1913,7 +1913,9 @@ end
 -- waiting, or idle. storage.tasks.body_time (state.lua) keeps the ticks per
 -- state and the idle gaps, keyed by the state that ended them. The state
 -- is read once as each tick begins (a plan dispatched in tick t counts from
--- t + 1) and written only when it changes; run_snapshot reads it.
+-- t + 1) and written only when it changes; run_snapshot reads it. A gap
+-- open at the recorder's window mark (mark_body_window) counts from the
+-- mark, so the gaps closed after a run's baseline hold only its own time.
 local function body_state(tasks)
   if tasks.human_hold then return "hold" end
   if tasks.dead_since then return "dead" end
@@ -1938,15 +1940,22 @@ local function account_body_time(tasks)
   if time.state == "idle" then
     local gap = time.gaps[state] or { count = 0, ticks = 0, longest = 0 }
     time.gaps[state] = gap
+    span = game.tick - math.max(time.state_since, time.window_tick or 0)
     gap.count, gap.ticks = gap.count + 1, gap.ticks + span
     if span >= gap.longest then gap.longest, gap.longest_end_tick = span, game.tick end
   end
   time.state, time.state_since = state, game.tick
 end
--- {since_tick, state, state_since, ticks = {[state] = n}, gaps = {[ended_by]
--- = {count, ticks, longest, longest_end_tick}}}, cumulative since
--- since_tick with the current state's open interval included; nil before
--- state.init made it.
+-- The run recorder's baseline (run_snapshot {window = true}) marks its
+-- window start: the idle gap open now counts from here when it closes.
+function M.mark_body_window()
+  local time = storage.tasks and storage.tasks.body_time
+  if time then time.window_tick = game.tick end
+end
+-- {since_tick, window_tick?, state, state_since, ticks = {[state] = n},
+-- gaps = {[ended_by] = {count, ticks, longest, longest_end_tick}}},
+-- cumulative since since_tick with the current state's open interval
+-- included; nil before state.init made it.
 function M.body_time()
   local time = storage.tasks and storage.tasks.body_time
   if not time then return nil end
@@ -1956,7 +1965,8 @@ function M.body_time()
   for state, gap in pairs(time.gaps) do
     gaps[state] = { count = gap.count, ticks = gap.ticks, longest = gap.longest, longest_end_tick = gap.longest_end_tick }
   end
-  return { since_tick = time.since_tick, state = time.state, state_since = time.state_since, ticks = ticks, gaps = gaps }
+  return { since_tick = time.since_tick, window_tick = time.window_tick, state = time.state, state_since = time.state_since,
+    ticks = ticks, gaps = gaps }
 end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end

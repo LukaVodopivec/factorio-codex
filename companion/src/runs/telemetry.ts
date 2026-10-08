@@ -22,7 +22,9 @@ const snapshotBodySchema = z.object({ state: z.string(), surface_ref: z.string()
 }).strict();
 const whole = z.number().int().nonnegative();
 /** What the body did by state, cumulative since since_tick (mod tasks.body_time). */
-export const bodyTimeSchema = z.object({ since_tick: whole, state: z.string(), state_since: whole,
+export const bodyTimeSchema = z.object({ since_tick: whole,
+  /** The recorder baseline's mark: a gap open then counts from here when it closes. */
+  window_tick: whole.optional(), state: z.string(), state_since: whole,
   ticks: z.record(z.string(), whole),
   /** Idle gaps by the state that ended them. */
   gaps: z.record(z.string(), z.object({ count: whole, ticks: whole, longest: whole,
@@ -128,11 +130,15 @@ const bodySummarySchema = z.object({ window_ticks: whole, busy_share: z.number()
 const runTelemetrySchema = z.object({ roles: z.record(z.string(), timeSplitSchema), body: bodySummarySchema.nullable() }).strict();
 const BUSY_STATES = ["pilot", "package", "upkeep", "crafting"];
 const round = (value: number, digits = 3) => Math.round(value * 10 ** digits) / 10 ** digits;
+const gapRow = (count: number, ticks: number, longest: number | null) => ({ count, total_seconds: round(ticks / 60, 2),
+  mean_seconds: round(ticks / count / 60, 2), longest_seconds: longest === null ? null : round(longest / 60, 2) });
 /** Body-busy share and idle gaps between two snapshots: the counters' deltas.
- *  A gap's longest counts only when it ended inside the window. */
+ *  The baseline marked the window, so the gap open then counts only from
+ *  the baseline; a gap's longest counts only when it lies inside the window,
+ *  and idle still open at the final sample is the gap "open". */
 export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<typeof bodySummarySchema> | null {
   const a = baseline.body_time, b = final.body_time;
-  if (!a || !b || a.since_tick !== b.since_tick || final.tick <= baseline.tick) return null;
+  if (!a || !b || a.since_tick !== b.since_tick || b.window_tick !== baseline.tick || final.tick <= baseline.tick) return null;
   const window = final.tick - baseline.tick;
   const states = Object.fromEntries(Object.keys(b.ticks).sort().flatMap((state) => {
     const ticks = b.ticks[state]! - (a.ticks[state] ?? 0);
@@ -143,10 +149,11 @@ export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<
     const now = b.gaps[by]!, then = a.gaps[by];
     const count = now.count - (then?.count ?? 0), ticks = now.ticks - (then?.ticks ?? 0);
     if (count <= 0) return [];
-    const inside = now.longest_end_tick !== undefined && now.longest_end_tick > baseline.tick;
-    return [[by, { count, total_seconds: round(ticks / 60, 2), mean_seconds: round(ticks / count / 60, 2),
-      longest_seconds: inside ? round(now.longest / 60, 2) : null }]];
+    const inside = now.longest_end_tick !== undefined && now.longest_end_tick - now.longest >= baseline.tick;
+    return [[by, gapRow(count, ticks, inside ? now.longest : null)]];
   }));
+  const open = b.state === "idle" ? final.tick - Math.max(b.state_since, baseline.tick) : 0;
+  if (open > 0) gaps.open = gapRow(1, open, open);
   return { window_ticks: window, busy_share: round(busy / window), states, gaps };
 }
 
@@ -364,7 +371,8 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     if (control) await control.call("benchmark_control", { action: "prepare", run_id: ledger.run.id,
       duration_seconds: duration, label: `${options.variant}: ${profiles.map(p => `${p.id} ${p.model}/${p.reasoning}${p.fast ? "/Fast" : "/normal"}`).join("; ")}`,
       summary: options.incumbentSummary });
-    const baseline = parseRunSnapshot(await bridge.call("run_snapshot"));
+    // The baseline marks the body-time window: idle before GO is not a gap of this run.
+    const baseline = parseRunSnapshot(await bridge.call("run_snapshot", { window: true }));
     const startedAt = new Date(), startedMono = performance.now();
     let manifest: RunManifest = { schema_version: 1, run: ledger.run, variant: options.variant, change: options.change,
       kind: options.kind, status: "recording", assisted: false, app_version: companionVersion(),
@@ -397,7 +405,7 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
             start_tick: baseline.tick,
             frozen_tick: result.frozen_tick, reason: result.freeze_reason, metrics: result.metrics });
           const live = readManifest(root, ledger.run.id);
-          manifest.assisted = live.assisted || result.assisted === true;
+          manifest.assisted = manifest.assisted || live.assisted || result.assisted === true;
           // A terminal timestamp closes ledger updates before collecting heavy reads.
           manifest.ended_at = completed.toISOString(); manifest.end_tick = result.frozen_tick;
           writeManifest(files.manifest, manifest);

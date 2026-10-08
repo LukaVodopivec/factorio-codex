@@ -167,14 +167,20 @@ describe("rollout time split", () => {
       // An MCP call inside the exec overlaps it: the union counts once.
       item(8, "McpToolCall", 6, 8),
       line(9, "response_item", { type: "custom_tool_call_output", call_id: "a", output: "y" }),
-      // Compaction: the item's own span and the gap before the compacted line agree.
+      // Compaction is the item's own span; the token record just before the compacted line adds nothing.
       item(30, "ContextCompaction", 10, 30),
+      line(30, "token_usage_record", {}),
       line(30, "compacted", { message: "" }),
+      // Plan text is the model's own output, not tool time.
+      item(32, "Plan", 31, 32),
       item(32, "Reasoning", 30, 32),
       line(33, "response_item", { type: "function_call", call_id: "b", name: "observe_local", arguments: "{}" }),
       line(36, "response_item", { type: "function_call_output", call_id: "b", output: "{}" }),
       event(40, "task_complete"),
-      // Between turns nothing counts; a settings event opens no turn.
+      // Between turns nothing counts: a late item_completed, a token count
+      // or a settings event opens no turn.
+      item(41, "McpToolCall", 38, 41),
+      event(42, "token_count"),
       event(100, "thread_settings_applied"),
       event(120, "task_started"),
       line(121, "response_item", { type: "custom_tool_call", call_id: "c", name: "exec", input: "x" }),
@@ -201,6 +207,18 @@ describe("rollout time split", () => {
     split.line(line(40, "response_item", { type: "function_call_output", call_id: "b", output: "{}" }));
     split.line(event(41, "task_complete"));
     expect(split.summary()).toMatchObject({ turns: 2, turn_ms: 21_000, tool_ms: 12_000, model_ms: 9_000 });
+  });
+
+  it("keeps a long turn's many disjoint tool spans in order without re-sorting them", () => {
+    const split = createTimeSplit();
+    split.line(event(0, "task_started"));
+    // Out of order by one, overlapping, and nested spans all merge into the union.
+    for (let k = 0; k < 5_000; k++) split.line(item(2 * k + 2, "CommandExecution", 2 * k + 1, 2 * k + 2));
+    split.line(item(10_001, "McpToolCall", 9_000, 9_002));
+    split.line(item(10_001, "McpToolCall", 0.5, 10_000.5));
+    split.line(event(10_002, "task_complete"));
+    expect(split.summary()).toEqual({ turns: 1, turn_ms: 10_002_000, tool_ms: 10_000_000, compaction_ms: 0, model_ms: 2_000,
+      tool_calls: 0, compactions: 0 });
   });
 
   it("hands every rollout line read to onLine by role, and a throwing hook never stops the feed", async () => {

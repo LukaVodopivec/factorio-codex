@@ -100,6 +100,20 @@ local before = storage.tasks.body_time.ticks.idle
 tasks.body_time()
 check(storage.tasks.body_time.ticks.idle == before, "the read never writes the counters")
 
+-- The recorder's window mark: the gap open at the mark counts from it when
+-- it closes; the idle ticks themselves stay whole.
+ticks(10)
+local idle_before = tasks.body_time().ticks.idle
+tasks.mark_body_window()
+local mark = game.tick
+ticks(5)
+busy("pilot", 4)
+time = tasks.body_time()
+check(time.window_tick == mark, "the read reports the window mark")
+check(time.gaps.pilot.count == 2 and time.gaps.pilot.ticks == 12 + 7 and time.gaps.pilot.longest == 12,
+  "a gap open at the mark counts only its ticks after the mark (" .. time.gaps.pilot.ticks .. ")")
+check(time.ticks.idle == idle_before + 7, "idle ticks before the mark still count as idle")
+
 -- A save without the counter (before state.init made it) reads nil and is not accounted.
 storage.tasks.body_time = nil
 ticks(1)

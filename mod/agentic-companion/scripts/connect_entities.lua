@@ -15,7 +15,8 @@
 -- budget ended the search first), ROUTE_BLOCKED (nothing reachable meets an
 -- end: the explored tile nearest one) or SEARCH_BUDGET (the node budget ran
 -- out first). The search goes on past max_length within its node budget, so
--- a route that exists but is too long is told apart from a blocked one.
+-- a route that exists but is too long is told apart from a blocked one. A
+-- power route fails with the same codes from its pole arithmetic.
 local companion = require("scripts.companion")
 local placement_geometry = require("scripts.placement_geometry")
 local fluid_connections = require("scripts.fluid_connections")
@@ -31,6 +32,8 @@ local PIPE = { pipe = true }
 -- Work items: a placement check is one can_place_entity pair plus the chunk
 -- reads around it; a node expansion is the heap and table work.
 local FIT_COST, NODE_COST, GAP_COST = 4, 1, 2
+-- Ancestors a step checks for its own tile (on_path).
+local PATH_CHECK = 16
 
 local function position(value, label)
   if type(value) ~= "table" or tonumber(value.x) == nil or tonumber(value.y) == nil then error(label .. " must be {x, y}") end
@@ -367,7 +370,7 @@ local function finish(R, goal_node)
   local seen = {}
   for index, step in ipairs(path) do
     local tile = key(step)
-    if seen[tile] then error(R.kind .. " route crosses itself; move an endpoint", 0) end
+    if seen[tile] then error(string.format("the planned %s route crosses itself at (%.1f, %.1f)", R.kind, step.x, step.y), 0) end
     seen[tile] = true
     if not step.fixed then
       local following = path[index + 1] and { x = path[index + 1].x, y = path[index + 1].y } or to
@@ -409,20 +412,37 @@ local function start_search(R, env)
     end
   end
   if not any then fail(R, "ROUTE_BLOCKED", "the " .. R.kind .. " route is blocked at its source connection") end
-  -- A goal with no free tile beside it is walled in: say so now, not after
-  -- searching everything within max_length. (An underground belt exit may
-  -- land on a free goal tile itself.)
+  -- A free-tile goal that takes no piece, or a goal with no free tile beside
+  -- it, is blocked: say so now, not after searching everything within
+  -- max_length. (An underground belt exit may land on a free goal tile.)
+  local reason
   for _, g in ipairs(R.goal_list) do
-    if g.include and R.kind == "belt" and R.under then return end
-    if not g.include or fits(R, env, g.x, g.y, 0, "piece") then
+    if g.include and not fits(R, env, g.x, g.y, 0, "piece") then
+      reason = reason or string.format("the %s route's end at (%.1f, %.1f) takes no piece", R.kind, g.x, g.y)
+    elseif g.include and R.kind == "belt" and R.under then
+      return
+    else
       for _, delta in ipairs(DELTAS) do
         local nx, ny = g.x + delta[1], g.y + delta[2]
         if R.start_keys[key({ x = nx, y = ny })] or fits(R, env, nx, ny, 0, "piece") then return end
       end
+      reason = reason or string.format("the %s route's end at (%.1f, %.1f) is walled in: no free tile beside it", R.kind, g.x, g.y)
     end
   end
-  local g = R.goal_list[1]
-  fail(R, "ROUTE_BLOCKED", string.format("the %s route's end at (%.1f, %.1f) is walled in: no free tile beside it", R.kind, g.x, g.y))
+  fail(R, "ROUTE_BLOCKED", reason)
+end
+
+-- Whether (x, y) is one of node's last PATH_CHECK tiles. With hops a state
+-- holds its arrival heading, so a route could turn round over its own tile
+-- to reach a tile in another heading; such a turn is short, and a longer
+-- crossing is still refused by finish.
+local function on_path(node, x, y)
+  for _ = 1, PATH_CHECK do
+    if not node then return false end
+    if node.x == x and node.y == y then return true end
+    node = node.parent
+  end
+  return false
 end
 
 -- Expands one node: plain steps to the four neighbours, and where the next
@@ -444,7 +464,7 @@ local function expand(R, env, current)
         -- A route never returns over its own start.
       else
         if fits(R, env, nx, ny, d, "piece") then
-          if improves(R, nx, ny, nil, d, current.length + 1) then
+          if not (R.under and on_path(current, nx, ny)) and improves(R, nx, ny, nil, d, current.length + 1) then
             push(R, { x = nx, y = ny, length = current.length + 1, parent = current, arrive = d,
               piece = piece(R, nx, ny) })
           end
@@ -465,7 +485,7 @@ local function expand(R, env, current)
           if R.start_keys[key({ x = xx, y = xy })] then break end
           local entrance, exit = hop_pieces(R, current.x, current.y, xx, xy, d)
           if span == 2 and not fits(R, env, current.x, current.y, entrance.direction, "under") then break end
-          if fits(R, env, xx, xy, exit.direction, "under")
+          if fits(R, env, xx, xy, exit.direction, "under") and not on_path(current, xx, xy)
             and (not env.gap_clear or env.gap_clear({ x = current.x, y = current.y }, { x = xx, y = xy }, d))
             and improves(R, xx, xy, landing and "goal" or d, landing and nil or d, length) then
             push(R, { x = xx, y = xy, length = length, parent = current, only = not landing and d or nil,
@@ -526,15 +546,14 @@ local function free_ports(entity)
     if not connection.connected_target then
       local index = connection.fluidbox_index
       if fluids[index] == nil then fluids[index] = fluid_connections.box_fluid(entity, index, connection.filter) or false end
-      rows[#rows + 1] = { position = connection.target_position, fluid = fluids[index] or nil, box = index }
+      rows[#rows + 1] = { position = connection.target_position, fluid = fluids[index] or nil }
     end
   end
   return rows
 end
 
 -- Free fluid ports of a machine as route terminals on the tile outside each:
--- those for fluid (or, when none takes it by name, those that take anything),
--- each with its fluid box index.
+-- those for fluid (or, when none takes it by name, those that take anything).
 local function machine_ports(entity, fluid)
   local rows = free_ports(entity)
   if fluid then
@@ -545,7 +564,7 @@ local function machine_ports(entity, fluid)
     rows = #exact > 0 and exact or open
   end
   local terminals = {}
-  for _, row in ipairs(rows) do terminals[#terminals + 1] = { position = row.position, include = true, box = row.box } end
+  for _, row in ipairs(rows) do terminals[#terminals + 1] = { position = row.position, include = true } end
   return terminals
 end
 
@@ -590,12 +609,23 @@ local function entity_box(entity)
   }
 end
 
-local function terminal_pole(c, item_name, proto, entity, tile)
+-- A power route's typed failure into P (a plain table, fail's R): poles are
+-- placed by arithmetic, not searched, so ROUTE_BLOCKED gives at, the pole
+-- position that takes no pole, and ROUTE_TOO_LONG a lower bound in poles.
+local function pole_blocked(P, pos)
+  fail(P or {}, "ROUTE_BLOCKED", string.format("power route is blocked at (%.1f, %.1f)", pos.x, pos.y),
+    { at = { x = pos.x, y = pos.y } })
+end
+
+local function poles_beyond(P, needed, limit)
+  fail(P or {}, "ROUTE_TOO_LONG", string.format("a power route needs at least %d poles; max_length is %d", needed, limit),
+    { min_length = needed, lower_bound = true, limit = limit })
+end
+
+local function terminal_pole(c, item_name, proto, entity, tile, P)
   local reach_new = tonumber(proto.get_max_wire_distance("normal"))
   if not entity then
-    if not can_place(c, proto, tile, 0) then
-      error(string.format("power route is blocked at (%.1f, %.1f)", tile.x, tile.y), 0)
-    end
+    if not can_place(c, proto, tile, 0) then pole_blocked(P, tile) end
     return { position = tile, reach = reach_new, step = { name = item_name, x = tile.x, y = tile.y } }
   end
   if entity.type == "electric-pole" then
@@ -624,7 +654,10 @@ local function terminal_pole(c, item_name, proto, entity, tile)
     if a.position.y ~= b.position.y then return a.position.y < b.position.y end
     return a.position.x < b.position.x
   end)
-  if not candidates[1] then error("no charted physical pole placement covers an exact power endpoint") end
+  if not candidates[1] then
+    fail(P or {}, "ROUTE_BLOCKED", string.format("no charted physical pole placement covers the power endpoint at (%.1f, %.1f)",
+      entity.position.x, entity.position.y), { at = { x = entity.position.x, y = entity.position.y } })
+  end
   local pos = candidates[1].position
   return { position = pos, reach = reach_new, step = { name = item_name, x = pos.x, y = pos.y } }
 end
@@ -651,48 +684,47 @@ end
 -- wire span exceeds spacing and the last one fits final_reach. Snapping a pole
 -- to a tile centre moves it up to half a tile per axis, so a span may grow by
 -- up to about 1.5 tiles; then one more pole shortens every span. Spans of
--- spacing - 1.5 always fit, so this is arithmetic over a few counts.
-local function pole_span(fits_pole, item_name, from, to, spacing, final_reach, budget)
+-- spacing - 1.5 always fit, so this is arithmetic over a few counts. fixed:
+-- the terminal poles already counted against max_length (fixed + budget).
+local function pole_span(fits_pole, item_name, from, to, spacing, final_reach, budget, P, fixed)
   local dx, dy = to.x - from.x, to.y - from.y
   local segments = math.ceil(math.sqrt(dx * dx + dy * dy) / spacing)
-  if segments - 1 > budget then error("power route needs " .. (segments - 1) .. " intermediate poles, beyond max_length") end
+  fixed = fixed or 0
   local positions
   while true do
+    if segments - 1 > budget then poles_beyond(P, segments - 1 + fixed, budget + fixed) end
     positions = snapped_span(from, to, segments, spacing, final_reach)
     if positions then break end
     segments = segments + 1
-    if segments - 1 > budget then
-      error("power route cannot satisfy physical wire reach on the placement grid within max_length")
-    end
   end
   local steps = {}
   for _, pos in ipairs(positions) do
-    if not fits_pole(pos) then error(string.format("power route is blocked at (%.1f, %.1f)", pos.x, pos.y)) end
+    if not fits_pole(pos) then pole_blocked(P, pos) end
     steps[#steps + 1] = { name = item_name, x = pos.x, y = pos.y }
   end
   return steps
 end
 
 -- Poles between two endpoints (entities or free tiles). Linear in the
--- route's pole count, so it runs in one step.
-local function power_route(c, item_name, proto, from, to, from_entity, to_entity, max_length)
+-- route's pole count, so it runs in one step. A failure is typed into P.
+local function power_route(c, item_name, proto, from, to, from_entity, to_entity, max_length, P)
   local new_reach = tonumber(proto.get_max_wire_distance("normal"))
   if not new_reach then error("power route prototype must expose wire reach") end
-  local from_terminal = terminal_pole(c, item_name, proto, from_entity, from)
-  local to_terminal = terminal_pole(c, item_name, proto, to_entity, to)
+  local from_terminal = terminal_pole(c, item_name, proto, from_entity, from, P)
+  local to_terminal = terminal_pole(c, item_name, proto, to_entity, to, P)
   local from_reach, to_reach = from_terminal.reach, to_terminal.reach
   from, to = from_terminal.position, to_terminal.position
   local steps = {}
   if from_terminal.step then steps[#steps + 1] = from_terminal.step end
   local terminal_count = (from_terminal.step and 1 or 0) + (to_terminal.step and 1 or 0)
-  if terminal_count > max_length then error("power endpoint coverage needs more poles than max_length") end
+  if terminal_count > max_length then poles_beyond(P, terminal_count, max_length) end
   local dx, dy = to.x - from.x, to.y - from.y
   if math.sqrt(dx * dx + dy * dy) <= math.min(from_reach, to_reach) then
     if to_terminal.step then steps[#steps + 1] = to_terminal.step end
     return steps
   end
   for _, step in ipairs(pole_span(function(pos) return can_place(c, proto, pos, 0) end, item_name, from, to,
-    math.min(new_reach, from_reach, to_reach), math.min(new_reach, to_reach), max_length - terminal_count)) do
+    math.min(new_reach, from_reach, to_reach), math.min(new_reach, to_reach), max_length - terminal_count, P, terminal_count)) do
     steps[#steps + 1] = step
   end
   if to_terminal.step then steps[#steps + 1] = to_terminal.step end
@@ -701,20 +733,21 @@ end
 
 -- Layout poles (build_layout), between planned endpoints that may not exist
 -- yet: poles at from and to (unless has_pole says one stands or is planned
--- there) and between them within wire reach.
-function M.route_poles(item_name, proto, from, to, max_length, fits_pole, has_pole)
+-- there) and between them within wire reach. A failure is typed into P
+-- (M.failure(err, P)).
+function M.route_poles(item_name, proto, from, to, max_length, fits_pole, has_pole, P)
   local reach = tonumber(proto.get_max_wire_distance("normal"))
   if not reach then error("power route prototype must expose wire reach") end
   local function pole_at(endpoint)
     if has_pole(endpoint) then return nil end
-    if not fits_pole(endpoint) then error(string.format("power route is blocked at (%.1f, %.1f)", endpoint.x, endpoint.y)) end
+    if not fits_pole(endpoint) then pole_blocked(P, endpoint) end
     return { name = item_name, x = endpoint.x, y = endpoint.y }
   end
   local head = pole_at(from)
   local tail = not (from.x == to.x and from.y == to.y) and pole_at(to) or nil
+  local terminals = (head and 1 or 0) + (tail and 1 or 0)
   local steps = { head }
-  for _, step in ipairs(pole_span(fits_pole, item_name, from, to, reach, reach,
-    max_length - (head and 1 or 0) - (tail and 1 or 0))) do
+  for _, step in ipairs(pole_span(fits_pole, item_name, from, to, reach, reach, max_length - terminals, P, terminals)) do
     steps[#steps + 1] = step
   end
   steps[#steps + 1] = tail
@@ -733,46 +766,110 @@ local function pipeline_limit()
 end
 
 -- The fluid segment a pipe route makes, as a row {extent, limit,
--- over_extent?, standing?}: extent is the larger side of its bounding box in
--- tiles (2.0.77: a straight run of 320 pipes works, 321 is overextended, an
--- L of 160 by 162 works), over the route's pieces and the standing segments
--- of the ends it joins (standing: how many). A crafting machine's fluid box
--- belongs to no segment (2.0.77: get_fluid_segment_id is nil on it, piped
--- or not), so a route ending at one adds nothing from that end.
-local function segment_row(state, steps, budget)
-  local min_x, min_y, max_x, max_y
-  local function cover(x1, y1, x2, y2)
-    min_x, min_y = math.min(min_x or x1, x1), math.min(min_y or y1, y1)
-    max_x, max_y = math.max(max_x or x2, x2), math.max(max_y or y2, y2)
-  end
+-- over_extent?, standing?, standing_uncharted?}: extent is the larger side of
+-- its bounding box in tiles (2.0.77: a straight run of 320 pipes works, 321
+-- is overextended, an L of 160 by 162 works), over the route's pieces and
+-- every standing segment a piece connects to (standing: how many), found by
+-- a survey of each piece's neighbours over ticks within the job budget: a
+-- neighbour of the companion's force whose normal pipe connection points at
+-- the piece, on a side the piece connects on (a pipe all four, a
+-- pipe-to-ground its normal side). A standing segment whose box reaches
+-- uncharted ground is only counted in standing_uncharted. A crafting
+-- machine's fluid box belongs to no segment (2.0.77: get_fluid_segment_id is
+-- nil on it, piped or not), so it adds nothing.
+local function segment_start(steps)
+  local seg = { next = 1, seen = {}, standing = 0, uncharted = 0 }
   for _, s in ipairs(steps) do
     local x, y = math.floor(s.x), math.floor(s.y)
-    cover(x, y, x, y)
+    seg.min_x, seg.min_y = math.min(seg.min_x or x, x), math.min(seg.min_y or y, y)
+    seg.max_x, seg.max_y = math.max(seg.max_x or x, x), math.max(seg.max_y or y, y)
   end
-  local standing, seen = 0, {}
-  for _, e in ipairs({ { state.from_entity, state.from_box }, { state.to_entity, state.to_box } }) do
-    local entity, box = e[1], e[2]
-    if entity and box and entity.valid then
-      budget.left = budget.left - FIT_COST
-      local ok, id = pcall(function() return entity.fluidbox.get_fluid_segment_id(box) end)
-      if ok and id and not seen[id] then
-        seen[id] = true
-        local bb_ok, bb = pcall(function() return entity.fluidbox.get_fluid_segment_extent_bounding_box(box) end)
-        if bb_ok and type(bb) == "table" and bb.left_top then
-          standing = standing + 1
-          cover(math.floor(bb.left_top.x), math.floor(bb.left_top.y),
-            math.ceil(bb.right_bottom.x) - 1, math.ceil(bb.right_bottom.y) - 1)
+  return seg
+end
+
+-- The tile offsets a planned piece connects on.
+local function piece_sides(state, s)
+  local under = state.under
+  if under and s.name == under.item then
+    -- Its underground side faces direction + faces; the normal side is opposite.
+    local side = ((s.direction or 0) + under.faces + 8) % 16
+    return { DELTAS[side / 4 + 1] }
+  end
+  return DELTAS
+end
+
+-- Surveys the next piece's neighbours.
+local function segment_scan(c, state, steps, budget)
+  local seg = state.segment
+  local s = steps[seg.next]
+  seg.next = seg.next + 1
+  local x, y = math.floor(s.x), math.floor(s.y)
+  local wanted = {}
+  for _, d in ipairs(piece_sides(state, s)) do wanted[(x + d[1]) .. "," .. (y + d[2])] = true end
+  budget.left = budget.left - GAP_COST
+  local ok, found = pcall(c.surface.find_entities_filtered,
+    { area = { left_top = { x = x - 0.9, y = y - 0.9 }, right_bottom = { x = x + 1.9, y = y + 1.9 } }, force = c.force })
+  if not (ok and type(found) == "table") then return end
+  for _, e in ipairs(found) do
+    budget.left = budget.left - NODE_COST
+    if e.valid and charted(c.force, c.surface, e.position) then
+      for _, row in ipairs(fluid_connections.live(e)) do
+        local t, from = row.target_position, row.position
+        if (row.connection_type == nil or row.connection_type == "normal") and math.floor(t.x) == x and math.floor(t.y) == y
+          and wanted[math.floor(from.x) .. "," .. math.floor(from.y)] then
+          local id_ok, id = pcall(function() return e.fluidbox.get_fluid_segment_id(row.fluidbox_index) end)
+          if id_ok and id and not seg.seen[id] then
+            seg.seen[id] = true
+            budget.left = budget.left - FIT_COST
+            local bb_ok, bb = pcall(function() return e.fluidbox.get_fluid_segment_extent_bounding_box(row.fluidbox_index) end)
+            if bb_ok and type(bb) == "table" and bb.left_top then
+              if charted(c.force, c.surface, bb.left_top) and charted(c.force, c.surface, bb.right_bottom) then
+                seg.standing = seg.standing + 1
+                seg.min_x, seg.min_y = math.min(seg.min_x, math.floor(bb.left_top.x)), math.min(seg.min_y, math.floor(bb.left_top.y))
+                seg.max_x = math.max(seg.max_x, math.ceil(bb.right_bottom.x) - 1)
+                seg.max_y = math.max(seg.max_y, math.ceil(bb.right_bottom.y) - 1)
+              else
+                seg.uncharted = seg.uncharted + 1
+              end
+            end
+          end
         end
       end
     end
   end
-  local row = { extent = math.max(max_x - min_x, max_y - min_y) + 1, limit = pipeline_limit() }
+end
+
+local function segment_row(seg)
+  local row = { extent = math.max(seg.max_x - seg.min_x, seg.max_y - seg.min_y) + 1, limit = pipeline_limit() }
   if row.limit and row.extent > row.limit then row.over_extent = true end
-  if standing > 0 then row.standing = standing end
+  if seg.standing > 0 then row.standing = seg.standing end
+  if seg.uncharted > 0 then row.standing_uncharted = seg.uncharted end
   return row
 end
 
 local function tile_key(pos) return math.floor(pos.x) .. "," .. math.floor(pos.y) end
+
+local function manhattan(a, b) return math.floor(math.abs(a.x - b.x) + math.abs(a.y - b.y) + 0.5) end
+
+-- Whether a new underground pair (entrance, exit) leaves the earlier legs'
+-- pairs ({a, b} each) paired as laid: no earlier end lies strictly between
+-- the new ends, and neither new end lies strictly inside an earlier pair's
+-- span on the same line (it would pair with that pair's entrance instead).
+function M.pairs_clear(pairs, entrance, exit)
+  local vertical = entrance.x == exit.x
+  local function between(v, lo, hi) return v > math.min(lo, hi) and v < math.max(lo, hi) end
+  for _, p in ipairs(pairs) do
+    for _, u in ipairs({ p.a, p.b }) do
+      if vertical and u.x == entrance.x and between(u.y, entrance.y, exit.y) then return false end
+      if not vertical and u.y == entrance.y and between(u.x, entrance.x, exit.x) then return false end
+    end
+    if vertical and p.a.x == p.b.x and p.a.x == entrance.x
+      and (between(entrance.y, p.a.y, p.b.y) or between(exit.y, p.a.y, p.b.y)) then return false end
+    if not vertical and p.a.y == p.b.y and p.a.y == entrance.y
+      and (between(entrance.x, p.a.x, p.b.x) or between(exit.x, p.a.x, p.b.x)) then return false end
+  end
+  return true
+end
 
 -- Starts the search of the current leg. A leg after the first starts at its
 -- waypoint: from the underground exit the last leg put there (no new
@@ -813,16 +910,13 @@ local function route_legs(c, state, budget)
       return can_place(c, role == "under" and under.proto or state.proto, pos, dir)
     end,
     -- Another underground of the same item on the axis between the ends,
-    -- standing or laid by an earlier leg, would pair with the entrance instead.
+    -- standing or laid by an earlier leg, would pair with the entrance
+    -- instead; so would a new pair inside an earlier leg's pair.
     gap_clear = function(entrance, exit, d)
       budget.left = budget.left - GAP_COST
+      if not M.pairs_clear(state.unders, entrance, exit) then return false end
       local area = { left_top = { x = math.min(entrance.x, exit.x) - 0.4, y = math.min(entrance.y, exit.y) - 0.4 },
         right_bottom = { x = math.max(entrance.x, exit.x) + 0.4, y = math.max(entrance.y, exit.y) + 0.4 } }
-      for _, u in ipairs(state.unders) do
-        if u.x > area.left_top.x and u.x < area.right_bottom.x and u.y > area.left_top.y and u.y < area.right_bottom.y then
-          return false
-        end
-      end
       local ok, found = pcall(c.surface.find_entities_filtered, { area = area, name = under.proto.name })
       return ok and type(found) == "table" and #found == 0
     end,
@@ -834,19 +928,42 @@ local function route_legs(c, state, budget)
     if not ok then
       local failure = M.failure(leg, R)
       if failure and #state.via > 0 then
-        failure.leg = state.leg - 1
-        failure.reason = failure.reason .. (state.leg <= #state.via and string.format(" (the leg to via[%d])", state.leg - 1)
+        local k = state.leg
+        if failure.code == "ROUTE_TOO_LONG" then
+          -- Earlier legs count as routed; legs after this one add at least
+          -- the Manhattan tiles between their ends.
+          if k <= #state.via then
+            local rest, previous = 0, state.via[k]
+            for j = k + 1, #state.via do rest, previous = rest + manhattan(previous, state.via[j]), state.via[j] end
+            local last
+            for _, g in ipairs(state.last_goals) do
+              local d = math.max(0, manhattan(previous, g.position) - (g.include and 0 or 1))
+              if not last or d < last then last = d end
+            end
+            failure.min_length, failure.lower_bound = failure.min_length + rest + (last or 0), true
+          end
+          failure.reason = string.format("a charted %s route through the waypoints, its earlier legs as routed, %s %d tiles; max_length is %d",
+            state.kind, failure.lower_bound and "needs at least" or "is", failure.min_length, failure.limit)
+        end
+        failure.leg = k - 1
+        failure.reason = failure.reason .. (k <= #state.via and string.format(" (the leg to via[%d])", k - 1)
           or " (the leg to `to`)")
       end
       error(leg, 0)
     end
     if not leg then return nil end
-    if state.leg == 1 then state.from_box = state.first_starts[R.ends.start].box end
-    if state.leg > #state.via then state.to_box = state.last_goals[R.ends.goal].box end
+    local entrance
     for _, s in ipairs(leg) do
       state.steps[#state.steps + 1] = s
       state.occupied[tile_key(s)] = true
-      if under and s.name == under.item then state.unders[#state.unders + 1] = { x = s.x, y = s.y } end
+      if under and s.name == under.item then
+        if entrance then
+          state.unders[#state.unders + 1] = { a = entrance, b = { x = s.x, y = s.y } }
+          entrance = nil
+        else
+          entrance = { x = s.x, y = s.y }
+        end
+      end
     end
     state.used = state.used + R.length
     if state.leg > #state.via then return state.steps end
@@ -866,8 +983,9 @@ end
 -- search with its own node budget; max_length bounds the whole route. With
 -- joins, a belt route also lists where it joins standing belts
 -- (belt_joins.lua), surveyed after the search within the same job budget; a
--- pipe route lists its fluid segment against the game's pipeline extent.
--- Nothing is built: the caller queues the steps.
+-- pipe route lists its fluid segment against the game's pipeline extent,
+-- surveyed the same way (segment_scan). A power route that fits no poles
+-- fails typed too. Nothing is built: the caller queues the steps.
 local function start(params)
   local c = companion.require_companion()
   local kind = params.kind
@@ -905,23 +1023,22 @@ local function start(params)
     if type(params.via) ~= "table" or #params.via > M.MAX_VIA then
       error("connect_entities via is a list of up to " .. M.MAX_VIA .. " waypoints {x, y}", 0)
     end
-    local previous = tile(from)
+    -- from, each waypoint and to are distinct tiles.
+    local named = { [tile_key(from)] = "from" }
     for i, point in ipairs(params.via) do
-      local wp = tile(position(point, "connect_entities via[" .. (i - 1) .. "]"))
-      if not charted(c.force, c.surface, wp) then error(string.format("connect_entities via[%d] must be force-charted", i - 1), 0) end
-      if tile_key(wp) == tile_key(previous) then error(string.format("connect_entities via[%d] repeats the tile before it", i - 1), 0) end
-      via[i], previous = wp, wp
+      local name = "via[" .. (i - 1) .. "]"
+      local wp = tile(position(point, "connect_entities " .. name))
+      if not charted(c.force, c.surface, wp) then error("connect_entities " .. name .. " must be force-charted", 0) end
+      if named[tile_key(wp)] then error("connect_entities " .. name .. " repeats the tile of " .. named[tile_key(wp)], 0) end
+      via[i], named[tile_key(wp)] = wp, name
     end
-    if #via > 0 and tile_key(via[#via]) == tile_key(to) then
-      error(string.format("connect_entities via[%d] repeats the tile of to", #via - 1), 0)
-    end
+    if #via > 0 and named[tile_key(to)] then error("connect_entities to repeats the tile of " .. named[tile_key(to)], 0) end
   end
   local from_entity, to_entity = locate(c.surface, from), locate(c.surface, to)
   for _, pair in ipairs({ { from_entity, from }, { to_entity, to } }) do
     local entity, at = pair[1], pair[2]
     if entity and not supports(kind, entity) then
-      error(string.format("the endpoint at (%.1f, %.1f) is a %s, which takes no %s connection; give a free tile or a %s endpoint",
-        at.x, at.y, entity.name, kind, kind), 0)
+      error(string.format("the endpoint at (%.1f, %.1f) is a %s, which takes no %s connection", at.x, at.y, entity.name, kind), 0)
     end
   end
   local state = { kind = kind, prototype = params.prototype, proto = proto, from = from, to = to, max_length = max_length,
@@ -940,7 +1057,7 @@ local function start(params)
     local fluid = route_fluid(params.fluid, from_entity, to_entity)
     local function terminals(entity, at)
       if not entity then return { { position = tile(at), include = true } } end
-      if PIPE[entity.type] then return { { position = exact(entity), include = false, box = 1 } } end
+      if PIPE[entity.type] then return { { position = exact(entity), include = false } } end
       local ports = machine_ports(entity, fluid)
       if #ports == 0 then
         error(string.format("%s at (%.1f, %.1f) has no free %sport", entity.name, at.x, at.y, fluid and (fluid .. " ") or ""), 0)
@@ -962,11 +1079,18 @@ local function step(state, budget)
     -- The job may step on a later tick: an endpoint mined since is no route.
     for _, pair in ipairs({ { state.from_entity, state.from }, { state.to_entity, state.to } }) do
       if pair[1] and not pair[1].valid then
-        error(string.format("the power endpoint at (%.1f, %.1f) is gone; connect again", pair[2].x, pair[2].y), 0)
+        error(string.format("the power endpoint at (%.1f, %.1f) is gone", pair[2].x, pair[2].y), 0)
       end
     end
-    steps = power_route(c, state.prototype, state.proto, state.from, state.to, state.from_entity, state.to_entity,
-      state.max_length)
+    local P = {}
+    local ok, value = pcall(power_route, c, state.prototype, state.proto, state.from, state.to, state.from_entity,
+      state.to_entity, state.max_length, P)
+    if not ok then
+      local failure = M.failure(value, P)
+      if not failure then error(value, 0) end
+      return { kind = state.kind, prototype = state.prototype, from = state.from, to = state.to, failure = failure }
+    end
+    steps = value
     budget.left = budget.left - FIT_COST * (#steps + 2)
   elseif state.route then
     steps = state.route
@@ -984,7 +1108,15 @@ local function step(state, budget)
   local out = { kind = state.kind, prototype = state.prototype, from = state.from, to = state.to,
     via = state.via and #state.via > 0 and state.via or nil, fluid = state.fluid,
     length = #steps, steps = steps, physical = true, ghosts = false }
-  if state.kind == "pipe" and #steps > 0 then out.fluid_segments = { segment_row(state, steps, budget) } end
+  if state.kind == "pipe" and #steps > 0 then
+    -- The pieces' neighbours, a scan per piece within the budget, over ticks.
+    state.segment = state.segment or segment_start(steps)
+    while state.segment.next <= #steps do
+      if budget.left <= 0 then return nil end
+      segment_scan(c, state, steps, budget)
+    end
+    out.fluid_segments = { segment_row(state.segment) }
+  end
   if state.kind ~= "belt" or #steps == 0 or not state.report_joins then return out end
   -- The route's belt joins, a scan per piece within the budget, over ticks.
   if not state.joins then

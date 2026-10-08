@@ -491,14 +491,17 @@ export function registerMcpTools(
   });
   // Route failures and pipe segments: facts and arithmetic, never a fix.
   const routeReport = " via: up to 8 waypoints you choose, passed in order with a piece on each, each leg its own search;"
-    + " max_length (tiles, an underground hop counting its span) bounds the whole route. When no route fits, the result"
-    + " fails with code ROUTE_TOO_LONG (min_length: the shortest route's tiles, or with lower_bound: true the least it"
-    + " needs when the search budget ended first; limit: max_length), ROUTE_BLOCKED (nothing reachable meets the end:"
-    + " closest, the reached tile nearest it, and remaining, its Manhattan tiles to the end) or SEARCH_BUDGET (the search"
-    + " spent its budget: explored tiles, closest, remaining); with via, leg is the via index the failed leg ends at (the"
-    + " via count for the leg to `to`). A pipe route lists fluid_segments [{extent: the larger side, in tiles, of the"
-    + " bounding box of the segment it makes, its pieces and the standing pipe segments its ends join (standing: how"
-    + " many), hops included; limit: the game's pipeline extent; over_extent: true when extent exceeds limit}].";
+    + " max_length (tiles, an underground hop counting its span; poles for power) bounds the whole route. When no route"
+    + " fits, the result fails with code ROUTE_TOO_LONG (min_length: the shortest route's tiles, with via counting earlier"
+    + " legs as routed, or with lower_bound: true the least it needs: the search budget ended first, legs after the failed"
+    + " one count their Manhattan tiles, or poles by wire reach; limit: max_length), ROUTE_BLOCKED (nothing reachable meets"
+    + " the end; when the search ran, closest, the reached tile nearest it, and remaining, its Manhattan tiles to the end;"
+    + " power: at, the pole position that takes no pole) or SEARCH_BUDGET (the search spent its budget: explored tiles,"
+    + " closest, remaining); with via, leg is the via index the failed leg ends at (the via count for the leg to `to`)."
+    + " A pipe route lists fluid_segments [{extent: the larger side, in tiles, of the bounding box of the segment it makes,"
+    + " hops included: its pieces and every standing segment a piece connects to (standing: how many;"
+    + " standing_uncharted: those reaching uncharted ground, not counted); limit: the game's pipeline extent;"
+    + " over_extent: true when extent exceeds limit}].";
   tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun}${routeReport} A belt route's dry run also lists ${joinReport}.`, inputSchema: routeSchema }, async (p, extra) => {
     try { return await connectRoute(routeSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }

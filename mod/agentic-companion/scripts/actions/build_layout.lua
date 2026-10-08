@@ -19,9 +19,9 @@
 -- SURFACE_CONDITION before any site is searched.
 -- Belt and pipe connections are searched by connect_entities' resumable A*
 -- (up to 200 tiles, underground hops where the way is blocked), spread over
--- ticks like the site search; one that finds no route fails with the
--- search's typed code (ROUTE_TOO_LONG, ROUTE_BLOCKED, SEARCH_BUDGET and their
--- fields), any other route error as ROUTE_FAILED.
+-- ticks like the site search; one that finds no route (power included)
+-- fails with the route's typed code (ROUTE_TOO_LONG, ROUTE_BLOCKED,
+-- SEARCH_BUDGET and their fields), any other route error as ROUTE_FAILED.
 --
 -- Offsets are entity centres; each entity snaps to its own tile grid, so a
 -- layout written for an integer anchor (top-left tile corner) is exact. An
@@ -688,7 +688,9 @@ local function route_more(ctx, variant, anchor, result, soft)
           { position = pos, radius = 0.5, type = "electric-pole", force = force })
         return found_ok and type(found) == "table" and #found > 0
       end
-      ok, steps = pcall(connect_entities.route_poles, route.item, route.proto, from, to, MAX_ROUTE, free, has_pole)
+      local P = {}
+      ok, steps = pcall(connect_entities.route_poles, route.item, route.proto, from, to, MAX_ROUTE, free, has_pole, P)
+      if not ok then typed = connect_entities.failure(steps, P) end
     else
       if not r.search then
         -- An endpoint tile that is not free is the entity the route ends at.

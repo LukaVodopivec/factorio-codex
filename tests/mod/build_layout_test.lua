@@ -913,6 +913,12 @@ check(not walled_route.ok and walled_route.failed[1].code == "ROUTE_BLOCKED" and
   and walled_route.failed[1].reason:match("walled in") and engine.can_place <= per_tick_engine,
   string.format("a walled-in route fails as ROUTE_BLOCKED within one tick's work (%d placement checks)", engine.can_place))
 engine.can_place = 0
+-- A power connection whose end pole has no room is typed too, with the pole position.
+local pole_walled = dry({ anchor = { x = 340, y = 300 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } },
+  connections = { { kind = "power", prototype = "small-electric-pole", from = { dx = 0.5, dy = 0.5 }, to = { dx = 10.5, dy = 0.5 } } } })
+local pole_row = pole_walled.failed and pole_walled.failed[1]
+check(not pole_walled.ok and pole_row and pole_row.code == "ROUTE_BLOCKED" and pole_row.at and pole_row.at.x == 340.5
+  and pole_row.at.y == 300.5, "a power connection whose end pole has no room fails ROUTE_BLOCKED at that position")
 -- A route-only layout joins what already stands: no entities, connections from an anchor.
 local route_only = dry({ anchor = { x = 600, y = 600 }, entities = {},
   connections = { { kind = "belt", prototype = "transport-belt", from = { dx = 0.5, dy = 0.5 }, to = { dx = 10.5, dy = 0.5 } } } })

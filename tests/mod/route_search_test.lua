@@ -32,10 +32,14 @@ _G.prototypes = { utility_constants = { default_pipeline_extent = 320 }, item = 
   pipe = { place_result = pipe }, ["pipe-to-ground"] = { place_result = pipe_to_ground },
 } }
 
--- The world: blocked tiles, endpoint entities, existing undergrounds.
-local blocked, endpoints, undergrounds = {}, {}, {}
+-- The world: blocked tiles, endpoint entities, existing undergrounds, and
+-- standing fluid entities an area query by force finds; chunks from
+-- uncharted_from (chunk x) on are uncharted.
+local blocked, endpoints, undergrounds, standing = {}, {}, {}, {}
+local uncharted_from
 local engine = { can_place = 0, find = 0 }
 local function tile(x, y) return math.floor(x) .. "," .. math.floor(y) end
+local body_force
 local surface = {
   can_place_entity = function(args)
     engine.can_place = engine.can_place + 1
@@ -48,6 +52,14 @@ local surface = {
       return hit and { hit } or {}
     end
     local out = {}
+    if not filter.name then
+      for _, e in ipairs(standing) do
+        local p = e.position
+        if (e.force or body_force) == filter.force and p.x + 0.3 > filter.area.left_top.x and p.x - 0.3 < filter.area.right_bottom.x
+          and p.y + 0.3 > filter.area.left_top.y and p.y - 0.3 < filter.area.right_bottom.y then out[#out + 1] = e end
+      end
+      return out
+    end
     for _, u in ipairs(undergrounds) do
       if u.name == filter.name and u.position.x > filter.area.left_top.x and u.position.x < filter.area.right_bottom.x
         and u.position.y > filter.area.left_top.y and u.position.y < filter.area.right_bottom.y then out[#out + 1] = u end
@@ -58,8 +70,10 @@ local surface = {
 local recipes = { ["underground-belt"] = { enabled = true }, ["pipe-to-ground"] = { enabled = true } }
 local body = { valid = true, position = { x = 1000.5, y = 1000.5 },
   bounding_box = { left_top = { x = 1000.3, y = 1000.3 }, right_bottom = { x = 1000.7, y = 1000.7 } },
-  surface = surface, force = { recipes = recipes, is_chunk_charted = function() return true end },
+  surface = surface, force = { recipes = recipes,
+    is_chunk_charted = function(_, chunk) return not uncharted_from or chunk.x < uncharted_from end },
   get_item_count = function() return 0 end }
+body_force = body.force
 package.loaded["scripts.companion"] = { require_companion = function() return body end, get = function() return body end }
 
 local connect = require("scripts.connect_entities")
@@ -339,21 +353,152 @@ local over = route({ kind = "pipe", prototype = "pipe", from = { x = 700.5, y = 
 check(over and over.fluid_segments[1].over_extent == true and over.fluid_segments[1].limit == 20,
   "over_extent: true when the extent exceeds the limit")
 _G.prototypes.utility_constants.default_pipeline_extent = 320
-local standing_pipe = { valid = true, name = "pipe", type = "pipe", position = { x = 740.5, y = 0.5 }, fluidbox = {
-  get_fluid_segment_id = function(index) return index == 1 and 7 or nil end,
-  get_fluid_segment_extent_bounding_box = function()
-    return { left_top = { x = 740.2109375, y = 0.2109375 }, right_bottom = { x = 1100.7890625, y = 0.7890625 } }
-  end } }
-endpoints[tile(740.5, 0.5)] = standing_pipe
+-- A standing pipe at (x, y) of segment id whose box runs from lt to rb
+-- (tile corners; the game's box sits 0.21 inside them), connecting on all
+-- four sides.
+local function standing_pipe(x, y, id, lt, rb, force)
+  local connections = {}
+  for _, d in ipairs({ { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }) do
+    connections[#connections + 1] = { connection_type = "normal", position = { x = x, y = y },
+      target_position = { x = x + d[1], y = y + d[2] } }
+  end
+  return { valid = true, name = "pipe", type = "pipe", position = { x = x, y = y }, force = force, fluidbox = { {},
+    get_pipe_connections = function() return connections end,
+    get_fluid_segment_id = function(index) return index == 1 and id or nil end,
+    get_fluid_segment_extent_bounding_box = function()
+      return { left_top = { x = lt[1] + 0.2109375, y = lt[2] + 0.2109375 }, right_bottom = { x = rb[1] - 0.2109375, y = rb[2] - 0.2109375 } }
+    end } }
+end
+local at_to = standing_pipe(740.5, 0.5, 7, { 740, 0 }, { 1101, 1 })
+endpoints[tile(740.5, 0.5)], standing = at_to, { at_to }
 local joined = route({ kind = "pipe", prototype = "pipe", from = { x = 700.5, y = 0.5 }, to = { x = 740.5, y = 0.5 } })
 seg = joined and joined.fluid_segments and joined.fluid_segments[1]
 check(seg and #joined.steps == 40 and seg.extent == 401 and seg.over_extent == true and seg.standing == 1,
-  "joining a standing 361-tile segment makes one of 401 tiles: over_extent")
+  "joining a standing 361-tile segment at `to` makes one of 401 tiles: over_extent")
+local at_from = standing_pipe(760.5, 0.5, 8, { 500, 0 }, { 761, 1 })
+endpoints, standing = { [tile(760.5, 0.5)] = at_from }, { at_from }
+local from_joined = route({ kind = "pipe", prototype = "pipe", from = { x = 760.5, y = 0.5 }, to = { x = 780.5, y = 0.5 } })
+seg = from_joined and from_joined.fluid_segments and from_joined.fluid_segments[1]
+check(seg and #from_joined.steps == 20 and seg.extent == 281 and not seg.over_extent and seg.standing == 1,
+  "a standing segment at `from` counts too (281 tiles)")
 endpoints = {}
+-- A standing pipe beside the route, at neither end, joins it; one of
+-- another force does not.
+standing = { standing_pipe(715.5, 11.5, 9, { 715, 11 }, { 716, 401 }),
+  standing_pipe(720.5, 11.5, 10, { 720, 11 }, { 721, 2001 }, { name = "enemy" }) }
+local beside = route({ kind = "pipe", prototype = "pipe", from = { x = 700.5, y = 10.5 }, to = { x = 730.5, y = 10.5 } })
+seg = beside and beside.fluid_segments and beside.fluid_segments[1]
+check(seg and seg.extent == 391 and seg.over_extent == true and seg.standing == 1,
+  "a standing pipe beside the route joins its segment (391 tiles, over_extent); another force's does not")
+-- A standing segment reaching uncharted ground is not counted.
+standing, uncharted_from = { standing_pipe(715.5, 11.5, 11, { 715, 11 }, { 1301, 12 }) }, 40
+local into_dark = route({ kind = "pipe", prototype = "pipe", from = { x = 700.5, y = 10.5 }, to = { x = 730.5, y = 10.5 } })
+seg = into_dark and into_dark.fluid_segments and into_dark.fluid_segments[1]
+check(seg and seg.extent == 31 and not seg.standing and seg.standing_uncharted == 1,
+  "a standing segment whose box reaches uncharted ground is only counted in standing_uncharted")
+uncharted_from = nil
+-- A pipe-to-ground connects only on its normal side: a pipe beside its
+-- other sides stays apart.
+for y = -120, 120 do for x = 20, 22 do blocked[tile(x + 0.5, y + 0.5)] = true end end
+standing = { standing_pipe(19.5, 1.5, 12, { 19, 1 }, { 20, 501 }) }
+local ptg_side = route({ kind = "pipe", prototype = "pipe", from = { x = 0.5, y = 0.5 }, to = { x = 40.5, y = 0.5 }, max_length = 60 })
+local ptg_entrance = ptg_side and ptg_side.steps[20]
+check(ptg_entrance and ptg_entrance.name == "pipe-to-ground" and ptg_entrance.x == 19.5
+  and ptg_side.fluid_segments[1].extent == 41 and not ptg_side.fluid_segments[1].standing,
+  "a pipe beside a pipe-to-ground's side, not its normal connection, is a separate segment")
+standing = { standing_pipe(18.5, 1.5, 13, { 18, 1 }, { 19, 501 }) }
+local pipe_side = route({ kind = "pipe", prototype = "pipe", from = { x = 0.5, y = 0.5 }, to = { x = 40.5, y = 0.5 }, max_length = 60 })
+check(pipe_side and pipe_side.fluid_segments[1].standing == 1 and pipe_side.fluid_segments[1].extent == 501,
+  "the same pipe beside a plain pipe of the route joins it (501 tiles)")
+standing, blocked = {}, {}
 local pipe_via = route({ kind = "pipe", prototype = "pipe", from = { x = 800.5, y = 0.5 }, to = { x = 810.5, y = 0.5 },
   via = { { x = 805.5, y = 5.5 } } })
 check(pipe_via and pipe_via.length == 21 and chained(pipe_via.steps, false) and pipe_via.fluid_segments[1].extent == 11,
   "a pipe route through a waypoint is one segment of extent 11")
+
+-- 14. via, more: a too-long leg before the last gives a lower bound that adds
+-- the Manhattan tiles of the legs after it.
+local early = route({ kind = "belt", prototype = "transport-belt", from = { x = 500.5, y = 0.5 }, to = { x = 510.5, y = 0.5 },
+  via = { { x = 540.5, y = 0.5 } }, max_length = 30 })
+local early_failure = early and early.failure
+check(early_failure and early_failure.code == "ROUTE_TOO_LONG" and early_failure.leg == 0 and early_failure.min_length == 71
+  and early_failure.lower_bound == true and early_failure.limit == 30 and early_failure.reason:match("needs at least 71 tiles"),
+  "a too-long leg to via[0] reports at least 41 + 30 tiles, a lower bound: " .. tostring(early_failure and early_failure.reason))
+-- A waypoint on a tile that takes no piece fails at once, even with
+-- underground belts that could otherwise search on.
+blocked[tile(505.5, 5.5)] = true
+local unplaceable, unplaceable_ticks = route({ kind = "belt", prototype = "transport-belt", from = { x = 500.5, y = 0.5 },
+  to = { x = 510.5, y = 0.5 }, via = { { x = 505.5, y = 5.5 } } })
+local no_piece = unplaceable and unplaceable.failure
+check(no_piece and no_piece.code == "ROUTE_BLOCKED" and no_piece.leg == 0 and no_piece.reason:match("takes no piece")
+  and unplaceable_ticks == 1, "a waypoint that takes no piece is ROUTE_BLOCKED at once: " .. tostring(no_piece and no_piece.reason))
+blocked = {}
+-- from, each waypoint and to are distinct tiles.
+local function via_error(from, via, to)
+  local ok, err = pcall(connect.job.start, { kind = "belt", prototype = "transport-belt", from = from, to = to, via = via })
+  return not ok and tostring(err) or ""
+end
+check(via_error({ x = 500.5, y = 0.5 }, { { x = 503.5, y = 3.5 }, { x = 505.5, y = 5.5 }, { x = 503.2, y = 3.9 } }, { x = 510.5, y = 0.5 })
+  :match("via%[2%] repeats the tile of via%[0%]")
+  and via_error({ x = 500.5, y = 0.5 }, { { x = 503.5, y = 3.5 }, { x = 500.5, y = 0.5 } }, { x = 510.5, y = 0.5 })
+  :match("via%[1%] repeats the tile of from")
+  and via_error({ x = 500.5, y = 0.5 }, { { x = 503.5, y = 3.5 }, { x = 505.5, y = 5.5 } }, { x = 503.5, y = 3.5 })
+  :match("to repeats the tile of via%[0%]"),
+  "a repeated tile among from, via and to is refused, naming both")
+-- A waypoint's piece becomes an underground entrance only in the heading
+-- the route reached it with: no hop north from a waypoint reached heading east.
+for x = 1280, 1330 do blocked[tile(x + 0.5, -0.5)] = true end
+local turn = route({ kind = "belt", prototype = "transport-belt", from = { x = 1300.5, y = 0.5 }, to = { x = 1305.5, y = -5.5 },
+  via = { { x = 1305.5, y = 0.5 } } })
+local at_turn
+for _, s in ipairs(turn and turn.steps or {}) do if s.x == 1305.5 and s.y == 0.5 then at_turn = s end end
+check(turn and not turn.failure and at_turn and at_turn.name == "transport-belt" and chained(turn.steps, true),
+  "a waypoint reached heading east is no entrance north; the route turns before it hops")
+blocked = {}
+-- The excluded-goal heuristic never overestimates: a budget-ended search
+-- towards an existing entity bounds its route at the exact straight run
+-- (100 pieces up to the entity), not one more.
+local excluded = connect.new_search({ kind = "belt", item = "transport-belt", max_length = 30,
+  starts = { { position = { x = 0.5, y = 450.5 }, include = true } },
+  goals = { { position = { x = 100.5, y = 450.5 }, include = false } } })
+excluded.max_nodes = 40
+local _, excluded_err = pcall(connect.search_step, excluded, open_env)
+local excluded_failure = connect.failure(excluded_err, excluded)
+check(excluded_failure and excluded_failure.code == "ROUTE_TOO_LONG" and excluded_failure.min_length == 100
+  and excluded_failure.lower_bound == true, "towards an existing entity the lower bound is 100 tiles, not 101")
+-- A later leg never hops over an earlier leg's underground: leg 1 tunnels
+-- under (905, 0) onto via[0]; leg 2 must cross row 0 and may not pass under
+-- leg 1's entrance at (904, 0), so it crosses at column 902 instead.
+local free_tiles = {}
+local function open_tile(x, y) free_tiles[tile(x + 0.5, y + 0.5)] = true end
+for x = 900, 907 do if x ~= 905 then open_tile(x, 0) end end
+for y = -3, 0 do open_tile(907, y) end
+for x = 902, 907 do open_tile(x, -3) end
+for y = -3, 3 do open_tile(904, y); open_tile(902, y) end
+for x = 902, 904 do open_tile(x, 3) end
+for x = 893, 917 do for y = -9, 9 do
+  if not free_tiles[tile(x + 0.5, y + 0.5)] then blocked[tile(x + 0.5, y + 0.5)] = true end
+end end
+local crossing = route({ kind = "belt", prototype = "transport-belt", from = { x = 900.5, y = 0.5 }, to = { x = 904.5, y = 3.5 },
+  via = { { x = 906.5, y = 0.5 } } })
+local inputs = {}
+for _, s in ipairs(crossing and crossing.steps or {}) do
+  if s.belt_to_ground_type == "input" then inputs[#inputs + 1] = s.x .. "," .. s.y end
+end
+check(crossing and not crossing.failure and crossing.length == 21 and #inputs == 2 and inputs[1] == "904.5,0.5"
+  and inputs[2] == "902.5,-0.5" and chained(crossing.steps, true),
+  "a later leg's hop never passes over an earlier leg's underground (" .. table.concat(inputs, " ") .. ")")
+blocked = {}
+-- connect.pairs_clear: a new pair may not hold an earlier pair's end between
+-- its ends, nor sit inside an earlier pair's span on the same line.
+local earlier = { { a = { x = 10.5, y = 0.5 }, b = { x = 15.5, y = 0.5 } } }
+check(not connect.pairs_clear(earlier, { x = 12.5, y = 0.5 }, { x = 14.5, y = 0.5 })
+  and not connect.pairs_clear(earlier, { x = 14.5, y = 0.5 }, { x = 12.5, y = 0.5 })
+  and not connect.pairs_clear(earlier, { x = 12.5, y = 0.5 }, { x = 18.5, y = 0.5 })
+  and connect.pairs_clear(earlier, { x = 12.5, y = 1.5 }, { x = 14.5, y = 1.5 })
+  and connect.pairs_clear(earlier, { x = 16.5, y = 0.5 }, { x = 19.5, y = 0.5 })
+  and connect.pairs_clear(earlier, { x = 12.5, y = -1.5 }, { x = 12.5, y = 1.5 }),
+  "an underground pair nested in an earlier pair's span on its line is refused; other lines are clear")
 
 -- 8. Through the job framework: the RPC returns a job id, get_job the route.
 jobs.register("connect_entities", connect.job)

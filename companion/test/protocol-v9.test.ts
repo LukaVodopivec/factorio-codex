@@ -99,6 +99,12 @@ describe("protocol v29 DTO and tool registry", () => {
     const piped = await handlers.connect_entities(schemas.connect_entities.parse({ kind: "pipe", prototype: "pipe",
       from: { x: 0.5, y: 0.5 }, to: { x: 30.5, y: 0.5 }, check_only: true }));
     expect(piped.structuredContent.fluid_segments).toEqual([{ extent: 401, limit: 320, over_extent: true, standing: 1 }]);
+    reply = { kind: "power", from: { x: 0.5, y: 0.5 }, to: { x: 9.5, y: 0.5 },
+      failure: { code: "ROUTE_BLOCKED", reason: "power route is blocked at (5.5, 0.5)", at: { x: 5.5, y: 0.5 } } };
+    const pole = await handlers.connect_entities(schemas.connect_entities.parse({ kind: "power", prototype: "small-electric-pole",
+      from: { x: 0.5, y: 0.5 }, to: { x: 9.5, y: 0.5 } }));
+    expect(pole.structuredContent).toMatchObject({ status: "failed", code: "ROUTE_BLOCKED", at: { x: 5.5, y: 0.5 } });
+    expect(enqueueAndWait).not.toHaveBeenCalled();
     expect(normalizePhysicalRoute({ kind: "pipe", steps: {}, fluid_segments: {}, via: {} })).toMatchObject({ steps: [], fluid_segments: [], via: [] });
     expect(schemas.connect_entities.safeParse({ ...args, kind: "power", prototype: "small-electric-pole" }).success).toBe(false);
     expect(schemas.connect_entities.safeParse({ ...args, via: Array(9).fill({ x: 1, y: 1 }) }).success).toBe(false);

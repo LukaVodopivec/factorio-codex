@@ -28,6 +28,7 @@ local set_walking = require("scripts.human_inputs").set_walking
 local factory_activity = require("scripts.factory_activity")
 local autonomy = require("scripts.autonomy")
 local errors = require("scripts.errors")
+local journal = require("scripts.journal")
 local M = {}
 local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 -- A plan's active budget: 570 s, or 12 s per step for long build packages.
@@ -202,6 +203,111 @@ local function inventory_delta(plan)
   end
   return delta
 end
+-- Recent draws: a ring of DRAWS_SIZE rows {tick, item, count, from,
+-- source, plan_id?} of what plans (or a direct task: source pilot) took
+-- from own stores (from = "stores", each take of a supply) or ended with
+-- fewer of in the body's inventory (from = "inventory", the plan's net
+-- change). A SUPPLY_SHORTFALL outcome names the newest rows of its missing
+-- items (recent_draws), facts about where the item went.
+local DRAWS_SIZE, MAX_RECENT_DRAWS = 32, 4
+local function record_draw(item, count, from, plan)
+  local ring = storage.draws
+  if not ring or count <= 0 then return end
+  local active = plan or storage.tasks.active
+  local source = active and active.type == "plan" and (active.source or "pilot") or "pilot"
+  local plan_id = active and active.type == "plan" and active.id or nil
+  for back = 0, math.min(ring.n, DRAWS_SIZE, 3) - 1 do
+    local row = ring.rows[(ring.n - 1 - back) % DRAWS_SIZE + 1]
+    if row.item == item and row.from == from and row.source == source and row.plan_id == plan_id then
+      row.count, row.tick = row.count + count, game.tick
+      return
+    end
+  end
+  ring.n = ring.n + 1
+  ring.rows[(ring.n - 1) % DRAWS_SIZE + 1] = { tick = game.tick, item = item, count = count, from = from,
+    source = source, plan_id = plan_id }
+end
+supply.set_draw_listener(function(item, count) record_draw(item, count, "stores") end)
+-- The newest draws of these items (an item key "name@quality" counts as its
+-- name), newest first, or nil.
+local function recent_draws(names)
+  local ring, wanted, rows = storage.draws, {}, {}
+  if not ring then return nil end
+  for _, name in ipairs(names) do wanted[name] = true end
+  for back = 0, math.min(ring.n, DRAWS_SIZE) - 1 do
+    local row = ring.rows[(ring.n - 1 - back) % DRAWS_SIZE + 1]
+    if wanted[row.item] or wanted[row.item:match("^(.-)@") or ""] then
+      rows[#rows + 1] = { item = row.item, count = row.count, from = row.from, source = row.source,
+        plan_id = row.plan_id, tick = row.tick }
+      if #rows >= MAX_RECENT_DRAWS then break end
+    end
+  end
+  return #rows > 0 and rows or nil
+end
+
+-- The repeat counter: a failed or partial step's code, kept per action and
+-- target in storage.repeats (so it outlives any reader's memory); the n-th
+-- time in a row the same code ends that action there, its outcome says
+-- repeat = n (from 2). A completed step there clears it.
+M.MAX_REPEAT_KEYS = 64
+local function tile(position)
+  if type(position) == "table" and type(position.x) == "number" and type(position.y) == "number" then
+    return math.floor(position.x) .. "," .. math.floor(position.y)
+  end
+end
+-- What a step acts on: its tile, else the item, recipe, entity or
+-- technology it names.
+local function step_target(step)
+  local area = type(step.area) == "table" and step.area or nil
+  local named = step.item or step.recipe or step.name or step.technology or step.to
+  return tile(step) or tile(step.position) or tile(step.anchor) or tile(step.from) or tile(step.center)
+    or tile(type(step.site) == "table" and step.site.near or nil) or tile(area and area.left_top)
+    or (type(named) == "string" and named or "")
+end
+local function count_repeat(step, code)
+  local repeats = storage.repeats
+  if not (repeats and step and step.action) then return nil end
+  local key = step.action .. "|" .. step_target(step)
+  local row = repeats.by_key[key]
+  if not code then
+    if row then repeats.by_key[key], repeats.size = nil, repeats.size - 1 end
+    return nil
+  end
+  if row and row.code == code then
+    row.count, row.tick = row.count + 1, game.tick
+    return row.count
+  end
+  if not row then
+    if repeats.size >= M.MAX_REPEAT_KEYS then
+      local oldest, oldest_tick
+      for other, entry in pairs(repeats.by_key) do
+        if not oldest_tick or entry.tick < oldest_tick then oldest, oldest_tick = other, entry.tick end
+      end
+      if oldest then repeats.by_key[oldest], repeats.size = nil, repeats.size - 1 end
+    end
+    repeats.size = repeats.size + 1
+  end
+  repeats.by_key[key] = { code = code, count = 1, tick = game.tick }
+  return nil
+end
+
+-- Plan steps that change an entity without an event naming it: the change
+-- journal's row names the step's action.
+local CHANGE_STEPS = { rotate_entity = "rotated", set_recipe = "changed", configure_entity = "changed",
+  copy_settings = "changed" }
+local function journal_step(plan, step)
+  local op = CHANGE_STEPS[step.action]
+  if not op or step.platform ~= nil or not storage.journal then return end
+  local ok, surface = pcall(function() return companion.get().surface.index end)
+  if not (ok and surface) then return end
+  local positions = step.action == "copy_settings" and type(step.to) == "table" and step.to or { step }
+  for _, at in ipairs(positions) do
+    if type(at.x) == "number" and type(at.y) == "number" then
+      journal.note(op, nil, { x = at.x, y = at.y }, surface, plan.source or "pilot", plan.id, step.action)
+    end
+  end
+end
+
 -- activity_log: the last ACTIVITY_LOG_SIZE plan outcomes, so a reader sees
 -- what the body did without polling each plan.
 local function upkeep_readback(plan)
@@ -279,7 +385,9 @@ local function log_plan(plan, detail)
   storage.activity_log = log
   log[#log + 1] = { plan_id = plan.id, source = plan.source or "pilot", steps = #plan.steps,
     status = plan.status, code = code, summary = summary, start_tick = plan.started_tick, end_tick = game.tick,
-    surface = plan.surface, upkeep = upkeep_readback(plan) }
+    surface = plan.surface, upkeep = upkeep_readback(plan),
+    -- The ending step's repeat count, when its code is the plan's.
+    ["repeat"] = last and last.code == code and last["repeat"] or nil }
   while #log > ACTIVITY_LOG_SIZE do table.remove(log, 1) end
   -- next_event wakes the pilot on this: the mod's own upkeep (often
   -- pre-empted) is in activity_log only.
@@ -304,6 +412,9 @@ local function finish(task, status, detail, preserve_body, outcome, keep_craftin
   if task.type == "plan" then
     task.finished_tick = game.tick
     task.final_inventory = inventory_snapshot()
+    for name, change in pairs(inventory_delta(task)) do
+      if change < 0 then record_draw(name, -change, "inventory", task) end
+    end
     observe_terminal(task)
     local final_status = status == "done" and "completed" or status
     if final_status == "completed" and task.observation_error then final_status = "failed" end
@@ -716,7 +827,9 @@ function M.active_summary()
   end
   return { id = active.id, type = active.type, status = "running" }
 end
--- activity_log {since_plan_id?, limit?}: recent plan outcomes, oldest first.
+-- activity_log {since_plan_id?, limit?, changes?}: recent plan outcomes,
+-- oldest first; changes ({since_tick?, area?, surface?, limit?}) adds the
+-- change journal's matching rows (journal.changes).
 function M.activity_log(params)
   local since = params.since_plan_id ~= nil and tonumber(params.since_plan_id) or nil
   if params.since_plan_id ~= nil and not since then error("since_plan_id must be a plan ID") end
@@ -732,7 +845,8 @@ function M.activity_log(params)
   end
   local omitted = math.max(0, #rows - limit)
   if omitted > 0 then rows = { table.unpack(rows, omitted + 1) } end
-  return { tick = game.tick, entries = rows, omitted = omitted }
+  return { tick = game.tick, entries = rows, omitted = omitted,
+    changes = params.changes ~= nil and journal.changes(params.changes) or nil }
 end
 function M.queue_length() return #storage.tasks.queue end
 
@@ -779,10 +893,18 @@ local function finish_step(plan, result)
   local recovery = plan._recovery
   if type(result.detail) == "string" then result.detail = errors.plain(result.detail) end
   errors.scrub(result.outcome)
+  -- Every failed or partial step names a code (errors.code).
+  local code = (status == "failed" or status == "partial") and (result_code(result) or errors.code(status)) or nil
+  local repeated = status ~= "cancelled" and count_repeat(step, code) or nil
+  local outcome = type(result.outcome) == "table" and result.outcome or nil
+  if outcome and outcome.code == "SUPPLY_SHORTFALL" and type(outcome.missing) == "table" then
+    local names = {}
+    for _, row in ipairs(outcome.missing) do if type(row.item) == "string" then names[#names + 1] = row.item end end
+    outcome.recent_draws = recent_draws(names)
+  end
+  if status == "completed" or status == "partial" then journal_step(plan, step) end
   plan.outcomes[#plan.outcomes + 1] = {
-    step = plan.current_step, action = step.action, status = status,
-    -- Every failed or partial step names a code (errors.code).
-    code = (status == "failed" or status == "partial") and (result_code(result) or errors.code(status)) or nil,
+    step = plan.current_step, action = step.action, status = status, code = code, ["repeat"] = repeated,
     upkeep_context = plan.source == "upkeep" and supply.diagnostics(plan.current_task) or nil,
     result = result.outcome or ((status == "completed" or status == "partial") and (result.detail or status) or nil),
     error = (status == "failed" or status == "cancelled") and (result.detail or status) or nil,

@@ -638,6 +638,38 @@ body.get_main_inventory = function() return { get_contents = function()
 end } end
 storage.tasks.active = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "build_layout" } },
   source = "package:" .. long(1) }
+-- Every alert type the game has, each with many alerts (four rows shown),
+-- and own losses on the read surface, each killed by a long-named entity.
+local worst = { reads = 0, stub = package.loaded["scripts.companion"] }
+worst.plain_present = worst.stub.require_present
+do
+  local by_type = { [99] = { { tick = 1 } } }
+  defines.alert_type = { custom = 99 }
+  for i, name in ipairs({ "entity_destroyed", "no_storage", "no_platform_storage", "no_roboport_storage",
+    "no_material_for_construction", "not_enough_construction_robots", "not_enough_repair_packs", "pipeline_overextended",
+    "train_out_of_fuel", "train_no_path", "unclaimed_cargo", "collector_path_blocked", "platform_tile_building_blocked",
+    "turret_out_of_ammo", "entity_under_attack", "turret_fire" }) do
+    defines.alert_type[name] = i
+    by_type[i] = {}
+    for k = 1, 50 do by_type[i][k] = { tick = k, prototype = { name = long(i) }, position = { x = -1234.5 - k, y = 1234.5 } } end
+  end
+  worst.stub.require_present = function()
+    local present = worst.plain_present()
+    present.player = { connected = true, get_alerts = function(filter)
+      worst.reads = worst.reads + 1
+      assert(filter.surface == surface)
+      return { [surface.index] = by_type }
+    end }
+    return present
+  end
+  local journal = require("scripts.journal")
+  storage.registry.force = "player"
+  for i = 1, 8 do
+    journal.on_entity_died({ entity = { name = long(i), type = "wall", position = { x = -1234.5, y = 1234.5 + i },
+      surface = surface, force = force }, cause = { valid = true, name = long(20 + i), type = "locomotive" },
+      force = { name = "player" } })
+  end
+end
 local full = factory_status.factory_status({})
 json_size = size(full)
 local starved_line
@@ -659,6 +691,26 @@ check(wide_feeds == 3 and full.omitted_feeds and full.omitted_feeds > 0 and in_l
   "the worst case shows three stalled rows' feed facts, a problem row whose line shows them says feed_in_line, "
     .. "and omitted_feeds counts the rest")
 check(json_size < 8704, "a worst-case factory_status at 200 machines stays under 8.5 KB (" .. json_size .. " bytes)")
+do
+  local destroyed = 0
+  for _, row in ipairs(full.problems) do if row.status == "destroyed" then destroyed = destroyed + 1 end end
+  check(worst.reads == 1 and #full.alerts == 3 and full.omitted_alerts == 13 and full.alerts[1].type == "entity_destroyed"
+    and full.alerts[1].count == 50 and full.alerts[1].name == long(1) and full.alerts[1].position.x == -1284.5
+    and full.alerts_unavailable == nil,
+    "alerts sum up each alert type in one get_alerts read: three rows with the newest alert, the rest counted")
+  check(destroyed == 2 and full.problems[1].status == "destroyed" and full.problems[1].killed_by == long(28)
+    and full.problems[2].killed_by == long(27) and full.omitted_problems >= 6,
+    "the newest two own losses lead the problem rows and the other losses count as omitted")
+  worst.stub.require_present = function()
+    local present = worst.plain_present()
+    present.player = { connected = true, get_alerts = function() error("__agentic-companion__/x.lua:1: alerts are off") end }
+    return present
+  end
+  local unreadable = factory_status.factory_status({ sections = { "alerts" } })
+  check(unreadable.alerts == nil and unreadable.alerts_unavailable == "alerts are off",
+    "alerts that cannot be read say why instead of showing none")
+  worst.stub.require_present = worst.plain_present
+end
 
 -- A machine mined while a refresh is still identifying the snapshot is left
 -- out; the refresh completes and the removal's dirty mark is kept.

@@ -32,6 +32,7 @@ local build = require("scripts.actions.build")
 local timing = require("scripts.profiler")
 local benchmark = require("scripts.benchmark")
 local errors = require("scripts.errors")
+local journal = require("scripts.journal")
 benchmark.on_freeze = thoughts.refresh
 
 -- Where the body is ({state, surface_ref, platform_name?, rebind_refused?},
@@ -283,7 +284,16 @@ script.on_event(defines.events.on_player_created, player_available)
 script.on_event(defines.events.on_player_joined_game, player_available)
 script.on_event(defines.events.on_robot_pre_mined, tasks.on_robot_pre_mined)
 -- Own entities built, cloned, mined or destroyed by anyone keep the registry
--- current; machines among them refresh the factory lines.
+-- current; machines among them refresh the factory lines; the change journal
+-- notes who did it (journal.lua). Ghosts are filtered out: none of these
+-- keeps them. Deaths are filtered to the player force (the own force), and
+-- are also the own losses.
+local NO_GHOSTS = { { filter = "ghost", invert = true } }
+local OWN_DEATHS = { { filter = "force", force = "player" }, { filter = "ghost", invert = true, mode = "and" } }
+local function journaled(where, handler, event)
+  local ok, err = pcall(handler, event)
+  if not ok then errors.record("event:" .. where, err) end
+end
 for _, name in ipairs({ "on_built_entity", "on_robot_built_entity", "on_space_platform_built_entity",
   "script_raised_built", "script_raised_revive", "on_entity_cloned" }) do
   if defines.events[name] then
@@ -291,17 +301,27 @@ for _, name in ipairs({ "on_built_entity", "on_robot_built_entity", "on_space_pl
       if event.name == defines.events.on_robot_built_entity then tasks.on_robot_built_entity(event) end
       registry.on_built(event)
       autonomy.on_entity_changed(event.entity and event or { entity = event.destination })
-    end)
+      journaled(name, journal.on_built, event)
+    end, NO_GHOSTS)
   end
 end
 for _, name in ipairs({ "on_player_mined_entity", "on_robot_mined_entity", "on_space_platform_mined_entity",
   "on_entity_died", "script_raised_destroy" }) do
   if defines.events[name] then
+    local died = name == "on_entity_died"
     script.on_event(defines.events[name], function(event)
       if event.name == defines.events.on_robot_mined_entity then tasks.on_robot_mined_entity(event) end
       registry.on_removed(event)
       autonomy.on_entity_changed(event)
-    end)
+      journaled(name, died and journal.on_entity_died or journal.on_removed, event)
+    end, died and OWN_DEATHS or NO_GHOSTS)
+  end
+end
+-- A player's rotation, flip or settings paste: changes the journal notes.
+for name, handler in pairs({ on_player_rotated_entity = journal.on_rotated, on_player_flipped_entity = journal.on_rotated,
+  on_entity_settings_pasted = journal.on_settings_pasted }) do
+  if defines.events[name] then
+    script.on_event(defines.events[name], function(event) journaled(name, handler, event) end)
   end
 end
 -- Removals no event above names (e.g. the body mining, a script destroy

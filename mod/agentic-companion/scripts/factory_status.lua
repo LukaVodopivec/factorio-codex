@@ -24,8 +24,14 @@
 -- three worst problems and its lowest power satisfaction), all from the same
 -- aggregates; the header lists the unlocked space locations. Labs with no
 -- research active are a problem row (no_research_in_progress, cause
--- research_idle): research stands still. `trial` (benchmark.lua) is the
--- benchmark clock and live score, present only while a benchmark exists.
+-- research_idle): research stands still. Own entities destroyed in the last
+-- five minutes (or since since_tick) lead the problem rows (status
+-- destroyed, the newest two of journal.lua's loss ring, killed_by naming
+-- what killed it when the game says). `alerts` sums up the game's own
+-- alerts for the Codex player on that surface (LuaPlayer.get_alerts), one
+-- row per alert type; absent without any, alerts_unavailable says why they
+-- could not be read. `trial` (benchmark.lua) is the benchmark clock and live
+-- score, present only while a benchmark exists.
 local companion = require("scripts.companion")
 local surfaces = require("scripts.surfaces")
 local items = require("scripts.items")
@@ -38,17 +44,21 @@ local logistics = require("scripts.logistics")
 local platforms = require("scripts.platforms")
 local jobs = require("scripts.jobs")
 local benchmark = require("scripts.benchmark")
+local journal = require("scripts.journal")
+local errors = require("scripts.errors")
 
 local M = {}
 
 local SECTIONS = { lines = true, problems = true, power = true, stock = true, research = true,
-  body = true, patches = true, logistics = true, platforms = true, elsewhere = true }
+  body = true, patches = true, logistics = true, platforms = true, elsewhere = true, alerts = true }
 -- Sections only named in `sections` add.
 local OPT_IN = { logistics = true }
 -- One power row: the network with the most capacity (a 0.22 row carries its
 -- sources, accumulators and cover; omitted_power counts the other networks
 -- and map_summary include power lists them all).
 local MAX_LINES, MAX_PROBLEMS, MAX_POWER, MAX_STOCK_ITEMS = 10, 6, 1, 6
+-- Own losses shown first among the problems (journal.lua): the newest two.
+local MAX_LOSS_ROWS = 2
 local MAX_PATCHES, MAX_AVAILABLE, MAX_INVENTORY = 4, 6, 8
 -- Other factory surfaces summed up, and the worst problems each names.
 local MAX_ELSEWHERE, MAX_ELSEWHERE_PROBLEMS = 8, 3
@@ -233,6 +243,9 @@ local function elsewhere_section(here_index, since_tick)
       local summary = overview[index] or { line_count = 0, running_line_count = 0, problems = {} }
       local problems = summary.problems
       table.sort(problems, problem_before)
+      -- The newest own loss there comes first; every loss counts.
+      local losses, lost_omitted = journal.problem_rows(index, since_tick, 1)
+      if losses[1] then table.insert(problems, 1, losses[1]) end
       local top = {}
       for i = 1, math.min(MAX_ELSEWHERE_PROBLEMS, #problems) do
         local p = problems[i]
@@ -241,12 +254,56 @@ local function elsewhere_section(here_index, since_tick)
       local power, cost = map_summary.power_min_satisfaction(networks[index] or {})
       reads = reads + cost
       rows[#rows + 1] = { surface = surfaces.ref(surface), lines_total = summary.line_count,
-        lines_running = summary.running_line_count, problems = #problems, top_problems = top,
+        lines_running = summary.running_line_count, problems = #problems + lost_omitted, top_problems = top,
         power_min_satisfaction = power }
     end
   end
   jobs.charge(reads)
   return rows, #others - #rows
+end
+
+-- The game's alerts on a surface for the Codex player, by type in this
+-- order (custom alerts of other mods are left out), at most MAX_ALERTS
+-- rows {type, count, name, position}: how many there are and the newest
+-- one's entity and position. Returns rows, omitted, or nil, nil and the
+-- reason they could not be read. One get_alerts call; its alerts are charged as
+-- read work.
+local ALERT_TYPES = { "entity_destroyed", "no_storage", "no_platform_storage", "no_roboport_storage",
+  "no_material_for_construction", "not_enough_construction_robots", "not_enough_repair_packs", "pipeline_overextended",
+  "train_out_of_fuel", "train_no_path", "unclaimed_cargo", "collector_path_blocked", "platform_tile_building_blocked",
+  "turret_out_of_ammo", "entity_under_attack", "turret_fire" }
+local MAX_ALERTS = 3
+local function alerts_section(body, surface)
+  -- A read needs the present body, so its connected player: never absent.
+  local player = body and body.player
+  if not player then return nil end
+  local ok, all = pcall(function() return player.get_alerts({ surface = surface }) end)
+  if not ok then return nil, nil, errors.plain(all):sub(1, 160) end
+  local by_type = type(all) == "table" and all[surface.index] or {}
+  local rows, omitted, work = {}, 0, 0
+  for _, name in ipairs(ALERT_TYPES) do
+    local id = defines.alert_type and defines.alert_type[name]
+    local list = id ~= nil and by_type[id] or nil
+    if type(list) == "table" and #list > 0 then
+      work = work + #list
+      if #rows < MAX_ALERTS then
+        local newest = list[1]
+        for _, alert in ipairs(list) do if (alert.tick or 0) > (newest.tick or 0) then newest = alert end end
+        local read, entity_name, position = pcall(function()
+          local target = newest.target
+          local entity = target and target.valid and target or nil
+          return entity and entity.name or newest.prototype and newest.prototype.name,
+            newest.position or entity and entity.position
+        end)
+        rows[#rows + 1] = { type = name, count = #list, name = read and entity_name or nil,
+          position = read and position and xy(position) or nil }
+      else
+        omitted = omitted + 1
+      end
+    end
+  end
+  jobs.charge(work)
+  return rows, omitted
 end
 
 -- The space locations the force has unlocked (a handful of reads); nil
@@ -389,7 +446,12 @@ function M.factory_status(params)
   if want.problems then
     local rows = autonomy.problems(since, index)
     table.sort(rows, problem_before)
-    result.problems, result.omitted_problems = rows, cap(rows, MAX_PROBLEMS)
+    -- The newest own losses come first, at most MAX_LOSS_ROWS; the rest
+    -- count as omitted.
+    local losses, lost_omitted = journal.problem_rows(index, since, MAX_LOSS_ROWS)
+    for i = #losses, 1, -1 do table.insert(rows, 1, losses[i]) end
+    local omitted = (cap(rows, MAX_PROBLEMS) or 0) + lost_omitted
+    result.problems, result.omitted_problems = rows, omitted > 0 and omitted or nil
   end
   cap_feeds(result)
   if want.power or want.stock then
@@ -425,6 +487,11 @@ function M.factory_status(params)
     -- Absent while the factory stands on one surface.
     if #rows > 0 then result.elsewhere, result.omitted_elsewhere = rows, omitted > 0 and omitted or nil end
   end
+  if want.alerts then
+    local rows, omitted, reason = alerts_section(body, target.surface)
+    if rows and #rows > 0 then result.alerts, result.omitted_alerts = rows, omitted > 0 and omitted or nil end
+    result.alerts_unavailable = reason
+  end
   return result
 end
 
@@ -451,6 +518,7 @@ function M.event_state()
   end)
   local research_idle = nil
   if research_ok and type(idle) == "boolean" then research_idle = idle end
+  local loss_tick, losses = journal.loss_state()
   return {
     tick = game.tick, last_plan_ended = t.last_plan_ended,
     active_plan_id = pilot_work(t.active) and t.active.type == "plan" and t.active.id or nil,
@@ -470,6 +538,9 @@ function M.event_state()
     -- last few (rocket_launched, platform_state_changed, cargo_delivered,
     -- rocket_ready).
     last_space_event_tick = space_tick, space_events = space_events,
+    -- Own entities destroyed (journal.lua): the newest loss's tick and the
+    -- last few losses, oldest first.
+    last_loss_tick = loss_tick, losses = losses,
   }
 end
 

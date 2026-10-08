@@ -57,6 +57,18 @@ function M.init()
   }
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}
+  -- The repeat counter (tasks.lua): "<action>|<target>" -> {code, count,
+  -- tick} of the last step ending failed or partial there, at most
+  -- tasks.MAX_REPEAT_KEYS keys (size), the oldest evicted first.
+  storage.repeats = storage.repeats or { by_key = {}, size = 0 }
+  -- Recent draws (tasks.lua): a ring ({rows, n}: n rows ever written) of
+  -- the items plans took from own stores or ended with fewer of.
+  storage.draws = storage.draws or { rows = {}, n = 0 }
+  -- The change journal and own entity losses (journal.lua): rings of the
+  -- last journal.SIZE changes and journal.LOSS_SIZE losses, and the tick of
+  -- the newest loss.
+  storage.journal = storage.journal or { rows = {}, n = 0 }
+  storage.losses = storage.losses or { rows = {}, n = 0, last_tick = nil }
 
   -- At most one path request exists because only the sole active task runs.
   storage.path_request = nil

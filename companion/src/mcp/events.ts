@@ -23,6 +23,13 @@ export interface SpaceEvent {
   platform?: { index: number; name: string }; old?: string; new?: string; surface?: string;
   location?: string; phase?: string; from?: string; to?: string; state?: string;
 }
+/** An own entity destroyed (the mod's loss ring): what, where, how many
+ *  of the same merged into the row, when the last went, and what killed it
+ *  when the game named it. */
+export interface LossRow {
+  name: string; position: { x: number; y: number }; surface?: string; count: number; tick: number;
+  killed_by?: { name?: string; type?: string; force?: string };
+}
 /** The mod's cheap event_state probe. */
 export interface EventState {
   tick: number; queue_depth: number; fifo_empty: boolean; human_hold: boolean;
@@ -37,6 +44,8 @@ export interface EventState {
   upkeep_off_since_tick?: number;
   /** The newest space event's tick and the last few entries, oldest first. */
   last_space_event_tick?: number; space_events?: SpaceEvent[];
+  /** The newest own loss's tick and the last few losses, oldest first (mod 0.32 on). */
+  last_loss_tick?: number; losses?: LossRow[];
 }
 export interface PackageFailure { package_id: string; reason?: string; tick?: number; at?: string }
 /** Package failures one session already received, kept across its calls:
@@ -64,10 +73,11 @@ const realClock: TaskClock = { now: () => Date.now(), sleep: (ms) => new Promise
 export const EVENT_POLL_MS = 500;
 
 /** Blocks until something the pilot should act on happens: a plan ends, a
- *  research finishes, the FIFO empties, a machine problem appears, a package
- *  fails its check, the orders change, a human hold starts or ends; otherwise
- *  times out. A plan_ended event carries the plan's step outcomes and
- *  inventory change, so no follow-up read is needed. */
+ *  research finishes, the FIFO empties, a machine problem appears, own
+ *  entities are destroyed, a package fails its check, the orders change, a
+ *  human hold starts or ends; otherwise times out. A plan_ended event
+ *  carries the plan's step outcomes and inventory change, so no follow-up
+ *  read is needed. */
 export async function waitForEvent(bridge: Bridge, input: NextEventInput, sources: EventSources,
   signal?: AbortSignal, clock: TaskClock = realClock): Promise<Record<string, unknown>> {
   const read = () => bridge.call<EventState>("event_state");
@@ -105,6 +115,10 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
         outcomes: luaArray(status?.outcomes ?? []), inventory_delta: record(status?.inventory_delta), ...finished });
     } catch { return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...surface, ...finished }); }
   };
+  // Own losses after a tick: the rows of the mod's ring changed since then
+  // (a merged row comes again with its new count).
+  const lost = (after: number, state: EventState) =>
+    done("entities_lost", state, { losses: (luaArray(state.losses ?? []) as LossRow[]).filter((row) => row.tick > after) });
   const researched = (state: EventState) => done("research_finished", state, { technology: state.last_research_finished!.technology,
     research_tick: state.last_research_finished!.tick, ...idleResearch(state) });
   // The problem tick counts machines on every surface: the body's surface's
@@ -142,6 +156,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if (last && last.tick > since) return ended(previous, last, research);
     if ((previous.last_research_finished?.tick ?? -1) > since) return researched(previous);
     if ((previous.last_problem_tick ?? -1) > since) return problems(since, previous);
+    if ((previous.last_loss_tick ?? -1) > since) return lost(since, previous);
     const space = spaceEvent(previous);
     if (space) return space;
   }
@@ -167,6 +182,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if (newResearch) return researched(state);
     if (state.human_hold !== previous.human_hold) return done(state.human_hold ? "human_hold_started" : "human_hold_ended", state);
     if ((state.last_problem_tick ?? -1) > (previous.last_problem_tick ?? -1)) return problems(previous.tick, state);
+    if ((state.last_loss_tick ?? -1) > (previous.last_loss_tick ?? -1)) return lost(previous.last_loss_tick ?? -1, state);
     const space = spaceEvent(state);
     if (space) return space;
     const failed = undelivered(state);
@@ -213,12 +229,24 @@ export function feedText(row: any): string | null {
 }
 const platformName = (value: Record<string, unknown>) => (value.platform as { name?: string } | undefined)?.name;
 
+/** A loss in words: how many of what, where, and what killed it. */
+export function lossText(row: LossRow): string {
+  const by = row.killed_by?.name ?? row.killed_by?.force;
+  return `${row.count} ${row.name} at ${at(row.position)}${row.surface ? ` on ${row.surface}` : ""}${by ? ` by ${by}` : ""}`;
+}
+/** A plan's outcomes that repeat an earlier step's code at the same action
+ *  and target: "<code> again at <action> (<n>th time)". */
+function repeatText(outcomes: unknown): string {
+  const repeated = (Array.isArray(outcomes) ? outcomes : []).filter((row: any) => typeof row?.repeat === "number");
+  return repeated.slice(0, 2).map((row: any) => `; ${row.code} again at step ${row.step} ${row.action} (${row.repeat} in a row)`).join("");
+}
+
 function eventText(value: Record<string, unknown>): string {
   switch (value.event) {
     case "plan_ended": {
       const research = value.research_finished as { technology?: string; research_idle?: boolean } | undefined;
-      return `plan ${value.plan_id} ended ${value.status}${research ? `; research ${research.technology} finished` : ""}`
-        + (research?.research_idle ? `: ${RESEARCH_IDLE}` : "");
+      return `plan ${value.plan_id} ended ${value.status}${repeatText(value.outcomes)}`
+        + `${research ? `; research ${research.technology} finished` : ""}` + (research?.research_idle ? `: ${RESEARCH_IDLE}` : "");
     }
     case "research_finished": return `research ${value.technology} finished${value.research_idle ? `: ${RESEARCH_IDLE}` : ""}`;
     case "package_failed": return `package ${value.package_id} was not queued: ${value.reason ?? "unknown reason"}`;
@@ -226,6 +254,10 @@ function eventText(value: Record<string, unknown>): string {
       const facts = (Array.isArray(value.problems) ? value.problems : []).map(feedText).filter((text) => text !== null).slice(0, 2);
       return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`
         + (researchIdleProblem(value.problems) ? `; ${RESEARCH_IDLE}` : "") + facts.map((text) => `; ${text}`).join("");
+    }
+    case "entities_lost": {
+      const rows = Array.isArray(value.losses) ? value.losses as LossRow[] : [];
+      return `own entities destroyed: ${rows.slice(0, 2).map(lossText).join("; ") || "?"}${rows.length > 2 ? `; ${rows.length - 2} more rows` : ""}`;
     }
     case "queue_empty": return typeof value.upkeep_off_since_tick === "number"
       ? `${IDLE_NOW}; upkeep off since stop at tick ${value.upkeep_off_since_tick} until a plan finishes` : IDLE_NOW;

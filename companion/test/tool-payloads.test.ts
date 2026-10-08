@@ -507,6 +507,12 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     expect(schemas.factory_status.safeParse({ sections: ["validations"] }).success).toBe(false);
     await handlers.activity_log({ since_plan_id: 4 });
     expect(call).toHaveBeenLastCalledWith("activity_log", { since_plan_id: 4, limit: 16 });
+    // The change journal filter goes to the mod as given, with its limit.
+    const area = { left_top: { x: -3, y: -3 }, right_bottom: { x: 4, y: 5 } };
+    await handlers.activity_log({ changes: { since_tick: 10, area, surface: "nauvis" } });
+    expect(call).toHaveBeenLastCalledWith("activity_log", { limit: 16, changes: { since_tick: 10, area, surface: "nauvis", limit: 16 } });
+    expect(schemas.activity_log.safeParse({ changes: { limit: 65 } }).success).toBe(false);
+    expect(schemas.factory_status.safeParse({ sections: ["alerts"] }).success).toBe(true);
     // A layout dry run is a direct mod check; a real build is a one-step plan.
     const layout = { anchor: { x: 1, y: 2 }, entities: [{ name: "stone-furnace", dx: 0, dy: 0 }] };
     await handlers.build_layout({ ...layout, check_only: true });

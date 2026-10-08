@@ -208,6 +208,9 @@ export function normalizeFactoryStatus(value: any): any {
   if (value.elsewhere !== undefined) out.elsewhere = luaArray(value.elsewhere).map((row: any) =>
     row && typeof row === "object" ? { ...row, top_problems: luaArray(row.top_problems ?? []) } : row);
   if (value.unlocked_locations !== undefined) out.unlocked_locations = luaArray(value.unlocked_locations);
+  if (value.alerts !== undefined) out.alerts = luaArray(value.alerts);
+  // The game's alerts could not be read: null, never an empty list.
+  if (typeof value.alerts_unavailable === "string") out.alerts = null;
   return out;
 }
 
@@ -270,7 +273,8 @@ export function normalizePlatformStatus(value: any): any {
 
 export function normalizeActivityLog(value: any): any {
   return value && typeof value === "object" ? { ...value, entries: luaArray(value.entries ?? []).map((row: any) =>
-    row?.upkeep === undefined ? row : { ...row, upkeep: upkeepReadback(row.upkeep) }) } : value;
+    row?.upkeep === undefined ? row : { ...row, upkeep: upkeepReadback(row.upkeep) }),
+    ...(value.changes && typeof value.changes === "object" ? { changes: { ...value.changes, rows: luaArray(value.changes.rows ?? []) } } : {}) } : value;
 }
 
 /** Where each raw material is gathered, per planet, what nothing gathers and

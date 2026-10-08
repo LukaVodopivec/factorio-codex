@@ -281,8 +281,14 @@ export function registerMcpTools(
     + " belt's centre line; on the line, the right lane); lanes [{lane: left or right facing the receiving belt's direction,"
     + " items: on that lane of that belt tile now, or what the layout's other inputs put there, adds: what this source puts there"
     + " (a drill the items of the resources it mines, a standing belt its lanes now, a planned run its own sources; null when"
-    + " unknown: an inserter's drop or a run nothing feeds), mixes: true when the lane would carry more than one item kind, null"
-    + " when an unknown leaves it open; a splitter's outputs each count all it takes in}])";
+    + " unknown: a run nothing feeds), mixes: true when the lane would carry more than one item kind, null"
+    + " when an unknown leaves it open; a splitter's outputs each count all it takes in}])."
+    // Inserter sources and standing twins: facts only, in their own sentences.
+    + " An inserter's adds is what its pickup gives: a crafter's recipe products, a chest's items now, a belt's lanes now or"
+    + " planned carry; with whitelist filters only those (the filters alone when the pickup is unknown), with blacklist ones"
+    + " less them; null for an empty chest, a crafter with no recipe or another pickup. A planned belt piece the same as one"
+    + " standing there (name, position, direction) stands now (standing true, items and adds include its lanes now); its join with another standing belt"
+    + " is a row only when the build changes the join's kind";
   const dryReport = " Its report also lists inserters (picks_from, drops_into: a planned or existing entity, or nothing), belt_ends"
     + " (each belt nothing ahead takes from: a run's end, one facing a reversed belt or an underground exit's back, an"
     + ` entrance with no exit; with what it faces), unpowered machines no pole covers, isolated_poles no wire reaches, ${oreReport}`
@@ -295,7 +301,8 @@ export function registerMcpTools(
     // the MCP tool timeout: the build's guard counts from here.
     const started = Date.now();
     const b = await bridge();
-    const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities(p), signal));
+    // Belt joins are a belt dry run's data: a build skips their reads.
+    const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities({ ...p, joins: check_only === true && p.kind === "belt" }), signal));
     if (check_only) return result({ ...route, check_only: true, status: "completed", terminal: true,
       summary: `route of ${route.steps.length} pieces planned; nothing built`, next_action: null });
     const detail = route.steps.length === 0
@@ -464,7 +471,7 @@ export function registerMcpTools(
     try { return await step("build_layout")(layoutSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun} A belt route also lists ${joinReport}.`, inputSchema: routeSchema }, async (p, extra) => {
+  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun} A belt route's dry run also lists ${joinReport}.`, inputSchema: routeSchema }, async (p, extra) => {
     try { return await connectRoute(routeSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });

@@ -3,9 +3,12 @@
 -- puts both source lanes on the near lane (one of them on an underground),
 -- a splitter output joins like a belt, and a drop lands on the lane on its
 -- side of the belt's centre line (the right lane on the line). Rows say
--- which items each joined lane holds, what the source adds and whether the
--- lane would carry more than one item kind; a connect_entities belt route
--- reports the same rows.
+-- which items each joined lane holds, what the source adds (an inserter:
+-- what its pickup gives, cut by its filters) and whether the lane would
+-- carry more than one item kind; a planned piece that already stands joins
+-- standing belts as a row only when the build changes the join; inputs on
+-- uncharted chunks are never read; a connect_entities belt route reports
+-- the same rows in its dry run only.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 
@@ -24,17 +27,23 @@ local protos = {
     inserter_pickup_position = { 0, -1 }, inserter_drop_position = { 0, 1.2 } },
   ["burner-mining-drill"] = { name = "burner-mining-drill", type = "mining-drill", collision_box = box(1.4, 1.4),
     vector_to_place_result = { -0.5, -1.3 } },
+  ["wooden-chest"] = { name = "wooden-chest", type = "container", collision_box = box(0.7, 0.7) },
+  ["assembling-machine-1"] = { name = "assembling-machine-1", type = "assembling-machine", collision_box = box(2.8, 2.8) },
 }
+_G.defines = { inventory = { chest = 1 }, build_check_type = { manual = 1 } }
 _G.prototypes = { entity = {
   ["iron-ore"] = { mineable_properties = { products = { { type = "item", name = "iron-ore", amount = 1 } } } },
   coal = { mineable_properties = { products = { { type = "item", name = "coal", amount = 1 } } } },
-}, item = {} }
+}, item = {}, recipe = {
+  ["iron-gear-wheel"] = { products = { { type = "item", name = "iron-gear-wheel", amount = 1 } } },
+} }
 for name, proto in pairs(protos) do
   prototypes.entity[name] = proto
   prototypes.item[name] = { name = name, place_result = proto }
 end
 
 local geometry = require("scripts.placement_geometry")
+local output_target = require("scripts.output_target")
 local joins = require("scripts.belt_joins")
 
 -- Standing belts: transport lines (1 left, 2 right, an underground's 3 and
@@ -59,7 +68,7 @@ local function standing(name, x, y, direction, lanes, extra)
   return e
 end
 
-local queries = 0
+local queries, uncharted = 0, {}
 local io = {
   query = function(area)
     queries = queries + 1
@@ -72,6 +81,13 @@ local io = {
     return out
   end,
   charge = function() end,
+  charted = function(point) return not uncharted[point.x] end,
+  pickup = function(point)
+    for _, e in ipairs(world) do
+      if output_target.can_target_type(e.type, "input")
+        and output_target.recipient_contains(e.bounding_box, point, "inserter", "input") then return e end
+    end
+  end,
 }
 
 -- A planned list as build_layout's survey has it.
@@ -81,7 +97,7 @@ local function survey(list, mined)
     local proto = protos[e[1]]
     local position, direction = { x = e[2], y = e[3] }, e[4] or 0
     planned[i] = { name = e[1], proto = proto, position = position, direction = direction,
-      area = geometry.footprint(proto, position, direction), under = e[5] }
+      area = geometry.footprint(proto, position, direction), under = e[5], recipe = e.recipe, settings = e.settings }
   end
   local tiles, J = joins.index(planned), joins.start(planned)
   for i, names in pairs(mined or {}) do joins.set_mined(J, i, names) end
@@ -173,8 +189,9 @@ check(out_a and out_b and out_a.join == "side_load" and out_b.join == "side_load
   and lane(out_a, "right") and list(lane(out_a, "right").adds) == "stone" and lane(out_a, "right").mixes == false
   and lane(out_a, "left") == nil, "each splitter output side-loads the right lane of an east belt north of it")
 
--- An inserter drop: what it moves is unknown in a dry run (adds null), and
--- the lane is the side of the centre line its drop point is on.
+-- An inserter drop with nothing at its pickup: what it moves is unknown
+-- (adds null), and the lane is the side of the centre line its drop point
+-- is on.
 world = {}
 standing("transport-belt", 40.5, 1.5, 4, { {}, { "iron-plate" } })
 standing("transport-belt", 50.5, 1.5, 0, { {}, { "iron-plate", "copper-plate" } })
@@ -217,6 +234,72 @@ check(merge and not merge.standing and merge.join == "side_load" and lane(merge,
   "two planned runs meeting on a planned belt are both rows; the drill's coal rides the right lane")
 check(queries == 3, "one small query per planned belt piece with an open side (" .. queries .. ")")
 
+-- A planned piece that already stands, feeding a standing curve: nothing
+-- changes, so no row (it once counted twice and turned the curve into a
+-- side-load).
+world = {}
+local stays = standing("transport-belt", 100.5, 0.5, 4, { { "coal" }, { "coal" } })
+local curve_b = standing("transport-belt", 101.5, 0.5, 0, { { "coal" }, {} })
+curve_b.belt_neighbours.inputs = { stays }
+rows = survey({ { "transport-belt", 100.5, 0.5, 4 } })
+check(#rows == 0, "a listed belt already feeding a standing curve makes no rows (" .. #rows .. ")")
+-- A new belt behind that curve makes the standing piece's join a side-load
+-- that adds the coal on it now (the new unfed belt leaves mixing open).
+rows = survey({ { "transport-belt", 100.5, 0.5, 4 }, { "transport-belt", 101.5, 1.5, 0 } })
+local now_side = find(rows, 101.5, 0.5, 100.5, 0.5)
+check(#rows == 2 and now_side and now_side.join == "side_load" and now_side.from.standing and #now_side.lanes == 1
+  and now_side.lanes[1].lane == "left" and list(now_side.lanes[1].adds) == "coal" and now_side.lanes[1].mixes == nil
+  and find(rows, 101.5, 0.5, 101.5, 1.5).join == "straight",
+  "a belt behind the curve turns the standing piece's join into a side-load onto the near lane")
+
+-- A standing side input on an uncharted chunk is not read: no row from it.
+world = {}
+local hidden_curve = standing("transport-belt", 140.5, 0.5, 0, { {}, {} })
+hidden_curve.belt_neighbours.inputs = { standing("transport-belt", 141.5, 0.5, 12, { { "coal" }, { "coal" } }) }
+uncharted[141.5] = true
+rows = survey({ { "transport-belt", 140.5, 1.5, 0 } })
+uncharted[141.5] = nil
+check(#rows == 1 and rows[1].from.x == 140.5, "a standing input on an uncharted chunk is never read")
+
+-- An inserter adds what its pickup gives: a planned assembler's recipe
+-- products, a chest's items now, a standing crafter's recipe; a whitelist
+-- bounds it (alone when the pickup is unknown), a blacklist cuts it.
+world = {}
+standing("transport-belt", 110.5, 1.5, 4, { {}, { "iron-plate" } })
+local gear_plan = { "assembling-machine-1", 110.5, -1.5, 0 }
+gear_plan.recipe = "iron-gear-wheel"
+rows = survey({ gear_plan, { "inserter", 110.5, 0.5, 0 } })
+local gears = find(rows, 110.5, 1.5)
+check(gears and gears.join == "drop" and list(gears.lanes[1].adds) == "iron-gear-wheel" and gears.lanes[1].mixes == true,
+  "an inserter from a planned gear assembler adds gears; onto iron plates they mix")
+world = {}
+standing("transport-belt", 120.5, 1.5, 4, { {}, { "copper-plate" } })
+standing("wooden-chest", 120.5, -0.5, 0, nil, { get_inventory = function()
+  return { get_contents = function() return { { name = "copper-plate", count = 5, quality = "normal" } } end }
+end })
+standing("transport-belt", 130.5, 1.5, 4, { {}, {} })
+standing("assembling-machine-1", 130.5, -1.5, 0, nil, { get_recipe = function()
+  return { products = { { type = "item", name = "iron-gear-wheel", amount = 1 } } }
+end })
+rows = survey({ { "inserter", 120.5, 0.5, 0 }, { "inserter", 130.5, 0.5, 0 } })
+local chest_row, crafter_row = find(rows, 120.5, 1.5), find(rows, 130.5, 1.5)
+check(chest_row and list(chest_row.lanes[1].adds) == "copper-plate" and chest_row.lanes[1].mixes == false
+  and crafter_row and list(crafter_row.lanes[1].adds) == "iron-gear-wheel" and crafter_row.lanes[1].mixes == false,
+  "an inserter adds a standing chest's items now or a standing crafter's recipe products")
+world = {}
+standing("transport-belt", 150.5, 1.5, 4, { {}, { "coal" } })
+standing("transport-belt", 160.5, 1.5, 4, { {}, {} })
+standing("wooden-chest", 160.5, -0.5, 0, nil, { get_inventory = function()
+  return { get_contents = function() return { { name = "copper-plate", count = 1 }, { name = "iron-plate", count = 1 } } end }
+end })
+local white, black = { "inserter", 150.5, 0.5, 0 }, { "inserter", 160.5, 0.5, 0 }
+white.settings = { inserter = { filters = { "coal" } } }
+black.settings = { inserter = { filters = { "iron-plate" }, mode = "blacklist" } }
+rows = survey({ white, black })
+check(list(find(rows, 150.5, 1.5).lanes[1].adds) == "coal" and find(rows, 150.5, 1.5).lanes[1].mixes == false
+  and list(find(rows, 160.5, 1.5).lanes[1].adds) == "copper-plate",
+  "a whitelist alone bounds an unknown pickup; a blacklist removes its items")
+
 -- connect_entities: a belt route into a standing belt reports its join.
 world = {}
 local target = standing("transport-belt", 93.5, 5.5, 0, { { "iron-plate" }, {} })
@@ -241,11 +324,16 @@ local force = { is_chunk_charted = function() return true end, recipes = {} }
 package.loaded["scripts.companion"] = { require_companion = function()
   return { surface = surface, force = force, get_item_count = function() return 0 end }
 end }
-_G.defines = { build_check_type = { manual = 1 } }
 local connect = require("scripts.connect_entities")
 local jobs = require("scripts.jobs")
-local route = jobs.run_now(connect.job, { kind = "belt", prototype = "transport-belt", from = { x = 90.5, y = 5.5 },
-  to = { x = 93.5, y = 5.5 }, max_length = 10, underground = false })
+local route_params = { kind = "belt", prototype = "transport-belt", from = { x = 90.5, y = 5.5 },
+  to = { x = 93.5, y = 5.5 }, max_length = 10, underground = false }
+queries = 0
+local built = jobs.run_now(connect.job, route_params)
+check(built and #built.steps > 0 and built.belt_joins == nil and queries == 0,
+  "a connect_entities route without joins (a build) makes no join reads")
+route_params.joins = true
+local route = jobs.run_now(connect.job, route_params)
 local joined = route and route.belt_joins and find(route.belt_joins, 93.5, 5.5)
 check(joined and joined.join == "side_load" and joined.standing and lane(joined, "left")
   and list(lane(joined, "left").items) == "iron-plate" and lane(joined, "left").mixes == nil,

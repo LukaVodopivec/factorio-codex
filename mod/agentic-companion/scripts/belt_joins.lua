@@ -23,18 +23,28 @@
 -- only), or what the layout's other inputs put there (a planned belt). adds:
 -- what this source puts on that lane, as far as the dry run knows: a drill
 -- what the resources in its mining area give when mined, a standing belt
--- what its lanes carry now, a planned run what its own sources add; nil
--- (JSON null) when only unknown sources feed it (an inserter, whose source
--- contents a dry run does not read, or a run whose start nothing feeds).
--- mixes: true when that lane would carry more than one item kind after the
--- build (a splitter's outputs each count everything it takes in), false when
--- not, nil when an unknown source leaves it open.
+-- what its lanes carry now, a planned run what its own sources add, an
+-- inserter what its pickup gives (a crafter's recipe products, a chest's
+-- items now, a belt's lanes), only its whitelist filters or less its
+-- blacklist ones; nil (JSON null) when only unknown sources feed it (an
+-- inserter whose pickup is none of those, an empty chest, a crafter with no
+-- recipe, a run whose start nothing feeds). mixes: true when that lane would
+-- carry more than one item kind after the build (a splitter's outputs each
+-- count everything it takes in), false when not, nil when an unknown source
+-- leaves it open.
+--
+-- A planned belt piece the same as one standing there (name, position,
+-- direction, underground end) stands now: standing is true, its lanes now
+-- count in items and in what it carries, and a join between it and another
+-- standing belt is no row unless the build changes the join's kind.
 --
 -- Reads: one small query per planned belt piece whose input sides or front
 -- the layout does not cover, and per drop that lands outside it, plus the
--- transport lines and belt_neighbours of the standing belts found. The state
--- is plain data: build_layout's survey and connect_entities' job keep it in
--- storage between ticks and pass the planned list and its tile index back.
+-- transport lines and belt_neighbours of the standing belts found (charted
+-- chunks only), and one pickup query per inserter dropping onto a belt. The
+-- state is plain data: build_layout's survey and connect_entities' job keep
+-- it in storage between ticks and pass the planned list and its tile index
+-- back.
 local output_target = require("scripts.output_target")
 
 local M = {}
@@ -122,8 +132,10 @@ local function under_of(e)
 end
 
 -- Records a standing belt once: its geometry and lanes; as a receiver also
--- its standing inputs (belt_neighbours) with their lanes.
-local function record(J, e, io, receiver)
+-- its standing inputs (belt_neighbours) on charted chunks, with their lanes.
+-- An input on a tile the layout places (planned = true) counts before the
+-- build only: after it, the planned piece there stands for it.
+local function record(J, e, io, receiver, tiles)
   local key = standing_key(e)
   local s = J.standing[key]
   if not s then
@@ -137,12 +149,68 @@ local function record(J, e, io, receiver)
     local ok, inputs = pcall(function() return e.belt_neighbours.inputs end)
     for _, input in ipairs(ok and inputs or {}) do
       if input.valid and FLOW[input.type] then
-        local inner = record(J, input, io, false)
-        s.inputs[#s.inputs + 1] = { key = inner, s = input.direction }
+        if tiles[cell(math.floor(input.position.x), math.floor(input.position.y))] then
+          s.inputs[#s.inputs + 1] = { s = input.direction, planned = true }
+        elseif not io.charted or io.charted(input.position) then
+          s.inputs[#s.inputs + 1] = { key = record(J, input, io, false, tiles), s = input.direction }
+        end
       end
     end
   end
   return key
+end
+
+local function same_spot(a, b) return math.abs(a.x - b.x) < 0.01 and math.abs(a.y - b.y) < 0.01 end
+
+-- What a standing pickup gives an inserter: a crafter its recipe's item
+-- products, a chest the items in it now; nil when unknown.
+local CHESTS = { container = true, ["logistic-container"] = true }
+local function pickup_items(e)
+  local ok, found = pcall(function()
+    local set = {}
+    if e.type == "assembling-machine" or e.type == "furnace" then
+      local recipe = e.get_recipe()
+      if not recipe then return nil end
+      for _, row in pairs(recipe.products) do
+        if row.type == "item" and type(row.name) == "string" then set[row.name] = true end
+      end
+    elseif CHESTS[e.type] then
+      for _, row in pairs(e.get_inventory(defines.inventory.chest).get_contents()) do
+        if type(row) == "table" and type(row.name) == "string" then set[row.name] = true end
+      end
+      if next(set) == nil then return nil end
+    else
+      return nil
+    end
+    return names_of(set)
+  end)
+  return ok and found or nil
+end
+
+-- Where a planned inserter picks up: a planned entity whose footprint
+-- passes the native endpoint test ({planned = j}), else what io.pickup
+-- finds standing there ({standing = belt key} or {items = names}); nil
+-- when nothing is known.
+local function pick(J, i, p, planned, tiles, io)
+  local point = output_target.input_position(p.proto, p.position, p.direction)
+  if not point then return end
+  for _, j in ipairs(tiles[cell(math.floor(point.x), math.floor(point.y))] or {}) do
+    local q = planned[j]
+    if output_target.can_target_type(q.proto.type, "input")
+      and output_target.recipient_contains(q.area, point, "inserter", "input") then
+      J.picks[i] = { planned = j }
+      return
+    end
+  end
+  local e = io.pickup and io.pickup(point)
+  if not e then return end
+  if FLOW[e.type] then
+    J.picks[i] = { standing = record(J, e, io, false, tiles) }
+  else
+    io.charge(1)
+    local items = pickup_items(e)
+    if items then J.picks[i] = { items = items } end
+  end
 end
 
 -- The survey of a planned list: one scan unit per planned belt piece,
@@ -155,7 +223,7 @@ function M.start(planned)
       units[#units + 1] = i
     end
   end
-  return { units = units, k = 1, edges = {}, seen = {}, standing = {}, mined = {} }
+  return { units = units, k = 1, edges = {}, seen = {}, standing = {}, mined = {}, twin = {}, picks = {} }
 end
 
 -- What a planned drill mines (resource names), from the dry run's own read
@@ -178,7 +246,8 @@ local function covers(e, tile)
 end
 
 -- Scans the next unit. io = {query(area) -> own belt-like entities on
--- charted chunks, charge(n)}.
+-- charted chunks, charge(n), charted(position)?, pickup(point)? -> the own
+-- entity an inserter picks up from there, on a charted chunk}.
 function M.scan(J, planned, tiles, io)
   local i = J.units[J.k]
   J.k = J.k + 1
@@ -186,6 +255,7 @@ function M.scan(J, planned, tiles, io)
   local kind = p.proto.type
   local need = false
   local outs, mine, drop = {}, {}, nil
+  local before = #J.edges
   if FLOW[kind] then
     outs = outputs(kind, p.position, p.direction, p.under)
     each_tile(p.area, function(x, y)
@@ -214,29 +284,37 @@ function M.scan(J, planned, tiles, io)
     need = list == nil
     outs = { t }
   end
-  if not need then return end
-  local a = drop and { left_top = { x = outs[1].x + 0.1, y = outs[1].y + 0.1 },
-      right_bottom = { x = outs[1].x + 0.9, y = outs[1].y + 0.9 } }
-    or { left_top = { x = p.area.left_top.x - 1, y = p.area.left_top.y - 1 },
-      right_bottom = { x = p.area.right_bottom.x + 1, y = p.area.right_bottom.y + 1 } }
-  for _, e in ipairs(io.query(a)) do
-    local at = { x = math.floor(e.position.x), y = math.floor(e.position.y) }
-    -- A standing belt the layout keeps in place is planned, not standing.
-    if FLOW[e.type] and not tiles[cell(at.x, at.y)] then
-      local under = under_of(e)
-      for _, t in ipairs(outs) do
-        if not tiles[cell(t.x, t.y)] and covers(e, t)
-          and (drop or takes(e.type, e.direction, under, p.direction)) then
-          add_edge(J, { src = i, dst = record(J, e, io, true), s = not drop and p.direction or nil, drop = drop })
+  if need then
+    local a = drop and { left_top = { x = outs[1].x + 0.1, y = outs[1].y + 0.1 },
+        right_bottom = { x = outs[1].x + 0.9, y = outs[1].y + 0.9 } }
+      or { left_top = { x = p.area.left_top.x - 1, y = p.area.left_top.y - 1 },
+        right_bottom = { x = p.area.right_bottom.x + 1, y = p.area.right_bottom.y + 1 } }
+    for _, e in ipairs(io.query(a)) do
+      local at = { x = math.floor(e.position.x), y = math.floor(e.position.y) }
+      local under = FLOW[e.type] and under_of(e)
+      if FLOW[e.type] and tiles[cell(at.x, at.y)] then
+        -- The same piece standing where this one is planned: it stands now.
+        if not drop and not J.twin[i] and e.name == p.name and same_spot(e.position, p.position)
+          and e.direction == p.direction and under == p.under then
+          J.twin[i] = record(J, e, io, true, tiles)
         end
-      end
-      if not drop and takes(kind, p.direction, p.under, e.direction) then
-        for _, t in ipairs(outputs(e.type, e.position, e.direction, under)) do
-          if mine[cell(t.x, t.y)] then add_edge(J, { src = record(J, e, io, false), dst = i, s = e.direction }) end
+      elseif FLOW[e.type] then
+        for _, t in ipairs(outs) do
+          if not tiles[cell(t.x, t.y)] and covers(e, t)
+            and (drop or takes(e.type, e.direction, under, p.direction)) then
+            add_edge(J, { src = i, dst = record(J, e, io, true, tiles), s = not drop and p.direction or nil, drop = drop })
+          end
+        end
+        if not drop and takes(kind, p.direction, p.under, e.direction) then
+          for _, t in ipairs(outputs(e.type, e.position, e.direction, under)) do
+            if mine[cell(t.x, t.y)] then add_edge(J, { src = record(J, e, io, false, tiles), dst = i, s = e.direction }) end
+          end
         end
       end
     end
   end
+  -- An inserter dropping onto a belt: what it picks up.
+  if kind == "inserter" and #J.edges > before then pick(J, i, p, planned, tiles, io) end
 end
 
 -- ----------------------------------------------------------------- finish
@@ -267,6 +345,25 @@ local function products(J, resource)
     end)
     list = ok and found or false
     J.products[resource] = list
+  end
+  return list
+end
+
+-- The item products of a planned crafter's recipe (cached per name), false
+-- when it cannot be read.
+local function recipe_items(J, name)
+  J.recipes = J.recipes or {}
+  local list = J.recipes[name]
+  if list == nil then
+    local ok, found = pcall(function()
+      local out = {}
+      for _, row in pairs(prototypes.recipe[name].products) do
+        if row.type == "item" and type(row.name) == "string" then out[#out + 1] = row.name end
+      end
+      return out
+    end)
+    list = ok and found or false
+    J.recipes[name] = list
   end
   return list
 end
@@ -303,23 +400,69 @@ function M.finish(J, planned, tiles, io)
       end
     end
   end
+  -- The standing belt a ref is now: itself, a planned piece's standing
+  -- twin, or nil.
+  local function now_of(ref)
+    if type(ref) == "string" then return ref end
+    return J.twin[ref]
+  end
   -- The receiving belt's inputs from behind and from the sides after the
-  -- build (drops are not belt inputs), and before it (standing only).
-  local function counts(ref, planned_too)
+  -- build (drops are not belt inputs: standing ones the layout does not
+  -- replace and planned ones), and before it (what stands now).
+  local function counts(ref, after)
     local q = info(ref)
     local rear, side = 0, 0
     local function add(s) if s == q.direction then rear = rear + 1 else side = side + 1 end end
-    if type(ref) == "string" then for _, input in ipairs(q.inputs or {}) do add(input.s) end end
-    if planned_too then
-      for _, k in ipairs(into[ref] or {}) do
-        local edge = edges[k]
-        if not edge.drop and not (type(ref) == "string" and type(edge.src) == "string") then add(edge.s) end
-      end
+    if not after then
+      local now = now_of(ref)
+      for _, input in ipairs(now and standing[now].inputs or {}) do add(input.s) end
+      return rear, side
+    end
+    if type(ref) == "string" then
+      for _, input in ipairs(q.inputs or {}) do if not input.planned then add(input.s) end end
+    end
+    for _, k in ipairs(into[ref] or {}) do
+      local edge = edges[k]
+      if not edge.drop and not (type(ref) == "string" and type(edge.src) == "string") then add(edge.s) end
     end
     return rear, side
   end
   local carry, contribution
   local memo, joins = {}, {}
+  -- What a planned inserter moves: what its pickup gives, cut to its
+  -- whitelist filters (a whitelist alone bounds it) or less its blacklist.
+  local function picked(i)
+    local out = lane()
+    local from = J.picks[i]
+    local q = from and from.planned and planned[from.planned]
+    if q and FLOW[q.proto.type] then
+      local c = carry(from.planned)
+      merge(out, c[1])
+      merge(out, c[2])
+    elseif q and q.recipe and q.proto.type == "assembling-machine" and recipe_items(J, q.recipe) then
+      for _, name in ipairs(recipe_items(J, q.recipe)) do out.set[name] = true end
+    elseif from and from.standing then
+      for l = 1, 2 do for _, name in ipairs(standing[from.standing].lanes[l]) do out.set[name] = true end end
+    elseif from and from.items then
+      for _, name in ipairs(from.items) do out.set[name] = true end
+    else
+      out.unknown = true
+    end
+    local settings = planned[i].settings and planned[i].settings.inserter
+    local filters = settings and type(settings.filters) == "table" and settings.filters or {}
+    if #filters > 0 then
+      local allowed = {}
+      for _, name in ipairs(filters) do if type(name) == "string" then allowed[name] = true end end
+      if settings.mode == "blacklist" then
+        for name in pairs(allowed) do out.set[name] = nil end
+      elseif out.unknown then
+        out = { set = allowed, unknown = false }
+      else
+        for name in pairs(out.set) do if not allowed[name] then out.set[name] = nil end end
+      end
+    end
+    return out
+  end
   -- How a source heading s joins receiver ref: kind, the receiver lane each
   -- source lane goes onto ({[1] = lane, [2] = lane}, nil where it is
   -- stopped).
@@ -359,6 +502,8 @@ function M.finish(J, planned, tiles, io)
           if not list then out[target].unknown = true end
           for _, item in ipairs(list or {}) do out[target].set[item] = true end
         end
+      elseif p.proto.type == "inserter" then
+        out[target] = picked(edge.src)
       else
         out[target].unknown = true
       end
@@ -391,6 +536,13 @@ function M.finish(J, planned, tiles, io)
       return result
     end
     local any = false
+    -- A planned piece that stands now carries its lanes now, as a standing
+    -- belt does.
+    local now = J.twin[ref]
+    if now then
+      any = true
+      for l = 1, 2 do for _, name in ipairs(standing[now].lanes[l]) do result[l].set[name] = true end end
+    end
     for _, k in ipairs(into[ref] or {}) do
       any = true
       local c = contribution(k)
@@ -411,11 +563,12 @@ function M.finish(J, planned, tiles, io)
     return result
   end
   -- A receiving lane after the build: a standing belt's items now and every
-  -- planned input; a planned belt's carry.
+  -- planned input; a planned belt's carry (and a standing twin's items now).
   local function total(ref, l, extra)
     local t = lane()
+    local now = now_of(ref)
+    if now then for _, name in ipairs(standing[now].lanes[l]) do t.set[name] = true end end
     if type(ref) == "string" then
-      for _, name in ipairs(standing[ref].lanes[l]) do t.set[name] = true end
       for _, k in ipairs(into[ref] or {}) do
         if type(edges[k].src) ~= "string" then merge(t, contribution(k)[l]) end
       end
@@ -427,7 +580,8 @@ function M.finish(J, planned, tiles, io)
   end
   local function lane_row(ref, l, adds, others, extra)
     local row = { lane = l == 1 and "left" or "right" }
-    if type(ref) == "string" then row.items = standing[ref].lanes[l] else row.items = names_of(others.set) end
+    local now = now_of(ref)
+    if now then row.items = standing[now].lanes[l] else row.items = names_of(others.set) end
     if not (adds.unknown and next(adds.set) == nil) then row.adds = names_of(adds.set) end
     local t = total(ref, l, extra)
     if count(t.set) > 1 then row.mixes = true elseif not t.unknown then row.mixes = false end
@@ -435,7 +589,7 @@ function M.finish(J, planned, tiles, io)
   end
   local function source_of(ref)
     local s = info(ref)
-    return { name = s.name, x = s.x, y = s.y, standing = type(ref) == "string" }
+    return { name = s.name, x = s.x, y = s.y, standing = now_of(ref) ~= nil }
   end
   local rows = {}
   for k, edge in ipairs(edges) do
@@ -443,9 +597,12 @@ function M.finish(J, planned, tiles, io)
     local dst = edge.dst
     local belt_inputs = 0
     for _, other in ipairs(into[dst] or {}) do if not edges[other].drop then belt_inputs = belt_inputs + 1 end end
-    if type(dst) == "string" or type(edge.src) == "string" or c.kind ~= "straight" or belt_inputs > 1 then
+    -- A join between two belts that both stand now is a row only when the
+    -- build changes its kind.
+    local kept = not edge.drop and now_of(dst) and now_of(edge.src) and join(dst, edge.s, false) == c.kind
+    if not kept and (type(dst) == "string" or type(edge.src) == "string" or c.kind ~= "straight" or belt_inputs > 1) then
       local q = info(dst)
-      local row = { name = q.name, x = q.x, y = q.y, standing = type(dst) == "string", from = source_of(edge.src),
+      local row = { name = q.name, x = q.x, y = q.y, standing = now_of(dst) ~= nil, from = source_of(edge.src),
         join = c.kind, lanes = {} }
       for _, l in ipairs(c.lanes) do
         local others = lane()
@@ -466,7 +623,7 @@ function M.finish(J, planned, tiles, io)
       local rear_after, side_after = counts(ref, true)
       if rear == 0 and side == 1 and not (rear_after == 0 and side_after == 1) then
         for _, input in ipairs(s.inputs) do
-          if input.s ~= s.direction then
+          if input.s ~= s.direction and not input.planned then
             local near = (input.s - s.direction) % 16 == 4 and 1 or 2
             local adds = lane()
             for l = 1, 2 do for _, name in ipairs(standing[input.key].lanes[l]) do adds.set[name] = true end end

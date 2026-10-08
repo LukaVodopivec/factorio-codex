@@ -62,6 +62,9 @@ describe("protocol v29 DTO and tool registry", () => {
       type: "build_plan", auto_craft: true, stop_on_error: true,
       steps: [{ item: "transport-belt", position: { x: 1.5, y: 0.5 }, direction: 4 }],
     }, expect.objectContaining({ tool: "connect_entities", role: "unknown" }));
+    // Only a dry run asks the mod for belt joins: a build skips their reads.
+    await handlers.connect_entities({ ...route, check_only: true });
+    expect(call).toHaveBeenLastCalledWith("connect_entities", { kind: "belt", prototype: "transport-belt", from: { x: 0.5, y: 0.5 }, to: { x: 4.5, y: 0.5 }, max_length: 200, joins: true }, undefined);
     expect(schemas.find_placement.safeParse({ item: "x", preferred: { x: 0, y: 0 }, radius: 31 }).success).toBe(false);
     expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 200 }).success).toBe(true);
     expect(schemas.connect_entities.safeParse({ kind: "belt", prototype: "x", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, max_length: 201 }).success).toBe(false);
@@ -525,6 +528,8 @@ describe("protocol v29 DTO and tool registry", () => {
     for (const tool of ["build_layout", "blueprint_place", "connect_entities"]) {
       expect(described[tool]).toMatch(/belt_joins \(.*join straight \(lanes kept.*side_load \(both source lanes onto the near lane.*drop \(the lane on the drop point's side/);
       expect(described[tool]).toMatch(/adds: what this source puts there.*null when unknown.*mixes: true when the lane would carry more than one item kind/);
+      expect(described[tool]).toMatch(/An inserter's adds is what its pickup gives: a crafter's recipe products, a chest's items now.*whitelist filters only those/);
+      expect(described[tool]).toMatch(/its join with another standing belt is a row only when the build changes the join's kind/);
     }
     expect(described.find_placement).toMatch(/nearest first for every type \(a drill candidate's resource_coverage is data to compare\)/);
     expect(described.factory_status).toMatch(/add_to_cover with both ways to cover the deficit \(steam: steam_engine, plus the boiler and offshore_pump the surface's engines need beyond those standing anywhere on the surface \(a pump feeding chemistry counts too\), no offshore_pump where its tiles give no water; solar where the sun gives power: solar_panel, accumulator\), for you to choose/);

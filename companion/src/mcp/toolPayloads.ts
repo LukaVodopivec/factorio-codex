@@ -39,7 +39,7 @@ export const toolPayloads = {
     ...(location ? { location } : {}), ...(recipe_choices ? { recipe_choices } : {}),
     ...(flow_precision ? { flow_precision } : {}), ...(planet ? { planet } : {}),
     ...(per_minute ? { per_minute } : {}), ...(fuel ? { fuel } : {}) }),
-  connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }) }),
+  connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground, joins }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false; joins?: boolean }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }), ...(joins ? { joins: true } : {}) }),
 };
 
 export function normalizeCanPlace(value: any, placements: Array<{ name: string; x: number; y: number; direction?: number }>): any {

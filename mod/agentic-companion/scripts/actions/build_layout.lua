@@ -1609,7 +1609,7 @@ local function planned_list(result)
     local e = p.entity
     list[#list + 1] = { name = e.proto.name, proto = e.proto, position = p.position, direction = e.direction,
       area = p.area, under = e.proto.type == "underground-belt" and belt_end(e) or nil, recipe = e.recipe,
-      mirror = e.mirror or nil, index = e.index, item = e.item, rank = RANK[e.proto.type] or 1 }
+      settings = e.settings, mirror = e.mirror or nil, index = e.index, item = e.item, rank = RANK[e.proto.type] or 1 }
   end
   for _, routed in ipairs(result.routes or {}) do
     for _, step in ipairs(routed.steps) do
@@ -1867,10 +1867,19 @@ local function survey_all(ctx, filter)
   return out
 end
 
--- The reads belt_joins makes, charged to the dry run's work.
+-- The reads belt_joins makes, charged to the dry run's work: belts in a
+-- small area, whether a point is charted, and the own entity an inserter
+-- picks up from at a point (the native endpoint test).
 local function join_io(ctx)
   return { query = function(area) return survey_all(ctx, { area = area, type = belt_joins.TYPES }) end,
-    charge = function(n) ctx.calls = ctx.calls + n end }
+    charge = function(n) ctx.calls = ctx.calls + n end,
+    charted = function(point) return charted_at(ctx, point) end,
+    pickup = function(point)
+      return survey_query(ctx, { area = output_target.endpoint_area(point, "inserter", "input") }, function(entity)
+        return output_target.can_target_type(entity.type, "input")
+          and output_target.recipient_contains(entity.bounding_box, point, "inserter", "input")
+      end)
+    end }
 end
 
 -- What an inserter endpoint lands in: the planned entity whose footprint

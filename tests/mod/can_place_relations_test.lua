@@ -133,4 +133,21 @@ check(inside.can_place == true and engine_checks > 0, "the same furnace wholly i
 surface.can_place_entity = plain_check
 force.is_chunk_charted = function() return true end
 
+-- An offshore pump's water lies behind its box (tile_buildability_rules): a
+-- pump on charted land facing uncharted water says nothing about that water.
+prototypes.item["offshore-pump"] = { place_result = { name = "offshore-pump", type = "offshore-pump", tile_width = 1,
+  tile_height = 1, collision_box = box(0.4),
+  tile_buildability_rules = { { area = { left_top = { x = -0.4, y = -3.4 }, right_bottom = { x = 0.4, y = -0.6 } } } } } }
+force.is_chunk_charted = function(_, chunk) return chunk.y == 1 end
+engine_checks = 0
+surface.can_place_entity = function(...) engine_checks = engine_checks + 1; return plain_check(...) end
+before = lookups
+local shore = spatial.can_place({ placements = { { item = "offshore-pump", position = { x = 0.5, y = 32.5 } } } }).results[1]
+check(shore.can_place == false and shore.code == "UNCHARTED" and engine_checks == 0 and lookups == before,
+  "an offshore pump whose water lies in an uncharted chunk is refused before the engine reads it")
+local turned = spatial.can_place({ placements = { { item = "offshore-pump", position = { x = 0.5, y = 32.5 }, direction = 8 } } }).results[1]
+check(turned.can_place == true and engine_checks > 0, "the same pump facing its charted side is checked")
+surface.can_place_entity = plain_check
+force.is_chunk_charted = function() return true end
+
 if failures > 0 then error(failures .. " can_place relation checks failed") end

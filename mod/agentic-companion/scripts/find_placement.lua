@@ -403,7 +403,9 @@ local function evaluate_spot(S, X, c, spot)
     S.engine_calls = S.engine_calls + COST_DIRECTION
     local pos = { x = x, y = y }
     local area = placement_geometry.footprint(proto, pos, direction)
-    if not footprint_charted(X.force, X.surface, area, X.platform) then reject(S, "uncharted", pos, direction); goto continue end
+    if not footprint_charted(X.force, X.surface, placement_geometry.placement_area(proto, pos, direction), X.platform) then
+      reject(S, "uncharted", pos, direction); goto continue
+    end
     do
       local output_position = output_targets.output_position(proto, pos, direction)
       local pickup_offset = X.inserter_pickup_offset and rotate(X.inserter_pickup_offset, direction) or nil

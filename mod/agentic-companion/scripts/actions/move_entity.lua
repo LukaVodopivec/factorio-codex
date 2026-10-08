@@ -106,14 +106,13 @@ local function blocked(c, e, proto, to, direction)
   end
   local mask_ok, mask = pcall(function() return proto.collision_mask end)
   mask = mask_ok and type(mask) == "table" and mask or nil
-  local layers = mask and type(mask.layers) == "table" and mask.layers or nil
   local tiles = { left_top = { x = math.floor(area.left_top.x), y = math.floor(area.left_top.y) },
     right_bottom = { x = math.ceil(area.right_bottom.x), y = math.ceil(area.right_bottom.y) } }
+  local tile_count = placement_geometry.tile_count(tiles)
   -- Every entity on the footprint, then only those whose mask collides with
   -- the entity's: the engine's layer filter once dropped a belt standing there.
   -- An unknown mask counts as colliding. Ore adds at most one row a tile.
-  local found_ok, found = pcall(c.surface.find_entities_filtered, { area = area,
-    limit = 33 + (tiles.right_bottom.x - tiles.left_top.x) * (tiles.right_bottom.y - tiles.left_top.y) })
+  local found_ok, found = pcall(c.surface.find_entities_filtered, { area = area, limit = 33 + tile_count })
   local natural = false
   for _, other in ipairs(found_ok and found or {}) do
     local other_ok, other_mask = pcall(function() return other.prototype.collision_mask end)
@@ -125,10 +124,21 @@ local function blocked(c, e, proto, to, direction)
       natural = true
     end
   end
-  -- Water or other tiles the entity collides with, over every tile it covers.
-  local tiles_ok, wet = pcall(c.surface.count_tiles_filtered, { area = tiles,
-    collision_mask = layers or "water_tile", limit = 1 })
-  if tiles_ok and wet > 0 then return "the ground there is water or otherwise unbuildable" end
+  -- Water or other tiles the entity collides with, over every tile it covers,
+  -- matched in Lua as for entities (an unknown entity mask meets water); one
+  -- mask read per tile name.
+  local tile_mask = mask or { layers = { water_tile = true } }
+  local tiles_ok, found_tiles = pcall(c.surface.find_tiles_filtered, { area = tiles, limit = tile_count })
+  local meets = {}
+  for _, tile in ipairs(tiles_ok and found_tiles or {}) do
+    local name_ok, name = pcall(function() return tile.name end)
+    local key = name_ok and name or tile
+    if meets[key] == nil then
+      local tile_ok, other = pcall(function() return tile.prototype.collision_mask end)
+      meets[key] = placement_geometry.mask_overlap(tile_mask, tile_ok and other or nil, true) == true
+    end
+    if meets[key] then return "the ground there is water or otherwise unbuildable" end
+  end
   if own_spot or natural then return nil end
   return "the ground there is water or otherwise unbuildable"
 end

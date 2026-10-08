@@ -59,6 +59,32 @@ function M.touching(area)
     right_bottom = { x = area.right_bottom.x + m, y = area.right_bottom.y + m } }
 end
 
+-- Everything the engine's placement check reads: the footprint plus each
+-- tile_buildability_rules area turned the same way (an offshore pump's
+-- water lies tiles behind its box), so a chart check covers it all.
+function M.placement_area(proto, position, direction)
+  local area = M.footprint(proto, position, direction)
+  local ok, rules = pcall(function() return proto.tile_buildability_rules end)
+  for _, rule in ipairs(ok and type(rules) == "table" and rules or {}) do
+    local box = type(rule) == "table" and type(rule.area) == "table" and rule.area or nil
+    local lt, rb = box and xy(box.left_top or box[1]), box and xy(box.right_bottom or box[2])
+    if lt and rb then
+      local r = M.footprint({ collision_box = { left_top = lt, right_bottom = rb } }, position, direction)
+      area.left_top.x, area.left_top.y = math.min(area.left_top.x, r.left_top.x), math.min(area.left_top.y, r.left_top.y)
+      area.right_bottom.x = math.max(area.right_bottom.x, r.right_bottom.x)
+      area.right_bottom.y = math.max(area.right_bottom.y, r.right_bottom.y)
+    end
+  end
+  return area
+end
+
+-- How many tiles an area touches: one ore entity each at most, which a
+-- capped blocker search adds to its limit so ore never crowds a blocker out.
+function M.tile_count(area)
+  return (math.ceil(area.right_bottom.x) - math.floor(area.left_top.x))
+    * (math.ceil(area.right_bottom.y) - math.floor(area.left_top.y))
+end
+
 -- The fluids a plain pipe would join: the game refuses a pipe that free
 -- neighbouring pipe connections of different fluids point into (a pipe
 -- connects on all four sides; other fluid entities only where their own

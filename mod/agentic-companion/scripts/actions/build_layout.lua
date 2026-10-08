@@ -445,7 +445,7 @@ local function same_spot(a, b) return math.abs(a.x - b.x) < 0.01 and math.abs(a.
 local function ghost_ground(ctx, proto, pos, direction)
   local surface, force = where(ctx)
   local area = placement_geometry.footprint(proto, pos, direction)
-  if not charted(ctx, area) then return false, "the footprint is not charted" end
+  if not charted(ctx, placement_geometry.placement_area(proto, pos, direction)) then return false, "the footprint is not charted" end
   local planned = false
   if ctx.planned then each_tile(area, function(x, y) planned = planned or ctx.planned[cell(x, y)] == true end) end
   if planned then
@@ -509,7 +509,7 @@ local function ground(ctx, proto, pos, direction, adopt, end_type)
   local ok, reason, clears, note
   if ctx.ghosts then
     ok, reason, note = ghost_ground(ctx, proto, pos, direction)
-  elseif not charted(ctx, area) then
+  elseif not charted(ctx, placement_geometry.placement_area(proto, pos, direction)) then
     ok, reason = false, "the footprint is not charted"
   elseif adopt and (function()
     local e = build.existing(c, proto, pos, direction, end_type)
@@ -521,7 +521,10 @@ local function ground(ctx, proto, pos, direction, adopt, end_type)
     if placeable_now or why == "CODEX_BODY_OVERLAP" then
       ok = true
     else
-      local found_ok, found = pcall(c.surface.find_entities_filtered, { area = placement_geometry.touching(area), limit = 33 })
+      -- Ore under the footprint adds one row a tile; it never crowds out a blocker.
+      local near = placement_geometry.touching(area)
+      local found_ok, found = pcall(c.surface.find_entities_filtered, { area = near,
+        limit = 33 + placement_geometry.tile_count(near) })
       local blocker
       for _, e in ipairs(found_ok and found or {}) do
         if e.valid and e ~= c and not placement_geometry.NON_BLOCKING_TYPES[e.type] then

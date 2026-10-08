@@ -99,9 +99,20 @@ local surface = {
     end
     return true
   end,
-  count_tiles_filtered = function(filter)
-    assert(filter.area and filter.collision_mask and filter.limit, "a bounded tile count by collision mask")
-    return math.min(wet_tiles(filter.area), filter.limit)
+  -- Water and land tiles with their 2.0 collision layers.
+  find_tiles_filtered = function(filter)
+    assert(filter.area and filter.limit and not filter.collision_mask, "a bounded tile search, matched in Lua")
+    local out = {}
+    for x = math.floor(filter.area.left_top.x), math.ceil(filter.area.right_bottom.x) - 1 do
+      for y = math.floor(filter.area.left_top.y), math.ceil(filter.area.right_bottom.y) - 1 do
+        local wet = water[x .. "," .. y]
+        out[#out + 1] = { name = wet and "water" or "grass-1", position = { x = x, y = y }, prototype = { collision_mask = wet
+          and { layers = { water_tile = true, resource = true, item = true, player = true, doodad = true } }
+          or { layers = { ground_tile = true } } } }
+      end
+    end
+    assert(#out <= filter.limit, "the limit covers every footprint tile")
+    return out
   end,
   find_entities_filtered = function(filter)
     assert(filter.area or filter.position, "no entity query may search the whole surface")
@@ -284,10 +295,17 @@ local ok_belt, err_belt = pcall(move.start, move.action.make_task({ from = { x =
 check(not ok_belt and tostring(err_belt):match("transport%-belt stands at %(112%.5, 40%.5%)")
   and not tostring(err_belt):match("water") and #mines == 0 and crate.valid,
   "a transport belt on the target is named with its position, not blamed on water")
+-- Water under a shift that overlaps the furnace's own spot is matched by its
+-- tile's layers against the furnace's, before anything is mined.
+water["72,40"] = true
+local ok_layered, err_layered = pcall(move.start, move.action.make_task({ from = { x = 71, y = 41 }, to = { x = 72, y = 41 } }))
+check(not ok_layered and tostring(err_layered):match("water") and #mines == 0,
+  "water under a shift is matched by collision layers before mining")
+water["72,40"] = nil
 local rail = spawn("elevated-straight-rail", { x = 72, y = 41 })
 local under_rail = run({ from = { x = 71, y = 41 }, to = { x = 72, y = 41 } })
 check(under_rail.status == "done" and find("stone-furnace").position.x == 72,
-  "an entity whose collision mask the furnace never meets does not block a shift onto it")
+  "the unfiltered blocker search still lets an elevated rail, on another layer, stand over the target")
 crate.valid, belt.valid, rail.valid = false, false, false
 local rail_back = run({ from = { x = 72, y = 41 }, to = { x = 71, y = 41 } })
 check(rail_back.status == "done", "and the furnace moves back")

@@ -655,6 +655,25 @@ describe("protocol v29 DTO and tool registry", () => {
     expect((await handlers.activity_log({ limit: 16 })).content[0].text).toBe("1 row; last: plan 4 built 4 furnaces");
     entries = {} as unknown[];
     expect((await handlers.activity_log({ limit: 16 })).content[0].text).toBe("0 rows");
+    entries = [{ ...plan, status: "failed", code: "SUPPLY_SHORTFALL", summary: "failed at step 1/1 get_items", repeat: 3 }];
+    expect((await handlers.activity_log({ limit: 16 })).content[0].text)
+      .toBe("1 row; last: plan 4 failed at step 1/1 get_items (SUPPLY_SHORTFALL 3 in a row)");
+  });
+
+  it("normalizes the change journal, alerts and unreadable alerts", async () => {
+    const row = { tick: 50, op: "built", name: "transport-belt", by: "package:belts", plan_id: 4, surface: "nauvis", count: 5,
+      area: { left_top: { x: 1, y: 0 }, right_bottom: { x: 5, y: 0 } } };
+    expect(normalizeActivityLog({ tick: 60, entries: {}, omitted: 0, changes: { rows: [row], omitted: 0, size: 200 } }))
+      .toEqual({ tick: 60, entries: [], omitted: 0, changes: { rows: [row], omitted: 0, size: 200 } });
+    expect(normalizeActivityLog({ tick: 60, entries: {}, omitted: 0, changes: { rows: {}, omitted: 0, size: 200 } }).changes.rows).toEqual([]);
+    const alert = { type: "no_storage", count: 2, name: "construction-robot", position: { x: 1, y: 2 } };
+    expect(normalizeFactoryStatus({ alerts: [alert] }).alerts).toEqual([alert]);
+    expect(normalizeFactoryStatus({ alerts_unavailable: "no connected player" })).toEqual({ alerts: null, alerts_unavailable: "no connected player" });
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const call = vi.fn(async () => ({ tick: 900, entries: [], omitted: 0, changes: { rows: [row], omitted: 0, size: 200 } }));
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
+      async () => ({ call } as unknown as Bridge), validConfig, "read-only");
+    expect((await handlers.activity_log({ changes: {} })).content[0].text).toBe("0 rows; 1 change");
   });
 
   it("parses and forwards both underground ends through placement search and returns verbatim plan steps", async () => {

@@ -461,5 +461,51 @@ describe.each(["full", "read-only"] as McpSurface[])("set_watch and clear_watch 
     expect(schemas.set_watch.safeParse({ condition: { kind: "rate_below", item: "iron-plate", per_min: 60 }, surface: "vulcanus" }).success).toBe(true);
     expect(schemas.clear_watch.safeParse({}).success).toBe(false);
     expect(schemas.clear_watch.safeParse({ id: 1, all: true }).success).toBe(false);
+describe("next_event own losses and repeated outcomes", () => {
+  const belts = { name: "transport-belt", position: { x: 11, y: 10 }, surface: "nauvis", count: 2, tick: 210,
+    killed_by: { name: "locomotive", type: "locomotive", force: "player" } };
+  const panel = { name: "solar-panel", position: { x: 0, y: 0 }, surface: "platform:1", count: 1, tick: 230,
+    killed_by: { force: "enemy" } };
+
+  it("fires entities_lost for losses during the wait, never for those before the call", async () => {
+    const before = { ...busy, last_loss_tick: 120, losses: [{ ...belts, tick: 120 }] };
+    const after = { ...before, tick: 240, last_loss_tick: 230, losses: [{ ...belts, tick: 120 }, belts, panel] };
+    const event = await waitForEvent(game([before, before, after]).bridge, input(), quiet(), undefined, fakeClock());
+    expect(event).toMatchObject({ event: "entities_lost", losses: [belts, panel], tick: 240 });
+    expect(eventSummary(event)).toBe("own entities destroyed: 2 transport-belt at (11, 10) on nauvis by locomotive; "
+      + "1 solar-panel at (0, 0) on platform:1 by enemy");
+    expect(await waitForEvent(game([before]).bridge, { timeout_seconds: 2 }, quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
+  });
+
+  it("returns losses after since_tick at once, after plan ends, research and problems", async () => {
+    const state = { ...busy, tick: 240, last_loss_tick: 230, losses: [belts, panel] };
+    expect(await waitForEvent(game([state]).bridge, input({ since_tick: 220 }), quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "entities_lost", losses: [panel] });
+    const ended = { ...state, last_plan_ended: { plan_id: 5, status: "completed", tick: 235 } };
+    const first = await waitForEvent(game([ended]).bridge, input({ since_tick: 220 }), quiet(), undefined, fakeClock());
+    expect(first).toMatchObject({ event: "plan_ended", plan_id: 5, losses: [panel] });
+    expect(eventSummary(first)).toContain("; own entities destroyed: 1 solar-panel at (0, 0) on platform:1 by enemy");
+    // An older mod has no loss fields: nothing changes.
+    expect(await waitForEvent(game([busy]).bridge, { timeout_seconds: 1, since_tick: 100 }, quiet(), undefined, fakeClock()))
+      .toMatchObject({ event: "timeout" });
+  });
+
+  it("carries losses on another event in the same poll, so the next since_tick cannot skip them", async () => {
+    let index = 0;
+    const before = { ...busy, last_loss_tick: 120, losses: [{ ...belts, tick: 120 }] };
+    const samples = [before, { ...before, tick: 240, last_problem_tick: 230, last_loss_tick: 230, losses: [{ ...belts, tick: 120 }, panel] }];
+    const call = vi.fn(async (method: string) => method === "factory_status" ? { tick: 240, problems: [] }
+      : samples[Math.min(index++, samples.length - 1)]);
+    const event = await waitForEvent({ call } as unknown as Bridge, input(), quiet(), undefined, fakeClock());
+    expect(event).toMatchObject({ event: "new_problem", losses: [panel], tick: 240 });
+  });
+
+  it("says when a plan's step repeats the same code at the same target", () => {
+    const outcomes = [{ step: 1, action: "walk_to", status: "completed" },
+      { step: 2, action: "get_items", status: "failed", code: "SUPPLY_SHORTFALL", repeat: 3,
+        result: { code: "SUPPLY_SHORTFALL", recent_draws: [{ item: "steel-plate", count: 20, from: "stores", source: "package:oil", plan_id: 4, tick: 90 }] } }];
+    expect(eventSummary({ event: "plan_ended", plan_id: 6, status: "failed", outcomes, body: { fifo_empty: false } }))
+      .toBe("plan 6 ended failed; SUPPLY_SHORTFALL again at step 2 get_items (3 in a row)");
   });
 });

@@ -802,8 +802,14 @@ local function wanted(task, frame)
   return task._claims and task._claims[frame.name] or frame.count
 end
 
+-- Called as listener(item, count) for each take from own stores (tasks.lua
+-- keeps them as recent draws).
+local draw_listener
+function M.set_draw_listener(fn) draw_listener = fn end
+
 local function note(task, kind, item, count)
   if count <= 0 then return end
+  if kind == "taken" and draw_listener then pcall(draw_listener, item, count) end
   -- A supply begun by 0.21.0 has no smelted book.
   local book = task._report[kind] or {}
   task._report[kind] = book

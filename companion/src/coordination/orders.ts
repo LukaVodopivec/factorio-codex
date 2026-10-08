@@ -24,7 +24,13 @@ export interface PackageRecord {
   captured?: string[];
   /** Its steps lay tiles or remove entities: a successor waits for its end even after the ledger drops it. */
   changes_ground?: boolean;
+  /** Changes to own buildings in its footprint after its source_tick, read
+   *  from the mod's change journal as it was queued: count is at least how
+   *  many (a merged row counts each change it covers, an omitted row one);
+   *  a fact, never a refusal. */
+  footprint_changed?: FootprintChanged;
 }
+export interface FootprintChanged { count: number; changes: unknown[] }
 /** The outcome of the ledger's research for one revision: queued (the
  *  technologies the game added; skipped: already researched or queued) or
  *  failed (the mod's refusal, which names those queued before it). */
@@ -247,6 +253,68 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
   }
 }
 
+type Point = { x: number; y: number };
+const isPoint = (value: unknown): value is Point => typeof (value as Point | undefined)?.x === "number"
+  && typeof (value as Point | undefined)?.y === "number";
+/** Tiles around a package's named positions its footprint also covers: a
+ *  building placed at a position reaches past it. */
+export const FOOTPRINT_PAD = 3;
+/** A package's footprint: the area around its anchor and every position its
+ *  steps name (a layout's offsets from its anchor, an area's corners, a
+ *  centre with its radius), padded by FOOTPRINT_PAD tiles. Steps on a space
+ *  platform (positions relative to its hub) and site-searched layouts beyond
+ *  their near point are not covered. */
+export function packageFootprint(entry: BuildPackage): { left_top: Point; right_bottom: Point } {
+  const points: Point[] = [entry.anchor];
+  const add = (value: unknown, origin: Point = { x: 0, y: 0 }) => {
+    if (isPoint(value)) points.push({ x: origin.x + value.x, y: origin.y + value.y });
+  };
+  const offset = (value: unknown, origin: Point) => {
+    const at = value as { dx?: unknown; dy?: unknown } | undefined;
+    if (typeof at?.dx === "number" && typeof at?.dy === "number") points.push({ x: origin.x + at.dx, y: origin.y + at.dy });
+  };
+  for (const step of entry.steps as Array<Record<string, any>>) {
+    if (step.platform !== undefined) continue;
+    add(step);
+    for (const key of ["position", "from", "input_target", "output_target", "target"]) add(step[key]);
+    for (const list of [step.positions, step.to, step.targets]) if (Array.isArray(list)) list.forEach((point) => add(point));
+    if (!Array.isArray(step.to)) add(step.to);
+    if (step.targets && !Array.isArray(step.targets)) {
+      const radius = typeof step.targets.radius === "number" ? step.targets.radius : 0;
+      add(step.targets.near, { x: -radius, y: -radius }); add(step.targets.near, { x: radius, y: radius });
+    }
+    if (step.area) { add(step.area.left_top); add(step.area.right_bottom); }
+    if (isPoint(step.center) && typeof step.radius === "number") {
+      add(step.center, { x: -step.radius, y: -step.radius }); add(step.center, { x: step.radius, y: step.radius });
+    }
+    if (step.action === "build_layout") {
+      add(step.site?.near);
+      if (isPoint(step.anchor)) {
+        const origin = step.anchor as Point;
+        add(origin);
+        for (const row of [...(step.entities ?? []), ...(step.tiles ?? [])]) offset(row, origin);
+        for (const row of [...(step.tile_rects ?? []), ...(step.connections ?? [])]) { offset(row.from, origin); offset(row.to, origin); }
+      }
+    }
+  }
+  const xs = points.map((point) => point.x), ys = points.map((point) => point.y);
+  return { left_top: { x: Math.min(...xs) - FOOTPRINT_PAD, y: Math.min(...ys) - FOOTPRINT_PAD },
+    right_bottom: { x: Math.max(...xs) + FOOTPRINT_PAD, y: Math.max(...ys) + FOOTPRINT_PAD } };
+}
+/** Changes to own buildings in a package's footprint after its source_tick
+ *  (the mod's change journal: up to three rows, and at least how many
+ *  changes matched), or undefined when none did or the journal could not be read:
+ *  the check only reports, it never holds a package. */
+async function footprintChanges(b: Bridge, entry: BuildPackage): Promise<FootprintChanged | undefined> {
+  try {
+    const answer = await b.call<{ changes?: { rows?: unknown; omitted?: number } }>("activity_log", { limit: 1,
+      changes: { since_tick: entry.source_tick, area: packageFootprint(entry), surface: entry.surface, limit: 3 } });
+    const rows = luaArray(answer?.changes?.rows ?? []) as Array<{ count?: number }>;
+    const count = rows.reduce((sum, row) => sum + (typeof row?.count === "number" ? row.count : 1), answer?.changes?.omitted ?? 0);
+    return rows.length > 0 ? { count, changes: rows } : undefined;
+  } catch { return undefined; }
+}
+
 /** The source of a plan the mod still knows, or null for an unknown (pruned) plan. */
 async function planSource(b: Bridge, planId: number): Promise<string | undefined | null> {
   try { return (await b.call<{ source?: string }>("plan_status", { plan_id: planId })).source; }
@@ -425,7 +493,11 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
         const problem = await checkPackage(b, entry, afterPlanId !== undefined);
         if (problem) { record(id, { status: "failed", reason: `check failed: ${problem}` }); continue; }
       }
-      const captured = captures.length > 0 ? { captured: captures.map((step) => step.name) } : {};
+      // What changed in its footprint since the strategist read it: a fact
+      // kept with the record (a retry keeps the first reading).
+      const changed = retry ? state.packages[id]?.footprint_changed : await footprintChanges(b, entry);
+      const captured = { ...(captures.length > 0 ? { captured: captures.map((step) => step.name) } : {}),
+        ...(changed ? { footprint_changed: changed } : {}) };
       if (steps.length === 0) { record(id, { status: "queued", ...captured }); continue; }
       const plan = queuePlanSchema.safeParse({ steps, surface: entry.surface, ...(afterPlanId ? { after_plan_id: afterPlanId } : {}) });
       if (!plan.success) { record(id, { status: "failed", reason: plan.error.issues[0]?.message ?? "invalid steps" }); continue; }

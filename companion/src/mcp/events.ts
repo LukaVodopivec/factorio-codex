@@ -23,6 +23,13 @@ export interface SpaceEvent {
   platform?: { index: number; name: string }; old?: string; new?: string; surface?: string;
   location?: string; phase?: string; from?: string; to?: string; state?: string;
 }
+/** An own entity destroyed (the mod's loss ring): what, where, how many
+ *  of the same merged into the row, when the last went, and what killed it
+ *  when the game named it. */
+export interface LossRow {
+  name: string; position: { x: number; y: number }; surface?: string; count: number; tick: number;
+  killed_by?: { name?: string; type?: string; force?: string };
+}
 /** The mod's cheap event_state probe. */
 export interface EventState {
   tick: number; queue_depth: number; fifo_empty: boolean; human_hold: boolean;
@@ -39,6 +46,8 @@ export interface EventState {
   last_space_event_tick?: number; space_events?: SpaceEvent[];
   /** The asking role's watch firings at or after the watch_since it passed, oldest first. */
   watch_fired?: WatchFiring[];
+  /** The newest own loss's tick and the last few losses, oldest first (mod 0.32 on). */
+  last_loss_tick?: number; losses?: LossRow[];
 }
 /** A watch the role set (set_watch) crossing its threshold. */
 export interface WatchFiring {
@@ -74,8 +83,8 @@ export const EVENT_POLL_MS = 500;
 
 /** Blocks until something the pilot should act on happens: a plan ends, a
  *  research finishes, the FIFO empties, a machine problem appears, one of the
- *  role's watches fires, a package fails its check, the orders change, a
- *  human hold starts or ends; otherwise
+ *  role's watches fires, own entities are destroyed, a package fails its
+ *  check, the orders change, a human hold starts or ends; otherwise
  *  times out. A plan_ended event carries the plan's step outcomes and
  *  inventory change, so no follow-up read is needed. */
 export async function waitForEvent(bridge: Bridge, input: NextEventInput, sources: EventSources,
@@ -93,13 +102,19 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
   // Space events after since_tick, or (without it) after the call started.
   const spaceSeen = since ?? previous.last_space_event_tick ?? -1;
   const newSpace = (state: EventState) => (luaArray(state.space_events ?? []) as SpaceEvent[]).filter((row) => row.tick > spaceSeen);
-  // Space events and watch firings never get lost behind another event: they
-  // ride along, since the caller's next since_tick is the returned tick.
+  // Own losses after since_tick, or (without it) after the call started; a
+  // merged row comes again with its new count.
+  const lossSeen = since ?? previous.last_loss_tick ?? -1;
+  const newLosses = (state: EventState) => (luaArray(state.losses ?? []) as LossRow[]).filter((row) => row.tick > lossSeen);
+  // Space events, watch firings and losses never get lost behind another
+  // event: they ride along, since the caller's next since_tick is the
+  // returned tick.
   const done = (event: string, state: EventState, details: Record<string, unknown> = {}) => {
     const space = (SPACE_EVENTS as readonly string[]).includes(event) ? [] : newSpace(state);
     const fired = event === "watch_fired" ? [] : luaArray(state.watch_fired ?? []);
+    const losses = event === "entities_lost" ? [] : newLosses(state);
     return { event, ...details, ...(space.length > 0 ? { space_events: space } : {}),
-      ...(fired.length > 0 ? { watches: fired } : {}), tick: state.tick,
+      ...(fired.length > 0 ? { watches: fired } : {}), ...(losses.length > 0 ? { losses } : {}), tick: state.tick,
       body: { active_plan_id: state.active_plan_id ?? null, queue_depth: state.queue_depth,
         fifo_empty: state.fifo_empty, human_hold: state.human_hold } };
   };
@@ -127,6 +142,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     const rows = luaArray(state.watch_fired ?? []) as WatchFiring[];
     return rows.length > 0 ? done("watch_fired", state, { watches: rows }) : null;
   };
+  const lost = (state: EventState) => done("entities_lost", state, { losses: newLosses(state) });
   const researched = (state: EventState) => done("research_finished", state, { technology: state.last_research_finished!.technology,
     research_tick: state.last_research_finished!.tick, ...idleResearch(state) });
   // The problem tick counts machines on every surface: the body's surface's
@@ -166,6 +182,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if ((previous.last_problem_tick ?? -1) > since) return problems(since, previous);
     const fired = watched(previous);
     if (fired) return fired;
+    if ((previous.last_loss_tick ?? -1) > since) return lost(previous);
     const space = spaceEvent(previous);
     if (space) return space;
   }
@@ -193,6 +210,7 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if ((state.last_problem_tick ?? -1) > (previous.last_problem_tick ?? -1)) return problems(previous.tick, state);
     const fired = watched(state);
     if (fired) return fired;
+    if ((state.last_loss_tick ?? -1) > (previous.last_loss_tick ?? -1)) return lost(state);
     const space = spaceEvent(state);
     if (space) return space;
     const failed = undelivered(state);
@@ -248,12 +266,26 @@ export function watchText(row: WatchFiring): string {
 }
 const platformName = (value: Record<string, unknown>) => (value.platform as { name?: string } | undefined)?.name;
 
+/** A loss in words: how many of what, where, and what killed it. */
+export function lossText(row: LossRow): string {
+  const by = row.killed_by?.name ?? row.killed_by?.force;
+  return `${row.count} ${row.name} at ${at(row.position)}${row.surface ? ` on ${row.surface}` : ""}${by ? ` by ${by}` : ""}`;
+}
+const lossesText = (rows: LossRow[]) => `own entities destroyed: ${rows.slice(0, 2).map(lossText).join("; ") || "?"}`
+  + (rows.length > 2 ? `; ${rows.length - 2} more rows` : "");
+/** A plan's outcomes that repeat an earlier step's code at the same action
+ *  and target: "<code> again at <action> (<n>th time)". */
+function repeatText(outcomes: unknown): string {
+  const repeated = (Array.isArray(outcomes) ? outcomes : []).filter((row: any) => typeof row?.repeat === "number");
+  return repeated.slice(0, 2).map((row: any) => `; ${row.code} again at step ${row.step} ${row.action} (${row.repeat} in a row)`).join("");
+}
+
 function eventText(value: Record<string, unknown>): string {
   switch (value.event) {
     case "plan_ended": {
       const research = value.research_finished as { technology?: string; research_idle?: boolean } | undefined;
-      return `plan ${value.plan_id} ended ${value.status}${research ? `; research ${research.technology} finished` : ""}`
-        + (research?.research_idle ? `: ${RESEARCH_IDLE}` : "");
+      return `plan ${value.plan_id} ended ${value.status}${repeatText(value.outcomes)}`
+        + `${research ? `; research ${research.technology} finished` : ""}` + (research?.research_idle ? `: ${RESEARCH_IDLE}` : "");
     }
     case "research_finished": return `research ${value.technology} finished${value.research_idle ? `: ${RESEARCH_IDLE}` : ""}`;
     case "package_failed": return `package ${value.package_id} was not queued: ${value.reason ?? "unknown reason"}`;
@@ -267,6 +299,7 @@ function eventText(value: Record<string, unknown>): string {
       return `${rows.length} watch${rows.length === 1 ? "" : "es"} fired: ${rows.slice(0, 2).map(watchText).join("; ")}`
         + (rows.length > 2 ? `; ${rows.length - 2} more in watches` : "");
     }
+    case "entities_lost": return lossesText(Array.isArray(value.losses) ? value.losses as LossRow[] : []);
     case "queue_empty": return typeof value.upkeep_off_since_tick === "number"
       ? `${IDLE_NOW}; upkeep off since stop at tick ${value.upkeep_off_since_tick} until a plan finishes` : IDLE_NOW;
     case "orders_changed": return "the strategist's orders changed";
@@ -291,8 +324,10 @@ export function eventSummary(value: Record<string, unknown>): string {
   const space = Array.isArray(value.space_events) ? value.space_events.length : 0;
   const along = space > 0 && !(SPACE_EVENTS as readonly string[]).includes(String(value.event));
   const fired = value.event !== "watch_fired" && Array.isArray(value.watches) ? value.watches.length : 0;
+  const lost = value.event !== "entities_lost" && Array.isArray(value.losses) ? value.losses as LossRow[] : [];
   const text = `${eventText(value)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`
-    + (fired > 0 ? `; ${fired} watch${fired === 1 ? "" : "es"} fired too, in watches` : "");
+    + (fired > 0 ? `; ${fired} watch${fired === 1 ? "" : "es"} fired too, in watches` : "")
+    + (lost.length > 0 ? `; ${lossesText(lost)}` : "");
   const body = value.body as { fifo_empty?: boolean; human_hold?: boolean } | undefined;
   const idle = body?.fifo_empty === true && body.human_hold !== true;
   return idle && !["queue_empty", "cancelled", "human_hold_started"].includes(String(value.event)) ? `${text}; ${IDLE_NOW}` : text;

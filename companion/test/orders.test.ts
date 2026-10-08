@@ -52,6 +52,8 @@ function fakeBridge(overrides: Record<string, (params: any) => unknown> = {}) {
     if (method === "blueprint_capture") return { name: params.name, entities: 4 };
     if (method === "queue_plan") return { plan_id: ++next };
     if (method === "plan_status") return { plan_id: params.plan_id, status: "running", source: sources.get(params.plan_id) };
+    // The change journal: nothing changed in any footprint.
+    if (method === "activity_log") return { tick: 900, entries: {}, omitted: 0, changes: { rows: {}, omitted: 0, size: 200 } };
     throw new Error(`unexpected ${method}`);
   };
   const call = vi.fn(async (method: string, params: any) => {
@@ -111,6 +113,41 @@ describe("package auto-queue", () => {
     expect(queuedPlans(call)).toHaveLength(2);
     expect(createOrdersTracker(() => dir).attach(result({ summary: "ok" })).structuredContent.orders.packages)
       .toEqual([{ id: "iron-a", status: "queued", plan_id: 41 }, { id: "iron-b", status: "queued", plan_id: 42 }]);
+  });
+
+  it("spans a package's footprint over its anchor and every position its steps name, padded", () => {
+    const entry = { ...furnaces("wide"), steps: [
+      { action: "place_entity", x: 1.5, y: 2.5, name: "stone-furnace" },
+      { action: "build_layout", anchor: { x: 10, y: 10 }, entities: [{ name: "lab", dx: 4, dy: -2 }] },
+      { action: "deconstruct_area", center: { x: -5, y: 0 }, radius: 2 },
+      { action: "copy_settings", from: { x: 0, y: 0 }, to: [{ x: 3, y: -4 }] },
+      // Hub-relative positions on a platform are not on the package's surface.
+      { action: "set_recipe", x: 99, y: 99, recipe: "x", platform: 1 }] };
+    expect(coordination.packageFootprint(entry as never)).toEqual({ left_top: { x: -10, y: -7 }, right_bottom: { x: 17, y: 13 } });
+  });
+
+  it("records what changed in a package's footprint after its source_tick, and queues it anyway", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [furnaces("iron-a"), furnaces("iron-b")]);
+    const row = { tick: 50, op: "removed", name: "stone-furnace", by: "human", surface: "nauvis", position: { x: 1.5, y: 2.5 } };
+    // A merged row stands for each change it covers.
+    const merged = { tick: 60, op: "built", name: "transport-belt", by: "human", surface: "nauvis", count: 5,
+      area: { left_top: { x: 0, y: 0 }, right_bottom: { x: 4, y: 0 } } };
+    const asked: unknown[] = [];
+    const { call, bridge } = fakeBridge({ activity_log: (params) => {
+      asked.push(params);
+      return asked.length === 1 ? { tick: 900, entries: {}, omitted: 0, changes: { rows: [row, merged], omitted: 2, size: 200 } }
+        : (() => { throw new ModError("unknown method"); })();
+    } });
+    await createPackageQueue(() => dir, bridge).tick();
+    expect(asked[0]).toEqual({ limit: 1, changes: { since_tick: 10, surface: "nauvis", limit: 3,
+      area: { left_top: { x: -3, y: -3 }, right_bottom: { x: 4.5, y: 5.5 } } } });
+    expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:iron-a", "package:iron-b"]);
+    const records = readPackageQueue(dir)!.packages;
+    expect(records["iron-a"]).toMatchObject({ status: "queued", footprint_changed: { count: 8, changes: [row, merged] } });
+    // A journal that cannot be read (an older mod) records nothing and holds nothing.
+    expect(records["iron-b"]).toMatchObject({ status: "queued" });
+    expect(records["iron-b"]).not.toHaveProperty("footprint_changed");
   });
 
   it("records a failed check, never queues it, and surfaces the failure", async () => {

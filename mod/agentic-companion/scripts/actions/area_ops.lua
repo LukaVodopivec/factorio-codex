@@ -40,7 +40,7 @@ local MAX_GHOSTS = 100
 local ORDERS_PER_TICK = 50
 local MAX_ROWS = 10           -- failure rows listed in a result
 -- The dry-run survey rows a hand or planet-ghost blueprint_place check reports.
-local SURVEYED = { on_ore = true, mixed_ore = true, open_fluid_ports = true, fluid_mixes = true }
+local SURVEYED = { on_ore = true, mixed_ore = true, open_fluid_ports = true, fluid_mixes = true, belt_joins = true }
 local MAX_TARGETS = 32
 local NATURAL_TYPES = { "tree", "simple-entity", "plant" } -- natural entities the body may clear
 -- Own-force entities that are never mined by an area action.
@@ -309,7 +309,8 @@ M.place_action = {
 -- materials against what the body carries; in hand mode an item the body
 -- cannot obtain now (unobtainable) makes it not ok. A placement that fits
 -- (here or at the free position) also reports build_layout's survey rows
--- on_ore, mixed_ore and open_fluid_ports (a platform has no ore). A place
+-- on_ore, mixed_ore, open_fluid_ports and belt_joins (a platform has no
+-- ore). A place
 -- whose pipes the build would be refused for mixing fluids is not free: no
 -- free_position, free_reason names the pipe (and at the position it is a
 -- collision). A job: the same search and per-tick budget as build_layout's
@@ -346,7 +347,7 @@ M.place_check_job = {
         surface = "platform:" .. job.platform.index, position = job.anchor, ok = report.ok, collisions = collisions,
         already = report.already, needs_planned_tiles = report.needs_planned_tiles, materials = report.materials,
         tiles = report.tiles, configuration_verified = false, missing = report.missing or {},
-        open_fluid_ports = report.open_fluid_ports }
+        open_fluid_ports = report.open_fluid_ports, belt_joins = report.belt_joins }
     end
     local c = actor(job.platform)
     local s = job.search
@@ -399,8 +400,9 @@ M.place_check_job = {
       tool_unlock = blueprints.tool_unlock(c, "blueprint") }
     if job.mode == "ghosts" then out.construction_robots = blueprints.construction_robots(c, job.anchor) end
     if not report.ok then return out end
-    -- What stands on ore, drills over mixed ore, and fluid ports that meet
-    -- nothing, as build_layout's dry run reports them, from the next tick.
+    -- What stands on ore, drills over mixed ore, fluid ports that meet
+    -- nothing and belt joins, as build_layout's dry run reports them, from
+    -- the next tick.
     local started = s.ctx.calls
     job.out, job.survey = out, build_layout.survey_start(s.ctx, result, SURVEYED)
     budget.left = budget.left - (s.ctx.calls - started)

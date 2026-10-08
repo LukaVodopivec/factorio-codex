@@ -33,8 +33,9 @@
 -- A dry run whose layout fits also reports, as data and never as a failure,
 -- inserters [{name,x,y,direction,picks_from,drops_into}], belt_ends
 -- [{name,x,y,direction,faces}], unpowered [{name,x,y}], isolated_poles
--- [{name,x,y}], on_ore [{name,x,y,ore}], mixed_ore [{name,x,y,mines,also}]
--- and open_fluid_ports [{name,x,y,port}] (see the dry-run survey). A planned
+-- [{name,x,y}], on_ore [{name,x,y,ore}], mixed_ore [{name,x,y,mines,also}],
+-- open_fluid_ports [{name,x,y,port}] and belt_joins (belt_joins.lua) (see
+-- the dry-run survey). A planned
 -- fluid entity that would join two standing fluids through the layout's own
 -- earlier pipes fails BLOCKED, as the game would refuse it.
 --
@@ -52,6 +53,7 @@ local companion = require("scripts.companion")
 local placement_geometry = require("scripts.placement_geometry")
 local output_target = require("scripts.output_target")
 local connect_entities = require("scripts.connect_entities")
+local belt_joins = require("scripts.belt_joins")
 local fluid_connections = require("scripts.fluid_connections")
 local build_plan = require("scripts.actions.build_plan")
 local build = require("scripts.actions.build")
@@ -1545,7 +1547,9 @@ end
 -- (on_ore, by resource), each drill whose mining area holds more than one
 -- resource it can mine (mixed_ore: mines is the one with the most tiles,
 -- also the rest), and fluid connections that meet nothing (open_fluid_ports,
--- see fluid_open). One thing it finds is a failure, not data: a planned
+-- see fluid_open), and where planned belts, splitter and underground outputs
+-- and drops join belts, with each joined lane's items (belt_joins, see
+-- belt_joins.lua). One thing it finds is a failure, not data: a planned
 -- fluid entity the game would refuse in the build's order because, through
 -- the layout's own earlier pipes, it would join two fluids that stand
 -- already (fluid_mixes, see mix_check). Pickup and drop points are
@@ -1649,7 +1653,7 @@ end
 -- Which report row each survey item kind fills.
 local ROW_OF = { inserter = "inserters", belt = "belt_ends", entrance = "belt_ends", power = "unpowered",
   pole = "isolated_poles", ore = "on_ore", drill = "mixed_ore", fluid = "open_fluid_ports",
-  seed = "fluid_mixes", mix = "fluid_mixes" }
+  seed = "fluid_mixes", mix = "fluid_mixes", join = "belt_joins", joins = "belt_joins" }
 local CRAFTERS = { ["assembling-machine"] = true, furnace = true, ["rocket-silo"] = true }
 
 local function uses_fluid(recipe_name)
@@ -1742,7 +1746,8 @@ local function survey_start(ctx, result, only)
   ctx.calls = ctx.calls + math.ceil(#planned / LOAD_PER_ITEM)
   local V = { planned = planned, tiles = tiles, items = {}, i = 1, widest = widest_supply(), group = {}, linked = {},
     ports = {}, port_at = {}, wild = {}, seeds = {}, mixes = {}, unders = {},
-    rows = { inserters = {}, belt_ends = {}, unpowered = {}, on_ore = {}, mixed_ore = {}, open_fluid_ports = {} } }
+    rows = { inserters = {}, belt_ends = {}, unpowered = {}, on_ore = {}, mixed_ore = {}, open_fluid_ports = {},
+      belt_joins = {} } }
   local function add(item)
     if not only or only[ROW_OF[item.kind]] then V.items[#V.items + 1] = item end
   end
@@ -1810,6 +1815,13 @@ local function survey_start(ctx, result, only)
     if V.ports[i] then add({ kind = "seed", i = i }) end
   end
   if next(V.ports) ~= nil then add({ kind = "mix", i = 1 }) end
+  -- Belt joins: one item per planned belt piece or drop, after the drills
+  -- (what they mine), then one pass over what they found.
+  if not only or only.belt_joins then
+    V.joins = belt_joins.start(planned)
+    for k = 1, #V.joins.units do add({ kind = "join", i = V.joins.units[k] }) end
+    add({ kind = "joins", i = 1 })
+  end
   return V
 end
 
@@ -1837,6 +1849,28 @@ local function survey_query(ctx, filter, accepts)
     end
   end
   return best
+end
+
+-- Every own entity a small query finds that stands on a charted chunk,
+-- charged like survey_query.
+local function survey_all(ctx, filter)
+  local surface, force = where(ctx)
+  filter.force = force
+  ctx.calls = ctx.calls + SURVEY_QUERY
+  local ok, found = pcall(surface.find_entities_filtered, filter)
+  if not (ok and type(found) == "table") then return {} end
+  ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
+  local out = {}
+  for _, entity in ipairs(found) do
+    if entity.valid and charted_at(ctx, entity.position) then out[#out + 1] = entity end
+  end
+  return out
+end
+
+-- The reads belt_joins makes, charged to the dry run's work.
+local function join_io(ctx)
+  return { query = function(area) return survey_all(ctx, { area = area, type = belt_joins.TYPES }) end,
+    charge = function(n) ctx.calls = ctx.calls + n end }
 end
 
 -- What an inserter endpoint lands in: the planned entity whose footprint
@@ -2174,16 +2208,22 @@ local function survey_item(ctx, V, item)
     local found = r and resources_in(ctx, supply_box(p.position, r), function(name) return mines(p.proto, name) end)
     local names = {}
     for name in pairs(found or {}) do names[#names + 1] = name end
+    table.sort(names, function(a, b)
+      if found[a] ~= found[b] then return found[a] > found[b] end
+      return a < b
+    end)
+    -- What it mines is what its drop adds to a belt (belt_joins).
+    if V.joins then belt_joins.set_mined(V.joins, item.i, names) end
     if #names > 1 then
-      table.sort(names, function(a, b)
-        if found[a] ~= found[b] then return found[a] > found[b] end
-        return a < b
-      end)
       local also = {}
       for k = 2, #names do also[names[k]] = found[names[k]] end
       rows.mixed_ore[#rows.mixed_ore + 1] = { name = p.name, x = p.position.x, y = p.position.y, mines = names[1],
         also = also }
     end
+  elseif item.kind == "join" then
+    belt_joins.scan(V.joins, V.planned, V.tiles, join_io(ctx))
+  elseif item.kind == "joins" then
+    rows.belt_joins = belt_joins.finish(V.joins, V.planned, V.tiles, join_io(ctx))
   elseif item.kind == "fluid" then
     for _, port in ipairs(fluid_open(ctx, V, item.i, item.rule)) do
       rows.open_fluid_ports[#rows.open_fluid_ports + 1] = { name = p.name, x = p.position.x, y = p.position.y,

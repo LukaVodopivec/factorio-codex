@@ -150,6 +150,12 @@ local permissive = false -- the expansion tests check geometry only
 local character
 local crowded = false     -- a built-up base: every land tile holds a wall
 local engine = { can_place = 0, find = 0 }
+-- A query's type filter: one type or a list of them.
+local function of_type(e, filter)
+  if type(filter.type) ~= "table" then return filter.type == nil or e.type == filter.type end
+  for _, t in ipairs(filter.type) do if e.type == t then return true end end
+  return false
+end
 local surface = {
   index = 1, name = "nauvis", planet = { name = "nauvis" },
   can_place_entity = function(args)
@@ -209,7 +215,7 @@ local surface = {
       for _, b in ipairs(blockers) do
         if b.position.x > filter.area.left_top.x and b.position.x < filter.area.right_bottom.x
           and b.position.y > filter.area.left_top.y and b.position.y < filter.area.right_bottom.y
-          and (filter.type == nil or b.type == filter.type) then out[#out + 1] = b end
+          and of_type(b, filter) then out[#out + 1] = b end
         if filter.limit and #out >= filter.limit then break end
       end
       return out
@@ -218,7 +224,7 @@ local surface = {
       local out = {}
       for _, b in ipairs(blockers) do
         local dx, dy = b.position.x - filter.position.x, b.position.y - filter.position.y
-        if dx * dx + dy * dy <= filter.radius * filter.radius and (filter.type == nil or b.type == filter.type) then
+        if dx * dx + dy * dy <= filter.radius * filter.radius and of_type(b, filter) then
           out[#out + 1] = b
         end
       end
@@ -506,6 +512,28 @@ do
     "a belt facing a reversed belt and the reversed belt are belt ends (" .. reversed .. ")")
   local sideload = belt_run({ belt, 4 }, { belt, 0 })
   check(sideload == "901.5:nothing", "a belt side-loading onto another is no end (" .. sideload .. ")")
+
+  -- belt_joins: a drill on the iron patch drops onto a planned belt that
+  -- runs into a standing copper-ore belt; the joined left lane mixes.
+  prototypes.entity["iron-ore"].mineable_properties = { products = { { type = "item", name = "iron-ore", amount = 1 } } }
+  local copper = existing("transport-belt", "transport-belt", 62.5, 49.5, 0.8, { direction = 0,
+    belt_neighbours = { inputs = {}, outputs = {} }, get_max_transport_line_index = function() return 2 end,
+    get_transport_line = function(index)
+      return { get_contents = function() return index == 1 and { { name = "copper-ore", quality = "normal", count = 3 } } or {} end }
+    end })
+  blockers = { copper }
+  local joined = dry({ anchor = { x = 60, y = 50 }, entities = { { name = "burner-mining-drill", dx = 1, dy = 1, direction = 4 },
+    { name = "transport-belt", dx = 2.5, dy = 0.5, direction = 0 } } })
+  local onto, dropped
+  for _, row in ipairs(joined.belt_joins or {}) do
+    if row.standing then onto = row elseif row.join == "drop" then dropped = row end
+  end
+  local left = onto and onto.lanes[1]
+  check(joined.ok and onto and onto.join == "straight" and left.lane == "left" and left.items[1] == "copper-ore"
+    and left.adds[1] == "iron-ore" and left.mixes == true and dropped and dropped.lanes[1].lane == "left",
+    "a layout dry run lists belt_joins: the drill's iron ore joins a standing copper-ore lane and mixes")
+  prototypes.entity["iron-ore"].mineable_properties = nil
+  blockers = {}
 
   local assembler = { name = "assembling-machine-1", dx = 0.5, dy = 0.5, recipe = "iron-gear-wheel" }
   local bare = dry({ anchor = { x = 950, y = 950 }, entities = { assembler } })

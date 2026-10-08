@@ -295,7 +295,16 @@ export function normalizeProductionRequirements(value: any): any {
 }
 
 export function normalizePhysicalRoute(value: any): any {
-  return value && typeof value === "object" ? { ...value, steps: luaArray(value.steps) } : value;
+  return value && typeof value === "object" ? normalizeBeltJoins({ ...value, steps: luaArray(value.steps) }) : value;
+}
+
+// A dry run's belt_joins rows as JSON lists, with null where the mod leaves
+// a lane's adds or mixes unknown (Lua has no null).
+export function normalizeBeltJoins(value: any): any {
+  if (!value || typeof value !== "object" || value.belt_joins === undefined) return value;
+  return { ...value, belt_joins: luaArray(value.belt_joins).map((row: any) => ({ ...row,
+    lanes: luaArray(row?.lanes).map((lane: any) => ({ ...lane, items: luaArray(lane?.items ?? []),
+      adds: lane?.adds === undefined ? null : luaArray(lane.adds), mixes: lane?.mixes ?? null })) })) };
 }
 
 export function normalizeInspection(value: any): any {

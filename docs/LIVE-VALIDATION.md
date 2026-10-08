@@ -168,6 +168,17 @@ observable checks on a copy of a running factory's save:
 These 0.30.0 behaviours were exercised live on a headless 2.0.77 server
 (stack moves, partial and refused moves, belt pickup, spills).
 
+Dry-run `belt_joins` rows (`build_layout`, `blueprint_place`, belt
+`connect_entities`) follow lane rules measured on a headless 2.0.77 server:
+transport line 1 is the left lane; a belt from behind, or the one side input
+of a belt with nothing behind it, keeps lanes; a side input of a belt with
+something behind it side-loads both source lanes onto the near lane; onto an
+underground entrance only the source lane over its back half passes (an
+exit: its front half); a splitter output joins like a belt; an inserter or
+drill drop lands on the lane on its side of the centre line, the right lane
+on the line. To recheck, build each case, dry-run the joining piece, then
+place it and read the receiving belt's transport lines.
+
 For the 0.29.2 release (the bots do the thinking), record these observable
 checks on a copy of a running factory's save:
 

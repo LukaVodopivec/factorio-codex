@@ -522,6 +522,10 @@ describe("protocol v29 DTO and tool registry", () => {
       expect(described[tool]).toMatch(/mixed_ore \(each drill whose mining area holds more than one resource it can mine: mines.*also/);
       expect(described[tool]).toMatch(/open_fluid_ports \(.*pipe run's end.*port is the tile it points at\)/);
     }
+    for (const tool of ["build_layout", "blueprint_place", "connect_entities"]) {
+      expect(described[tool]).toMatch(/belt_joins \(.*join straight \(lanes kept.*side_load \(both source lanes onto the near lane.*drop \(the lane on the drop point's side/);
+      expect(described[tool]).toMatch(/adds: what this source puts there.*null when unknown.*mixes: true when the lane would carry more than one item kind/);
+    }
     expect(described.find_placement).toMatch(/nearest first for every type \(a drill candidate's resource_coverage is data to compare\)/);
     expect(described.factory_status).toMatch(/add_to_cover with both ways to cover the deficit \(steam: steam_engine, plus the boiler and offshore_pump the surface's engines need beyond those standing anywhere on the surface \(a pump feeding chemistry counts too\), no offshore_pump where its tiles give no water; solar where the sun gives power: solar_panel, accumulator\), for you to choose/);
     expect(described.factory_status).toMatch(/resource patches with their outline \(bbox: left_top, right_bottom\)/);

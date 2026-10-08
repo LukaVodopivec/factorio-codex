@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_TASK_TIMEOUT_MS, type Bridge } from "../src/bridge.js";
 import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
 import { queuePlanSchema } from "../src/mcp/runPlan.js";
-import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeFifo, normalizeProductionRequirements, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
+import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeBeltJoins, normalizeFifo, normalizePhysicalRoute, normalizeProductionRequirements, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 describe("public MCP to Lua DTO mappings", () => {
   it("returns canonical structured content without duplicating it as JSON text", () => {
@@ -707,5 +707,19 @@ describe("connect_status body lifecycle", () => {
       .mockRejectedValueOnce(new Error("native player 'Codex' is not connected with a living character"));
     await expect(connectStatus(async () => ({ call } as unknown as Bridge), validConfig)).rejects.toThrow("native player 'Codex' is not connected");
     expect(call.mock.calls).toEqual([["ping"], ["spawn_companion", {}]]);
+  });
+});
+
+describe("dry-run belt_joins rows", () => {
+  it("turns Lua's empty tables into lists and an absent adds or mixes into null", () => {
+    const row = { name: "transport-belt", x: 0.5, y: 0.5, standing: true, from: { name: "inserter", x: 0.5, y: 1.5, standing: false },
+      join: "drop", lanes: [{ lane: "right", items: {} }, { lane: "left", items: ["iron-plate"], adds: {}, mixes: false }] };
+    const normalized = normalizeBeltJoins({ ok: true, belt_joins: [row] });
+    expect(normalized.belt_joins[0].lanes).toEqual([{ lane: "right", items: [], adds: null, mixes: null },
+      { lane: "left", items: ["iron-plate"], adds: [], mixes: false }]);
+    expect(normalizeBeltJoins({ ok: true })).toEqual({ ok: true });
+    const route = normalizePhysicalRoute({ steps: {}, belt_joins: [{ ...row, lanes: [{ lane: "left", items: {}, adds: ["coal"], mixes: true }] }] });
+    expect(route.steps).toEqual([]);
+    expect(route.belt_joins[0].lanes[0]).toEqual({ lane: "left", items: [], adds: ["coal"], mixes: true });
   });
 });

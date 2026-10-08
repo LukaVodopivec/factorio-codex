@@ -30,7 +30,10 @@ frozen final snapshot. Thinking and tool latency count. A native 72000-tick
 backup also freezes the trial. Late freezes over one second, a clock that
 differs from normal 60 UPS by over 60 ticks, missing counters/checkpoints,
 assistance, changed baseline hash, release or profiles make a trial ineligible.
-Short durations are disposable validation only. Honest model stalls count.
+The recorder's run attestation marks a trial assisted by itself when the
+baseline or any sample shows game speed other than 1, cheat mode, an editor or
+god controller, a mod outside the allowlist, or a modifier research does not
+explain (`docs/ARCHITECTURE.md`). Short durations are disposable validation only. Honest model stalls count.
 
 ## Finite command interface
 

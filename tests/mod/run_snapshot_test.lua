@@ -24,6 +24,26 @@ local body = {
 package.loaded["scripts.registry"] = { surfaces = function() return { 1, 2 } end }
 package.loaded["scripts.companion"] = { require_companion = function() return body end }
 dofile(here .. "/body_stub.lua")(package.loaded["scripts.companion"], function() return body end)
+-- The attestation facts: the Codex player, the active mods, and the force's
+-- and character's modifiers against the researched technologies' effects.
+local codex_player = { cheat_mode = false, controller_type = 7, physical_controller_type = 1 }
+_G.defines = { controllers = { character = 1, god = 2, editor = 3, remote = 7 } }
+local present = package.loaded["scripts.companion"].require_present
+package.loaded["scripts.companion"].require_present = function()
+  local b = present(); b.player = codex_player; return b
+end
+_G.script = { active_mods = { base = "2.0.77", ["space-age"] = "2.0.77", ["agentic-companion"] = "0.32.0", extra = "1.0.0" } }
+body.force.technologies = {
+  toolbelt = { researched = true, level = 1, prototype = { level = 1, max_level = 1 } },
+  ["steel-axe"] = { researched = false, level = 1, prototype = { level = 1, max_level = 1 } },
+  ["mining-productivity-3"] = { researched = false, level = 5, prototype = { level = 3, max_level = 4294967295 } },
+}
+body.force.character_inventory_slots_bonus = 10 -- toolbelt explains it
+body.force.manual_mining_speed_modifier = 0 -- steel axe not researched, none granted
+body.force.mining_drill_productivity_bonus = 0.2 -- two finished infinite levels
+body.force.manual_crafting_speed_modifier = 2 -- no research grants it
+body.character_reach_distance_bonus = 5 -- no research raises the character's own
+body.character_crafting_speed_modifier = 0
 package.loaded["scripts.spatial"] = { observe_compact = function(params)
   check(params.radius == 5, "snapshot reuses a bounded compact observation")
   return { character = { inventory = { ["iron-ore"] = 7 } } }
@@ -34,8 +54,13 @@ package.loaded["scripts.map_summary"] = {
 }
 package.loaded["scripts.research"] = { progression_status = function() return { researched = { "automation" } } end }
 
-_G.game = { tick = 18000, get_surface = function(index) return ({ nauvis, vulcanus })[index] end }
-_G.prototypes = { entity = {
+_G.game = { tick = 18000, speed = 1, get_surface = function(index) return ({ nauvis, vulcanus })[index] end }
+_G.prototypes = { technology = {
+  toolbelt = { effects = { { type = "character-inventory-slots-bonus", modifier = 10 } } },
+  ["steel-axe"] = { effects = { { type = "character-mining-speed", modifier = 1 } } },
+  ["mining-productivity-3"] = { effects = { { type = "mining-drill-productivity-bonus", modifier = 0.1 } } },
+  automation = { effects = { { type = "unlock-recipe", recipe = "assembling-machine-1" } } },
+}, entity = {
   iron = { type = "resource", mineable_properties = { products = { { name = "iron-ore", type = "item" } } } },
   oil = { type = "resource", mineable_properties = { products = { { name = "crude-oil", type = "fluid" } } } },
   tree = { type = "tree", mineable_properties = { products = { { name = "wood" } } } },
@@ -79,6 +104,16 @@ check(#snapshot.statistics.raw_resources == 3, "natural resource products are de
 check(snapshot.statistics.raw_resources[1].name == "crude-oil" and snapshot.statistics.raw_resources[2].name == "iron-ore"
   and snapshot.statistics.raw_resources[3].name == "wood", "raw resource identities are deterministic")
 check(snapshot.statistics.semantics.produced == "force_surface_input_counts", "native production semantics are explicit")
+local attest = snapshot.attestation
+check(attest.game_speed == 1 and attest.cheat_mode == false and attest.controller == "remote"
+  and attest.physical_controller == "character", "the attestation states game speed, cheat mode and both controllers by name")
+check(attest.mods.base == "2.0.77" and attest.mods.extra == "1.0.0" and attest.mods["agentic-companion"] == "0.32.0",
+  "the attestation lists every active mod with its version")
+check(#attest.bonuses == 2 and attest.bonuses[1].scope == "character" and attest.bonuses[1].name == "character_reach_distance_bonus"
+  and attest.bonuses[1].value == 5 and attest.bonuses[1].from_research == 0
+  and attest.bonuses[2].scope == "force" and attest.bonuses[2].name == "manual_crafting_speed_modifier"
+  and attest.bonuses[2].value == 2 and attest.bonuses[2].from_research == 0,
+  "only modifiers research does not explain are listed; researched and infinite levels explain theirs")
 
 -- One surface: its own counters are the sums, with no by_surface copy.
 package.loaded["scripts.registry"].surfaces = function() return { 1 } end
@@ -97,3 +132,4 @@ check(walked == 0 and #again.statistics.raw_resources == 3, "a later snapshot re
 
 print("ok   run snapshots retain cumulative resources and bounded diagnostic context")
 print("ok   run snapshots count the Codex player's hand-crafted items from the upgrade tick")
+print("ok   run snapshots attest game speed, cheat mode, controllers, active mods and modifiers research does not explain")

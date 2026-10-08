@@ -6,7 +6,8 @@
 -- stay stable when the body travels; with more than one surface,
 -- statistics.by_surface[ref] = {items, fluids} keeps each one's own. Works
 -- in every body state but absent: the compact observation only while the
--- body stands on a surface.
+-- body stands on a surface. Each snapshot also carries the run attestation
+-- (facts the recorder checks) and the body's time by state (tasks.body_time).
 local autonomy = require("scripts.autonomy")
 local companion = require("scripts.companion")
 local factory_activity = require("scripts.factory_activity")
@@ -15,8 +16,111 @@ local registry = require("scripts.registry")
 local research = require("scripts.research")
 local spatial = require("scripts.spatial")
 local surfaces = require("scripts.surfaces")
+local tasks = require("scripts.tasks")
 
 local M = {}
+
+-- Force modifiers a researched technology raises, by its effect type.
+local FORCE_BONUSES = {
+  manual_crafting_speed_modifier = "character-crafting-speed",
+  manual_mining_speed_modifier = "character-mining-speed",
+  character_running_speed_modifier = "character-running-speed",
+  character_build_distance_bonus = "character-build-distance",
+  character_item_drop_distance_bonus = "character-item-drop-distance",
+  character_reach_distance_bonus = "character-reach-distance",
+  character_resource_reach_distance_bonus = "character-resource-reach-distance",
+  character_item_pickup_distance_bonus = "character-item-pickup-distance",
+  character_loot_pickup_distance_bonus = "character-loot-pickup-distance",
+  character_inventory_slots_bonus = "character-inventory-slots-bonus",
+  character_health_bonus = "character-health-bonus",
+  laboratory_speed_modifier = "laboratory-speed",
+  mining_drill_productivity_bonus = "mining-drill-productivity-bonus",
+}
+-- The character's own modifiers: no technology raises them.
+local CHARACTER_BONUSES = {
+  "character_crafting_speed_modifier", "character_mining_speed_modifier", "character_running_speed_modifier",
+  "character_build_distance_bonus", "character_item_drop_distance_bonus", "character_reach_distance_bonus",
+  "character_resource_reach_distance_bonus", "character_item_pickup_distance_bonus",
+  "character_loot_pickup_distance_bonus", "character_inventory_slots_bonus", "character_health_bonus",
+}
+local EFFECT_FIELDS = {}
+for field, effect in pairs(FORCE_BONUSES) do EFFECT_FIELDS[effect] = field end
+
+-- The technologies with one of those effects: {name, effects = {{field,
+-- modifier}}}, read once per load (prototypes never change at runtime).
+local bonus_techs
+local function bonus_technologies()
+  if bonus_techs then return bonus_techs end
+  local rows = {}
+  for name, technology in pairs(prototypes and prototypes.technology or {}) do
+    local ok, effects = pcall(function() return technology.effects end)
+    local found = {}
+    for _, effect in ipairs(ok and effects or {}) do
+      local field = EFFECT_FIELDS[effect.type]
+      if field and type(effect.modifier) == "number" then found[#found + 1] = { field = field, modifier = effect.modifier } end
+    end
+    if #found > 0 then rows[#rows + 1] = { name = name, effects = found } end
+  end
+  bonus_techs = rows
+  return rows
+end
+
+-- Researched levels of a technology: a leveled (or infinite) one counts
+-- each finished level from its prototype's first.
+local function levels_done(technology)
+  local p = technology.prototype
+  local first, max = p.level or 1, p.max_level or p.level or 1
+  if technology.researched then return max - first + 1 end
+  return math.max(0, (technology.level or first) - first)
+end
+
+local function read(fn)
+  local ok, value = pcall(fn)
+  if ok then return value end
+end
+
+local function controller_name(value)
+  for name, id in pairs(defines and defines.controllers or {}) do if id == value then return name end end
+  return value ~= nil and tostring(value) or nil
+end
+
+-- Facts the recorder checks for an unassisted run: game speed, the Codex
+-- player's cheat mode and controllers, the active mods, and every checked
+-- force or character modifier that differs from what research grants
+-- ({scope, name, value, from_research}).
+local function attestation(body)
+  local player, force = body.player, body.force
+  local from_research = {}
+  local technologies = force and read(function() return force.technologies end)
+  for _, row in ipairs(technologies and bonus_technologies() or {}) do
+    local technology = technologies[row.name]
+    local levels = technology and read(function() return levels_done(technology) end) or 0
+    for _, effect in ipairs(row.effects) do
+      from_research[effect.field] = (from_research[effect.field] or 0) + effect.modifier * levels
+    end
+  end
+  local bonuses = {}
+  local function check(scope, owner, field, expected)
+    local value = owner and read(function() return owner[field] end)
+    if type(value) == "number" and math.abs(value - expected) > 1e-9 then
+      bonuses[#bonuses + 1] = { scope = scope, name = field, value = value, from_research = expected }
+    end
+  end
+  for field in pairs(FORCE_BONUSES) do check("force", force, field, from_research[field] or 0) end
+  local character = body.character
+  for _, field in ipairs(CHARACTER_BONUSES) do check("character", character, field, 0) end
+  table.sort(bonuses, function(a, b) return a.scope == b.scope and a.name < b.name or a.scope < b.scope end)
+  local mods = {}
+  for name, version in pairs(script and script.active_mods or {}) do mods[name] = version end
+  return {
+    game_speed = game.speed,
+    cheat_mode = player and read(function() return player.cheat_mode end),
+    controller = player and controller_name(read(function() return player.controller_type end)),
+    physical_controller = player and controller_name(read(function() return player.physical_controller_type end)),
+    mods = mods,
+    bonuses = bonuses,
+  }
+end
 
 -- Rocks and wrecks (simple-entity) also drop manufactured items, so they are
 -- not raw-resource sources; rock stone and coal are already resource products.
@@ -141,7 +245,7 @@ local function snapshot_finish(S, budget)
         fluids = counters(row.fluids or { unavailable = true }) }
     end
   end
-  budget.left = budget.left - 20 - #read * 8
+  budget.left = budget.left - 30 - #read * 8 - #bonus_technologies()
   return {
     tick = game.tick,
     character = character(body),
@@ -153,6 +257,9 @@ local function snapshot_finish(S, budget)
     factory = map_summary.registry_factory(),
     -- Production lines (autonomy.lua): how many run, self-sustain or are hand-fed.
     lines = autonomy.counts(),
+    -- What the body did by state since body_time.since_tick (tasks.body_time).
+    body_time = tasks.body_time(),
+    attestation = attestation(body),
     statistics = {
       -- Summed over every factory surface (the recorder's keys).
       items = summed.items,

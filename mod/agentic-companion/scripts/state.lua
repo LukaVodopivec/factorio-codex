@@ -54,6 +54,10 @@ function M.init()
     -- first, at most four {surface_index, x, y} (tasks.note_work_site),
     -- absent before one: idle upkeep serves near them.
     work_sites = tasks.work_sites,
+    -- Run telemetry (tasks.body_time): ticks per body state and idle gaps
+    -- since since_tick, and the state in force since state_since.
+    body_time = tasks.body_time or { since_tick = game and game.tick or 0, state = "idle",
+      state_since = game and game.tick or 0, ticks = {}, gaps = {} },
   }
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}

@@ -1907,9 +1907,61 @@ for _, name in ipairs({ "on_robot_pre_mined", "on_robot_mined_entity", "on_robot
     if runner and runner[name] then runner[name](task, event) end
   end
 end
+-- Body time (run telemetry): what the body did, tick by tick, as one state:
+-- a task of a source (pilot for pilot plans and direct tools, package,
+-- upkeep), hand-crafting with no task, a human hold, a dead body with work
+-- waiting, or idle. storage.tasks.body_time (state.lua) keeps the ticks per
+-- state and the idle gaps, keyed by the state that ended them. The state
+-- is read once as each tick begins (a plan dispatched in tick t counts from
+-- t + 1) and written only when it changes; run_snapshot reads it.
+local function body_state(tasks)
+  if tasks.human_hold then return "hold" end
+  if tasks.dead_since then return "dead" end
+  local active = tasks.active
+  if active then
+    local source = active.type == "plan" and active.source or "pilot"
+    if source == "upkeep" then return "upkeep" end
+    return source:sub(1, 8) == "package:" and "package" or "pilot"
+  end
+  local rec = storage.companion
+  local character = rec and rec.entity
+  if character and character.valid and (character.crafting_queue_size or 0) > 0 then return "crafting" end
+  return "idle"
+end
+local function account_body_time(tasks)
+  local time = tasks.body_time
+  if not time then return end
+  local state = body_state(tasks)
+  if state == time.state then return end
+  local span = game.tick - time.state_since
+  time.ticks[time.state] = (time.ticks[time.state] or 0) + span
+  if time.state == "idle" then
+    local gap = time.gaps[state] or { count = 0, ticks = 0, longest = 0 }
+    time.gaps[state] = gap
+    gap.count, gap.ticks = gap.count + 1, gap.ticks + span
+    if span >= gap.longest then gap.longest, gap.longest_end_tick = span, game.tick end
+  end
+  time.state, time.state_since = state, game.tick
+end
+-- {since_tick, state, state_since, ticks = {[state] = n}, gaps = {[ended_by]
+-- = {count, ticks, longest, longest_end_tick}}}, cumulative since
+-- since_tick with the current state's open interval included; nil before
+-- state.init made it.
+function M.body_time()
+  local time = storage.tasks and storage.tasks.body_time
+  if not time then return nil end
+  local ticks, gaps = {}, {}
+  for state, n in pairs(time.ticks) do ticks[state] = n end
+  ticks[time.state] = (ticks[time.state] or 0) + game.tick - time.state_since
+  for state, gap in pairs(time.gaps) do
+    gaps[state] = { count = gap.count, ticks = gap.ticks, longest = gap.longest, longest_end_tick = gap.longest_end_tick }
+  end
+  return { since_tick = time.since_tick, state = time.state, state_since = time.state_since, ticks = ticks, gaps = gaps }
+end
 function M.on_tick()
   if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end
   local tasks = storage.tasks
+  account_body_time(tasks)
   local current = tasks.active and tasks.active.current_task
   local runner = current and runners[current.type]
   -- Pure bounded cargo observation continues through holds; native robots

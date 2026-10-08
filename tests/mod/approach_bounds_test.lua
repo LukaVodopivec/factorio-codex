@@ -45,6 +45,7 @@ local pinned = false                 -- the world refuses every movement
 local wall = function() return false end -- positions the world refuses, unseen by any evidence
 local held = false                   -- the player holds the body
 local path_requests = 0
+local path_goals = {}                -- every path request, by id
 local function water(_, y) return y >= 0 end
 local function overlaps(a, b)
   return a.left_top.x < b.right_bottom.x and a.right_bottom.x > b.left_top.x
@@ -62,7 +63,8 @@ local surface = {
   request_path = function(request)
     path_requests = path_requests + 1
     surface_request = { id = path_requests, start = { x = request.start.x, y = request.start.y },
-      goal = { x = request.goal.x, y = request.goal.y } }
+      goal = { x = request.goal.x, y = request.goal.y }, radius = request.radius }
+    path_goals[path_requests] = surface_request
     return path_requests
   end,
   get_tile = function(x, y)
@@ -177,6 +179,7 @@ local function answer_path()
 end
 local function reset(x, y)
   entities, inventory, pinned, held, path_requests, surface_request = {}, {}, false, false, 0, nil
+  path_goals = {}
   wall, shore_route, detour = function() return false end, true, nil
   body.position, body.walking_state, body.mining_state = { x = x, y = y }, {}, {}
   body.crafting_queue, body.crafting_queue_size, body.crafting_queue_progress = {}, 0, 0
@@ -730,6 +733,33 @@ outcome = record and last_outcome(record)
 check(record ~= nil and record.status == "completed" and outcome.result.code == "LAYOUT_BUILT"
   and entities[#entities].position.x == 3.5 and body.position.x <= -0.2 and body.position.y < -6,
   "a settle step blocked by a corner walks to its off-belt tile by a native path and builds: "
+    .. tostring(outcome and (outcome.error or outcome.result and outcome.result.code)))
+
+-- Inside a dense layout the body stands on a belt in build reach of its
+-- placement; its off-belt tile is the one beside it (chests and belts fill
+-- the rest). Something no evidence shows (as above) stops the straight step
+-- 0.4 tiles short, the body's box still on the belt's edge; the way in is
+-- from the north. The native-path fallback walks there; 0.29.2 counted
+-- itself "arrived" within half a tile without asking for a path, repeated the
+-- straight step and failed "ordinary walking did not leave transport-belt
+-- ... within 60 ticks".
+reset(0.5, -5.5)
+entities = { belts(0, -9, 1, -2), chest(-0.5, -6.5), chest(-0.5, -5.5), chest(-0.5, -4.5), chest(1.5, -4.5) }
+wall = function(p) return p.x >= 1.2 and p.x < 1.4 and p.y > -5.8 and p.y < -5.2 end
+detour = { { x = 0.5, y = -6.5 }, { x = 1.5, y = -6.5 } }
+inventory = { ["wooden-chest"] = 1 }
+plan = tasks.queue_plan({ steps = { { action = "build_layout", anchor = { x = 3, y = -6 },
+  entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } } } }).plan_id
+record, took = run(plan, 600)
+outcome = record and last_outcome(record)
+local settle_path
+for _, request in pairs(path_goals) do
+  if request.goal.x == 1.5 and request.goal.y == -5.5 then settle_path = request end
+end
+check(record ~= nil and record.status == "completed" and outcome.result.code == "LAYOUT_BUILT"
+  and entities[#entities].position.x == 3.5 and body.position.x - 0.2 >= 1 and took < 300
+  and settle_path and settle_path.radius < 0.3,
+  "a settle step stopped beside its off-belt tile in a dense layout walks there by a native path and builds: "
     .. tostring(outcome and (outcome.error or outcome.result and outcome.result.code)))
 
 print(failures == 0 and "\nALL APPROACH BOUNDS TESTS PASSED" or ("\n" .. failures .. " APPROACH BOUNDS TEST(S) FAILED"))

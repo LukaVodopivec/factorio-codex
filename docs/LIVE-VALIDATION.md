@@ -270,8 +270,9 @@ turning them into a fixed opening or map-specific sequence:
   to a clear off-belt tile (reported as `settle`), within 4 tiles, or for an
   approach within 8 tiles and still in reach of its target, else anywhere in
   that reach (searched over a few ticks). A step that ordinary walking cannot
-  finish in time, or a tile beyond those rings, is walked to once by a
-  native path. A layout retries
+  finish in time (even one stopped a few tenths short), or cut short by a
+  blocked start, or a tile beyond those rings, is walked to once by a native
+  path to the tile centre itself, before any `BODY_ON_CONVEYOR`. A layout retries
   once, after its last step, a placement whose approach failed
   `BODY_ON_CONVEYOR` or `START_COLLISION`. `BODY_ON_CONVEYOR` leaves
   the body on the belt, where it drifts until the next `walk_to` off it; after

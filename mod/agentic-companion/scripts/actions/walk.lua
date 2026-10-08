@@ -56,6 +56,12 @@ local SETTLE_TICKS = 60 -- per 4 tiles to the off-belt tile
 -- reach of its target (up to 10 tiles: about 320 cells), this many a tick.
 local SETTLE_SEARCH_RADIUS = 10
 local SETTLE_CHECKS_PER_TICK = 48
+-- How close a settle's native path brings the body to its off-belt tile
+-- centre: under the 0.3 tiles between a body box there and the next tile, so
+-- a routed settle ends off every belt (within 0.5 a body that came from the
+-- belt's side still stood on its edge). Its tiles are tile centres, where the
+-- native 1x1 path grid has a node.
+local SETTLE_ROUTE_RADIUS = 0.25
 
 -- tan(22.5 deg): boundary between cardinal and diagonal octants
 local OCTANT_RATIO = 0.41421356
@@ -155,6 +161,7 @@ end
 
 local function request_path(state, c, task_id, target, phase, radius)
   target = target or state.target
+  radius = radius or state.path_radius
   state.walk_dir, state.steer_leg = nil, nil
   local id = c.surface.request_path({
     bounding_box = { { -0.2, -0.2 }, { 0.2, 0.2 } },
@@ -790,14 +797,17 @@ end
 
 -- A native path to an off-belt tile centre that a straight step cannot
 -- reach (beyond the rings around the body, or past machines in the way).
--- One per settle; its walker is the settle's own (state.settle_route).
+-- One per settle; its walker is the settle's own (state.settle_route). It
+-- walks to the tile itself (SETTLE_ROUTE_RADIUS): a body still on the belt
+-- always asks for the path, never "arrives" beside the tile it failed to
+-- reach and repeats the straight step.
 local function settle_routed(state, c, cell, conveyor)
   state.phase = "settling"
   state.settle = { from = { x = c.position.x, y = c.position.y }, to = cell,
     conveyor = conveyor, started_tick = game.tick, routed = true }
   local route = {}
-  M.begin(route, c, cell, 0.5, "exact")
-  route.off_belt = true
+  M.begin(route, c, cell, SETTLE_ROUTE_RADIUS, "exact")
+  route.off_belt, route.path_radius = true, SETTLE_ROUTE_RADIUS
   state.settle_route = route
   state.walk_dir, state.steer_leg = nil, nil
   stop(c)
@@ -919,7 +929,7 @@ local function step_settle(state, c, task_id)
       return settle_failure(c, settle.conveyor, string.format("the walk to the off-belt tile (%.1f, %.1f) failed: %s",
         settle.to.x, settle.to.y, r.failed), { settle = settle, route = r.outcome })
     end
-    -- At the tile but still on a belt's edge or just out of reach: the rest is one straight step.
+    -- At the tile but just out of reach (or a belt laid there since): the rest is one straight step.
     settle_straight(state, c, settle.to, settle.conveyor)
     return nil
   end
@@ -930,6 +940,17 @@ local function step_settle(state, c, task_id)
     if not settle.routed then
       settle_routed(state, c, settle.to, settle.conveyor)
       return nil
+    end
+    -- Off the belt but short of reach: the route stopped within its radius
+    -- of a tile at the reach's edge and the last straight step was blocked.
+    if not placement_geometry.conveyor_under(c) then
+      return fail(c, "PATH_STALLED", string.format(
+        "stepped off %s but stopped at (%.1f, %.1f), %.2f tiles from the target, beyond reach %.2f: ordinary walking"
+          .. " did not reach the off-belt tile (%.1f, %.1f) within %d ticks", settle.conveyor.name, pos.x, pos.y,
+        math.sqrt(dist_sq(pos, state.settle_anchor)), state.settle_limit, settle.to.x, settle.to.y, allowed),
+        { code = "PATH_STALLED", diagnostics = { path = { evidence_scope = "charted_visible_only",
+          start = { x = pos.x, y = pos.y }, settle = settle, settle_anchor = state.settle_anchor,
+          settle_limit = state.settle_limit } } })
     end
     return fail(c, "BODY_ON_CONVEYOR", string.format(
       "ordinary walking did not leave %s toward (%.1f, %.1f) within %d ticks",
@@ -1144,6 +1165,13 @@ function M.step(state, c, task_id)
   if at_goal(state, pos) then
     local conveyor = not state.off_belt and placement_geometry.conveyor_under(c)
     if conveyor then
+      local settle = state.settle
+      if state.settle_attempted and settle and settle.to and not settle.routed then
+        -- A blocked start cut the straight step short: walk to its tile by
+        -- the native path a timed-out step gets, before failing.
+        settle_routed(state, c, settle.to, settle.conveyor)
+        return nil
+      end
       if state.settle_attempted then
         return fail(c, "BODY_ON_CONVEYOR", "the body still stands on " .. conveyor.name
           .. " after its bounded off-belt step", { code = "BODY_ON_CONVEYOR",

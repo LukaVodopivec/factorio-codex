@@ -58,6 +58,7 @@ local entities = {
   ["pipe-to-ground"] = entity("pipe-to-ground", "pipe-to-ground", 1, 1),
   ["pumpjack"] = entity("pumpjack", "mining-drill", 3, 3, { mining_drill_radius = 0.99, electric = true,
     resource_categories = { ["basic-fluid"] = true } }),
+  ["oil-refinery"] = entity("oil-refinery", "assembling-machine", 5, 5, { electric = true }),
 }
 -- 2.0 pipe connections: a tile inside the north-facing entity and the
 -- direction leading out of it; the four positions turn with the entity.
@@ -93,6 +94,10 @@ entities["pumpjack"].fluidbox_prototypes = { typed_box("none", 1, { { 1, -1, 0 }
 entities["pumpjack"].fluidbox_prototypes[1].pipe_connections[1].flow_direction = "output"
 entities["assembling-machine-2"].fluidbox_prototypes = { typed_box("input", 1, { { 0, -1, 0 } }),
   typed_box("output", 2, { { 0, 1, 8 } }) }
+-- The oil refinery as 2.0.77 has it: inputs 1 and 2 south, outputs 3 to 5
+-- north (which fluid sits in which comes from the recipe).
+entities["oil-refinery"].fluidbox_prototypes = { typed_box("input", 1, { { -1, 2, 8 } }), typed_box("input", 2, { { 1, 2, 8 } }),
+  typed_box("output", 3, { { -2, -2, 0 } }), typed_box("output", 4, { { 0, -2, 0 } }), typed_box("output", 5, { { 2, -2, 0 } }) }
 -- A pipe-to-ground: a normal side north, the underground side south.
 entities["pipe-to-ground"].fluidbox_prototypes = { fluid_box(1, { { 0, 0, 0 }, { 0, 0, 8 } }) }
 entities["pipe-to-ground"].fluidbox_prototypes[1].pipe_connections[2].connection_type = "underground"
@@ -101,7 +106,8 @@ for name, proto in pairs(entities) do items[name] = { name = name, place_result 
 items["iron-plate"] = { name = "iron-plate", stack_size = 100 }
 _G.prototypes = { item = items, entity = { ["iron-ore"] = { name = "iron-ore", type = "resource", resource_category = "basic-solid" },
   ["copper-ore"] = { name = "copper-ore", type = "resource", resource_category = "basic-solid" },
-  ["crude-oil"] = { name = "crude-oil", type = "resource", resource_category = "basic-fluid" } },
+  ["crude-oil"] = { name = "crude-oil", type = "resource", resource_category = "basic-fluid",
+    mineable_properties = { products = { { type = "fluid", name = "crude-oil", amount = 10 } } } } },
   tile = { water = { collision_mask = { layers = { water_tile = true } }, fluid = { name = "water" } },
     grass = { collision_mask = { layers = { ground_tile = true } } } },
   -- Nauvis's map generation places water (power blocks need it).
@@ -110,6 +116,11 @@ _G.prototypes = { item = items, entity = { ["iron-ore"] = { name = "iron-ore", t
   -- What the survey reads of a recipe: whether it takes or makes a fluid.
   recipe = { ["iron-gear-wheel"] = { ingredients = { { type = "item", name = "iron-plate", amount = 2 } },
       products = { { type = "item", name = "iron-gear-wheel", amount = 1 } } },
+    ["advanced-oil-processing"] = { ingredients = { { type = "fluid", name = "water", amount = 50 },
+      { type = "fluid", name = "crude-oil", amount = 100 } }, products = { { type = "fluid", name = "heavy-oil", amount = 25 },
+      { type = "fluid", name = "light-oil", amount = 45 }, { type = "fluid", name = "petroleum-gas", amount = 55 } } },
+    ["basic-oil-processing"] = { ingredients = { { type = "fluid", name = "crude-oil", amount = 100, fluidbox_index = 2 } },
+      products = { { type = "fluid", name = "petroleum-gas", amount = 45, fluidbox_index = 3 } } },
     ["water-barrel"] = { ingredients = { { type = "fluid", name = "water", amount = 50 }, { type = "item", name = "barrel", amount = 1 } },
       products = { { type = "item", name = "water-barrel", amount = 1 } } } } }
 for name, proto in pairs(entities) do prototypes.entity[name] = proto end
@@ -261,6 +272,8 @@ for name in pairs(items) do recipes[name] = { name = name, enabled = true,
 recipes["iron-gear-wheel"] = { name = "iron-gear-wheel", enabled = true }
 recipes["locked-thing"] = { name = "locked-thing", enabled = false }
 recipes["water-barrel"] = { name = "water-barrel", enabled = true }
+recipes["advanced-oil-processing"] = { name = "advanced-oil-processing", enabled = true }
+recipes["basic-oil-processing"] = { name = "basic-oil-processing", enabled = true }
 character = {
   valid = true, name = "character", position = { x = 500.5, y = 500.5 },
   bounding_box = { left_top = { x = 500.3, y = 500.3 }, right_bottom = { x = 500.7, y = 500.7 } },
@@ -712,6 +725,74 @@ do
     and to_standing.failed[1].reason:match("^pipe%-to%-ground at %(960%.5, 975%.5%): it would join lubricant and petroleum%-gas pipes") ~= nil,
     "a planned pipe-to-ground fed lubricant fails when its standing underground partner carries petroleum gas")
   check(to_same.ok and #to_same.failed == 0, "a standing underground partner of the same fluid joins nothing that mixes")
+
+  -- Recipe-aware ports (port_fluids): a refinery on advanced oil processing
+  -- takes water south-west (980.5 + -1) and crude oil south-east; a
+  -- standing pipe at the crude inlet holding heavy oil is a mismatch row,
+  -- the same pipe holding crude oil is none. Data, never a failure.
+  local function refinery(recipe, extra)
+    local list = { { name = "oil-refinery", dx = 0.5, dy = 0.5, recipe = recipe } }
+    for _, e in ipairs(extra or {}) do list[#list + 1] = e end
+    return dry({ anchor = { x = 980, y = 980 }, entities = list })
+  end
+  local function port_row(report, x, y)
+    for _, row in ipairs(report.port_fluids or {}) do if row.port.x == x and row.port.y == y then return row end end
+  end
+  local function mismatches(report)
+    local n = 0
+    for _, row in ipairs(report.port_fluids or {}) do if row.mismatch then n = n + 1 end end
+    return n
+  end
+  blockers = { standing_fluid_pipe(981.5, 983.5, "heavy-oil") }
+  local swapped = refinery("advanced-oil-processing")
+  local crude_in = port_row(swapped, 981.5, 983.5)
+  check(swapped.ok and #(swapped.port_fluids or {}) == 5 and crude_in and crude_in.role == "input"
+    and crude_in.fluid == "crude-oil" and crude_in.meets == "pipe" and crude_in.carries and crude_in.carries[1] == "heavy-oil"
+    and #crude_in.carries == 1 and crude_in.mismatch == true and mismatches(swapped) == 1,
+    "a standing heavy-oil pipe at a refinery's crude-oil inlet is a port_fluids mismatch row, and the dry run stays ok")
+  local water_in, gas_out = port_row(swapped, 979.5, 983.5), port_row(swapped, 982.5, 977.5)
+  check(water_in and water_in.fluid == "water" and water_in.meets == "nothing" and water_in.mismatch == nil
+    and gas_out and gas_out.role == "output" and gas_out.fluid == "petroleum-gas",
+    "each refinery port names the fluid its recipe puts there, and what it meets")
+  blockers = { standing_fluid_pipe(981.5, 983.5, "crude-oil") }
+  local correct = refinery("advanced-oil-processing")
+  check(correct.ok and mismatches(correct) == 0 and port_row(correct, 981.5, 983.5).meets == "pipe",
+    "the same pipe holding crude oil at the crude-oil inlet is no mismatch")
+  blockers = {}
+  -- A planned pumpjack's crude oil into the water inlet: its source fluid
+  -- (the resource under it) meets the port the recipe gives water.
+  resources[#resources + 1] = { valid = true, name = "crude-oil", type = "resource", position = { x = 70.5, y = 30.5 } }
+  local piped_wrong = dry({ anchor = { x = 70, y = 30 }, entities = { { name = "pumpjack", dx = 0.5, dy = 0.5 },
+    { name = "oil-refinery", dx = 2.5, dy = -3.5, recipe = "advanced-oil-processing" } } })
+  -- Without a crafter on a fluid recipe no port_fluids row exists, so the
+  -- planned pumpjack's resource is not read for one: the refinery adds its
+  -- own on_ore read and that one, the layout without it neither.
+  local function resource_reads(list)
+    local before = engine.resource_reads or 0
+    local report = dry({ anchor = { x = 70, y = 30 }, entities = list })
+    return (engine.resource_reads or 0) - before, report
+  end
+  local jack = { name = "pumpjack", dx = 0.5, dy = 0.5 }
+  local alone_reads, alone = resource_reads({ jack })
+  local with_reads = resource_reads({ jack, { name = "oil-refinery", dx = 2.5, dy = -3.5, recipe = "advanced-oil-processing" } })
+  resources[#resources] = nil
+  check(alone.ok and alone.port_fluids == nil and with_reads == alone_reads + 2,
+    "a layout without a crafter on a fluid recipe reads no planned source for port_fluids")
+  local wrong_row = port_row(piped_wrong, 71.5, 29.5)
+  check(piped_wrong.ok and wrong_row and wrong_row.fluid == "water" and wrong_row.meets == "pumpjack"
+    and wrong_row.carries and wrong_row.carries[1] == "crude-oil" and wrong_row.mismatch == true and mismatches(piped_wrong) == 1,
+    "a planned pumpjack piped into a refinery's water inlet is a mismatch: crude oil meets the water port")
+  -- Basic oil processing uses only the crude-oil inlet (box 2) and the gas
+  -- outlet (box 5): the game removes the other boxes, so a pipe at the
+  -- water inlet meets a closed port and its own end is open.
+  local basic = refinery("basic-oil-processing", { { name = "pipe", dx = -0.5, dy = 3.5 } })
+  local closed = port_row(basic, 979.5, 983.5)
+  local open_pipe
+  for _, row in ipairs(basic.open_fluid_ports or {}) do if row.name == "pipe" then open_pipe = row end end
+  check(basic.ok and #basic.port_fluids == 3 and closed and closed.closed == true and closed.fluid == nil
+    and closed.meets == "pipe" and port_row(basic, 981.5, 983.5).fluid == "crude-oil"
+    and port_row(basic, 982.5, 977.5).fluid == "petroleum-gas" and port_row(basic, 980.5, 977.5) == nil and open_pipe,
+    "a basic-oil refinery's unused water inlet is a closed row when a pipe meets it, and that pipe is an open end")
   check(not tunnelled.ok and #tunnelled.failed == 1 and tunnelled.failed[1].index == 3
     and tunnelled.failed[1].reason:match("would join lubricant and petroleum%-gas pipes") ~= nil,
     "the lubricant a planned pipe-to-ground pair carries under a gap meets petroleum gas past its exit")

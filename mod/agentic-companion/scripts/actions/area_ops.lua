@@ -40,7 +40,7 @@ local MAX_GHOSTS = 100
 local ORDERS_PER_TICK = 50
 local MAX_ROWS = 10           -- failure rows listed in a result
 -- The dry-run survey rows a hand or planet-ghost blueprint_place check reports.
-local SURVEYED = { on_ore = true, mixed_ore = true, open_fluid_ports = true, fluid_mixes = true, belt_joins = true }
+local SURVEYED = { on_ore = true, mixed_ore = true, open_fluid_ports = true, fluid_mixes = true, belt_joins = true, port_fluids = true }
 local MAX_TARGETS = 32
 local NATURAL_TYPES = { "tree", "simple-entity", "plant" } -- natural entities the body may clear
 -- Own-force entities that are never mined by an area action.
@@ -347,7 +347,7 @@ M.place_check_job = {
         surface = "platform:" .. job.platform.index, position = job.anchor, ok = report.ok, collisions = collisions,
         already = report.already, needs_planned_tiles = report.needs_planned_tiles, materials = report.materials,
         tiles = report.tiles, configuration_verified = false, missing = report.missing or {},
-        open_fluid_ports = report.open_fluid_ports, belt_joins = report.belt_joins }
+        open_fluid_ports = report.open_fluid_ports, belt_joins = report.belt_joins, port_fluids = report.port_fluids }
     end
     local c = actor(job.platform)
     local s = job.search

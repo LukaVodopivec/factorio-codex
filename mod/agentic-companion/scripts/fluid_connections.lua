@@ -104,6 +104,117 @@ function M.ports(proto, direction, area)
   return out
 end
 
+-- ------------------------------------------------- recipe fluid boxes
+-- How a crafting machine's recipe uses its fluid boxes, as Factorio 2.0.77
+-- sets them (read live on every base and Space Age crafter): input boxes
+-- take the recipe's fluid ingredients, output boxes its fluid products, each
+-- role in prototype box order against the recipe's fluids in recipe order.
+--  * No fluid of a role: the game removes that role's boxes, connections
+--    and all (an assembler on gears has no box).
+--  * Fluids that name a fluidbox_index (basic oil processing: crude oil 2,
+--    petroleum gas 3) take the role's box at that place; the role's other
+--    boxes are removed.
+--  * As many fluids as boxes: one box each, in order.
+--  * Fewer: the first fluid takes the first boxes merged into one, each
+--    later fluid one of the last boxes (two fluids in three boxes: 1+2, 3).
+--    Seen for up to three boxes of a role, which every crafter has.
+-- {[box index] = {role, fluid}}: fluid is false for a removed box; a box
+-- whose use is not known (more than three boxes of a role with fewer
+-- fluids, an index only some fluids name, a box neither input nor output)
+-- is left out.
+local RECIPE_ROLE = { input = "ingredients", output = "products" }
+local recipe_box_cache = {}
+function M.recipe_boxes(proto, recipe_name)
+  local key = tostring(proto and proto.name) .. "|" .. tostring(recipe_name)
+  local cached = recipe_box_cache[key]
+  if cached then return cached end
+  local out = {}
+  pcall(function()
+    local recipe = prototypes.recipe[recipe_name]
+    local boxes = { input = {}, output = {} }
+    for index, box in pairs(proto.fluidbox_prototypes) do
+      local list = boxes[box.production_type]
+      if list then list[#list + 1] = tonumber(box.index) or tonumber(index) end
+    end
+    for role, field in pairs(RECIPE_ROLE) do
+      local list = boxes[role]
+      table.sort(list)
+      local fluids, indexed = {}, 0
+      for _, row in ipairs(recipe[field] or {}) do
+        if row.type == "fluid" then
+          fluids[#fluids + 1] = row
+          if tonumber(row.fluidbox_index) and row.fluidbox_index > 0 then indexed = indexed + 1 end
+        end
+      end
+      local m, n = #list, #fluids
+      if n == 0 then
+        for _, b in ipairs(list) do out[b] = { role = role, fluid = false } end
+      elseif indexed == n then
+        for _, b in ipairs(list) do out[b] = { role = role, fluid = false } end
+        for _, row in ipairs(fluids) do
+          local b = list[row.fluidbox_index]
+          if b then out[b] = { role = role, fluid = row.name } end
+        end
+      elseif indexed == 0 and n <= m and (n == m or m <= 3) then
+        for k, b in ipairs(list) do
+          out[b] = { role = role, fluid = fluids[math.max(1, k - (m - n))].name }
+        end
+      end
+    end
+  end)
+  recipe_box_cache[key] = out
+  return out
+end
+
+-- M.ports of a crafting machine on a recipe, each port with its role and
+-- fluid (recipe_boxes; fluid false: a removed box that connects nothing,
+-- nil: not known).
+function M.recipe_ports(proto, recipe_name, direction, area)
+  local ports = M.ports(proto, direction, area)
+  local uses = recipe_name and M.recipe_boxes(proto, recipe_name) or {}
+  for _, port in ipairs(ports) do
+    local use = uses[port.box]
+    if use then port.role, port.fluid = use.role, use.fluid end
+  end
+  return ports
+end
+
+-- The role of a live box ("input", "output", ...), merged boxes included
+-- (all members of one share it), nil when unreadable.
+local function live_role(entity, index)
+  local ok, role = pcall(function()
+    local proto = entity.fluidbox.get_prototype(index)
+    if type(proto) == "table" and proto[1] ~= nil then proto = proto[1] end
+    return proto.production_type
+  end)
+  return ok and type(role) == "string" and role or nil
+end
+M.live_role = live_role
+
+-- The fluid a live box is set to take: its runtime filter (a crafter's
+-- comes from its recipe), else the fluid it is locked to; nil when neither.
+function M.takes(entity, index)
+  local ok, filter = pcall(function() return entity.fluidbox.get_filter(index) end)
+  if ok and type(filter) == "table" and type(filter.name) == "string" then return filter.name end
+  local locked_ok, locked = pcall(function() return entity.fluidbox.get_locked_fluid(index) end)
+  return locked_ok and type(locked) == "string" and locked or nil
+end
+
+-- The fluid on the far side of a live connection: what the box it reaches
+-- holds, else what that box's fluid segment holds; nil when nothing.
+function M.target_fluid(target_entity, target_index)
+  if not (target_entity and target_index) then return nil end
+  local ok, name = pcall(function()
+    local held = target_entity.fluidbox[target_index]
+    if held and type(held.name) == "string" then return held.name end
+    local contents = target_entity.fluidbox.get_fluid_segment_contents(target_index)
+    for fluid, amount in pairs(contents or {}) do
+      if type(fluid) == "string" and amount > 0 then return fluid end
+    end
+  end)
+  return ok and name or nil
+end
+
 function M.live(entity, internal)
   local rows, count, complete = {}, 0, true
   local count_ok = pcall(function() count = #entity.fluidbox end)
@@ -151,6 +262,24 @@ function M.live(entity, internal)
     return a.fluidbox_index < b.fluidbox_index
   end)
   return rows, complete
+end
+
+-- M.live rows as inspect shows them, each with what its box takes (M.takes)
+-- and, when connected, the fluid it meets (M.target_fluid); mismatch when
+-- both are known and differ.
+function M.inspected(entity)
+  local rows = M.live(entity, true)
+  local takes = {}
+  for _, row in ipairs(rows) do
+    local index = row.fluidbox_index
+    if takes[index] == nil then takes[index] = M.takes(entity, index) or false end
+    row.takes = takes[index] or nil
+    row.meets = M.target_fluid(row._target_entity, row._target_fluidbox_index)
+    if row.takes and row.meets and row.takes ~= row.meets then row.mismatch = true end
+    row._pipe_connection_index, row._target_entity, row._target_fluidbox_index = nil, nil, nil
+    row._target_pipe_connection_index = nil
+  end
+  return rows
 end
 
 -- The fluid a live box takes: its runtime filter (a crafting machine's comes

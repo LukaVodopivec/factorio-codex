@@ -387,7 +387,7 @@ local function inspect_one(position, c)
   end
 
   collect_fluids(e, out)
-  local connections = fluid_connections.live(e)
+  local connections = fluid_connections.inspected(e)
   if #connections > 0 then out.fluid_connections = connections end
 
   return out, e

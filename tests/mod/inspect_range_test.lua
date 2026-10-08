@@ -185,6 +185,37 @@ for _, unreadable in ipairs({
 end
 fluidbox.get_prototype = native_prototype
 
+-- Per port: what the box takes (its recipe filter, else its locked fluid)
+-- and the fluid the connection meets (what the box it reaches holds, else
+-- that box's segment). A refinery with heavy oil piped to its crude inlet.
+local heavy_pipe = mock.entity({ valid = true, name = "pipe", type = "pipe", position = { x = 4.5, y = 6.5 },
+  fluidbox = setmetatable({ [1] = { name = "heavy-oil", amount = 100 } }, { __len = function() return 1 end }) })
+local crude_pipe = mock.entity({ valid = true, name = "pipe", type = "pipe", position = { x = 2.5, y = 6.5 },
+  fluidbox = { get_fluid_segment_contents = function() return { ["crude-oil"] = 40 } end } })
+local refinery_boxes = setmetatable({
+  get_filter = function(index) return index == 2 and { name = "crude-oil" } or nil end,
+  get_locked_fluid = function(index) return index == 1 and "crude-oil" or nil end,
+  get_prototype = function(index) return { index = index, production_type = "input" } end,
+  get_pipe_connections = function(index)
+    local pipe = index == 2 and heavy_pipe or crude_pipe
+    return { { position = { x = pipe.position.x, y = 5.5 }, target_position = pipe.position, connection_type = "normal",
+      flow_direction = "input", target = mock.fluidbox({ owner = pipe }), target_fluidbox_index = 1 } }
+  end,
+}, { __len = function() return 2 end })
+local refinery = mock.entity({ valid = true, name = "oil-refinery", type = "assembling-machine", direction = 0,
+  position = { x = 3.5, y = 3.5 }, prototype = {}, fluidbox = refinery_boxes })
+found_entity = refinery
+local refinery_ports = inspect.inspect({ targets = { refinery.position } }).entities[1].fluid_connections
+local swapped, fed
+for _, row in ipairs(refinery_ports or {}) do
+  if row.fluidbox_index == 2 then swapped = row else fed = row end
+end
+check(swapped and swapped.takes == "crude-oil" and swapped.meets == "heavy-oil" and swapped.mismatch == true
+  and swapped._target_entity == nil and swapped.connected_target.name == "pipe",
+  "a crude-oil inlet meeting a pipe of heavy oil reports takes, meets and mismatch")
+check(fed and fed.takes == "crude-oil" and fed.meets == "crude-oil" and fed.mismatch == nil,
+  "a box with no filter takes its locked fluid; an empty box met reads its segment's fluid; matching is no mismatch")
+
 local ore = mock.entity({ valid = true, name = "iron-ore", type = "resource", position = { x = 2.25, y = 0.25 }, amount = 873 })
 local drill = mock.entity({
   valid = true, name = "burner-mining-drill", type = "mining-drill", direction = 4,

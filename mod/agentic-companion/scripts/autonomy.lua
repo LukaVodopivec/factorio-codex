@@ -36,6 +36,8 @@
 --                   depleted drill last mined;
 --                   worked out when the cause machine or its status changes
 --                   (and every 10 s while it lasts), never by a read
+--   meets           (a fluid cause) the other fluid the lacking box's
+--                   connections meet, as heavy oil piped to a crude-oil inlet
 --   temperature     (power lines with a reactor or heat exchanger) the lowest
 --                   sampled heat-source temperature
 --   working         machines that progressed in the last 10 s
@@ -60,6 +62,7 @@
 local registry = require("scripts.registry")
 local platforms = require("scripts.platforms")
 local surfaces = require("scripts.surfaces")
+local fluid_connections = require("scripts.fluid_connections")
 
 local M = {}
 
@@ -533,9 +536,9 @@ local function missing_input(rec)
   for _, ingredient in ipairs(ingredients or {}) do
     if ingredient.type == "fluid" then
       local ok, amount = pcall(entity.get_fluid_count, ingredient.name)
-      if ok and (amount or 0) < (ingredient.amount or 1) then return ingredient.name, false end
+      if ok and (amount or 0) < (ingredient.amount or 1) then return ingredient.name, "fluid" end
     elseif inventory and inventory.get_item_count(ingredient.name) < (ingredient.amount or 1) then
-      return ingredient.name, true
+      return ingredient.name, "item"
     end
   end
 end
@@ -554,10 +557,31 @@ local function ingredient_names(rec)
     if ingredient.type ~= "fluid" then names[ingredient.name] = true end
   end
   return names
+-- The other fluid what a box's connections reach holds (fluid_connections
+-- target_fluid: a pipe of heavy oil at a crude-oil inlet), else nil.
+local function box_meets(entity, index, fluid)
+  local ok, connections = pcall(entity.fluidbox.get_pipe_connections, index)
+  for _, connection in ipairs(ok and connections or {}) do
+    local target = connection.target
+    local met = target and fluid_connections.target_fluid(target.owner, connection.target_fluidbox_index)
+    if met and met ~= fluid then return met end
+  end
+end
+
+-- The other fluid the inlet a machine takes this fluid through meets, else
+-- nil (box_meets of its first input box filtered to it).
+local function fluid_meets(entity, fluid)
+  local boxes = entity.fluidbox
+  for index = 1, #boxes do
+    local filter = boxes.get_filter(index)
+    if filter and filter.name == fluid and fluid_connections.live_role(entity, index) ~= "output" then
+      return box_meets(entity, index, fluid)
+    end
+  end
 end
 
 -- The fluid a fluid-starved machine lacks: the filter of its first input
--- fluidbox (else of any fluidbox), else "fluid".
+-- fluidbox (else of any fluidbox), else "fluid"; then fluid_meets.
 local function fluid_cause(entity)
   local boxes = entity.fluidbox
   local first
@@ -565,9 +589,7 @@ local function fluid_cause(entity)
     local filter = boxes.get_filter(index)
     if filter then
       first = first or filter.name
-      local ok, prototype = pcall(boxes.get_prototype, index)
-      local production = ok and prototype and (prototype.production_type or prototype[1] and prototype[1].production_type)
-      if production ~= "output" then return filter.name end
+      if fluid_connections.live_role(entity, index) ~= "output" then return filter.name, fluid_meets(entity, filter.name) end
     end
   end
   return first or "fluid"
@@ -582,10 +604,14 @@ local FUEL = "fuel"
 local function cause_of(rec, state)
   local raw = rec.raw
   if state == "starved" then
-    if FLUID_STATUS[raw] then return fluid_cause(rec.entity) end
+    if FLUID_STATUS[raw] then
+      local fluid, meets = fluid_cause(rec.entity)
+      return fluid, nil, meets
+    end
     if raw == "no_spot_seedable_by_inputs" then return "seed" end
-    local name, item = missing_input(rec)
-    return name, item and name or nil
+    local lack, kind = missing_input(rec)
+    if kind == "fluid" then return lack, nil, fluid_meets(rec.entity, lack) end
+    return lack, kind == "item" and lack or nil
   elseif state == "no_fuel" then
     return nil, FUEL
   elseif state == "idle" and (raw == "no_recipe" or raw == "recipe_not_researched"
@@ -889,12 +915,12 @@ local function evaluate(a, tick)
     line.working, line.temperature = productive, temperature
     local cause_rec = cause_unit and a.machines[cause_unit]
     if not cause_rec then
-      line.cause, line.cause_for, line.cause_raw, line.cause_tick = nil, nil, nil, nil
+      line.cause, line.cause_for, line.cause_raw, line.cause_tick, line.cause_meets = nil, nil, nil, nil, nil
     elseif cause_unit ~= line.cause_for or cause_rec.raw ~= line.cause_raw or tick - line.cause_tick >= CAUSE_TICKS then
       if causes_left > 0 then
         causes_left = causes_left - 1
-        local ok, cause, wanted = pcall(cause_of, cause_rec, state)
-        cause = ok and cause or nil
+        local ok, cause, wanted, meets = pcall(cause_of, cause_rec, state)
+        cause, meets = ok and cause or nil, ok and meets or nil
         -- Its feeders, once per episode and after a line refresh (in the
         -- same cause unit).
         if ok and wanted and feed_due(cause_rec, state, wanted) then
@@ -904,10 +930,11 @@ local function evaluate(a, tick)
         -- A starved machine whose lack cannot be named (a furnace that never
         -- smelted has no recipe to read) gives the game's own status.
         if not cause and state == "starved" then cause = cause_rec.raw end
-        if cause ~= line.cause then line.changed_tick = tick end
+        if cause ~= line.cause or meets ~= line.cause_meets then line.changed_tick = tick end
         -- Capped, lines that stalled together are worked out over several
         -- evaluates, so their causes also age out on different ones.
         line.cause, line.cause_for, line.cause_raw, line.cause_tick = cause, cause_unit, cause_rec.raw, tick
+        line.cause_meets = meets
       elseif not cursor then
         cursor = index
       end
@@ -1080,6 +1107,7 @@ function M.lines(since_tick, surface)
         row.cause_position = { x = rec.position.x, y = rec.position.y }
         row.cause = line.cause
         row.feed = feed_row(current_feed(rec, line.state, line.state == "no_fuel" and FUEL or line.cause))
+        row.meets = line.cause_meets
       end
       local member = line.degraded_unit and a.machines[line.degraded_unit]
       if line.state == "running" and line.degraded and member then

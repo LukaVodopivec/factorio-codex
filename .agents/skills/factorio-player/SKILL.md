@@ -128,6 +128,7 @@ retried after the hold.
   area holds another resource too) and `open_fluid_ports` (a fluid connection
   that meets nothing). They and belt route dry runs list `belt_joins` (lane
   joins, `mixes`).
+- `port_fluids`: each crafter port's recipe `fluid` and what its system `carries`.
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
 - `inspect_entity` gives belt `lanes` and `lane_mix`, inserter `holding`;

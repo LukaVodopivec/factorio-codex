@@ -759,6 +759,12 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(normalizeFactoryStatus({ lines: {}, problems: {}, power: {}, patches: {}, stock: [{ item: "coal", holders: {} }],
       research: { available: {}, queue: {} }, body: { inventory_summary: [] } })).toEqual({ lines: [], problems: [], power: [], patches: [],
       stock: [{ item: "coal", holders: [] }], research: { available: [], queue: [] }, body: { inventory_summary: {} } });
+    // Labs lacking packs: counts stay a map, each pack's positions a list.
+    expect(normalizeFactoryStatus({ research: { available: {}, packs_per_minute_made: { "automation-science-pack": 4.5 },
+      labs: { count: 3, starved_by: { "logistic-science-pack": 2 }, starved_at: { "logistic-science-pack": [{ x: 1, y: 2 }],
+        "military-science-pack": {} } } } }).research).toEqual({ available: [], packs_per_minute_made: { "automation-science-pack": 4.5 },
+      labs: { count: 3, starved_by: { "logistic-science-pack": 2 }, starved_at: { "logistic-science-pack": [{ x: 1, y: 2 }],
+        "military-science-pack": [] } } });
     expect(normalizeActivityLog({ tick: 5, entries: {}, omitted: 0 })).toEqual({ tick: 5, entries: [], omitted: 0 });
     expect(normalizeProductionRequirements({ nodes: {} }).nodes).toEqual([]);
     // Technology and location modes carry the roots inside deterministic_requirements.

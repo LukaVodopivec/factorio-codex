@@ -19,6 +19,7 @@
 -- conditions limit where they run, with the planets that allow them.
 local companion = require("scripts.companion")
 local research = require("scripts.research")
+local autonomy = require("scripts.autonomy")
 
 local M = {}
 local FLOW_PRECISIONS = {
@@ -536,7 +537,8 @@ end
 -- prototypes at call time (crafting and mining speed, recipe and mining
 -- time, energy use, burner effectivity, fuel value, belt speed); nothing is
 -- tabulated. Counts are nominal full-duty capacity at normal quality with
--- no modules, beacons or mining-productivity research.
+-- no modules, beacons or mining-productivity research. Each stage and raw
+-- row also sets its demand against what already stands (see standing).
 
 local function round(value) return math.floor(value * 100 + 0.5) / 100 end
 
@@ -584,7 +586,39 @@ local function tier_rows(force, protos, speed_of, work, fuel)
   return rows
 end
 
-local function rate_plan(force, expanded, fuel_name)
+-- The stated demand against what stands: the own lines on the planned
+-- surface making the item (autonomy's sampled lines: their measured rate,
+-- count and, when every member's is known, nameplate), the shortfall from
+-- that rate, and what the surface made of it in the last minute (one flow
+-- statistics read: hand-crafting, byproducts and machines outside lines
+-- included). No entity read.
+local function standing(row, item, demand, place)
+  if not place.surface then
+    row.standing_per_min, row.standing_lines, row.short_per_min = 0, 0, round(demand)
+    return row
+  end
+  local rate, lines, max = autonomy.producing(item, place.surface.index, true)
+  row.standing_per_min, row.standing_lines = round(rate), lines
+  if lines > 0 then row.standing_max_per_min = max end
+  row.short_per_min = round(math.max(0, demand - rate))
+  local kind = prototypes.fluid and prototypes.fluid[item] and not (prototypes.item and prototypes.item[item]) and "fluid" or "item"
+  local statistics = place[kind]
+  if statistics == nil then
+    statistics = read(function()
+      if kind == "fluid" then return place.force.get_fluid_production_statistics(place.surface) end
+      return place.force.get_item_production_statistics(place.surface)
+    end) or false
+    place[kind] = statistics
+  end
+  local made = statistics and read(function()
+    return statistics.get_flow_count({ name = item, category = "input",
+      precision_index = defines.flow_precision_index.one_minute, count = false })
+  end)
+  if type(made) == "number" then row.made_per_min = round(made) end
+  return row
+end
+
+local function rate_plan(force, expanded, fuel_name, place)
   local fuel_proto = prototypes.item[fuel_name]
   local fuel = { name = fuel_name, joules = fuel_proto.fuel_value, category = read(function() return fuel_proto.fuel_category end) }
   local crafters = {}
@@ -599,9 +633,10 @@ local function rate_plan(force, expanded, fuel_name)
     end
     -- Crafting work per second at speed 1, shared out by machine speed.
     local work = node.recipe_executions / 60 * node.craft_time_seconds_per_execution
-    stages[#stages + 1] = { item = node.item, recipe = node.recipe, category = node.category,
+    stages[#stages + 1] = standing({ item = node.item, recipe = node.recipe, category = node.category,
       units_per_minute = round(node.required_units), executions_per_minute = round(node.recipe_executions),
-      machines = tier_rows(force, able, function(proto) return read(function() return proto.get_crafting_speed() end) end, work, fuel) }
+      machines = tier_rows(force, able, function(proto) return read(function() return proto.get_crafting_speed() end) end, work, fuel) },
+      node.item, node.required_units, place)
   end
   local resources = prototypes.get_entity_filtered({ { filter = "type", type = "resource" } })
   local drills = prototypes.get_entity_filtered({ { filter = "type", type = "mining-drill" } })
@@ -629,7 +664,7 @@ local function rate_plan(force, expanded, fuel_name)
       end
     end
     if #row.drills == 0 then row.note = "no drill mines it: a fluid, a hand-gathered or asteroid product, or another planet's resource" end
-    raw[#raw + 1] = row
+    raw[#raw + 1] = standing(row, item, per_minute, place)
   end
   local belts = {}
   for name, proto in pairs(prototypes.get_entity_filtered({ { filter = "type", type = "transport-belt" } })) do
@@ -639,7 +674,7 @@ local function rate_plan(force, expanded, fuel_name)
   end
   table.sort(belts, function(a, b) return a.items_per_minute < b.items_per_minute end)
   return { units = "per_minute",
-    basis = "nominal full-duty capacity at normal quality with built-in productivity; no modules, beacons or researched productivity",
+    basis = "machine and drill counts: nominal full-duty capacity at normal quality with built-in productivity; no modules, beacons or researched productivity",
     reference_fuel = { item = fuel.name, megajoules = round(fuel.joules / 1e6), category = fuel.category },
     stages = stages, raw = raw, belts = belts }
 end
@@ -677,7 +712,12 @@ function M.production_requirements(params)
   local expanded = expand_targets(force, targets, choices,
     { partial = false, location = location, filter_location = params.planet, rate = params.per_minute == true })
   if params.per_minute == true then
-    return annotate({ planet = location, targets_per_minute = targets, rates = rate_plan(force, expanded, fuel) }, expanded, force)
+    -- The planned surface: the named planet's (none until it exists), else
+    -- the body's.
+    local surface = body.surface
+    if params.planet ~= nil then surface = read(function() return game.planets[params.planet].surface end) end
+    local place = { force = force, surface = surface }
+    return annotate({ planet = location, targets_per_minute = targets, rates = rate_plan(force, expanded, fuel, place) }, expanded, force)
   end
   return annotate({ units = { targets = "item_or_fluid_units", raw = "item_or_fluid_units",
       products = "item_or_fluid_units", time = "seconds_at_crafting_speed_1" },

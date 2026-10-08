@@ -10,7 +10,7 @@ local function recipe(name, ingredients, products, enabled, energy, category)
   return { name = name, ingredients = ingredients, products = products, enabled = enabled, energy = energy, category = category }
 end
 
-local character = { valid = true, surface = { name = "nauvis", planet = { name = "nauvis" } } }
+local character = { valid = true, surface = { index = 1, name = "nauvis", planet = { name = "nauvis" } } }
 local force = { recipes = {
   ["iron-plate"] = recipe("iron-plate", { { name = "iron-ore", amount = 1 } }, { { name = "iron-plate", amount = 1 } }, true, 3.2, "smelting"),
   ["iron-gear-wheel"] = recipe("iron-gear-wheel", { { name = "iron-plate", amount = 2 } }, { { name = "iron-gear-wheel", amount = 1 } }, true, 0.5, "crafting"),
@@ -71,6 +71,23 @@ function prototypes.get_entity_filtered(filters)
 end
 _G.game = { tick = 1 }
 _G.defines = { flow_precision_index = { five_seconds = 1, one_minute = 2, ten_minutes = 3, one_hour = 4 } }
+-- Standing supply: the line sampler's own lines (stubbed: surface 1 has
+-- one furnace line making 18 plates a minute of a 24 nameplate) and the
+-- surface's flow statistics (20 plates a minute, hand-crafting included).
+local producing_calls, flow_reads = {}, {}
+package.loaded["scripts.autonomy"] = { producing = function(item, surface, nameplate_too)
+  producing_calls[#producing_calls + 1] = { item = item, surface = surface, nameplate_too = nameplate_too }
+  if item == "iron-plate" and surface == 1 then return 18, 1, 24 end
+  return 0, 0, nameplate_too and 0 or nil
+end }
+force.get_item_production_statistics = function(surface)
+  return { get_flow_count = function(spec)
+    flow_reads[#flow_reads + 1] = { surface = surface, name = spec.name, category = spec.category,
+      precision_index = spec.precision_index, count = spec.count }
+    return spec.name == "iron-plate" and 20 or 0
+  end }
+end
+force.get_fluid_production_statistics = function() error("no fluid in these plans") end
 local production = require("scripts.production_requirements")
 
 local function close(a, b) return a ~= nil and math.abs(a - b) < 0.011 end
@@ -111,4 +128,30 @@ check(#organic == 1 and close(organic[1].machines, 0.67) and organic[1].fuel_per
 check(#gears.stages[1].machines == 1, "machines with no placing item (crash-site wrecks) are not listed")
 check(close(production.production_requirements({ targets = { ["iron-plate"] = 7.5 }, per_minute = true }).rates.stages[1].machines[1].machines, 0.4),
   "fractional rates are accepted and planned exactly")
+
+-- Stated demand against standing supply: every stage and raw row says what
+-- own lines on the planned surface make (rate, lines, nameplate), the
+-- shortfall from that rate, and what the surface made in the last minute.
+producing_calls, flow_reads = {}, {}
+local stood = production.production_requirements({ targets = { ["iron-plate"] = 30 }, per_minute = true }).rates
+local plate_stage, ore_row = stood.stages[1], stood.raw[1]
+check(plate_stage.standing_per_min == 18 and plate_stage.standing_lines == 1 and plate_stage.standing_max_per_min == 24
+  and plate_stage.short_per_min == 12 and plate_stage.made_per_min == 20,
+  "30 plates a minute against one line making 18 (nameplate 24): 12 short, 20 made on the surface")
+check(ore_row.standing_per_min == 0 and ore_row.standing_lines == 0 and ore_row.standing_max_per_min == nil
+  and ore_row.short_per_min == 30 and ore_row.made_per_min == 0,
+  "no ore line: standing 0 with no nameplate, the whole 30 a minute short")
+check(#producing_calls == 2 and producing_calls[1].surface == 1 and producing_calls[1].nameplate_too == true
+  and #flow_reads == 2 and flow_reads[1].category == "input" and flow_reads[1].precision_index == 2
+  and flow_reads[1].count == false and flow_reads[1].surface == character.surface,
+  "one sampled-line pass and one one-minute flow read per item, on the body's surface")
+local plenty = production.production_requirements({ targets = { ["iron-plate"] = 15 }, per_minute = true }).rates.stages[1]
+check(plenty.short_per_min == 0 and plenty.standing_per_min == 18, "standing above the demand is no shortfall")
+_G.game.planets = { vulcanus = {} }
+prototypes.space_location.vulcanus = { name = "vulcanus" }
+producing_calls = {}
+local elsewhere = production.production_requirements({ targets = { ["iron-plate"] = 30 }, per_minute = true, planet = "vulcanus" }).rates
+check(#producing_calls == 0 and elsewhere.raw[1].standing_lines == 0 and elsewhere.raw[1].short_per_min == 30
+  and elsewhere.raw[1].made_per_min == nil,
+  "a planet with no surface yet has nothing standing and no flow to read")
 os.exit(failures == 0 and 0 or 1)

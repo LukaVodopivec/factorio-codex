@@ -42,6 +42,19 @@
 --                   sampled heat-source temperature
 --   working         machines that progressed in the last 10 s
 --   rate_per_min    products finished over the last minute (items, or crafts)
+--   max_per_min     what the members make a minute at full duty, worked out
+--                   when the line regroups (machine_capacity); absent while
+--                   a member's is unknown
+--   utilisation     rate_per_min / max_per_min
+--   share_10m       the share of the evaluates of about the last 10 minutes
+--                   the line spent in each state, from one counter bin a
+--                   minute; shown once the line was not running nearly all
+--                   of that time
+--   fuel_s          (lines with burner members) seconds of fuel the lowest
+--                   member has left at its measured burn rate (fuel_energy)
+--   supply_states   (no_power rows, and map_summary's power rows short of
+--                   power) the generating lines on the same electric
+--                   network: state, position and fuel_s (supply_states)
 --   hand_fed        a character transfer into one of its machines in the last 60 s
 --   degraded        (running lines) {state, cause_position}: the worst
 --                   member problem past its threshold (a dry boiler beside
@@ -74,6 +87,12 @@ local MINUTE_TICKS = 3600
 -- A machine that made progress this recently counts as running.
 local PRODUCTIVE_TICKS = 600
 local RATE_BIN_TICKS, RATE_BINS = 600, 6
+-- State share counters: one bin a minute, ten kept.
+local SHARE_BIN_TICKS, SHARE_BINS = MINUTE_TICKS, 10
+-- share_10m is shown once running fell below this share.
+local SHARE_SHOWN_BELOW = 0.99
+-- Generating lines a supply_states list names.
+local MAX_SUPPLY = 3
 local LINK_TILES = 6
 -- Hand transfers a line keeps (ticks), and how long each counts.
 local REPEAT_WINDOW_TICKS, MAX_REPEAT_TICKS = 10 * MINUTE_TICKS, 8
@@ -172,12 +191,12 @@ local function current_recipe(entity)
   return type(name) == "string" and prototypes.recipe[name] or nil
 end
 
--- {key, product, yield, recipe}: what a machine makes, how many items per
--- cycle, and the recipe's name for crafting machines.
+-- {key, product, yield, recipe, energy}: what a machine makes, how many
+-- items per cycle, and the recipe's name and energy for crafting machines.
 local function identity(entity)
   if POWER_TYPES[entity.type] then return "power", "electricity", 0 end
   if entity.type == "lab" then return "lab", "research", 0 end
-  local product, yield, recipe_name
+  local product, yield, recipe_name, energy
   if entity.type == "mining-drill" then
     local ok, target = pcall(function() return entity.mining_target end)
     local mineable = ok and target and target.prototype.mineable_properties
@@ -186,10 +205,78 @@ local function identity(entity)
   else
     local ok, recipe = pcall(current_recipe, entity)
     local first = ok and recipe and recipe.products and recipe.products[1]
-    if first then product, yield, recipe_name = first.name, tonumber(first.amount) or 1, recipe.name end
+    if first then
+      product, yield, recipe_name, energy = first.name, tonumber(first.amount) or 1, recipe.name, tonumber(recipe.energy)
+    end
   end
   if not product then return entity.type .. ":" .. entity.name, nil, 0 end
-  return entity.type .. ":" .. product, product, yield, recipe_name
+  return entity.type .. ":" .. product, product, yield, recipe_name, energy
+end
+
+local function number_of(read)
+  local ok, value = pcall(read)
+  return ok and type(value) == "number" and value or nil
+end
+
+-- A drill's installed nominal capacity a minute (items of every product),
+-- independent of duty, status and bonuses, or nil: it needs a current
+-- target in a charted chunk and fixed, certain item products. map_summary's
+-- machine groups sum it too.
+function M.nominal_mining_capacity(entity, force, surface, platform)
+  local ok, rate = pcall(function()
+    local target = entity.mining_target
+    if not (target and target.valid and type(target.position) == "table") then return nil end
+    if not surfaces.charted(force, surface, math.floor(target.position.x / 32), math.floor(target.position.y / 32),
+      platform) then return nil end
+    local mining = target.prototype.mineable_properties
+    local speed, time = entity.prototype.mining_speed, mining.mining_time
+    if type(speed) ~= "number" or speed <= 0 or speed >= math.huge
+      or type(time) ~= "number" or time <= 0 or time >= math.huge then return nil end
+    local yield, count = 0, 0
+    for _, product in pairs(mining.products) do
+      if product.type ~= "item" or type(product.name) ~= "string"
+        or (product.probability ~= nil and product.probability ~= 1) then return nil end
+      local amount = product.amount
+      if amount == nil and product.amount_min == product.amount_max then amount = product.amount_min end
+      if type(amount) ~= "number" or amount <= 0 or amount >= math.huge then return nil end
+      yield, count = yield + amount, count + 1
+    end
+    if count == 0 then return nil end
+    local result = 60 * speed / time * yield
+    if result > 0 and result < math.huge then return result end
+  end)
+  return ok and rate or nil
+end
+
+-- What a machine makes a minute at full duty, in its line's units, and its
+-- productivity bonus. A crafting machine: crafting speed (modules, beacons
+-- and quality included) / recipe energy, as map_summary's
+-- theoretical_crafts_per_second, x (1 + productivity) x yield x 60, where
+-- productivity is the entity's (modules and beacons) plus the force's
+-- research bonus for the recipe (2.0.77 keeps that one off the entity), at
+-- most the recipe's maximum. A drill: its nominal mining capacity x (1 +
+-- speed bonus) x (1 + productivity: the entity's includes the force's
+-- mining productivity). nil for other machines and when a value cannot be
+-- read. Read when the lines regroup, so module and research changes count
+-- from the next refresh (at most a minute).
+local function machine_capacity(entity, rec, force)
+  if not rec.product or (rec.yield or 0) <= 0 then return nil end
+  local productivity = number_of(function() return entity.productivity_bonus end) or 0
+  if rec.recipe then
+    productivity = productivity + (number_of(function() return entity.force.recipes[rec.recipe].productivity_bonus end) or 0)
+    local most = number_of(function() return prototypes.recipe[rec.recipe].maximum_productivity end)
+    if most and productivity > most then productivity = most end
+  end
+  if rec.type == "mining-drill" then
+    local nominal = M.nominal_mining_capacity(entity, force, entity.surface)
+    if not nominal then return nil end
+    local speed = number_of(function() return entity.speed_bonus end) or 0
+    return nominal * (1 + speed) * (1 + productivity), productivity
+  end
+  if not (CRAFTING_TYPES[rec.type] and rec.energy and rec.energy > 0) then return nil end
+  local speed = number_of(function() return entity.crafting_speed end)
+  if not (speed and speed > 0) then return nil end
+  return speed / rec.energy * (1 + productivity) * rec.yield * 60, productivity
 end
 
 -- Reactors and heat exchangers (boilers with a heat energy source) report
@@ -259,9 +346,11 @@ local function refresh_identify(a, count)
       if PROBLEM_ONLY_TYPES[entry.type] then
         rec.key, rec.product, rec.yield, rec.recipe, rec.line_id = nil, nil, 0, nil, nil
       else
-        local ok, key, product, yield, recipe = pcall(identity, entity)
-        if ok then rec.key, rec.product, rec.yield, rec.recipe = key, product, yield, recipe
-        else rec.key, rec.product, rec.yield, rec.recipe = entry.type .. ":" .. entry.name, nil, 0, nil end
+        local ok, key, product, yield, recipe, energy = pcall(identity, entity)
+        if ok then rec.key, rec.product, rec.yield, rec.recipe, rec.energy = key, product, yield, recipe, energy
+        else rec.key, rec.product, rec.yield, rec.recipe, rec.energy = entry.type .. ":" .. entry.name, nil, 0, nil, nil end
+        local read, capacity, productivity = pcall(machine_capacity, entity, rec, force)
+        rec.capacity, rec.productivity = read and capacity or nil, read and productivity or nil
         -- A drill keeps the resource it last mined: once depleted it has none.
         if entry.type == "mining-drill" and rec.product then rec.resource = rec.product end
         if rec.heat == nil then rec.heat = heat_powered(entity) end
@@ -356,16 +445,18 @@ local function refresh_finish(a)
     end
     local line = best and old_lines[best] or new_line(a, members[1].key, members[1].product)
     taken[line.id] = true
-    local units, sx, sy, last_transfer = {}, 0, 0, nil
+    local units, sx, sy, last_transfer, capacity = {}, 0, 0, nil, 0
     for _, rec in ipairs(members) do
       rec.line_id = line.id
       units[#units + 1] = rec.unit
       sx, sy = sx + rec.position.x, sy + rec.position.y
+      capacity = capacity and rec.capacity and capacity + rec.capacity or nil
       local transfer = a.transfer_tick[position_key(rec.surface, rec.position)]
       if transfer and (not last_transfer or transfer > last_transfer) then last_transfer = transfer end
     end
     if #units ~= #(line.machines or {}) then line.changed_tick = game.tick end
     line.machines, line.product, line.surface = units, members[1].product, members[1].surface
+    line.max_per_min = capacity
     line.position = { x = math.floor(sx / #members + 0.5), y = math.floor(sy / #members + 0.5) }
     if last_transfer and (not line.last_transfer_tick or last_transfer > line.last_transfer_tick) then
       line.last_transfer_tick = last_transfer
@@ -412,6 +503,43 @@ local function add_output(line, tick, amount)
   line.rate_bins[slot] = (line.rate_bins[slot] or 0) + amount
 end
 
+-- Counts one evaluate of a line in a state: share_bins[slot] = {[state] =
+-- evaluates} for each of the last SHARE_BINS minutes.
+local function count_state(line, tick, state)
+  local bin = math.floor(tick / SHARE_BIN_TICKS)
+  local bins = line.share_bins or {}
+  if line.share_bin ~= bin then
+    -- Clear the bins skipped since the last count.
+    for b = (line.share_bin and math.max(line.share_bin + 1, bin - SHARE_BINS + 1) or bin - SHARE_BINS + 1), bin do
+      bins[b % SHARE_BINS + 1] = {}
+    end
+    line.share_bins, line.share_bin = bins, bin
+  end
+  local slot = bins[bin % SHARE_BINS + 1]
+  slot[state] = (slot[state] or 0) + 1
+end
+
+-- The share of about the last 10 minutes' evaluates in each state (two
+-- places, shares under 0.005 left out), or nil while running took at least
+-- SHARE_SHOWN_BELOW of them.
+local function share_10m(line, tick)
+  local bin = math.floor(tick / SHARE_BIN_TICKS)
+  if not line.share_bin or bin - line.share_bin >= SHARE_BINS then return nil end
+  local counts, total = {}, 0
+  for b = math.max(line.share_bin - SHARE_BINS + 1, bin - SHARE_BINS + 1), line.share_bin do
+    for state, n in pairs(line.share_bins[b % SHARE_BINS + 1] or {}) do
+      counts[state], total = (counts[state] or 0) + n, total + n
+    end
+  end
+  if total == 0 or (counts.running or 0) >= total * SHARE_SHOWN_BELOW then return nil end
+  local out = {}
+  for state, n in pairs(counts) do
+    local share = math.floor(n / total * 100 + 0.5) / 100
+    if share > 0 then out[state] = share end
+  end
+  return out
+end
+
 -- Keeps the chore status sets (upkeep reads them) as a machine's status
 -- changes.
 local function set_raw(a, rec, raw)
@@ -424,19 +552,66 @@ local function set_raw(a, rec, raw)
   if CHORE_STATUSES[raw] then add_waiting(a.waiting, rec) end
 end
 
+-- An item's fuel value in joules (0 when it has none), cached per name.
+local fuel_values = {}
+local function fuel_value(name)
+  local value = fuel_values[name]
+  if value == nil then
+    value = number_of(function() return prototypes.item[name].fuel_value end) or 0
+    fuel_values[name] = value
+  end
+  return value
+end
+
+-- The joules a burner holds (its fuel inventory's items' fuel values plus
+-- remaining_burning_fuel) and its fuel item count, in two reads.
+local function fuel_energy(burner)
+  local energy, count = number_of(function() return burner.remaining_burning_fuel end) or 0, 0
+  for _, row in ipairs(burner.inventory.get_contents()) do
+    count = count + row.count
+    energy = energy + row.count * fuel_value(row.name)
+  end
+  return energy, count
+end
+
+-- The burn rate (joules a tick) is what the energy fell by since the last
+-- sample: the current consumption, 0 while the machine burns nothing. A
+-- sample with more energy than the last was refuelled in between, so the
+-- last rate stands.
+local function measure_burn(rec, energy, tick)
+  if rec.fuel_j and rec.fuel_tick and tick > rec.fuel_tick and energy <= rec.fuel_j then
+    rec.burn = (rec.fuel_j - energy) / (tick - rec.fuel_tick)
+  end
+  rec.fuel_j, rec.fuel_tick = energy, tick
+end
+
+-- A burner member's runway in whole seconds: 0 with no fuel, nil while it
+-- burns nothing (or before a rate is measured).
+local function fuel_seconds(rec)
+  if not rec.fuel_j then return nil end
+  if rec.fuel_j <= 0 then return 0 end
+  if rec.burn and rec.burn > 0 then return math.floor(rec.fuel_j / rec.burn / 60) end
+end
+
 -- Keeps the low_fuel set as a burner machine's fuel runs low or is topped
 -- up: low only while working with fewer than LOW_FUEL_ITEMS fuel items (a
--- failed read is not low). A burner inserter is never low: one moving coal
--- fuels itself from its hand an item at a time, so only no_fuel needs upkeep.
-local function set_low_fuel(a, rec, entity, raw)
+-- failed read is not low). The same reads measure its fuel energy and burn
+-- rate (fuel_s). A burner inserter is never low: one moving coal fuels
+-- itself from its hand an item at a time, so only no_fuel needs upkeep.
+local function set_low_fuel(a, rec, entity, raw, tick)
   if rec.burner == nil then
     local ok, burner = pcall(function() return entity.burner end)
     rec.burner = ok and burner ~= nil
   end
   local low = false
-  if rec.burner and raw == "working" and not BURNER_ONLY_TYPES[rec.type] then
-    local ok, count = pcall(function() return entity.burner.inventory.get_item_count() end)
-    low = ok and type(count) == "number" and count < LOW_FUEL_ITEMS
+  if rec.burner and not BURNER_ONLY_TYPES[rec.type] then
+    local ok, energy, count = pcall(function() return fuel_energy(entity.burner) end)
+    if ok then
+      measure_burn(rec, energy, tick)
+      low = raw == "working" and count < LOW_FUEL_ITEMS
+    else
+      rec.fuel_j, rec.fuel_tick, rec.burn = nil, nil, nil
+    end
   end
   if (rec.low_fuel == true) == low then return end
   rec.low_fuel = low or nil
@@ -461,6 +636,13 @@ local function sample(a, rec, tick)
       if progress < rec.progress then produced = 1 end
     end
     rec.progress = progress
+    -- Productivity's extra products fill a progress bar of their own (read
+    -- only for a drill with a bonus), so the rate and max_per_min agree.
+    if (rec.productivity or 0) > 0 then
+      local bonus = number_of(function() return entity.bonus_mining_progress end)
+      if bonus and rec.bonus_progress and bonus < rec.bonus_progress then produced = produced + 1 end
+      rec.bonus_progress = bonus
+    end
   elseif CRAFTING_TYPES[rec.type] then
     local finished = entity.products_finished
     if rec.finished and finished > rec.finished then progressed, produced = true, finished - rec.finished end
@@ -494,7 +676,7 @@ local function sample(a, rec, tick)
     if target then target.dry_picker = rec.unit end
   end
   set_raw(a, rec, raw)
-  set_low_fuel(a, rec, entity, raw)
+  set_low_fuel(a, rec, entity, raw, tick)
   local threshold = (BURNER_ONLY_TYPES[rec.type] and FUEL_PROBLEM_TICKS or PROBLEM_TICKS)[raw]
   if threshold then
     -- The same problem returning inside the recovery window is the old
@@ -857,11 +1039,13 @@ local function evaluate(a, tick)
     -- The worst member problem past its threshold, productive or not, and
     -- whether a member is out of fuel or power.
     local degraded, degraded_rank, degraded_unit, dead, worst_outlet = nil, nil, nil, false, nil
-    local dry_names = {}
+    local dry_names, fuel_s = {}, nil
     for _, unit in ipairs(line.machines) do
       local rec = a.machines[unit]
       if rec then
         count = count + 1
+        local runway = fuel_seconds(rec)
+        if runway and (not fuel_s or runway < fuel_s) then fuel_s = runway end
         -- The first dry machine of each kind (the one its problem row names)
         -- gets its feed read before the problem is announced.
         if rec.raw == "no_fuel" and rec.problem == "no_fuel" and not dry_names[rec.name] then
@@ -914,7 +1098,10 @@ local function evaluate(a, tick)
     end
     line.state, line.hand_fed, line.self_sustaining, line.cause_unit = state, hand_fed, self_sustaining, cause_unit
     line.degraded, line.degraded_unit = degraded, degraded_unit
-    line.working, line.temperature = productive, temperature
+    line.working, line.temperature, line.fuel_s = productive, temperature, fuel_s
+    -- A new line's first 10 s read idle until a second sample shows
+    -- progress: they are not counted.
+    if tick - line.created_tick >= PRODUCTIVE_TICKS then count_state(line, tick, state) end
     local cause_rec = cause_unit and a.machines[cause_unit]
     if not cause_rec then
       line.cause, line.cause_for, line.cause_raw, line.cause_tick, line.cause_meets = nil, nil, nil, nil, nil
@@ -1041,7 +1228,9 @@ local function rate_per_min(line, tick)
       total = total + (line.rate_bins[b % RATE_BINS + 1] or 0)
     end
   end
-  local span = math.max(RATE_BIN_TICKS, math.min(RATE_BIN_TICKS * RATE_BINS, tick - line.created_tick))
+  -- The bins summed cover from the oldest one's start (or the line's
+  -- creation) to now: the newest is still filling.
+  local span = math.max(RATE_BIN_TICKS, tick - math.max((bin - RATE_BINS + 1) * RATE_BIN_TICKS, line.created_tick))
   return math.floor(total * 3600 / span * 10 + 0.5) / 10
 end
 
@@ -1086,6 +1275,50 @@ function M.producing(item, surface)
   return rate, count
 end
 
+-- Whether a power line has a member on this electric network (the
+-- registry's network id of each member, kept by its maintenance pass).
+local function on_network(line, network)
+  for _, unit in ipairs(line.machines) do
+    if registry.network_of(unit) == network then return true end
+  end
+  return false
+end
+
+-- The generating lines (product electricity) on one surface with a member
+-- on this electric network, as {line, state, position, degraded?, fuel_s?}:
+-- the position is that of the member the state or degraded names, else the
+-- line's. Lines needing attention first (then by id), at most MAX_SUPPLY,
+-- and how many the cap left out; nil without one. Pure Lua over the lines.
+function M.supply_states(surface, network)
+  local a = data()
+  if not (a and network) then return nil end
+  local rows = {}
+  for _, id in ipairs(a.line_order) do
+    local line = a.lines[id]
+    if line.product == "electricity" and line_surface(a, line) == surface and on_network(line, network) then
+      local unit = line.state == "running" and line.degraded and line.degraded_unit or line.cause_unit
+      local member = unit and a.machines[unit]
+      rows[#rows + 1] = { line = id, state = line.state, degraded = line.state == "running" and line.degraded or nil,
+        position = member and { x = member.position.x, y = member.position.y } or line.position, fuel_s = line.fuel_s,
+        _rank = STATE_RANK[line.state] or (line.degraded and #STATE_PRIORITY + 1 or #STATE_PRIORITY + 2) }
+    end
+  end
+  if #rows == 0 then return nil end
+  table.sort(rows, function(x, y)
+    if x._rank ~= y._rank then return x._rank < y._rank end
+    return x.line < y.line
+  end)
+  local omitted = math.max(0, #rows - MAX_SUPPLY)
+  while #rows > MAX_SUPPLY do table.remove(rows) end
+  for _, row in ipairs(rows) do row._rank = nil end
+  return rows, omitted > 0 and omitted or nil
+end
+
+local function round_to(value, places)
+  local scale = 10 ^ places
+  return math.floor(value * scale + 0.5) / scale
+end
+
 -- Public line rows of one surface (an index; nil or "all": every surface),
 -- ordered by id.
 -- since_tick keeps only lines that changed state, flags, membership or cause
@@ -1117,6 +1350,17 @@ function M.lines(since_tick, surface)
           feed = line.degraded == "no_fuel" and feed_row(current_feed(member, "no_fuel", FUEL)) or nil }
       end
       if line.temperature then row.temperature = math.floor(line.temperature * 10 + 0.5) / 10 end
+      if line.max_per_min then
+        row.max_per_min = round_to(line.max_per_min, 1)
+        row.utilisation = round_to(row.rate_per_min / line.max_per_min, 2)
+      end
+      row.share_10m, row.fuel_s = share_10m(line, game.tick), line.fuel_s
+      -- A machine short of power names the generating lines of its network
+      -- (none when it is on no network).
+      if line.state == "no_power" and rec then
+        row.network_id = registry.network_of(line.cause_unit)
+        row.supply_states, row.supply_omitted = M.supply_states(line_surface(a, line), row.network_id)
+      end
       if not line.product then
         local first = a.machines[line.machines[1]]
         row.entity = first and first.name

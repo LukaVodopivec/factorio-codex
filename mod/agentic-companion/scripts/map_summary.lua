@@ -247,30 +247,9 @@ local function products_with_fuel(products)
 end
 
 -- Installed nominal capacity, independent of duty/status and bonuses. This
--- requires a current charted target.
-local function nominal_mining_capacity(entity, force, surface, platform)
-  local ok, rate = pcall(function()
-    local target = entity.mining_target
-    if not entity_key(target) or not charted(force, surface, target.position, platform) then return nil end
-    local mining = target.prototype.mineable_properties
-    local speed, time = entity.prototype.mining_speed, mining.mining_time
-    if type(speed) ~= "number" or speed <= 0 or speed >= math.huge
-      or type(time) ~= "number" or time <= 0 or time >= math.huge then return nil end
-    local yield, count = 0, 0
-    for _, product in pairs(mining.products) do
-      if product.type ~= "item" or type(product.name) ~= "string"
-        or (product.probability ~= nil and product.probability ~= 1) then return nil end
-      local amount = product.amount
-      if amount == nil and product.amount_min == product.amount_max then amount = product.amount_min end
-      if type(amount) ~= "number" or amount <= 0 or amount >= math.huge then return nil end
-      yield, count = yield + amount, count + 1
-    end
-    if count == 0 then return nil end
-    local result = 60 * speed / time * yield
-    if result > 0 and result < math.huge then return result end
-  end)
-  return ok and rate or nil
-end
+-- requires a current charted target (autonomy.lua keeps the arithmetic: the
+-- factory lines' max_per_min uses it too).
+local nominal_mining_capacity = autonomy.nominal_mining_capacity
 
 local function has_burner(entity)
   local ok, burner = pcall(function() return entity.burner end)
@@ -1841,6 +1820,11 @@ function M.build_power(surface, limit)
       if not by_kind and solar_w > 0 then row.capacity_w = nil end
     end
     row.satisfaction = satisfaction_of(net, row.production_w)
+    -- Short of power: the generating lines on this network, their states
+    -- and where (the line sampler's, no entity read).
+    if row.satisfaction < 1 then
+      row.supply_states, row.supply_omitted = autonomy.supply_states(env.index, net.id)
+    end
     local sources = {}
     for kind, source in pairs(net.sources) do
       if source.count > 0 then

@@ -894,6 +894,14 @@ function M.networks_by_surface()
   return by_surface
 end
 
+-- The electric network id a registered entity was on at its last
+-- maintenance visit (or build), else nil: no engine read.
+function M.network_of(unit)
+  local r = data()
+  local entry = r and unit and r.entries[unit]
+  return entry and entry.network or nil
+end
+
 -- The electric networks with members on a surface, by id.
 function M.networks(surface)
   local r = data()

@@ -11,8 +11,10 @@
 -- that set once after a load, an upgrade or a reversed research.
 -- registry_ready, stock_power_ready and patches_ready are false while an
 -- upgraded save's bootstrap or first pass still runs. The default read
--- stays under about 6 KB: one RCON chunk pair, not a multi-part answer (feed
--- facts on up to three stalled rows add up to about 1.6 KB). logistics
+-- stays under about 6 KB in ordinary play (feed facts on up to three stalled
+-- rows add up to about 1.6 KB; line capacity, state shares, fuel runway and
+-- supply states about 1.5 KB more at their widest; under 9.75 KB in all, the
+-- worst case autonomy_test measures). logistics
 -- (robot networks) is opt-in through sections. platforms lists the force's
 -- space platforms, one attribute-read line each (platforms.lua).
 --
@@ -89,6 +91,18 @@ local function cap_feeds(result)
     elseif row.feed then keep(row) end
   end
   if omitted > 0 then result.omitted_feeds = omitted end
+end
+
+-- supply_states (autonomy.supply_states) rides once per electric network: a
+-- line row on a network a power row or an earlier line row lists keeps only
+-- its network_id.
+local function cap_supply(result)
+  local shown = {}
+  for _, row in ipairs(result.power or {}) do if row.supply_states then shown[row.network_id] = true end end
+  for _, row in ipairs(result.lines or {}) do
+    if row.supply_states and shown[row.network_id] then row.supply_states, row.supply_omitted = nil, nil
+    elseif row.supply_states then shown[row.network_id] = true end
+  end
 end
 
 local function xy(position) return { x = position.x, y = position.y } end
@@ -404,6 +418,7 @@ function M.factory_status(params)
       result.stock, result.omitted_stock = rows, omitted > 0 and omitted or nil
     end
   end
+  cap_supply(result)
   if want.research then result.research = research_section(target.force) end
   if want.body then result.body = body_section(body, target.ref) end
   if want.patches then

@@ -10,7 +10,8 @@
 -- file against the 0.22.2 mod). The only result differences allowed are the
 -- fields 0.22.3 adds, which the comparison names and drops: factory_status
 -- `surface`, map_summary `surface` and `factory.surface`. The additive
--- upkeep selection is asserted separately before comparing retained fields.
+-- upkeep selection, line shares and supply states are asserted separately
+-- before comparing retained fields.
 local here = (arg and arg[0] or "."):match("^(.*)/[^/]+$") or "."
 local mock = dofile(here .. "/factorio_api_mock.lua")
 package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
@@ -270,6 +271,21 @@ for _, row in ipairs(status.patches or {}) do
   row.bbox = nil
 end
 check(outlined, "every factory_status patch row carries an outline around its centre")
+-- Additive: the unpowered line's state share and network, and the power
+-- row short of power names the steam line on that network (once: the line
+-- row keeps only network_id).
+local unpowered, shares = nil, 0
+for _, row in ipairs(status.lines or {}) do
+  if row.state == "no_power" then unpowered = row end
+  if row.share_10m then shares = shares + 1 end
+end
+local supply = status.power and status.power[1] and status.power[1].supply_states
+check(unpowered and unpowered.share_10m and unpowered.share_10m.no_power == 1 and shares == 1
+  and unpowered.network_id == 5 and unpowered.supply_states == nil
+  and supply and #supply == 1 and supply[1].state == "running" and supply[1].position.x == 100,
+  "the unpowered line shares no_power and names network 5, whose power row lists the running steam line")
+for _, row in ipairs(status.lines or {}) do row.share_10m, row.network_id = nil, nil end
+if status.power and status.power[1] then status.power[1].supply_states = nil end
 measured.status = text(status)
 -- 7. map_summary with every section, as one job.
 before = snapshot()
@@ -279,6 +295,10 @@ measured.summary_cost = spent(before) .. " ticks=" .. job_ticks
 summary.surface = nil
 if summary.factory then summary.factory.surface = nil end
 summary.tick, summary.source_tick = nil, nil
+local network = summary.power and summary.power.networks[1]
+check(network and network.supply_states and network.supply_states[1].state == "running",
+  "map_summary's power row short of power lists its generating line's state too")
+if network then network.supply_states = nil end
 measured.summary = text(summary)
 
 -- `texlua tests/mod/nauvis_unchanged_test.lua record` prints this

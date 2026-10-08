@@ -12,7 +12,7 @@ local RAW = { working = 1, no_fuel = 2, no_ingredients = 3, item_ingredient_shor
   waiting_to_launch_rocket = 10, missing_required_fluid = 11, fluid_ingredient_shortage = 12, waiting_for_source_items = 13 }
 _G.defines = { entity_status = RAW, inventory = { crafter_input = 2, lab_input = 3 },
   rocket_silo_status = { building_rocket = 1, rocket_ready = 10 }, direction = { north = 0, east = 4, south = 8, west = 12 } }
-local PLATE = { name = "iron-plate", ingredients = { { name = "iron-ore", type = "item", amount = 1 } },
+local PLATE = { name = "iron-plate", energy = 3.2, ingredients = { { name = "iron-ore", type = "item", amount = 1 } },
   products = { { name = "iron-plate", type = "item", amount = 1 } } }
 local GEAR = { name = "iron-gear-wheel", ingredients = { { name = "iron-plate", type = "item", amount = 2 } },
   products = { { name = "iron-gear-wheel", type = "item", amount = 1 } } }
@@ -174,7 +174,7 @@ autonomy.on_body_time({ x = 0, y = 2 }, 1500)
 autonomy.on_body_time({ x = 900, y = 900 }, 6000)
 check(plate_row().hand_seconds == 30, "the body time spent serving a line by hand is reported in seconds (and only its own)")
 local rate, making = autonomy.producing("iron-plate")
-check(making == 2 and rate >= plate_line.rate_per_min and select(2, autonomy.producing("copper-plate")) == 0,
+check(making == 2 and rate >= plate_row().rate_per_min and select(2, autonomy.producing("copper-plate")) == 0,
   "producing sums the rate of every own line making an item (" .. rate .. "/min)")
 run(10 * 3600, smelt)
 for _, line in ipairs(autonomy.lines()) do if line.id == plate_line.id then plate_line = line end end
@@ -487,14 +487,22 @@ check(factory_status.event_state().last_cancel_all_tick == 450, "event_state car
 storage.tasks.last_cancel_all_tick = nil
 
 -- Cost and size at 200 machines: about seven machine samples a tick, no
--- entity query, and a status read under 8.5 KB (patch outlines and both
+-- entity query, and a status read under 9.75 KB (patch outlines and both
 -- ways to cover a power deficit took it past 6 KB, three rows of feed facts
--- at their widest add about 1.6 KB).
+-- at their widest add about 1.6 KB, capacity, state shares and fuel runway
+-- on every line row and three supply states on the power row about 1.5 KB).
 _G.storage = {}
 state.init()
 storage.registry.ready = true
 entities, next_unit = {}, 1000
-for i = 1, 200 do furnace((i % 20) * 8, math.floor(i / 20) * 8) end
+-- Each burns coal (fuel_s) and has a crafting speed (max_per_min).
+for i = 1, 200 do
+  local f = furnace((i % 20) * 8, math.floor(i / 20) * 8)
+  f.crafting_speed = 2
+  f.burner = { inventory = mock.inventory({ get_contents = function()
+    return { { name = "coal", count = 50, quality = "normal" } } end }) }
+  mock.read(f.burner, "remaining_burning_fuel", function() return 4000000 - game.tick % 1000000 end)
+end
 game.tick = 100000
 -- The refresh identifies 32 machines a tick and swaps the lines in on its
 -- last tick; until then the previous (here: no) lines stay.
@@ -614,6 +622,10 @@ summary_stub.build_power = function(_, limit)
     night_s = 124.9, sources = {}, accumulators = { count = 9999, stored_j = 49995000000, capacity_j = 49995000000, charge = 0.999 },
     add_to_cover = { steam = { steam_engine = 99999, boiler = 99999, offshore_pump = 99999 },
       solar = { solar_panel = 99999, accumulator = 99999 } } }
+    rows[i].supply_states, rows[i].supply_omitted = {}, 99
+    for k = 1, 3 do
+      rows[i].supply_states[k] = { line = 9990 + k, state = "no_fuel", position = { x = -1234.5, y = 1234.5 }, fuel_s = 0 }
+    end
     for _, kind in ipairs({ "nuclear", "solar", "steam" }) do
       rows[i].sources[#rows[i].sources + 1] = { kind = kind, count = 9999, nameplate_w = 987654321, production_w = 123456789 }
     end
@@ -658,7 +670,7 @@ end
 check(wide_feeds == 3 and full.omitted_feeds and full.omitted_feeds > 0 and in_line > 0,
   "the worst case shows three stalled rows' feed facts, a problem row whose line shows them says feed_in_line, "
     .. "and omitted_feeds counts the rest")
-check(json_size < 8704, "a worst-case factory_status at 200 machines stays under 8.5 KB (" .. json_size .. " bytes)")
+check(json_size < 9984, "a worst-case factory_status at 200 machines stays under 9.75 KB (" .. json_size .. " bytes)")
 
 -- A machine mined while a refresh is still identifying the snapshot is left
 -- out; the refresh completes and the removal's dirty mark is kept.
@@ -738,7 +750,9 @@ check(silo_line and silo_line.state == "idle" and silo_line.cause == "rocket_rea
 -- leaves it once topped up; a dry or electric machine is never low.
 local fuel_left = 1
 local low_drill = machine("mining-drill", "burner-mining-drill", 400, 0, { mining_progress = 0, mining_target = ore,
-  burner = { inventory = mock.inventory({ get_item_count = function() return fuel_left end }) } })
+  burner = { inventory = mock.inventory({ get_contents = function()
+    return fuel_left > 0 and { { name = "coal", count = fuel_left, quality = "normal" } } or {}
+  end }) } })
 autonomy.refresh()
 sample_silo(1)
 local function low_set()

@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.32.0** against a real Factorio game: start a
+This guide validates release **0.33.0** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.32.0 run is recorded.
+until a 0.33.0 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node
@@ -181,6 +181,27 @@ alone is not evidence of usable framing.
    re-observe authoritative MCP state.
 
 ## Release checklists
+
+For the 0.33.0 release (the harness), record these observable checks:
+
+- A pilot's MCP process claims a writer generation; once a replacement
+  pilot claims the next one, the old pilot's writes return `WRITER_RETIRED`
+  while its reads still work, and `doctor` shows the newest generation. The
+  supervisor's `--role supervisor` session still drives rehearsals, and an
+  unstamped `stop` always runs.
+- A `queue_plan` whose answer was lost is retried once with the same
+  `client_key` and returns the same plan (`duplicate: true`); a write whose
+  outcome cannot be read returns `OUTCOME_UNKNOWN`, never a silent retry.
+- Large replies arrive in one piece (up to 256 KiB a part), well inside the
+  tick budget.
+- The documented role launch lines turn off built-in web search, multi-agent
+  and memories.
+- The recorder writes `tool_outcomes.jsonl`, splits each role's time into
+  thinking, tool calls and compaction, reports body-busy share and idle gaps
+  by plan source, and marks a run assisted when game speed, cheat mode, the
+  controller, the mod list or unexplained bonuses deviate.
+- `npm run test:live` runs the headless smoke suite against an installed
+  Factorio and passes.
 
 For the 0.32.0 release (can it keep up), record these observable checks on
 a copy of a running factory's save:

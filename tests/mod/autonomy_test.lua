@@ -11,7 +11,7 @@ local RAW = { working = 1, no_fuel = 2, no_ingredients = 3, item_ingredient_shor
   waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8, no_minable_resources = 9,
   waiting_to_launch_rocket = 10, waiting_for_source_items = 11 }
 _G.defines = { entity_status = RAW, inventory = { crafter_input = 2, lab_input = 3 },
-  rocket_silo_status = { building_rocket = 1, rocket_ready = 10 } }
+  rocket_silo_status = { building_rocket = 1, rocket_ready = 10 }, direction = { north = 0, east = 4, south = 8, west = 12 } }
 local PLATE = { name = "iron-plate", ingredients = { { name = "iron-ore", type = "item", amount = 1 } },
   products = { { name = "iron-plate", type = "item", amount = 1 } } }
 local GEAR = { name = "iron-gear-wheel", ingredients = { { name = "iron-plate", type = "item", amount = 2 } },
@@ -868,13 +868,23 @@ local charted_before = force.is_chunk_charted
 force.is_chunk_charted = function(_, chunk) return not (chunk.x >= 15 and chunk.y < 0) end
 local edge_boiler = boiler(500, 0)
 feeder(500, 2, edge_boiler, belt_at(500, 3, { { { name = "copper-ore", count = 1, quality = "normal" } }, {} }))
+local find_before, edge_queries = surface.find_entities_filtered, 0
+surface.find_entities_filtered = function(filter)
+  if filter.area and filter.area.right_bottom.x > 400 then edge_queries = edge_queries + 1 end
+  return find_before(filter)
+end
 autonomy.refresh()
-local queries_before = queries
 count_queries(700)
 local edge_line = line_at(500)
 check(edge_line and edge_line.state == "no_fuel" and edge_line.feed == nil and row_at(autonomy.problems(), 500).feed == nil
-  and queries == queries_before, "a feeder search reaching an uncharted chunk reads nothing and shows no feed")
+  and edge_queries == 0, "a feeder search reaching an uncharted chunk reads nothing and shows no feed")
+-- Once charted, the next line refresh reads it.
 force.is_chunk_charted = charted_before
+autonomy.refresh()
+count_queries(30)
+check(line_at(500).feed and line_at(500).feed.class == "foreign_item" and edge_queries == 1,
+  "a feed an uncharted chunk kept out is read after the next line refresh")
+surface.find_entities_filtered = find_before
 edge_boiler.valid = false
 
 -- Twenty boilers drying at once: at most MAX_CAUSES (16) feed queries an
@@ -900,6 +910,67 @@ local most = 0
 for _, n in ipairs(query_ticks) do most = math.max(most, n) end
 check(most <= 16 and #query_ticks >= 2 and fed == 20,
   "20 boilers drying together get their feeds at most 16 an evaluate (" .. most .. "), all " .. fed .. " by the announcement")
+
+-- A feeder built during a dry episode: the read before it says feeders 0;
+-- the line refresh a build starts reads the feed again (one query), and a
+-- re-read that finds the same facts leaves the line unchanged.
+local rebuilt = boiler(3000, 0)
+autonomy.refresh()
+count_queries(60)
+check(line_at(3000).feed and line_at(3000).feed.feeders == 0, "a dry boiler with no feeder says feeders 0")
+feeder(3000, 2, rebuilt, belt_at(3000, 3, { {}, {} }))
+autonomy.refresh()
+local rebuilt_from = game.tick
+-- Every stale feed is read again, at most 16 an evaluate.
+count_queries(120)
+local rebuilt_feed = line_at(3000).feed
+check(rebuilt_feed and rebuilt_feed.feeders == 1 and rebuilt_feed.class == "source_empty",
+  "after a line refresh the boiler's new feeder is read: feeders 1, source_empty")
+check(#autonomy.lines(rebuilt_from) > 0, "a re-read whose facts changed marks the line changed")
+autonomy.refresh()
+local same_from, same_queries = game.tick, queries
+count_queries(120)
+local changed_rebuilt = false
+for _, line in ipairs(autonomy.lines(same_from)) do if line.position.x == 3000 then changed_rebuilt = true end end
+check(queries > same_queries and not changed_rebuilt and line_at(3000).feed.feeders == 1,
+  "a re-read with the same facts leaves the line unchanged")
+rebuilt.valid = false
+
+-- An inserter picking from a splitter reads the half it picks from: lines
+-- 1/5 and 2/6 the left of travel, 3/7 and 4/8 the right.
+local function splitter_at(x, y, direction, by_line)
+  return mock.entity({ valid = true, name = "splitter", type = "splitter", position = { x = x, y = y }, direction = direction,
+    get_transport_line = function(i) return mock.transport_line({ get_contents = function() return by_line[i] or {} end }) end })
+end
+local coal = { { name = "coal", count = 2, quality = "normal" } }
+-- East-facing: its right half is south of its centre.
+local split = splitter_at(4000.5, 3, defines.direction.east, { [7] = coal, [8] = coal })
+local right_boiler = boiler(4000, 0)
+local right_feeder = feeder(4000.5, 2, right_boiler, split, RAW.no_power)
+right_feeder.pickup_position = { x = 4000.5, y = 3.5 }
+local left_boiler = boiler(4010, 0)
+local left_feeder = feeder(4010.5, 2, left_boiler, split, RAW.no_power)
+left_feeder.pickup_position = { x = 4000.5, y = 2.5 }
+autonomy.refresh()
+count_queries(60)
+local right_feed, left_feed = line_at(4000).feed, line_at(4010).feed
+check(right_feed and right_feed.class == nil and right_feed.inserters[1].lanes[1][1] == "coal"
+  and right_feed.inserters[1].lanes[2][1] == "coal",
+  "an inserter on a splitter's right half reads lines 3/7 and 4/8: coal there, at an unpowered inserter, gives no class")
+check(left_feed and left_feed.class == "source_empty" and #left_feed.inserters[1].lanes[1] == 0,
+  "an inserter on the same splitter's left half reads lines 1/5 and 2/6: empty")
+right_boiler.valid, left_boiler.valid = false, false
+
+-- An inserter with no pickup entity: what it would pick is not known, so no
+-- class.
+local blind = boiler(5000, 0)
+feeder(5000, 2, blind, nil)
+autonomy.refresh()
+count_queries(60)
+local blind_feed = line_at(5000).feed
+check(blind_feed and blind_feed.feeders == 1 and blind_feed.class == nil and blind_feed.inserters[1].from == nil,
+  "an inserter with no pickup entity gives no class and no from")
+blind.valid = false
 
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

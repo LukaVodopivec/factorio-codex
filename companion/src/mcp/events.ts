@@ -195,15 +195,19 @@ export function feedText(row: any): string | null {
   const missing = feed.missing === "fuel" ? "fuel it burns" : String(feed.missing);
   const its = feed.feeders > 1 ? `one of its ${feed.feeders} inserters, at ${at(inserter.position)},` : `its inserter at ${at(inserter.position)}`;
   const hand = inserter.holding ? `, holding ${inserter.holding}` : "";
+  const held = inserter.holding ? `; that inserter holds ${inserter.holding}` : "";
   if (inserter.from === undefined) return `${where}: ${its} has no pickup entity in a charted chunk (${inserter.status}${hand})`;
+  if (inserter.lanes === undefined && inserter.items === undefined) {
+    return `${where}: ${its} picks from a ${inserter.from} at ${at(inserter.from_position)} whose contents were not read (${inserter.status}${hand})`;
+  }
   const lanes = Array.isArray(inserter.lanes) ? inserter.lanes.map(itemNames) : null;
   const carried = lanes ? [...new Set(lanes.flat())] : itemNames(inserter.items);
   const what = carried.length === 0 ? "nothing"
     : `${carried.join(", ")}${inserter.omitted_names ? ` and ${inserter.omitted_names} more` : ""}`;
   const source = `a ${inserter.from} at ${at(inserter.from_position)} ${lanes ? "carrying" : "holding"} ${what}`;
   switch (feed.class) {
-    case "foreign_item": return `${where}: ${its} picks from ${source} only, which ${row.name} does not take`;
-    case "source_empty": return `${where}: ${its} picks from ${source}; no ${missing} there`;
+    case "foreign_item": return `${where}: ${its} picks from ${source} only, which ${row.name} does not take${held}`;
+    case "source_empty": return `${where}: ${its} picks from ${source}; no ${missing} there${held}`;
     default: return `${where}: ${missing} is at the pickup of ${its} (${source}), which is ${inserter.status}${hand}`;
   }
 }

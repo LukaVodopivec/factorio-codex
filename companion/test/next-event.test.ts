@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge, TaskClock } from "../src/bridge.js";
-import { eventSummary, IDLE_NOW, RESEARCH_IDLE, waitForEvent, type EventState, type PackageFailure } from "../src/mcp/events.js";
+import { eventSummary, feedText, IDLE_NOW, RESEARCH_IDLE, waitForEvent, type EventState, type PackageFailure } from "../src/mcp/events.js";
 import { registerMcpTools, type McpSurface } from "../src/mcp/server.js";
 
 const idle: EventState = { tick: 100, queue_depth: 0, fifo_empty: true, human_hold: false };
@@ -167,6 +167,21 @@ describe("next_event research beside a plan end", () => {
     expect(bound).toBe("new machine problem (1 rows); boiler (5, 5) no_fuel: iron-ore is at the pickup of its inserter at (5, 7) "
       + "(a wooden-chest at (5, 8) holding iron-ore), which is working, holding iron-ore");
     expect(bound).not.toMatch(/\b(add|move|should|filter|split|replace)\b/);
+    // What the deciding inserter holds is stated with every class.
+    const furnace = { status: "no_fuel", name: "stone-furnace", position: { x: 1, y: 1 } };
+    const stuck = { position: { x: 1, y: 3 }, status: "waiting_for_source_items", holding: "coal", from: "transport-belt",
+      from_position: { x: 1, y: 4 }, lanes: [["coal"], []] };
+    expect(feedText({ ...furnace, feed: { class: "source_empty", missing: "iron-ore", feeders: 1, inserters: [stuck] } }))
+      .toBe("stone-furnace (1, 1) no_fuel: its inserter at (1, 3) picks from a transport-belt at (1, 4) carrying coal; "
+        + "no iron-ore there; that inserter holds coal");
+    expect(feedText({ ...furnace, feed: { class: "foreign_item", missing: "iron-ore", feeders: 1,
+      inserters: [{ ...stuck, holding: "copper-plate", lanes: [["copper-plate"], []] }] } }))
+      .toBe("stone-furnace (1, 1) no_fuel: its inserter at (1, 3) picks from a transport-belt at (1, 4) carrying copper-plate "
+        + "only, which stone-furnace does not take; that inserter holds copper-plate");
+    // A pickup whose contents were not read gives no class and says so.
+    expect(feedText({ ...furnace, feed: { missing: "fuel", feeders: 1, inserters: [{ ...stuck, lanes: undefined }] } }))
+      .toBe("stone-furnace (1, 1) no_fuel: its inserter at (1, 3) picks from a transport-belt at (1, 4) whose contents "
+        + "were not read (waiting_for_source_items, holding coal)");
   });
 });
 

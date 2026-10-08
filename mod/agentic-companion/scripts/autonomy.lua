@@ -53,9 +53,10 @@
 --                   minutes (walking and fetching included), shown from 10 s:
 --                   what keeping the line running by hand costs
 --   feed            (a starved line lacking an item, a no_fuel line, a
---                   degraded no_fuel member and each no_fuel problem row) the
---                   inserters that drop into that machine, read once per
---                   episode (see read_feed)
+--                   degraded no_fuel member and the no_fuel problem row of a
+--                   line machine whose feed was read) the inserters that drop
+--                   into that machine, read once per episode and again after
+--                   each line refresh (see read_feed)
 local registry = require("scripts.registry")
 local platforms = require("scripts.platforms")
 local surfaces = require("scripts.surfaces")
@@ -292,6 +293,8 @@ local function refresh_finish(a)
     local rec = job.recs[unit]
     if rec then
       machines[unit] = rec
+      -- Feeders may have been built or rebuilt: the feed is read again.
+      if rec.feed then rec.feed.stale = true end
       if CHORE_STATUSES[rec.raw] then add_waiting(waiting, rec) end
       if rec.low_fuel then add_waiting(waiting, rec, "low_fuel") end
       if PROBLEM_ONLY_TYPES[rec.type] then
@@ -611,11 +614,14 @@ local function dry_outlet(a, unit, rec)
 end
 
 -- Feed facts. Once per episode of a starved machine lacking an item or of a
--- dry machine (inside the cause refresh and its MAX_CAUSES cap), one bounded
--- query finds the inserters within FEED_MARGIN tiles of its footprint that
+-- dry machine, and again after each line refresh (after a build, at least
+-- once a minute: feeders may have changed, and a read an uncharted chunk
+-- kept out or that failed is retried), inside the cause refresh and its
+-- MAX_CAUSES cap, one bounded query finds the inserters within FEED_MARGIN tiles of its footprint that
 -- drop into it (feeders); the first MAX_FEEDERS are read: status, the item
 -- in hand (holding) and their pickup target, with the item names on each lane
--- of a belt (lanes) or in another entity's output inventory (items), at most
+-- of a belt (lanes; a splitter's lanes are those of the half the inserter
+-- picks from) or in another entity's output inventory (items), at most
 -- MAX_FEED_NAMES each (omitted_names counts the rest). Facts only, in a
 -- charted area: an inserter or pickup in an uncharted chunk is not read. The
 -- class says what the read found:
@@ -625,7 +631,9 @@ end
 --                   the machine takes for neither its recipe nor its fuel
 --   source_empty    no pickup has it (and none holds only such items)
 -- and is absent when the item is at a pickup whose feeder is not working
--- (its status says why) or nothing feeds the machine (feeders = 0). Rows
+-- (its status says why), when no feeder's pickup could be read (no pickup
+-- entity, or one in an uncharted chunk) or nothing feeds the machine
+-- (feeders = 0). Rows
 -- show the feeder that decided the class (inserters), to stay small.
 -- The search box reaches a long-handed inserter's centre.
 local FEED_MARGIN = 2.5
@@ -647,15 +655,40 @@ local function current_feed(rec, state, wanted)
     and (wanted == nil or feed.missing == wanted) then return feed end
 end
 
+-- Whether the machine's feed is due a read: none for this episode, or one
+-- read before the last line refresh (shown until the new read replaces it).
+local function feed_due(rec, state, wanted)
+  local feed = current_feed(rec, state, wanted)
+  return not feed or feed.stale == true
+end
+
 local function xy_of(position) return { x = position.x, y = position.y } end
 
--- Sorted item names of get_contents rows, all of them (for the class) and
--- at most MAX_FEED_NAMES shown.
-local function content_names(contents, all)
+-- The transport lines an inserter picking from this belt entity reads, as
+-- {left lane, right lane} each a list of line indexes. A splitter has eight:
+-- 1/2 and 5/6 its left half (input and output side), 3/4 and 7/8 its right
+-- half; the half is the side of its centre the pickup position lies on.
+local function pickup_lines(pickup, at)
+  if pickup.type ~= "splitter" then return { { 1 }, { 2 } } end
+  local direction, fx, fy = pickup.direction, 0, -1
+  if direction == defines.direction.east then fx, fy = 1, 0
+  elseif direction == defines.direction.south then fx, fy = 0, 1
+  elseif direction == defines.direction.west then fx, fy = -1, 0 end
+  local centre = pickup.position
+  -- Left of travel is (fy, -fx).
+  if at and (at.x - centre.x) * fy - (at.y - centre.y) * fx > 0 then return { { 1, 5 }, { 2, 6 } } end
+  return { { 3, 7 }, { 4, 8 } }
+end
+
+-- Sorted item names of get_contents rows (of one or more lists), all of
+-- them (for the class) and at most MAX_FEED_NAMES shown.
+local function content_names(lists, all)
   local names, seen = {}, {}
-  for _, row in pairs(contents or {}) do
-    local name = type(row) == "table" and row.name
-    if name and not seen[name] then seen[name] = true; names[#names + 1] = name end
+  for _, contents in ipairs(lists) do
+    for _, row in pairs(contents or {}) do
+      local name = type(row) == "table" and row.name
+      if name and not seen[name] then seen[name] = true; names[#names + 1] = name end
+    end
   end
   table.sort(names)
   for _, name in ipairs(names) do all[name] = true end
@@ -664,7 +697,8 @@ local function content_names(contents, all)
   return shown, #names - #shown
 end
 
--- One feeder's facts, and the item names at its pickup (a set).
+-- One feeder's facts, the item names at its pickup (a set), and whether that
+-- pickup was read.
 local function feeder_row(inserter, force, surface, platform)
   local row = { position = xy_of(inserter.position), status = status_name(inserter) }
   local held = inserter.held_stack
@@ -676,20 +710,22 @@ local function feeder_row(inserter, force, surface, platform)
     row.from, row.from_position = pickup.name, xy_of(at)
     if BELT_TYPES[pickup.type] then
       row.lanes = {}
-      for lane = 1, 2 do
-        local shown, more = content_names(pickup.get_transport_line(lane).get_contents(), names)
+      for lane, indexes in ipairs(pickup_lines(pickup, inserter.pickup_position)) do
+        local lists = {}
+        for i, index in ipairs(indexes) do lists[i] = pickup.get_transport_line(index).get_contents() end
+        local shown, more = content_names(lists, names)
         row.lanes[lane], omitted = shown, omitted + more
       end
     else
       local ok, inventory = pcall(pickup.get_output_inventory)
       if ok and inventory then
-        local shown, more = content_names(inventory.get_contents(), names)
+        local shown, more = content_names({ inventory.get_contents() }, names)
         row.items, omitted = shown, more
       end
     end
   end
   if omitted > 0 then row.omitted_names = omitted end
-  return row, names
+  return row, names, row.lanes ~= nil or row.items ~= nil
 end
 
 -- Reads a machine's feed (see above) for this episode onto its record.
@@ -724,13 +760,13 @@ local function read_feed(rec, state, wanted, tick)
     if target and target.unit_number == rec.unit then
       feeders = feeders + 1
       if feeders <= MAX_FEEDERS then
-        local row, names = feeder_row(inserter, force, surface, platform)
+        local row, names, read = feeder_row(inserter, force, surface, platform)
         local has, only_foreign = false, next(names) ~= nil
         for name in pairs(names) do
           if (wanted == FUEL and fuel(name)) or name == wanted then has = true end
           if taken(name) then only_foreign = false end
         end
-        rows[#rows + 1] = { row = row, has = has, foreign = only_foreign, working = row.status == "working" }
+        rows[#rows + 1] = { row = row, has = has, foreign = only_foreign, working = row.status == "working", read = read }
       end
     end
   end
@@ -738,13 +774,15 @@ local function read_feed(rec, state, wanted, tick)
   if #rows == 0 then return feed end
   local first
   for _, test in ipairs({
-    function(r) return r.has and r.working end, function(r) return r.has end, function(r) return r.foreign end }) do
+    function(r) return r.has and r.working end, function(r) return r.has end, function(r) return r.foreign end,
+    function(r) return r.read end }) do
     for i, r in ipairs(rows) do if not first and test(r) then first = i end end
   end
+  -- No pickup read: what is there is not known, so no class.
   local deciding = rows[first or 1]
   if deciding.has then feed.class = deciding.working and "inserter_bound" or nil
   elseif deciding.foreign then feed.class = "foreign_item"
-  else feed.class = "source_empty" end
+  elseif deciding.read then feed.class = "source_empty" end
   feed.inserters = { deciding.row }
   return feed
 end
@@ -754,6 +792,22 @@ end
 local function feed_row(feed)
   if not (feed and feed.feeders) then return nil end
   return { class = feed.class, missing = feed.missing, feeders = feed.feeders, inserters = feed.inserters }
+end
+
+-- A small table's facts as one string (keys sorted), to tell a changed read.
+local function facts_key(value)
+  if type(value) ~= "table" then return tostring(value) end
+  local parts = {}
+  for key, item in pairs(value) do parts[#parts + 1] = tostring(key) .. "=" .. facts_key(item) end
+  table.sort(parts)
+  return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- Reads a machine's feed; true when its public facts changed.
+local function refeed(rec, state, wanted, tick)
+  local before = facts_key(feed_row(current_feed(rec, state, wanted)))
+  read_feed(rec, state, wanted, tick)
+  return facts_key(feed_row(rec.feed)) ~= before
 end
 
 local function evaluate(a, tick)
@@ -784,10 +838,11 @@ local function evaluate(a, tick)
         -- gets its feed read before the problem is announced.
         if rec.raw == "no_fuel" and rec.problem == "no_fuel" and not dry_names[rec.name] then
           dry_names[rec.name] = true
-          if not current_feed(rec, "no_fuel", FUEL) then
+          if feed_due(rec, "no_fuel", FUEL) then
             if causes_left > 0 then
               causes_left = causes_left - 1
-              if pcall(read_feed, rec, "no_fuel", FUEL, tick) then line.changed_tick = tick end
+              local ok, changed = pcall(refeed, rec, "no_fuel", FUEL, tick)
+              if ok and changed then line.changed_tick = tick end
             elseif not cursor then
               cursor = index
             end
@@ -840,10 +895,11 @@ local function evaluate(a, tick)
         causes_left = causes_left - 1
         local ok, cause, wanted = pcall(cause_of, cause_rec, state)
         cause = ok and cause or nil
-        -- Its feeders, once per episode (in the same cause unit).
-        if ok and wanted and not current_feed(cause_rec, state, wanted)
-          and pcall(read_feed, cause_rec, state, wanted, tick) then
-          line.changed_tick = tick
+        -- Its feeders, once per episode and after a line refresh (in the
+        -- same cause unit).
+        if ok and wanted and feed_due(cause_rec, state, wanted) then
+          local read, changed = pcall(refeed, cause_rec, state, wanted, tick)
+          if read and changed then line.changed_tick = tick end
         end
         -- A starved machine whose lack cannot be named (a furnace that never
         -- smelted has no recipe to read) gives the game's own status.

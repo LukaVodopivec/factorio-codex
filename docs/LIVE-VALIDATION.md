@@ -15,6 +15,41 @@ entrypoint is for that Windows client; the repository provides no Linux
 visual client launcher. Any equivalent split works, as long as the server
 machine stays headless.
 
+## Headless live smoke suite
+
+`npm run test:live` (or `scripts/agent-app verify --profile live`) checks the
+real mod against the real engine with no client and no body, in about a
+minute. It is opt-in and never part of `npm test` or CI. It needs Node 22 and a
+Factorio 2.0.x executable, found through `FACTORIO_BIN` or a standard Linux
+Steam install; without one it skips with a message (the agent-app profile sets
+`FACTORIO_LIVE_REQUIRED=1`, which turns the skip into a failure).
+
+The suite creates a throwaway peaceful save on seed 747930220 in a temp dir
+with its own config, write dir and random free loopback ports, so it never
+touches your Factorio data, and removes the dir and the server on success and
+failure. Through the repository's `RconClient` and `Bridge` it runs scenario
+console commands (`/silent-command __agentic-companion__ ...`) that build
+entities with `create_entity` and call the mod's modules and RPCs:
+
+- line sampling of a powered assembler line and a dry boiler, and a
+  `consumption_above_production` watch firing;
+- `inspect` belt lanes;
+- a `build_layout` dry run on a space platform with `belt_joins` and
+  `port_fluids` rows;
+- NaN-safe JSON through `rpc.to_json`;
+- `items.move` keeping durability and quality.
+
+Then it asserts that `ping` shows no `handler_errors`, the server log has no
+script errors, every profiler `rpc` line stays within 8 ms, and each 600-tick
+`on_tick` window averages within 8 ms a tick. The profiler logs no per-tick
+maximum, so one slow tick inside a quiet window is not caught. A headless
+server has no Codex player and charts nothing, so the suite's own setup
+command patches only that throwaway server's live Lua state: a stand-in body
+on nauvis, every chunk counted as charted for the mod's chart rule, and the
+registry marked ready.
+The mod carries no test flag or path; chart checks the engine answers itself
+(planet layouts and routes) still need a client run below.
+
 ## Start a test server and connect a client
 
 1. On the Windows client machine, install the full standalone Factorio 2.0.x

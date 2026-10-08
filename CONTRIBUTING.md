@@ -34,6 +34,13 @@ through `npx tsx` and the mod archive check. CI runs the same steps (see
 `.github/workflows/ci.yml`). Changes to movement, reach, inventory, crafting,
 placement or time must stay observable and covered by tests.
 
+`npm run test:live` is the opt-in live smoke suite
+(`companion/test/live-scenarios.ts`, also `scripts/agent-app verify --profile
+live`): it runs the real mod on a throwaway headless Factorio 2.0.x server and
+is never part of `npm test` or CI. It finds the game through `FACTORIO_BIN` or
+a standard Linux Steam install and skips with a message when there is none.
+See [docs/LIVE-VALIDATION.md](docs/LIVE-VALIDATION.md).
+
 ## Rules for new tools and instructions
 
 **Enable thinking, never replace it.** The mod and the instructions let the

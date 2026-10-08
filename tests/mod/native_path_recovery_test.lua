@@ -596,6 +596,24 @@ check(stuck and stuck.status == "failed" and stuck.detail:match("^BODY_ON_CONVEY
   and stuck.outcome.code == "BODY_ON_CONVEYOR",
   "a routed settle that never leaves the belt fails BODY_ON_CONVEYOR within its walk's own bounds")
 
+-- A blocked start (a tree cleared, an escape) cuts the straight step short
+-- and the walk asks for its path again, ending on the belt: the settle's tile
+-- is walked to by its native path before the walk fails BODY_ON_CONVEYOR.
+belts = { belt(10, 0, 1, 1) }
+task = reset({ x = 10.5, y = 0.5 })
+walk.start(task)
+walk.tick(task); deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
+body.position = { x = 10.5, y = 0.5 }
+walk.tick(task)
+local cut = task._walk.phase == "settling" and not task._walk.settle.routed
+task._walk.phase = "request"
+check(cut and walk.tick(task) == nil and task._walk.phase == "settling" and task._walk.settle.routed
+  and task._walk.settle_route and task._walk.settle_route.path_radius < 0.3,
+  "a walk back on the belt after its straight settle step was cut short walks to the tile by a native path")
+local asked = walk.tick(task) == nil and storage.path_request ~= nil
+check(asked and requested_goals[next_path_id].x == 10.5 and requested_goals[next_path_id].y == -0.5,
+  "that native path goes to the settle's own off-belt tile")
+
 task = reset({ x = 12.5, y = 0.5 })
 body.position = { x = 10.5, y = 0.5 }
 check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, 2.5) == nil and task._approach

@@ -15,7 +15,7 @@ describe("strategist read-only MCP surface", () => {
     expect([...READ_ONLY_TOOLS].sort()).toEqual(["activity_log", "blueprint_describe", "blueprint_export", "blueprint_list",
       "blueprint_place", "build_layout", "can_place", "connect_entities", "connect_status",
       "describe_prototype", "factory_status", "find_placement", "inspect_entity", "map_summary", "next_event", "observe_local",
-      "place_tiles", "plan_status", "platform_status", "production_requirements", "progression_status"]);
+      "place_tiles", "plan_status", "platform_status", "production_requirements", "progression_status", "set_watch", "clear_watch"].sort());
   });
 
   it("does not create a body and read calls never enter the physical FIFO lane", async () => {

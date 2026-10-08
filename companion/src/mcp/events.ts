@@ -37,6 +37,13 @@ export interface EventState {
   upkeep_off_since_tick?: number;
   /** The newest space event's tick and the last few entries, oldest first. */
   last_space_event_tick?: number; space_events?: SpaceEvent[];
+  /** The asking role's watch firings after the watch_since it passed, oldest first. */
+  watch_fired?: WatchFiring[];
+}
+/** A watch the role set (set_watch) crossing its threshold. */
+export interface WatchFiring {
+  id: number; tick: number; surface?: string; value?: number; produced_per_min?: number;
+  condition: { kind: "rate_below" | "consumption_above_production" | "line_below"; item?: string; line?: number; per_min?: number };
 }
 export interface PackageFailure { package_id: string; reason?: string; tick?: number; at?: string }
 /** Package failures one session already received, kept across its calls:
@@ -50,6 +57,8 @@ export interface EventSources {
   /** This session's delivery record; without one, failures present when the
    *  call starts count as delivered. */
   delivery?: FailureDelivery;
+  /** The session's role: its own watches' firings arrive as watch_fired. */
+  role?: string;
 }
 
 /** Said wherever research stands still: after a research_finished with
@@ -64,24 +73,33 @@ const realClock: TaskClock = { now: () => Date.now(), sleep: (ms) => new Promise
 export const EVENT_POLL_MS = 500;
 
 /** Blocks until something the pilot should act on happens: a plan ends, a
- *  research finishes, the FIFO empties, a machine problem appears, a package
- *  fails its check, the orders change, a human hold starts or ends; otherwise
+ *  research finishes, the FIFO empties, a machine problem appears, one of the
+ *  role's watches fires, a package fails its check, the orders change, a
+ *  human hold starts or ends; otherwise
  *  times out. A plan_ended event carries the plan's step outcomes and
  *  inventory change, so no follow-up read is needed. */
 export async function waitForEvent(bridge: Bridge, input: NextEventInput, sources: EventSources,
   signal?: AbortSignal, clock: TaskClock = realClock): Promise<Record<string, unknown>> {
-  const read = () => bridge.call<EventState>("event_state");
+  const since = input.since_tick;
+  // The role's watch firings after since_tick, or (without it) after the
+  // first read's tick.
+  const role = sources.role;
+  let watchSince = since;
+  const read = () => role !== undefined && watchSince !== undefined
+    ? bridge.call<EventState>("event_state", { role, watch_since: watchSince }) : bridge.call<EventState>("event_state");
   const started = clock.now();
   let previous = await read();
-  const since = input.since_tick;
+  watchSince ??= previous.tick;
   // Space events after since_tick, or (without it) after the call started.
   const spaceSeen = since ?? previous.last_space_event_tick ?? -1;
   const newSpace = (state: EventState) => (luaArray(state.space_events ?? []) as SpaceEvent[]).filter((row) => row.tick > spaceSeen);
-  // Space events never get lost behind another event: they ride along, since
-  // the caller's next since_tick is the returned tick.
+  // Space events and watch firings never get lost behind another event: they
+  // ride along, since the caller's next since_tick is the returned tick.
   const done = (event: string, state: EventState, details: Record<string, unknown> = {}) => {
     const space = (SPACE_EVENTS as readonly string[]).includes(event) ? [] : newSpace(state);
-    return { event, ...details, ...(space.length > 0 ? { space_events: space } : {}), tick: state.tick,
+    const fired = event === "watch_fired" ? [] : luaArray(state.watch_fired ?? []);
+    return { event, ...details, ...(space.length > 0 ? { space_events: space } : {}),
+      ...(fired.length > 0 ? { watches: fired } : {}), tick: state.tick,
       body: { active_plan_id: state.active_plan_id ?? null, queue_depth: state.queue_depth,
         fifo_empty: state.fifo_empty, human_hold: state.human_hold } };
   };
@@ -104,6 +122,10 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
         ...(status?.source === undefined ? {} : { source: status.source }),
         outcomes: luaArray(status?.outcomes ?? []), inventory_delta: record(status?.inventory_delta), ...finished });
     } catch { return done("plan_ended", state, { plan_id: plan.plan_id, status: plan.status, ...surface, ...finished }); }
+  };
+  const watched = (state: EventState) => {
+    const rows = luaArray(state.watch_fired ?? []) as WatchFiring[];
+    return rows.length > 0 ? done("watch_fired", state, { watches: rows }) : null;
   };
   const researched = (state: EventState) => done("research_finished", state, { technology: state.last_research_finished!.technology,
     research_tick: state.last_research_finished!.tick, ...idleResearch(state) });
@@ -142,6 +164,8 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if (last && last.tick > since) return ended(previous, last, research);
     if ((previous.last_research_finished?.tick ?? -1) > since) return researched(previous);
     if ((previous.last_problem_tick ?? -1) > since) return problems(since, previous);
+    const fired = watched(previous);
+    if (fired) return fired;
     const space = spaceEvent(previous);
     if (space) return space;
   }
@@ -167,6 +191,8 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
     if (newResearch) return researched(state);
     if (state.human_hold !== previous.human_hold) return done(state.human_hold ? "human_hold_started" : "human_hold_ended", state);
     if ((state.last_problem_tick ?? -1) > (previous.last_problem_tick ?? -1)) return problems(previous.tick, state);
+    const fired = watched(state);
+    if (fired) return fired;
     const space = spaceEvent(state);
     if (space) return space;
     const failed = undelivered(state);
@@ -211,6 +237,15 @@ export function feedText(row: any): string | null {
     default: return `${where}: ${missing} is at the pickup of ${its} (${source}), which is ${inserter.status}${hand}`;
   }
 }
+/** One watch firing in words: the numbers it compared. */
+export function watchText(row: WatchFiring): string {
+  const c: Partial<WatchFiring["condition"]> = row.condition ?? {};
+  const on = row.surface ? ` on ${row.surface}` : "";
+  if (c.kind === "consumption_above_production")
+    return `watch ${row.id}: ${c.item} consumed ${row.value}/min${on}, above ${row.produced_per_min}/min made`;
+  if (c.kind === "line_below") return `watch ${row.id}: line ${c.line} makes ${row.value}/min${on}, below ${c.per_min}/min`;
+  return `watch ${row.id}: ${c.item} made ${row.value}/min${on}, below ${c.per_min}/min`;
+}
 const platformName = (value: Record<string, unknown>) => (value.platform as { name?: string } | undefined)?.name;
 
 function eventText(value: Record<string, unknown>): string {
@@ -226,6 +261,11 @@ function eventText(value: Record<string, unknown>): string {
       const facts = (Array.isArray(value.problems) ? value.problems : []).map(feedText).filter((text) => text !== null).slice(0, 2);
       return `new machine problem (${Array.isArray(value.problems) ? value.problems.length : "?"} rows)`
         + (researchIdleProblem(value.problems) ? `; ${RESEARCH_IDLE}` : "") + facts.map((text) => `; ${text}`).join("");
+    }
+    case "watch_fired": {
+      const rows = Array.isArray(value.watches) ? value.watches as WatchFiring[] : [];
+      return `${rows.length} watch${rows.length === 1 ? "" : "es"} fired: ${rows.slice(0, 2).map(watchText).join("; ")}`
+        + (rows.length > 2 ? `; ${rows.length - 2} more in watches` : "");
     }
     case "queue_empty": return typeof value.upkeep_off_since_tick === "number"
       ? `${IDLE_NOW}; upkeep off since stop at tick ${value.upkeep_off_since_tick} until a plan finishes` : IDLE_NOW;
@@ -250,7 +290,9 @@ function eventText(value: Record<string, unknown>): string {
 export function eventSummary(value: Record<string, unknown>): string {
   const space = Array.isArray(value.space_events) ? value.space_events.length : 0;
   const along = space > 0 && !(SPACE_EVENTS as readonly string[]).includes(String(value.event));
-  const text = `${eventText(value)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`;
+  const fired = value.event !== "watch_fired" && Array.isArray(value.watches) ? value.watches.length : 0;
+  const text = `${eventText(value)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`
+    + (fired > 0 ? `; ${fired} watch${fired === 1 ? "" : "es"} fired too, in watches` : "");
   const body = value.body as { fifo_empty?: boolean; human_hold?: boolean } | undefined;
   const idle = body?.fifo_empty === true && body.human_hold !== true;
   return idle && !["queue_empty", "cancelled", "human_hold_started"].includes(String(value.event)) ? `${text}; ${IDLE_NOW}` : text;

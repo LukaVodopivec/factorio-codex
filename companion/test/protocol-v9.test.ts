@@ -11,14 +11,14 @@ describe("protocol v29 DTO and tool registry", () => {
   it("declares v29 and the exact accepted RPC surface", () => {
     expect(PROTOCOL_VERSION).toBe(29);
     expect(MCP_SERVER_VERSION).toBe("0.31.0");
-    expect(RPC_METHODS).toHaveLength(43);
+    expect(RPC_METHODS).toHaveLength(45);
     expect(RPC_METHODS).not.toContain("build_block");
     expect(RPC_METHODS).toEqual(expect.arrayContaining(["find_placement", "map_summary", "production_requirements", "run_snapshot", "connect_entities",
       "factory_status", "activity_log", "event_state", "build_layout", "say", "say_now", "get_job",
-      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel"]));
+      "blueprint_capture", "blueprint_create", "blueprint_list", "blueprint_describe", "blueprint_delete", "blueprint_export", "blueprint_place", "place_tiles", "platform_status", "create_platform", "set_requests", "configure_entity", "set_recipe", "set_platform_route", "travel", "set_watch", "clear_watch"]));
   });
 
-  it("registers exactly 51 tools, none of them build_block, and forwards exact v29 payloads", async () => {
+  it("registers exactly 53 tools, none of them build_block, and forwards exact v29 payloads", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const schemas: Record<string, any> = {};
     const call = vi.fn(async (method: string) => method === "connect_entities"
@@ -27,7 +27,7 @@ describe("protocol v29 DTO and tool registry", () => {
     const enqueueAndWait = vi.fn(async () => "built 1/1 placements");
     const enqueueAndWaitResult = vi.fn(async () => ({ status: "done" as const, detail: "done" }));
     registerMcpTools({ registerTool(name: string, config: any, handler: (args: any) => Promise<any>) { handlers[name] = handler; schemas[name] = config.inputSchema; } }, async () => ({ call, enqueueAndWait, enqueueAndWaitResult } as unknown as Bridge), validConfig);
-    expect(Object.keys(handlers)).toHaveLength(51);
+    expect(Object.keys(handlers)).toHaveLength(53);
     expect(Object.keys(handlers)).not.toContain("build_block");
 
     const find = schemas.find_placement.parse({ item: "offshore-pump", preferred: { x: 1, y: 2 } });

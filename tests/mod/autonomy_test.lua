@@ -174,7 +174,7 @@ autonomy.on_body_time({ x = 0, y = 2 }, 1500)
 autonomy.on_body_time({ x = 900, y = 900 }, 6000)
 check(plate_row().hand_seconds == 30, "the body time spent serving a line by hand is reported in seconds (and only its own)")
 local rate, making = autonomy.producing("iron-plate")
-check(making == 2 and rate >= plate_line.rate_per_min and select(2, autonomy.producing("copper-plate")) == 0,
+check(making == 2 and rate >= plate_row().rate_per_min and select(2, autonomy.producing("copper-plate")) == 0,
   "producing sums the rate of every own line making an item (" .. rate .. "/min)")
 run(10 * 3600, smelt)
 for _, line in ipairs(autonomy.lines()) do if line.id == plate_line.id then plate_line = line end end

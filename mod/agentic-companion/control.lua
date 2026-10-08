@@ -32,6 +32,7 @@ local build = require("scripts.actions.build")
 local timing = require("scripts.profiler")
 local benchmark = require("scripts.benchmark")
 local errors = require("scripts.errors")
+local watches = require("scripts.watches")
 benchmark.on_freeze = thoughts.refresh
 
 -- Where the body is ({state, surface_ref, platform_name?, rebind_refused?},
@@ -174,6 +175,10 @@ rpc.register("cancel", tasks.cancel)
 rpc.register("factory_status", read(factory_status.factory_status))
 rpc.register("activity_log", read(tasks.activity_log))
 rpc.register("event_state", factory_status.event_state)
+-- Watches are reads: any role sets its own (the strategist too), and like
+-- every read their results carry the fifo block.
+rpc.register("set_watch", read(watches.set))
+rpc.register("clear_watch", read(watches.clear))
 thoughts.register_rpcs(rpc)
 -- get_chunk is registered inside rpc.lua itself.
 
@@ -264,6 +269,7 @@ local function tick(event)
     map_summary.status_tick(event.tick)
   end
   autonomy.on_tick(event.tick)
+  watches.on_tick(event.tick)
   jobs.on_tick()
   companion.follow_spectators()
   if storage.benchmark and event.tick % 60 == 0 then thoughts.refresh() end

@@ -47,6 +47,8 @@ export const RPC_METHODS = [
   "set_recipe",
   "set_platform_route",
   "travel",
+  "set_watch",
+  "clear_watch",
 ] as const;
 
 export type RpcMethod = (typeof RPC_METHODS)[number];

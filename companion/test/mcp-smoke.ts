@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const surface = process.env.MCP_SURFACE ?? "full";
-const readOnly = ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status"];
+const readOnly = ["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status","set_watch","clear_watch"];
 const expected = (surface === "read-only"
   ? readOnly
   : [...readOnly, "get_items","walk_to","mine","pickup_items","place_entity","craft_items","insert_items","extract_items","set_recipe","rotate_entity","build_plan","queue_plan","run_plan","start_research","stop",

@@ -231,6 +231,26 @@ describe("persistent two-brain coordination contract", () => {
     expect(readme).toMatch(/The feed is output only: game chat never controls the bot/);
   });
 
+  it("starts every documented role session without web search, multi-agent tools or memories", () => {
+    // Keys and their effect verified against Codex CLI 0.159.2; features.multi_agent=false left the tools in place,
+    // and agents.enabled=false alone kept them when a user config enables multi_agent_v2.
+    const isolation = [`-c 'web_search="disabled"'`, "-c agents.enabled=false", "-c features.memories=false", "-c features.multi_agent_v2=false"];
+    const launches = (relative: string) => {
+      const text = read(relative).replace(/\\\n\s*/g, " ");
+      return [...text.matchAll(/^codex (.+)$/gm), ...text.matchAll(/`codex ([^`]+)`/g)].map((match) => match[1]);
+    };
+    const documented = { "README.md": 3, "docs/LIVE-VALIDATION.md": 2, "prompts/pilot.md": 1 };
+    for (const [relative, count] of Object.entries(documented)) {
+      const lines = launches(relative);
+      expect(lines, relative).toHaveLength(count);
+      for (const line of lines) {
+        for (const flag of isolation) expect(line, relative).toContain(flag);
+        expect(line).not.toMatch(/--search|web_search="(?:cached|indexed|live)"|features\.multi_agent=|features\.shell_tool=false|agents\.enabled=true|features\.multi_agent_v2=true|features\.memories=true/);
+      }
+    }
+    expect(live).toMatch(/`web_search="disabled"` removes the web tool[\s\S]*`agents\.enabled=false` removes the multi-agent tools[\s\S]*`features\.memories=false` stops stored memories[\s\S]*`agents\.enabled=false` alone does not cover `multi_agent_v2`[\s\S]*the strategist keeps `ledger-apply`[\s\S]*the shell can still read earlier run\s+folders/);
+  });
+
   it("keeps continuation native and forbids thread tools, with a compaction re-read", () => {
     for (const text of [skill, pilot, strategist].map(flat).concat(agents))
       expect(text).toMatch(/never call `list_threads`, `read_thread`, or `wait_threads`|never call `list_threads`, `read_thread`, or `wait_threads`/i);

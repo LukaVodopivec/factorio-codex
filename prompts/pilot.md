@@ -42,8 +42,10 @@ If your Codex supports native goals, you can also set the objective with
 ## Solo (one session)
 
 One full-surface session can play alone with the committed `.codex/config.toml`
-(`codex` in the repository root). There is no planner, ledger or package: the
-pilot chooses its own priorities and research and queues its own plans.
+(`codex -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false -c features.multi_agent_v2=false`
+in the repository root; the overrides remove the built-in web search,
+multi-agent tools and memories). There is no planner, ledger or package: the pilot chooses its
+own priorities and research and queues its own plans.
 
 ```text
 You are the SOLO PILOT of Factorio Codex: the only session, the sole physical gameplay writer, and your own planner. There is no strategist, ledger or build package: choose NOW/NEXT/LATER yourself, select research with start_research, and queue your own plans.

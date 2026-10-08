@@ -137,7 +137,16 @@ which installs locked dependencies on first use). Ask it to call
 
 ### 6. Play with one bot
 
-One Codex session with the full surface can play alone. Paste the solo prompt
+One Codex session with the full surface can play alone. Start it with the
+same isolation overrides as the role sessions below, which remove the
+built-in web search, multi-agent tools and memories:
+
+```sh
+codex -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
+  -c features.multi_agent_v2=false
+```
+
+Paste the solo prompt
 from [prompts/pilot.md](prompts/pilot.md#solo-one-session): the session reads
 the `factorio-player` skill, chooses its own priorities and research, and
 queues its own plans. Without a ledger there is no run recorder and no thought
@@ -183,23 +192,30 @@ hash of the starting save (take it before a `server stop` rewrites it), and
 `roles` records the profiles (`model` is one of `gpt-6-luna`, `gpt-6.1-sol`,
 `gpt-6-sol`, `gpt-6-astra`).
 Then start the two sessions from the repository root in two terminals. Each
-override names a complete MCP server table, and `--add-dir` lets each session
-write its notebook folder (and the planner its ledger) outside the repository:
+override names a complete MCP server table, `--add-dir` lets each session
+write its notebook folder (and the planner its ledger) outside the repository,
+and the isolation overrides remove the built-in web search, multi-agent tools
+and memories. Shell stays on for `ledger-apply`, so not reading earlier runs
+stays an instruction rule:
 
 ```sh
 # pilot: full surface, package bridge on
 codex -m gpt-6-luna -c 'model_reasoning_effort="low"' \
   -c 'model_reasoning_summary="detailed"' --add-dir "$RUN_DIR" \
+  -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
+  -c features.multi_agent_v2=false \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","pilot"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'
 
 # planner: read-only surface only
 codex -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' \
   -c 'model_reasoning_summary="detailed"' --add-dir "$RUN_DIR" \
+  -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
+  -c features.multi_agent_v2=false \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
   -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
-The read-only surface registers only the 21 read-only tools; the four that
+The read-only surface registers only the 23 read-only tools; the four that
 build (`build_layout`, `connect_entities`, `blueprint_place`, `place_tiles`)
 are dry runs there. Fast mode for the pilot is optional; set the pilot's
 `fast` in `run-identity.json` to what you actually run.

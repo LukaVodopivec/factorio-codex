@@ -736,7 +736,20 @@ do
   resources[#resources + 1] = { valid = true, name = "crude-oil", type = "resource", position = { x = 70.5, y = 30.5 } }
   local piped_wrong = dry({ anchor = { x = 70, y = 30 }, entities = { { name = "pumpjack", dx = 0.5, dy = 0.5 },
     { name = "oil-refinery", dx = 2.5, dy = -3.5, recipe = "advanced-oil-processing" } } })
+  -- Without a crafter on a fluid recipe no port_fluids row exists, so the
+  -- planned pumpjack's resource is not read for one: the refinery adds its
+  -- own on_ore read and that one, the layout without it neither.
+  local function resource_reads(list)
+    local before = engine.resource_reads or 0
+    local report = dry({ anchor = { x = 70, y = 30 }, entities = list })
+    return (engine.resource_reads or 0) - before, report
+  end
+  local jack = { name = "pumpjack", dx = 0.5, dy = 0.5 }
+  local alone_reads, alone = resource_reads({ jack })
+  local with_reads = resource_reads({ jack, { name = "oil-refinery", dx = 2.5, dy = -3.5, recipe = "advanced-oil-processing" } })
   resources[#resources] = nil
+  check(alone.ok and alone.port_fluids == nil and with_reads == alone_reads + 2,
+    "a layout without a crafter on a fluid recipe reads no planned source for port_fluids")
   local wrong_row = port_row(piped_wrong, 71.5, 29.5)
   check(piped_wrong.ok and wrong_row and wrong_row.fluid == "water" and wrong_row.meets == "pumpjack"
     and wrong_row.carries and wrong_row.carries[1] == "crude-oil" and wrong_row.mismatch == true and mismatches(piped_wrong) == 1,

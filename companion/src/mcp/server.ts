@@ -274,7 +274,7 @@ export function registerMcpTools(
   // Recipe-aware crafter ports: facts about each port, never a fix.
   const portFluidReport = " port_fluids: each port of a planned crafting machine whose recipe takes or makes a fluid, with"
     + " role (input or output), fluid (the one its recipe puts there; absent when not known), meets (the planned or"
-    + " existing entity at the tile it points at, else nothing), carries (the fluids that system holds or its planned"
+    + " existing fluid entity connected there, else nothing), carries (the fluids that system holds or its planned"
     + " sources put in: crafter outputs, boiler steam, an offshore pump's liquid, a pumpjack's resource), and mismatch:"
     + " true when carries holds another fluid. closed: true marks a port of a box the recipe leaves unused (the game"
     + " connects nothing there) that something meets. Data, not a failure.";
@@ -357,7 +357,7 @@ export function registerMcpTools(
     try { return result(normalizeObservation(await (await bridge()).call("observe_local", { radius, detail }, extra?.signal))); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("inspect_entity", { description: `Inspect up to ${INSPECT_LIMIT} exact positions: contents by inventory, settings, status; a rocket silo's rocket (parts, cargo, weight, auto requests), a landing pad's stock and requests. Beyond 30 tiles only own entities in charted chunks are read, marked remote: true. Each fluid_connections row has takes (the fluid that box takes: its recipe filter or locked fluid), meets (the fluid the box it connects to holds) and mismatch: true when they differ. surface reads another planet or platform. Input: {"positions":[{"x":1.5,"y":2.5}]}.`, inputSchema: z.object({ positions: z.array(position).min(1).max(INSPECT_LIMIT), surface: surfaceRef.optional() }).strict() }, async ({ positions, surface }) => {
+  tools.registerTool("inspect_entity", { description: `Inspect up to ${INSPECT_LIMIT} exact positions: contents by inventory, settings, status; a rocket silo's rocket (parts, cargo, weight, auto requests), a landing pad's stock and requests. Beyond 30 tiles only own entities in charted chunks are read, marked remote: true. Each fluid_connections row has takes (the fluid that box takes: its filter (a crafter's comes from its recipe) or locked fluid), meets (what the box it connects to holds, else that segment's fluid) and mismatch: true when they differ. surface reads another planet or platform. Input: {"positions":[{"x":1.5,"y":2.5}]}.`, inputSchema: z.object({ positions: z.array(position).min(1).max(INSPECT_LIMIT), surface: surfaceRef.optional() }).strict() }, async ({ positions, surface }) => {
     try { return result(normalizeInspection(await (await bridge()).call("inspect", toolPayloads.inspect(positions, surface)))); }
     catch (error) { return failure(error); }
   });
@@ -467,7 +467,7 @@ export function registerMcpTools(
   tools.registerTool("blueprint_list", { description: "The blueprints stored for this run, with size and entity count.", inputSchema: z.object({}).strict() }, async () => rpc("blueprint_list"));
   tools.registerTool("blueprint_describe", { description: "One stored blueprint: its entities with offsets, size and item cost.", inputSchema: named }, async (p, extra) => rpc("blueprint_describe", named.parse(p), extra?.signal));
   tools.registerTool("blueprint_export", { description: "A stored blueprint as a string for the notebook. It is never imported back.", inputSchema: named }, async (p) => rpc("blueprint_export", named.parse(p)));
-  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position (none where its pipes would join two fluids: free_reason names the pipe); where the blueprint fits (there or at the free position) also ${oreReport} and ${fluidReport}.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
+  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position (none where its pipes would join two fluids: free_reason names the pipe); where the blueprint fits (there or at the free position) also ${oreReport} and ${fluidReport}.${portFluidReport}`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
     try { return await step("blueprint_place")(placeBlueprintSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });

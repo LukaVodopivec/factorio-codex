@@ -1704,8 +1704,10 @@ end
 -- (fluid_connections.recipe_ports); a port of a box its recipe leaves out
 -- connects nothing in the game, so it is kept apart in V.closed[i]. A
 -- mirrored entity's ports are not worked out: its tiles take any port.
+-- V.fluid_crafter marks a layout with a crafting machine on a recipe that
+-- takes or makes a fluid: only then are port_fluids rows worked out.
 local function fluid_ports(ctx, V)
-  local cache, count = {}, 0
+  local cache, fluid_recipe, count = {}, {}, 0
   V.closed = V.closed or {}
   for i, p in ipairs(V.planned) do
     local recipe = CRAFTERS[p.proto.type] and p.recipe or nil
@@ -1718,7 +1720,9 @@ local function fluid_ports(ctx, V)
         or fluid_connections.ports(p.proto, p.direction, area)
       table.sort(rel, by_box)
       cache[key] = rel
+      fluid_recipe[key] = recipe and uses_fluid(recipe) or false
     end
+    if fluid_recipe[key] then V.fluid_crafter = true end
     if #rel > 0 and p.mirror then
       each_tile(p.area, function(x, y) V.wild[cell(x, y)] = true end)
     elseif #rel > 0 then
@@ -2129,6 +2133,7 @@ end
 -- machine's recipe products, an output box with a prototype filter (a
 -- boiler's steam), an offshore pump's liquid at its source tile, the fluid
 -- of a resource under a drill with an output box (a pumpjack's crude oil).
+-- The output filters are read once per prototype name (V.filters).
 local function planned_sources(ctx, V, i)
   local p, out = V.planned[i], {}
   local ports = V.ports[i] or {}
@@ -2137,14 +2142,21 @@ local function planned_sources(ctx, V, i)
   end
   local kind = p.proto.type
   if not CRAFTERS[kind] then
-    ctx.calls = ctx.calls + 1
-    pcall(function()
-      for index, box in pairs(p.proto.fluidbox_prototypes) do
-        local filter = box.production_type == "output" and box.filter
-        local name = filter and (type(filter) == "string" and filter or filter.name)
-        if type(name) == "string" then out[tonumber(box.index) or tonumber(index)] = name end
-      end
-    end)
+    V.filters = V.filters or {}
+    local filters = V.filters[p.name]
+    if not filters then
+      ctx.calls = ctx.calls + 1
+      filters = {}
+      pcall(function()
+        for index, box in pairs(p.proto.fluidbox_prototypes) do
+          local filter = box.production_type == "output" and box.filter
+          local name = filter and (type(filter) == "string" and filter or filter.name)
+          if type(name) == "string" then filters[tonumber(box.index) or tonumber(index)] = name end
+        end
+      end)
+      V.filters[p.name] = filters
+    end
+    for box, name in pairs(filters) do out[box] = name end
   end
   if kind == "offshore-pump" and ports[1] and not ctx.space then
     ctx.calls = ctx.calls + SURVEY_QUERY
@@ -2179,7 +2191,7 @@ end
 -- it. carry(node) reads a built node's system.
 local function port_rows(ctx, V, carry)
   local rows = V.rows.port_fluids
-  if not rows then return end
+  if not rows or not V.fluid_crafter then return end
   local order = {}
   for i in pairs(V.ports) do order[#order + 1] = i end
   for i in pairs(V.closed or {}) do if not V.ports[i] then order[#order + 1] = i end end
@@ -2321,7 +2333,7 @@ local function survey_item(ctx, V, item)
   if item.kind == "seed" then
     fluid_seeds(ctx, V, item.i)
     if V.ports[item.i] then underground_seed(ctx, V, item.i) end
-    if V.ports[item.i] and V.rows.port_fluids then planned_sources(ctx, V, item.i) end
+    if V.ports[item.i] and V.rows.port_fluids and V.fluid_crafter then planned_sources(ctx, V, item.i) end
   elseif item.kind == "mix" then
     mix_check(ctx, V)
   elseif item.kind == "ore" then

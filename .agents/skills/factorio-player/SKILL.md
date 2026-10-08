@@ -125,7 +125,7 @@ retried after the hold.
   as data: `on_ore` (a non-drill building over ore), `mixed_ore` (a drill whose
   area holds another resource too) and `open_fluid_ports` (a fluid connection
   that meets nothing).
-- `port_fluids`: each crafter port's recipe `fluid` against what it `meets`.
+- `port_fluids`: each crafter port's recipe `fluid` and what its system `carries`.
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
 - `platform_status` is your platform screen: state, location, hub slots and

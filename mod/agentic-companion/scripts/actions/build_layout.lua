@@ -34,7 +34,7 @@
 -- inserters [{name,x,y,direction,picks_from,drops_into}], belt_ends
 -- [{name,x,y,direction,faces}], unpowered [{name,x,y}], isolated_poles
 -- [{name,x,y}], on_ore [{name,x,y,ore}], mixed_ore [{name,x,y,mines,also}],
--- open_fluid_ports [{name,x,y,port}] and belt_joins (belt_joins.lua) (see
+-- open_fluid_ports [{name,x,y,port}], belt_joins (belt_joins.lua) and port_fluids (see
 -- the dry-run survey). A planned
 -- fluid entity that would join two standing fluids through the layout's own
 -- earlier pipes fails BLOCKED, as the game would refuse it.

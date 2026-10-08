@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.30.0** against a real Factorio game: start a
+This guide validates release **0.31.0** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.30.0 run is recorded.
+until a 0.31.0 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node
@@ -146,6 +146,29 @@ alone is not evidence of usable framing.
    re-observe authoritative MCP state.
 
 ## Release checklists
+
+For the 0.31.0 release (why a machine stops), record these observable checks
+on a copy of a running factory's save:
+
+- A dry boiler or starved machine's `factory_status` row and its
+  `new_problem` event carry `feed`: the inserters dropping into it, what each
+  holds, what its pickup carries per belt lane, and a class (`foreign_item`,
+  `source_empty`, `inserter_bound`, or none when a feeder is not working). It
+  is read once per stall and again after each line refresh.
+- A fluid-starved crafter names the fluid it lacks and, when its inlet meets
+  another fluid, `meets` that fluid.
+- `inspect_entity` gives belt `lanes` with `lane_mix` (empty, pure,
+  separated, mixed), inserter `holding`, crafter port `takes`/`meets`, and
+  with `trace: up|down` the items along a belt and their sources, capped and
+  stopping at uncharted chunks.
+- Layout, blueprint and route dry runs list `belt_joins` (straight, side-load
+  or drop, per lane, with `mixes`) and layout and blueprint dry runs list
+  `port_fluids` (each crafter port's recipe fluid, what it meets, `mismatch`).
+  Neither row fails a dry run.
+
+These 0.31.0 behaviours were exercised live on a headless 2.0.77 server (a
+boiler fed from a copper-ore belt, a crude-starved refinery whose inlet holds
+heavy oil, side-loads, splitter halves, fluidbox port mapping).
 
 For the 0.30.0 release (honest moves and plain failures), record these
 observable checks on a copy of a running factory's save:

@@ -309,7 +309,7 @@ M.place_action = {
 -- materials against what the body carries; in hand mode an item the body
 -- cannot obtain now (unobtainable) makes it not ok. A placement that fits
 -- (here or at the free position) also reports build_layout's survey rows
--- on_ore, mixed_ore, open_fluid_ports and belt_joins (a platform has no
+-- on_ore, mixed_ore, open_fluid_ports, belt_joins and port_fluids (a platform has no
 -- ore). A place
 -- whose pipes the build would be refused for mixing fluids is not free: no
 -- free_position, free_reason names the pipe (and at the position it is a

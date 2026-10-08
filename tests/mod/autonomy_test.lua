@@ -979,6 +979,8 @@ local REFINING = { name = "advanced-oil-processing", ingredients = { { name = "c
 local inlet = mock.entity({ valid = true, name = "pipe", type = "pipe", position = { x = 501, y = 3.5 },
   fluidbox = setmetatable({ [1] = { name = "heavy-oil", amount = 100 } }, { __len = function() return 1 end }) })
 local refinery = machine("assembling-machine", "oil-refinery", 500.5, 0.5, { products_finished = 0,
+  -- A footprint, so a feed read would run (and show) were a fluid cause to ask for one.
+  bounding_box = box(500.5, 0.5, 2.5),
   status = RAW.missing_required_fluid, get_recipe = function() return REFINING end,
   get_inventory = function() return inventory({}) end, get_fluid_count = function() return 0 end,
   fluidbox = setmetatable({
@@ -997,6 +999,7 @@ end
 local oil = refinery_line()
 check(oil and oil.state == "starved" and oil.cause == "crude-oil" and oil.meets == "heavy-oil",
   "a refinery starved of crude oil whose inlet meets heavy oil says cause crude-oil, meets heavy-oil")
+check(oil and oil.feed == nil, "a fluid cause reads no feeding inserters")
 inlet.fluidbox[1] = { name = "crude-oil", amount = 100 }
 sample_silo(25)
 oil = refinery_line()

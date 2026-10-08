@@ -15,7 +15,7 @@ end
 
 local stacks = dofile(here .. "/item_stack_mock.lua")
 _G.storage, _G.game = {}, { tick = 1, create_inventory = stacks.create_inventory }
-_G.defines = { inventory = { chest = 1, lab_input = 2 } }
+_G.defines = { inventory = { chest = 1, lab_input = 2, character_ammo = 4, character_trash = 8 } }
 _G.prototypes = { item = { ["automation-science-pack"] = {}, yumako = {}, ["iron-plate"] = {}, coal = {},
   ["firearm-magazine"] = {} } }
 stacks.stack_sizes = { ["automation-science-pack"] = 200, yumako = 50, ["iron-plate"] = 100, coal = 50,
@@ -23,9 +23,10 @@ stacks.stack_sizes = { ["automation-science-pack"] = 200, yumako = 50, ["iron-pl
 stacks.max_durability["automation-science-pack"] = 1
 stacks.magazine["firearm-magazine"] = 10
 
-local main = stacks.inventory(10)
+local main, ammo = stacks.inventory(10), stacks.inventory(3)
 local body = { valid = true, reach_distance = 10, force = { name = "player" } }
 function body.get_main_inventory() return main end
+function body.get_inventory(id) return id == defines.inventory.character_ammo and ammo or nil end
 function body.get_item_count(item) return main.get_item_count(item) end
 function body.insert() error("moves use the main inventory's own stacks") end
 function body.remove_item() error("moves never remove by name") end
@@ -45,7 +46,7 @@ local function run(runner, task)
   return runner.tick(task)
 end
 local function reset_main()
-  main = stacks.inventory(10)
+  main, ammo = stacks.inventory(10), stacks.inventory(3)
   stacks.created, stacks.destroyed = 0, 0
 end
 -- An entity that routes inserts into one inventory, as a lab or chest does.
@@ -149,6 +150,40 @@ local turret_ammo = stacks.inventory(1)
 target = holder("gun-turret", "ammo-turret", turret_ammo)
 run(transfer.insert, { target = { x = 3, y = 3 }, items = { ["firearm-magazine"] = 5 }, auto_supply = false })
 check(turret_ammo[1].count == 5 and turret_ammo[1].ammo == 3, "a partly used magazine reaches the turret with its rounds")
+
+-- Magazines in the body's ammo slot are stock too (get_item_count, and so
+-- upkeep, counts them): an insert hands them over after the main inventory's.
+reset_main()
+stacks.put(main, 1, { name = "firearm-magazine", count = 2 })
+stacks.put(ammo, 1, { name = "firearm-magazine", count = 6, ammo = 4 })
+turret_ammo = stacks.inventory(1)
+target = holder("gun-turret", "ammo-turret", turret_ammo)
+local loaded = run(transfer.insert, { target = { x = 3, y = 3 }, items = { ["firearm-magazine"] = 5 }, auto_supply = false })
+check(loaded.status == "done" and loaded.outcome.total_inserted == 5 and turret_ammo.get_item_count("firearm-magazine") == 5
+  and main.is_empty() and ammo.get_item_count("firearm-magazine") == 3 and ammo[1].ammo == 4,
+  "an insert takes the main inventory's magazines, then whole ones from the ammo slot")
+
+-- Without a role, a named extraction reaches every inventory the entity
+-- has, as entity.remove_item did: a turret's ammo has no role.
+reset_main()
+turret_ammo = stacks.inventory(1)
+stacks.put(turret_ammo, 1, { name = "firearm-magazine", count = 8 })
+target = holder("gun-turret", "ammo-turret", turret_ammo, {
+  get_max_inventory_index = function() return 1 end,
+  get_inventory = function(id) return id == 1 and turret_ammo or nil end })
+local unloaded = run(transfer.extract, { target = { x = 3, y = 3 }, items = { ["firearm-magazine"] = 3 } })
+check(unloaded.status == "done" and unloaded.outcome.total_extracted == 3 and turret_ammo[1].count == 5
+  and main.get_item_count("firearm-magazine") == 3, "a named extraction takes magazines out of a gun turret")
+
+-- A target whose insert raises: the held part goes back to its source and
+-- the one-slot buffer is still destroyed.
+reset_main()
+stacks.put(main, 1, { name = "coal", count = 10 })
+local broken = { insert = function() error("insert failed") end }
+local raised = pcall(items.move, main, broken, "coal", "normal", 5)
+check(not raised and main.get_item_count("coal") == 10 and main[1].count == 10
+  and stacks.created == 1 and stacks.destroyed == 1,
+  "a move that raises returns the held items to the source and destroys its buffer")
 
 -- A source that ignores the split (as a belt stack might) still loses
 -- exactly what the target gained: the difference is removed by name.

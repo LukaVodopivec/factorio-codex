@@ -11,6 +11,9 @@
 --                            inserts (unbounded when nil)
 --   M.counted(names, count_of, remove)
 --                            the same over a fixture's count and remove stubs
+--   M.stack(get, set, alive) one stack over get()/set(rec); while alive()
+--                            is false (a belt's stack once its line changed)
+--                            every member but valid errors
 --   M.create_inventory(n)    game.create_inventory
 --   M.durability(stacks...)  the durability units the stacks hold
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]+$")
@@ -53,19 +56,26 @@ end
 
 local records = setmetatable({}, { __mode = "k" })
 
--- A LuaItemStack over get()/set(rec): set(nil) empties it.
-local function stack_proxy(get, set)
+-- A LuaItemStack over get()/set(rec): set(nil) empties it. alive() (always
+-- true when nil) is its valid; an invalid stack's other members error.
+local function stack_proxy(get, set, alive)
   local proxy = api.item_stack({})
+  local function valid() return alive == nil or alive() end
+  local function on(key, fn)
+    api.read(proxy, key, function() assert(valid(), "read of an invalid item stack: " .. key); return fn() end)
+  end
   local function rec() return get() end
   local function need() return assert(rec(), "read of an empty item stack") end
-  api.read(proxy, "valid_for_read", function() return rec() ~= nil end)
-  api.read(proxy, "name", function() return need().name end)
-  api.read(proxy, "count", function() local r = rec(); return r and r.count or 0 end)
-  api.read(proxy, "quality", function() return { name = need().quality } end)
-  api.read(proxy, "spoil_percent", function() return need().spoil_percent or 0 end)
-  api.read(proxy, "durability", function() local r = need(); return r.durability or M.max_durability[r.name] end)
-  api.read(proxy, "ammo", function() local r = need(); return r.ammo or M.magazine[r.name] end)
+  api.read(proxy, "valid", valid)
+  on("valid_for_read", function() return rec() ~= nil end)
+  on("name", function() return need().name end)
+  on("count", function() local r = rec(); return r and r.count or 0 end)
+  on("quality", function() return { name = need().quality } end)
+  on("spoil_percent", function() return need().spoil_percent or 0 end)
+  on("durability", function() local r = need(); return r.durability or M.max_durability[r.name] end)
+  on("ammo", function() local r = need(); return r.ammo or M.magazine[r.name] end)
   api.write(proxy, "count", function(value)
+    assert(valid(), "write of an invalid item stack")
     local r = need()
     assert(value <= r.count, "a count write never adds items")
     if value == 0 then set(nil) else
@@ -75,10 +85,11 @@ local function stack_proxy(get, set)
       set(out)
     end
   end)
-  api.read(proxy, "clear", function() return function() set(nil) end end)
-  api.read(proxy, "transfer_stack", function()
+  on("clear", function() return function() set(nil) end end)
+  on("transfer_stack", function()
     return function(source, amount)
       local from = assert(records[source], "transfer_stack takes a mock stack")
+      assert(from.valid(), "transfer_stack from an invalid item stack")
       local src = from.get()
       if not src then return false end
       amount = math.min(amount or src.count, src.count)
@@ -106,13 +117,17 @@ local function stack_proxy(get, set)
       return k == amount
     end
   end)
-  records[proxy] = { get = get, set = set }
+  records[proxy] = { get = get, set = set, valid = valid }
   return proxy
 end
+M.stack = stack_proxy
 
 -- What an insert offers: a mock stack's record or an ItemStackDefinition.
 local function offered(items)
-  if records[items] then return records[items].get() end
+  if records[items] then
+    assert(records[items].valid(), "insert of an invalid item stack")
+    return records[items].get()
+  end
   return { name = items.name, count = items.count or 1, quality = quality_of(items.quality),
     spoil_percent = items.spoil_percent, durability = items.durability, ammo = items.ammo }
 end

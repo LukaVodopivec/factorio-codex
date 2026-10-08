@@ -11,6 +11,11 @@
 --                        real stacks of name from inventory `from` into `to`
 --   move_stacks(stacks, to, name, quality, count, source)
 --                        the same from any list of stacks (a belt line's)
+--   body_stock(c)        the body's inventories a move hands items from
+--   carried(list, name, quality)
+--                        the count of name (of quality) in those inventories
+--   move_from(list, to, name, quality, count)
+--                        move from each listed inventory in turn
 --   spill(surface, position, stack, record)
 --                        spills a stack never onto a belt nor for robots
 local M = {}
@@ -90,23 +95,28 @@ function M.quality_name(quality)
   return ok and type(name) == "string" and name or "normal"
 end
 
+-- Offers the held stack to `put` (an insert) and takes what it accepted off
+-- held. Returns that count.
+local function offer(held, put)
+  if not held.valid_for_read then return 0 end
+  local count = held.count
+  local took = math.min(put(held) or 0, count)
+  if took >= count then held.clear() elseif took > 0 then held.count = count - took end
+  return took
+end
+
 -- Hands up to `count` items of one real stack to `to` (anything with insert:
 -- an inventory, an entity, the body). The engine's own transfer_stack moves
--- them into `buffer`, a one-slot script inventory, so the split keeps each
--- item's spoil, durability, ammo and quality; `to` inserts that stack, and
--- what it did not take goes back onto the stack it came from, else to the
--- source (put_back). Returns the count `to` took.
-local function give(stack, to, count, buffer, put_back)
-  local held = buffer[1]
+-- them into `held`, the slot of a one-slot script inventory, so the split
+-- keeps each item's spoil, durability, ammo and quality; `to` inserts that
+-- stack, and what it did not take goes back onto the stack it came from
+-- (while that stack is still valid), else to the source (put_back). Returns
+-- the count `to` took.
+local function give(stack, to, count, held, put_back)
   held.transfer_stack(stack, count)
-  local offered = held.valid_for_read and held.count or 0
-  local taken = offered > 0 and math.min(to.insert(held) or 0, offered) or 0
-  if taken >= offered then held.clear() elseif taken > 0 then held.count = offered - taken end
-  if held.valid_for_read then stack.transfer_stack(held) end
-  if held.valid_for_read then
-    local back = math.min(put_back(held) or 0, held.count)
-    if back >= held.count then held.clear() elseif back > 0 then held.count = held.count - back end
-  end
+  local taken = offer(held, to.insert)
+  if held.valid_for_read and stack.valid then stack.transfer_stack(held) end
+  offer(held, put_back)
   if held.valid_for_read then
     error(string.format("ITEM_MOVE_UNRETURNED: %d %s could not go back where they came from", held.count, held.name), 0)
   end
@@ -119,25 +129,37 @@ end
 -- after says what left it. A source that lost less than `to` gained (one that
 -- ignored the split) gives up the difference through source.remove; it may
 -- lose one more, when a returned part folds a partly used item into its
--- stack. source.put_back(stack) returns what it took back. Stops when `to`
--- takes less than offered; returns the count `to` gained and whether it did.
+-- stack. source.put_back(stack) returns what it took back. A stack no longer
+-- valid (a belt's, once its line changed) is skipped. Stops when `to` takes
+-- less than offered; returns the count `to` gained and whether it did. On an
+-- error the held part goes back to the source, else to `to`, and the buffer
+-- is destroyed before the error is raised again.
 function M.move_stacks(stacks, to, name, quality, count, source)
   local moved, short, buffer = 0, false, nil
-  for _, stack in ipairs(stacks) do
-    if moved >= count then break end
-    if stack.valid_for_read and stack.name == name
-      and (quality == nil or M.quality_name(stack.quality) == quality) then
-      local q, before = M.quality_name(stack.quality), stack.count
-      local want = math.min(before, count - moved)
-      buffer = buffer or game.create_inventory(1)
-      local taken = give(stack, to, want, buffer, source.put_back)
-      local left = before - (stack.valid_for_read and stack.count or 0)
-      if left < taken then source.remove({ name = name, quality = q, count = taken - left }) end
-      moved = moved + taken
-      if taken < want then short = true; break end
+  local ok, err = pcall(function()
+    for _, stack in ipairs(stacks) do
+      if moved >= count then break end
+      if stack.valid and stack.valid_for_read and stack.name == name
+        and (quality == nil or M.quality_name(stack.quality) == quality) then
+        local q, before = M.quality_name(stack.quality), stack.count
+        local want = math.min(before, count - moved)
+        buffer = buffer or game.create_inventory(1)
+        local taken = give(stack, to, want, buffer[1], source.put_back)
+        local left = before - (stack.valid and stack.valid_for_read and stack.count or 0)
+        if left < taken then source.remove({ name = name, quality = q, count = taken - left }) end
+        moved = moved + taken
+        if taken < want then short = true; break end
+      end
     end
+  end)
+  if buffer then
+    if not ok then
+      pcall(offer, buffer[1], source.put_back)
+      pcall(offer, buffer[1], to.insert)
+    end
+    buffer.destroy()
   end
-  if buffer then buffer.destroy() end
+  if not ok then error(err, 0) end
   return moved, short
 end
 
@@ -146,6 +168,38 @@ function M.move(from, to, name, quality, count)
   local stacks = {}
   for index = 1, #from do stacks[index] = from[index] end
   return M.move_stacks(stacks, to, name, quality, count, { remove = from.remove, put_back = from.insert })
+end
+
+-- The body's own stock, in the order a move hands it over: the main
+-- inventory, then the ammo and trash slots (everything get_item_count counts
+-- but the worn guns and armour).
+function M.body_stock(c)
+  local list = { c.get_main_inventory() }
+  for _, name in ipairs({ "character_ammo", "character_trash" }) do
+    local index = defines.inventory and defines.inventory[name]
+    local ok, inventory = false, nil
+    if index then ok, inventory = pcall(c.get_inventory, index) end
+    if ok and inventory then list[#list + 1] = inventory end
+  end
+  return list
+end
+
+function M.carried(list, name, quality)
+  local total = 0
+  for _, inventory in ipairs(list) do total = total + inventory.get_item_count({ name = name, quality = quality }) end
+  return total
+end
+
+-- M.move from each inventory of list in turn; returns the count moved.
+function M.move_from(list, to, name, quality, count)
+  local moved = 0
+  for _, inventory in ipairs(list) do
+    if moved >= count then break end
+    local got, short = M.move(inventory, to, name, quality, count - moved)
+    moved = moved + got
+    if short then break end
+  end
+  return moved
 end
 
 -- Spills a stack (a LuaItemStack or {name, count, quality}) around position

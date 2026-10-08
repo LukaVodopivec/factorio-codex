@@ -12,8 +12,9 @@ local function check(cond, what)
   if cond then print("ok   " .. what) else failures = failures + 1; print("FAIL " .. what) end
 end
 
+local stacks = dofile(here .. "/item_stack_mock.lua")
 _G.storage = {}
-_G.game = { tick = 100 }
+_G.game = { tick = 100, create_inventory = stacks.create_inventory }
 _G.defines = { build_check_type = { manual = 1, ghost_revive = 2 }, inventory = { chest = 1, crafter_input = 2 },
   direction = { north = 0, east = 4, south = 8, west = 12 } }
 
@@ -36,7 +37,7 @@ _G.prototypes = { item = items, entity = entities }
 
 local own, nature = { name = "player", recipes = {} }, { name = "neutral" }
 local geometry = require("scripts.placement_geometry")
-local world, inventory = {}, {}
+local world, inventory, real_main = {}, {}, nil
 local function live()
   local out = {}
   for _, e in ipairs(world) do if e.valid then out[#out + 1] = e end end
@@ -45,14 +46,20 @@ end
 local function slots(contents)
   local held = contents or {}
   return {
+    -- Keyed "name" or "name@quality".
     get_contents = function()
       local rows = {}
-      for name, count in pairs(held) do if count > 0 then rows[#rows + 1] = { name = name, count = count, quality = "normal" } end end
+      for key, count in pairs(held) do
+        local name, quality = key:match("^(.-)@(.+)$")
+        if count > 0 then rows[#rows + 1] = { name = name or key, count = count, quality = quality or "normal" } end
+      end
       table.sort(rows, function(a, b) return a.name < b.name end)
       return rows
     end,
     insert = function(stack)
-      held[stack.name] = (held[stack.name] or 0) + stack.count
+      local quality = type(stack.quality) == "table" and stack.quality.name or stack.quality
+      local key = (quality == nil or quality == "normal") and stack.name or stack.name .. "@" .. quality
+      held[key] = (held[key] or 0) + stack.count
       return stack.count
     end,
     held = held,
@@ -125,7 +132,9 @@ local body = {
   get_item_count = function(name) return inventory[name] or 0 end,
   remove_item = function(stack) inventory[stack.name] = (inventory[stack.name] or 0) - stack.count; return stack.count end,
   insert = function(stack) inventory[stack.name] = (inventory[stack.name] or 0) + stack.count; return stack.count end,
-  get_main_inventory = function() return { get_insertable_count = function() return 1000 end } end,
+  -- Restored contents leave as the main inventory's own stacks (one per
+  -- name), or those of real_main when a case sets it.
+  get_main_inventory = function() return real_main or stacks.view(inventory) end,
   can_reach_entity = function() return true end,
 }
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
@@ -187,6 +196,23 @@ check(placed.recipe == "iron-gear-wheel" and placed.inventories.modules.held["sp
   and placed.inventories.input.held["iron-plate"] == 4 and inventory["speed-module"] == 0 and inventory["iron-plate"] == 0
   and inventory["assembling-machine-1"] == 0 and moved.outcome.restored.recipe == "iron-gear-wheel"
   and moved.outcome.restored.items["iron-plate"] == 4, "its recipe, module and ingredients are put back")
+
+-- Rare plates it held go back as the body's own rare plates, never as normal
+-- ones made by name; the body's normal plates stay.
+real_main = stacks.inventory(4)
+stacks.put(real_main, 1, { name = "iron-plate", count = 10 })
+stacks.put(real_main, 2, { name = "iron-plate", count = 4, quality = "rare" })
+machine = find("assembling-machine-1")
+machine.inventories.input.held["iron-plate"], machine.inventories.modules.held["speed-module"] = 0, 0
+machine.inventories.input.held["iron-plate@rare"] = 4
+local rare = run({ from = { x = 20.5, y = 10.5 }, to = { x = 26.5, y = 10.5 } })
+placed = find("assembling-machine-1")
+check(rare and rare.status == "done" and rare.outcome.shortfall == nil and placed.inventories.input.held["iron-plate@rare"] == 4
+  and (placed.inventories.input.held["iron-plate"] or 0) == 0 and rare.outcome.restored.items["iron-plate@rare"] == 4
+  and real_main.get_item_count({ name = "iron-plate", quality = "rare" }) == 0
+  and real_main.get_item_count({ name = "iron-plate", quality = "normal" }) == 10,
+  "rare ingredients go back as the body's own rare stacks and its normal plates stay")
+real_main, inventory["iron-plate@rare"] = nil, nil
 
 -- An inserter keeps its filters; a direction given turns it.
 local arm = spawn("inserter", { x = 30.5, y = 30.5 }, 4, { use_filters = true })

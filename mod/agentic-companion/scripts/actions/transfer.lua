@@ -87,19 +87,18 @@ local function role_inventories(e, role)
     outcome = { code = "INVENTORY_NOT_PRESENT", inventory = role, present = present, target = target_identity(e) } }
 end
 
--- Normal-quality items of `name` in the body's main inventory: what an
--- insert of a named item hands over.
+-- Normal-quality items of `name` in the body's stock (main inventory, ammo
+-- and trash slots, items.body_stock): what an insert of a named item hands
+-- over, and what upkeep's get_item_count counts.
 local function carried_normal(c, name)
-  local main = c.get_main_inventory()
-  return main and main.get_item_count({ name = name, quality = "normal" }) or 0
+  return items.carried(items.body_stock(c), name, "normal")
 end
 
 -- Hands up to n normal-quality `name` from the body's own stacks to `into`
 -- (an entity or an inventory) and returns how many left the body: spoil,
 -- durability and ammo go with them.
 local function hand_over(c, into, name, n)
-  local main = c.get_main_inventory()
-  return main and items.move(main, into, name, "normal", n) or 0
+  return items.move_from(items.body_stock(c), into, name, "normal", n)
 end
 
 -- Moves each listed {name, count} from the companion into the entity,
@@ -382,16 +381,25 @@ local function pull(c, source, name, quality, count)
   return items.move(source, inventory, name, quality, math.min(count, room)), full
 end
 
--- Every inventory an entity holds items in, in role order, each once (by
--- its define index: two reads of one inventory are different objects).
+-- Every inventory an entity holds items in, each once (by its define index:
+-- two reads of one inventory are different objects): the roles' in role
+-- order, then any other (a turret's or vehicle's ammo, a hub's cargo), as
+-- entity.remove_item reached them.
 local function all_inventories(e)
   local list, seen = {}, {}
+  local function add(inventory, id)
+    if not seen[id] then seen[id], list[#list + 1] = true, inventory end
+  end
   for _, role in ipairs(inventory_roles.ORDER) do
     for _, inventory in ipairs(inventory_roles.get(e, role)) do
       local ok, index = pcall(function() return inventory.index end)
-      local id = ok and index or inventory
-      if not seen[id] then seen[id], list[#list + 1] = true, inventory end
+      add(inventory, ok and index or inventory)
     end
+  end
+  local ok, max = pcall(function() return e.get_max_inventory_index() end)
+  for index = 1, ok and tonumber(max) or 0 do
+    local got, inventory = pcall(e.get_inventory, index)
+    if got and inventory and not seen[inventory] then add(inventory, index) end
   end
   return list
 end

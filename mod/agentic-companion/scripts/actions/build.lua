@@ -675,20 +675,21 @@ local function apply_recipe(task, e, recipe, into, surface, at, where)
   local ok, removed = pcall(e.set_recipe, task.recipe)
   local spilled = {}
   local taken = ok and take_back(removed, into, surface, at, spilled) or 0
+  local spill_note = spilled.count and string.format(" (spilled %d that did not fit at (%.1f, %.1f))", spilled.count,
+    spilled.position.x, spilled.position.y) or ""
   local read_ok, assigned = pcall(e.get_recipe)
   if not ok or not read_ok or not assigned or assigned.name ~= task.recipe then
     return {
       status = "failed",
-      detail = string.format("couldn't set %s on the %s — that machine probably can't craft it",
-        task.recipe, e.name),
+      detail = string.format("couldn't set %s on the %s — that machine probably can't craft it%s",
+        task.recipe, e.name, spill_note),
+      outcome = spilled.count and { code = "RECIPE_NOT_SET", spilled = spilled } or nil,
     }
   end
   return {
     status = "done",
     detail = string.format("set %s's recipe to %s%s%s", e.name, task.recipe,
-      taken > 0 and string.format(" (took %d leftover items into %s)", taken, where) or "",
-      spilled.count and string.format(" (spilled %d that did not fit at (%.1f, %.1f))", spilled.count,
-        spilled.position.x, spilled.position.y) or ""),
+      taken > 0 and string.format(" (took %d leftover items into %s)", taken, where) or "", spill_note),
     outcome = spilled.count and { code = "RECIPE_SET", spilled = spilled } or nil,
   }
 end

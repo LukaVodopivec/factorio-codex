@@ -162,24 +162,36 @@ local function within(a, b, distance)
   return dx * dx + dy * dy <= distance * distance
 end
 
--- Moves up to `want` of the item from one lane into the inventory and returns
--- the count moved: the line's own stacks are handed over and only what the
--- inventory took leaves the line (items.move_stacks). Should the inventory
--- take fewer than it said it could hold, the rest never left the belt; the
--- refusal is counted and stops the pickup.
+-- Moves up to `want` normal-quality items of the kind from one lane into the
+-- inventory and returns the count moved: the line's own stacks are handed
+-- over and only what the inventory took leaves the line (items.move_stacks).
+-- Any change to a line invalidates every stack it listed, so the line is
+-- read again before each stack moves, taking the last stack of the kind
+-- first. Should the inventory take fewer than it said it could hold, the
+-- rest never left the belt; the refusal is counted and stops the pickup.
 local function take(task, inventory, lane, want)
   local line = task._belt.get_transport_line(lane)
+  local kind = { name = task.item, quality = "normal" }
   -- can_insert is true when any part fits; only the insertable count bounds a removal.
-  want = math.min(want, line.get_item_count(task.item), inventory.get_insertable_count(task.item))
-  if want < 1 then return 0 end
-  local stacks = {}
-  for _, row in ipairs(line.get_detailed_contents()) do stacks[#stacks + 1] = row.stack end
-  local moved, short = items.move_stacks(stacks, inventory, task.item, nil, want, { remove = line.remove_item,
-    put_back = function(stack)
-      local count = stack.count
-      return line.insert_at_back(stack) and count or 0
-    end })
-  if short then task._refused = (task._refused or 0) + want - moved end
+  want = math.min(want, line.get_item_count(kind), inventory.get_insertable_count(kind))
+  local source = { remove = line.remove_item, put_back = function(stack)
+    local count = stack.count
+    return line.insert_at_back(stack) and count or 0
+  end }
+  local moved = 0
+  while moved < want do
+    local stack
+    local rows = line.get_detailed_contents()
+    for i = #rows, 1, -1 do
+      local s = rows[i].stack
+      if s.valid_for_read and s.name == task.item and items.quality_name(s.quality) == "normal" then stack = s; break end
+    end
+    if not stack then break end
+    local got, short = items.move_stacks({ stack }, inventory, task.item, "normal", want - moved, source)
+    moved = moved + got
+    if short then task._refused = (task._refused or 0) + want - moved; break end
+    if got == 0 then break end
+  end
   return moved
 end
 

@@ -4,7 +4,8 @@
 -- `to` and places it there (auto-clear and the checks of place_entity), then
 -- restores what the API allows: the recipe, the direction (unless one is
 -- given), its settings (entity_settings), the mirror (placed mirrored), and
--- the fuel, modules and ingredients it held. Products it held stay in the inventory.
+-- the fuel, modules and ingredients it held, as the body's own stacks of each
+-- item and quality (items.move_from). Products it held stay in the inventory.
 -- Result: {moved, from, to, restored:{recipe, direction, items, settings},
 -- shortfall?}. A placement that fails leaves the entity in the inventory and
 -- says so. Before mining, the target spot is checked so a move that cannot
@@ -34,6 +35,7 @@ local supply = require("scripts.actions.supply")
 local set_walking = require("scripts.human_inputs").set_walking
 
 local robot_move = require("scripts.actions.robot_move")
+local item_stacks = require("scripts.items")
 local M = {}
 
 -- The nested place runs through supply's nested runner table; build_plan
@@ -82,10 +84,14 @@ local function inventories(e)
   return out
 end
 
+-- {[key] = count} by item and quality (items.key: "name", "name@quality").
 local function contents(inventory)
   local out = {}
   local ok, rows = pcall(function() return inventory.get_contents() end)
-  for _, r in ipairs(ok and rows or {}) do out[r.name] = (out[r.name] or 0) + r.count end
+  for _, r in ipairs(ok and rows or {}) do
+    local key = item_stacks.key(r.name, r.quality)
+    out[key] = (out[key] or 0) + r.count
+  end
   return next(out) and out or nil
 end
 
@@ -266,20 +272,23 @@ local function put_contents(task, c, e)
   local targets = inventories(e)
   for _, group in ipairs(GROUPS) do
     local inventory = targets[group]
-    local names = {}
-    for name in pairs(snap.held[group] or {}) do names[#names + 1] = name end
-    table.sort(names)
-    for _, name in ipairs(names) do
-      local want = snap.held[group][name]
-      local n = math.min(want, c.get_item_count(name))
+    local keys = {}
+    for key in pairs(snap.held[group] or {}) do keys[#keys + 1] = key end
+    table.sort(keys)
+    for _, key in ipairs(keys) do
+      local want = snap.held[group][key]
+      local name, quality = key:match("^(.+)@([^@]+)$")
+      name, quality = name or key, quality or "normal"
+      -- The body's own stacks go back, with their spoil, durability, ammo and quality.
+      local stock = item_stacks.body_stock(c)
+      local n = math.min(want, item_stacks.carried(stock, name, quality))
       local inserted = 0
       if inventory and n > 0 then
-        local ok, count = pcall(inventory.insert, { name = name, count = n })
+        local ok, count = pcall(item_stacks.move_from, stock, inventory, name, quality, n)
         inserted = ok and count or 0
-        if inserted > 0 then c.remove_item({ name = name, count = inserted }) end
       end
-      if inserted > 0 then restored.items[name] = (restored.items[name] or 0) + inserted end
-      if inserted < want then shortfall[#shortfall + 1] = { item = name, missing = want - inserted, into = group } end
+      if inserted > 0 then restored.items[key] = (restored.items[key] or 0) + inserted end
+      if inserted < want then shortfall[#shortfall + 1] = { item = key, missing = want - inserted, into = group } end
     end
   end
   if not next(restored.items) then restored.items = nil end

@@ -16,6 +16,8 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 _G.game = { tick = 1, create_inventory = stacks.create_inventory }
 _G.defines = { direction = { north = 0, east = 4, south = 8, west = 12 } }
 
+-- insert_shortfall: the inventory says it can hold that many more than its
+-- insert then takes.
 local contents, capacity, insert_shortfall = {}, 100, 0
 local function carried()
   local total = 0
@@ -27,46 +29,69 @@ local inventory = {
   can_insert = function(stack) return carried() + stack.count <= capacity end,
   get_insertable_count = function() return math.max(0, capacity - carried()) end,
   insert = function(stack)
-    local count = math.max(0, math.min(stack.count, math.max(0, capacity - carried())) - insert_shortfall)
+    local count = math.max(0, math.min(stack.count, capacity - insert_shortfall - carried()))
     contents[stack.name] = (contents[stack.name] or 0) + count
     return count
   end,
 }
 
--- A belt holds a count per item per lane; lane 1 is left of its direction.
--- Each item kind on a lane is one real item stack (item_stack_mock). removed
--- counts what the action took off transport lines and line_writes what it
--- put back at the line's end; any other line write is an error.
+-- A belt holds a count per item per lane, keyed "name" (normal quality) or
+-- "name@quality"; lane 1 is left of its direction. get_detailed_contents
+-- lists one real one-item stack per item (item_stack_mock), and as in the
+-- game any change to the line invalidates every stack it listed: reading
+-- one afterwards errors. removed counts what left transport lines and
+-- line_writes what the action put back at the line's end; any other line
+-- write is an error.
 local line_writes, removed = 0, {}
+local function key_of(item)
+  if type(item) == "string" then return item end
+  local q = type(item.quality) == "table" and item.quality.name or item.quality
+  return (q == nil or q == "normal") and item.name or item.name .. "@" .. q
+end
 local function belt(x, y, direction, left, right)
   local lanes = { left or {}, right or {} }
   local entity = { valid = true, type = "transport-belt", name = "transport-belt",
     position = { x = x, y = y }, direction = direction, lanes = lanes }
+  local generation = { 0, 0 }
   entity.get_transport_line = function(index)
+    local function changed() generation[index] = generation[index] + 1 end
     return {
-      get_item_count = function(name) return lanes[index][name] or 0 end,
+      get_item_count = function(item) return lanes[index][key_of(item)] or 0 end,
       get_detailed_contents = function()
-        local names = {}
-        for name in pairs(lanes[index]) do names[#names + 1] = name end
-        table.sort(names)
-        local line = stacks.counted(names, function(name) return lanes[index][name] or 0 end, function(stack)
-          lanes[index][stack.name] = (lanes[index][stack.name] or 0) - stack.count
-          removed[stack.name] = (removed[stack.name] or 0) + stack.count
-        end)
-        local rows = {}
-        for i = 1, #line do rows[i] = { stack = line[i], position = i / 4, unique_id = i } end
+        local keys = {}
+        for key in pairs(lanes[index]) do keys[#keys + 1] = key end
+        table.sort(keys)
+        local rows, listed = {}, generation[index]
+        for _, key in ipairs(keys) do
+          local name, quality = key:match("^(.-)@(.+)$")
+          local rec = { name = name or key, quality = quality or "normal", count = 1 }
+          for _ = 1, lanes[index][key] do
+            local gone = false
+            local stack = stacks.stack(function() return not gone and rec or nil end, function(value)
+              assert(value == nil and not gone, "a belt stack only gives up its one item")
+              gone, lanes[index][key] = true, lanes[index][key] - 1
+              removed[key] = (removed[key] or 0) + 1
+              changed()
+            end, function() return generation[index] == listed end)
+            rows[#rows + 1] = { stack = stack, position = #rows / 4, unique_id = #rows + 1 }
+          end
+        end
         return rows
       end,
       remove_item = function(stack)
-        local count = math.min(stack.count, lanes[index][stack.name] or 0)
-        lanes[index][stack.name] = (lanes[index][stack.name] or 0) - count
-        removed[stack.name] = (removed[stack.name] or 0) + count
+        local key = key_of(stack)
+        local count = math.min(stack.count, lanes[index][key] or 0)
+        lanes[index][key] = (lanes[index][key] or 0) - count
+        removed[key] = (removed[key] or 0) + count
+        changed()
         return count
       end,
       insert_at = function() line_writes = line_writes + 1; error("the action must never insert belt items") end,
       insert_at_back = function(stack)
         line_writes = line_writes + 1
-        lanes[index][stack.name] = (lanes[index][stack.name] or 0) + stack.count
+        local key = key_of({ name = stack.name, quality = stack.quality })
+        lanes[index][key] = (lanes[index][key] or 0) + stack.count
+        changed()
         return true
       end,
       clear = function() line_writes = line_writes + 1; error("the action must never clear a belt") end,
@@ -197,6 +222,18 @@ check(body.picking_state == false and result.outcome.source == "belt" and result
   and result.outcome.requested == 3 and result.outcome.belt.position.x == 5.5
   and result.detail:match("picked up 3 iron%-plate from the transport%-belt"),
   "the result reports the count the belt gave up and native picking_state was never left on")
+
+-- One item at a time off a line whose stacks go invalid on each change, and
+-- only the normal quality: rare plates of the same name stay on the belt.
+north = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 3, ["iron-plate@rare"] = 4 })
+reset(north)
+approach_result = "ok"
+task = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 3 }
+pickup.start(task)
+result = run(task, 50)
+check(result and result.status == "done" and contents["iron-plate"] == 3 and north.lanes[1]["iron-plate"] == 0
+  and north.lanes[1]["iron-plate@rare"] == 4 and removed["iron-plate@rare"] == nil and line_writes == 0,
+  "a pickup reads the line again before each item and takes normal plates only, never a rare one as normal")
 
 -- A body already within pickup distance of the belt centre, as when it stands
 -- on a belt in a dense area with no free tile, takes the items at once even
@@ -380,18 +417,19 @@ check(result and result.status == "failed" and result.detail:match("picked up 2 
   and result.outcome.picked_up == 2 and result.outcome.removed_from_belt == 2,
   "an inventory that lost its room stops the pickup before removing anything more")
 -- Conservation even if the inventory takes fewer than it said it could hold:
--- the remainder goes back onto its own stack, nothing is spilled, lost or created.
+-- the refused item goes back onto the belt (its stack went invalid when it
+-- left the line, so at the line's end); nothing is spilled, lost or created.
 north = belt(5.5, 0.5, defines.direction.north, { ["iron-plate"] = 5 })
 reset(north)
-approach_result, insert_shortfall = "ok", 1
+approach_result, capacity, insert_shortfall = "ok", 3, 1
 task = { target = { x = 5.5, y = 0.5 }, item = "iron-plate", count = 3 }
 pickup.start(task)
 result = run(task, 10)
 check(result and result.status == "failed" and result.detail:match("picked up 2")
   and result.detail:match("refused 1 iron%-plate it said it could hold; they stayed on the belt")
-  and contents["iron-plate"] == 2 and on_belt(north, "iron-plate") == 3 and line_writes == 0 and removed["iron-plate"] == 2
+  and contents["iron-plate"] == 2 and on_belt(north, "iron-plate") == 3 and line_writes == 1 and removed["iron-plate"] == 3
   and result.outcome.picked_up == 2 and result.outcome.removed_from_belt == 2,
-  "an insert that takes fewer than offered leaves the rest on its belt stack: belt plus inventory is unchanged")
+  "an insert that takes fewer than offered puts the rest back on its belt: belt plus inventory is unchanged")
 local source = io.open(here .. "/../../mod/agentic-companion/scripts/actions/pickup.lua"):read("a")
 check(not source:find("spill_item_stack", 1, true), "the pickup action never calls spill_item_stack")
 

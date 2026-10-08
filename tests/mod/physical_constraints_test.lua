@@ -115,6 +115,19 @@ build.set_recipe.start(incompatible_recipe)
 local incompatible_result = build.set_recipe.tick(incompatible_recipe)
 check(incompatible_result.status == "failed" and incompatible_result.detail:match("probably can't craft it") ~= nil,
   "set_recipe rejects a non-throwing incompatible machine")
+-- Leftovers the change gave back that did not fit were spilled: the failure
+-- still says so.
+local spills = {}
+surface.spill_item_stack = function(args) spills[#spills + 1] = args; return {} end
+body.insert = function(stack) return math.min(stack.count, 2) end
+target_entity.set_recipe = function() return { { name = "copper-cable", count = 5 } } end
+local spilled_recipe = { target = { x = 1, y = 0 }, recipe = "iron-gear-wheel" }
+build.set_recipe.start(spilled_recipe)
+local spilled_result = build.set_recipe.tick(spilled_recipe)
+check(spilled_result.status == "failed" and spilled_result.outcome.code == "RECIPE_NOT_SET"
+  and spilled_result.outcome.spilled.count == 3 and #spills == 1 and spilled_result.detail:match("spilled 3 that did not fit"),
+  "a failed recipe change still reports the leftovers it spilled")
+surface.spill_item_stack, body.insert = nil, nil
 
 body.crafting_queue_size = 0
 body.begin_crafting = function()

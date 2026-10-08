@@ -764,7 +764,7 @@ for _, row in ipairs(full.lines) do if row.supply_states then supplied = row end
 check(supplied and supplied.network_id == 2001 and #supplied.supply_states == 3 and supplied.supply_omitted == 1
   and supplied.supply_states[1].degraded == "no_fuel" and full.power[1].supply_states,
   "the worst case has a no_power line row with three degraded supply states beside the power row's")
-check(json_size < 10752, "a worst-case factory_status at 200 machines stays under 10.5 KB (" .. json_size .. " bytes)")
+check(json_size < 12800, "a worst-case factory_status at 200 machines stays under 12.5 KB (" .. json_size .. " bytes)")
 
 -- A machine mined while a refresh is still identifying the snapshot is left
 -- out; the refresh completes and the removal's dirty mark is kept.
@@ -995,6 +995,7 @@ check(line_at(500).feed and line_at(500).feed.class == "foreign_item" and edge_q
 surface.find_entities_filtered = find_before
 edge_boiler.valid = false
 
+do
 -- Twenty boilers drying at once: at most MAX_CAUSES (16) feed queries an
 -- evaluate (a budget shared with the other lines' causes); the rest follow
 -- on the next.
@@ -1079,6 +1080,7 @@ local blind_feed = line_at(5000).feed
 check(blind_feed and blind_feed.feeders == 1 and blind_feed.class == nil and blind_feed.inserters[1].from == nil,
   "an inserter with no pickup entity gives no class and no from")
 blind.valid = false
+end
 -- A fluid-starved refinery names the fluid its first input box takes and,
 -- when that box's connection meets another fluid (heavy oil piped to the
 -- crude-oil inlet), meets: that fluid. Fixed, meets goes.

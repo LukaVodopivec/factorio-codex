@@ -80,7 +80,13 @@ export interface PowerRow {
    *  only where the sun gives power. The bot chooses. */
   add_to_cover?: { steam: { steam_engine: number; boiler: number; offshore_pump?: number };
     solar?: { solar_panel: number; accumulator?: number } };
+  /** satisfaction < 1 and the network has generating lines: at most three, stalled first. */
+  supply_states?: SupplyState[];
+  /** Generating lines past the three. */
+  supply_omitted?: number;
 }
+/** A generating line on an electric network: its state, the member that state (or degraded) names, and its fuel runway. */
+export interface SupplyState { line: number; state: LineState; degraded?: LineState; position: Position; fuel_s?: number }
 export type LineState = "running" | "starved" | "output_full" | "depleted" | "no_fuel" | "no_power" | "no_heat" | "frozen" | "disabled" | "idle";
 export interface FactoryLine {
   id: number | string; product?: string; entity?: string; machines: number; working: number; state: LineState;
@@ -95,6 +101,19 @@ export interface FactoryLine {
   degraded?: { state: LineState; cause_position: Position };
   /** Lowest heat-source temperature on a line with a reactor or heat exchanger. */
   temperature?: number;
+  /** What its machines make a minute at full duty (speed, productivity, recipe energy, product amount); absent while one machine's is unknown. */
+  max_per_min?: number;
+  /** rate_per_min / max_per_min. */
+  utilisation?: number;
+  /** Share of about the last ten minutes in each state; present once it was not running nearly all of that time. */
+  share_10m?: Partial<Record<LineState, number>>;
+  /** Seconds of fuel left at the measured burn rate by its lowest burner member of those burning; 0 when one is out. */
+  fuel_s?: number;
+  /** no_power lines: the electric network of the machine short of power. */
+  network_id?: number;
+  /** no_power lines, once per network and for one network at most (see PowerRow.supply_states). */
+  supply_states?: SupplyState[];
+  supply_omitted?: number;
 }
 /** factory_status sections:["logistics"]: robot networks nearest the body. */
 export interface LogisticsSection {

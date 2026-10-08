@@ -257,8 +257,10 @@ end
 -- most the recipe's maximum. A drill: its nominal mining capacity x (1 +
 -- speed bonus) x (1 + productivity: the entity's includes the force's
 -- mining productivity). nil for other machines and when a value cannot be
--- read. Read when the lines regroup, so module and research changes count
--- from the next refresh (at most a minute).
+-- read. A drill also gives its cycle in ticks at full duty and its target's
+-- mining time (the unit both its progress bars count in), for the sampler.
+-- Read when the lines regroup, so module and research changes count from
+-- the next refresh (at most a minute).
 local function machine_capacity(entity, rec, force)
   if not rec.product or (rec.yield or 0) <= 0 then return nil end
   local productivity = number_of(function() return entity.productivity_bonus end) or 0
@@ -271,7 +273,10 @@ local function machine_capacity(entity, rec, force)
     local nominal = M.nominal_mining_capacity(entity, force, entity.surface)
     if not nominal then return nil end
     local speed = number_of(function() return entity.speed_bonus end) or 0
-    return nominal * (1 + speed) * (1 + productivity), productivity
+    local time = number_of(function() return entity.mining_target.prototype.mineable_properties.mining_time end)
+    local base = number_of(function() return entity.prototype.mining_speed end)
+    local cycle = time and base and base * (1 + speed) > 0 and 60 * time / (base * (1 + speed)) or nil
+    return nominal * (1 + speed) * (1 + productivity), productivity, cycle, time
   end
   if not (CRAFTING_TYPES[rec.type] and rec.energy and rec.energy > 0) then return nil end
   local speed = number_of(function() return entity.crafting_speed end)
@@ -349,8 +354,9 @@ local function refresh_identify(a, count)
         local ok, key, product, yield, recipe, energy = pcall(identity, entity)
         if ok then rec.key, rec.product, rec.yield, rec.recipe, rec.energy = key, product, yield, recipe, energy
         else rec.key, rec.product, rec.yield, rec.recipe, rec.energy = entry.type .. ":" .. entry.name, nil, 0, nil, nil end
-        local read, capacity, productivity = pcall(machine_capacity, entity, rec, force)
+        local read, capacity, productivity, cycle, mining_time = pcall(machine_capacity, entity, rec, force)
         rec.capacity, rec.productivity = read and capacity or nil, read and productivity or nil
+        rec.cycle, rec.mining_time = read and cycle or nil, read and mining_time or nil
         -- A drill keeps the resource it last mined: once depleted it has none.
         if entry.type == "mining-drill" and rec.product then rec.resource = rec.product end
         if rec.heat == nil then rec.heat = heat_powered(entity) end
@@ -631,18 +637,29 @@ local function sample(a, rec, tick)
   local progressed, produced = PROGRESS_STATUS[raw] == true, 0
   if rec.type == "mining-drill" then
     local progress = entity.mining_progress
-    if rec.progress and progress ~= rec.progress then
-      progressed = true
-      if progress < rec.progress then produced = 1 end
-    end
-    rec.progress = progress
     -- Productivity's extra products fill a progress bar of their own (read
     -- only for a drill with a bonus), so the rate and max_per_min agree.
-    if (rec.productivity or 0) > 0 then
-      local bonus = number_of(function() return entity.bonus_mining_progress end)
-      if bonus and rec.bonus_progress and bonus < rec.bonus_progress then produced = produced + 1 end
-      rec.bonus_progress = bonus
+    local bonus = (rec.productivity or 0) > 0 and number_of(function() return entity.bonus_mining_progress end) or nil
+    if rec.progress and progress ~= rec.progress then
+      progressed = true
+      local mined = progress < rec.progress and 1 or 0
+      local extra = bonus and rec.bonus_progress and bonus < rec.bonus_progress and 1 or 0
+      -- A drill whose cycle is shorter than a sample period wraps its bars
+      -- more than once between samples. Working at both samples, it ran the
+      -- elapsed ticks at full duty: the cycles finished are the bar's
+      -- advance (elapsed / cycle in mining-time units; the bonus bar's is
+      -- that x productivity) plus the old reading less the new.
+      if rec.cycle and rec.cycle < SAMPLE_PERIOD and rec.mining_time and rec.progress_tick
+        and raw == "working" and rec.raw == "working" then
+        local cycles = (tick - rec.progress_tick) / rec.cycle
+        mined = math.max(mined, math.floor(cycles + (rec.progress - progress) / rec.mining_time + 0.01))
+        if bonus and rec.bonus_progress then
+          extra = math.max(extra, math.floor(cycles * rec.productivity + (rec.bonus_progress - bonus) / rec.mining_time + 0.01))
+        end
+      end
+      produced = mined + extra
     end
+    rec.progress, rec.bonus_progress, rec.progress_tick = progress, bonus, tick
   elseif CRAFTING_TYPES[rec.type] then
     local finished = entity.products_finished
     if rec.finished and finished > rec.finished then progressed, produced = true, finished - rec.finished end
@@ -1327,6 +1344,8 @@ function M.lines(since_tick, surface)
   local a = data()
   local rows = {}
   if not a then return rows end
+  -- supply_states once per surface and network, however many rows share it.
+  local supply = {}
   for _, id in ipairs(a.line_order) do
     local line = a.lines[id]
     if (not since_tick or line.changed_tick >= since_tick) and on(a, line, surface) then
@@ -1359,7 +1378,9 @@ function M.lines(since_tick, surface)
       -- (none when it is on no network).
       if line.state == "no_power" and rec then
         row.network_id = registry.network_of(line.cause_unit)
-        row.supply_states, row.supply_omitted = M.supply_states(line_surface(a, line), row.network_id)
+        local key = tostring(line_surface(a, line)) .. ":" .. tostring(row.network_id)
+        supply[key] = supply[key] or { M.supply_states(line_surface(a, line), row.network_id) }
+        row.supply_states, row.supply_omitted = supply[key][1], supply[key][2]
       end
       if not line.product then
         local first = a.machines[line.machines[1]]

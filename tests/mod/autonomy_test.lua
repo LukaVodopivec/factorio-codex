@@ -487,10 +487,11 @@ check(factory_status.event_state().last_cancel_all_tick == 450, "event_state car
 storage.tasks.last_cancel_all_tick = nil
 
 -- Cost and size at 200 machines: about seven machine samples a tick, no
--- entity query, and a status read under 9.75 KB (patch outlines and both
+-- entity query, and a status read under 10.5 KB (patch outlines and both
 -- ways to cover a power deficit took it past 6 KB, three rows of feed facts
--- at their widest add about 1.6 KB, capacity, state shares and fuel runway
--- on every line row and three supply states on the power row about 1.5 KB).
+-- at their widest add about 1.6 KB, capacity, five-state shares and fuel
+-- runway on every line row and three supply states on the power row and on
+-- one line row about 2.3 KB).
 _G.storage = {}
 state.init()
 storage.registry.ready = true
@@ -598,12 +599,34 @@ for _, f in ipairs({ furnaces_by_unit[1], furnaces_by_unit[2], furnaces_by_unit[
   end
 end
 for i = 5, 12 do mock.state(furnaces_by_unit[i]).status = RAW.full_output end
+-- A furnace short of power on network 2001, which the power row (network
+-- 1001) does not list: its row carries that network's supply states, four
+-- steam lines (each a working engine beside a dry boiler, so running and
+-- degraded no_fuel) of which three are named.
+mock.state(furnaces_by_unit[5]).status = RAW.no_power
+storage.registry.entries[furnaces_by_unit[5].unit_number].network = 2001
+local engines = {}
+for k = 1, 4 do
+  local boiler = machine("boiler", "boiler", -1234.5 - k * 20, 1234.5, { status = RAW.no_fuel,
+    burner = { inventory = mock.inventory({ get_contents = function() return {} end }) } })
+  mock.read(boiler.burner, "remaining_burning_fuel", function() return 0 end)
+  engines[k] = machine("generator", "steam-engine", -1234.5 - k * 20, 1238.5)
+  storage.registry.entries[boiler.unit_number].network = 2001
+  storage.registry.entries[engines[k].unit_number].network = 2001
+end
+autonomy.refresh()
 for _ = 1, 700 do
   game.tick = game.tick + 1
   for i = 13, #furnaces_by_unit - 1 do
     if game.tick % 192 == 0 then mock.state(furnaces_by_unit[i]).products_finished = mock.state(furnaces_by_unit[i]).products_finished + 1 end
   end
   autonomy.on_tick(game.tick)
+end
+-- Every line spent the last minute in five states: share_10m at its widest.
+for _, line in pairs(storage.autonomy.lines) do
+  local bin = math.floor(game.tick / 3600)
+  line.share_bins, line.share_bin = line.share_bins or {}, bin
+  line.share_bins[bin % 10 + 1] = { running = 100, starved = 23, no_fuel = 17, output_full = 11, no_power = 7 }
 end
 -- 28 characters: the longest vanilla Space Age names (electromagnetic-science-pack).
 local long = function(i) return string.format("electromagnetic-science-%03d", i) end
@@ -655,7 +678,7 @@ json_size = size(full)
 local starved_line
 for _, line in ipairs(full.lines) do if line.state == "starved" then starved_line = line end end
 local max_id = 0
-for _, line in ipairs(autonomy.lines()) do if line.id > max_id then max_id = line.id end end
+for _, line in ipairs(autonomy.lines()) do if line.product ~= "electricity" and line.id > max_id then max_id = line.id end end
 check(full.omitted_lines and full.omitted_lines > 0 and full.omitted_problems and full.omitted_problems > 0
   and full.omitted_stock and full.omitted_power and full.omitted_patches and full.research.omitted_available
   and full.body.inventory_omitted, "the worst-case read fills every section past its cap")
@@ -670,7 +693,12 @@ end
 check(wide_feeds == 3 and full.omitted_feeds and full.omitted_feeds > 0 and in_line > 0,
   "the worst case shows three stalled rows' feed facts, a problem row whose line shows them says feed_in_line, "
     .. "and omitted_feeds counts the rest")
-check(json_size < 9984, "a worst-case factory_status at 200 machines stays under 9.75 KB (" .. json_size .. " bytes)")
+local supplied
+for _, row in ipairs(full.lines) do if row.supply_states then supplied = row end end
+check(supplied and supplied.network_id == 2001 and #supplied.supply_states == 3 and supplied.supply_omitted == 1
+  and supplied.supply_states[1].degraded == "no_fuel" and full.power[1].supply_states,
+  "the worst case has a no_power line row with three degraded supply states beside the power row's")
+check(json_size < 10752, "a worst-case factory_status at 200 machines stays under 10.5 KB (" .. json_size .. " bytes)")
 
 -- A machine mined while a refresh is still identifying the snapshot is left
 -- out; the refresh completes and the removal's dirty mark is kept.

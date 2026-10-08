@@ -189,6 +189,42 @@ for _, row in ipairs(autonomy.lines()) do if row.position.y == 200 then burning 
 check(burning.fuel_s == 0, "a member out of fuel makes the line's fuel_s 0")
 check(line_of("iron-gear-wheel").fuel_s == nil, "a line without a burner has no fuel_s")
 
+-- ------------------------------------------------------------ fast drills
+-- Drills whose cycle is shorter than the 30-tick sample period: a big
+-- drill (mining speed 2.5) on stone taking 1 s mines every 24 ticks (150 a
+-- minute); on scrap taking 0.5 s with +30 % productivity every 12 ticks
+-- (300 a minute, 390 with the bonus). Both bars count in units of the mining
+-- time (2.0.77: a scrap drill's wrap at 0.5).
+local function resource(name, x, time)
+  return mock.entity({ valid = true, name = name, type = "resource", position = { x = x, y = 400 },
+    prototype = { mineable_properties = { mining_time = time, products = { { name = name, type = "item", amount = 1 } } } } })
+end
+local stone_drill = machine("mining-drill", "big-mining-drill", 700, 400, { mining_progress = 0,
+  mining_target = resource("stone", 700, 1), productivity_bonus = 0, speed_bonus = 0, prototype = { mining_speed = 2.5 } })
+local scrap_drill = machine("mining-drill", "big-mining-drill", 800, 400, { mining_progress = 0, bonus_mining_progress = 0,
+  mining_target = resource("scrap", 800, 0.5), productivity_bonus = 0.3, speed_bonus = 0, prototype = { mining_speed = 2.5 } })
+autonomy.refresh()
+local mined_ticks = 0
+local function mine()
+  mined_ticks = mined_ticks + 1
+  mock.state(stone_drill).mining_progress = (mined_ticks % 24) / 24
+  mock.state(scrap_drill).mining_progress = 0.5 * (mined_ticks % 12) / 12
+  mock.state(scrap_drill).bonus_mining_progress = (mined_ticks * 0.3 * 0.5 / 12) % 0.5
+end
+run(3 * 3600, mine)
+local stone, scrap = line_of("stone"), line_of("scrap")
+check(stone and near(stone.max_per_min, 150) and stone.rate_per_min >= 147 and stone.rate_per_min <= 153
+  and stone.utilisation >= 0.98 and stone.utilisation <= 1.02,
+  "a drill mining every 24 ticks counts every cycle between its 30-tick samples (" .. tostring(stone and stone.rate_per_min) .. " a minute)")
+check(scrap and near(scrap.max_per_min, 390) and scrap.utilisation >= 0.98 and scrap.utilisation <= 1.02,
+  "a 12-tick scrap drill with productivity meets its max, bonus products included ("
+    .. tostring(scrap and scrap.rate_per_min) .. " a minute)")
+-- Not working at a sample: only the bars' wraps count (at most one each).
+mock.state(stone_drill).status = RAW.low_power
+run(3 * 3600, mine)
+stone = line_of("stone")
+check(stone.rate_per_min <= 121, "a fast drill not reading working counts one cycle a sample (" .. stone.rate_per_min .. " a minute)")
+
 -- ------------------------------------------------------------ supply_states
 -- A steam line (a dry boiler beside an engine on network 5) and an
 -- assembler on network 5 short of power: the assembler's row names its
@@ -253,6 +289,29 @@ check(status.power[1].supply_states and row and row.network_id == 5 and row.supp
 status = factory_status.factory_status({ sections = { "lines" } })
 for _, line in ipairs(status.lines) do if line.position.x == 520 then row = line end end
 check(row.supply_states and row.supply_states[1], "without the power section the line row carries them")
+-- A second network short of power: line rows carry supply states for one
+-- network the power rows do not list; the other row keeps its network_id.
+local other_boiler = machine("boiler", "boiler", 900, 0, { status = RAW.no_fuel,
+  burner = { inventory = mock.inventory({ get_contents = function() return {} end }) } })
+mock.read(other_boiler.burner, "remaining_burning_fuel", function() return 0 end)
+local other = machine("assembling-machine", "assembling-machine-1", 920, 0, { status = RAW.no_power,
+  products_finished = 0, crafting_speed = 0.5, get_recipe = function() return GEAR end })
+storage.registry.entries[other_boiler.unit_number].network = 7
+storage.registry.entries[other.unit_number].network = 7
+autonomy.refresh()
+run(700)
+status = factory_status.factory_status({ sections = { "lines" } })
+local carried, bare = 0, 0
+for _, line in ipairs(status.lines) do
+  if line.state == "no_power" then
+    if line.supply_states then carried = carried + 1 elseif line.network_id then bare = bare + 1 end
+  end
+end
+check(carried == 1 and bare == 1, "line rows carry supply states for one network; another no_power row keeps its network_id")
+status = factory_status.factory_status({ sections = { "lines", "power" } })
+for _, line in ipairs(status.lines) do if line.position.x == 920 then row = line end end
+check(row.network_id == 7 and row.supply_states and row.supply_states[1].state == "no_fuel",
+  "with network 5 on the power row, the network 7 row carries its own")
 
 check(#mock.violations == 0, "no read outside the Factorio 2.0.77 API")
 if failures > 0 then print(failures .. " FAILURES"); os.exit(1) end

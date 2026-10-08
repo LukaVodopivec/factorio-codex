@@ -13,7 +13,7 @@
 -- upgraded save's bootstrap or first pass still runs. The default read
 -- stays under about 6 KB in ordinary play (feed facts on up to three stalled
 -- rows add up to about 1.6 KB; line capacity, state shares, fuel runway and
--- supply states about 1.5 KB more at their widest; under 9.75 KB in all, the
+-- supply states about 2.3 KB more at their widest; under 10.5 KB in all, the
 -- worst case autonomy_test measures). logistics
 -- (robot networks) is opt-in through sections. platforms lists the force's
 -- space platforms, one attribute-read line each (platforms.lua).
@@ -93,15 +93,16 @@ local function cap_feeds(result)
   if omitted > 0 then result.omitted_feeds = omitted end
 end
 
--- supply_states (autonomy.supply_states) rides once per electric network: a
--- line row on a network a power row or an earlier line row lists keeps only
--- its network_id.
+-- supply_states (autonomy.supply_states) rides once per electric network,
+-- and line rows carry them for at most one network no power row lists: any
+-- other line row keeps only its network_id (map_summary's power section has
+-- every network's).
 local function cap_supply(result)
-  local shown = {}
+  local shown, line_shown = {}, false
   for _, row in ipairs(result.power or {}) do if row.supply_states then shown[row.network_id] = true end end
   for _, row in ipairs(result.lines or {}) do
-    if row.supply_states and shown[row.network_id] then row.supply_states, row.supply_omitted = nil, nil
-    elseif row.supply_states then shown[row.network_id] = true end
+    if row.supply_states and not shown[row.network_id] and not line_shown then line_shown = true
+    elseif row.supply_states then row.supply_states, row.supply_omitted = nil, nil end
   end
 end
 

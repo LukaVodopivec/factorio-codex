@@ -320,7 +320,17 @@ replacement.
   `depleted` with the ore a drill ran out of, `no_fuel`, `no_power`,
   `no_heat`, `disabled`, `idle` with `no_recipe` or `recipe_not_researched`),
   the position that causes a problem, on a running line `degraded` (its
-  worst member problem and where), `rate_per_min`, `hand_fed` (a character
+  worst member problem and where), `rate_per_min`, `max_per_min` (what its
+  machines make a minute at full duty: crafting speed with modules, beacons
+  and quality x (1 + productivity) / recipe energy x product amount, or a
+  drill's mining speed with its bonuses), `utilisation` (`rate_per_min` /
+  `max_per_min`), `share_10m` (the share of about the last ten minutes in
+  each state, once the line was not running nearly all of it), `fuel_s`
+  (seconds of fuel left at the measured burn rate by its lowest burner member
+  of those burning, 0 when one is out), on a `no_power` line `network_id`
+  and, when that network has generating lines, `supply_states` (at most three,
+  stalled first: line, state, degraded, position, `fuel_s`; shown once per
+  network and on line rows for one network only), `hand_fed` (a character
   transfer in the last minute), `self_sustaining` (a minute of running with
   no character transfer, no stall and no member out of fuel or power) and, from the second hand transfer into or out of
   its machines within ten minutes, `hand_transfers`: such a line is served by
@@ -400,7 +410,7 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | Tool | Surface | Purpose |
 | --- | --- | --- |
 | `connect_status` | both | config, RCON, mod and protocol check; binds the `Codex` player |
-| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover` (steam and solar), stock, research, body (state, surface, health), patches with their `bbox` outline, one line per space platform, `elsewhere` (one line per other surface with buildings), `unlocked_locations`; `surface`, `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
+| `factory_status` | both | the single routine read: lines, problems, power by source with `add_to_cover` (steam and solar) and, short of power, `supply_states` (the generating lines on that network), stock, research, body (state, surface, health), patches with their `bbox` outline, one line per space platform, `elsewhere` (one line per other surface with buildings), `unlocked_locations`; `surface`, `since_tick`, `sections` (only the parts named; `logistics`, the robot networks, only when named) |
 | `next_event` | both | waits up to 120 s for `plan_ended` (with the plan's outcomes and inventory change), `research_finished`, `queue_empty`, `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`/`ended`, `rocket_ready`, `rocket_launched`, `cargo_delivered`, `platform_state_changed`, `platform_arrived`, `travel_phase`, `body_surface_changed`, or `timeout` |
 | `activity_log` | both | recent plan outcomes with `source` (`pilot`, `upkeep`, `package:<id>`), cancels with their `origin`, blueprint changes, and package statuses |
 | `build_layout` | both (read-only: dry run) | build a layout of offsets from an `anchor` or a found `site`, with recipes, starting items, settings and belt/pipe/power connections; `mode: ghosts` for robots; `platform` marks ghosts and foundation tiles on a space platform for its hub to build; a dry run also reports, as data, inserters, belt ends, unpowered machines, isolated poles, `on_ore` (non-drill buildings over ore), `mixed_ore` (drills whose area holds another resource), `open_fluid_ports` (fluid connections that meet nothing) and `port_fluids` (each fluid-recipe crafter port's recipe fluid and what its system carries) |

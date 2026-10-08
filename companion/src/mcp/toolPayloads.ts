@@ -40,7 +40,7 @@ export const toolPayloads = {
     ...(location ? { location } : {}), ...(recipe_choices ? { recipe_choices } : {}),
     ...(flow_precision ? { flow_precision } : {}), ...(planet ? { planet } : {}),
     ...(per_minute ? { per_minute } : {}), ...(fuel ? { fuel } : {}) }),
-  connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }) }),
+  connectEntities: ({ kind, prototype, from, to, max_length, fluid, underground, joins }: { kind: "belt" | "pipe" | "power"; prototype: string; from: { x: number; y: number }; to: { x: number; y: number }; max_length: number; fluid?: string; underground?: string | false; joins?: boolean }) => ({ kind, prototype, from, to, max_length, ...(fluid === undefined ? {} : { fluid }), ...(underground === undefined ? {} : { underground }), ...(joins ? { joins: true } : {}) }),
 };
 
 export function normalizeCanPlace(value: any, placements: Array<{ name: string; x: number; y: number; direction?: number }>): any {
@@ -312,7 +312,16 @@ export function normalizeProductionRequirements(value: any): any {
 }
 
 export function normalizePhysicalRoute(value: any): any {
-  return value && typeof value === "object" ? { ...value, steps: luaArray(value.steps) } : value;
+  return value && typeof value === "object" ? normalizeBeltJoins({ ...value, steps: luaArray(value.steps) }) : value;
+}
+
+// A dry run's belt_joins rows as JSON lists, with null where the mod leaves
+// a lane's adds or mixes unknown (Lua has no null).
+export function normalizeBeltJoins(value: any): any {
+  if (!value || typeof value !== "object" || value.belt_joins === undefined) return value;
+  return { ...value, belt_joins: luaArray(value.belt_joins).map((row: any) => ({ ...row,
+    lanes: luaArray(row?.lanes).map((lane: any) => ({ ...lane, items: luaArray(lane?.items ?? []),
+      adds: lane?.adds === undefined ? null : luaArray(lane.adds), mixes: lane?.mixes ?? null })) })) };
 }
 
 /** Belt lanes, an inserter's hand and a belt trace: empty Lua tables are

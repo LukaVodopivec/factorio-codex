@@ -168,6 +168,31 @@ observable checks on a copy of a running factory's save:
 These 0.30.0 behaviours were exercised live on a headless 2.0.77 server
 (stack moves, partial and refused moves, belt pickup, spills).
 
+Dry-run `belt_joins` rows (`build_layout`, `blueprint_place`, belt
+`connect_entities`) follow lane rules measured on a headless 2.0.77 server:
+transport line 1 is the left lane; a belt from behind, or the one side input
+of a belt with nothing behind it, keeps lanes; a side input of a belt with
+something behind it side-loads both source lanes onto the near lane; onto an
+underground entrance only the source lane over its back half passes (an
+exit: its front half); a splitter output joins like a belt; an inserter or
+drill drop lands on the lane on its side of the centre line, the right lane
+on the line. To recheck, build each case, dry-run the joining piece, then
+place it and read the receiving belt's transport lines.
+
+An inserter's `adds` in those rows reads its pickup the way the game's
+endpoint does (`get_recipe()` products of a standing assembler or furnace,
+the chest inventory's `get_contents()`, a belt's transport lines, a planned
+assembler's recipe products), then applies the planned inserter's whitelist
+or blacklist filters. A planned belt piece identical to one standing there
+(name, position, direction, underground end) counts as standing (its lanes
+now count in `items` and `adds`): a standing
+belt's `belt_neighbours.inputs` on a planned tile count before the build only,
+and a join between two standing belts is listed only when the build changes
+its kind. Inputs on uncharted chunks are not read. A belt `connect_entities`
+build (not a dry run) skips the join scan. To recheck, list a standing belt
+that feeds a standing curve in a dry run (no rows), then add a planned belt
+behind the curve (one side-load row from the standing piece).
+
 For the 0.29.2 release (the bots do the thinking), record these observable
 checks on a copy of a running factory's save:
 

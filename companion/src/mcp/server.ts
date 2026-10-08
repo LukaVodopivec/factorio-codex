@@ -13,7 +13,7 @@ import { areaFields, areaIssue, blueprintName, blueprintPlaceFields, blueprintPl
   createPlatformFields, deconstructFields, deconstructIssue, entitySettings, executeRunPlan, exploreFields, INSPECT_LIMIT, insertFields, insertIssue, inventoryRole,
   launchRocketFields, layoutFields, layoutIssue, moveEntityFields, planStatusSchema, platformRouteFields, platformSelector, queuePlanSchema, requestsFields, requestsIssue,
   routeIssue, runPlanSchema, settingsIssue, surfaceRef, tilesFields, tilesIssue, travelFields, upgradeFields, waitForPlanStatus, type RunPlanResult } from "./runPlan.js";
-import { normalizeActivityLog, normalizeCanPlace, normalizeConfigured, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, normalizeRequests, normalizeRoute, luaArray, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
+import { normalizeActivityLog, normalizeBeltJoins, normalizeCanPlace, normalizeConfigured, normalizeFactoryStatus, normalizeFifo, normalizeInspection, normalizeMapSummary, normalizePhysicalRoute, normalizePlacementSearch, normalizePlanDiagnostics, normalizePlatformStatus, normalizeProductionRequirements, normalizeRequests, normalizeRoute, luaArray, planStatusSummary, queuedPlanSummary, toolPayloads } from "./toolPayloads.js";
 
 export { normalizeObservation, toolPayloads };
 export const MCP_SERVER_VERSION = companionVersion();
@@ -197,8 +197,8 @@ export function registerMcpTools(
   const tools: ToolRegistrar = { registerTool: (name, config, handler) =>
     server.registerTool(name, config, async (args, extra) => orders.attach(await handler(args, extra))) };
   // signal (the MCP request's) stops the poll of a read the game runs as a job.
-  const rpc = async (method: any, params: unknown = {}, signal?: AbortSignal) => {
-    try { return result(await (await bridge()).call(method, params, signal)); }
+  const rpc = async (method: any, params: unknown = {}, signal?: AbortSignal, normalize = (value: any) => value) => {
+    try { return result(normalize(await (await bridge()).call(method, params, signal))); }
     catch (error) { return failure(error); }
   };
   // A remote action on a space platform (its window, no body): one RPC that
@@ -243,7 +243,7 @@ export function registerMcpTools(
   };
   // A plan action as one tool: a one-step plan, or its dry run as a read-only mod check.
   const step = (action: string) => async ({ check_only, ...params }: Record<string, unknown>, signal?: AbortSignal) => {
-    if (check_only) return rpc(action, { ...params, check_only: true }, signal);
+    if (check_only) return rpc(action, { ...params, check_only: true }, signal, normalizeBeltJoins);
     return runPlan({ steps: [{ action, ...params }] }, signal, action);
   };
   const checkOnly = surface === "full" ? z.boolean().default(false) : z.literal(true).default(true);
@@ -271,10 +271,28 @@ export function registerMcpTools(
     + " tiles, and also, the rest by tile count)";
   const fluidReport = "open_fluid_ports (a planned pump, boiler, engine, tank or other fluid machine with a fluid box no"
     + " planned or existing connection meets, a pipe run's end, a pipe-to-ground's open side; port is the tile it points at)";
+  // Belt joins: facts measured on Factorio 2.0.77, never advice.
+  const joinReport = "belt_joins (each planned belt, underground exit or splitter output that lands on a standing belt or on a"
+    + " planned belt another belt also feeds, each planned inserter or drill drop onto a belt, each standing belt feeding a planned"
+    + " belt, and each standing side input a planned belt turns from a curve into a side-load: name, x, y and standing of the"
+    + " receiving belt; from {name, x, y, standing}; join straight (lanes kept: from behind, or the one side input of a transport"
+    + " belt with nothing behind it, which turns), side_load (both source lanes onto the near lane; onto an underground belt only"
+    + " the source lane over an entrance's back half or an exit's front half) or drop (the lane on the drop point's side of the"
+    + " belt's centre line; on the line, the right lane); lanes [{lane: left or right facing the receiving belt's direction,"
+    + " items: on that lane of that belt tile now, or what the layout's other inputs put there, adds: what this source puts there"
+    + " (a drill the items of the resources it mines, a standing belt its lanes now, a planned run its own sources; null when"
+    + " unknown: a run nothing feeds), mixes: true when the lane would carry more than one item kind, null"
+    + " when an unknown leaves it open; a splitter's outputs each count all it takes in}])."
+    // Inserter sources and standing twins: facts only, in their own sentences.
+    + " An inserter's adds is what its pickup gives: a crafter's recipe products, a chest's items now, a belt's lanes now or"
+    + " planned carry; with whitelist filters only those (the filters alone when the pickup is unknown), with blacklist ones"
+    + " less them; null for an empty chest, a crafter with no recipe or another pickup. A planned belt piece the same as one"
+    + " standing there (name, position, direction) stands now (standing true, items and adds include its lanes now); its join with another standing belt"
+    + " is a row only when the build changes the join's kind";
   const dryReport = " Its report also lists inserters (picks_from, drops_into: a planned or existing entity, or nothing), belt_ends"
     + " (each belt nothing ahead takes from: a run's end, one facing a reversed belt or an underground exit's back, an"
     + ` entrance with no exit; with what it faces), unpowered machines no pole covers, isolated_poles no wire reaches, ${oreReport}`
-    + ` and ${fluidReport}. A planned pipe or other fluid entity that, in build order, would join two fluids already standing`
+    + `, ${fluidReport} and ${joinReport}. A planned pipe or other fluid entity that, in build order, would join two fluids already standing`
     + " through the layout's own pipes fails BLOCKED (would join X and Y pipes): the game refuses that placement.";
   // connect_entities plans the route as a read; the build is a direct
   // build_plan task, and a power route is then checked for continuity.
@@ -283,7 +301,8 @@ export function registerMcpTools(
     // the MCP tool timeout: the build's guard counts from here.
     const started = Date.now();
     const b = await bridge();
-    const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities(p), signal));
+    // Belt joins are a belt dry run's data: a build skips their reads.
+    const route: any = normalizePhysicalRoute(await b.call("connect_entities", toolPayloads.connectEntities({ ...p, joins: check_only === true && p.kind === "belt" }), signal));
     if (check_only) return result({ ...route, check_only: true, status: "completed", terminal: true,
       summary: `route of ${route.steps.length} pieces planned; nothing built`, next_action: null });
     const detail = route.steps.length === 0
@@ -454,14 +473,14 @@ export function registerMcpTools(
     try { return await step("build_layout")(layoutSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun}`, inputSchema: routeSchema }, async (p, extra) => {
+  tools.registerTool("connect_entities", { description: `Connect two points with belts, pipes or power poles, up to 200 pieces. An end is an existing belt, pipe, pole or machine, or a free tile (bare ore counts as free). Belts and pipes go underground past obstacles; fluid picks the machine port. The body fetches the pieces, walks and builds.${dryRun} A belt route's dry run also lists ${joinReport}.`, inputSchema: routeSchema }, async (p, extra) => {
     try { return await connectRoute(routeSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
   tools.registerTool("blueprint_list", { description: "The blueprints stored for this run, with size and entity count.", inputSchema: z.object({}).strict() }, async () => rpc("blueprint_list"));
   tools.registerTool("blueprint_describe", { description: "One stored blueprint: its entities with offsets, size and item cost.", inputSchema: named }, async (p, extra) => rpc("blueprint_describe", named.parse(p), extra?.signal));
   tools.registerTool("blueprint_export", { description: "A stored blueprint as a string for the notebook. It is never imported back.", inputSchema: named }, async (p) => rpc("blueprint_export", named.parse(p)));
-  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position (none where its pipes would join two fluids: free_reason names the pipe); where the blueprint fits (there or at the free position) also ${oreReport} and ${fluidReport}.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
+  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position (none where its pipes would join two fluids: free_reason names the pipe); where the blueprint fits (there or at the free position) also ${oreReport}, ${fluidReport} and ${joinReport}.`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
     try { return await step("blueprint_place")(placeBlueprintSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });

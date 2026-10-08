@@ -126,7 +126,8 @@ retried after the hold.
   (layout dry runs take `surface`). A layout or blueprint dry run also lists,
   as data: `on_ore` (a non-drill building over ore), `mixed_ore` (a drill whose
   area holds another resource too) and `open_fluid_ports` (a fluid connection
-  that meets nothing).
+  that meets nothing). They and belt route dry runs list `belt_joins` (lane
+  joins, `mixes`).
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
 - `inspect_entity` gives belt `lanes` and `lane_mix`, inserter `holding`;

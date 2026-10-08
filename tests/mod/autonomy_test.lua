@@ -520,10 +520,11 @@ check(factory_status.event_state().last_cancel_all_tick == 450, "event_state car
 storage.tasks.last_cancel_all_tick = nil
 
 -- Cost and size at 200 machines: about seven machine samples a tick, no
--- entity query, and a status read under 10 KB (patch outlines and both
+-- entity query, and a status read under 10.25 KB (patch outlines and both
 -- ways to cover a power deficit took it past 6 KB, three rows of feed facts
--- at their widest add about 1.6 KB, research at its widest about 1.9 KB:
--- twelve packs needed and made, labs lacking each and eight positions).
+-- at their widest add about 1.6 KB, research at its widest about 2.1 KB:
+-- twelve packs needed and made, labs lacking each and eight positions on a
+-- platform).
 _G.storage = {}
 state.init()
 storage.registry.ready = true
@@ -673,7 +674,8 @@ end } end
 storage.tasks.active = { id = 4, type = "plan", status = "running", current_step = 2, steps = { {}, { action = "build_layout" } },
   source = "package:" .. long(1) }
 -- Research at its widest: twelve long-named packs needed by 48 stalled labs
--- that lack every one (packs made, starved_by at its position cap).
+-- on a platform that lack every one (packs made, starved_by at its position
+-- cap, each position naming the platform).
 local packs, lab_recs, lab_waiting = {}, {}, {}
 for i = 1, 12 do packs[i] = { type = "item", name = long(i), amount = 1 } end
 force.current_research = { name = long(1), research_unit_ingredients = packs, research_unit_count = 1000000 }
@@ -685,20 +687,25 @@ _G.defines.flow_precision_index = { one_minute = 1 }
 force.get_item_production_statistics = function()
   return { get_flow_count = function() return 1234.5678 end }
 end
+game.get_surface = function(index)
+  if index == 2 then return { valid = true, index = 2, name = "platform-1234", platform = { index = 1234 } } end
+end
 for i = 1, 60 do
   local unit = 50000 + i
-  lab_recs[unit] = { unit = unit, type = "lab", name = "lab", raw = "missing_science_packs", surface = 1,
+  lab_recs[unit] = { unit = unit, type = "lab", name = "lab", raw = "missing_science_packs", surface = 2,
     position = { x = -1234.5 - i, y = 1234.5 + i },
     entity = { get_inventory = function() return { get_item_count = function() return 0 end } end } }
   lab_waiting[unit] = true
   storage.autonomy.machines[unit] = lab_recs[unit]
 end
-storage.autonomy.waiting.missing_science_packs = { [1] = lab_waiting }
+storage.autonomy.waiting.missing_science_packs = { [2] = lab_waiting }
 local full = factory_status.factory_status({})
 json_size = size(full)
 registry.labs = real_labs
+game.get_surface = nil
 check(full.research.packs_per_minute_made[long(12)] and full.research.labs.starved_by[long(12)] == 48
-  and full.research.labs.starved_unread == 12, "the worst case includes research at its widest")
+  and full.research.labs.starved_unread == 12 and full.research.labs.starved_at[long(1)][1].surface == "platform:1234",
+  "the worst case includes research at its widest, its lab positions on a platform")
 local starved_line
 for _, line in ipairs(full.lines) do if line.state == "starved" then starved_line = line end end
 local max_id = 0
@@ -717,7 +724,7 @@ end
 check(wide_feeds == 3 and full.omitted_feeds and full.omitted_feeds > 0 and in_line > 0,
   "the worst case shows three stalled rows' feed facts, a problem row whose line shows them says feed_in_line, "
     .. "and omitted_feeds counts the rest")
-check(json_size < 10240, "a worst-case factory_status at 200 machines stays under 10 KB (" .. json_size .. " bytes)")
+check(json_size < 10496, "a worst-case factory_status at 200 machines stays under 10.25 KB (" .. json_size .. " bytes)")
 
 -- A machine mined while a refresh is still identifying the snapshot is left
 -- out; the refresh completes and the removal's dirty mark is kept.

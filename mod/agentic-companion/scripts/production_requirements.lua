@@ -674,7 +674,7 @@ local function rate_plan(force, expanded, fuel_name, place)
   end
   table.sort(belts, function(a, b) return a.items_per_minute < b.items_per_minute end)
   return { units = "per_minute",
-    basis = "nominal full-duty capacity at normal quality with built-in productivity; no modules, beacons or researched productivity",
+    basis = "machine and drill counts: nominal full-duty capacity at normal quality with built-in productivity; no modules, beacons or researched productivity",
     reference_fuel = { item = fuel.name, megajoules = round(fuel.joules / 1e6), category = fuel.category },
     stages = stages, raw = raw, belts = belts }
 end

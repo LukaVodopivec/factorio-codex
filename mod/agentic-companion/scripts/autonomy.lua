@@ -172,8 +172,20 @@ local function current_recipe(entity)
   return type(name) == "string" and prototypes.recipe[name] or nil
 end
 
--- {key, product, yield, recipe}: what a machine makes, how many items per
--- cycle, and the recipe's name for crafting machines.
+-- Items a product gives per cycle on average: its amount (the midpoint of
+-- a ranged amount) times its probability, plus any extra count fraction.
+local function expected_amount(product)
+  local amount = tonumber(product.amount)
+  if not amount then
+    local low, high = tonumber(product.amount_min), tonumber(product.amount_max)
+    amount = low and high and (low + high) / 2 or 1
+  end
+  return amount * (tonumber(product.probability) or 1) + (tonumber(product.extra_count_fraction) or 0)
+end
+
+-- {key, product, yield, recipe}: what a machine makes (its recipe's or
+-- resource's first product), how many of it per cycle on average, and the
+-- recipe's name for crafting machines.
 local function identity(entity)
   if POWER_TYPES[entity.type] then return "power", "electricity", 0 end
   if entity.type == "lab" then return "lab", "research", 0 end
@@ -182,11 +194,11 @@ local function identity(entity)
     local ok, target = pcall(function() return entity.mining_target end)
     local mineable = ok and target and target.prototype.mineable_properties
     local first = mineable and mineable.products and mineable.products[1]
-    if first then product, yield = first.name, tonumber(first.amount) or 1 end
+    if first then product, yield = first.name, expected_amount(first) end
   else
     local ok, recipe = pcall(current_recipe, entity)
     local first = ok and recipe and recipe.products and recipe.products[1]
-    if first then product, yield, recipe_name = first.name, tonumber(first.amount) or 1, recipe.name end
+    if first then product, yield, recipe_name = first.name, expected_amount(first), recipe.name end
   end
   if not product then return entity.type .. ":" .. entity.name, nil, 0 end
   return entity.type .. ":" .. product, product, yield, recipe_name
@@ -445,6 +457,57 @@ local function set_low_fuel(a, rec, entity, raw)
   if units then units[rec.unit] = nil end
 end
 
+-- Mining time of the resource whose first product is this item, once per
+-- load from prototypes (false when none, or resources that disagree; a
+-- failed read is not kept).
+local mining_times = {}
+local function mining_time(product)
+  local known = mining_times[product]
+  if known ~= nil then return known or nil end
+  known = false
+  local ok, resources = pcall(function() return prototypes.get_entity_filtered({ { filter = "type", type = "resource" } }) end)
+  if not ok then return nil end
+  for _, proto in pairs(resources or {}) do
+    local mining = proto.mineable_properties
+    local first = mining and mining.products and mining.products[1]
+    local time = mining and tonumber(mining.mining_time)
+    if first and first.name == product and first.type ~= "fluid" and time and time > 0 then
+      if known and known ~= time then known = false; break end
+      known = time
+    end
+  end
+  mining_times[product] = known
+  return known or nil
+end
+
+-- Items a drill finished between two samples, from its progress (or bonus
+-- progress: productivity products) toward the resource's mining time,
+-- which wraps on each one. A sample sees at most one wrap, so a drill that
+-- may finish a cycle or more a sample and was working (full power) at both
+-- samples counts the cycles of its nominal advance: prototype mining speed
+-- x (1 + its speed bonus) x elapsed seconds (x its productivity bonus for
+-- bonus progress), rounded against the progress it shows.
+local drill_speeds = {}
+local function drill_cycles(rec, entity, field, old, new, working, elapsed)
+  local wrapped = old and new < old and 1 or 0
+  if not (old and working and elapsed > 0) then return wrapped end
+  local speed = drill_speeds[rec.name]
+  if speed == nil then
+    local ok, value = pcall(function() return prototypes.entity[rec.name].mining_speed end)
+    speed = ok and tonumber(value) or false
+    drill_speeds[rec.name] = speed
+  end
+  local span = rec.product and mining_time(rec.product)
+  if not (speed and span) then return wrapped end
+  local ok, advance = pcall(function()
+    local bonus = entity.speed_bonus or 0
+    local factor = field == "bonus" and (entity.productivity_bonus or 0) or 1
+    return speed * (1 + bonus) * factor * elapsed / 60
+  end)
+  if not (ok and advance and advance >= span) then return wrapped end
+  return math.max(wrapped, math.floor((old + advance - new) / span + 0.5))
+end
+
 local function sample(a, rec, tick)
   local entity = rec.entity
   if not (entity and entity.valid) then a.dirty_tick = a.dirty_tick or tick; return end
@@ -456,11 +519,14 @@ local function sample(a, rec, tick)
   local progressed, produced = PROGRESS_STATUS[raw] == true, 0
   if rec.type == "mining-drill" then
     local progress = entity.mining_progress
-    if rec.progress and progress ~= rec.progress then
-      progressed = true
-      if progress < rec.progress then produced = 1 end
-    end
-    rec.progress = progress
+    local ok, bonus = pcall(function() return entity.bonus_mining_progress end)
+    bonus = ok and tonumber(bonus) or nil
+    if rec.progress and progress ~= rec.progress then progressed = true end
+    local working = raw == "working" and rec.raw == "working"
+    local elapsed = rec.progress_tick and tick - rec.progress_tick or 0
+    produced = drill_cycles(rec, entity, "progress", rec.progress, progress, working, elapsed)
+      + (bonus and rec.bonus_progress and drill_cycles(rec, entity, "bonus", rec.bonus_progress, bonus, working, elapsed) or 0)
+    rec.progress, rec.bonus_progress, rec.progress_tick = progress, bonus, tick
   elseif CRAFTING_TYPES[rec.type] then
     local finished = entity.products_finished
     if rec.finished and finished > rec.finished then progressed, produced = true, finished - rec.finished end
@@ -1068,33 +1134,13 @@ local function on(a, line, surface)
   return surface == nil or surface == "all" or line_surface(a, line) == surface
 end
 
--- Mining time of the resource whose first product is this item, once per
--- load from prototypes (false when none, or resources that disagree).
-local mining_times = {}
-local function mining_time(product)
-  local known = mining_times[product]
-  if known ~= nil then return known or nil end
-  known = false
-  local ok, resources = pcall(prototypes.get_entity_filtered, { { filter = "type", type = "resource" } })
-  for _, proto in pairs(ok and resources or {}) do
-    local mining = proto.mineable_properties
-    local first = mining and mining.products and mining.products[1]
-    local time = mining and tonumber(mining.mining_time)
-    if first and first.name == product and first.type ~= "fluid" and time and time > 0 then
-      if known and known ~= time then known = false; break end
-      known = time
-    end
-  end
-  mining_times[product] = known
-  return known or nil
-end
-
 -- Items a minute one machine makes at full duty from prototypes alone:
 -- crafting speed (normal quality) x (1 + built-in and researched recipe
--- productivity) / recipe energy x yield, or a drill's mining speed x (1 +
--- the force's mining productivity, for drills that use it) / mining time x
--- yield. Modules, beacons and quality are not counted. nil when unknown (a
--- furnace that never smelted, a fluid, a pumpjack).
+-- productivity, at most the recipe's maximum) / recipe energy x yield, or
+-- a drill's mining speed x (1 + the force's mining productivity, for drills
+-- that use it) / mining time x yield. Modules, beacons and quality are
+-- not counted. nil when unknown (a furnace that never smelted, a fluid, a
+-- pumpjack).
 local function nameplate(rec, force)
   local proto = prototypes.entity[rec.name]
   if not (proto and rec.yield and rec.yield > 0) then return nil end
@@ -1112,8 +1158,8 @@ local function nameplate(rec, force)
   if not (energy and energy > 0 and speed) then return nil end
   local effect = proto.effect_receiver and proto.effect_receiver.base_effect
   local researched = force and force.recipes[rec.recipe]
-  local productivity = (tonumber(effect and effect.productivity) or 0)
-    + (tonumber(researched and researched.productivity_bonus) or 0)
+  local productivity = math.min((tonumber(effect and effect.productivity) or 0)
+    + (tonumber(researched and researched.productivity_bonus) or 0), tonumber(recipe.maximum_productivity) or math.huge)
   return speed * (1 + productivity) / energy * rec.yield * 60
 end
 

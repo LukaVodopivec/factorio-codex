@@ -645,24 +645,30 @@ configuration loads, and a partial override of one field is rejected there.
 codex --model gpt-6-luna -c model_reasoning_effort=low -c service_tier=fast -c features.fast_mode=true \
   -c model_reasoning_summary=detailed \
   -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
+  -c features.multi_agent_v2=false \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=["--role","pilot"],enabled=true,required=true,startup_timeout_sec=180,tool_timeout_sec=600}'
 codex --model gpt-6.1-sol -c model_reasoning_effort=medium \
   -c model_reasoning_summary=detailed \
   -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false \
+  -c features.multi_agent_v2=false \
   -c 'mcp_servers.factorio={command="./scripts/start-factorio-mcp",args=[],enabled=false}' \
   -c 'mcp_servers.factorio-readonly={command="./scripts/start-factorio-mcp",args=["--surface","read-only","--role","strategist"],enabled_tools=["connect_status","map_summary","progression_status","production_requirements","describe_prototype","observe_local","inspect_entity","plan_status","can_place","find_placement","factory_status","activity_log","next_event","build_layout","connect_entities","blueprint_list","blueprint_describe","blueprint_export","blueprint_place","place_tiles","platform_status","set_watch","clear_watch"],enabled=true,required=false,startup_timeout_sec=180,tool_timeout_sec=600}'
 ```
 
-The isolation overrides make "no guides, nothing from earlier runs"
-mechanical: `web_search="disabled"` removes the web tool (it wins over
+The isolation overrides remove the built-in web search, multi-agent and
+memory routes: `web_search="disabled"` removes the web tool (it wins over
 `--search` and the legacy web-search toggles), `agents.enabled=false` removes
 the multi-agent tools (`spawn_agent`, `send_message`, `wait_agent` and the rest
 of that set), and `features.memories=false` stops stored memories from being
-injected. Shell, `apply_patch` and goals stay, so the strategist keeps
-`ledger-apply`. On Codex CLI 0.159.2 `features.multi_agent=false` left the
-multi-agent tools in place, so it is not used. No documented key turns off
-`list_threads`, `read_thread` and `wait_threads`; that rule stays in the
-instructions. Recheck these keys when the Codex runtime changes.
+injected. `agents.enabled=false` alone does not cover `multi_agent_v2`: a user
+configuration that enables it brings the same tools back, so
+`features.multi_agent_v2=false` is set too. Shell, `apply_patch` and goals
+stay, so the strategist keeps `ledger-apply`. On Codex CLI 0.159.2
+`features.multi_agent=false` left the multi-agent tools in place, so it is not
+used. The flags do not close every route: the shell can still read earlier run
+folders, and no documented key turns off `list_threads`, `read_thread` and
+`wait_threads`. Not reading earlier runs and not calling thread tools stay
+instruction rules. Recheck these keys when the Codex runtime changes.
 
 Fast mode is `service_tier=fast` (read back as the `priority` tier) with
 `features.fast_mode` enabled;

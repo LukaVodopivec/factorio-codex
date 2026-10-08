@@ -42,9 +42,9 @@ If your Codex supports native goals, you can also set the objective with
 ## Solo (one session)
 
 One full-surface session can play alone with the committed `.codex/config.toml`
-(`codex -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false`
-in the repository root; the overrides remove web search, the multi-agent tools
-and memories). There is no planner, ledger or package: the pilot chooses its
+(`codex -c 'web_search="disabled"' -c agents.enabled=false -c features.memories=false -c features.multi_agent_v2=false`
+in the repository root; the overrides remove the built-in web search,
+multi-agent tools and memories). There is no planner, ledger or package: the pilot chooses its
 own priorities and research and queues its own plans.
 
 ```text

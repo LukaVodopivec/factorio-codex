@@ -941,6 +941,17 @@ local function step_settle(state, c, task_id)
       settle_routed(state, c, settle.to, settle.conveyor)
       return nil
     end
+    -- Off the belt but short of reach: the route stopped within its radius
+    -- of a tile at the reach's edge and the last straight step was blocked.
+    if not placement_geometry.conveyor_under(c) then
+      return fail(c, "PATH_STALLED", string.format(
+        "stepped off %s but stopped at (%.1f, %.1f), %.2f tiles from the target, beyond reach %.2f: ordinary walking"
+          .. " did not reach the off-belt tile (%.1f, %.1f) within %d ticks", settle.conveyor.name, pos.x, pos.y,
+        math.sqrt(dist_sq(pos, state.settle_anchor)), state.settle_limit, settle.to.x, settle.to.y, allowed),
+        { code = "PATH_STALLED", diagnostics = { path = { evidence_scope = "charted_visible_only",
+          start = { x = pos.x, y = pos.y }, settle = settle, settle_anchor = state.settle_anchor,
+          settle_limit = state.settle_limit } } })
+    end
     return fail(c, "BODY_ON_CONVEYOR", string.format(
       "ordinary walking did not leave %s toward (%.1f, %.1f) within %d ticks",
       settle.conveyor.name, settle.to.x, settle.to.y, allowed),

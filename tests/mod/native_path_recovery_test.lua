@@ -599,6 +599,20 @@ check(stuck and stuck.status == "failed" and stuck.detail:match("^BODY_ON_CONVEY
 -- A blocked start (a tree cleared, an escape) cuts the straight step short
 -- and the walk asks for its path again, ending on the belt: the settle's tile
 -- is walked to by its native path before the walk fails BODY_ON_CONVEYOR.
+-- Here a furnace placed over the body mid-step starts an escape.
+local obstacles = {}
+body.surface.find_entities_filtered = function(filter)
+  if filter.type then return belts end
+  local out = {}
+  for _, e in ipairs(obstacles) do
+    local box, area = e.bounding_box, filter.area
+    if not area or (box.left_top.x < area.right_bottom.x and box.right_bottom.x > area.left_top.x
+      and box.left_top.y < area.right_bottom.y and box.right_bottom.y > area.left_top.y) then
+      out[#out + 1] = e
+    end
+  end
+  return out
+end
 belts = { belt(10, 0, 1, 1) }
 task = reset({ x = 10.5, y = 0.5 })
 walk.start(task)
@@ -606,13 +620,57 @@ walk.tick(task); deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
 body.position = { x = 10.5, y = 0.5 }
 walk.tick(task)
 local cut = task._walk.phase == "settling" and not task._walk.settle.routed
-task._walk.phase = "request"
-check(cut and walk.tick(task) == nil and task._walk.phase == "settling" and task._walk.settle.routed
+obstacles = { { valid = true, name = "stone-furnace", type = "furnace", position = { x = 10.5, y = 0.5 },
+  prototype = { collision_mask = { layers = { player = true, object = true } } },
+  bounding_box = { left_top = { x = 10.1, y = 0.1 }, right_bottom = { x = 10.9, y = 0.9 } } } }
+check(cut and walk.tick(task) == nil and task._walk.phase == "escaping",
+  "a start blocked during the straight settle step begins an escape")
+body.position = { x = 10.5, y = -1.5 }
+obstacles = {}
+check(walk.tick(task) == nil and task._walk.phase == "waiting" and storage.path_request ~= nil,
+  "the cleared escape asks for the walk's path again")
+deliver({ { x = 10.5, y = 0.5 } }, false); walk.tick(task)
+body.position = { x = 10.5, y = 0.5 }
+check(walk.tick(task) == nil and task._walk.phase == "settling" and task._walk.settle.routed
   and task._walk.settle_route and task._walk.settle_route.path_radius < 0.3,
   "a walk back on the belt after its straight settle step was cut short walks to the tile by a native path")
 local asked = walk.tick(task) == nil and storage.path_request ~= nil
 check(asked and requested_goals[next_path_id].x == 10.5 and requested_goals[next_path_id].y == -0.5,
   "that native path goes to the settle's own off-belt tile")
+
+-- The off-belt tile sits on the edge of the target's reach. The native path
+-- stops within its radius of it, off the belt but just out of reach, and
+-- something unseen blocks the last straight step: the walk fails PATH_STALLED
+-- saying the body left the belt, never BODY_ON_CONVEYOR.
+local edge = math.sqrt(5)
+task = reset({ x = 12.5, y = 0.5 })
+body.position = { x = 10.5, y = 0.5 }
+check(approach.ensure(task, body, { x = 12.5, y = 0.5 }, edge) == nil
+  and task._approach.walk.settle.to.x == 10.5 and task._approach.walk.settle.to.y == -0.5,
+  "an approach on a belt settles to an off-belt tile on the edge of its reach")
+game.tick = 60
+approach.ensure(task, body, { x = 12.5, y = 0.5 }, edge)
+game.tick = 61
+approach.ensure(task, body, { x = 12.5, y = 0.5 }, edge)
+check(task._approach.walk.settle.routed and storage.path_request ~= nil,
+  "its timed-out straight step asks for a native path to the tile")
+deliver({ { x = 10.3, y = -0.4 } }, false)
+body.position = { x = 10.3, y = -0.4 }
+local edge_result
+for _ = 1, 3 do
+  edge_result = approach.ensure(task, body, { x = 12.5, y = 0.5 }, edge)
+  if edge_result then break end
+  game.tick = game.tick + 61
+end
+check(type(edge_result) == "table" and edge_result.status == "failed"
+  and edge_result.outcome.code == "PATH_STALLED" and edge_result.detail:match("stepped off transport%-belt")
+  and edge_result.detail:match("beyond reach") and not edge_result.detail:match("did not leave"),
+  "a body off the belt but just out of reach fails PATH_STALLED, not BODY_ON_CONVEYOR: "
+    .. tostring(type(edge_result) == "table" and edge_result.detail))
+body.surface.find_entities_filtered = function(filter)
+  if filter.type then return belts end
+  return {}
+end
 
 task = reset({ x = 12.5, y = 0.5 })
 body.position = { x = 10.5, y = 0.5 }

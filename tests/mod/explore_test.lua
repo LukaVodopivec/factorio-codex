@@ -19,10 +19,10 @@ local resources = {}
 local body = { valid = true, position = { x = 0.5, y = 0.5 }, surface = {} }
 body.force = {
   is_chunk_charted = function(_, chunk) return charted[key(chunk)] == true end,
-  is_chunk_requested_for_charting = function(_, chunk) return pending[key(chunk)] == true end,
+  is_chunk_requested_for_charting = function(_, chunk) return pending[key(chunk)] ~= nil end,
   chart = function(_, area)
     charts = charts + 1
-    pending[key({ x = math.floor(area[1][1] / 32), y = math.floor(area[1][2] / 32) })] = true
+    pending[key({ x = math.floor(area[1][1] / 32), y = math.floor(area[1][2] / 32) })] = game.tick
   end,
 }
 local queries = {}
@@ -61,13 +61,18 @@ local function chart_around_body(radius)
   local cx, cy = math.floor(body.position.x / 32), math.floor(body.position.y / 32)
   for y = cy - radius, cy + radius do for x = cx - radius, cx + radius do charted[x .. "," .. y] = true end end
 end
+-- Requested chunks are charted chart_delay ticks after the request (the
+-- next tick by default).
+local chart_delay = 0
 local function run(task, ticks)
   explore.start(task)
   for _ = 1, ticks or 5000 do
     local result = explore.tick(task)
     if result then return result end
     game.tick = game.tick + 1
-    for k in pairs(pending) do charted[k], pending[k] = true, nil end
+    for k, at in pairs(pending) do
+      if game.tick > at + chart_delay then charted[k], pending[k] = true, nil end
+    end
   end
 end
 local function reset()
@@ -75,6 +80,7 @@ local function reset()
   body.position = { x = 0.5, y = 0.5 }
   chart_around_body(2)
   blocked = function() return false end
+  chart_delay = 0
 end
 
 -- Oil 400 tiles east: legs east, a chart pass after each, and a stop once
@@ -89,8 +95,36 @@ local east = true
 for _, leg in ipairs(legs) do if leg.y ~= 0.5 then east = false end end
 check(east and #legs == oil.outcome.legs and charts > #legs, "every leg heads east and is charted around")
 local bounded = true
-for _, q in ipairs(queries) do if not (q.radius and q.radius <= 96 and q.limit and q.limit <= 64) then bounded = false end end
+for _, q in ipairs(queries) do if not (q.radius and q.radius <= explore.VIEW_RADIUS and q.limit and q.limit <= 64) then bounded = false end end
 check(bounded and #queries == #legs + 1, "one bounded resource query per leg (and one before the first)")
+
+-- The search covers what explore charts: a patch about 110 tiles beside a
+-- leg's end (beyond the old 96-tile view) is found.
+do
+  reset()
+  resources = { { valid = true, name = "crude-oil", position = { x = 200.5, y = 110.5 } } }
+  local beside = run({ resource = "crude-oil", direction = 4, max_distance = 400 })
+  check(explore.VIEW_RADIUS == 128 and beside and beside.status == "done" and beside.outcome.code == "PATCH_FOUND"
+    and beside.outcome.patch.distance > 100 and beside.outcome.patch.distance <= 128,
+    "explore searches the 128 tiles it charts around a leg's end and finds a patch 110 tiles beside it")
+  -- Charting takes time: the search after a leg waits until the outer ring
+  -- of the chunks it requested is charted, so a patch at the ring's edge
+  -- counts (the body's own chunk was charted long before).
+  reset()
+  chart_delay = 40
+  resources = { { valid = true, name = "crude-oil", position = { x = 192.4, y = 0.5 } } }
+  local edge = run({ resource = "crude-oil", direction = 4, max_distance = 64 })
+  check(edge and edge.status == "done" and edge.outcome.code == "PATCH_FOUND" and edge.outcome.patch.position.x == 192.4,
+    "after a leg explore waits for the outer ring of its chart before it searches")
+  -- A ring that is never charted ends the wait at the deadline, as before.
+  reset()
+  chart_delay = math.huge
+  for x = -4, 4 do for y = -4, 4 do charted[x .. "," .. y] = true end end
+  local stalled = run({ resource = "crude-oil", direction = 4, max_distance = 64 })
+  check(stalled and stalled.status == "failed" and stalled.outcome.code == "EXPLORE_NOT_FOUND"
+    and stalled.detail:match("within 128 tiles of the start or any leg's end"),
+    "an uncharted ring ends the settle at its deadline and the shortfall names the searched radius")
+end
 
 -- The budget: no patch within max_distance is a named shortfall.
 reset()

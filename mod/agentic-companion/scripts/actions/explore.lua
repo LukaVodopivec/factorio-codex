@@ -2,7 +2,8 @@
 -- It walks legs of up to LEG_TILES toward the frontier (the given heading,
 -- else the heading whose uncharted land is nearest), charts the land around
 -- itself after each leg, and stops once a charted patch of the resource lies
--- in view or it has walked max_distance. Every leg is an ordinary walk; a
+-- in view (the land it charts: VIEW_RADIUS tiles around the start and each
+-- leg's end) or it has walked max_distance. Every leg is an ordinary walk; a
 -- heading the body cannot walk is turned by 45 degrees, at most MAX_TURNS
 -- times in a row. Work per tick is bounded: one chart pass around the body,
 -- one bounded resource query per leg.
@@ -15,7 +16,7 @@ local LEG_TILES = 64
 local ARRIVAL_RADIUS = 4
 local CHART_RADIUS_CHUNKS = 4      -- 9 x 9 chunks around the body
 local FRONTIER_CHUNKS = 8          -- uncharted land looked for along each heading
-local VIEW_RADIUS = 96             -- resource search around the body
+local VIEW_RADIUS = CHART_RADIUS_CHUNKS * 32 -- resource search around the body: what it charts
 local VIEW_LIMIT = 64
 local CHART_POLL_TICKS = 15
 local CHART_WAIT_TICKS = 600
@@ -47,6 +48,19 @@ function M.chart_around(c, radius_chunks)
       end
     end
   end
+end
+
+-- Whether the outer ring of the chunks chart_around requested around centre
+-- is charted (at most 8 * CHART_RADIUS_CHUNKS chunk reads).
+local function ring_charted(c, centre)
+  local r = CHART_RADIUS_CHUNKS
+  for y = centre.y - r, centre.y + r do
+    local step = (y == centre.y - r or y == centre.y + r) and 1 or 2 * r
+    for x = centre.x - r, centre.x + r, step do
+      if not charted(c, { x = x * 32, y = y * 32 }) then return false end
+    end
+  end
+  return true
 end
 
 -- The heading whose first uncharted chunk is nearest (1-based index).
@@ -136,7 +150,7 @@ local function leg(task, c)
   if left < 2 * ARRIVAL_RADIUS then
     if task.resource then
       return finish(task, c, "failed", "EXPLORE_NOT_FOUND", string.format(
-        "EXPLORE_NOT_FOUND: no charted %s within %d tiles of the body after walking %d of %d tiles",
+        "EXPLORE_NOT_FOUND: no charted %s within %d tiles of the start or any leg's end after walking %d of %d tiles",
         task.resource, VIEW_RADIUS, math.floor(task._walked + 0.5), task.max_distance))
     end
     return finish(task, c, "done", "EXPLORED", string.format("walked %d tiles in %d legs and charted around each",
@@ -174,16 +188,19 @@ function M.tick(task)
       end
       turn(task)
     end
-    -- Chart what the leg brought into view, then look once it is charted.
+    -- Chart what the leg brought into view, then look once all of it (its
+    -- outer ring last) is charted, or the deadline passes.
     M.chart_around(c, CHART_RADIUS_CHUNKS)
     task._phase, task._deadline, task._next_poll = "settle", game.tick + CHART_WAIT_TICKS, game.tick
+    task._settle_centre = chunk_of(c.position)
     return nil
   end
 
   if task._phase == "settle" then
     if game.tick < task._next_poll then return nil end
     task._next_poll = game.tick + CHART_POLL_TICKS
-    if not charted(c, c.position) and game.tick < task._deadline then return nil end
+    local centre = task._settle_centre or chunk_of(c.position)
+    if game.tick < task._deadline and not (charted(c, c.position) and ring_charted(c, centre)) then return nil end
     task._phase = "look"
   end
 

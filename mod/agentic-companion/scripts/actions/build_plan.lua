@@ -582,13 +582,32 @@ local function finish_placed_step(task, c, step, built)
           task._retry_tick = game.tick + INSERT_RETRY_TICKS
           return nil
         end
-        for _, problem in ipairs(problems) do issues[#issues + 1] = problem end
         if #problems > 0 and inserted > 0 then
+          -- The totals over both attempts per item (requested, inserted,
+          -- remainder), never the retry's own counts; the step's result
+          -- carries them, so a layout lists it with its code.
+          local parts = {}
+          for _, issue in ipairs(issues) do parts[#parts + 1] = issue end
+          for _, row in ipairs(transfers) do
+            if row.remainder > 0 then
+              parts[#parts + 1] = string.format("the %s took %d of %d %s (%d not inserted)",
+                built.name, row.inserted, row.requested, row.item, row.remainder)
+            end
+          end
+          for _, problem in ipairs(problems) do
+            if problem:match("^no item called") then parts[#parts + 1] = problem end
+          end
+          local why = string.format("placed the %s, then partially inserted starter items — %s",
+            step.item, table.concat(parts, "; "))
+          local i = task._index
+          task._results[i] = { ok = false, why = why, code = "PARTIAL_INSERT", transfers = transfers,
+            picked_up = build.picked_up(task, step.position) }
+          task._failures[#task._failures + 1] = { index = i, why = why, code = "PARTIAL_INSERT" }
           task._built = nil
-          return { status = "partial", detail = string.format("placed the %s, then partially inserted starter items — %s",
-            step.item, table.concat(problems, "; ")),
+          return { status = "partial", detail = why,
             outcome = { code = "PARTIAL_INSERT", total_inserted = inserted, transfers = transfers } }
         end
+        for _, problem in ipairs(problems) do issues[#issues + 1] = problem end
       end
     end
     if #issues > 0 then

@@ -93,5 +93,48 @@ check(#ports == 5 and by_box[2].role == "input" and by_box[2].fluid == "crude-oi
 local unknown = fc.recipe_ports(refinery, "half-indexed", 0, area)
 check(unknown[1].role == nil and unknown[1].fluid == nil, "a port whose box use is unknown has no role or fluid")
 
+-- Mirrored ports. A chemical plant as 2.0 defines it (inputs north at
+-- x -1 and 1, outputs south), positions turned clockwise per direction.
+-- Assumed game rule: mirroring reflects the north-frame connection across
+-- the vertical axis (x to -x, east and west swapped) before the turn, which
+-- is what the game's horizontal blueprint flip implies (direction 16 - d
+-- with mirroring toggled mirrors the world-space ports).
+do
+  local function box(index, role, x, y, d)
+    local positions = {}
+    for q = 0, 3 do
+      positions[q + 1] = { x = x, y = y }
+      x, y = -y, x
+    end
+    return { index = index, production_type = role,
+      pipe_connections = { { connection_type = "normal", direction = d, positions = positions } } }
+  end
+  local plant = { name = "chemical-plant", type = "assembling-machine", fluidbox_prototypes = {
+    box(1, "input", -1, -1, 0), box(2, "input", 1, -1, 0), box(3, "output", -1, 1, 8), box(4, "output", 1, 1, 8) } }
+  local square = { left_top = { x = -1.5, y = -1.5 }, right_bottom = { x = 1.5, y = 1.5 } }
+  local function at_box(list)
+    local out = {}
+    for _, port in ipairs(list) do out[port.box] = port end
+    return out
+  end
+  local north = at_box(fc.recipe_ports(plant, "heavy-oil-cracking", 0, square, true))
+  check(north[1].fluid == "water" and north[1].at.x == 1 and north[1].at.y == -1 and north[1].target.x == 1
+    and north[1].target.y == -2 and north[2].fluid == "heavy-oil" and north[2].at.x == -1,
+    "a mirrored chemical plant facing north takes its first input (water) at x 1 and its second at x -1")
+  local east = at_box(fc.ports(plant, 4, square, true))
+  check(east[1].at.x == 1 and east[1].at.y == 1 and east[1].target.x == 2 and east[1].target.y == 1
+    and east[3].at.x == -1 and east[3].at.y == 1 and east[3].target.x == -2 and east[3].target.y == 1,
+    "a mirrored plant facing east reflects, then turns: its first input sits south-east and leads east")
+  local same = true
+  for d = 0, 12, 4 do
+    local plain, flipped = at_box(fc.ports(plant, d, square)), at_box(fc.ports(plant, (16 - d) % 16, square, true))
+    for b = 1, 4 do
+      if not (flipped[b].at.x == -plain[b].at.x and flipped[b].at.y == plain[b].at.y
+        and flipped[b].target.x == -plain[b].target.x and flipped[b].target.y == plain[b].target.y) then same = false end
+    end
+  end
+  check(same, "assumed game rule: mirrored at direction 16 - d is the plain plant at d flipped left to right (every port)")
+end
+
 print(failures == 0 and "\nALL RECIPE FLUID PORT TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

@@ -626,6 +626,37 @@ check(topped.status == "done" and calls[1].kind == "extract" and calls[1].task.i
   "get_items crafts only what the queue does not already make")
 crafting = {}
 
+-- A count over one round's 100 crafts is fetched and queued again in later
+-- rounds; past the round cap the shortfall states the cap, never "every
+-- source ran dry".
+do
+  local function crafts_of(list)
+    local out = {}
+    for _, call in ipairs(list) do if call.kind == "craft" then out[#out + 1] = call.task.count end end
+    return table.concat(out, ",")
+  end
+  reset()
+  chest({ x = 4.5, y = 0.5 }, { ["iron-plate"] = 600 })
+  local many = run({ items = { { name = "iron-gear-wheel", count = 250 } } })
+  check(many.status == "done" and inventory["iron-gear-wheel"] == 250 and crafts_of(calls) == "100,100,50"
+    and not many.detail:match("ran dry"),
+    "get_items crafts a count over one round's 100 crafts in further rounds")
+  reset()
+  chest({ x = 4.5, y = 0.5 }, { ["iron-plate"] = 3000 })
+  local capped = run({ items = { { name = "iron-gear-wheel", count = 1050 } } })
+  check(capped.status == "partial" and inventory["iron-gear-wheel"] == 1000 and capped.outcome.missing[1].missing == 50
+    and capped.detail:match("hand%-crafting queued 1000 of 1050 crafts: get_items queues at most 100 crafts per round and 10 rounds per item")
+    and not capped.detail:match("ran dry"),
+    "get_items past its craft rounds states the cap as a fact")
+  -- A round that queued fewer crafts than it asked for (here the stub
+  -- queues none for want of plates) starts no further round.
+  reset()
+  chest({ x = 4.5, y = 0.5 }, { ["iron-plate"] = 250 })
+  local short_round = run({ items = { { name = "iron-gear-wheel", count = 250 } } })
+  check(short_round.status == "partial" and crafts_of(calls) == "100,100" and inventory["iron-gear-wheel"] == 100,
+    "get_items stops its craft rounds once the ingredients run short")
+end
+
 -- Shared ingredients: plates a recipe needs directly and through its gears
 -- and pipes are all fetched, from furnace outputs, and nothing is left over.
 local early_recipes = {

@@ -979,6 +979,7 @@ local edge = { id = 10, item = "stone-furnace", position = { x = 21, y = 11 } }
 check(build.clear_footprint(edge, body, proto, edge.position, 0) == nil and edge._clear and edge._clear.entity == touching,
   "a tree whose box touches the footprint edge is mined before placement")
 
+do
 -- Item stacks lying on the footprint go into the main inventory as their own
 -- stacks before placement: only what the inventory took leaves the ground,
 -- and the rows name each stack's exact position.
@@ -1020,6 +1021,7 @@ check(build.clear_footprint(heap, body, proto, heap.position, 0) == nil and inve
   "at most 32 stacks are taken up a call; the next call goes on")
 check(build.clear_footprint(heap, body, proto, heap.position, 0) == "ok" and inventory["iron-plate"] == 33
   and #build.picked_up(heap, heap.position) == 33 and heap._clears == nil, "then the footprint is clear")
+end
 
 -- Embedded auto-supply runs once and reports.
 reset()

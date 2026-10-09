@@ -56,6 +56,9 @@ describe("strategist read-only MCP surface", () => {
     await handlers.observe_local({ radius: 15, detail: "compact" });
     const inspected = await handlers.inspect_entity({ positions: [{ x: 400.5, y: 0.5 }] });
     expect(inspected.structuredContent.entities[0].remote).toBe(true);
+    const area = { left_top: { x: 384, y: -16 }, right_bottom: { x: 416, y: 16 } };
+    await handlers.inspect_entity(schemas.inspect_entity.parse({ area }));
+    expect(call).toHaveBeenLastCalledWith("inspect", { area });
     const include = ["stockpiles", "sites", "patches", "power", "problems", "flows_all"];
     const summary = await handlers.map_summary({ detail: "aggregate", flow_precision: "one_minute", include });
     expect(call).toHaveBeenCalledWith("map_summary", { detail: "aggregate", flow_precision: "one_minute", include }, undefined);

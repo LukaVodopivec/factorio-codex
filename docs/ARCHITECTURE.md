@@ -29,9 +29,14 @@ registered in `scripts/rpc.lua`. The mod owns everything deterministic:
 - **The FIFO.** Physical work runs as plans of steps in one queue
   (`scripts/tasks.lua`, `scripts/actions/`). Walking, reach, mining, crafting,
   inventory and placement are the game's own; nothing is free.
-- **Reads.** `factory_status`, `map_summary`, `observe_local`, placement
-  searches and dry runs read charted state only. Heavy reads run as jobs
-  spread over ticks (`scripts/jobs.lua`).
+- **Reads.** `factory_status`, `map_summary`, `observe_local`,
+  `inspect_entity`, placement searches and dry runs read charted state only.
+  `factory_status` lists at most 10 lines, worst first, and counts every line
+  in `line_counts` and `by_state`; an `output_full` line's cause may be
+  `drop_blocked` with `drop_into`. `inspect_entity` reads exact positions, or
+  lists own entities in one charted area of at most 64 x 64 tiles as compact
+  rows (`scripts/inspect.lua`). Heavy reads run as jobs spread over ticks
+  (`scripts/jobs.lua`).
 - **Line tracking** (`scripts/autonomy.lua`), auto-supply, the power model,
   charting and blueprints, as listed in the README's "What the mod does by
   itself".

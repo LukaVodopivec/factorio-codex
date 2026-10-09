@@ -179,6 +179,25 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(entities[1]).not.toHaveProperty("remote");
     expect(entities[2].error).toContain("charted chunk");
   });
+  it("reads an area as compact rows: exactly one of positions or area, trace with positions only", async () => {
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    const schemas: Record<string, any> = {};
+    const descriptions: Record<string, string> = {};
+    const call = vi.fn(async () => ({ tick: 9, evidence_class: "fresh_exact_local_and_charted_remote", entities: {} }));
+    registerMcpTools({ registerTool(name, config: any, handler) { handlers[name] = handler; schemas[name] = config.inputSchema; descriptions[name] = config.description; } },
+      async () => ({ call } as unknown as Bridge), validConfig);
+    const area = { left_top: { x: 0, y: 0 }, right_bottom: { x: 64, y: 64 } };
+    const listed = await handlers.inspect_entity(schemas.inspect_entity.parse({ area, surface: "vulcanus" }));
+    expect(call).toHaveBeenLastCalledWith("inspect", { area, surface: "vulcanus" });
+    expect(listed.structuredContent.entities).toEqual([]);
+    expect(schemas.inspect_entity.safeParse({ area, positions: [{ x: 1, y: 2 }] }).success).toBe(false);
+    expect(schemas.inspect_entity.safeParse({}).success).toBe(false);
+    expect(schemas.inspect_entity.safeParse({ area, trace: "up" }).success).toBe(false);
+    expect(schemas.inspect_entity.safeParse({ area: { ...area, center: { x: 1, y: 1 } } }).success).toBe(false);
+    expect(descriptions.inspect_entity).toMatch(/at most 64 x 64 tiles with every chunk under it charted/);
+    expect(descriptions.inspect_entity).toMatch(/at most 200 rows, omitted counts the rest/);
+    expect(descriptions.inspect_entity).toMatch(/at a rocket silo's centre the silo with its rocket/);
+  });
   it("returns the hand-mining drill hint and the belt pickup outcome as structured fields", async () => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     const descriptions: Record<string, string> = {};
@@ -205,6 +224,8 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(descriptions.mine).toMatch(/hand-mining adds to what they mine/);
     expect(descriptions.mine).not.toMatch(/still helps|meet demand/);
     expect(descriptions.factory_status).toMatch(/hand_transfers: served by hand twice or more in ten minutes, so not yet automated/);
+    expect(descriptions.factory_status).toMatch(/lines lists at most 10, worst first, and line_counts \{total, running, self_sustaining, hand_fed\} and by_state \{state: n\} count every line/);
+    expect(descriptions.factory_status).toMatch(/drop_blocked: an output_full machine's own drop target, drop_into \(an entity name, or ground\), takes no more/);
     expect(descriptions.mine).not.toMatch(/instead/);
     expect(descriptions.get_items).toMatch(/also one own drills mine when none of their output can be taken now/);
     expect(descriptions.get_items).toMatch(/drop position/);

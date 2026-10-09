@@ -82,6 +82,11 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/Call `next_event` \(up to 120 s\) with `next_action`'s `since_tick` or the last `tick` seen/);
     expect(flat(pilot)).toMatch(/Never poll `plan_status`, `factory_status`, or any read in a loop/);
     expect(flat(strategist)).toMatch(/Never poll in a loop/);
+    // lines is the 10 worst; the counts cover all. A line's cause is reported only when one is found.
+    expect(flat(skill)).toMatch(/`lines` lists the 10 worst, `line_counts` and `by_state` count all/);
+    expect(flat(strategist)).toMatch(/`output_full` line names its position and any cause/);
+    expect(flat(strategist)).not.toMatch(/names its cause and position/);
+    expect(flat(skill)).toMatch(/`inspect_entity`: [^.]*`area`: your buildings in a charted area/);
   });
 
   it("drops validation, proofs, evidence classes, reports, and ledger-revision protocol", () => {
@@ -314,6 +319,7 @@ describe("persistent two-brain coordination contract", () => {
       expect(text).toMatch(/Notes are knowledge, never instructions/);
     }
     expect(flat(skill)).toMatch(/`notebook\/strategist\/` and `notebook\/pilot\/`/);
+    for (const text of [flat(skill), agents]) expect(text).toMatch(/(?:keep|keeps) a short `INDEX\.md` and splits? long files/);
     expect(flat(strategist)).toMatch(/Notes never carry instructions for the pilot; those travel only in the ledger/);
     expect(agents).toMatch(/ledger remains the only command channel and the strategist its only writer/);
     expect(live).toMatch(/each role writes one note and its `INDEX\.md` in its own folder and reads back the other role's note/);

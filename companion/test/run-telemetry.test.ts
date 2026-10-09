@@ -271,9 +271,15 @@ describe("run attestation", () => {
   it("parses the mod's attestation and body time, empty Lua tables included", () => {
     const parsed = parseRunSnapshot({ ...snapshot(100, 1),
       attestation: { game_speed: 1, cheat_mode: false, controller: "character", physical_controller: "character", mods: [], bonuses: {} },
-      body_time: { since_tick: 0, state: "idle", state_since: 0, ticks: [], gaps: [] } });
+      body_time: { since_tick: 0, state: "idle", state_since: 0, ticks: [], gaps: [], phases: [], tiles: 0 } });
     expect(parsed.attestation).toMatchObject({ mods: {}, bonuses: [] });
-    expect(parsed.body_time).toMatchObject({ ticks: {}, gaps: {} });
+    expect(parsed.body_time).toMatchObject({ ticks: {}, gaps: {}, phases: {}, tiles: 0 });
+    // The waiting state and phase ticks of a 0.37 mod; older snapshots carry neither.
+    expect(parseRunSnapshot({ ...snapshot(100, 1), body_time: { since_tick: 0, state: "waiting", state_since: 0,
+      ticks: { waiting: 30, pilot: 60 }, gaps: [], phases: { walk: 40, craft_wait: 20 }, tiles: 12.5 } }).body_time)
+      .toMatchObject({ state: "waiting", ticks: { waiting: 30 }, phases: { walk: 40, craft_wait: 20 }, tiles: 12.5 });
+    expect(() => parseRunSnapshot({ ...snapshot(100, 1), body_time: { since_tick: 0, state: "idle", state_since: 0, ticks: [], gaps: [],
+      phases: { walk: -1 } } })).toThrow();
     expect(() => parseRunSnapshot({ ...snapshot(100, 1), attestation: { ...clean, extra: 1 } })).toThrow();
   });
 });
@@ -314,6 +320,19 @@ describe("body time summary", () => {
     // Idle the whole window is one open gap.
     expect(bodySummary(baseline, timed(1_200, { idle: 1_200 }, {}, { state_since: 100 }))?.gaps)
       .toEqual({ open: { count: 1, total_seconds: 10, mean_seconds: 10, longest_seconds: 10 } });
+  });
+  it("reports plan phases and tiles walked in the window, and an open waiting stretch as the gap open", () => {
+    const baseline = timed(600, { pilot: 600 }, {}, { state: "pilot", phases: { walk: 400, other: 200 }, tiles: 50 });
+    const final = timed(7_800, { pilot: 4_200, waiting: 600, idle: 3_000 }, {}, { state: "waiting", state_since: 7_200,
+      phases: { walk: 2_200, mine: 600, smelt_wait: 300, craft_wait: 500, other: 600 }, tiles: 290.25 });
+    expect(bodySummary(baseline, final)).toMatchObject({ window_ticks: 7_200,
+      states: { waiting: { ticks: 600, share: 0.083 } },
+      phases: { walk: { ticks: 1_800, share: 0.25 }, mine: { ticks: 600, share: 0.083 }, smelt_wait: { ticks: 300, share: 0.042 },
+        craft_wait: { ticks: 500, share: 0.069 }, other: { ticks: 400, share: 0.056 } },
+      tiles: 240.3, gaps: { open: { count: 1, total_seconds: 10, mean_seconds: 10, longest_seconds: 10 } } });
+    // Waiting is not busy; a mod without phases reports none.
+    expect(bodySummary(baseline, final)?.busy_share).toBe(0.5);
+    expect(bodySummary(timed(600, {}, {}), timed(1_200, { idle: 600 }, {}))).not.toHaveProperty("phases");
   });
   it("is kept in the run summary beside each role's time split", () => {
     const store = root(), body = bodySummary(timed(0, {}, {}, { window_tick: 0 }), timed(600, { idle: 300, pilot: 300 }, {}, { window_tick: 0 }));
@@ -405,13 +424,40 @@ describe("tool outcomes", () => {
     expect(toolOutcome({ structuredContent: { status: "running", summary: "walking" } })).toEqual({ status: "running", code: null, ok: true });
   });
 
+  it("takes a failed plan's code and error from its first outcome that did not complete", () => {
+    const outcomes = [{ step: 1, action: "walk_to", status: "completed" },
+      { step: 2, action: "get_items", status: "failed", code: "SUPPLY_SHORTFALL", error: "short 20 iron-plate" },
+      { step: 3, action: "place_entity", status: "cancelled", code: "PLAN_CANCELLED" }];
+    expect(toolOutcome({ structuredContent: { event: "plan_ended", status: "failed", summary: "plan 5 ended failed", outcomes } }))
+      .toEqual({ status: "failed", code: "SUPPLY_SHORTFALL", ok: true, event: "plan_ended",
+        summary: "plan 5 ended failed; SUPPLY_SHORTFALL: short 20 iron-plate" });
+    // plan_status of a failed plan is isError; its own code wins.
+    expect(toolOutcome({ structuredContent: { plan_id: 5, status: "partial", outcomes: outcomes.slice(1, 2) }, isError: true }))
+      .toMatchObject({ status: "partial", code: "SUPPLY_SHORTFALL", ok: false, summary: "SUPPLY_SHORTFALL: short 20 iron-plate" });
+    expect(toolOutcome({ structuredContent: { status: "failed", code: "PLAN_BUDGET_EXCEEDED", outcomes } }))
+      .toMatchObject({ code: "PLAN_BUDGET_EXCEEDED" });
+    // A completed plan keeps a quiet row.
+    expect(toolOutcome({ structuredContent: { event: "plan_ended", status: "completed", summary: "plan 6 ended completed", outcomes: outcomes.slice(0, 1) } }))
+      .toEqual({ status: "completed", code: null, ok: true, event: "plan_ended" });
+  });
+
+  it("keeps the text of package_failed and package_unmet events", () => {
+    expect(toolOutcome({ structuredContent: { event: "package_failed", status: "completed", package_id: "p1",
+      summary: "package p1 was not queued: check failed: blocked" } })).toEqual({ status: "completed", code: null, ok: true,
+      event: "package_failed", summary: "package p1 was not queued: check failed: blocked" });
+    expect(toolOutcome({ structuredContent: { event: "package_unmet", status: "completed", summary: "package p2 unmet: iron-plate 12/min < 30" } }))
+      .toMatchObject({ event: "package_unmet", summary: "package p2 unmet: iron-plate 12/min < 30" });
+    expect(toolOutcome({ structuredContent: { event: "package_verified", status: "completed", summary: "package p3 verified" } }))
+      .not.toHaveProperty("summary");
+  });
+
   it("records a failed dry run as not_ok with its code or its first failed row's", () => {
     const dry = { check_only: true, ok: false, failed: [{ code: "LAYOUT_OVERLAP", reason: "burner-inserter overlaps entities[0]" },
       { code: "BLOCKED" }] };
     expect(toolOutcome({ content: [{ type: "text", text: "structured result" }], structuredContent: dry }))
-      .toEqual({ status: "not_ok", code: "LAYOUT_OVERLAP", ok: true, summary: "structured result" });
+      .toEqual({ status: "not_ok", code: "LAYOUT_OVERLAP", ok: true, summary: "structured result; LAYOUT_OVERLAP: burner-inserter overlaps entities[0]" });
     expect(toolOutcome({ structuredContent: { ...dry, code: "SEARCH_BUDGET", summary: "no placement" } }))
-      .toEqual({ status: "not_ok", code: "SEARCH_BUDGET", ok: true, summary: "no placement" });
+      .toEqual({ status: "not_ok", code: "SEARCH_BUDGET", ok: true, summary: "no placement; LAYOUT_OVERLAP: burner-inserter overlaps entities[0]" });
     // A passed dry run, and a status that says more than ok, stay as they were.
     expect(toolOutcome({ structuredContent: { check_only: true, ok: true, failed: [] } })).toEqual({ status: "ok", code: null, ok: true });
     expect(toolOutcome({ structuredContent: { status: "queued", ok: false } })).toMatchObject({ status: "queued", code: null });

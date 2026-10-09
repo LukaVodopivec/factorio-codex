@@ -29,6 +29,9 @@ export const bodyTimeSchema = z.object({ since_tick: whole,
   /** Idle gaps by the state that ended them. */
   gaps: z.record(z.string(), z.object({ count: whole, ticks: whole, longest: whole,
     longest_end_tick: whole.optional() }).strict()),
+  /** Pilot and package plan ticks by body phase (walk, mine, smelt_wait,
+   *  craft_wait, other) and tiles walked in them (mod 0.37 on). */
+  phases: z.record(z.string(), whole).optional(), tiles: z.number().nonnegative().optional(),
 }).strict();
 /** Facts for an unassisted run; bonuses lists only modifiers research does not explain. */
 export const attestationSchema = z.object({ game_speed: z.number().optional(), cheat_mode: z.boolean().optional(),
@@ -107,7 +110,7 @@ export function parseRunSnapshot(value: any): RunSnapshot {
   }
   // An empty Lua table is a list here; these are records (and bonuses a list).
   const record = (holder: any, key: string) => { if (Array.isArray(holder?.[key]) && holder[key].length === 0) holder[key] = {}; };
-  record(value?.body_time, "ticks"); record(value?.body_time, "gaps"); record(value?.attestation, "mods");
+  record(value?.body_time, "ticks"); record(value?.body_time, "gaps"); record(value?.body_time, "phases"); record(value?.attestation, "mods");
   if (value?.attestation) value.attestation.bonuses = luaArray(value.attestation.bonuses);
   if (Array.isArray(value?.milestones) && value.milestones.length === 0) value.milestones = {};
   record(value?.milestones, "research");
@@ -150,6 +153,8 @@ const bodySummarySchema = z.object({ window_ticks: whole, busy_share: z.number()
   states: z.record(z.string(), shareRow),
   gaps: z.record(z.string(), z.object({ count: whole, total_seconds: z.number().nonnegative(),
     mean_seconds: z.number().nonnegative(), longest_seconds: z.number().nonnegative().nullable() }).strict()),
+  /** Body phases of pilot and package plans in the window, and tiles walked (mod 0.37 on). */
+  phases: z.record(z.string(), shareRow).optional(), tiles: z.number().nonnegative().optional(),
 }).strict();
 const runEventsSchema = z.object({
   milestones: z.record(z.string(), z.object({ tick: whole, elapsed_s: z.number() }).strict()).optional(),
@@ -166,10 +171,11 @@ const BUSY_STATES = ["pilot", "package", "crafting"];
 const round = (value: number, digits = 3) => Math.round(value * 10 ** digits) / 10 ** digits;
 const gapRow = (count: number, ticks: number, longest: number | null) => ({ count, total_seconds: round(ticks / 60, 2),
   mean_seconds: round(ticks / count / 60, 2), longest_seconds: longest === null ? null : round(longest / 60, 2) });
-/** Body-busy share and idle gaps between two snapshots: the counters' deltas.
- *  The baseline marked the window, so the gap open then counts only from
- *  the baseline; a gap's longest counts only when it lies inside the window,
- *  and idle still open at the final sample is the gap "open". */
+/** Body-busy share, idle gaps and plan phases between two snapshots: the
+ *  counters' deltas. The baseline marked the window, so the gap open then
+ *  counts only from the baseline; a gap's longest counts only when it lies
+ *  inside the window, and idle (or waiting: queued work the body is not
+ *  doing) still open at the final sample is the gap "open". */
 export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<typeof bodySummarySchema> | null {
   const a = baseline.body_time, b = final.body_time;
   if (!a || !b || a.since_tick !== b.since_tick || b.window_tick !== baseline.tick || final.tick <= baseline.tick) return null;
@@ -186,9 +192,14 @@ export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<
     const inside = now.longest_end_tick !== undefined && now.longest_end_tick - now.longest >= baseline.tick;
     return [[by, gapRow(count, ticks, inside ? now.longest : null)]];
   }));
-  const open = b.state === "idle" ? final.tick - Math.max(b.state_since, baseline.tick) : 0;
+  const open = b.state === "idle" || b.state === "waiting" ? final.tick - Math.max(b.state_since, baseline.tick) : 0;
   if (open > 0) gaps.open = gapRow(1, open, open);
-  return { window_ticks: window, busy_share: round(busy / window), states, gaps };
+  const phases = b.phases ? Object.fromEntries(Object.keys(b.phases).sort().flatMap((phase) => {
+    const ticks = b.phases![phase]! - (a.phases?.[phase] ?? 0);
+    return ticks > 0 ? [[phase, { ticks, share: round(ticks / window) }]] : [];
+  })) : undefined;
+  return { window_ticks: window, busy_share: round(busy / window), states, gaps, ...(phases ? { phases } : {}),
+    ...(b.tiles !== undefined ? { tiles: round(Math.max(0, b.tiles - (a.tiles ?? 0)), 1) } : {}) };
 }
 
 const ROCKET_MILESTONES = ["rocket_ready", "rocket_launch_ordered", "rocket_launched"] as const;
@@ -342,24 +353,40 @@ export interface ToolOutcome { at: string; role: string; tool: string; status: s
   event?: string; summary?: string; duration_ms: number }
 const OUTCOME_SUMMARY_MAX = 200;
 const QUIET_STATUSES = new Set(["ok", "completed", "running"]);
+/** Events whose status reads completed although they report a package that failed or fell short. */
+const FAILURE_EVENTS = new Set(["package_failed", "package_unmet"]);
 /** A tool result's outcome: status is the structured status, else failed
- *  (isError), not_ok (a result with ok false, such as a failed dry run, whose
- *  code is its own or its first failed row's), else ok; ok is whether the
- *  call itself succeeded (not isError); event is next_event's kind; summary
- *  (at most 200 characters) only for a failed call or a status other than
- *  ok, completed or running. */
+ *  (isError), not_ok (a result with ok false, such as a failed dry run), else
+ *  ok; ok is whether the call itself succeeded (not isError: a plan read of a
+ *  failed or cancelled plan is not an error); event is next_event's kind.
+ *  code is the result's own, else a failed dry run's first failed row's, else
+ *  the first plan outcome that did not complete (plan_ended, plan_status,
+ *  run_plan). summary (at most 200 characters) only for a failed call, a
+ *  status other than ok, completed or running, or a package_failed or
+ *  package_unmet event: the result's text, then that row's or outcome's code
+ *  and reason or error. */
 export function toolOutcome(value: unknown): Omit<ToolOutcome, "at" | "role" | "tool" | "duration_ms"> {
   const result = value as { isError?: unknown; content?: unknown; structuredContent?: Record<string, unknown> } | null | undefined;
   const structured = result?.structuredContent;
   const ok = result?.isError !== true;
   const notOk = typeof structured?.status !== "string" && structured?.ok === false;
   const status = typeof structured?.status === "string" ? structured.status : !ok ? "failed" : notOk ? "not_ok" : "ok";
-  const firstFailed = Array.isArray(structured?.failed) ? (structured.failed[0] as { code?: unknown } | undefined)?.code : undefined;
-  const code = typeof structured?.code === "string" ? structured.code : notOk && typeof firstFailed === "string" ? firstFailed : null;
+  type Row = { code?: unknown; reason?: unknown; error?: unknown; status?: unknown } | undefined;
+  const failedRow = notOk && Array.isArray(structured?.failed) ? structured.failed[0] as Row : undefined;
+  const openOutcome = Array.isArray(structured?.outcomes)
+    ? (structured.outcomes as Row[]).find((outcome) => outcome && typeof outcome === "object" && outcome.status !== "completed") : undefined;
+  const row = failedRow ?? openOutcome;
+  const rowCode = typeof row?.code === "string" ? row.code : undefined;
+  const rowDetail = failedRow ? failedRow.reason : openOutcome?.error;
+  const code = typeof structured?.code === "string" ? structured.code : rowCode ?? null;
   const text = typeof structured?.summary === "string" ? structured.summary
     : Array.isArray(result?.content) ? (result.content[0] as { text?: unknown } | undefined)?.text : undefined;
-  return { status, code, ok, ...(typeof structured?.event === "string" ? { event: structured.event } : {}),
-    ...(typeof text === "string" && (!ok || !QUIET_STATUSES.has(status)) ? { summary: text.slice(0, OUTCOME_SUMMARY_MAX) } : {}) };
+  const why = [rowCode, typeof rowDetail === "string" && rowDetail !== rowCode ? rowDetail : undefined].filter(Boolean).join(": ");
+  const summary = [typeof text === "string" ? text : undefined, why || undefined].filter(Boolean).join("; ");
+  const event = typeof structured?.event === "string" ? structured.event : undefined;
+  const noisy = !ok || !QUIET_STATUSES.has(status) || (event !== undefined && FAILURE_EVENTS.has(event));
+  return { status, code, ok, ...(event !== undefined ? { event } : {}),
+    ...(summary && noisy ? { summary: summary.slice(0, OUTCOME_SUMMARY_MAX) } : {}) };
 }
 /** Appends one row per MCP tool call to tool_outcomes.jsonl beside the
  *  samples of the run the current run directory's ledger names, while the

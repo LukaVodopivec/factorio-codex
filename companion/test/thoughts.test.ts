@@ -221,7 +221,7 @@ describe("rollout time split", () => {
       model_calls: 0, mcp_calls: 2, compactions: 0, reasoning_items: 0, reasoning_summarized: 0 });
   });
 
-  it("splits next_event waiting out of tool time, counts MCP calls apart from the model's cells, and summarized reasoning", () => {
+  it("splits next_event and plan_status waiting out of tool time, counts MCP calls apart from the model's cells, and summarized reasoning", () => {
     const split = createTimeSplit();
     const mcp = (s: number, tool: string, from: number, to: number) =>
       event(s, "item_completed", { item: { type: "McpToolCall", server: "factorio", tool }, started_at_ms: ms(from), completed_at_ms: ms(to) });
@@ -235,10 +235,14 @@ describe("rollout time split", () => {
       mcp(5, "factory_status", 2, 5),
       mcp(90, "next_event", 10, 90),
       line(100, "response_item", { type: "custom_tool_call_output", call_id: "a", output: "y" }),
-      event(110, "task_complete"),
+      // A blocking plan_status wait is waiting too.
+      line(101, "response_item", { type: "custom_tool_call", call_id: "b", name: "exec", input: "x" }),
+      mcp(130, "plan_status", 101, 130),
+      line(131, "response_item", { type: "custom_tool_call_output", call_id: "b", output: "y" }),
+      event(140, "task_complete"),
     ]) split.line(text);
-    expect(split.summary()).toEqual({ turns: 1, turn_ms: 110_000, tool_ms: 98_000 - 80_000, wait_ms: 80_000, compaction_ms: 0,
-      model_ms: 110_000 - 98_000, model_calls: 1, mcp_calls: 2, compactions: 0, reasoning_items: 3, reasoning_summarized: 1 });
+    expect(split.summary()).toEqual({ turns: 1, turn_ms: 140_000, tool_ms: 98_000 - 80_000 + 30_000 - 29_000, wait_ms: 80_000 + 29_000,
+      compaction_ms: 0, model_ms: 140_000 - 98_000 - 30_000, model_calls: 2, mcp_calls: 3, compactions: 0, reasoning_items: 3, reasoning_summarized: 1 });
   });
 
   it("hands every rollout line read to onLine by role, and a throwing hook never stops the feed", async () => {

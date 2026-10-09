@@ -5,8 +5,11 @@ import { luaArray, readsOnly, withFeedFacts } from "./toolPayloads.js";
 // A Lua record serialized empty may arrive as [].
 const record = (value: unknown) => value === undefined || (Array.isArray(value) && value.length === 0) ? {} : value;
 
+/** Longest next_event wait: under the 31 s code-mode exec yield, so a wait
+ *  returns within one call and no cell is abandoned. */
+export const NEXT_EVENT_MAX_SECONDS = 25;
 export const nextEventSchema = z.object({
-  timeout_seconds: z.number().int().min(1).max(120).default(60),
+  timeout_seconds: z.number().int().min(1).max(NEXT_EVENT_MAX_SECONDS).default(NEXT_EVENT_MAX_SECONDS),
   since_tick: z.number().int().nonnegative().optional(),
 }).strict();
 export type NextEventInput = z.infer<typeof nextEventSchema>;

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Bridge, DEFAULT_TASK_TIMEOUT_MS, type TaskClock } from "../src/bridge.js";
 import type { RconClient } from "../src/rcon.js";
-import { executeRunPlan, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
+import { executeRunPlan, packageStepSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
 import { registerMcpTools } from "../src/mcp/server.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
@@ -33,7 +33,7 @@ describe("current queued-plan protocol", () => {
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, async () => ({ call } as unknown as Bridge), validConfig);
     const output = await handlers.queue_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "compact" });
     expect(output.structuredContent).toMatchObject({ plan_id: 8, status: "queued", terminal: false,
-      next_action: { tool: "next_event", arguments: { timeout_seconds: 60 } } });
+      next_action: { tool: "next_event", arguments: { timeout_seconds: 25 } } });
     expect(call).toHaveBeenCalledWith("queue_plan", { ...queuePlanSchema.parse({ steps: [{ action: "walk_to", x: 1, y: 2 }], after_plan_id: 7, observation_detail: "compact" }),
       client_key: expect.stringMatching(/^[0-9a-f-]{36}$/) });
   });
@@ -66,6 +66,12 @@ describe("current queued-plan protocol", () => {
     expect(queuePlanSchema.safeParse({ steps: [{ ...layout, anchor: { x: 0, y: 0 }, site: { near: { x: 0, y: 0 } } }] }).success).toBe(false);
     expect(queuePlanSchema.safeParse({ steps: [{ ...layout, anchor: { x: 0, y: 0 }, check_only: true }] }).success).toBe(false);
     expect(queuePlanSchema.safeParse({ steps: [{ action: "build_block", block: "mining", count: 1, resource: "iron-ore" }] }).success).toBe(false);
+    // get_items craft: false is a plan and package step option too, kept as given and absent when not given.
+    const noCraft = { action: "get_items", item: "iron-gear-wheel", count: 10, craft: false };
+    expect(queuePlanSchema.parse({ steps: [noCraft] }).steps[0]).toEqual(noCraft);
+    expect(packageStepSchema.parse(noCraft)).toEqual(noCraft);
+    expect(parsed.steps[0]).not.toHaveProperty("craft");
+    expect(queuePlanSchema.safeParse({ steps: [{ ...noCraft, craft: 0 }] }).success).toBe(false);
   });
 
   it("preserves exact inserter input and output targets through queued plans", () => {
@@ -289,7 +295,7 @@ describe("run_plan and direct tools under a human hold", () => {
       const ran = await settle(handlers.run_plan!({ steps: [{ action: "walk_to", x: 1, y: 2 }] }));
       expect(ran.isError).toBe(false);
       expect(ran.structuredContent).toMatchObject({ plan_id: 51, status: "queued", terminal: false, human_control: true,
-        next_action: { tool: "next_event", arguments: { timeout_seconds: 60 } } });
+        next_action: { tool: "next_event", arguments: { timeout_seconds: 25 } } });
       expect(ran.content[0].text).toContain("nothing was cancelled");
       expect(methods).not.toContain("cancel");
     } finally { vi.useRealTimers(); }

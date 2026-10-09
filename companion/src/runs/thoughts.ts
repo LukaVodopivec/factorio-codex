@@ -32,7 +32,7 @@ export function extractThoughts(line: string): Array<{ ts: string; kind: Thought
 }
 
 /** A role's wall time inside its turns, from rollout event times: wait time
- *  (next_event MCP calls' own start and end), tool time (other tool items'
+ *  (next_event and plan_status MCP calls' own start and end), tool time (other tool items'
  *  spans and each model call to its output, less wait time), compaction time
  *  (context compaction items), and model time (the rest of the turn). Turns
  *  run from task_started to task_complete or turn_aborted; a turn already
@@ -51,8 +51,9 @@ const MODEL_ITEMS = new Set(["Reasoning", "AgentMessage", "UserMessage", "Plan"]
 const CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call"]);
 const OUTPUTS = new Set(["function_call_output", "custom_tool_call_output", "local_shell_call_output"]);
 const IN_TURN_EVENTS = new Set(["item_completed", "token_count", "agent_message", "agent_reasoning"]);
-// The MCP tool that blocks until something happens: its time is waiting, not tool work.
-const WAIT_TOOLS = new Set(["next_event"]);
+// The MCP tools that block until something happens: next_event and
+// plan_status (a read without a wait takes tens of ms). Their time is waiting, not tool work.
+const WAIT_TOOLS = new Set(["next_event", "plan_status"]);
 
 /** Adds [a, b] to a start-sorted list of disjoint spans, merging what it
  *  overlaps. Spans arrive nearly in order, so this works at the tail. */

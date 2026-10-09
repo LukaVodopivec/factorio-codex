@@ -35,7 +35,8 @@ local MAX_DEPTH = 4          -- recipe levels supplied below a wanted item
 local MAX_TAKES = 6          -- sources tried per item
 local MAX_GATHERS = 8        -- hand-mining actions per item
 local MAX_RESOURCE_CYCLES = 50
-local MAX_CRAFTS = 100
+local MAX_CRAFTS = 100         -- hand-crafts queued per round (the craft action's own cap)
+local MAX_CRAFT_ROUNDS = 10    -- rounds per item: a count over one round's cap is fetched and queued again
 local MAX_SHORTFALL_ROWS = 8
 local GATHER_RADII = { 8, 16, 32, 48, 64 }
 local GATHER_LIMIT = 100     -- natural entities read per query
@@ -957,6 +958,8 @@ local function advance(task, c, frame)
   end
 
   if frame.phase == "craft" then
+    -- A later round follows only a round that queued all its crafts.
+    if frame.craft_left and need > frame.craft_left then frame.phase = "end"; return false end
     local recipe, per_craft = hand_recipe(c, frame.name)
     if not recipe or frame.depth >= MAX_DEPTH then
       frame.craft_error = recipe and "too many recipe levels" or per_craft
@@ -978,9 +981,17 @@ local function advance(task, c, frame)
   end
 
   if frame.phase == "craft_start" then
-    frame.phase = "end"
     if task._claims then release(task, frame) end
-    local crafts = math.min(math.ceil(need / frame.per_craft), MAX_CRAFTS)
+    local all = math.ceil(need / frame.per_craft)
+    local crafts = math.min(all, MAX_CRAFTS)
+    -- A round the cap cut short comes back to the craft phase, which fetches
+    -- and queues the rest, up to MAX_CRAFT_ROUNDS rounds; past them the end
+    -- names the cap.
+    frame.craft_rounds = (frame.craft_rounds or 0) + 1
+    frame.crafts_queued = (frame.crafts_queued or 0) + crafts
+    frame.craft_left = math.max(0, need - crafts * frame.per_craft)
+    frame.craft_capped = all > crafts and frame.craft_rounds >= MAX_CRAFT_ROUNDS or nil
+    frame.phase = all > crafts and not frame.craft_capped and "craft" or "end"
     frame.before = have(c, frame.name)
     local ok, err = pcall(begin_sub, task, { type = "craft", recipe = frame.recipe, count = crafts })
     if ok then frame.source_kind = "craft"; return true end
@@ -1125,6 +1136,11 @@ local function advance(task, c, frame)
     parts[#parts + 1] = "no own chest, landing pad, machine output or belt holds it"
   end
   if frame.craft_error then parts[#parts + 1] = "not hand-craftable: " .. frame.craft_error end
+  if frame.craft_capped then
+    parts[#parts + 1] = string.format("hand-crafting queued %d of %d crafts: get_items queues at most %d crafts"
+      .. " per round and %d rounds per item", frame.crafts_queued, frame.crafts_queued + math.ceil(need / frame.per_craft),
+      MAX_CRAFTS, MAX_CRAFT_ROUNDS)
+  end
   if frame.smelt_error then parts[#parts + 1] = "not smelted: " .. frame.smelt_error end
   if frame.gather_error then parts[#parts + 1] = frame.gather_error end
   if frame.error then parts[#parts + 1] = "last attempt: " .. frame.error end

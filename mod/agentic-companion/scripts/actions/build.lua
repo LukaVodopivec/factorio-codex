@@ -47,8 +47,10 @@ local function blocked_reason(c, pos, proto, direction)
   for _, search in ipairs(searches) do
     for _, e in ipairs(c.surface.find_entities_filtered(search)) do
       if e.valid and e ~= c and e.type ~= "resource" then
-        return string.format("%s at (%.1f, %.1f) is in the way — pick a clear spot or remove it first",
-          e.name, e.position.x, e.position.y)
+        local lying = placement_geometry.ground_item_row(e)
+        if lying then return placement_geometry.ground_item_text(lying) .. " is in the way" end
+        return string.format("%s at (%s, %s) is in the way — pick a clear spot or remove it first",
+          e.name, placement_geometry.exact(e.position.x), placement_geometry.exact(e.position.y))
       end
     end
   end
@@ -138,6 +140,68 @@ local function natural_blocker(c, area)
   return nil
 end
 
+-- Item stacks lying on the footprint go into the body's main inventory, as
+-- the game's own building takes them up: up to GROUND_PICKS stacks a call,
+-- each moved as its real stack (items.move_stacks), so only what the
+-- inventory took leaves the ground. A stack the inventory cannot take whole
+-- stays where it lies and fails the placement with GROUND_ITEMS_NO_ROOM;
+-- nothing is spilled. task._picked_up keeps this footprint's rows
+-- {item, count, x, y} (M.picked_up). Returns "ok" once none lies there, nil
+-- when more may, or a failed result.
+local GROUND_PICKS = 32
+local function pick_ground_items(task, c, area, position)
+  local rows, found = placement_geometry.ground_items(c.surface, placement_geometry.touching(area), GROUND_PICKS)
+  if #found == 0 then return "ok" end
+  local log = task._picked_up
+  if not (log and log.x == position.x and log.y == position.y) then
+    log = { x = position.x, y = position.y, rows = {} }
+    task._picked_up = log
+  end
+  local inventory = c.get_main_inventory()
+  for i, e in ipairs(found) do
+    local row, stack = rows[i], e.stack
+    local quality = items.quality_name(stack.quality)
+    local at = row.position
+    local moved, short = 0, inventory.get_insertable_count({ name = row.name, quality = quality }) < row.count
+    if not short then
+      moved, short = items.move_stacks({ stack }, inventory, row.name, quality, row.count, {
+        remove = function(part)
+          local left = e.valid and e.stack
+          if not (left and left.valid_for_read) then return 0 end
+          if left.count <= part.count then e.destroy() else left.count = left.count - part.count end
+          return part.count
+        end,
+        -- The stack went away under the split: the part goes back where it lay.
+        put_back = function(held)
+          local count = held.count
+          return c.surface.create_entity({ name = "item-on-ground", position = at, stack = held }) and count or 0
+        end,
+      })
+    end
+    if moved > 0 then
+      log.rows[#log.rows + 1] = { item = row.name, quality = quality ~= "normal" and quality or nil, count = moved,
+        x = at.x, y = at.y }
+    end
+    if e.valid and not (e.stack and e.stack.valid_for_read) then e.destroy() end
+    if short then
+      return { status = "failed",
+        detail = string.format("GROUND_ITEMS_NO_ROOM: Codex inventory cannot take the %s lying on the placement footprint; %d stay on the ground",
+          placement_geometry.ground_item_text(row), row.count - moved),
+        outcome = { code = "GROUND_ITEMS_NO_ROOM", item = row.name, count = row.count - moved, x = at.x, y = at.y,
+          picked_up = #log.rows > 0 and log.rows or nil } }
+    end
+  end
+  return #found < GROUND_PICKS and "ok" or nil
+end
+
+-- The ground stacks clear_footprint took from the footprint at position:
+-- {item, count, x, y} rows, or nil.
+function M.picked_up(task, position)
+  local log = task._picked_up
+  if log and position and log.x == position.x and log.y == position.y and #log.rows > 0 then return log.rows end
+  return nil
+end
+
 function M.clear_footprint(task, c, proto, position, direction)
   if task._clear then
     local result = supply.step(task, "_clear")
@@ -147,8 +211,21 @@ function M.clear_footprint(task, c, proto, position, direction)
     end
   end
   if task.auto_clear == false then return "ok" end
-  local blocker = natural_blocker(c, placement_geometry.footprint(proto, position, direction))
-  if not blocker then task._clears = nil; return "ok" end
+  local area = placement_geometry.footprint(proto, position, direction)
+  local blocker = natural_blocker(c, area)
+  if not blocker then
+    -- Ground stacks last, from where the body stands to build (or just
+    -- mined a tree or rock in this footprint).
+    local picked = pick_ground_items(task, c, area, position)
+    if picked == "ok" then task._clears = nil; return "ok" end
+    if picked then return picked end
+    task._clears = (task._clears or 0) + 1
+    if task._clears > MAX_CLEARS then
+      return { status = "failed", detail = string.format("the placement footprint still holds item stacks after picking up %d stacks a tick for %d ticks",
+        GROUND_PICKS, MAX_CLEARS) }
+    end
+    return nil
+  end
   task._clears = (task._clears or 0) + 1
   if task._clears > MAX_CLEARS then
     return { status = "failed", detail = string.format("the placement footprint still holds %s after clearing %d trees and rocks",
@@ -290,7 +367,14 @@ local function placed(task, c, built, result)
   local mismatch = M.underground_error(built, task.direction, task.belt_to_ground_type)
   if mismatch then
     return { status = "failed", detail = mismatch, outcome = { code = "UNDERGROUND_CONFIGURATION_MISMATCH",
-      placed = 1, underground = M.underground_pairing(built) } }
+      placed = 1, underground = M.underground_pairing(built), picked_up = M.picked_up(task, task.position) } }
+  end
+  local picked = M.picked_up(task, task.position)
+  if picked then
+    result.outcome = result.outcome or {}
+    result.outcome.picked_up = picked
+    result.detail = string.format("%s; first took up %d item stack%s lying on its footprint", result.detail, #picked,
+      #picked == 1 and "" or "s")
   end
   if not task._insert then return result end
   task._inserting = { entity = built, result = result }
@@ -519,11 +603,13 @@ function M.place.tick(task)
   local can_place, placement_reason = placement_geometry.can_place(c,
     prototypes.item[task.item].place_result, task.position, task.direction)
   if not can_place then
+    local picked = M.picked_up(task, task.position)
     return {
       status = "failed",
       detail = string.format("can't place %s at (%.1f, %.1f) — %s",
         task.item, task.position.x, task.position.y,
         placement_reason == "CODEX_BODY_OVERLAP" and "CODEX_BODY_OVERLAP — walk clear of the exact collision footprint" or blocked_reason(c, task.position, prototypes.item[task.item].place_result, task.direction)),
+      outcome = picked and { picked_up = picked } or nil,
     }
   end
 

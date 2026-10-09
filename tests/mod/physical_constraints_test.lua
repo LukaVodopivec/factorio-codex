@@ -72,7 +72,7 @@ check(build.place.tick(place) == nil and captured_reach == body.build_distance,
   "placement waits for physical build reach instead of acting remotely")
 approach_result = "ok"
 local blocked = build.place.tick(place)
-check(blocked.status == "failed" and blocked.detail:match("rock%-huge at %(4%.0, 0%.0%) is in the way") ~= nil
+check(blocked.status == "failed" and blocked.detail:match("rock%-huge at %(4, 0%) is in the way") ~= nil
   and inventory["stone-furnace"] == 1,
   "blocked placement fails without consuming inventory or creating an entity")
 -- A neighbour within a tile is named only when nothing touches the footprint.
@@ -84,6 +84,17 @@ build.place.start(place)
 local named = build.place.tick(place)
 check(named.status == "failed" and named.detail:match("tree%-01 at %(4%.6, 0%.7%) is in the way") ~= nil,
   "a blocked placement names what touches its footprint, not a neighbour")
+-- With auto_clear off a lying item stack stays and is named exactly, so
+-- pickup_items can target that position.
+local lying = { valid = true, name = "item-on-ground", type = "item-entity", position = { x = 4.25, y = -0.33984375 },
+  stack = { valid_for_read = true, name = "iron-plate", count = 3 } }
+surface.find_entities_filtered = function(filter) return { filter.area and lying or neighbour } end
+local kept_place = { item = "stone-furnace", position = { x = 4, y = 0 }, auto_clear = false }
+build.place.start(kept_place)
+local kept_lying = build.place.tick(kept_place)
+check(kept_lying.status == "failed"
+  and kept_lying.detail:find("item-on-ground iron-plate x3 at (4.25, -0.33984375) is in the way", 1, true) ~= nil,
+  "a lying item stack in the way is named with its item, count and exact position")
 surface.find_entities_filtered = search
 
 local explicit = { target = { x = 1, y = 0 }, direction = 12 }

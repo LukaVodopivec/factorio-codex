@@ -119,8 +119,10 @@ local function blocked(c, e, proto, to, direction)
   -- the entity's: the engine's layer filter once dropped a belt standing there.
   -- An unknown mask counts as colliding. Ore adds at most one row a tile.
   local found_ok, found = pcall(c.surface.find_entities_filtered, { area = area, limit = 33 + tile_count })
-  local natural = false
+  -- Item stacks lying there are taken up by the placement (build.clear_footprint).
+  local natural, lying = false, false
   for _, other in ipairs(found_ok and found or {}) do
+    lying = lying or placement_geometry.ground_item_row(other) ~= nil
     local other_ok, other_mask = pcall(function() return other.prototype.collision_mask end)
     if other.valid and other ~= c and other ~= e and not placement_geometry.NON_BLOCKING_TYPES[other.type]
       and placement_geometry.mask_overlap(mask, other_ok and other_mask or nil, false) ~= false then
@@ -145,7 +147,7 @@ local function blocked(c, e, proto, to, direction)
     end
     if meets[key] then return "the ground there is water or otherwise unbuildable" end
   end
-  if own_spot or natural then return nil end
+  if own_spot or natural or lying then return nil end
   return "the ground there is water or otherwise unbuildable"
 end
 

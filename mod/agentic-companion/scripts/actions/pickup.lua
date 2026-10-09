@@ -10,6 +10,8 @@ local items = require("scripts.items")
 
 local M = {}
 local TARGET_RADIUS = 0.01
+-- A miss names at most this many stacks lying within a tile of the target.
+local NEARBY_ROWS = 8
 local PICKUP_TIMEOUT_TICKS = 120
 -- A belt pickup ends after this many ticks within reach, however steadily
 -- single items keep arriving, and after this many drifts out of reach where
@@ -29,7 +31,8 @@ local function stack_snapshot(entity)
   return stack.name, stack.count
 end
 
--- The third result counts the ground stacks at the position, whatever they hold.
+-- The third result counts the ground stacks at the position, whatever they
+-- hold; the fourth is true when none matches (gone or changed).
 local function matching_target(surface, target, item, count)
   local match, stacks = nil, 0
   for _, entity in ipairs(surface.find_entities_filtered({
@@ -42,8 +45,20 @@ local function matching_target(surface, target, item, count)
       match = entity
     end
   end
-  if not match then return nil, "the exact observed ground stack is gone or changed", stacks end
+  if not match then return nil, "the exact observed ground stack is gone or changed", stacks, true end
   return match
+end
+
+-- A miss's GROUND_STACK_CHANGED text: what was asked for and the stacks
+-- lying within a tile of the target, exact, or that none does.
+local function miss_text(surface, target, item, count, reason)
+  local rows = placement_geometry.ground_items(surface, { left_top = { x = target.x - 1, y = target.y - 1 },
+    right_bottom = { x = target.x + 1, y = target.y + 1 } }, NEARBY_ROWS)
+  local parts = {}
+  for i, row in ipairs(rows) do parts[i] = placement_geometry.ground_item_text(row) end
+  return string.format("GROUND_STACK_CHANGED: %s (asked for %d %s at (%s, %s)); %s", reason, count, item,
+    placement_geometry.exact(target.x), placement_geometry.exact(target.y),
+    #parts > 0 and ("item stacks within 1 tile: " .. table.concat(parts, ", ")) or "no item stack lies within 1 tile")
 end
 
 -- Belt pickup. Items ride a belt's two lanes a quarter tile either side of its
@@ -101,7 +116,7 @@ function M.start(task)
   local count = tonumber(task.count)
   if not count or count % 1 ~= 0 or count < 1 then error("pickup count must be a positive integer") end
   task.count = count
-  local entity, reason, stacks = matching_target(c.surface, task.target, task.item, count)
+  local entity, reason, stacks, changed = matching_target(c.surface, task.target, task.item, count)
   if not entity then
     -- With no ground stack at the position, the target is the belt under it.
     local belt = stacks == 0 and belt_at(c.surface, task.target) or nil
@@ -114,7 +129,8 @@ function M.start(task)
           end
         end
       end
-      error(reason)
+      if not changed then error(reason, 0) end
+      error(miss_text(c.surface, task.target, task.item, count, reason), 0)
     end
     task._belt, task._picked, task._wait_tick = belt, 0, game.tick
     return
@@ -126,7 +142,7 @@ end
 -- whatever the player left: approach again and count nothing gained during the
 -- hold. A belt pickup keeps only what its own transfers moved. A ground
 -- pickup takes its inventory baseline when picking starts again; one whose
--- stack was already taken, with exactly its count gained, is left to finish.
+-- stack was already taken, with at least its count gained, is left to finish.
 function M.resume(task)
   if task._belt then
     task._picking_started, task._wait_tick, task._progress_tick, task._idle = false, game.tick, nil, nil
@@ -134,7 +150,7 @@ function M.resume(task)
   end
   if task._picking_started and not stack_snapshot(task._entity) then
     local c = companion.get()
-    if c and c.get_main_inventory().get_item_count(task.item) - task._inventory_before == task.count then return end
+    if c and c.get_main_inventory().get_item_count(task.item) - task._inventory_before >= task.count then return end
   end
   task._picking_started = false
 end
@@ -328,18 +344,25 @@ function M.tick(task)
     local gained = inventory.get_item_count(task.item) - task._inventory_before
     local depleted = task.count - (remaining or 0)
     if not name then
-      if gained == task.count then
+      -- Factorio's picking takes every stack within item_pickup_distance, so
+      -- the gain may be larger than the selected stack: a measured fact.
+      if gained >= task.count then
         stop(c)
+        local surplus = gained - task.count
         return { status = "done", detail = string.format(
-          "physically picked up %d %s; inventory delta %d and selected ground stack depleted",
-          task.count, task.item, gained) }
+          "physically picked up %d %s; inventory delta %d and selected ground stack depleted%s",
+          gained, task.item, gained, surplus > 0 and string.format(
+            "; %d more than the %d requested (picking takes every stack within item_pickup_distance)", surplus, task.count)
+            or ""),
+          outcome = surplus > 0 and { item = task.item, requested = task.count, picked_up = gained, surplus = surplus } or nil }
       end
       return fail(c, string.format(
         "the selected ground stack disappeared but inventory gained %d of the expected %d %s",
-        gained, task.count, task.item))
+        gained, task.count, task.item), { code = "PICKUP_COUNT_MISMATCH", gained = gained, expected = task.count })
     end
     if name ~= task.item or remaining > task.count or depleted ~= gained then
-      return fail(c, "the selected ground stack or inventory changed without matching pickup evidence")
+      return fail(c, "the selected ground stack or inventory changed without matching pickup evidence",
+        { code = "GROUND_STACK_CHANGED" })
     end
     if gained == task.count then
       stop(c)
@@ -362,7 +385,7 @@ function M.tick(task)
   end
 
   if name ~= task.item or remaining ~= task.count then
-    return fail(c, "the exact observed ground stack was invalidated before pickup")
+    return fail(c, "the exact observed ground stack was invalidated before pickup", { code = "GROUND_STACK_CHANGED" })
   end
   if not inventory.can_insert({ name = task.item, count = task.count }) then
     return fail(c, "Codex inventory cannot hold the exact observed ground stack")
@@ -375,7 +398,7 @@ function M.tick(task)
   end
   name, remaining = stack_snapshot(task._entity)
   if name ~= task.item or remaining ~= task.count then
-    return fail(c, "the exact observed ground stack was invalidated during approach")
+    return fail(c, "the exact observed ground stack was invalidated during approach", { code = "GROUND_STACK_CHANGED" })
   end
   c.update_selected_entity(task._entity.position)
   if c.selected ~= task._entity then

@@ -531,10 +531,13 @@ local function ground(ctx, proto, pos, direction, adopt, end_type)
       local near = placement_geometry.touching(area)
       local found_ok, found = pcall(c.surface.find_entities_filtered, { area = near,
         limit = 33 + placement_geometry.tile_count(near) })
-      local blocker
+      -- Item stacks lying there are taken up by the build (build.clear_footprint).
+      local blocker, lying
       for _, e in ipairs(found_ok and found or {}) do
         if e.valid and e ~= c and not placement_geometry.NON_BLOCKING_TYPES[e.type] then
           if NATURAL[e.type] then clears = true else blocker = blocker or e end
+        elseif e.valid and not lying then
+          lying = placement_geometry.ground_item_row(e)
         end
       end
       local mix = placement_geometry.fluid_mix(c.surface, proto, pos, direction)
@@ -542,9 +545,11 @@ local function ground(ctx, proto, pos, direction, adopt, end_type)
       if mix then
         ok, clears, reason = false, nil, placement_geometry.fluid_mix_reason(mix)
       elseif blocker then
-        ok, clears, reason = false, nil, string.format("blocked by %s at (%.1f, %.1f)", blocker.name, blocker.position.x, blocker.position.y)
-      elseif clears then
+        ok, clears, reason = false, nil, string.format("blocked by %s at (%s, %s)", blocker.name,
+          placement_geometry.exact(blocker.position.x), placement_geometry.exact(blocker.position.y))
+      elseif clears or lying then
         ok = true
+        note = lying and (placement_geometry.ground_item_text(lying) .. " will be picked up") or nil
       else
         ok = false
         reason = proto.type == "mining-drill" and "no resource it can mine under it"
@@ -1377,6 +1382,17 @@ local function noted(result, note)
     if value.note == note then out[#out + 1] = value.index end
   end
   table.sort(out)
+  return #out > 0 and out or nil
+end
+
+-- {index, note} of the layout entities whose spot holds item stacks the
+-- build takes up first ("item-on-ground ... will be picked up").
+local function ground_notes(result)
+  local out = {}
+  for _, value in pairs(result.notes or {}) do
+    if value.note:find("^item%-on%-ground ") then out[#out + 1] = { index = value.index, note = value.note } end
+  end
+  table.sort(out, function(a, b) return a.index < b.index end)
   return #out > 0 and out or nil
 end
 
@@ -2630,7 +2646,8 @@ local function report(c, result, extra, s)
   for i, step in ipairs(steps) do placed[i] = placed_row(step) end
   local out = { check_only = true, ok = #result.failed == 0, anchor = result.anchor, rotation = result.rotation,
     placed = placed, failed = result.failed, materials = materials(c, steps),
-    clears = result.clears and result.clears > 0 and result.clears or nil, unobtainable = unobtainable(c, steps) }
+    clears = result.clears and result.clears > 0 and result.clears or nil, ground_items = ground_notes(result),
+    unobtainable = unobtainable(c, steps) }
   for k, v in pairs(extra or {}) do out[k] = v end
   return out
 end

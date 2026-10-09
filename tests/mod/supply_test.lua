@@ -979,6 +979,48 @@ local edge = { id = 10, item = "stone-furnace", position = { x = 21, y = 11 } }
 check(build.clear_footprint(edge, body, proto, edge.position, 0) == nil and edge._clear and edge._clear.entity == touching,
   "a tree whose box touches the footprint edge is mined before placement")
 
+-- Item stacks lying on the footprint go into the main inventory as their own
+-- stacks before placement: only what the inventory took leaves the ground,
+-- and the rows name each stack's exact position.
+local function lying(position, name, count)
+  local rec = { name = name, count = count, quality = "normal" }
+  local e = add({ type = "item-entity", name = "item-on-ground", position = position, force = neutral })
+  e.stack = stacks.stack(function() return rec end, function(value) rec = value end, function() return e.valid end)
+  e.destroy = function() e.valid = false end
+  return e
+end
+reset()
+local plates = lying({ x = 11.25, y = 10.6640625 }, "iron-plate", 3)
+local beside = lying({ x = 14.5, y = 11 }, "coal", 2)
+local ground_place = { id = 11, item = "stone-furnace", position = { x = 11, y = 11 } }
+check(build.clear_footprint(ground_place, body, proto, ground_place.position, 0) == "ok" and not plates.valid
+  and beside.valid and inventory["iron-plate"] == 3 and (inventory.coal or 0) == 0,
+  "item stacks lying on the footprint are taken into the inventory; stacks beside it stay")
+local rows = build.picked_up(ground_place, ground_place.position)
+check(rows and #rows == 1 and rows[1].item == "iron-plate" and rows[1].count == 3 and rows[1].x == 11.25
+  and rows[1].y == 10.6640625 and build.picked_up(ground_place, { x = 12, y = 11 }) == nil,
+  "picked_up names each stack taken up with its exact position, for this footprint only")
+local left_alone = lying({ x = 11.5, y = 11.5 }, "iron-plate", 2)
+check(build.clear_footprint({ id = 12, position = { x = 11, y = 11 }, auto_clear = false }, body, proto, { x = 11, y = 11 }, 0) == "ok"
+  and left_alone.valid and inventory["iron-plate"] == 3, "auto_clear=false leaves item stacks lying")
+-- No room for a stack: it stays where it lies, whole, and the placement fails with a code.
+local main = body.get_main_inventory
+body.get_main_inventory = function() return stacks.view(inventory, function() return 1 end) end
+local no_room = build.clear_footprint({ id = 13, position = { x = 11, y = 11 } }, body, proto, { x = 11, y = 11 }, 0)
+check(type(no_room) == "table" and no_room.status == "failed" and no_room.outcome.code == "GROUND_ITEMS_NO_ROOM"
+  and no_room.detail:match("item%-on%-ground iron%-plate x2 at %(11%.5, 11%.5%)") and left_alone.valid
+  and left_alone.stack.count == 2 and inventory["iron-plate"] == 3,
+  "a stack the inventory cannot take whole stays on the ground and the placement fails GROUND_ITEMS_NO_ROOM")
+body.get_main_inventory = main
+-- More stacks than one call takes: the rest follow on the next call, each call one clear.
+reset()
+for i = 1, 33 do lying({ x = 10.5 + (i % 3) * 0.25, y = 10.5 + (i % 4) * 0.25 }, "iron-plate", 1) end
+local heap = { id = 14, item = "stone-furnace", position = { x = 11, y = 11 } }
+check(build.clear_footprint(heap, body, proto, heap.position, 0) == nil and inventory["iron-plate"] == 32 and heap._clears == 1,
+  "at most 32 stacks are taken up a call; the next call goes on")
+check(build.clear_footprint(heap, body, proto, heap.position, 0) == "ok" and inventory["iron-plate"] == 33
+  and #build.picked_up(heap, heap.position) == 33 and heap._clears == nil, "then the footprint is clear")
+
 -- Embedded auto-supply runs once and reports.
 reset()
 local owner = { id = 9 }

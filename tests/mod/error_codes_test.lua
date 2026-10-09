@@ -193,6 +193,40 @@ check(observed.status == "failed" and observed.outcomes[1].status == "completed"
   and storage.handler_errors.recent[#storage.handler_errors.recent].where == "task:plan:observe",
   "a plan whose steps completed but whose final observation raised names that, not its last step")
 
+-- The real transfer and pickup refusals carry their own codes through the
+-- dispatcher: no target to take from, a ground stack gone or changed, and a
+-- pickup whose stack vanished with too little gained.
+package.loaded["scripts.actions.approach"] = { ensure = function() return "ok" end, find_entity_near = function() return nil end }
+package.loaded["scripts.actions.transfer"] = nil
+package.loaded["scripts.actions.pickup"] = nil
+local real_transfer = require("scripts.actions.transfer")
+local real_pickup = require("scripts.actions.pickup")
+extract.start, extract.tick = real_transfer.extract.start, real_transfer.extract.tick
+local missing = run({ { action = "extract_items", x = 1, y = 1 } })
+check(missing.outcomes[1].code == "TRANSFER_TARGET_MISSING"
+  and storage.activity_log[#storage.activity_log].code == "TRANSFER_TARGET_MISSING",
+  "extract with nothing at the target is TRANSFER_TARGET_MISSING, not unclassified")
+local lying = { valid = true, type = "item-entity", name = "item-on-ground", position = { x = 1, y = 1 },
+  stack = { valid_for_read = true, name = "coal", count = 2 } }
+body.surface = { find_entities_filtered = function() return { lying } end }
+pickup.start, pickup.tick = real_pickup.start, real_pickup.tick
+local changed = run({ { action = "pickup_items", x = 1, y = 1, item = "coal", count = 3 } })
+check(changed.outcomes[1].code == "GROUND_STACK_CHANGED" and changed.outcomes[1].error:find("item-on-ground coal x2 at (1, 1)", 1, true)
+  and storage.activity_log[#storage.activity_log].code == "GROUND_STACK_CHANGED",
+  "a pickup whose observed stack changed is GROUND_STACK_CHANGED and names what lies there")
+local counts = { coal = 0 }
+body.item_pickup_distance = 1
+body.update_selected_entity = function() body.selected = lying end
+body.get_main_inventory = function() return { get_item_count = function(name) return counts[name] or 0 end,
+  can_insert = function() return true end } end
+local vanished_task = { target = { x = 1, y = 1 }, item = "coal", count = 2, id = 1 }
+real_pickup.start(vanished_task)
+real_pickup.tick(vanished_task)
+counts.coal, lying.valid = 1, false
+local vanished = real_pickup.tick(vanished_task)
+check(errors.code(vanished.status, vanished.outcome, vanished.detail) == "PICKUP_COUNT_MISMATCH",
+  "a pickup whose stack vanished with too little gained is PICKUP_COUNT_MISMATCH")
+
 -- The dispatchers never hand a caught error on raw: every one goes through
 -- errors.plain or errors.record.
 for _, name in ipairs({ "rpc", "tasks" }) do

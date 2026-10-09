@@ -422,6 +422,18 @@ check(trees.ok and trees.clears == 1, "trees in a footprint pass the check: plac
 blockers = { { valid = true, name = "stone-wall", type = "wall", position = { x = 20.5, y = 20.5 } } }
 local walled = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
 check(not walled.ok and walled.failed[1].reason:match("blocked by stone%-wall") ~= nil, "an owned blocker is named")
+-- An item stack lying on a footprint refuses the engine's check, but the
+-- build takes it up first: the check passes and names it exactly, never as water.
+blockers = { { valid = true, name = "item-on-ground", type = "item-entity", position = { x = 20.25, y = 20.6640625 },
+  stack = { valid_for_read = true, name = "iron-plate", count = 3 } } }
+local lying = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
+check(lying.ok and #lying.failed == 0 and lying.ground_items and lying.ground_items[1].index == 0
+  and lying.ground_items[1].note == "item-on-ground iron-plate x3 at (20.25, 20.6640625) will be picked up",
+  "a footprint holding only an item stack passes, noted with the stack's exact position")
+blockers[2] = { valid = true, name = "stone-wall", type = "wall", position = { x = 20.5, y = 20.5 } }
+local lying_walled = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
+check(not lying_walled.ok and lying_walled.failed[1].reason:match("blocked by stone%-wall at %(20%.5, 20%.5%)") ~= nil,
+  "a real blocker beside a lying stack is still named")
 -- Ore under every tile of a 9x9 footprint, read before a belt on it: the
 -- capped blocker search still reaches the belt.
 entities["test-silo"] = entity("test-silo", "container", 9, 9)

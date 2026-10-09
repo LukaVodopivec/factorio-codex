@@ -300,6 +300,22 @@ local ok_tree, err_tree = pcall(move.start, move.action.make_task({ from = { x =
 check(not ok_tree and tostring(err_tree):match("water") and #mines == 0, "a tree on water does not hide the water")
 local carried = run({ from = { x = 72, y = 41 }, to = { x = 71, y = 41 } })
 check(carried.status == "done", "the furnace moves back")
+-- An item stack lying on the target refuses the engine's check but is no
+-- blocker: the placement takes it up into the inventory and the move lands.
+entities["item-on-ground"] = proto("item-on-ground", "item-entity", 1, 1)
+local dropped = { name = "iron-plate", count = 2, quality = "normal" }
+local drop = spawn("item-on-ground", { x = 80.25, y = 40.6640625 })
+drop.stack = stacks.stack(function() return dropped end, function(value) dropped = value end, function() return drop.valid end)
+drop.destroy = function() drop.valid = false end
+inventory["iron-plate"] = 0
+check(not surface.can_place_entity({ name = "stone-furnace", position = { x = 80, y = 41 }, direction = 0 }),
+  "the engine refuses a placement over the lying stack")
+local onto_drop = run({ from = { x = 71, y = 41 }, to = { x = 80, y = 41 } })
+check(onto_drop and onto_drop.status == "done" and find("stone-furnace").position.x == 80 and not drop.valid
+  and inventory["iron-plate"] == 2, "a move onto a lying item stack lands and takes the stack into the inventory")
+entities["item-on-ground"] = nil
+local back_again = run({ from = { x = 80, y = 41 }, to = { x = 71, y = 41 } })
+check(back_again.status == "done", "the furnace moves back again")
 
 -- Collision masks decide what blocks the target: a transport belt there is
 -- named with its position, and an entity on another layer never blocks.

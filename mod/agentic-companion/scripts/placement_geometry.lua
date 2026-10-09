@@ -45,6 +45,45 @@ M.NON_BLOCKING_TYPES = { character = true, resource = true, ["item-entity"] = tr
   corpse = true, ["character-corpse"] = true, ["entity-ghost"] = true, ["tile-ghost"] = true,
   ["deconstructible-tile-proxy"] = true, ["item-request-proxy"] = true }
 
+-- A coordinate as text that reads back as the same number (positions are
+-- multiples of 1/256), so a message's position can be targeted exactly.
+function M.exact(n)
+  local text = string.format("%.15g", n)
+  if tonumber(text) ~= n then text = string.format("%.17g", n) end
+  return text
+end
+
+-- {name, count, position} of an item stack lying on the ground
+-- (item-entity), or nil for anything else.
+function M.ground_item_row(e)
+  if not (e and e.valid and e.type == "item-entity") then return nil end
+  local ok, name, count = pcall(function()
+    local stack = e.stack
+    if stack and stack.valid_for_read then return stack.name, stack.count end
+  end)
+  if not (ok and name) then return nil end
+  return { name = name, count = count, position = { x = e.position.x, y = e.position.y } }
+end
+
+-- Up to `limit` item stacks lying on the ground over an area, in one engine
+-- query: their rows, and the entities in the same order.
+function M.ground_items(surface, area, limit)
+  local rows, entities = {}, {}
+  local ok, found = pcall(surface.find_entities_filtered, { area = area, type = "item-entity", limit = limit })
+  for _, e in ipairs(ok and type(found) == "table" and found or {}) do
+    local row = M.ground_item_row(e)
+    if row then rows[#rows + 1], entities[#entities + 1] = row, e end
+  end
+  return rows, entities
+end
+
+-- "item-on-ground iron-plate x3 at (4.5, -41.65234375)": exact, as
+-- pickup_items matches it.
+function M.ground_item_text(row)
+  return string.format("item-on-ground %s x%d at (%s, %s)", row.name, row.count,
+    M.exact(row.position.x), M.exact(row.position.y))
+end
+
 function M.overlaps(a, b)
   return a and b and a.left_top and a.right_bottom and b.left_top and b.right_bottom
     and a.left_top.x < b.right_bottom.x and a.right_bottom.x > b.left_top.x

@@ -60,6 +60,7 @@ local function no_entity(task, action)
     status = "failed",
     detail = string.format("nothing at (%.1f, %.1f) to %s — check the position with inspect",
       task.target.x, task.target.y, action),
+    outcome = { code = "TRANSFER_TARGET_MISSING" },
   }
 end
 

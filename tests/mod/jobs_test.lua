@@ -331,6 +331,54 @@ check(result.job_status == "done" and result.result.counted == 900 and polls > 1
   "snapshot jobs finish while entity simulation is frozen")
 game.tick_paused = false
 
+-- A defer_encode kind (run_snapshot) never returns its result from the RPC,
+-- which would encode it whole in that tick: the RPC answers pending, the
+-- encoder writes it within the allowance over ticks, and get_job returns it
+-- encoded, once.
+do
+  storage.jobs = nil
+  game.tick = game.tick + 1
+  jobs.register("snapshot_like", {
+    defer_encode = true,
+    start = function(params) return { n = params.n } end,
+    step = function(state, budget)
+      budget.left = budget.left - 1
+      local rows = {}
+      for i = 1, state.n do rows[i] = { name = "item-" .. i, count = i } end
+      return { rows = rows, n = state.n }
+    end,
+  })
+  local small = jobs.start("snapshot_like", { n = 2 })
+  local small_job = storage.jobs.by_id[small.job_id]
+  check(small.job_status == "pending" and small_job.status == "done" and small_job.json == encode(small_job.result),
+    "a defer_encode result that fits the RPC's tick is encoded there and still answers pending")
+  local small_read = jobs.get({ job_id = small.job_id })
+  check(small_read.job_status == "done" and small_read[jobs.RAW_JSON].result == encode(small_read.result)
+    and #storage.jobs.order == 0, "get_job returns that encoding once")
+  local big = jobs.start("snapshot_like", { n = 3000 })
+  local first_used = storage.jobs.used
+  local big_job = storage.jobs.by_id[big.job_id]
+  check(big.job_status == "pending" and big_job.status == "pending" and big_job.encoding ~= nil
+    and first_used <= jobs.WORK_PER_TICK + jobs.ENCODE_NODES + 1,
+    "a large defer_encode result answers pending and its encoding stays within the RPC tick's allowance ("
+      .. first_used .. ")")
+  local most, ticks = 0, 0
+  repeat
+    game.tick = game.tick + 1
+    jobs.on_tick()
+    most, ticks = math.max(most, storage.jobs.used), ticks + 1
+  until big_job.status ~= "pending" or ticks > 100
+  local big_read = jobs.get({ job_id = big.job_id })
+  check(big_read.job_status == "done" and big_read[jobs.RAW_JSON].result == encode(big_read.result) and ticks > 1
+    and most <= jobs.WORK_PER_TICK + jobs.ENCODE_NODES + 1,
+    "its encoding spreads over " .. ticks .. " ticks of at most " .. most .. " items and get_job returns it")
+  -- Without the flag the same small read returns at once (rpc.lua encodes it).
+  jobs.register("snapshot_like", { start = function(params) return { n = params.n } end,
+    step = function(state, budget) budget.left = budget.left - 1; return { n = state.n } end })
+  local direct = jobs.start("snapshot_like", { n = 2 })
+  check(direct.n == 2 and #storage.jobs.order == 0, "a kind without defer_encode still returns a small result at once")
+end
+
 -- NaN and infinities, which table_to_json writes bare, reach the bridge as null.
 do
   local rpc = require("scripts.rpc")

@@ -50,6 +50,34 @@ check(result.nodes[1].recipe_executions == 3 and result.nodes[2].recipe_executio
   and result.total_craft_time_seconds_at_speed_1 == 3.5 and result.targets.gear == 1
   and result.units.targets == "item_or_fluid_units" and result.units.time == "seconds_at_crafting_speed_1",
   "multiple targets aggregate craft counts, raw inputs, products, categories and time")
+-- The force's recipes are read once a request, not once a product; the
+-- job reads them a recipe per work item over ticks, then expands on a
+-- fresh tick, with the same answer.
+do
+  local function same(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+    for k, v in pairs(a) do if not same(v, b[k]) then return false end end
+    for k in pairs(b) do if a[k] == nil then return false end end
+    return true
+  end
+  local jobs = require("scripts.jobs")
+  local params = { targets = { widget = 3, gear = 1 }, recipe_choices = { widget = "widget-a" } }
+  local walks = 0
+  setmetatable(force.recipes, { __pairs = function(t) walks = walks + 1; return next, t, nil end })
+  local direct = production.production_requirements(params)
+  check(walks == 1, "a request reads the force's recipes once, not once per product (" .. walks .. " reads)")
+  local sliced, ticks = jobs.run_now(production.job, params, 1)
+  check(ticks > 4 and same(sliced, direct),
+    "the job reads one recipe a work item over " .. ticks .. " ticks and answers like the direct read")
+  local whole, whole_ticks = jobs.run_now(production.job, params)
+  check(whole_ticks == 1 and same(whole, direct), "with a whole tick's budget the job answers in its first tick")
+  setmetatable(force.recipes, nil)
+  local refused, reason = pcall(production.job.start, { targets = { widget = 1 }, technology = "x" })
+  check(not refused and tostring(reason):find("exactly one of", 1, true) ~= nil,
+    "the job checks the request when it starts (the RPC's error)")
+  local failed, why = pcall(jobs.run_now, production.job, { targets = { widget = 3 } })
+  check(not failed and tostring(why):match("ambiguous production route") ~= nil, "an expansion error fails the job")
+end
 local progressed, progress_error = pcall(production.production_requirements, { targets = { future = 1 } })
 check(not progressed and tostring(progress_error):match("no progression route") ~= nil, "locked-only products refuse a nonexistent progression route")
 

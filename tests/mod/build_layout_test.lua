@@ -918,19 +918,35 @@ check(worst <= per_tick_engine and ticks <= layout.MAX_WORK / layout.WORK_PER_TI
   string.format("the site search spreads over ticks within its budget (worst tick %d placement checks, %d ticks)", worst, ticks))
 check(overlap_calls <= 16 * entity_count,
   string.format("layout overlaps are checked once, not per candidate (%d footprint comparisons)", overlap_calls))
--- The dry run is a job with the same per-tick budget: it searches as far as
--- the build would and gives the same definite answer.
+-- The dry run is a job: it searches as far as the build would and gives the
+-- same definite answer, with a CHECK_COST-th of each tick's budget for its
+-- own work items, each charged CHECK_COST.
 local dry_job = layout.layout_check_job.start({ site = big.site, entities = big.entities, check_only = true })
-local dry_big, dry_ticks, dry_worst = nil, 0, 0
-while not dry_big and dry_ticks < 200 do
+local dry_big, dry_ticks, dry_worst, dry_undercharged = nil, 0, 0, 0
+while not dry_big and dry_ticks < 600 do
   engine.can_place = 0
-  dry_big = layout.layout_check_job.step(dry_job, { left = layout.WORK_PER_TICK })
+  local budget, calls = { left = layout.WORK_PER_TICK }, dry_job.search.ctx.calls
+  dry_big = layout.layout_check_job.step(dry_job, budget)
+  local charged, own = layout.WORK_PER_TICK - budget.left, dry_job.search.ctx.calls - calls
+  if charged < layout.CHECK_COST * own then dry_undercharged = dry_undercharged + 1 end
   dry_ticks, dry_worst = dry_ticks + 1, math.max(dry_worst, engine.can_place)
 end
 check(dry_big and not dry_big.ok and dry_big.failed[1].code == "SITE_NOT_FOUND"
-  and dry_big.failed[1].reason == outcome.outcome.failed[1].reason and dry_worst <= per_tick_engine,
-  string.format("a dry run searches over ticks within the same budget and answers like the build (%d ticks, worst %d checks)",
-    dry_ticks, dry_worst))
+  and dry_big.failed[1].reason == outcome.outcome.failed[1].reason and dry_worst <= per_tick_engine / layout.CHECK_COST
+  and dry_undercharged == 0,
+  string.format("a dry run searches over ticks within 1/%d of the budget, charged %d a work item, and answers like the build"
+    .. " (%d ticks, worst %d checks)", layout.CHECK_COST, layout.CHECK_COST, dry_ticks, dry_worst))
+do
+  -- A tick that left the dry run only MIN_WORK (a build used the rest)
+  -- still gives it MIN_WORK of its own, as before, so a large site's checks
+  -- still finish from the warm cache.
+  local squeezed = layout.layout_check_job.start({ site = big.site, entities = big.entities, check_only = true })
+  local budget = { left = jobs.MIN_WORK }
+  layout.layout_check_job.step(squeezed, budget)
+  local own = squeezed.search.ctx.calls
+  check(own >= jobs.MIN_WORK and jobs.MIN_WORK - budget.left == own,
+    string.format("a dry run left MIN_WORK does %d items of its own, charged one each", own))
+end
 crowded = false
 geometry.overlaps = real_overlaps
 

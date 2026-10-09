@@ -32,9 +32,9 @@ rpc.register("broken", function() error("handler failed") end)
 
 rpc.dispatch("probe", "")
 local entry = logged[1]
-check(#logged == 1 and entry[1] == "" and entry[2] == "rpc " and entry[3] == "probe" and entry[4] == " "
-  and entry[5] == created[1] and not created[1].running and printed[1] == "ok",
-  "each RPC logs its method and a stopped profiler after replying")
+check(#logged == 1 and entry[1] == "" and entry[2] == "rpc " and entry[3] == "probe" and entry[4] == " tick "
+  and entry[5] == 10 and entry[6] == " " and entry[7] == created[1] and not created[1].running and printed[1] == "ok",
+  "each RPC logs its method, its tick (the host sums a tick's RPCs) and a stopped profiler after replying")
 rpc.dispatch("broken", "")
 check(#logged == 2 and logged[2][3] == "broken" and printed[2] == "err", "a failing RPC is still logged")
 storage.rpc_outbox.by_id[1] = { parts = { "a" }, created_tick = 10 }

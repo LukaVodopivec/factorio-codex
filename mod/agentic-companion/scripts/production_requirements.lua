@@ -287,18 +287,51 @@ end
 
 -- ------------------------------------------------------------- expansion
 
-local function candidate_recipes(force, product, permitted_locked, location)
-  local candidates, locked = {}, {}
-  for name, recipe in pairs(force.recipes or {}) do
+-- The force's recipes that make each product: {names, cursor, by_product =
+-- {[product] = {recipe names}}}, read once per request instead of once per
+-- product, a recipe per work item (index_step), so the job spreads it over
+-- ticks.
+local function new_index(force)
+  local names = {}
+  for name in pairs(force.recipes or {}) do names[#names + 1] = name end
+  return { names = names, cursor = 1, by_product = {} }
+end
+
+-- Reads recipes while budget is left; true once every one is read.
+local function index_step(force, index, budget)
+  local recipes, names, by_product = force.recipes, index.names, index.by_product
+  while index.cursor <= #names do
+    if budget.left <= 0 then return false end
+    local name = names[index.cursor]
+    index.cursor, budget.left = index.cursor + 1, budget.left - 1
+    local recipe = recipes[name]
     -- Hidden recipes (quality recycling, debug items) are never production routes.
     local hidden_ok, hidden = pcall(function() return recipe.hidden end)
-    local produces = false
-    if not (hidden_ok and hidden) then
-      for _, candidate in ipairs(recipe.products or {}) do if candidate.name == product then produces = true end end
+    if recipe and not (hidden_ok and hidden) then
+      for _, product in ipairs(recipe.products or {}) do
+        local list = product.name and (by_product[product.name] or {})
+        if list then
+          by_product[product.name] = list
+          if list[#list] ~= name then list[#list + 1] = name end
+        end
+      end
     end
+  end
+  return true
+end
+
+local function whole_index(force)
+  local index = new_index(force)
+  index_step(force, index, { left = math.huge })
+  return index.by_product
+end
+
+local function candidate_recipes(force, product, permitted_locked, location, by_product)
+  local candidates, locked = {}, {}
+  for _, name in ipairs(by_product[product] or {}) do
+    local recipe = force.recipes[name]
     -- Surface conditions are read only for the few recipes that make it.
-    if produces and location ~= nil and not conditions_hold(recipe_conditions(recipe), location) then produces = false end
-    if produces then
+    if location == nil or conditions_hold(recipe_conditions(recipe), location) then
       if recipe.enabled or permitted_locked and permitted_locked[name] then candidates[#candidates + 1] = recipe
       else locked[#locked + 1] = recipe end
     end
@@ -321,7 +354,8 @@ local function expand_targets(force, targets, choices, options)
   local function choose_uncached(product)
     local choice = choices[product]
     if choice == nil and resource_products[product] then return nil end
-    local candidates, locked = candidate_recipes(force, product, options.permitted_locked, options.filter_location)
+    local candidates, locked = candidate_recipes(force, product, options.permitted_locked, options.filter_location,
+      options.index)
     if choice ~= nil then
       if type(choice) ~= "string" then error("recipe choice for " .. product .. " must be a recipe name") end
       for _, recipe in ipairs(candidates) do if recipe.name == choice then return recipe end end
@@ -340,7 +374,7 @@ local function expand_targets(force, targets, choices, options)
     return nil
   end
 
-  -- One recipe search per product per expansion (the search reads every force recipe).
+  -- One recipe search per product per expansion.
   local function choose(product)
     if chosen[product] == nil then chosen[product] = { choose_uncached(product) } end
     return chosen[product][1]
@@ -469,7 +503,7 @@ local function flow_rows(force, surface, required, precision_name)
     basis = "remaining_science_divided_by_observed_force_output_rate" }
 end
 
-local function closure_requirements(params, body, location, force, target_kind, target_name)
+local function closure_requirements(params, body, location, force, target_kind, target_name, index)
   local character = body.character
   local location_candidates = target_kind == "location" and find_location_unlock(force, target_name) or nil
   if location_candidates and #location_candidates > 1 then
@@ -511,7 +545,7 @@ local function closure_requirements(params, body, location, force, target_kind, 
   local credit, remaining = exact_inventory_credit(character, science)
   local deterministic = expand_targets(force, remaining, params.recipe_choices or {}, {
     partial = true, permitted_locked = permitted_locked, ambiguities = ambiguities, variable = variable,
-    location = location, filter_location = params.planet,
+    location = location, filter_location = params.planet, index = index,
   })
   annotate(deterministic, deterministic, force)
   local precision = params.flow_precision or "one_minute"
@@ -679,14 +713,14 @@ local function rate_plan(force, expanded, fuel_name, place)
     stages = stages, raw = raw, belts = belts }
 end
 
-function M.production_requirements(params)
+-- The request's checks, before any work (an error is the RPC's): the body
+-- and the planning location.
+local function validate(params)
   local modes = (params.targets and 1 or 0) + (params.technology and 1 or 0) + (params.location and 1 or 0)
   if modes ~= 1 then error("production_requirements requires exactly one of targets, technology, or location") end
   local body = companion.require_present()
-  local force = body.force
   local location = planning_location(params, body)
-  if params.technology then return closure_requirements(params, body, location, force, "technology", params.technology) end
-  if params.location then return closure_requirements(params, body, location, force, "location", params.location) end
+  if params.technology or params.location then return body, location end
 
   local targets, target_names = params.targets, {}
   if type(targets) ~= "table" then error("production_requirements targets must map item or fluid names to positive counts") end
@@ -709,8 +743,20 @@ function M.production_requirements(params)
       error("fuel must name a fuel item, such as coal")
     end
   end
+  return body, location
+end
+
+-- index: the recipes by product (new_index), else read whole in this call.
+function M.production_requirements(params, index)
+  local body, location = validate(params)
+  local force = body.force
+  index = index or whole_index(force)
+  if params.technology then return closure_requirements(params, body, location, force, "technology", params.technology, index) end
+  if params.location then return closure_requirements(params, body, location, force, "location", params.location, index) end
+
+  local targets, choices, fuel = params.targets, params.recipe_choices or {}, params.fuel or "coal"
   local expanded = expand_targets(force, targets, choices,
-    { partial = false, location = location, filter_location = params.planet, rate = params.per_minute == true })
+    { partial = false, location = location, filter_location = params.planet, rate = params.per_minute == true, index = index })
   if params.per_minute == true then
     -- The planned surface: the named planet's (none until it exists), else
     -- the body's.
@@ -724,5 +770,38 @@ function M.production_requirements(params)
     planet = location, targets = targets, nodes = expanded.nodes, raw = expanded.raw, products = expanded.products,
     total_craft_time_seconds_at_speed_1 = expanded.total_craft_time_seconds_at_speed_1 }, expanded, force)
 end
+
+-- What one expansion (or technology closure) with a ready index is charged:
+-- the recipe searches are index lookups, the rest grows with the tree.
+M.EXPAND_WORK = 200
+M.EXPAND_NODE_WORK = 4
+
+-- production_requirements as a job (control.lua registers it): the recipes
+-- by product first, a recipe per work item over ticks, then the expansion
+-- whole, once EXPAND_WORK fits what is left of the tick or after one
+-- deferral to a fresh tick, charged by the nodes it made.
+M.job = {
+  start = function(params)
+    validate(params)
+    return { params = params }
+  end,
+  step = function(S, budget)
+    local force = companion.require_present().force
+    if not S.index then
+      S.index = new_index(force)
+      budget.left = budget.left - math.ceil(#S.index.names / 16)
+    end
+    if not index_step(force, S.index, budget) then return nil end
+    if budget.left < M.EXPAND_WORK and not S.waited then
+      S.waited = true
+      return nil
+    end
+    local result = M.production_requirements(S.params, S.index.by_product)
+    local nodes = result.nodes or result.rates and result.rates.stages
+      or result.deterministic_requirements and result.deterministic_requirements.nodes or {}
+    budget.left = budget.left - M.EXPAND_WORK - M.EXPAND_NODE_WORK * #nodes
+    return result
+  end,
+}
 
 return M

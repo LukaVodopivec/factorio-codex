@@ -44,10 +44,13 @@ body.force.mining_drill_productivity_bonus = 0.2 -- two finished infinite levels
 body.force.manual_crafting_speed_modifier = 2 -- no research grants it
 body.character_reach_distance_bonus = 5 -- no research raises the character's own
 body.character_crafting_speed_modifier = 0
-package.loaded["scripts.spatial"] = { observe_compact = function(params)
-  check(params.radius == 5, "snapshot reuses a bounded compact observation")
-  return { character = { inventory = { ["iron-ore"] = 7 } } }
-end }
+package.loaded["scripts.spatial"] = {
+  observe_compact = function() error("a snapshot reads the body's state without an observation's entity scan") end,
+  body_state = function(c)
+    check(c.character == body and c.body.character == body, "the snapshot reads the body's own observation state")
+    return { inventory = { ["iron-ore"] = 7 } }
+  end,
+}
 package.loaded["scripts.map_summary"] = {
   map_summary = function() error("a snapshot never walks the charted chunks") end,
   registry_factory = function() return { scope = "registry", machine_count = 2 } end,
@@ -79,7 +82,9 @@ activity.on_player_crafted_item({ player_index = 2, item_stack = { name = "trans
 local jobs = require("scripts.jobs")
 local run_snapshot = require("scripts.run_snapshot")
 local snapshot, snapshot_ticks = jobs.run_now(run_snapshot.job, {}, 1)
-check(snapshot_ticks == 5, "the snapshot reads one surface's statistics of one kind a step (" .. snapshot_ticks .. " ticks)")
+-- Four statistics reads, then the seven phases, each its own tick.
+check(snapshot_ticks >= 4 + 7, "the snapshot reads one surface's statistics of one kind a step, then a phase a step ("
+  .. snapshot_ticks .. " ticks)")
 local hand = snapshot.statistics.hand_crafted
 check(hand.since_tick == 0 and #hand.items == 2 and hand.items[1].name == "iron-gear-wheel" and hand.items[1].count == 2
   and hand.items[2].name == "transport-belt" and hand.items[2].count == 2,
@@ -138,6 +143,56 @@ check(plain.body_time.window_tick == nil and storage.tasks.body_time.window_tick
 local marked = jobs.run_now(run_snapshot.job, { window = true })
 check(marked.body_time.window_tick == marked.tick and storage.tasks.body_time.window_tick == marked.tick,
   "the baseline sample marks the window at its own tick")
+
+-- The phases: within a small budget each runs whole in its own tick, one
+-- whose cost does not fit what is left waits once for a fresh tick, and
+-- the record equals one taken in a single tick.
+do
+  local function same(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+    for k, v in pairs(a) do if not same(v, b[k]) then return false end end
+    for k in pairs(b) do if a[k] == nil then return false end end
+    return true
+  end
+  local whole, whole_ticks = jobs.run_now(run_snapshot.job, {}, 1000000)
+  check(whole_ticks == 1, "with a whole tick's budget for it the snapshot finishes in one tick")
+  -- 120 technologies: progression costs more than a 30-item tick.
+  setmetatable(body.force.technologies, { __len = function() return 120 end })
+  local ran, step = {}, 0
+  local runs = {}
+  for name, phase in pairs(run_snapshot.PHASES) do
+    runs[name] = phase.run
+    phase.run = function(...) ran[#ran + 1] = { phase = name, step = step }; return runs[name](...) end
+  end
+  local S = run_snapshot.job.start({})
+  local sliced, most = nil, 0
+  while sliced == nil and step < 100 do
+    step = step + 1
+    local budget = { left = 30 }
+    sliced = run_snapshot.job.step(S, budget)
+    most = math.max(most, 30 - budget.left)
+  end
+  for name, run in pairs(runs) do run_snapshot.PHASES[name].run = run end
+  setmetatable(body.force.technologies, nil)
+  local steps_of, order = {}, {}
+  for _, row in ipairs(ran) do steps_of[row.phase], order[#order + 1] = row.step, row.phase end
+  check(table.concat(order, ",") == "progression,factory,lines,attestation,resources,character,assemble",
+    "the phases run once each, in order: " .. table.concat(order, ","))
+  local alone = true
+  for _, row in ipairs(ran) do
+    if row.phase ~= "progression" and row.step == steps_of.progression then alone = false end
+  end
+  if os.getenv("SNAP_DEBUG") then for _, row in ipairs(ran) do print(row.phase, row.step) end end
+  check(alone and steps_of.factory > steps_of.progression and steps_of.progression > 1,
+    "progression (120 technologies) waits for a fresh tick after the reads, runs whole alone there, and the next phase waits")
+  check(most <= 30 + 1 + 120, "no tick spends more than its budget and one phase (" .. most .. ")")
+  check(same(sliced, whole), "a snapshot spread over " .. step .. " ticks equals one taken in a single tick")
+  -- A snapshot saved by 0.34 mid-read has no phase: it continues.
+  local old = run_snapshot.job.start({})
+  old.phase = nil
+  check(same(jobs.run_now({ start = function() return old end, step = run_snapshot.job.step }, {}, 5), whole),
+    "a snapshot saved by 0.34 without a phase finishes after the upgrade")
+end
 
 print("ok   run snapshots retain cumulative resources and bounded diagnostic context")
 print("ok   run snapshots count the Codex player's hand-crafted items from the upgrade tick")

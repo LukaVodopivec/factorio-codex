@@ -1,7 +1,10 @@
 -- run_snapshot: what the run recorder samples, as a job (jobs.lua): one
 -- surface's item or fluid statistics a step, so the work does not grow in
--- one tick with the number of planets and platforms, and the result goes
--- out through the jobs encoder. Statistics are summed over every factory
+-- one tick with the number of planets and platforms, then the context in
+-- phases (PHASES) that each run whole within a tick's work, so the factory
+-- and the research tree growing spread the snapshot over more ticks. The
+-- result is always encoded by the jobs encoder over ticks and read through
+-- get_job (defer_encode). Statistics are summed over every factory
 -- surface in statistics.items / statistics.fluids, so the recorder's deltas
 -- stay stable when the body travels; with more than one surface,
 -- statistics.by_surface[ref] = {items, fluids} keeps each one's own. Works
@@ -206,7 +209,9 @@ local function read_one(S, force, budget)
       S.unavailable[kind.key] = true
       row[kind.key] = { unavailable = true }
     end
-    budget.left = budget.left - 4 - math.ceil((size(input) + size(output)) / 8)
+    local counted = size(input) + size(output)
+    S.entries = (S.entries or 0) + counted
+    budget.left = budget.left - 4 - math.ceil(counted / 8)
   else
     budget.left = budget.left - 1
   end
@@ -218,16 +223,16 @@ local function counters(raw)
   return { produced = sorted_counts(raw.input), consumed = sorted_counts(raw.output) }
 end
 
--- The character's state: the compact observation's on a surface (radius 5
--- is bounded by its small area), else what the body carries.
+-- The character's state: an observation's (spatial.body_state, without the
+-- observation's entity scan) on a surface, else what the body carries.
 local function character(body)
-  if companion.get() then return spatial.observe_compact({ radius = 5 }).character end
+  if companion.get() then return spatial.body_state({ character = body.character, body = body }) end
   local ok, state = pcall(spatial.character_state, body.character)
   return ok and state or nil
 end
 
-local function snapshot_finish(S, budget)
-  local body = companion.require_present()
+-- The record, from what the phases kept, with the summed counters sorted.
+local function assemble(S)
   local summed = {}
   for _, kind in ipairs(KINDS) do
     local sum = S.sums[kind.key]
@@ -245,53 +250,143 @@ local function snapshot_finish(S, budget)
         fluids = counters(row.fluids or { unavailable = true }) }
     end
   end
-  budget.left = budget.left - 30 - #read * 8 - #bonus_technologies()
-  if S.window then tasks.mark_body_window() end
   return {
-    tick = game.tick,
-    character = character(body),
+    tick = S.tick,
+    character = S.character,
     -- Where the body is: {state, surface_ref, platform_name?}.
-    body = companion.body_summary(),
-    progression = research.progression_status({}),
+    body = S.body,
+    progression = S.progression,
     -- What the mod maintains (registry, line sampler, power cache): no chunk
     -- walk and no entity read per sample.
-    factory = map_summary.registry_factory(),
+    factory = S.factory,
     -- Production lines (autonomy.lua): how many run, self-sustain or are hand-fed.
-    lines = autonomy.counts(),
+    lines = S.lines,
     -- What the body did by state since body_time.since_tick (tasks.body_time).
-    body_time = tasks.body_time(),
-    attestation = attestation(body),
+    body_time = S.body_time,
+    attestation = S.attestation,
     statistics = {
       -- Summed over every factory surface (the recorder's keys).
       items = summed.items,
       fluids = summed.fluids,
       by_surface = by_surface,
-      raw_resources = raw_resource_products(),
+      raw_resources = S.raw_resources,
       -- Items the Codex player crafted by hand since since_tick (cumulative).
-      hand_crafted = factory_activity.hand_crafted(),
+      hand_crafted = S.hand_crafted,
       semantics = { produced = "force_surface_input_counts", consumed = "force_surface_output_counts",
         items = "summed_over_factory_surfaces" },
     },
   }
 end
 
+-- Entries of a LuaCustomTable or a list (#), 0 when unreadable.
+local function length(t)
+  local ok, n = pcall(function() return #t end)
+  return ok and tonumber(n) or 0
+end
+
+-- Entries of a plain table: the game's table_size, else counted.
+local function entries(t)
+  if t == nil then return 0 end
+  if table_size then return table_size(t) end
+  return size(t)
+end
+
+-- After the statistics reads, each phase is one call whose work grows with
+-- the factory, the research tree or the prototypes. cost(S, body) is its
+-- size in work items (jobs.lua), taken before it runs from counts that are
+-- cheap to read; run(S, body) keeps what it read in S (assemble returns
+-- the record).
+local PHASES = {
+  -- Every technology (a record for each unresearched one) and every recipe.
+  progression = {
+    cost = function(_, body)
+      local force = body.force
+      return length(force and force.technologies) + math.ceil(length(force and force.recipes) / 8)
+    end,
+    run = function(S) S.progression = research.progression_status({}) end,
+  },
+  -- Every machine the line sampler keeps, and the registry's entries counted.
+  factory = {
+    cost = function()
+      return math.ceil(entries(storage.autonomy and storage.autonomy.machines) / 4)
+        + math.ceil(entries(storage.registry and storage.registry.entries) / 64)
+    end,
+    run = function(S) S.factory = map_summary.registry_factory() end,
+  },
+  lines = {
+    cost = function() return math.ceil(length(storage.autonomy and storage.autonomy.line_order) / 16) end,
+    run = function(S) S.lines = autonomy.counts() end,
+  },
+  -- The bonus technologies (on the first snapshot after a load every
+  -- technology prototype) and the force's and character's modifiers.
+  attestation = {
+    cost = function() return 20 + (bonus_techs and #bonus_techs or length(prototypes and prototypes.technology)) end,
+    run = function(S, body) S.attestation = attestation(body) end,
+  },
+  -- Every entity prototype on the first snapshot after a load, later the rows.
+  resources = {
+    cost = function()
+      if raw_rows then return math.ceil(#raw_rows / 16) end
+      return math.ceil(length(prototypes and prototypes.entity) / 8)
+    end,
+    run = function(S) S.raw_resources = raw_resource_products() end,
+  },
+  -- The body's state and time, read together at the sample's tick.
+  character = {
+    cost = function() return 40 end,
+    run = function(S, body)
+      if S.window then tasks.mark_body_window() end
+      S.tick, S.character, S.body = game.tick, character(body), companion.body_summary()
+      S.body_time, S.hand_crafted = tasks.body_time(), factory_activity.hand_crafted()
+    end,
+  },
+  -- Sorting every counter the reads kept.
+  assemble = {
+    cost = function(S) return math.ceil((S.entries or 0) / 4) + 8 * #S.surfaces end,
+    run = assemble,
+  },
+}
+M.PHASES = PHASES
+local PHASE_NEXT = { read = "progression", progression = "factory", factory = "lines", lines = "attestation",
+  attestation = "resources", resources = "character", character = "assemble" }
+
 -- run_snapshot {window?}: the job definition (control.lua registers it).
 -- window = true (the recorder's baseline) marks the body-time window as
--- the sample is taken (tasks.mark_body_window).
+-- the sample is taken (tasks.mark_body_window). The phases run in
+-- PHASE_NEXT order, so a snapshot spans the ticks its work needs: a phase
+-- runs once its cost (plus one item, so a spent budget always ends the
+-- tick) fits what is left of the tick, else it is deferred once to a fresh
+-- tick and then runs whatever its cost, like the jobs encoder's calls.
 M.job = {
+  defer_encode = true,
   start = function(params)
     local S = snapshot_start()
     S.window = params and params.window == true
+    S.phase = "read"
     return S
   end,
   step = function(S, budget)
-    local force = companion.require_present().force
-    while S.cursor <= #S.surfaces do
+    local body = companion.require_present()
+    -- (A 0.34 snapshot in a loaded save has no phase: it was reading.)
+    S.phase = S.phase or "read"
+    while true do
       if budget.left <= 0 then return nil end
-      read_one(S, force, budget)
+      if S.phase == "read" then
+        if S.cursor <= #S.surfaces then read_one(S, body.force, budget) else S.phase = PHASE_NEXT.read end
+      else
+        local phase = PHASES[S.phase]
+        local cost = 1 + phase.cost(S, body)
+        if cost > budget.left and not S.waited then
+          S.waited = true
+          return nil
+        end
+        S.waited = nil
+        local result = phase.run(S, body)
+        budget.left = budget.left - cost
+        if S.phase == "assemble" then return result end
+        S.phase = PHASE_NEXT[S.phase]
+      end
     end
-    if budget.left <= 0 then return nil end
-    return snapshot_finish(S, budget)
   end,
 }
 

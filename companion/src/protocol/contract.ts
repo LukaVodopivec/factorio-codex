@@ -60,6 +60,7 @@ export type RpcMethod = (typeof RPC_METHODS)[number];
 export const JOB_METHODS = [
   "observe_local", "inspect", "find_placement", "map_summary", "connect_entities", "build_layout",
   "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status", "run_snapshot",
+  "production_requirements",
 ] as const satisfies readonly RpcMethod[];
 
 /** The gameplay writes (the mod's benchmark.MUTATIONS) and cancel: a

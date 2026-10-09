@@ -1,6 +1,8 @@
 -- Lua time of each RPC, and of all tick handlers together per 600 ticks,
--- written to the game log (factorio-current.log): "rpc <method> Duration: …"
--- and "on_tick 600 ticks Duration: …". LuaProfiler values can only be
+-- written to the game log (factorio-current.log): "rpc <method> tick <tick>
+-- Duration: …" and "on_tick 600 ticks Duration: …". Lua has no clock: the
+-- host sums the RPC lines of one tick to find a tick over budget
+-- (live-scenarios.ts). LuaProfiler values can only be
 -- logged, never read, so nothing here can steer the game. Profilers cannot be
 -- serialized, so they live in this module, not in storage. Without
 -- helpers.create_profiler (tests) every call is a no-op.
@@ -20,7 +22,7 @@ function M.log_rpc(method, profiler)
   if not profiler then return end
   pcall(function()
     profiler.stop()
-    log({ "", "rpc ", tostring(method), " ", profiler })
+    log({ "", "rpc ", tostring(method), " tick ", game and game.tick or 0, " ", profiler })
   end)
 end
 

@@ -17,9 +17,12 @@
 -- A job is plain data in storage.jobs (no closures, no upvalues): its kind
 -- names a definition registered at load, so a save made mid-job loads and
 -- continues. A definition is {start = function(params) -> state,
--- step = function(state, budget) -> result | nil}; step spends from
--- budget.left (it may overrun by its last item) and returns the result once
--- done. An error in start is the RPC's error; an error in step fails the job.
+-- step = function(state, budget) -> result | nil, defer_encode?}; step
+-- spends from budget.left (it may overrun by its last item) and returns the
+-- result once done. An error in start is the RPC's error; an error in step
+-- fails the job. A large result (defer_encode = true) never returns from the
+-- RPC, which would encode it whole in one tick: the RPC answers pending and
+-- get_job returns it, encoded over ticks like any result finished on a tick.
 local M = {}
 
 M.WORK_PER_TICK = 600
@@ -319,10 +322,18 @@ function M.start(kind, params)
   for _, other in ipairs(jobs.order) do
     if other ~= id and jobs.by_id[other].status == "pending" then waiting = true end
   end
-  if not waiting and work(jobs, job, { left = allowance(jobs) }) then
-    forget(jobs, id)
-    if job.status == "failed" then error(job.error, 0) end
-    return job.result
+  -- A defer_encode result is never encoded whole in this tick by rpc.lua:
+  -- the encoder takes it over ticks and get_job returns it.
+  local defer = definition.defer_encode == true
+  if not waiting and work(jobs, job, { left = allowance(jobs) }, defer) then
+    if job.status == "failed" then
+      forget(jobs, id)
+      error(job.error, 0)
+    end
+    if not defer then
+      forget(jobs, id)
+      return job.result
+    end
   end
   return { job_id = id, job_status = "pending", kind = kind }
 end

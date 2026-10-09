@@ -598,6 +598,8 @@ local function body_state(c)
   state.state, state.surface = body.state, body.surface_ref
   return state
 end
+-- (The run recorder's snapshot reads the same, without an observation.)
+M.body_state = body_state
 
 local function observe_finish(S, c)
   -- Every list was kept to its cap as it was collected.

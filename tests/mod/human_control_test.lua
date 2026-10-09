@@ -743,7 +743,7 @@ do
     describe_prototype = reader() }
   package.loaded["scripts.find_placement"] = { find_placement = reader() }
   package.loaded["scripts.map_summary"] = { summary_job = job() }
-  package.loaded["scripts.production_requirements"] = { production_requirements = reader() }
+  package.loaded["scripts.production_requirements"] = { job = job() }
   package.loaded["scripts.connect_entities"] = { job = job() }
   package.loaded["scripts.run_snapshot"] = { job = job() }
   assert(loadfile(here .. "/../../mod/agentic-companion/control.lua"))()

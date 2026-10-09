@@ -14,10 +14,11 @@
 // (characterStandIn). Nothing in the mod has a test flag or path.
 //
 // After the scenarios: ping shows no handler_errors, the server log has no
-// script errors, every profiler rpc line stays within the 8 ms budget, and
-// every 600-tick on_tick window (profiler.lua) averages within it. The
-// profiler logs no per-tick maximum, so one slow tick inside a quiet window
-// is not caught here.
+// script errors, every profiler rpc line and the rpc lines of each tick
+// together stay within the 8 ms budget, and every 600-tick on_tick window
+// (profiler.lua) averages within it. Tick handlers (jobs advanced on_tick)
+// are only logged per window, so one slow handler tick inside a quiet
+// window is not caught here.
 import { spawn, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import dgram from "node:dgram";
@@ -449,13 +450,23 @@ const scenarios: Scenario[] = [
   },
 ];
 
-// Profiler lines (profiler.lua): "rpc <method> Duration: <ms>ms" for each
-// RPC, "on_tick 600 ticks Duration: <ms>ms" for all tick handlers.
+// Profiler lines (profiler.lua): "rpc <method> tick <tick> Duration: <ms>ms"
+// for each RPC, "on_tick 600 ticks Duration: <ms>ms" for all tick handlers.
+// The RPCs of one tick share its budget: ticks sums their time per tick.
 function profile(log: string) {
-  const rpcs: { method: string; ms: number }[] = [], windows: number[] = [];
-  for (const match of log.matchAll(/ rpc (\S+) Duration: ([\d.]+)ms/g)) rpcs.push({ method: match[1]!, ms: Number(match[2]) });
+  const rpcs: { method: string; tick: number; ms: number }[] = [], windows: number[] = [];
+  for (const match of log.matchAll(/ rpc (\S+) tick (\d+) Duration: ([\d.]+)ms/g)) {
+    rpcs.push({ method: match[1]!, tick: Number(match[2]), ms: Number(match[3]) });
+  }
   for (const match of log.matchAll(/ on_tick (\d+) ticks Duration: ([\d.]+)ms/g)) windows.push(Number(match[2]) / Number(match[1]));
-  return { rpcs, windows };
+  const ticks = new Map<number, { ms: number; methods: string[] }>();
+  for (const row of rpcs) {
+    const tick = ticks.get(row.tick) ?? { ms: 0, methods: [] };
+    tick.ms += row.ms;
+    tick.methods.push(row.method);
+    ticks.set(row.tick, tick);
+  }
+  return { rpcs, windows, ticks: [...ticks].map(([tick, row]) => ({ tick, ...row })) };
 }
 // Stdin is closed, which the server logs as an error and ignores.
 const BENIGN_ERRORS = [/InterruptibleStdioStream\.cpp.*Got EOF on stdin/];
@@ -487,13 +498,18 @@ try {
   const errors = log.split("\n").filter((line) => /\berror\b/i.test(line) && !line.includes("[COMMAND]")
     && !BENIGN_ERRORS.some((pattern) => pattern.test(line)));
   report(errors.length === 0, "the server log has no script errors", errors.slice(0, 5).join(" | "));
-  const { rpcs, windows } = profile(log);
+  const { rpcs, windows, ticks } = profile(log);
   const slow = rpcs.filter((row) => row.ms > TICK_BUDGET_MS);
+  const slowTicks = ticks.filter((row) => row.ms > TICK_BUDGET_MS);
+  const slowestTick = ticks.reduce<(typeof ticks)[number] | undefined>((worst, row) => (!worst || row.ms > worst.ms ? row : worst), undefined);
   const worstWindow = Math.max(0, ...windows);
-  report(rpcs.length > 0 && windows.length > 0 && slow.length === 0 && worstWindow <= TICK_BUDGET_MS,
-    `every rpc and the 600-tick on_tick average stay within ${TICK_BUDGET_MS} ms`,
+  report(rpcs.length > 0 && windows.length > 0 && slow.length === 0 && slowTicks.length === 0 && worstWindow <= TICK_BUDGET_MS,
+    `every rpc, the rpcs of each tick, and the 600-tick on_tick average stay within ${TICK_BUDGET_MS} ms`,
     `${rpcs.length} rpcs, slowest ${rpcs.length ? Math.max(...rpcs.map((row) => row.ms)).toFixed(2) : "-"} ms`
       + `${slow.length ? ` (over budget: ${slow.map((row) => `${row.method} ${row.ms.toFixed(2)}`).join(", ")})` : ""}; `
+      + `${ticks.length} rpc ticks, slowest ${slowestTick ? `${slowestTick.ms.toFixed(2)} ms at tick ${slowestTick.tick}`
+        + ` (${slowestTick.methods.join(", ")})` : "-"}`
+      + `${slowTicks.length ? ` (over budget: ${slowTicks.map((row) => `tick ${row.tick} ${row.ms.toFixed(2)}`).join(", ")})` : ""}; `
       + `${windows.length} tick windows, worst average ${worstWindow.toFixed(3)} ms/tick`);
 } catch (error) {
   report(false, "live server", `${error instanceof Error ? error.message : String(error)}; log: ${logTail()}`);

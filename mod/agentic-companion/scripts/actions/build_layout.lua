@@ -2693,6 +2693,15 @@ local function check_viewer(params)
   return view, view
 end
 
+-- A dry run's own work: at most a CHECK_COST-th of what is left of the
+-- tick (never less than jobs.MIN_WORK, or than what is left below it, so a
+-- site of MAX_ENTITIES still finishes its checks from the warm cache), and
+-- that share uses up what is left. Its can_place checks run beside every
+-- other job of the tick and its report (materials, survey rows) at the
+-- end: one item each let a dry run take 24 ms of one tick (trial 0011).
+local CHECK_COST = 3
+M.CHECK_COST = CHECK_COST
+
 local function check_job(label, make_request)
   return {
     start = function(params)
@@ -2708,16 +2717,18 @@ local function check_job(label, make_request)
       local s = state.search
       local ctx = s.ctx
       local before = ctx.calls
-      local result = advance(c, s, math.max(1, budget.left))
+      local left = math.max(1, budget.left)
+      local share = math.max(math.floor(left / CHECK_COST), math.min(left, jobs.MIN_WORK))
+      local result = advance(c, s, share)
       if result and not state.survey and #result.failed == 0 and result.placements then
         -- A buildable layout is surveyed next (data, never a failure).
         state.survey = survey_start(ctx, result)
       end
       if state.survey and result then
         ctx.c = c
-        if not survey_step(ctx, state.survey, before + math.max(1, budget.left)) then result = nil end
+        if not survey_step(ctx, state.survey, before + share) then result = nil end
       end
-      budget.left = budget.left - (ctx.calls - before)
+      budget.left = budget.left - math.ceil((ctx.calls - before) * left / share)
       if not result then return nil end
       result.given_anchor = s.given_anchor
       local out = report(c, result, state.extra, s)

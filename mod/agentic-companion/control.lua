@@ -144,11 +144,15 @@ jobs.register("platform_status", platforms.status_job)
 -- run_snapshot (the run recorder's sample) reads one surface's statistics a
 -- step; it carries no fifo block.
 jobs.register("run_snapshot", run_snapshot.job)
+-- production_requirements reads the force's recipes over ticks, then
+-- expands with them.
+jobs.register("production_requirements", production_requirements.job)
 rpc.register("run_snapshot", jobs.rpc("run_snapshot"))
 rpc.register("benchmark_control", benchmark.control)
 rpc.register("timelapse", timelapse.rpc)
 for _, kind in ipairs({ "observe_local", "inspect", "map_summary", "connect_entities", "build_layout",
-  "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status" }) do
+  "blueprint_capture", "blueprint_describe", "blueprint_place", "place_tiles", "platform_status",
+  "production_requirements" }) do
   rpc.register(kind, read(jobs.rpc(kind)))
 end
 rpc.register("blueprint_create", blueprints.create)
@@ -177,7 +181,6 @@ rpc.register("configure_entity", configure.rpc)
 rpc.register("set_recipe", build.set_recipe_rpc)
 rpc.register("can_place", read(spatial.can_place))
 rpc.register("find_placement", read(find_placement.find_placement))
-rpc.register("production_requirements", read(production_requirements.production_requirements))
 rpc.register("describe_prototype", read(spatial.describe_prototype))
 rpc.register("progression_status", read(research.progression_status))
 rpc.register("enqueue", tasks.enqueue)

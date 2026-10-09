@@ -45,7 +45,7 @@ stub("scripts.spatial", { observe_job = job_reader("observe_local"), observe_com
   can_place = reader("can_place"), describe_prototype = reader("describe_prototype") })
 stub("scripts.find_placement", { find_placement = reader("find_placement") })
 stub("scripts.map_summary", { summary_job = job_reader("map_summary") })
-stub("scripts.production_requirements", { production_requirements = reader("production_requirements") })
+stub("scripts.production_requirements", { job = job_reader("production_requirements") })
 stub("scripts.connect_entities", { job = job_reader("connect_entities") })
 stub("scripts.run_snapshot", { job = job_reader("run_snapshot") })
 stub("scripts.companion", { get = function() return body end, record = function() return {} end,

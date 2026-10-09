@@ -40,9 +40,10 @@ entities with `create_entity` and call the mod's modules and RPCs:
 - `items.move` keeping durability and quality.
 
 Then it asserts that `ping` shows no `handler_errors`, the server log has no
-script errors, every profiler `rpc` line stays within 8 ms, and each 600-tick
-`on_tick` window averages within 8 ms a tick. The profiler logs no per-tick
-maximum, so one slow tick inside a quiet window is not caught. A headless
+script errors, every profiler `rpc` line and the `rpc` lines of each tick
+together stay within 8 ms, and each 600-tick `on_tick` window averages within
+8 ms a tick. Tick handlers are logged only per window, so one slow handler
+tick inside a quiet window is not caught. A headless
 server has no Codex player and charts nothing, so the suite's own setup
 command patches only that throwaway server's live Lua state: a stand-in body
 on nauvis, every chunk counted as charted for the mod's chart rule, and the
@@ -468,8 +469,8 @@ turning them into a fixed opening or map-specific sequence:
   time at 300 machines (60 UPS holds); `since_tick` returns only changed lines
   and problems. Each line's `state` matches what the machines do: starve a
   line, stop its fuel, block its output, and cut its power in turn.
-- Frame time: the game log carries one `rpc <method> Duration: …` line per
-  RPC and one `on_tick 600 ticks Duration: …` line per 600 ticks (Lua time,
+- Frame time: the game log carries one `rpc <method> tick <tick> Duration: …`
+  line per RPC (sum a tick's lines for its RPC time) and one `on_tick 600 ticks Duration: …` line per 600 ticks (Lua time,
   logged only). On the upgraded save, `factory_status.registry_ready` and
   `patches_ready` turn true within about a minute of load; after that no
   `factory_status`, `event_state` or `activity_log` line exceeds about 8 ms,

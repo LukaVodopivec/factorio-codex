@@ -14,11 +14,12 @@
 // (characterStandIn). Nothing in the mod has a test flag or path.
 //
 // After the scenarios: ping shows no handler_errors, the server log has no
-// script errors, every profiler rpc line and the rpc lines of each tick
-// together stay within the 8 ms budget, and every 600-tick on_tick window
-// (profiler.lua) averages within it. Tick handlers (jobs advanced on_tick)
-// are only logged per window, so one slow handler tick inside a quiet
-// window is not caught here.
+// script errors, every profiler rpc line and the rpc and job lines of each
+// tick together stay within the 8 ms budget, and every 600-tick on_tick
+// window (profiler.lua) averages within it. The profiler logs tick handlers
+// only per window, so the setup also times this server's job work (jobs
+// advanced on_tick) per tick; one slow tick of another handler inside a
+// quiet window is not caught here.
 import { spawn, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import dgram from "node:dgram";
@@ -159,7 +160,12 @@ function expect(condition: unknown, message: string, value?: unknown): asserts c
 }
 
 // Test-only setup of this throwaway game (see the header), and a cleared,
-// paved area around the stand-in body for the planet scenarios.
+// paved area around the stand-in body for the planet scenarios. jobs.on_tick
+// is wrapped to log "job_tick <tick> <pending kinds> Duration: <ms>ms" for
+// each tick that advances a job (profile() adds it to that tick's time), and
+// it and rpc.dispatch log "gc_freed <tick> <where>" when the Lua heap shrank
+// during them: the garbage collector's sweep ran there, and the profiler
+// counts its time in that tick (it is reported, never subtracted).
 async function setup(): Promise<void> {
   await lua(`
     local s = game.surfaces.nauvis
@@ -167,6 +173,29 @@ async function setup(): Promise<void> {
       position = { x = ${BODY.x}, y = ${BODY.y} }, force = game.forces.player } end
     mod("surfaces").charted = function() return true end
     storage.registry.ready, storage.registry.ready_tick = true, game.tick
+    local function collected(label, heap)
+      if collectgarbage("count") < heap then log("gc_freed " .. game.tick .. " " .. label) end
+    end
+    local jobs, rpc_module = mod("jobs"), mod("rpc")
+    local advance, dispatch = jobs.on_tick, rpc_module.dispatch
+    jobs.on_tick = function()
+      local state, kinds = storage.jobs, {}
+      for _, id in ipairs(state and state.order or {}) do
+        local job = state.by_id[id]
+        if job and job.status == "pending" then kinds[#kinds + 1] = job.kind end
+      end
+      if #kinds == 0 then return advance() end
+      local heap, profiler = collectgarbage("count"), helpers.create_profiler()
+      advance()
+      profiler.stop()
+      log({ "", "job_tick ", game.tick, " ", table.concat(kinds, ","), " ", profiler })
+      collected("jobs", heap)
+    end
+    rpc_module.dispatch = function(method, params)
+      local heap = collectgarbage("count")
+      dispatch(method, params)
+      collected("rpc:" .. tostring(method), heap)
+    end
     for _, e in pairs(s.find_entities_filtered({ area = { { 14, 14 }, { 50, 42 } } })) do e.destroy() end
     local tiles = {}
     for x = 14, 49 do for y = 14, 41 do tiles[#tiles + 1] = { name = "refined-concrete", position = { x, y } } end end
@@ -359,6 +388,41 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    // Before characterStandIn: blueprints.area still asks the force's real
+    // chart, which this server never fills, so the refusal is the mod's own.
+    // (No force.chart request here: one gives nauvis a chart whose uncharted
+    // chunks build_blueprint's skip_fog_of_war then skips, and the ghosts
+    // scenario below would place none.)
+    name: "inspect_entity's area refuses uncharted land, then lists own entities as compact rows",
+    async run(bridge) {
+      const area = { left_top: { x: 14, y: 14 }, right_bottom: { x: 50, y: 42 } };
+      await lua(`${BUILD}
+        local s = game.surfaces.nauvis
+        make(s, "pipe", 44.5, 36.5).insert_fluid({ name = "water", amount = 50 })
+        make(s, "entity-ghost", 46.5, 36.5, { inner_name = "inserter", direction = defines.direction.west })
+      `);
+      const refused = await bridge.call("inspect", { area }).then(() => "", (error) => error instanceof Error ? error.message : String(error));
+      expect(refused === "inspect area reaches uncharted land", "an area over uncharted chunks is refused", refused);
+      await characterStandIn();
+      const listed = await bridge.call<any>("inspect", { area });
+      const rows = list(listed.entities);
+      const wanted = await lua<number>(`local n = 0
+        for _, e in pairs(game.surfaces.nauvis.find_entities_filtered({ area = { { 14, 14 }, { 50, 42 } }, force = "player" })) do
+          if e.type ~= "character" then n = n + 1 end
+        end
+        return n`);
+      expect(rows.length === wanted && listed.omitted === undefined, "one row for each own entity in the area", { rows: rows.length, wanted });
+      const at = (name: string, x: number, y: number) => rows.find((row) => row.name === name && row.position?.x === x && row.position?.y === y);
+      expect(at("assembling-machine-2", 22.5, 29.5)?.recipe === "iron-gear-wheel", "a crafter's row names its recipe", rows);
+      expect(at("transport-belt", 30.5, 36.5)?.direction === 4, "a belt's row names its direction", rows);
+      expect(at("pipe", 44.5, 36.5)?.fluid === "water", "a pipe's row names its fluid", rows);
+      expect(at("entity-ghost", 46.5, 36.5)?.ghost_name === "inserter", "a ghost's row names its entity", rows);
+      expect(!rows.some((row) => row.name === "character"), "no character is listed", rows);
+      return `before the chart patch: refused (${refused});`
+        + ` after it: ${rows.length} rows, e.g. ${rows.slice(0, 3).map((row) => `${row.name} (${row.position.x}, ${row.position.y})`).join(", ")}`;
+    },
+  },
+  {
     name: "place_entity takes the item stacks lying on its footprint into the body's inventory",
     async run(bridge) {
       await characterStandIn();
@@ -448,28 +512,213 @@ const scenarios: Scenario[] = [
         + "ghosts at position = origin, plain and turned + flipped, stand at origin + dx/dy";
     },
   },
+  {
+    // A mid-game state: every technology of at most two science packs
+    // researched, and 60 machines on a third cleared site (48 powered
+    // assemblers on a dozen recipes, 12 fuelled furnaces). The first
+    // run_snapshot and production_requirements after the load also build
+    // their per-load prototype caches.
+    name: "run_snapshot and production_requirements answer through get_job within the tick budget",
+    async run() {
+      const from = fs.readFileSync(paths.log, "utf8").length;
+      const built = await lua<any>(`${BUILD}
+        local s, force = game.surfaces.nauvis, game.forces.player
+        s.request_to_generate_chunks({ 92, 84 }, 2)
+        s.force_generate_chunk_requests()
+        for _, e in pairs(s.find_entities_filtered({ area = { { 60, 64 }, { 124, 104 } } })) do e.destroy() end
+        local tiles = {}
+        for x = 60, 123 do for y = 64, 103 do tiles[#tiles + 1] = { name = "refined-concrete", position = { x, y } } end end
+        s.set_tiles(tiles)
+        local researched = 0
+        for _, t in pairs(force.technologies) do
+          local packs = #t.research_unit_ingredients
+          if packs >= 1 and packs <= 2 and not t.researched then t.research_recursive() end
+        end
+        for _, t in pairs(force.technologies) do if t.researched then researched = researched + 1 end end
+        local eei = make(s, "electric-energy-interface", 62, 66)
+        eei.power_production, eei.electric_buffer_size = 10000000, 100000000
+        for _, x in ipairs({ 70, 88, 106 }) do for _, y in ipairs({ 72, 90 }) do make(s, "substation", x, y) end end
+        local recipes = { "iron-gear-wheel", "copper-cable", "electronic-circuit", "transport-belt", "inserter", "pipe",
+          "automation-science-pack", "logistic-science-pack", "firearm-magazine", "engine-unit", "steel-chest", "iron-stick" }
+        local machines = 0
+        for col = 0, 11 do
+          for _, y in ipairs({ 68.5, 76.5, 86.5, 94.5 }) do
+            local a = make(s, "assembling-machine-2", 66.5 + 4 * col, y)
+            a.set_recipe(recipes[col + 1])
+            for _, ingredient in ipairs(prototypes.recipe[recipes[col + 1]].ingredients) do
+              if ingredient.type == "item" then a.insert({ name = ingredient.name, count = 20 }) end
+            end
+            machines = machines + 1
+          end
+          local f = make(s, "stone-furnace", 66 + 4 * col, 100)
+          f.insert({ name = "coal", count = 10 })
+          f.insert({ name = "iron-ore", count = 30 })
+          machines = machines + 1
+        end
+        local deep = {}
+        for name, t in pairs(force.technologies) do
+          if not t.researched and #t.research_unit_ingredients >= 3 and t.prototype.max_level == t.prototype.level then deep[#deep + 1] = name end
+        end
+        table.sort(deep)
+        return { researched = researched, machines = machines, deep = deep[1] }`);
+      await until("the line sampler to group the new machines", async () =>
+        (await lua<number>(`return mod("autonomy").counts().line_count`)) >= 12, 60_000);
+      // The bridge's own job path: a recorded sleep is a get_job poll, so a
+      // call that slept was answered pending first and read through get_job.
+      let polls = 0;
+      const jobs = new Bridge(rcon!, { now: () => Date.now(), sleep: (ms) => { polls += 1; return sleep(ms); } });
+      const viaJob = async <T,>(method: "run_snapshot" | "production_requirements", params: unknown) => {
+        polls = 0;
+        const value = await jobs.call<T>(method, params);
+        return { value, polls };
+      };
+      const snapshots: number[] = [];
+      for (let i = 0; i < 6; i++) {
+        const { value: snap, polls: n } = await viaJob<any>("run_snapshot", i === 0 ? { window: true } : {});
+        expect(n > 0, "run_snapshot answers pending and get_job returns it", snap);
+        expect(snap.tick > 0 && list(snap.statistics?.items?.produced).length > 0, "the snapshot carries item statistics",
+          { tick: snap.tick, statistics: snap.statistics });
+        expect(snap.progression && snap.factory && snap.attestation && snap.lines?.line_count >= 12,
+          "the snapshot carries progression, factory, attestation and lines", { keys: Object.keys(snap ?? {}), lines: snap?.lines });
+        snapshots.push(n);
+      }
+      // A rate plan, a deep count expansion (its ambiguous routes chosen),
+      // and the closure of the first unresearched technology (by name) of
+      // three or more science packs.
+      const requests: [string, Record<string, unknown>, (result: any) => boolean][] = [
+        ["targets per minute", { targets: { "electronic-circuit": 120 }, per_minute: true }, (r) => list(r.rates?.stages).length > 0],
+        ["targets", { targets: { "chemical-science-pack": 100 }, planet: "nauvis",
+          recipe_choices: { "plastic-bar": "plastic-bar", "petroleum-gas": "basic-oil-processing", sulfur: "sulfur" } }, (r) => list(r.nodes).length > 5],
+        ["technology", { technology: built.deep }, (r) => list(r.missing_technologies).length > 0 && r.deterministic_requirements],
+      ];
+      const answered: string[] = [];
+      for (const round of [1, 2]) {
+        for (const [label, params, holds] of requests) {
+          const { value, polls: n } = await viaJob<any>("production_requirements", params);
+          expect(n > 0, `production_requirements (${label}) answers pending and get_job returns it`, value);
+          expect(holds(value), `production_requirements (${label}) returns its plan`, JSON.stringify(value).slice(0, 600));
+          if (round === 1) answered.push(`${label} ${n} polls`);
+        }
+      }
+      // Each call's rpc line is logged as it returns; the last get_job's too.
+      const slice = await until("the profiler lines of every call", async () => {
+        const text = fs.readFileSync(paths.log, "utf8").slice(from);
+        const { rpcs } = profile(text);
+        return rpcs.filter((row) => row.method === "run_snapshot").length === 6
+          && rpcs.filter((row) => row.method === "production_requirements").length === 6 ? text : undefined;
+      });
+      const { rpcs, jobTicks, ticks } = profile(slice);
+      const slowest = (method: string) => {
+        const rpc = Math.max(0, ...rpcs.filter((row) => row.method === method).map((row) => row.ms));
+        const job = Math.max(0, ...jobTicks.filter((row) => row.kinds.includes(method)).map((row) => row.ms));
+        const tick = ticks.filter((row) => row.methods.includes(method) || row.methods.includes(`job:${method}`))
+          .reduce<(typeof ticks)[number] | undefined>((worst, row) => (!worst || row.ms > worst.ms ? row : worst), undefined);
+        return `${method}: rpc ${rpc.toFixed(2)} ms, job tick ${job.toFixed(2)} ms, ${jobTicks.filter((row) => row.kinds.includes(method)).length}`
+          + ` job ticks, slowest ${tick ? describeTick(tick) : "tick -"}`;
+      };
+      const over = ticks.filter((row) => row.ms > TICK_BUDGET_MS);
+      expect(over.length === 0, `every tick of these calls stays within ${TICK_BUDGET_MS} ms`,
+        over.map(describeTick));
+      return `${built.researched} technologies researched, ${built.machines} machines; closure of ${built.deep}; snapshot polls ${snapshots.join(",")};`
+        + ` requirements ${answered.join(", ")}; ${slowest("run_snapshot")}; ${slowest("production_requirements")};`
+        + ` get_job slowest ${Math.max(0, ...rpcs.filter((row) => row.method === "get_job").map((row) => row.ms)).toFixed(2)} ms`;
+    },
+  },
+  {
+    // fluid_connections.ports with mirror against the game: each crafter
+    // created mirrored (and plain) at every cardinal direction on a recipe
+    // using each of its fluid boxes, its live pipe connections (the tile each
+    // leaves from and the tile it points at, with the fluid its box takes)
+    // compared with the ports the mod works out for build_layout.
+    name: "mirrored refineries and chemical plants connect where fluid_connections.ports says",
+    async run() {
+      const result = await lua<any>(`${BUILD}
+        local s, fc, geometry = game.surfaces.nauvis, mod("fluid_connections"), mod("placement_geometry")
+        for _, e in pairs(s.find_entities_filtered({ area = { { 60, 106 }, { 124, 140 } } })) do e.destroy() end
+        local tiles = {}
+        for x = 60, 123 do for y = 106, 139 do tiles[#tiles + 1] = { name = "refined-concrete", position = { x, y } } end end
+        s.set_tiles(tiles)
+        local function key(ax, ay, tx, ty, fluid)
+          return string.format("%d,%d>%d,%d:%s", math.floor(ax), math.floor(ay), math.floor(tx), math.floor(ty), tostring(fluid))
+        end
+        local rows, k = {}, 0
+        for row, case in ipairs({ { "oil-refinery", "advanced-oil-processing" }, { "chemical-plant", "heavy-oil-cracking" } }) do
+          local name, recipe = case[1], case[2]
+          local proto = prototypes.entity[name]
+          for _, mirror in ipairs({ false, true }) do
+            for d = 0, 12, 4 do
+              k = k + 1
+              local x, y = 63.5 + ((k - 1) % 8) * 7, 109.5 + (row - 1) * 14 + (mirror and 7 or 0)
+              local e = make(s, name, x, y, { direction = d, mirror = mirror })
+              e.set_recipe(recipe)
+              local live = {}
+              for i = 1, #e.fluidbox do
+                local filter = e.fluidbox.get_filter(i)
+                for _, c in ipairs(e.fluidbox.get_pipe_connections(i)) do
+                  if c.connection_type == "normal" then
+                    live[#live + 1] = key(c.position.x, c.position.y, c.target_position.x, c.target_position.y, filter and filter.name)
+                  end
+                end
+              end
+              local area = geometry.footprint(proto, { x = 0, y = 0 }, d)
+              local said = {}
+              for _, port in ipairs(fc.recipe_ports(proto, recipe, d, area, mirror)) do
+                if port.fluid ~= false then said[#said + 1] = key(x + port.at.x, y + port.at.y, x + port.target.x, y + port.target.y, port.fluid) end
+              end
+              table.sort(live)
+              table.sort(said)
+              rows[#rows + 1] = { name = name, direction = d, mirror = mirror, mirroring = e.mirroring,
+                live = table.concat(live, " "), said = table.concat(said, " ") }
+            end
+          end
+        end
+        return rows`);
+      const rows = list(result);
+      expect(rows.length === 16, "two crafters, plain and mirrored, at four directions", rows.length);
+      expect(rows.every((row) => row.mirroring === row.mirror), "create_entity's mirror sets LuaEntity.mirroring", rows);
+      const wrong = rows.filter((row) => row.live !== row.said || row.live === "");
+      expect(wrong.length === 0, "every live pipe connection is a port the mod works out, and no other", wrong);
+      const sample = rows.find((row) => row.name === "chemical-plant" && row.mirror && row.direction === 4);
+      return `${rows.length} placements match; e.g. mirrored chemical plant facing east: ${sample?.live}`;
+    },
+  },
 ];
 
 // Profiler lines (profiler.lua): "rpc <method> tick <tick> Duration: <ms>ms"
-// for each RPC, "on_tick 600 ticks Duration: <ms>ms" for all tick handlers.
-// The RPCs of one tick share its budget: ticks sums their time per tick.
+// for each RPC, "on_tick 600 ticks Duration: <ms>ms" for all tick handlers;
+// the setup's "job_tick <tick> <kinds> Duration: <ms>ms" for each tick's job
+// work and "gc_freed <tick> <where>". The RPCs and job work of one tick share
+// its budget: ticks sums their time per tick, methods naming each RPC and
+// each job as job:<kind>, gc marking a tick in which the collector freed memory.
 function profile(log: string) {
   const rpcs: { method: string; tick: number; ms: number }[] = [], windows: number[] = [];
+  const jobTicks: { kinds: string[]; tick: number; ms: number }[] = [];
   for (const match of log.matchAll(/ rpc (\S+) tick (\d+) Duration: ([\d.]+)ms/g)) {
     rpcs.push({ method: match[1]!, tick: Number(match[2]), ms: Number(match[3]) });
   }
+  for (const match of log.matchAll(/ job_tick (\d+) (\S+) Duration: ([\d.]+)ms/g)) {
+    jobTicks.push({ kinds: match[2]!.split(","), tick: Number(match[1]), ms: Number(match[3]) });
+  }
   for (const match of log.matchAll(/ on_tick (\d+) ticks Duration: ([\d.]+)ms/g)) windows.push(Number(match[2]) / Number(match[1]));
   const ticks = new Map<number, { ms: number; methods: string[] }>();
-  for (const row of rpcs) {
-    const tick = ticks.get(row.tick) ?? { ms: 0, methods: [] };
-    tick.ms += row.ms;
-    tick.methods.push(row.method);
-    ticks.set(row.tick, tick);
-  }
-  return { rpcs, windows, ticks: [...ticks].map(([tick, row]) => ({ tick, ...row })) };
+  const add = (at: number, ms: number, methods: string[]) => {
+    const tick = ticks.get(at) ?? { ms: 0, methods: [] };
+    tick.ms += ms;
+    tick.methods.push(...methods);
+    ticks.set(at, tick);
+  };
+  for (const row of rpcs) add(row.tick, row.ms, [row.method]);
+  for (const row of jobTicks) add(row.tick, row.ms, row.kinds.map((kind) => `job:${kind}`));
+  const gc = new Set([...log.matchAll(/ gc_freed (\d+) \S+$/gm)].map((match) => Number(match[1])));
+  return { rpcs, jobTicks, windows, ticks: [...ticks].map(([tick, row]) => ({ tick, ...row, gc: gc.has(tick) })) };
 }
-// Stdin is closed, which the server logs as an error and ignores.
-const BENIGN_ERRORS = [/InterruptibleStdioStream\.cpp.*Got EOF on stdin/];
+const describeTick = (row: { tick: number; ms: number; methods: string[]; gc: boolean }) =>
+  `tick ${row.tick} ${row.ms.toFixed(2)} ms (${row.methods.join(", ")}${row.gc ? "; the Lua GC freed memory in it" : ""})`;
+// Stdin is closed, which the server logs as an error and ignores. The setup's
+// job_tick and gc_freed lines name their source, the setup command, whose
+// text has "error".
+const BENIGN_ERRORS = [/InterruptibleStdioStream\.cpp.*Got EOF on stdin/, /:\d+: job_tick \d+ \S+ Duration: [\d.]+ms$/,
+  /:\d+: gc_freed \d+ \S+$/];
 
 const failures: string[] = [];
 const report = (ok: boolean, name: string, detail: string) => {
@@ -498,18 +747,18 @@ try {
   const errors = log.split("\n").filter((line) => /\berror\b/i.test(line) && !line.includes("[COMMAND]")
     && !BENIGN_ERRORS.some((pattern) => pattern.test(line)));
   report(errors.length === 0, "the server log has no script errors", errors.slice(0, 5).join(" | "));
-  const { rpcs, windows, ticks } = profile(log);
+  const { rpcs, jobTicks, windows, ticks } = profile(log);
   const slow = rpcs.filter((row) => row.ms > TICK_BUDGET_MS);
   const slowTicks = ticks.filter((row) => row.ms > TICK_BUDGET_MS);
   const slowestTick = ticks.reduce<(typeof ticks)[number] | undefined>((worst, row) => (!worst || row.ms > worst.ms ? row : worst), undefined);
   const worstWindow = Math.max(0, ...windows);
   report(rpcs.length > 0 && windows.length > 0 && slow.length === 0 && slowTicks.length === 0 && worstWindow <= TICK_BUDGET_MS,
-    `every rpc, the rpcs of each tick, and the 600-tick on_tick average stay within ${TICK_BUDGET_MS} ms`,
+    `every rpc, the rpcs and job work of each tick, and the 600-tick on_tick average stay within ${TICK_BUDGET_MS} ms`,
     `${rpcs.length} rpcs, slowest ${rpcs.length ? Math.max(...rpcs.map((row) => row.ms)).toFixed(2) : "-"} ms`
       + `${slow.length ? ` (over budget: ${slow.map((row) => `${row.method} ${row.ms.toFixed(2)}`).join(", ")})` : ""}; `
-      + `${ticks.length} rpc ticks, slowest ${slowestTick ? `${slowestTick.ms.toFixed(2)} ms at tick ${slowestTick.tick}`
-        + ` (${slowestTick.methods.join(", ")})` : "-"}`
-      + `${slowTicks.length ? ` (over budget: ${slowTicks.map((row) => `tick ${row.tick} ${row.ms.toFixed(2)}`).join(", ")})` : ""}; `
+      + `${jobTicks.length} job ticks; ${ticks.length} ticks (the Lua GC freed memory in ${ticks.filter((row) => row.gc).length}),`
+      + ` slowest ${slowestTick ? describeTick(slowestTick) : "-"}`
+      + `${slowTicks.length ? ` (over budget: ${slowTicks.map(describeTick).join(", ")})` : ""}; `
       + `${windows.length} tick windows, worst average ${worstWindow.toFixed(3)} ms/tick`);
 } catch (error) {
   report(false, "live server", `${error instanceof Error ? error.message : String(error)}; log: ${logTail()}`);

@@ -230,12 +230,18 @@ end
 function M.progression_status()
   local force = companion.require_present().force
   local researched, available, trigger_unlocks, enabled_recipes = {}, {}, {}, {}
-  local function technology_record(name, technology)
-    local prerequisites, ready = {}, true
+  -- Whether every prerequisite is researched, and their names. Only a ready
+  -- technology gets a record: reading every unresearched one's prototype
+  -- tables made this read (run_snapshot's progression phase) a long frame.
+  local function readiness(technology)
+    local prerequisites = {}
     for prereq_name, prerequisite in pairs(technology.prerequisites or {}) do
+      if not prerequisite.researched then return false end
       prerequisites[#prerequisites + 1] = prereq_name
-      if not prerequisite.researched then ready = false end
     end
+    return true, prerequisites
+  end
+  local function technology_record(name, technology, prerequisites)
     table.sort(prerequisites)
     local science = {}
     local ok, ingredients = pcall(function() return technology.prototype.research_unit_ingredients end)
@@ -258,13 +264,14 @@ function M.progression_status()
     ok, record.science_count = pcall(function() return technology.prototype.research_unit_count end)
     if not ok or type(record.science_count) ~= "number" then record.science_count = nil end
     record.unit_time_s = M.unit_time_s(technology.prototype)
-    return ready, record
+    return record
   end
   for name, technology in pairs(force.technologies) do
     if technology.researched then researched[#researched + 1] = name
     elseif technology.enabled then
-      local ready, record = technology_record(name, technology)
+      local ready, prerequisites = readiness(technology)
       if ready then
+        local record = technology_record(name, technology, prerequisites)
         local trigger = research_trigger(technology)
         if trigger then
           record.trigger = trigger

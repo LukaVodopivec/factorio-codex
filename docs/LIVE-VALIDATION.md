@@ -37,13 +37,24 @@ entities with `create_entity` and call the mod's modules and RPCs:
 - a `build_layout` dry run on a space platform with `belt_joins` and
   `port_fluids` rows;
 - NaN-safe JSON through `rpc.to_json`;
-- `items.move` keeping durability and quality.
+- `items.move` keeping durability and quality;
+- `inspect` `area` refusing uncharted land, then listing own entities as
+  compact rows;
+- `run_snapshot` and `production_requirements` on a mid-game state (red and
+  green research, 60 machines), each answered pending and read through
+  `get_job`, with every tick of their work within 8 ms;
+- mirrored and plain oil refineries and chemical plants whose live pipe
+  connections match `fluid_connections.ports` at every direction;
+- the physical scenarios on a real character (ground stacks taken up by
+  `place_entity`, `blueprint_capture` origins).
 
 Then it asserts that `ping` shows no `handler_errors`, the server log has no
-script errors, every profiler `rpc` line and the `rpc` lines of each tick
-together stay within 8 ms, and each 600-tick `on_tick` window averages within
-8 ms a tick. Tick handlers are logged only per window, so one slow handler
-tick inside a quiet window is not caught. A headless
+script errors, every profiler `rpc` line and the `rpc` lines and job work of
+each tick together stay within 8 ms, and each 600-tick `on_tick` window
+averages within 8 ms a tick. The setup times job work (jobs advanced on_tick)
+per tick itself and marks a tick in which the Lua garbage collector freed
+memory (its time counts in that tick); other tick handlers are logged only per window, so one slow tick of
+theirs inside a quiet window is not caught. A headless
 server has no Codex player and charts nothing, so the suite's own setup
 command patches only that throwaway server's live Lua state: a stand-in body
 on nauvis, every chunk counted as charted for the mod's chart rule, and the

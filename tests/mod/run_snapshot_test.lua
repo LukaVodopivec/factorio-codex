@@ -81,7 +81,19 @@ activity.on_player_crafted_item({ player_index = 1, item_stack = { name = "trans
 activity.on_player_crafted_item({ player_index = 2, item_stack = { name = "transport-belt", count = 2 } })
 local jobs = require("scripts.jobs")
 local run_snapshot = require("scripts.run_snapshot")
+-- Phase costs come from counts every peer reads alike (# of a
+-- LuaCustomTable), never from the per-load caches the first snapshot
+-- builds: a client that joined later has not built them, and its job would
+-- take other ticks than the server's.
+setmetatable(prototypes.technology, { __len = function() return 4 end })
+setmetatable(prototypes.entity, { __len = function() return 6 end })
+local function phase_costs()
+  return run_snapshot.PHASES.attestation.cost(nil, body) .. "/" .. run_snapshot.PHASES.resources.cost(nil, body)
+end
+local costs_before = phase_costs()
 local snapshot, snapshot_ticks = jobs.run_now(run_snapshot.job, {}, 1)
+check(phase_costs() == costs_before, "the per-load caches leave the phase costs as they were ("
+  .. costs_before .. " before the first snapshot, " .. phase_costs() .. " after)")
 -- Four statistics reads, then the seven phases, each its own tick.
 check(snapshot_ticks >= 4 + 7, "the snapshot reads one surface's statistics of one kind a step, then a phase a step ("
   .. snapshot_ticks .. " ticks)")

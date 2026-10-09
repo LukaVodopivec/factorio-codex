@@ -294,10 +294,12 @@ end
 -- After the statistics reads, each phase is one call whose work grows with
 -- the factory, the research tree or the prototypes. cost(S, body) is its
 -- size in work items (jobs.lua), taken before it runs from counts that are
--- cheap to read; run(S, body) keeps what it read in S (assemble returns
--- the record).
+-- cheap to read and the same on every peer: never from a per-load cache
+-- (bonus_techs, raw_rows), which a client that joined later has not built,
+-- so its job would take other ticks than the server's. run(S, body) keeps
+-- what it read in S (assemble returns the record).
 local PHASES = {
-  -- Every technology (a record for each unresearched one) and every recipe.
+  -- Every technology (a record for each ready unresearched one) and every recipe.
   progression = {
     cost = function(_, body)
       local force = body.force
@@ -318,17 +320,16 @@ local PHASES = {
     run = function(S) S.lines = autonomy.counts() end,
   },
   -- The bonus technologies (on the first snapshot after a load every
-  -- technology prototype) and the force's and character's modifiers.
+  -- technology prototype) and the force's and character's modifiers:
+  -- charged as that first read on every snapshot.
   attestation = {
-    cost = function() return 20 + (bonus_techs and #bonus_techs or length(prototypes and prototypes.technology)) end,
+    cost = function() return 20 + length(prototypes and prototypes.technology) end,
     run = function(S, body) S.attestation = attestation(body) end,
   },
-  -- Every entity prototype on the first snapshot after a load, later the rows.
+  -- Every entity prototype on the first snapshot after a load, later the
+  -- rows: charged as that first read on every snapshot.
   resources = {
-    cost = function()
-      if raw_rows then return math.ceil(#raw_rows / 16) end
-      return math.ceil(length(prototypes and prototypes.entity) / 8)
-    end,
+    cost = function() return math.ceil(length(prototypes and prototypes.entity) / 8) end,
     run = function(S) S.raw_resources = raw_resource_products() end,
   },
   -- The body's state and time, read together at the sample's tick.

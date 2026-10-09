@@ -47,8 +47,14 @@ local send_trigger = { name = "trigger-send", researched = false, enabled = true
   prerequisites = {}, prototype = { research_trigger = {
     type = "send-item-to-orbit", item = { name = "space-science-pack", quality = "uncommon", comparator = ">" },
   }, effects = {} } }
+-- A technology whose prerequisite is not researched gets no record, so its
+-- prototype tables are never read (progression_status reads every
+-- technology of the force in one call).
+local blocked_prototype_reads = 0
 local blocked = { name = "advanced", researched = false, enabled = true,
-  prerequisites = { missing = { researched = false } }, prototype = { effects = {} } }
+  prerequisites = { missing = { researched = false } }, prototype = setmetatable({}, { __index = function()
+    blocked_prototype_reads = blocked_prototype_reads + 1
+  end }) }
 local direct_effect_reads = 0
 local technology_api = { __index = function(_, key)
   if key == "effects" then
@@ -151,6 +157,7 @@ check(type(empty_progression.available[1].unlocks) == "table"
   and next(empty_progression.available[1].unlocks) == nil,
   "ordinary technology with empty prototype effects preserves empty unlocks")
 check(direct_effect_reads == 0, "progression never accesses unsupported direct technology.effects")
+check(blocked_prototype_reads == 0, "progression reads no prototype of a technology whose prerequisites are not researched")
 
 local trigger_prereq = { researched = false, prototype = { research_trigger = {
   type = "build-entity", entity = { name = "lab", quality = "epic", comparator = "=" },

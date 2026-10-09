@@ -211,7 +211,7 @@ const planSteps = [
   z.object({ action: z.literal("inspect_entities"), positions: z.array(point).min(1).max(INSPECT_LIMIT) }).strict(),
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("wait_for_research"), technology: z.string().min(1), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
-  z.object({ action: z.literal("get_items"), item: z.string().min(1), count: z.number().int().min(1).max(10000) }).strict(),
+  z.object({ action: z.literal("get_items"), item: z.string().min(1), count: z.number().int().min(1).max(5000) }).strict(),
   z.object({ action: z.literal("build_layout"), ...layoutFields }).strict(),
   z.object({ action: z.literal("explore"), ...exploreFields }).strict(),
   z.object({ action: z.literal("move_entity"), ...moveEntityFields }).strict(),

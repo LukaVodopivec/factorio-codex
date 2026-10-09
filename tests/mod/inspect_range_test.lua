@@ -490,5 +490,105 @@ check(capped.omitted_networks == 3 and not capped.counts_complete and not capped
   and capped.construction_robots == 4 and count_queries == 4,
   "readiness caps work at four networks and marks truncated counts incomplete")
 
+-- A ready rocket, its shadow and its cargo pod stand at their silo's centre:
+-- a read there is the silo's (its silo block reports the rocket), locally
+-- and remotely.
+do
+  local native_find = surface.find_entities_filtered
+  local silo = mock.entity({ valid = true, name = "rocket-silo", type = "rocket-silo", force = body.force,
+    position = { x = 5.5, y = 5.5 } })
+  local at_centre = {}
+  for _, kind in ipairs({ "rocket-silo-rocket", "rocket-silo-rocket-shadow", "cargo-pod" }) do
+    at_centre[#at_centre + 1] = mock.entity({ valid = true, name = kind, type = kind, force = body.force,
+      position = { x = 5.5, y = 5.5 } })
+  end
+  at_centre[#at_centre + 1] = silo
+  surface.find_entities_filtered = function() return at_centre end
+  body.force.is_chunk_charted = function() return true end
+  local here = inspect.inspect({ targets = { { x = 5.5, y = 5.5 } } }).entities[1]
+  body.position = { x = 500, y = 500 }
+  local far = inspect.inspect({ targets = { { x = 5.5, y = 5.5 } } }).entities[1]
+  body.position = { x = 0, y = 0 }
+  surface.find_entities_filtered = native_find
+  check(here.name == "rocket-silo" and here.remote == nil and far.name == "rocket-silo" and far.remote == true,
+    "a silo's centre reads the silo, not its rocket or cargo pod, near and remote")
+end
+
+-- inspect {area}: own entities in one charted area of at most 64 x 64 as
+-- compact rows, characters never listed, capped with an omitted count.
+do
+  local native_find = surface.find_entities_filtered
+  local queries = {}
+  local in_area = {
+    mock.entity({ valid = true, name = "assembling-machine-1", type = "assembling-machine", direction = 4,
+      position = { x = 10.5, y = 10.5 }, get_recipe = function() return { name = "iron-gear-wheel" } end }),
+    mock.entity({ valid = true, name = "pipe", type = "pipe", direction = 0, position = { x = 12.5, y = 10.5 },
+      fluidbox = { [1] = { name = "water", amount = 100 } } }),
+    mock.entity({ valid = true, name = "character", type = "character", direction = 0, position = { x = 11, y = 11 } }),
+    mock.entity({ valid = true, name = "entity-ghost", type = "entity-ghost", direction = 8, position = { x = 14.5, y = 12.5 },
+      ghost_name = "transport-belt" }),
+    -- reaches in from a chunk that is not charted
+    mock.entity({ valid = true, name = "storage-tank", type = "storage-tank", direction = 0, position = { x = -1.5, y = 10.5 } }),
+  }
+  local function matches(e, filter) return filter.type == nil or e.type == filter.type end
+  surface.count_entities_filtered = function(filter)
+    queries[#queries + 1] = filter
+    local n = 0
+    for _, e in ipairs(in_area) do if matches(e, filter) then n = n + 1 end end
+    return n
+  end
+  surface.find_entities_filtered = function(filter)
+    queries[#queries + 1] = filter
+    local list = {}
+    for _, e in ipairs(in_area) do if #list < filter.limit then list[#list + 1] = e end end
+    return list
+  end
+  body.force.is_chunk_charted = function(_, chunk) return chunk.x >= 0 and chunk.y >= 0 end
+  local area = { left_top = { x = 0, y = 0 }, right_bottom = { x = 64, y = 64 } }
+  local read = inspect.inspect({ area = area })
+  local rows = read.entities
+  check(#rows == 3 and rows[1].name == "assembling-machine-1" and rows[1].recipe == "iron-gear-wheel"
+    and rows[1].direction == 4 and rows[1].position.x == 10.5
+    and rows[2].name == "pipe" and rows[2].fluid == "water" and rows[3].ghost_name == "transport-belt"
+    and read.omitted == nil and read.area.right_bottom.x == 64
+    and read.evidence_class == "fresh_exact_local_and_charted_remote",
+    "an area read lists own entities as compact rows, never a character or an entity whose chunk is uncharted")
+  local own_force = #queries == 3
+  for _, filter in ipairs(queries) do
+    own_force = own_force and filter.force == body.force and filter.area.left_top.x == 0 and filter.area.right_bottom.y == 64
+  end
+  check(own_force, "an area read is three engine queries of exactly that area on the body's force")
+
+  local cap = inspect.AREA_ROWS
+  inspect.AREA_ROWS = 1
+  local capped = inspect.inspect({ area = area })
+  inspect.AREA_ROWS = cap
+  check(#capped.entities == 1 and capped.omitted == 3, "an area read past its row cap counts the rest as omitted")
+
+  queries = {}
+  local function refused(params, pattern, label)
+    local ok, err = pcall(inspect.inspect, params)
+    check(not ok and tostring(err):match(pattern) ~= nil and #queries == 0, label)
+  end
+  refused({ area = { left_top = { x = -40, y = 0 }, right_bottom = { x = 10, y = 10 } } }, "uncharted",
+    "an area reaching uncharted land is refused before any query")
+  refused({ area = { left_top = { x = 0, y = 0 }, right_bottom = { x = 65, y = 10 } } }, "at most 64 x 64",
+    "an area wider than 64 tiles is refused")
+  refused({ area = area, targets = { { x = 1, y = 1 } } }, "not both", "targets and area together are refused")
+
+  -- Many rows spread over ticks.
+  in_area = {}
+  for i = 1, 200 do
+    in_area[i] = mock.entity({ valid = true, name = "transport-belt", type = "transport-belt", direction = 0,
+      position = { x = (i % 60) + 0.5, y = math.floor(i / 60) + 0.5 } })
+  end
+  local state, done, ticks = inspect.job.start({ area = area }), nil, 0
+  repeat ticks = ticks + 1; done = inspect.job.step(state, { left = 100 }) until done or ticks > 20
+  check(done and #done.entities == 200 and ticks >= 4, "a 200-row area read spreads over " .. ticks .. " ticks")
+
+  surface.find_entities_filtered = native_find
+  surface.count_entities_filtered = nil
+end
+
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

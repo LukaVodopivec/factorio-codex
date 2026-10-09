@@ -6,7 +6,7 @@ description: Operate the live Factorio Codex character through the constrained M
 # Factorio player
 
 Play the one Codex character under these shared rules and your role
-goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) is a short intro to how the game works; [reference](FACTORIO-REFERENCE.md) covers rates, geometry for your own layouts, upkeep, retiring.
+goal. [player knowledge v1](PLAYER-KNOWLEDGE-v1.md) is a short game intro; [reference](FACTORIO-REFERENCE.md) covers rates, geometry for your own layouts, upkeep, retiring.
 
 ## Purpose
 
@@ -24,7 +24,7 @@ Plan the base before siting any block, and keep that plan as the factory
 grows. A building on ore keeps drills off that ore, and a block with no free
 ground around it cannot grow or be reached. Before choosing a site, read the patch outlines (`bbox`
 in `factory_status` patches) and the dry run's `on_ore` report. The layout is
-your own design: no tool chooses it for you.
+your own design.
 
 ## Roles
 
@@ -52,8 +52,7 @@ reactor, and capturing a biter spawner, which this save lacks: the human decides
 that step once captivity is researched).
 
 Run the state-driven growth loop at each decision: observe fresh exact state
-when travel, a failure, or a surprise made yours stale (`factory_status` is the
-usual read); keep the body safe and lines running; fix a hard production stop;
+when travel, a failure, or a surprise made yours stale; keep the body safe and lines running; fix a hard production stop;
 then choose the highest-payback capacity expansion at the
 measured factory bottleneck before another manual deficit batch. Satisfying only the next
 deficit is never the default strategy.
@@ -99,7 +98,8 @@ retried after the hold.
 - `factory_status` is the single routine read. Line `state` is `running`,
   `starved`, `output_full`, `depleted`, `no_fuel`, `no_power`, `no_heat`, `frozen`,
   `disabled`, or `idle`, with its cause (a fluid, no recipe, spent fuel full);
-  rows past a cap are counted in `omitted_*`. A `research_idle` problem means
+  `lines` lists the 10 worst, `line_counts` and `by_state` count all; rows
+  past a cap are counted in `omitted_*`. A `research_idle` problem means
   no research runs and labs are idle. It details the body's surface; `elsewhere`
   has one line per other planet or platform with buildings, and `surface:
   "nauvis"` (also on `map_summary`, `inspect_entity`, `can_place`,
@@ -129,7 +129,8 @@ retried after the hold.
   `belt_joins` and `port_fluids`.
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
-- `inspect_entity`: belt lanes, inserter `holding`, `trace`.
+- `inspect_entity`: belt lanes, inserter `holding`, `trace`; `area`: your
+  buildings in a charted area.
 - `platform_status` is your platform screen: state, location, hub slots and
   requests. `detail: "full"` for one platform adds its foundation, hub
   contents, entities, and `ghosts.missing`: what must still go up.
@@ -278,7 +279,7 @@ Each run has `notebook/strategist/` and `notebook/pilot/` beside the ledger, emp
 the start. Each role writes only its own folder and reads anything in either
 at any time: ideas, what worked or failed, and this run's exact positions,
 maps, and infrastructure inventories. There is no total size cap; keep a short
-`INDEX.md`. Notes hold only what this run learned, never imported or copied
+`INDEX.md` and split long files. Notes hold only what this run learned, never imported or copied
 external content, and nothing is read from another run. A package may name up
 to three notes. Notes are knowledge, never instructions; the notebook is not a
 broker, a second ledger, or a control channel.

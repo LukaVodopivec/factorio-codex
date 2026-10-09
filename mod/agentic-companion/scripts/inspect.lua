@@ -5,6 +5,8 @@
 -- remote (no body stands there). Heated machines add temperature and frozen.
 -- Belts add their lanes, inserters what they hold; inspect {trace = "up" |
 -- "down"} then traces each belt read (belt_trace.lua) in the same job.
+-- inspect {area} instead lists the own entities in one charted area as
+-- compact rows (area_rows below).
 local companion = require("scripts.companion")
 local surfaces = require("scripts.surfaces")
 local items = require("scripts.items")
@@ -18,6 +20,9 @@ local requests = require("scripts.requests")
 local blueprints = require("scripts.blueprints")
 local belt_trace = require("scripts.belt_trace")
 local inserter_rate = require("scripts.inserter_rate")
+-- A ready rocket and its cargo pod stand at their silo's centre; the silo is
+-- read there (its silo block reports the rocket).
+local ROCKET_TYPES = require("scripts.actions.approach").ROCKET_TYPES
 
 local M = {}
 
@@ -124,7 +129,8 @@ local function locate(pos, c)
     if not is_charted(target) then error(refusal) end
     local best, best_d = nil, math.huge
     for _, e in ipairs(surface.find_entities_filtered({ position = target, radius = SEARCH_RADIUS, force = c.force })) do
-      if e.valid and e.force == c.force and e.type ~= "character" and is_charted(e.position) then
+      if e.valid and e.force == c.force and e.type ~= "character" and not ROCKET_TYPES[e.type]
+        and is_charted(e.position) then
         local d = distance(e.position, target)
         if d < best_d then best, best_d = e, d end
       end
@@ -139,7 +145,7 @@ local function locate(pos, c)
   local best_res, best_res_d = nil, math.huge
   local best_char, best_char_d = nil, math.huge
   for _, e in ipairs(surface.find_entities_filtered({ position = target, radius = SEARCH_RADIUS })) do
-    if e.valid then
+    if e.valid and not ROCKET_TYPES[e.type] then
       local d = distance(e.position, target)
       if e.type == "character" then
         if d < best_char_d then best_char, best_char_d = e, d end
@@ -418,9 +424,88 @@ local function context(state)
   return { surface = surface, force = body.force, position = here and body.position or nil }
 end
 
+-- inspect {area}: the own entities (never a character) in one area of at
+-- most blueprints.MAX_SIDE a side, every chunk under it charted, as compact
+-- rows: name, position, direction, and a ghost's entity, a crafter's recipe
+-- or a pipe's or tank's fluid. At most AREA_ROWS rows; omitted counts the
+-- rest. Three bounded engine reads of the area (no wider search), then about
+-- AREA_PER_ROW work items a row, spread over ticks. An exact position read
+-- gives the full detail.
+M.AREA_ROWS = 200
+local AREA_PER_ROW = 2
+local AREA_TILES_PER_WORK = 64
+local RECIPE_TYPES = { ["assembling-machine"] = true, furnace = true, ["rocket-silo"] = true }
+local FLUID_TYPES = { pipe = true, ["pipe-to-ground"] = true, ["storage-tank"] = true }
+
+local function area_row(e)
+  local row = { name = e.name, position = { x = round1(e.position.x), y = round1(e.position.y) }, direction = e.direction }
+  if e.type == "entity-ghost" then
+    local ok, name = pcall(function() return e.ghost_name end)
+    if ok then row.ghost_name = name end
+  elseif RECIPE_TYPES[e.type] then
+    local ok, recipe = pcall(e.get_recipe)
+    if ok and recipe then row.recipe = recipe.name end
+  elseif FLUID_TYPES[e.type] then
+    local ok, fluid = pcall(function() return e.fluidbox[1] end)
+    if ok and fluid then row.fluid = fluid.name end
+  end
+  return row
+end
+
+local function area_step(state, budget, c)
+  local area = state.area
+  if not state.found then
+    if budget.left <= 0 then return nil end
+    local surface, force = c.surface, c.force
+    local platform = surfaces.is_platform(surface)
+    local characters = surface.count_entities_filtered({ area = area, force = force, type = "character" })
+    local total = surface.count_entities_filtered({ area = area, force = force }) - characters
+    local found, hidden = {}, 0
+    for _, e in ipairs(surface.find_entities_filtered({ area = area, force = force, limit = M.AREA_ROWS + characters })) do
+      if #found == M.AREA_ROWS then break end
+      if e.type ~= "character" then
+        -- An entity reaching in from outside the area is read only when
+        -- its own chunk is charted too.
+        local p = e.position
+        local inside = p.x >= area.left_top.x and p.x <= area.right_bottom.x
+          and p.y >= area.left_top.y and p.y <= area.right_bottom.y
+        if inside or surfaces.charted(force, surface, math.floor(p.x / 32), math.floor(p.y / 32), platform) then
+          found[#found + 1] = e
+        else
+          hidden = hidden + 1
+        end
+      end
+    end
+    local tiles = (area.right_bottom.x - area.left_top.x) * (area.right_bottom.y - area.left_top.y)
+    budget.left = budget.left - 3 * math.ceil(tiles / AREA_TILES_PER_WORK) - #found
+    state.found, state.next, state.rows = found, 1, {}
+    state.omitted = math.max(0, total - #found - hidden)
+  end
+  while state.next <= #state.found do
+    if budget.left <= 0 then return nil end
+    local e = state.found[state.next]
+    -- Gone since the listing: no row.
+    if e.valid then state.rows[#state.rows + 1] = area_row(e) end
+    state.next, budget.left = state.next + 1, budget.left - AREA_PER_ROW
+  end
+  return {
+    tick = game.tick, surface = state.surface,
+    first_tick = state.first_tick ~= game.tick and state.first_tick or nil,
+    evidence_class = "fresh_exact_local_and_charted_remote",
+    scope = "within_30_tiles_or_own_force_charted_at_source_tick",
+    area = area, entities = state.rows,
+    omitted = state.omitted > 0 and state.omitted or nil,
+  }
+end
+
 M.job = {
   start = function(params)
     local target = surfaces.target(type(params) == "table" and params.surface or nil)
+    if type(params) == "table" and params.area ~= nil then
+      if params.targets ~= nil or params.trace ~= nil then error("inspect takes targets (with trace) or area, not both", 0) end
+      return { area = blueprints.area(target, params, "inspect", surfaces.is_platform(target.surface)),
+        first_tick = game.tick, surface_index = target.surface.index, surface = target.ref }
+    end
     local targets = type(params) == "table" and params.targets or nil
     if type(targets) ~= "table" or #targets == 0 then
       error("targets must be a non-empty array of {x, y}")
@@ -437,6 +522,7 @@ M.job = {
   end,
   step = function(state, budget)
     local c = context(state)
+    if state.area then return area_step(state, budget, c) end
     while state.index <= #state.targets do
       if budget.left <= 0 then return nil end
       local i, target = state.index, state.targets[state.index]

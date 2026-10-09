@@ -110,8 +110,8 @@ describe("compact strategist operations ledger", () => {
     expect(apply("{broken")).toEqual({ status: "discarded", reason: "MALFORMED_UPDATE" });
     const history = fs.readFileSync(path.join(dir, "ledger-history.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(history).toEqual([
-      { at: expect.any(String), status: "applied", revision: 1, source_tick: 100, package_ids: [] },
-      { at: expect.any(String), status: "discarded", reason: "MALFORMED_UPDATE", issues: expect.any(Array), package_ids: ["iron-a"] },
+      { at: expect.any(String), run_id: "run-1", status: "applied", revision: 1, source_tick: 100, package_ids: [] },
+      { at: expect.any(String), run_id: "run-1", status: "discarded", reason: "MALFORMED_UPDATE", issues: expect.any(Array), package_ids: ["iron-a"] },
       { at: expect.any(String), status: "discarded", reason: "MALFORMED_UPDATE", package_ids: [] }]);
     expect(fs.statSync(path.join(dir, "ledger-history.jsonl")).mode & 0o777).toBe(0o600);
   });

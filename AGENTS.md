@@ -250,8 +250,8 @@ turn. Missing, delayed, malformed, stale or unexplained contradictory evidence
 holds `GO`; a sent report or successful update is not confirmation. Follow
 `docs/LIVE-VALIDATION.md` for installed field semantics.
 
-Before `GO` of a fresh run, archive the previous run's `operations.json` and
-`package-queue.json` into that run's directory and have the strategist initialise the new
+Before `GO` of a fresh run, archive the previous run's `operations.json`,
+`package-queue.json` and `ledger-history.jsonl` into that run's directory and have the strategist initialise the new
 ledger; a ledger from another run is archival evidence only. Before `GO` on any
 resumed save or after a mod upgrade, reconcile retained work: call `stop`
 with `keep_upkeep: true` once even when idle (packages written before it stay

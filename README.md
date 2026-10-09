@@ -280,7 +280,7 @@ failed package surfaces as `package_failed` in `next_event` and in
 made per minute, or the state of the line at a position); the bridge measures
 them once, two minutes of game time after the package's plan ends, and reports
 `package_verified` or `package_unmet` with the measured values, fixing and
-re-queuing nothing. The strategist selects research the same way: the ledger's
+re-queuing nothing; a failed or cancelled plan's metrics are `not_measured`. The strategist selects research the same way: the ledger's
 `research` list (technologies in queue order) is queued by that bridge once
 per revision, skipping what is already researched or queued, and recorded in
 `activity_log`. Every tool result carries `orders` (revision, NOW, package

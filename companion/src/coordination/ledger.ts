@@ -338,10 +338,12 @@ export function packageContract(): string {
  *  nothing. */
 export function recordLedgerHistory(file: string, envelope: unknown, result: LedgerApplyResult, at = new Date()): void {
   try {
-    const listed = (envelope as { update?: { build_packages?: unknown } } | null)?.update?.build_packages;
+    const sent = envelope as { run_id?: unknown; run?: { id?: unknown }; update?: { build_packages?: unknown } } | null;
+    const runId = typeof sent?.run_id === "string" ? sent.run_id : typeof sent?.run?.id === "string" ? sent.run.id : undefined;
+    const listed = sent?.update?.build_packages;
     const packageIds = Array.isArray(listed) ? listed.flatMap((entry) =>
       typeof entry?.package_id === "string" ? [entry.package_id] : []) : [];
-    const row = { at: at.toISOString(), ...result, package_ids: packageIds };
+    const row = { at: at.toISOString(), run_id: runId, ...result, package_ids: packageIds };
     fs.appendFileSync(path.join(path.dirname(file), "ledger-history.jsonl"), `${JSON.stringify(row)}\n`, { encoding: "utf8", mode: 0o600 });
   } catch { /* evidence only */ }
 }

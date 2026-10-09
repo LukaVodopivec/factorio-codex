@@ -45,8 +45,8 @@ const itemTotals = z.record(z.string(), z.number().int().nonnegative());
 export const milestonesSchema = z.object({ rocket_ready_tick: whole.optional(), rocket_launch_ordered_tick: whole.optional(),
   rocket_launched_tick: whole.optional(), research: z.record(z.string(), whole).optional() }).strict();
 const holdEpisode = z.object({ start_tick: whole, end_tick: whole.optional(), cause: z.string().optional() }).strict();
-/** Human holds since the save began (mod 0.36 on): how many, their closed
- *  ticks, and the last 16 episodes (end_tick absent while one is open). */
+/** Human holds since the save began (mod 0.36 on): how many, their ticks
+ *  (an open hold's so far included), and the last 16 episodes (end_tick absent while one is open). */
 export const holdsSchema = z.object({ count: whole, total_ticks: whole, recent: z.array(holdEpisode).max(16) }).strict();
 export const runSnapshotSchema = z.object({
   // null while the body is aboard a platform or in a cargo pod without a readable character (mod 0.22.3 on).
@@ -195,7 +195,7 @@ const ROCKET_MILESTONES = ["rocket_ready", "rocket_launch_ordered", "rocket_laun
 /** Between the baseline and final samples: each rocket milestone the final
  *  snapshot holds, with its tick and seconds from GO (the baseline tick;
  *  negative when it happened before this recording), human holds in the
- *  window (count, closed seconds, episodes that ended in it or are open), and
+ *  window (count, seconds, episodes that ended in it or are open), and
  *  handler faults in the window. A field is absent when the mod did not
  *  report it, or when its counter fell (another save). */
 export function runEvents(baseline: RunSnapshot, final: RunSnapshot): z.infer<typeof runEventsSchema> {

@@ -234,8 +234,8 @@ end
 local function body_moved(event)
   local ok, err = pcall(move_body, event)
   if ok then return end
-  local message = errors.record("event:body_moved", err)
-  if log then pcall(log, "[agentic-companion] body move handling failed: " .. message) end
+  -- errors.record writes the fault's server-log line.
+  errors.record("event:body_moved", err)
 end
 local function initialize()
   state.init()

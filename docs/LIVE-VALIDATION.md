@@ -999,7 +999,8 @@ To continue a run's factory with a new release instead of a fresh map:
    until idle. Repeat that call after the stop and takeover rehearsals, whose
    plain `stop` turns upkeep off until a plan finishes, so it is the last
    `stop` before `GO`.
-4. The old run's `operations.json` and `package-queue.json` stay archived in
+4. The old run's `operations.json`, `package-queue.json` and
+   `ledger-history.jsonl` stay archived in
    its directory. The strategist initialises the new run's ledger from fresh
    reads (packages from the old ledger are not queued again); the copied
    notebook continues, because a resumed save of the same factory continues

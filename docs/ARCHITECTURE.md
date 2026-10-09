@@ -193,7 +193,7 @@ Run telemetry, all beside the samples and never shown to the bots:
   with its `tick` and `elapsed_s` from `GO` (the baseline tick). Each
   technology's first finish tick stays in the samples' `milestones.research`.
 - `manifest.json` `telemetry.holds`: human holds in the window (`count`,
-  `total_seconds` of closed holds, and the `recent` episodes, at most 16, with
+  `total_seconds` of holds (an open hold's ticks so far included), and the `recent` episodes, at most 16, with
   `start_tick`, `end_tick` (absent while open) and `cause`), from the mod's
   hold record in `run_snapshot.holds`; `telemetry.handler_errors`: caught mod
   handler faults in the window, from `run_snapshot.handler_errors`. Each

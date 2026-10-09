@@ -159,11 +159,14 @@ local function human_control()
   return held == true, idle, cause
 end
 -- A step or task error the dispatcher caught, as its failed detail: a
--- deliberate refusal (errors.deliberate: coded, or raised without a source
--- location) as it stands; anything else is a fault kept in the error ring.
+-- refusal that leads with its code (CRAFT_INVALID: ...) as it stands;
+-- anything else is a fault kept in the error ring. A missing source location
+-- proves nothing here: the engine's own API errors ("LuaEntity API call when
+-- LuaEntity was invalid.") carry none either.
 local function caught(where, err)
-  local deliberate, message = errors.deliberate(err)
-  return deliberate and message or errors.record(where, err)
+  local message = errors.plain(err)
+  if message:match("^[A-Z][A-Z0-9_]+[A-Z0-9]:") then return message end
+  return errors.record(where, err)
 end
 -- The body's crafting queue for plan diagnostics ({recipe, count, queue_s}:
 -- its head entry and the seconds it still needs), or nil when it is empty.

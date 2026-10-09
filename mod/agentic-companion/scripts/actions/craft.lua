@@ -134,20 +134,20 @@ end
 function M.start(task)
   local c = companion.require_companion()
   if type(task.recipe) ~= "string" then
-    error("craft requires recipe = <recipe name>", 0)
+    error("CRAFT_INVALID: craft requires recipe = <recipe name>", 0)
   end
   local count = tonumber(task.count)
   if not count or count % 1 ~= 0 or count < 1 or count > MAX_COUNT then
-    error("craft crafts must be an integer from 1 to 100", 0)
+    error("CRAFT_INVALID: craft crafts must be an integer from 1 to 100", 0)
   end
   task.count = count
 
   local r = c.force.recipes[task.recipe]
   if not r then
-    error("unknown recipe: '" .. task.recipe .. "'", 0)
+    error("RECIPE_UNKNOWN: unknown recipe: '" .. task.recipe .. "'", 0)
   end
   if not r.enabled then
-    error("recipe " .. task.recipe .. " isn't unlocked yet — research it first", 0)
+    error("RECIPE_LOCKED: recipe " .. task.recipe .. " isn't unlocked yet — research it first", 0)
   end
   -- Hand-crafting keeps the recipe's surface conditions too.
   local refused = placement_geometry.condition_refusal(c.surface, "recipe", task.recipe)

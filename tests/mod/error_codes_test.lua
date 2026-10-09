@@ -181,24 +181,32 @@ check(storage.handler_errors.count == 3 and storage.handler_errors.recent[1].whe
   and storage.handler_errors.recent[3].where == "task:mine:start" and no_location(storage.handler_errors),
   "each runner error the dispatcher caught is in the ring; returned failures are not")
 
--- A deliberate refusal a runner raises (coded, or with no source location)
--- fails its step or task with the plain message, its code when it leads
--- with one, and never fills the error ring.
+-- A deliberate refusal a runner raises leads with its code: it fails its
+-- step or task with the plain message and that code, and never fills the
+-- error ring. An engine error carries no location either, but no code: it is
+-- a fault, kept in the ring.
 do
   local count = storage.handler_errors.count
   local mine_start, walk_tick = mine.start, walk.tick
-  mine.start = function() error("craft crafts must be an integer from 1 to 100", 0) end
+  mine.start = function() error("CRAFT_INVALID: craft crafts must be an integer from 1 to 100", 0) end
   walk.tick = function() error("AREA_INVALID: queue_plan build_ghosts step 1 area must be {left_top, right_bottom}", 0) end
   local plain = run({ { action = "mine", x = 3, y = 4, count = 1 } })
   local coded = run({ { action = "walk_to", x = 5, y = 5 } })
   local direct_refusal = tasks.enqueue({ task = { type = "mine" } })
   game.tick = game.tick + 1; tasks.on_tick()
-  mine.start, walk.tick = mine_start, walk_tick
-  check(plain.outcomes[1].error == "craft crafts must be an integer from 1 to 100"
-    and plain.outcomes[1].code == "STEP_FAILED_UNCLASSIFIED" and coded.outcomes[1].code == "AREA_INVALID"
-    and storage.tasks.records[direct_refusal.task_id].detail == "craft crafts must be an integer from 1 to 100"
+  check(plain.outcomes[1].error == "CRAFT_INVALID: craft crafts must be an integer from 1 to 100"
+    and plain.outcomes[1].code == "CRAFT_INVALID" and coded.outcomes[1].code == "AREA_INVALID"
+    and storage.tasks.records[direct_refusal.task_id].detail == "CRAFT_INVALID: craft crafts must be an integer from 1 to 100"
     and storage.handler_errors.count == count,
-    "deliberate refusals at step start, step tick and task start are no handler faults")
+    "coded refusals at step start, step tick and task start are no handler faults")
+  mine.start = function() error("LuaEntity API call when LuaEntity was invalid.", 0) end
+  local engine = run({ { action = "mine", x = 3, y = 4, count = 1 } })
+  mine.start, walk.tick = mine_start, walk_tick
+  local last = storage.handler_errors.recent[#storage.handler_errors.recent]
+  check(engine.outcomes[1].error == "LuaEntity API call when LuaEntity was invalid."
+    and storage.handler_errors.count == count + 1 and last.where == "task:mine:start"
+    and last.error == "LuaEntity API call when LuaEntity was invalid.",
+    "an engine error without a location or code is a handler fault in the ring")
 end
 
 -- A failed or partial plan leaves one server-log line with its code and

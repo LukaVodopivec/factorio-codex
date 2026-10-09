@@ -102,10 +102,11 @@ do
     end
   end
   check(not remedy, "the coded craft refusals state facts only")
-  for _, bad in ipairs({ { recipe = "no-such-recipe", count = 1 }, { recipe = "iron-gear-wheel", count = 0 } }) do
+  for _, bad in ipairs({ { recipe = "no-such-recipe", count = 1, code = "RECIPE_UNKNOWN" },
+    { recipe = "iron-gear-wheel", count = 0, code = "CRAFT_INVALID" } }) do
     local ok, why = pcall(craft.start, bad)
-    check(not ok and errors.deliberate(why) and not tostring(why):find(".lua:", 1, true),
-      "a craft refused at start is deliberate: " .. tostring(why))
+    check(not ok and errors.deliberate(why) and not tostring(why):find(".lua:", 1, true)
+      and tostring(why):sub(1, #bad.code + 2) == bad.code .. ": ", "a craft refused at start is coded: " .. tostring(why))
   end
 end
 

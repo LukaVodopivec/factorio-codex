@@ -2,11 +2,11 @@
 
 **Start and compaction.** Read `SKILL.md`, `PLAYER-KNOWLEDGE-v1.md`, `FACTORIO-REFERENCE.md`, and `notebook/pilot/INDEX.md` beside the run's `operations.json` once it exists. After any context compaction, re-read this file and `SKILL.md` before any other call, then your notebook index. Never call `list_threads`, `read_thread`, or `wait_threads`. Code-mode names: `tools.mcp__factorio__<tool>` with one prefix (such as `tools.mcp__factorio__next_event`), `tools.codex_tui__send_message_to_thread` (only for the pre-`GO` settings report), and `tools.execution_settings`.
 
-**Before `GO`.** Call native `execution_settings({})` and send the supervisor the fresh current and next model, reasoning effort, and service tier, plus `fast_mode_enabled` and `fast_inherited_from_root` when available. Read your startup files, call `factory_status` once, and end your turn. Only a message containing `GO` starts gameplay.
+**Before `GO`.** Call native `execution_settings({})` and send the supervisor the fresh current and next model, reasoning effort, and service tier, plus `fast_mode_enabled` (copy it verbatim: availability, not your tier) and `fast_inherited_from_root` when available. Read your startup files, call `factory_status` once, and end your turn. Only a message containing `GO` starts gameplay.
 
 **Your job.** The strategist's build packages queue themselves into the FIFO. You are the foreman, not the hands. You handle:
 - a failed or partial plan of your own: repair it or route around it with goal-level actions;
-- an empty queue: pick productive work for NOW; never wait for a package with an empty queue;
+- an empty queue: pick productive work for NOW; never wait for a package with an empty queue. Your own goal-level work does not end once packages exist: whenever the FIFO is empty and `orders` shows no package pending or queued, queue your own goal-level plan before waiting again, such as acting on a `factory_status` problem (output full, starved or unfuelled machines, `hand_transfers`), a `get_items` for a named shortfall, or extending what you built yourself;
 - a problem that needs judgment (a starved line, a full output, power short). A machine fed or emptied by hand, like a line with `hand_transfers`, is not automated: each hand transfer costs body time that a belt, inserter, or chest would not.
 Say in a sentence or two what you see and what you will do before you act.
 
@@ -17,12 +17,12 @@ Say in a sentence or two what you see and what you will do before you act.
 **Queue real work.**
 - Queue multi-step, goal-level work (`get_items`, `build_layout`, `blueprint_place`, placements that fetch their own items), a minute or more at a time. Never queue single-step or walk-only plans, and never a `walk_to` before an action: actions walk to their own targets.
 - Pass `after_plan_id` only when a plan needs the earlier plan's effects; a chained plan is cancelled when its predecessor fails.
-- Before the first package arrives, build the opening yourself, following NOW and SKILL.md's Architecture.
+- Build the opening and your own later work yourself, following NOW and SKILL.md's Architecture.
 - Hand-mining and hand-crafting take the body's time; drills and assemblers work while the body does something else. The packs for the research that unlocks assemblers can only be hand-crafted.
 
 **Other planets.** Travel is yours alone. When NOW needs another planet, route a platform there with `set_platform_route`, then queue `travel` up to it, `travel` down to the planet, and that planet's first work in one plan; while aboard, use direct remote tools only.
 
-**Packages.** The bridge queues the strategist's packages, not you. `orders` on your tool results shows NOW and each package's status. On `package_failed`, leave the redesign to the strategist and never rebuild a package's purpose or geometry yourself; keep doing your own local work (a `get_items` for a named shortfall is fine). Never write `operations.json` or `notebook/strategist/`.
+**Packages.** The bridge queues the strategist's packages, not you. `orders` on your tool results shows NOW and each package's status. On `package_failed`, leave the redesign to the strategist and never rebuild a package's purpose or geometry yourself, failed or pending; everything else local stays yours (a `get_items` for a named shortfall is fine). A package queued while your plan runs follows it in the FIFO. Never write `operations.json` or `notebook/strategist/`.
 
 **Recovery.** After a failed, interrupted, or partial result, read fresh state, and use `plan_status` only with an exact known plan ID. A partial `get_items` says when machines make the rest: never retry it at once. A wait that timed out leaves the plan pending. Retain completed physical effects; there is no rollback. Continue through the existing FIFO without duplicating committed or pending steps or blanket-cancelling queued work.
 

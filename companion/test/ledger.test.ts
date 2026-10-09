@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { AFTER_PACKAGE_ID_RULE, VERIFY_RULE, applyLedgerFile, operationsLedgerSchema, reduceLedger } from "../src/coordination/ledger.js";
+import { AFTER_PACKAGE_ID_RULE, VERIFY_RULE, applyLedgerFile, operationsLedgerSchema, packageContract, reduceLedger } from "../src/coordination/ledger.js";
+import { packageStepSchema } from "../src/mcp/runPlan.js";
 
 const temporary: string[] = [];
 afterEach(() => {
@@ -61,17 +62,40 @@ describe("compact strategist operations ledger", () => {
   });
 
   it.each([
-    ["malformed", {}, "MALFORMED_REPORT"],
+    ["malformed", {}, "MALFORMED_UPDATE"],
     ["wrong run", { ...envelope(), run_id: "other" }, "WRONG_RUN"],
     ["wrong save", { ...envelope(), save_identity: "other" }, "WRONG_SAVE"],
   ])("discards %s evidence without changing the ledger", (_label, report, reason) => {
     expect(reduceLedger(ledger(), report).result).toMatchObject({ status: "discarded", reason });
   });
 
-  it("discards duplicate and stale reports without blocking the pilot", () => {
+  it("discards duplicate and stale updates, naming the source_tick to exceed", () => {
     const existing = { ...ledger(), source_tick: 100, revision: 4 };
-    expect(reduceLedger(existing, envelope(100)).result).toEqual({ status: "discarded", reason: "DUPLICATE_REPORT" });
-    expect(reduceLedger(existing, envelope(99)).result).toEqual({ status: "discarded", reason: "STALE_REPORT" });
+    expect(reduceLedger(existing, envelope(100)).result).toEqual({ status: "discarded", reason: "DUPLICATE_UPDATE",
+      issues: ["source_tick must exceed 100"] });
+    expect(reduceLedger(existing, envelope(99)).result).toEqual({ status: "discarded", reason: "STALE_UPDATE",
+      issues: ["source_tick must exceed 100"] });
+  });
+
+  it("prints the package contract generated from the schemas with ledger-apply --schema", () => {
+    const contract = packageContract();
+    // Every package step action but travel (the pilot's), with its required and optional fields.
+    for (const option of packageStepSchema.options) {
+      const action = option.shape.action.value;
+      const line = contract.split("\n").find((row) => row.startsWith(`  ${action}: `));
+      if (action === "travel") { expect(line).toBeUndefined(); continue; }
+      expect(line, action).toBeDefined();
+    }
+    expect(contract).toContain("  pickup_items: x: number; y: number; item: string; count: integer | optional: -");
+    expect(contract).toContain("  blueprint_place: name: string matching");
+    expect(contract).toMatch(/flip: horizontal\|vertical; mode: hand\|ghosts/);
+    expect(contract).toContain("package_id: string matching ^[a-z0-9-]{1,32}$; serves: NOW|NEXT;");
+    expect(contract).toContain("at most 8192 bytes");
+    expect(contract).toContain(AFTER_PACKAGE_ID_RULE);
+    expect(contract).toContain(VERIFY_RULE);
+    const root = path.resolve(import.meta.dirname, "../..");
+    const printed = execFileSync(path.join(root, "node_modules/.bin/tsx"), [path.join(root, "companion/src/cli.ts"), "ledger-apply", "--schema"], { encoding: "utf8" });
+    expect(printed.trim()).toBe(contract);
   });
 
   it("writes atomically with mode 0600 and preserves immutable run identity", () => {
@@ -90,10 +114,10 @@ describe("compact strategist operations ledger", () => {
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(expected);
     expect(fs.statSync(file).mode & 0o7777).toBe(0o600);
     for (const [report, reason] of [
-      [envelope(100), "DUPLICATE_REPORT"], [envelope(99), "STALE_REPORT"],
+      [envelope(100), "DUPLICATE_UPDATE"], [envelope(99), "STALE_UPDATE"],
       [{ ...envelope(101), run_id: "other" }, "WRONG_RUN"],
       [{ ...envelope(101), save_identity: "other" }, "WRONG_SAVE"],
-      [{ ...envelope(101), update: {} }, "MALFORMED_REPORT"],
+      [{ ...envelope(101), update: {} }, "MALFORMED_UPDATE"],
     ] as const) {
       expect(applyLedgerFile(file, report)).toMatchObject({ status: "discarded", reason });
       expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(expected);
@@ -112,7 +136,7 @@ describe("compact strategist operations ledger", () => {
     { ...initialization(), run_id: "run-1", save_identity: "fresh-space-age" },
   ])("rejects invalid or ambiguous initialization without creating a file", (report) => {
     const file = ledgerFile();
-    expect(applyLedgerFile(file, report)).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(applyLedgerFile(file, report)).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(fs.existsSync(file)).toBe(false);
     expect(fs.readdirSync(path.dirname(file))).toEqual([]);
   });
@@ -260,7 +284,7 @@ describe("build packages the bridge queues", () => {
     expect(operationsLedgerSchema.parse(older).research).toEqual([]);
     for (const research of [["automation", "automation"], Array.from({ length: 8 }, (_, index) => `tech-${index}`), ["../x"], [""]]) {
       expect(reduceLedger(ledger(), { ...report, update: { ...report.update, research } }).result)
-        .toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+        .toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     }
   });
 
@@ -275,7 +299,7 @@ describe("build packages the bridge queues", () => {
     expect(reduced.result).toMatchObject({ status: "applied", revision: 1 });
     expect(reduced.ledger?.build_packages[0].steps.at(-1)).toMatchObject({ action: "mine", count: 1, allow_fluid_loss: false });
     const long = { ...drillPair(), steps: Array.from({ length: 201 }, () => ({ action: "walk_to", x: 1, y: 2 })) };
-    expect(reduceLedger(ledger(), withPackages([long])).result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(reduceLedger(ledger(), withPackages([long])).result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
   });
 
   it("rejects a layout without exactly one of anchor or site, and placement on its own mine step", () => {
@@ -288,7 +312,7 @@ describe("build packages the bridge queues", () => {
     const mine = { action: "mine", x: 45, y: -30, target_kind: "owned", expected_name: "wooden-chest" };
     const replaced = { ...drillPair(), steps: [mine, ...drillPair().steps] };
     const result = reduceLedger(ledger(), withPackages([replaced])).result;
-    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("build_packages.0.steps.1")
       && issue.includes("own mine step"))).toBe(true);
   });
@@ -313,7 +337,7 @@ describe("build packages the bridge queues", () => {
     ];
     for (const [bad, text] of cases) {
       const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), steps: bad }])).result;
-      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
       expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(text)), text).toBe(true);
     }
   });
@@ -341,7 +365,7 @@ describe("build packages the bridge queues", () => {
     ];
     for (const [bad, text] of cases) {
       const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), steps: bad }])).result;
-      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
       expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(text)), text).toBe(true);
     }
   });
@@ -371,7 +395,7 @@ describe("build packages the bridge queues", () => {
     ];
     for (const [packages, path] of cases) {
       const result = reduceLedger(ledger(), withPackages(packages)).result;
-      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
       expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(path))).toBe(true);
     }
   });
@@ -381,7 +405,7 @@ describe("build packages the bridge queues", () => {
     expect(reduceLedger(ledger(), withPackages([successor])).result).toMatchObject({ status: "applied" });
     const { build_packages: _omitted, ...update } = envelope(101).update;
     const result = reduceLedger(ledger(), { ...envelope(101), update }).result;
-    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("update.build_packages"))).toBe(true);
   });
 
@@ -448,7 +472,7 @@ describe("build packages the bridge queues", () => {
     ];
     for (const [entry, text] of cases) {
       const result = reduceLedger(ledger(), withPackages([entry])).result;
-      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+      expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
       expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(text)), text).toBe(true);
     }
     expect(reduceLedger(ledger(), withPackages([{ ...drillPair(), surface: "platform:3" }])).result).toMatchObject({ status: "applied" });
@@ -465,12 +489,12 @@ describe("build packages the bridge queues", () => {
     // The same id with changed steps would never be queued: rejected with the path.
     const changed = { ...drillPair(), steps: drillPair().steps.slice(0, 2) };
     const result = applyLedgerFile(file, withPackages([changed], 103));
-    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes("build_packages.0.package_id")
       && issue.includes("already used (status failed)"))).toBe(true);
     // Dropped, then listed again under the old id: rejected too.
     expect(applyLedgerFile(file, withPackages([], 104))).toMatchObject({ status: "applied", revision: 4 });
-    expect(applyLedgerFile(file, withPackages([drillPair()], 105))).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(applyLedgerFile(file, withPackages([drillPair()], 105))).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(applyLedgerFile(file, withPackages([drillPair("coal-drill-furnace-2")], 106))).toMatchObject({ status: "applied", revision: 5 });
   });
 
@@ -486,7 +510,7 @@ describe("build packages the bridge queues", () => {
     const long = { ...envelope(101), update: { ...update, task_list: { ...update.task_list,
       NOW: { ...update.task_list.NOW, essential_prerequisite: "x".repeat(161) } } } };
     const result = reduceLedger(ledger(), long).result;
-    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(result.status === "discarded" && result.issues?.some((issue) =>
       issue.includes("update.task_list.NOW.essential_prerequisite") && issue.includes("one outcome sentence"))).toBe(true);
   });
@@ -511,7 +535,7 @@ describe("build packages the bridge queues", () => {
     [["notebook/a.md", "notebook/b.md", "notebook/c.md", "notebook/d.md"], "build_packages.0.notes"],
   ])("rejects package notes %j outside the bounded notebook shape", (notes, issuePath) => {
     const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), notes }])).result;
-    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.includes(issuePath))).toBe(true);
   });
 
@@ -539,7 +563,7 @@ describe("build packages the bridge queues", () => {
     [[{ line_at: { x: 1 }, state: "running" }], "build_packages.0.verify.0"],
   ])("rejects verify %j outside its two metric shapes", (verify, issuePath) => {
     const result = reduceLedger(ledger(), withPackages([{ ...drillPair(), verify }])).result;
-    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(result.status === "discarded" && result.issues?.some((issue) => issue.startsWith(`update.${issuePath}`))).toBe(true);
   });
 
@@ -548,7 +572,7 @@ describe("build packages the bridge queues", () => {
     expect(applyLedgerFile(file, initialization())).toMatchObject({ status: "applied", revision: 1 });
     const before = fs.readFileSync(file, "utf8");
     const result = applyLedgerFile(file, withPackages([{ ...drillPair(), notes: ["notebook/absent.md"] }]));
-    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT",
+    expect(result).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE",
       issues: ["build_packages.0.notes.0: notebook/absent.md is not a file beside the ledger"] });
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
@@ -556,7 +580,7 @@ describe("build packages the bridge queues", () => {
   it("rejects an invalid package at initialization without creating the ledger", () => {
     const file = ledgerFile();
     const init = { ...initialization(), update: { ...initialization().update, build_packages: [drillPair("a", 500)] } };
-    expect(applyLedgerFile(file, init)).toMatchObject({ status: "discarded", reason: "MALFORMED_REPORT" });
+    expect(applyLedgerFile(file, init)).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(fs.existsSync(file)).toBe(false);
   });
 });

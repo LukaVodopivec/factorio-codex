@@ -441,6 +441,10 @@ export function normalizePlanDiagnostics(value: any): any {
 }
 
 export const FIFO_IDLE_HINT = "body idle: queue bounded work before further reads";
+/** Roles that only read (strategist, advisor) queue no work: their idle
+ *  wording is a fact, never a cue to act. */
+export const readsOnly = (role?: string) => role === "strategist" || role === "advisor";
+export const fifoIdleFact = (seconds: number) => `FIFO empty and body idle for ${seconds} s`;
 export const FIFO_IDLE_HINT_SECONDS = 30;
 export const FIFO_HUMAN_HINT = "human control: the body is held and plans stay queued in order; this is neither idleness nor failure";
 export interface FifoState { active_plan_id: number | null; queue_depth: number | null; idle_seconds: number | null;
@@ -462,9 +466,10 @@ function itemTotals(fifo: Record<string, unknown>, key: "queued_demand" | "short
     ...(typeof omitted === "number" ? { [`omitted_${key}`]: omitted } : {}) };
 }
 
-// Lua omits nil fields; every read result states all three, plus the idle hint.
-// A human hold is reported as sent and replaces the idle hint: a parked FIFO is not idle.
-export function normalizeFifo(value: unknown): FifoState | undefined {
+// Lua omits nil fields; every read result states all three, plus the idle hint
+// (for a reading role, the idle fact). A human hold is reported as sent and
+// replaces the idle hint: a parked FIFO is not idle.
+export function normalizeFifo(value: unknown, role?: string): FifoState | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const fifo = value as Record<string, unknown>;
   const number = (field: unknown) => typeof field === "number" && Number.isFinite(field) ? field : null;
@@ -478,7 +483,8 @@ export function normalizeFifo(value: unknown): FifoState | undefined {
     ...(upkeepOff !== null ? { upkeep_off_since_tick: upkeepOff } : {}),
     ...(fifo.body && typeof fifo.body === "object" && !Array.isArray(fifo.body) ? { body: fifo.body as FifoState["body"] } : {}),
     ...itemTotals(fifo, "queued_demand"), ...itemTotals(fifo, "short_by"),
-    ...(held ? { hint: FIFO_HUMAN_HINT } : idle !== null && idle > FIFO_IDLE_HINT_SECONDS ? { hint: FIFO_IDLE_HINT } : {}) };
+    ...(held ? { hint: FIFO_HUMAN_HINT } : idle !== null && idle > FIFO_IDLE_HINT_SECONDS
+      ? { hint: readsOnly(role) ? fifoIdleFact(idle) : FIFO_IDLE_HINT } : {}) };
 }
 
 // The body idled while the caller reasoned; say so where the pilot looks next.

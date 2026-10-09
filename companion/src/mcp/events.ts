@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Bridge, TaskClock } from "../bridge.js";
-import { luaArray, withFeedFacts } from "./toolPayloads.js";
+import { luaArray, readsOnly, withFeedFacts } from "./toolPayloads.js";
 
 // A Lua record serialized empty may arrive as [].
 const record = (value: unknown) => value === undefined || (Array.isArray(value) && value.length === 0) ? {} : value;
@@ -241,6 +241,8 @@ export async function waitForEvent(bridge: Bridge, input: NextEventInput, source
 }
 
 export const IDLE_NOW = "the FIFO is empty and the body is idle: queue work now";
+/** The same for a role that only reads (strategist, advisor): a fact, never a cue. */
+export const IDLE_FACT = "the FIFO is empty and the body is idle";
 
 const at = (point: unknown) => { const p = point as { x?: number; y?: number } | undefined; return `(${p?.x}, ${p?.y})`; };
 
@@ -308,7 +310,7 @@ function repeatText(outcomes: unknown): string {
   return repeated.slice(0, 2).map((row: any) => `; ${row.code} again at step ${row.step} ${row.action} (${row.repeat} in a row)`).join("");
 }
 
-function eventText(value: Record<string, unknown>): string {
+function eventText(value: Record<string, unknown>, idleText: string): string {
   switch (value.event) {
     case "plan_ended": {
       const research = value.research_finished as { technology?: string; research_idle?: boolean } | undefined;
@@ -335,7 +337,7 @@ function eventText(value: Record<string, unknown>): string {
     }
     case "entities_lost": return lossesText(Array.isArray(value.losses) ? value.losses as LossRow[] : []);
     case "queue_empty": return typeof value.upkeep_off_since_tick === "number"
-      ? `${IDLE_NOW}; upkeep off since stop at tick ${value.upkeep_off_since_tick} until a plan finishes` : IDLE_NOW;
+      ? `${idleText}; upkeep off since stop at tick ${value.upkeep_off_since_tick} until a plan finishes` : idleText;
     case "orders_changed": return "the strategist's orders changed";
     case "human_hold_started": return "a human took the body; plans stay queued";
     case "human_hold_ended": return "the human hold ended; queued plans resume";
@@ -353,16 +355,18 @@ function eventText(value: Record<string, unknown>): string {
 
 /** One line for the result. With since_tick a FIFO that is already empty
  *  never fires queue_empty again, so any event that finds the body idle (and
- *  not held by a human) says so: the last plan ending is the pilot's cue. */
-export function eventSummary(value: Record<string, unknown>): string {
+ *  not held by a human) says so: the last plan ending is the pilot's cue. A
+ *  role that only reads gets the idle fact without the cue. */
+export function eventSummary(value: Record<string, unknown>, role?: string): string {
+  const idleText = readsOnly(role) ? IDLE_FACT : IDLE_NOW;
   const space = Array.isArray(value.space_events) ? value.space_events.length : 0;
   const along = space > 0 && !(SPACE_EVENTS as readonly string[]).includes(String(value.event));
   const fired = value.event !== "watch_fired" && Array.isArray(value.watches) ? value.watches.length : 0;
   const lost = value.event !== "entities_lost" && Array.isArray(value.losses) ? value.losses as LossRow[] : [];
-  const text = `${eventText(value)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`
+  const text = `${eventText(value, idleText)}${along ? `; ${space} rocket, platform or travel event${space === 1 ? "" : "s"} in space_events` : ""}`
     + (fired > 0 ? `; ${fired} watch${fired === 1 ? "" : "es"} fired too, in watches` : "")
     + (lost.length > 0 ? `; ${lossesText(lost)}` : "");
   const body = value.body as { fifo_empty?: boolean; human_hold?: boolean } | undefined;
   const idle = body?.fifo_empty === true && body.human_hold !== true;
-  return idle && !["queue_empty", "cancelled", "human_hold_started"].includes(String(value.event)) ? `${text}; ${IDLE_NOW}` : text;
+  return idle && !["queue_empty", "cancelled", "human_hold_started"].includes(String(value.event)) ? `${text}; ${idleText}` : text;
 }

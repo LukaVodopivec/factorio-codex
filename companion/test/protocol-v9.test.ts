@@ -576,12 +576,13 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(described.build_layout).toMatch(/near_liquid picks water, lava, heavy-oil or ammoniacal-solution; a dry run may name surface/);
     expect(described.build_block).toBeUndefined();
     expect(described.build_layout).toMatch(/inserters \(picks_from, drops_into[^)]*\), belt_ends .*facing a reversed belt.*unpowered .*isolated_poles/);
-    for (const tool of ["build_layout", "blueprint_place"]) {
+    expect(described.build_layout).toMatch(/on_ore, mixed_ore, open_fluid_ports, belt_joins and port_fluids \(each as blueprint_place's dry run describes it\), materials and ground_items/);
+    for (const tool of ["blueprint_place"]) {
       expect(described[tool]).toMatch(/on_ore \(each placement but a drill whose footprint covers resource tiles, with the tiles by resource\)/);
       expect(described[tool]).toMatch(/mixed_ore \(each drill whose mining area holds more than one resource it can mine: mines.*also/);
       expect(described[tool]).toMatch(/open_fluid_ports \(.*pipe run's end.*port is the tile it points at\)/);
     }
-    for (const tool of ["build_layout", "blueprint_place", "connect_entities"]) {
+    for (const tool of ["blueprint_place", "connect_entities"]) {
       expect(described[tool]).toMatch(/belt_joins \(.*join straight \(lanes kept.*side_load \(both source lanes onto the near lane.*drop \(the lane on the drop point's side/);
       expect(described[tool]).toMatch(/adds: what this source puts there.*null when unknown.*mixes: true when the lane would carry more than one item kind/);
       expect(described[tool]).toMatch(/An inserter's adds is what its pickup gives: a crafter's recipe products, a chest's items now.*whitelist filters only those/);

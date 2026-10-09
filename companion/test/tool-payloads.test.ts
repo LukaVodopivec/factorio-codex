@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_TASK_TIMEOUT_MS, type Bridge } from "../src/bridge.js";
 import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads, type SessionRole } from "../src/mcp/server.js";
 import { queuePlanSchema } from "../src/mcp/runPlan.js";
-import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeBeltJoins, normalizeFifo, normalizePhysicalRoute, normalizeProductionRequirements, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
+import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeBeltJoins, normalizeFifo, normalizePhysicalRoute, normalizePlanDiagnostics, normalizeProductionRequirements, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
 describe("public MCP to Lua DTO mappings", () => {
   it("returns canonical structured content without duplicating it as JSON text", () => {
@@ -134,9 +134,48 @@ describe("public MCP to Lua DTO mappings", () => {
       async () => ({ call: vi.fn() } as unknown as Bridge), validConfig);
     expect(descriptions.blueprint_capture).toMatch(/footprint touches the area, edge included; poles carry their wires/);
     expect(descriptions.blueprint_place).toMatch(/dx\/dy are relative to the blueprint origin returned by capture\/describe/);
-    expect(descriptions.blueprint_place).toMatch(/refuses a blueprint with wires, quality, tiles or grid snapping/);
+    expect(descriptions.blueprint_place).toMatch(/pole copper wires between its own poles are remade by the poles' own connection as they are built \(wires_ignored counts them\), and it refuses circuit or power-switch wires, quality, tiles or grid snapping/);
+    expect(descriptions.blueprint_place).not.toMatch(/capture without poles/);
     for (const name of ["blueprint_capture", "blueprint_place", "blueprint_describe"]) expect(descriptions[name], name).toMatch(/case-sensitive/i);
   });
+  it("names the 0.37 execution, map and research facts in the descriptions, as facts only", () => {
+    const descriptions: Record<string, string> = {};
+    registerMcpTools({ registerTool(name, config: any) { descriptions[name] = config.description; } },
+      async () => ({ call: vi.fn() } as unknown as Bridge), validConfig);
+    const added: Array<[string, RegExp]> = [
+      ["get_items", /crafted_s: the hand-crafting seconds it queued\. craft: false takes, smelts and gathers only, never hand-crafts: what that leaves short ends SUPPLY_SHORTFALL with the bill/],
+      ["queue_plan", /hand_craft \{total_s, items\}: the bill rows its needs would hand-craft from current stock, with hand_craft_s each; absent when none/],
+      ["plan_status", /diagnostics has supply .* and crafting \{recipe, count, queue_s: hand-crafting seconds still queued\}/],
+      ["observe_local", /character\.crafting\.queue_s is the hand-crafting seconds still queued/],
+      ["explore", /PATCH_FOUND with name, bbox, centroid, distance and charted_before: true\. EXPLORE_NOT_FOUND names nearest_charted \{name, centroid, bbox, distance\}, or 'none charted'; charted_unknown: true while the patch list is capped or still filling/],
+      ["production_requirements", /time_estimate has bottleneck_seconds .*lab_seconds_at_speed_1 .*unit_time_s, which each missing technology row carries\) and lab_seconds at the current labs' speed \(only while labs progress\)/],
+      ["progression_status", /modifiers: its effects other than recipes, as \{type, modifier\}/],
+      ["set_recipe", /With insert_items and extract_items it runs a hand-fed assembler\./],
+      ["blueprint_place", /wires_ignored counts them/],
+    ];
+    // Facts and arithmetic only: no remedy, recommendation or count to build.
+    const remedy = /\b(should|must build|you need|consider|recommend\w*|build more|add more|instead build|it is best|try to)\b/i;
+    for (const [tool, fact] of added) {
+      expect(descriptions[tool], tool).toMatch(fact);
+      const clause = descriptions[tool]!.match(fact)![0];
+      expect(clause, tool).not.toMatch(remedy);
+    }
+    // The two largest descriptions name their sections instead of cataloguing every field.
+    expect(descriptions.factory_status!.length).toBeLessThan(4_000);
+    expect(descriptions.build_layout!.length).toBeLessThan(3_200);
+    expect(descriptions.factory_status).toMatch(/sections picks parts: lines, problems, power, stock, research, body, patches, logistics .*platforms .*elsewhere .*alerts/);
+    expect(descriptions.factory_status).toMatch(/patches: the four nearest resource patches with their outline \(bbox: left_top, right_bottom\), omitted_patches counting the rest/);
+  });
+
+  it("keeps the active step's supply and crafting diagnostics of a plan read", () => {
+    const supply = { stage: "auto_supply", supply: { phase: "craft", item: "electronic-circuit", wanted: 40 } };
+    const crafting = { recipe: "electronic-circuit", count: 40, queue_s: 18.5 };
+    const value = normalizePlanDiagnostics({ plan_id: 3, status: "running", outcomes: [],
+      diagnostics: { action: "get_items", supply, crafting, machine: { position: { x: 1, y: 2 } } } });
+    expect(value.diagnostics).toMatchObject({ supply, crafting, route: [], machines: [{ status: "active_target" }] });
+    expect(normalizePlanDiagnostics({ plan_id: 4, status: "completed", outcomes: [] }).diagnostics).toEqual({ route: [], machines: [] });
+  });
+
   it("states the ground-stack, pickup, move and enclosure codes", () => {
     const descriptions: Record<string, string> = {};
     registerMcpTools({ registerTool(name, config: any) { descriptions[name] = config.description; } },
@@ -570,8 +609,12 @@ describe("registered MCP handler parity with the current Lua protocol", () => {
     call.mockClear();
     await handlers.build_layout(layout);
     await handlers.get_items({ item: "iron-plate", count: 20 });
+    // craft: false is the bot's choice and goes to the mod as given; absent, it stays absent (the mod's default crafts).
+    await handlers.get_items(schemas.get_items.parse({ item: "iron-gear-wheel", count: 10, craft: false }));
     const queued = call.mock.calls.filter(([method]) => method === "queue_plan").map(([, params]) => (params as any).steps);
-    expect(queued).toEqual([[{ action: "build_layout", ...layout }], [{ action: "get_items", item: "iron-plate", count: 20 }]]);
+    expect(queued).toEqual([[{ action: "build_layout", ...layout }], [{ action: "get_items", item: "iron-plate", count: 20 }],
+      [{ action: "get_items", item: "iron-gear-wheel", count: 10, craft: false }]]);
+    expect(schemas.get_items.safeParse({ item: "iron-plate", count: 1, craft: "no" }).success).toBe(false);
     expect(Object.keys(handlers)).toHaveLength(53);
   });
 });

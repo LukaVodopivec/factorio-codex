@@ -127,6 +127,8 @@ export const areaFields = {
   radius: z.number().positive().max(32).optional(),
 };
 export const moveEntityFields = { from: point, to: point, direction: direction.optional(), allow_fluid_loss: z.boolean().optional(), mode: z.enum(["body", "robots"]).optional() };
+/** get_items: craft false takes, smelts and gathers only, never hand-crafts (absent: true). */
+export const getItemsFields = { item: z.string().min(1), count: z.number().int().min(1).max(5000), craft: z.boolean().optional() };
 export const exploreFields = { resource: z.string().min(1).optional(), direction: direction.optional(),
   max_distance: z.number().int().min(32).max(3000) };
 /** With platform (ghosts only) position is relative to the platform's hub. */
@@ -211,7 +213,7 @@ const planSteps = [
   z.object({ action: z.literal("inspect_entities"), positions: z.array(point).min(1).max(INSPECT_LIMIT) }).strict(),
   z.object({ action: z.literal("wait_for_item"), ...position, inventory: z.enum(["input", "output", "fuel", "main"]), item: z.string(), count: z.number().int().positive(), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
   z.object({ action: z.literal("wait_for_research"), technology: z.string().min(1), timeout_seconds: z.number().min(1).max(300).default(120) }).strict(),
-  z.object({ action: z.literal("get_items"), item: z.string().min(1), count: z.number().int().min(1).max(5000) }).strict(),
+  z.object({ action: z.literal("get_items"), ...getItemsFields }).strict(),
   z.object({ action: z.literal("build_layout"), ...layoutFields }).strict(),
   z.object({ action: z.literal("explore"), ...exploreFields }).strict(),
   z.object({ action: z.literal("move_entity"), ...moveEntityFields }).strict(),

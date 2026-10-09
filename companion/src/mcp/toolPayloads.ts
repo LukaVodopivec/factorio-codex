@@ -435,7 +435,9 @@ export function normalizePlanDiagnostics(value: any): any {
     ...(value.upkeep === undefined ? {} : { upkeep: upkeepReadback(value.upkeep) }),
     ...(value.upkeep_selection === undefined ? {} : { upkeep_selection: upkeepSelection(value.upkeep_selection) }),
     ...(value.transitions === undefined ? {} : { transitions: luaArray(value.transitions) }),
-    diagnostics: { route, machines },
+    // The active step's supply and hand-crafting state (mod 0.37 on), as sent.
+    diagnostics: { route, machines, ...(active?.supply !== undefined ? { supply: active.supply } : {}),
+      ...(active?.crafting !== undefined ? { crafting: active.crafting } : {}) },
     ...(physicalAudit ? { physical_audit: physicalAudit } : {}),
   };
 }

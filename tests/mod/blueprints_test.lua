@@ -146,6 +146,36 @@ check(fails(function() capture({ name = "crowd", area = { left_top = { x = -31, 
   "a blueprint takes at most 100 entities: a crowded area is refused by a bounded count, before any blueprint is built")
 bp.world = saved_world
 
+-- create_blueprint keeps world positions; the capture shifts them by an even
+-- whole vector so the block sits about (0, 0) and names that vector origin.
+check(smelter.origin and smelter.origin.x == 2 and smelter.origin.y == 2,
+  "a capture names the even origin it moved its entities from")
+bp.world = {
+  { name = "assembling-machine-1", type = "assembling-machine", position = { x = 36.5, y = -35.5 }, direction = 0, force = own },
+  { name = "inserter", type = "inserter", position = { x = 38.5, y = -35.5 }, direction = 4, force = own },
+  { name = "stone-furnace", type = "furnace", position = { x = 40, y = -36 }, direction = 0, force = own },
+}
+bp.world_tiles = { { name = "stone-path", position = { x = 35, y = -37 } } }
+local far_block = capture({ name = "far-block", area = { left_top = { x = 34, y = -38 }, right_bottom = { x = 42, y = -33 } } })
+local far_described = describe("far-block")
+local far_rows = far_described.entities
+check(far_block.origin.x == 38 and far_block.origin.y == -36 and far_described.origin.x == 38 and far_described.origin.y == -36
+  and far_rows[1].dx == -1.5 and far_rows[1].dy == 0.5 and far_rows[2].dx == 0.5 and far_rows[3].dx == 2 and far_rows[3].dy == 0
+  and far_block.size.w == 6 and far_block.size.h == 3,
+  "a capture far from (0, 0) describes small dx/dy about its origin; origin + dx/dy is where each stood")
+local far_tiles = bp.state(storage.blueprints.inventory[storage.blueprints.by_name["far-block"].slot]).tiles
+check(far_tiles and far_tiles[1].position.x == -3 and far_tiles[1].position.y == -1, "its tiles move by the same origin")
+local far_flip = blueprints.layout("far-block", "horizontal")
+check(far_flip.entities[1].dx == 1.5 and far_flip.entities[3].dx == -2 and far_flip.entities[2].direction == 12,
+  "a flip of a captured block pivots at the block, not the world origin")
+bp.world, bp.world_tiles = { { name = "inserter", type = "inserter", position = { x = 0.5, y = 0.5 }, direction = 0, force = own } }, {}
+local near = capture({ name = "near", area = { left_top = { x = -1, y = -1 }, right_bottom = { x = 1.9, y = 1.9 } } })
+check(near.origin.x == 0 and near.origin.y == 0 and describe("near").entities[1].dx == 0.5,
+  "a capture already about (0, 0) stays where it is")
+blueprints.delete({ name = "far-block" })
+blueprints.delete({ name = "near" })
+bp.world = saved_world
+
 -- create: a layout spec, nothing in the world.
 local made = blueprints.create({ name = "gears", entities = {
   { name = "assembling-machine-1", dx = 0.5, dy = 0.5, recipe = "iron-gear-wheel" },

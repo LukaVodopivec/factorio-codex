@@ -2,12 +2,13 @@
 -- members are checked against the documented 2.0.77 API (factorio_api_mock).
 -- A stack holds {item, entities, tiles}; create_blueprint reads `world`
 -- (entities with name, type, position, direction, force, recipe?) inside the
--- area for the given force, positions made relative to the area's centre
--- tile corner; build_blueprint makes ghost tables and records its arguments.
+-- area for the given force at their world positions, as the engine keeps
+-- them (and tiles from `world_tiles` inside the area, at theirs);
+-- build_blueprint makes ghost tables and records its arguments.
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]+$")
 local mock = dofile(here .. "/factorio_api_mock.lua")
 
-local M = { mock = mock, built = {}, created = {}, world = {} }
+local M = { mock = mock, built = {}, created = {}, world = {}, world_tiles = {} }
 local states = setmetatable({}, { __mode = "k" })
 
 local function copy_list(list)
@@ -53,18 +54,23 @@ function M.stack()
       assert(st.item == "blueprint", "create_blueprint on a blueprint item")
       M.created[#M.created + 1] = args
       local a = args.area
-      local cx = math.floor((a.left_top.x + a.right_bottom.x) / 2)
-      local cy = math.floor((a.left_top.y + a.right_bottom.y) / 2)
-      local list = {}
+      local list, tiles = {}, {}
       for _, e in ipairs(M.world) do
         if e.force == args.force and e.position.x > a.left_top.x and e.position.x < a.right_bottom.x
           and e.position.y > a.left_top.y and e.position.y < a.right_bottom.y then
           list[#list + 1] = { entity_number = #list + 1, name = e.name, recipe = e.recipe,
-            position = { x = e.position.x - cx, y = e.position.y - cy },
+            position = { x = e.position.x, y = e.position.y },
             direction = e.direction ~= 0 and e.direction or nil }
         end
       end
+      for _, t in ipairs(M.world_tiles) do
+        if t.position.x >= a.left_top.x and t.position.x < a.right_bottom.x
+          and t.position.y >= a.left_top.y and t.position.y < a.right_bottom.y then
+          tiles[#tiles + 1] = { name = t.name, position = { x = t.position.x, y = t.position.y } }
+        end
+      end
       st.entities = #list > 0 and list or nil
+      st.tiles = #tiles > 0 and tiles or nil
       return {}
     end,
     build_blueprint = function(args)

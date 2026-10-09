@@ -66,6 +66,14 @@ end
 -- One tile step out of an entity side, by cardinal direction.
 local UNIT = { [0] = { 0, -1 }, [4] = { 1, 0 }, [8] = { 0, 1 }, [12] = { -1, 0 } }
 
+-- A north-frame offset turned clockwise to a cardinal direction.
+local function rotate(p, direction)
+  if direction == 4 then return { x = -p.y, y = p.x } end
+  if direction == 8 then return { x = -p.x, y = -p.y } end
+  if direction == 12 then return { x = p.y, y = -p.x } end
+  return { x = p.x, y = p.y }
+end
+
 -- The normal pipe connections of a prototype facing a cardinal direction,
 -- as ports {box, at, target} relative to its position: at lies in the
 -- entity's own tile the connection leaves from, target in the tile it
@@ -74,8 +82,12 @@ local UNIT = { [0] = { 0, -1 }, [4] = { 1, 0 }, [8] = { 0, 1 }, [12] = { -1, 0 }
 -- footprint at the origin. A definition position inside the footprint is
 -- that tile (2.0: the connection's direction, turned with the entity, leads
 -- out); one outside it is the target itself. Underground and linked
--- connections are left out; an unreadable box gives no ports.
-function M.ports(proto, direction, area)
+-- connections are left out; an unreadable box gives no ports. mirror: the
+-- entity is placed mirrored, which reflects each north-frame connection
+-- across the entity's vertical axis (x to -x, east and west swapped) before
+-- the turn to direction (the order the game's horizontal blueprint flip
+-- implies: direction 16 - d with mirroring toggled).
+function M.ports(proto, direction, area, mirror)
   local out = {}
   direction = math.floor(tonumber(direction) or 0) % 16
   if direction % 4 ~= 0 then return out end
@@ -87,10 +99,14 @@ function M.ports(proto, direction, area)
       local box_index = tonumber(box.index) or tonumber(index)
       for _, connection in ipairs(box.pipe_connections or {}) do
         local kind = connection.connection_type
-        local p = vec(connection.positions and connection.positions[direction / 4 + 1])
+        local p = vec(connection.positions and connection.positions[mirror and 1 or direction / 4 + 1])
+        local d = tonumber(connection.direction)
+        if p and mirror then
+          p = rotate({ x = -p.x, y = p.y }, direction)
+          d = d and (16 - math.floor(d)) % 16
+        end
         if p and (kind == nil or kind == "normal") then
           if p.x > lt.x and p.x < rb.x and p.y > lt.y and p.y < rb.y then
-            local d = tonumber(connection.direction)
             local step = d and UNIT[(math.floor(d) + direction) % 16]
             if step then out[#out + 1] = { box = box_index, at = p, target = { x = p.x + step[1], y = p.y + step[2] } } end
           else
@@ -169,8 +185,8 @@ end
 -- M.ports of a crafting machine on a recipe, each port with its role and
 -- fluid (recipe_boxes; fluid false: a removed box that connects nothing,
 -- nil: not known).
-function M.recipe_ports(proto, recipe_name, direction, area)
-  local ports = M.ports(proto, direction, area)
+function M.recipe_ports(proto, recipe_name, direction, area, mirror)
+  local ports = M.ports(proto, direction, area, mirror)
   local uses = recipe_name and M.recipe_boxes(proto, recipe_name) or {}
   for _, port in ipairs(ports) do
     local use = uses[port.box]

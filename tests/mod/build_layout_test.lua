@@ -791,6 +791,20 @@ do
   local correct = refinery("advanced-oil-processing")
   check(correct.ok and mismatches(correct) == 0 and port_row(correct, 981.5, 983.5).meets == "pipe",
     "the same pipe holding crude oil at the crude-oil inlet is no mismatch")
+  -- A mirrored refinery gets port_fluids rows too, its ports reflected
+  -- across its vertical axis (assumed: the game mirrors the north frame
+  -- before turning it): water now south-east, where the heavy-oil pipe
+  -- stands, crude oil south-west, petroleum gas north-west.
+  do
+    blockers = { standing_fluid_pipe(981.5, 983.5, "heavy-oil") }
+    local mirrored = dry({ anchor = { x = 980, y = 980 }, entities = {
+      { name = "oil-refinery", dx = 0.5, dy = 0.5, recipe = "advanced-oil-processing", mirror = true } } })
+    local water, crude, gas = port_row(mirrored, 981.5, 983.5), port_row(mirrored, 979.5, 983.5), port_row(mirrored, 978.5, 977.5)
+    check(mirrored.ok and #(mirrored.port_fluids or {}) == 5 and water and water.fluid == "water" and water.meets == "pipe"
+      and water.mismatch == true and crude and crude.fluid == "crude-oil" and crude.meets == "nothing"
+      and gas and gas.role == "output" and gas.fluid == "petroleum-gas" and mismatches(mirrored) == 1,
+      "a mirrored refinery's port_fluids rows swap its water and crude-oil inlets (reflection across its vertical axis)")
+  end
   blockers = {}
   -- A planned pumpjack's crude oil into the water inlet: its source fluid
   -- (the resource under it) meets the port the recipe gives water.

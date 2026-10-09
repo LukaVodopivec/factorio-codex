@@ -1751,7 +1751,7 @@ end
 -- A crafting machine's ports carry their recipe role and fluid
 -- (fluid_connections.recipe_ports); a port of a box its recipe leaves out
 -- connects nothing in the game, so it is kept apart in V.closed[i]. A
--- mirrored entity's ports are not worked out: its tiles take any port.
+-- mirrored entity's ports are reflected (fluid_connections.ports).
 -- V.fluid_crafter marks a layout with a crafting machine on a recipe that
 -- takes or makes a fluid: only then are port_fluids rows worked out.
 local function fluid_ports(ctx, V)
@@ -1759,21 +1759,20 @@ local function fluid_ports(ctx, V)
   V.closed = V.closed or {}
   for i, p in ipairs(V.planned) do
     local recipe = CRAFTERS[p.proto.type] and p.recipe or nil
-    local key = p.name .. "|" .. p.direction .. "|" .. tostring(recipe)
+    local mirror = p.mirror == true
+    local key = p.name .. "|" .. p.direction .. "|" .. tostring(recipe) .. "|" .. tostring(mirror)
     local rel = cache[key]
     if rel == nil then
       ctx.calls = ctx.calls + 1
       local area = placement_geometry.footprint(p.proto, { x = 0, y = 0 }, p.direction)
-      rel = recipe and fluid_connections.recipe_ports(p.proto, recipe, p.direction, area)
-        or fluid_connections.ports(p.proto, p.direction, area)
+      rel = recipe and fluid_connections.recipe_ports(p.proto, recipe, p.direction, area, mirror)
+        or fluid_connections.ports(p.proto, p.direction, area, mirror)
       table.sort(rel, by_box)
       cache[key] = rel
       fluid_recipe[key] = recipe and uses_fluid(recipe) or false
     end
     if fluid_recipe[key] then V.fluid_crafter = true end
-    if #rel > 0 and p.mirror then
-      each_tile(p.area, function(x, y) V.wild[cell(x, y)] = true end)
-    elseif #rel > 0 then
+    if #rel > 0 then
       local list, closed = {}, {}
       for _, r in ipairs(rel) do
         local x, y = p.position.x, p.position.y
@@ -1809,7 +1808,7 @@ local function survey_start(ctx, result, only)
   end
   ctx.calls = ctx.calls + math.ceil(#planned / LOAD_PER_ITEM)
   local V = { planned = planned, tiles = tiles, items = {}, i = 1, widest = widest_supply(), group = {}, linked = {},
-    ports = {}, port_at = {}, wild = {}, seeds = {}, mixes = {}, unders = {}, closed = {}, carry = {}, met = {}, sources = {},
+    ports = {}, port_at = {}, seeds = {}, mixes = {}, unders = {}, closed = {}, carry = {}, met = {}, sources = {},
     rows = { inserters = {}, belt_ends = {}, unpowered = {}, on_ore = {}, mixed_ore = {}, open_fluid_ports = {},
       belt_joins = {} } }
   if not only or only.port_fluids then V.rows.port_fluids = {} end
@@ -1997,12 +1996,10 @@ local function mines(drill, name)
 end
 
 -- Whether a planned fluid port meets a connection back from the tile it
--- points at: a planned port there that points back (a mirrored planned
--- fluid entity's tiles take any), else an own entity's live connection
--- (one small query). A planned entity there with no port back meets
--- nothing. planned_only answers nil instead of querying.
+-- points at: a planned port there that points back, else an own entity's
+-- live connection (one small query). A planned entity there with no port
+-- back meets nothing. planned_only answers nil instead of querying.
 local function port_met(ctx, V, i, port, planned_only)
-  if V.wild[port.target] then return true end
   for _, other in ipairs(V.port_at[port.target] or {}) do
     if other.i ~= i and other.port.target == port.at then return true end
   end
@@ -2296,7 +2293,6 @@ local function port_rows(ctx, V, carry)
             break
           end
         end
-        if not name and V.wild[port.target] then name = V.planned[V.tiles[port.target][1]].name end
         if not name and met[slot] then name = met[slot].name end
         local own_set = own_node and carry(own_node)
         if own_set then

@@ -1174,4 +1174,105 @@ check(viewpoint.made_per_min == 4 and viewpoint.minutes_at_rate == nil,
   "a covered row still gives its own lines' rate, with no minutes for a short it has not")
 check(supply.expected_minutes(9, 4) == 2.3 and supply.expected_minutes(1, 0) == nil,
   "expected_minutes rounds up to a tenth and needs a rate")
+
+-- Enclosed by own entities: a nested walk ends BODY_ENCLOSED naming an own
+-- blocker. The supply steps out through it once per frame (move_entity's
+-- escape, a scripted runner here), starts the same action again, and only
+-- when that is not possible ends pinned with BODY_ENCLOSED and the walk's
+-- diagnostics, never a SUPPLY_SHORTFALL that tries every other source.
+do
+reset()
+local boxed_in, escapes, escape_answer, released = true, {}, nil, {}
+local ENCLOSED = { status = "failed", detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities",
+  outcome = { code = "BODY_ENCLOSED", diagnostics = { path = { start = { x = 0, y = 0 },
+    suggested_recovery = { x = 1.5, y = 0.5, expected_name = "inserter" } } } } }
+supply.register_runner("extract", stub("extract", function(task)
+  if boxed_in then return ENCLOSED end
+  local source = at(task.target)
+  local n = 0
+  for name, count in pairs(task.items) do n = n + move(source, name, count) end
+  return { status = "done", detail = "took " .. n, outcome = { target = { name = source.name, type = source.type, position = source.position } } }
+end))
+supply.register_runner("move_entity", {
+  start = function(task) escapes[#escapes + 1] = task end,
+  tick = function(task)
+    local answer = escape_answer(task)
+    if answer.status == "done" then boxed_in = false end
+    return answer
+  end,
+  cancelled = function(task) released[#released + 1] = task; return { code = "ESCAPE_CANCELLED", detail = "put it back" } end,
+})
+local STEPPED = { status = "done", detail = "stepped out through the inserter at (1.5, 0.5): took it up and put it back",
+  outcome = { code = "ESCAPED" } }
+escape_answer = function() return STEPPED end
+chest({ x = 5.5, y = 0.5 }, { wood = 4 })
+chest({ x = 9.5, y = 0.5 }, { wood = 40 })
+local stepped = run({ items = { { name = "wood", count = 2 } } })
+local extracts = {}
+for _, call in ipairs(calls) do if call.kind == "extract" then extracts[#extracts + 1] = call.task end end
+check(stepped.status == "done" and inventory.wood == 2 and #escapes == 1 and escapes[1].from.x == 1.5
+  and escapes[1].to.x == 1.5 and escapes[1].through.x == 5.5 and escapes[1].through.y == 0.5
+  and escapes[1].expected_name == "inserter" and #extracts == 2 and extracts[1].target.x == 5.5 and extracts[2].target.x == 5.5,
+  "an enclosed fetch steps out through the named own blocker toward the source, then fetches from the same source again")
+check(stepped.outcome.code == "SUPPLIED" and stepped.outcome.step_out.escaped
+  and stepped.detail:match("stepped out through the inserter at %(1%.5, 0%.5%)"),
+  "the supply's result says it stepped out")
+
+-- The step-out fails: pinned at once, no other source walked to, and the
+-- code is BODY_ENCLOSED with the walk's diagnostics and the step-out's error.
+reset()
+boxed_in, escapes = true, {}
+escape_answer = function() return { status = "failed", detail = "ESCAPE_FAILED: took up the inserter at (1.5, 0.5),"
+  .. " the walk out failed and it is back in place", outcome = { code = "ESCAPE_FAILED" } } end
+chest({ x = 5.5, y = 0.5 }, { wood = 4 })
+chest({ x = 9.5, y = 0.5 }, { wood = 40 })
+local caged = run({ items = { { name = "wood", count = 2 } } })
+extracts = {}
+for _, call in ipairs(calls) do if call.kind == "extract" then extracts[#extracts + 1] = call.task end end
+check(caged.status == "failed" and caged.outcome.code == "BODY_ENCLOSED" and #escapes == 1 and #extracts == 1
+  and caged.outcome.diagnostics.path.suggested_recovery.expected_name == "inserter"
+  and caged.outcome.step_out.attempted and caged.outcome.step_out.error:match("^ESCAPE_FAILED")
+  and caged.detail:match("^BODY_ENCLOSED: missing 2 wood; stepping out failed: ESCAPE_FAILED")
+  and not caged.detail:match("SUPPLY_SHORTFALL"),
+  "a failed step-out pins the supply: BODY_ENCLOSED with the walk diagnostics, no other source tried")
+
+-- Stepped out, but the fetch again ends enclosed: one step-out per frame.
+reset()
+boxed_in, escapes = true, {}
+supply.register_runner("move_entity", {
+  start = function(task) escapes[#escapes + 1] = task end,
+  tick = function() return STEPPED end,
+})
+chest({ x = 5.5, y = 0.5 }, { wood = 4 })
+local again = run({ items = { { name = "wood", count = 2 } } })
+check(again.status == "failed" and again.outcome.code == "BODY_ENCLOSED" and #escapes == 1
+  and again.outcome.step_out.escaped and again.detail:match("and the walk after it was still enclosed"),
+  "a fetch still enclosed after its step-out ends BODY_ENCLOSED and steps out only once")
+
+-- A plan that ends mid step-out lets go of the taken-up entity, from a
+-- get_items step and through an action's embedded auto-supply.
+reset()
+boxed_in, escapes, released = true, {}, {}
+supply.register_runner("move_entity", {
+  start = function(task) escapes[#escapes + 1] = task end,
+  tick = function() return nil end,
+  cancelled = function(task) released[#released + 1] = task; return { code = "ESCAPE_CANCELLED", detail = "put it back" } end,
+})
+chest({ x = 5.5, y = 0.5 }, { wood = 4 })
+local mid = { items = { { name = "wood", count = 2 } } }
+supply.start(mid)
+for _ = 1, 5 do supply.tick(mid) end
+local note = supply.cancelled(mid)
+local owner = { _supply = mid }
+local owner_note = supply.cancel_nested(owner)
+check(mid._escape and note and note.code == "ESCAPE_CANCELLED" and owner_note and owner_note.code == "ESCAPE_CANCELLED"
+  and #released == 2 and released[1] == mid._escape and released[2] == mid._escape,
+  "cancelling a supply mid step-out reaches the escape, directly and through an owner's _supply")
+supply.register_runner("extract", stub("extract", function(task)
+  local source = at(task.target)
+  local transfers = {}
+  for name, count in pairs(task.items) do transfers[#transfers + 1] = { item = name, extracted = move(source, name, count) } end
+  return { status = "done", detail = "took", outcome = { transfers = transfers } }
+end))
+end
 os.exit(failures == 0 and 0 or 1)

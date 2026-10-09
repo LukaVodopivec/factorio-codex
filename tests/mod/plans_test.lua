@@ -369,6 +369,21 @@ check(still_status.status == "failed" and still_status.outcomes[1].error:match("
   and escape and escape.through.x == 20 and escape.through.y == 0
   and still_status.outcomes[1].recovery.fix_error:match("refusing"),
   "a failed recovery returns the original failure with the fix error; without a resolved goal it walks toward the step's target")
+-- A supply that already stepped out (get_items, auto-supply) has used the
+-- step's one fix: no second escape through the same blocker.
+escape = nil
+walk.tick = scripted({
+  { status = "failed", detail = "BODY_ENCLOSED: missing 2 wood; stepping out failed: ESCAPE_FAILED: walled in",
+    outcome = { code = "BODY_ENCLOSED", step_out = { attempted = true, error = "ESCAPE_FAILED: walled in" },
+      diagnostics = { path = { resolved_goal = { x = 20, y = 0.5 },
+        suggested_recovery = { x = 5.5, y = 0.5, expected_name = "wooden-chest" } } } } },
+})
+local supplied_enclosed = tasks.queue_plan({ steps = { { action = "walk_to", x = 20, y = 0 } } })
+for tick = 381, 386 do game.tick = tick; tasks.on_tick() end
+local supplied_status = tasks.plan_status({ plan_id = supplied_enclosed.plan_id })
+check(supplied_status.status == "failed" and supplied_status.outcomes[1].code == "BODY_ENCLOSED"
+  and escape == nil and supplied_status.outcomes[1].recovery == nil,
+  "a BODY_ENCLOSED result whose supply already ran its step-out starts no second one")
 walk.tick = walk_tick
 tasks.register_action("move_entity", package.loaded["scripts.actions.move_entity"].action)
 end

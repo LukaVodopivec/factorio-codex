@@ -269,15 +269,26 @@ spawn("wooden-chest", { x = 60.5, y = 40.5 })
 local ok, err = pcall(move.start, move.action.make_task({ from = { x = 48, y = 40 }, to = { x = 60.5, y = 40.5 } }))
 check(not ok and tostring(err):match("wooden%-chest stands") and #mines == 0 and find("stone-furnace").valid,
   "a target another entity stands on is refused before mining")
+check(tostring(err):match("^MOVE_TARGET_BLOCKED: the stone%-furnace can't go to %(61%.0, 41%.0%): wooden%-chest stands"),
+  "a blocked target leads with MOVE_TARGET_BLOCKED")
 -- Trees there are cleared by the placement.
 spawn("tree", { x = 70.5, y = 40.5 })
 local cleared = run({ from = { x = 48, y = 40 }, to = { x = 71, y = 41 } })
 check(cleared.status == "done" and find("stone-furnace").position.x == 71 and not find("tree"),
   "a tree on the target is mined by the placement")
-check(not pcall(move.start, move.action.make_task({ from = { x = 71, y = 41 }, to = { x = 71, y = 41 } })),
-  "a move onto its own spot facing the same way is refused")
-check(not pcall(move.start, move.action.make_task({ from = { x = 500, y = 500 }, to = { x = 0, y = 0 } })),
-  "a move from where no own entity stands is refused")
+local ok_same, err_same = pcall(move.start, move.action.make_task({ from = { x = 71, y = 41 }, to = { x = 71, y = 41 } }))
+check(not ok_same and tostring(err_same):match("^MOVE_ALREADY_THERE: the stone%-furnace already stands at"),
+  "a move onto its own spot facing the same way is refused with MOVE_ALREADY_THERE")
+local ok_none, err_none = pcall(move.start, move.action.make_task({ from = { x = 500, y = 500 }, to = { x = 0, y = 0 } }))
+check(not ok_none and tostring(err_none) == "MOVE_SOURCE_MISSING: no own entity stands at (500.0, 500.0)",
+  "a move from where no own entity stands is refused with MOVE_SOURCE_MISSING")
+entities["crash-site-chest"] = proto("crash-site-chest", "container", 1, 1)
+entities["crash-site-chest"].items_to_place_this = nil
+local wreck = spawn("crash-site-chest", { x = 150.5, y = 40.5 })
+local ok_wreck, err_wreck = pcall(move.start, move.action.make_task({ from = { x = 150.5, y = 40.5 }, to = { x = 152.5, y = 40.5 } }))
+check(not ok_wreck and tostring(err_wreck) == "MOVE_NOT_PLACEABLE: no item places a crash-site-chest" and wreck.valid,
+  "an entity no item places is refused with MOVE_NOT_PLACEABLE")
+wreck.valid = false
 
 -- A short move overlapping its own spot still checks the rest of the target.
 mines = {}
@@ -412,7 +423,8 @@ approach_mock.ensure = function(_, c, target, reach)
   local dx, dy = target.x - c.position.x, target.y - c.position.y
   local d = math.sqrt(dx * dx + dy * dy)
   if d <= reach then return "ok" end
-  if walk_answer then return walk_answer end
+  local answer = type(walk_answer) == "function" and walk_answer() or type(walk_answer) == "table" and walk_answer
+  if answer then return answer end
   local step = math.min(0.5, d)
   place_body(c.position.x + dx / d * step, c.position.y + dy / d * step)
   return nil
@@ -491,6 +503,83 @@ check(boxed and boxed.status == "failed" and boxed.outcome.code == "ESCAPE_FAILE
   "a failed walk out still puts the entity back and reports it plainly")
 walk_answer = nil
 
+-- A cage of several own entities: chests stand behind the inserter. While
+-- one stands, the walk out ends BODY_ENCLOSED naming the nearest, as the
+-- walk does. Each escape steps out through the next one, the earlier ones
+-- still taken up, and each puts its own back, innermost first.
+local function cage(xs)
+  local walls = {}
+  for _, x in ipairs(xs) do walls[#walls + 1] = spawn("wooden-chest", { x = x, y = 0.5 }) end
+  inventory["wooden-chest"] = 0
+  walk_answer = function()
+    for _, x in ipairs(xs) do
+      if surface.find_entity("wooden-chest", { x = x, y = 0.5 }) then
+        return { status = "failed", detail = "couldn't get in range: BODY_ENCLOSED: no path",
+          outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
+            suggested_recovery = { x = x, y = 0.5, expected_name = "wooden-chest" } } } } }
+      end
+    end
+  end
+  return walls
+end
+local function clear_cage(xs)
+  for _, x in ipairs(xs) do
+    local wall = surface.find_entity("wooden-chest", { x = x, y = 0.5 })
+    if wall then wall.valid = false end
+  end
+  walk_answer = nil
+end
+local put_order = {}
+local counted_create = surface.create_entity
+surface.create_entity = function(args)
+  put_order[#put_order + 1] = args.name .. "@" .. args.position.x
+  return counted_create(args)
+end
+place_body(199.5, 0.5)
+cage({ 201.5 })
+put_order = {}
+local through_two = escape_run()
+check(through_two and through_two.status == "done" and through_two.outcome.code == "ESCAPED"
+  and #put_order == 2 and put_order[1] == "wooden-chest@201.5" and put_order[2] == "inserter@200.5"
+  and surface.find_entity("wooden-chest", { x = 201.5, y = 0.5 }) ~= nil
+  and surface.find_entity("inserter", { x = 200.5, y = 0.5 }) ~= nil
+  and inventory["wooden-chest"] == 0 and inventory.inserter == 0 and body.position.x > 202.85,
+  "a cage of two own entities: the escape steps out through the second, puts it back, then the first")
+clear_cage({ 201.5 })
+
+-- At most three levels: a fourth wall leaves the body inside, and every
+-- level puts its entity back in place, innermost first, and fails.
+place_body(199.5, 0.5)
+cage({ 201.5, 202.5, 203.5 })
+put_order = {}
+local walled = escape_run()
+check(walled and walled.status == "failed" and walled.outcome.code == "ESCAPE_FAILED" and walled.outcome.restored_in_place
+  and #put_order == 3 and put_order[1] == "wooden-chest@202.5" and put_order[2] == "wooden-chest@201.5"
+  and put_order[3] == "inserter@200.5" and inventory["wooden-chest"] == 0 and inventory.inserter == 0
+  and walled.detail:match("the next step%-out failed: ESCAPE_FAILED: took up the wooden%-chest at %(201%.5, 0%.5%)"),
+  "an escape nests at most three levels deep; each level puts its own entity back and the failure names each")
+clear_cage({ 201.5, 202.5, 203.5 })
+
+-- The plan ends while the nested escape walks out: the inner chest goes back
+-- first, then the inserter, and the note names both.
+place_body(199.5, 0.5)
+cage({ 201.5 })
+put_order = {}
+local nesting = { from = { x = 200.5, y = 0.5 }, to = { x = 200.5, y = 0.5 }, through = { x = 220.5, y = 0.5 },
+  expected_name = "inserter", id = 9 }
+move.start(nesting)
+for _ = 1, 80 do
+  if move.tick(nesting) then break end
+  if nesting._escape and nesting._escape._phase == "through" and body.position.x >= 202.5 then break end
+end
+local both = nesting._escape and move.cancelled(nesting)
+check(both and both.code == "ESCAPE_CANCELLED" and both.put_back and both.nested and both.nested.put_back
+  and #put_order == 2 and put_order[1] == "wooden-chest@201.5" and put_order[2] == "inserter@200.5"
+  and inventory["wooden-chest"] == 0 and inventory.inserter == 0,
+  "a plan ended mid nested step-out puts back the inner entity first, then the outer, and names both")
+clear_cage({ 201.5 })
+surface.create_entity = counted_create
+
 -- Something takes the spot while the body walks out: the inserter stays in
 -- the inventory and the failure says so plainly.
 place_body(199.5, 0.5)
@@ -506,8 +595,12 @@ check(lost and lost.status == "failed" and lost.outcome.code == "MOVE_PLACE_FAIL
 squatter.valid = false
 inventory.inserter = 0
 
-check(not pcall(move.start, { from = { x = 200.5, y = 0.5 }, to = { x = 200.5, y = 0.5 }, through = { x = 220.5, y = 0.5 },
-  expected_name = "fast-inserter", id = 9 }), "an escape refuses an entity other than the named one")
+local other_gate = spawn("inserter", { x = 200.5, y = 0.5 }, 4)
+local ok_other, err_other = pcall(move.start, { from = { x = 200.5, y = 0.5 }, to = { x = 200.5, y = 0.5 },
+  through = { x = 220.5, y = 0.5 }, expected_name = "fast-inserter", id = 9 })
+check(not ok_other and tostring(err_other):match("^MOVE_SOURCE_MISMATCH: a inserter, not the fast%-inserter, stands at")
+  and other_gate.valid, "an escape refuses an entity other than the named one with MOVE_SOURCE_MISMATCH")
+other_gate.valid = false
 
 -- The plan ends mid escape (a cancel, a stop, the plan's budget): the
 -- cancelled hook puts the taken-up inserter back when the body can, with

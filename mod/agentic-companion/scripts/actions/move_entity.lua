@@ -24,7 +24,11 @@
 -- outside after the put-back; else a failure that says whether the entity
 -- is back in place or in the inventory. A plan that ends mid escape
 -- (cancelled hook) puts the entity back when it can there and then, else
--- names it in the inventory.
+-- names it in the inventory. A cage of several own entities: a walk out that
+-- ends BODY_ENCLOSED naming another own blocker starts one nested escape
+-- through it while this entity stays taken up (at most MAX_ESCAPE_DEPTH
+-- levels); each level puts its own entity back, innermost first, and checks
+-- that the body stands outside it.
 local companion = require("scripts.companion")
 local registry = require("scripts.registry")
 local approach = require("scripts.actions.approach")
@@ -155,11 +159,12 @@ function M.start(task)
   local c = companion.require_companion()
   validate(task, "move_entity")
   local e = own_entity_at(c, task.from, task.mode == "robots")
-  if not e then error(string.format("move_entity: no own entity stands at (%.1f, %.1f)", task.from.x, task.from.y), 0) end
+  -- Refusals lead with a stable code (tasks.result_code, errors.code).
+  if not e then error(string.format("MOVE_SOURCE_MISSING: no own entity stands at (%.1f, %.1f)", task.from.x, task.from.y), 0) end
   if task.through ~= nil then
     if not point(task.through) then error("move_entity escape needs through = {x, y}", 0) end
     if task.expected_name and e.name ~= task.expected_name then
-      error(string.format("move_entity: a %s, not the %s, stands at (%.1f, %.1f)", e.name, task.expected_name,
+      error(string.format("MOVE_SOURCE_MISMATCH: a %s, not the %s, stands at (%.1f, %.1f)", e.name, task.expected_name,
         task.from.x, task.from.y), 0)
     end
     task.to, task.direction, task.mode = { x = e.position.x, y = e.position.y }, nil, nil
@@ -168,20 +173,20 @@ function M.start(task)
   local ok_items, items = pcall(function() return proto.items_to_place_this end)
   local first = ok_items and type(items) == "table" and items[1] or nil
   local item = type(first) == "string" and first or type(first) == "table" and first.name or nil
-  if not item then error("move_entity: no item places a " .. e.name, 0) end
+  if not item then error("MOVE_NOT_PLACEABLE: no item places a " .. e.name, 0) end
   local direction = task.direction ~= nil and math.floor(task.direction) % 16 or e.direction
   local w, h = tonumber(proto.tile_width) or 1, tonumber(proto.tile_height) or 1
   if direction % 8 == 4 then w, h = h, w end
   local to = { x = snapped(task.to.x, w), y = snapped(task.to.y, h) }
   if to.x == e.position.x and to.y == e.position.y and direction == e.direction and not task.through then
-    error(string.format("move_entity: the %s already stands at (%.1f, %.1f) facing that way", e.name, to.x, to.y), 0)
+    error(string.format("MOVE_ALREADY_THERE: the %s already stands at (%.1f, %.1f) facing that way", e.name, to.x, to.y), 0)
   end
   if task.mode == "robots" then
     task._proto, task._item, task._to, task._direction = proto, item, to, direction
     return robot_move.start(task, c, e)
   end
   local why = blocked(c, e, proto, to, direction)
-  if why then error(string.format("move_entity: the %s can't go to (%.1f, %.1f): %s", e.name, to.x, to.y, why), 0) end
+  if why then error(string.format("MOVE_TARGET_BLOCKED: the %s can't go to (%.1f, %.1f): %s", e.name, to.x, to.y, why), 0) end
   -- Only an assembling machine takes a recipe (set_recipe); a furnace's
   -- follows its input.
   local recipe
@@ -254,6 +259,23 @@ local function past_gap(task)
   local half = math.max(area.right_bottom.x - area.left_top.x, area.right_bottom.y - area.left_top.y) / 2
   local out = (half + 1.5) * 1.5 + ESCAPE_REACH
   return { x = cx + dx / length * out, y = cy + dy / length * out }
+end
+
+-- Escape: the walk out still ends enclosed and names another own blocker.
+-- One nested escape through it, this level's entity still taken up, at most
+-- MAX_ESCAPE_DEPTH levels in all. true once started, else false and why.
+local MAX_ESCAPE_DEPTH = 3
+local function nested_escape(task, reached)
+  local depth = task.depth or 1
+  if task._nested or depth >= MAX_ESCAPE_DEPTH then return false end
+  local ok, blocker = pcall(function() return reached.outcome.diagnostics.path.suggested_recovery end)
+  if not (ok and type(blocker) == "table" and reached.outcome.code == "BODY_ENCLOSED"
+    and type(blocker.x) == "number" and type(blocker.y) == "number") then return false end
+  task._nested = true
+  local at = { x = blocker.x, y = blocker.y }
+  local started, err = pcall(supply.begin, task, "_escape", { type = "move_entity", from = at, to = at,
+    through = task.through, expected_name = blocker.expected_name, depth = depth + 1 })
+  return started, not started and plain(err) or nil
 end
 
 -- Escape, with the entity back in place: the failure when the body is not
@@ -342,6 +364,19 @@ function M.tick(task)
     placement_geometry.footprint(task._proto, task._to, task._direction), placement_geometry.character_box(c)) then
     task._reentered = true
   end
+  -- A nested escape (the walk out met another own blocker) runs to its end
+  -- first; it puts its own entity back before this level does.
+  if task._escape then
+    local inner = supply.step(task, "_escape")
+    if not inner then return nil end
+    if inner.status == "done" then
+      -- Out through the next opening, past this entity's open spot: the walk
+      -- on only has to stand a tile clear of it.
+      task._through_entered = true
+    else
+      task._through_error = "the next step-out failed: " .. tostring(inner.detail)
+    end
+  end
   if task._sub then
     local kind = task._sub.type
     local result = supply.step(task, "_sub")
@@ -377,7 +412,7 @@ function M.tick(task)
     if not ok then return failed(task, "MOVE_MINE_FAILED", plain(err)) end
     return nil
   end
-  if task._phase == "through" and not stepped_out(task, c) then
+  if task._phase == "through" and not task._through_error and not stepped_out(task, c) then
     local reached = approach.ensure(task, c, task._past or task.through, ESCAPE_REACH)
     if reached == nil then return nil end
     if reached == "ok" and not task._past and not stepped_out(task, c) then
@@ -385,8 +420,12 @@ function M.tick(task)
       task._past = past_gap(task)
       if task._past then return nil end
     end
+    local nested, nested_error
+    if type(reached) == "table" then nested, nested_error = nested_escape(task, reached) end
+    if nested then return nil end
     if not stepped_out(task, c) then
-      task._through_error = type(reached) == "table" and tostring(reached.detail)
+      task._through_error = type(reached) == "table" and (tostring(reached.detail)
+        .. (nested_error and ("; the next step-out did not start: " .. nested_error) or ""))
         or string.format("the walk out ended within a tile of the %s's spot", snap.name)
     end
   end
@@ -490,7 +529,11 @@ end
 
 function M.cancelled(task, body_only)
   if task.mode == "robots" then return not body_only and robot_move.cancelled(task) or nil end
-  return body_cancelled(task)
+  -- A nested escape lets go of its entity first: innermost first.
+  local inner = type(task._escape) == "table" and M.cancelled(task._escape, body_only) or nil
+  local note = body_cancelled(task)
+  if inner and note then note.nested, note.detail = inner, note.detail .. "; " .. tostring(inner.detail) end
+  return note or inner
 end
 function M.diagnostics(task) if task.mode == "robots" then return robot_move.diagnostics(task) end end
 for _, name in ipairs({ "on_robot_pre_mined", "on_robot_mined_entity", "on_robot_built_entity" }) do

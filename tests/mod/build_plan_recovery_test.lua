@@ -213,7 +213,7 @@ local escapes, escape_result = {}, nil
 supply.register_runner("move_entity", { start = function(task) escapes[#escapes + 1] = task end,
   tick = function() return escape_result end })
 local enclosed_walk = { status = "failed",
-  detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities: the automatic step-out through the owned fast-inserter at (187.5,-7.5) (take it up, walk out, put it back) failed or was not possible",
+  detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities; owned blocker toward the goal: the fast-inserter at (187.5,-7.5)",
   outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
     suggested_recovery = { x = 187.5, y = -7.5, expected_name = "fast-inserter" } } } } }
 local enclosed_calls = 0
@@ -396,5 +396,54 @@ check(mid_escape and note and note.code == "ESCAPE_CANCELLED" and note.put_back 
   "a build ended mid step-out puts the taken-up gate back through its escape's cancelled hook")
 surface.create_entity, character.can_reach_entity = plain_create, nil
 walk_mock.tick = full_tick
+
+-- Auto-supply enclosed: the fetch from an own chest ends BODY_ENCLOSED, the
+-- supply's step-out fails, and the step names BODY_ENCLOSED and the failed
+-- step-out, not a SUPPLY_SHORTFALL. A build ended mid supply step-out lets
+-- go of the taken-up entity through the supply's escape.
+do
+  local registry = require("scripts.registry")
+  local saved = { stock_totals = registry.stock_totals, holders_with = registry.holders_with,
+    holder_inventory = registry.holder_inventory, holder_kind = registry.holder_kind }
+  local store = { valid = true, name = "wooden-chest", type = "container", position = { x = 5.5, y = 0.5 } }
+  registry.stock_totals = function(names) local out = {}; for _, n in ipairs(names) do out[n] = 4 end; return out end
+  registry.holders_with = function() return { { entity = store, position = store.position } } end
+  registry.holder_inventory = function() return { get_item_count = function() return 4 end } end
+  registry.holder_kind = function() return "chest" end
+  character.force.is_chunk_charted = function() return true end
+  character.get_main_inventory = function() return nil end
+  local extracts, escapes2, released, escape_answer = 0, {}, {}, nil
+  supply.register_runner("extract", { start = function() extracts = extracts + 1 end, tick = function()
+    return { status = "failed", detail = "couldn't get in range: BODY_ENCLOSED: no path; enclosed by owned entities",
+      outcome = { code = "BODY_ENCLOSED", diagnostics = { path = {
+        suggested_recovery = { x = 1.5, y = 0.5, expected_name = "inserter" } } } } }
+  end })
+  supply.register_runner("move_entity", { start = function(task) escapes2[#escapes2 + 1] = task end,
+    tick = function() return escape_answer end,
+    cancelled = function(task) released[#released + 1] = task; return { code = "ESCAPE_CANCELLED", detail = "put it back" } end })
+  escape_answer = { status = "failed", detail = "ESCAPE_FAILED: took up the inserter at (1.5, 0.5), the walk out failed" }
+  set_body(0.5, 0.5)
+  inventory["stone-furnace"], created = 0, 0
+  local fed = { id = 65, steps = { { item = "stone-furnace", position = { x = 10.5, y = 0.5 } } } }
+  build_plan.start(fed)
+  local fed_result
+  for _ = 1, 40 do fed_result = build_plan.tick(fed); if fed_result then break end end
+  check(fed_result and fed_result.status == "failed" and created == 0 and extracts == 1 and #escapes2 == 1
+    and escapes2[1].through.x == 5.5 and fed._supply_result and fed._supply_result.code == "BODY_ENCLOSED"
+    and fed_result.detail:match("BODY_ENCLOSED: missing 1 stone%-furnace; stepping out failed: ESCAPE_FAILED")
+    and not fed_result.detail:match("SUPPLY_SHORTFALL"),
+    "an auto-supply enclosed at its fetch steps out once and the step names BODY_ENCLOSED, not a shortfall")
+
+  escape_answer = nil
+  local cut2 = { id = 66, steps = { { item = "stone-furnace", position = { x = 10.5, y = 0.5 } } } }
+  build_plan.start(cut2)
+  for _ = 1, 10 do if build_plan.tick(cut2) or cut2._supply and cut2._supply._escape then break end end
+  local cut_note = cut2._supply and cut2._supply._escape and build_plan.cancelled(cut2)
+  check(cut_note and cut_note.code == "ESCAPE_CANCELLED" and #released == 1 and released[1] == cut2._supply._escape,
+    "a build ended mid supply step-out reaches the supply's escape through its cancelled hook")
+  for key, value in pairs(saved) do registry[key] = value end
+  character.force.is_chunk_charted, character.get_main_inventory = nil, nil
+  supply.register_runner("move_entity", package.loaded["scripts.actions.move_entity"])
+end
 
 os.exit(failures == 0 and 0 or 1)

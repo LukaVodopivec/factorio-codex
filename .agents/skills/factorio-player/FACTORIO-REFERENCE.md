@@ -161,22 +161,26 @@ run's report confirm each one on the real site.
 - `production_requirements` with a technology lists the packs it still needs;
   with targets it expands any item into its full chain.
 
+## Body time
+
+- Until machines make buildings, every building is hand-crafted, so the
+  body's crafting limits how fast the factory grows; an assembler making a
+  building item takes that time off the body.
+- Crafting from carried intermediates skips each sub-recipe's time: with the
+  gears already carried, a recipe that needs them crafts in its own time only
+  (a dry run's `hand_craft_s` counts what stock covers).
+- Construction robots build ghosts while the body does something else. A
+  ghost is only an order, built when a robot brings its item: from a roboport
+  network's storage, or from the body's inventory by robots it carries with a
+  personal roboport in worn armor (`queue_plan`'s `equip`).
+
 ## Reading the tools
 
-- `describe_prototype` gives per-machine numbers: `mining_speed`,
-  `crafting_speed`, `max_energy_usage` (joules per tick; × 60 for watts),
-  `mining_time` and products for resources, fuel categories and slot count.
-- `production_requirements` gives recipe executions, ingredient amounts and
-  total craft time at speed 1 for a target count. With `per_minute` true it
-  does the rate arithmetic above for you: machines per tier, fuel or power,
-  drills per raw resource and belt capacity for a target rate.
-- `factory_status` gives each production line one `state`: `running`,
-  `starved` (input missing; `cause` names it), `output_full`, `depleted` (a
-  drill's ore ran out; `cause` names the ore), `no_fuel`, `no_power`,
-  `frozen`, `no_heat`, `disabled` or `idle`; its problem rows name the
-  machine's own status. A full line with `cause` `outlet_no_fuel` has a dry
-  burner inserter taking from it, at `cause_position`. A running line's
-  `degraded` names its worst member problem and where (a dry boiler beside
-  working engines) before the line stops. Starved and output_full are the
-  flow problems above; no_fuel and no_power are energy problems. During a benchmark its
-  `trial` shows the time left and the score so far.
+- `describe_prototype` gives the per-machine numbers the formulas above take;
+  `production_requirements` with `per_minute` does the rate arithmetic for a
+  target rate. Their descriptions list the fields.
+- `factory_status` line states map onto the sections above: `starved` and
+  `output_full` are flow problems, `no_fuel` and `no_power` energy problems,
+  `depleted` a drill whose ore ran out; `cause` and `cause_position` say what
+  and where. A running line's `degraded` names its worst member problem (a
+  dry boiler beside working engines) before the line stops.

@@ -79,7 +79,7 @@ describe("persistent two-brain coordination contract", () => {
     for (const state of ["running", "starved", "output_full", "no_fuel", "no_power", "no_heat", "disabled", "idle"]) expect(skill).toContain(`\`${state}\``);
     for (const event of ["plan_ended", "queue_empty", "new_problem", "package_failed", "orders_changed", "human_hold_started", "human_hold_ended"])
       expect(skill).toContain(`\`${event}\``);
-    expect(flat(pilot)).toMatch(/Call `next_event` \(up to 120 s\) with `next_action`'s `since_tick` or the last `tick` seen/);
+    expect(flat(pilot)).toMatch(/Call `next_event` \(up to 25 s\) with `next_action`'s `since_tick` or the last `tick` seen/);
     expect(flat(pilot)).toMatch(/Never poll `plan_status`, `factory_status`, or any read in a loop/);
     expect(flat(strategist)).toMatch(/Never poll in a loop/);
     // lines is the 10 worst; the counts cover all. A line's cause is reported only when one is found.
@@ -499,6 +499,29 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(strategist)).toMatch(/A line that stays `hand_fed` or shows `hand_transfers` is served by hand: not automated, and it costs body time \(`hand_seconds`\)\./);
     expect(flat(knowledge)).toMatch(/\*\*Hand work\.\*\* A line served by hand is not automated: each transfer costs body time \(`hand_seconds`\)/);
     expect(readme).toMatch(/`hand_transfers`: such a line is served by hand, not automated, and costs body time/);
+  });
+
+  it("aims the strategist at the assigned milestone and gives mechanics, not orders, for body time", () => {
+    expect(strategist.split("\n")[0]).toMatch(/toward the run's assigned milestone \(the supervisor's objective or `GO` message names it; SKILL\.md's Objective is the long-run aim\)/);
+    expect(strategist.split("\n")[0]).not.toMatch(/Solar System Edge/);
+    expect(flat(skill)).toMatch(/until the factory completes Space Age and reaches the Solar System Edge/);
+    const flatPilot = flat(pilot);
+    expect(flatPilot).toMatch(/when no plan needs the body, upkeep already refuels burners and brings the current research's packs to labs from stock/);
+    expect(flatPilot).toMatch(/packs made by hand add nothing while every lab is already working/);
+    expect(flatPilot).toMatch(/hand-crafting inside `get_items` costs body time at crafting speed \(`queue_plan`'s `hand_craft` shows it; `craft: false` never hand-crafts\)/);
+    expect(flatPilot).toMatch(/your own plans hold the FIFO, so a package queued after one waits until it ends/);
+    expect(flatPilot).not.toMatch(/such as acting on a `factory_status` problem|up to 120 s/);
+    const flatKnowledge = flat(knowledge);
+    expect(flatKnowledge).toMatch(/Research is a critical path measured in lab time[^.]*\. A speed-up pays when the time it saves \(time left for that work, times its gain\) exceeds its own cost/);
+    expect(flatKnowledge).toMatch(/`production_requirements` gives `lab_seconds`/);
+    expect(flatKnowledge).toMatch(/\*\*Walking\*\* is body time[^.]*movement bonuses[^.]*raise the body's speed/);
+    const flatReference = flat(reference);
+    expect(flatReference).toMatch(/Until machines make buildings, every building is hand-crafted, so the body's crafting limits how fast the factory grows/);
+    expect(flatReference).toMatch(/Crafting from carried intermediates skips each sub-recipe's time/);
+    expect(flatReference).toMatch(/Construction robots build ghosts while the body does something else\. A ghost is only an order/);
+    const server = flat(read("companion/src/mcp/server.ts"));
+    expect(server).toMatch(/equip wears armor from the inventory[^.]*\. A personal roboport in the worn grid[^.]*construction robots the body carries to build ghosts/);
+    expect(server).toMatch(/mode ghosts: ghosts for construction robots \(a ghost is only an order/);
   });
 
   it("heads the strategist's progress principle as automated progress, not an order", () => {

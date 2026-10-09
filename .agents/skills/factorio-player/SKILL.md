@@ -93,6 +93,8 @@ retried after the hold.
 
 ## Tools
 
+Each tool's description holds its fields and codes; these are the rules.
+
 **Reads (both roles).**
 
 - `factory_status` is the single routine read. Line `state` is `running`,
@@ -101,16 +103,13 @@ retried after the hold.
   `lines` lists the 10 worst, `line_counts` with `by_state` counts all; rows
   past a cap are counted in `omitted_*`. A `research_idle` problem means
   no research runs and labs are idle. It details the body's surface; `elsewhere`
-  has one line per other planet or platform with buildings, and `surface:
-  "nauvis"` (also on `map_summary`, `inspect_entity`, `can_place`,
-  `find_placement`) reads another one from anywhere; `body.state` shows only
-  off a planet (aboard, in transit, dead). The power row (the largest network;
-  `map_summary` with `include: ['power']` lists all) splits production by
-  source and gives `sustained_w` (solar at this planet's day average); when
+  has one line per other planet or platform with buildings, and `surface`
+  reads another one from anywhere; `body.state` shows only
+  off a planet (aboard, in transit, dead). The power row (the largest network)
+  gives `sustained_w` (solar at this planet's day average); when
   short, `add_to_cover` lists both ways to cover demand, `steam` (engines,
   boilers, pumps) and `solar` (panels, accumulators): you choose. `sections: ['logistics']` shows robot networks. A false
   `*_ready` flag means that part still fills after a load: read again.
-- A stalled row's `feed`: its feeding inserters.
 - `next_event` returns `plan_ended`, `research_finished`, `queue_empty`,
   `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`,
   `human_hold_ended`, or `timeout`. Pass the last `tick` you saw as
@@ -122,18 +121,15 @@ retried after the hold.
 - `activity_log` shows each plan's `source` (`pilot`, `upkeep`,
   `package:<id>`) and who cancelled what; `plan_status` reads one exact
   `plan_id`; `build_layout`, `connect_entities`, and `blueprint_place` with
-  `check_only: true` are dry runs that return the site or a definite answer
-  (layout dry runs take `surface`). A layout or blueprint dry run also lists,
-  as data: `on_ore` (a non-drill building over ore), `mixed_ore` (a drill whose
-  area holds another resource too), `open_fluid_ports` (unconnected),
-  `belt_joins` and `port_fluids`.
+  `check_only: true` are dry runs that return the site or a definite answer.
+  A layout or blueprint dry run also lists `on_ore`, `mixed_ore`,
+  `open_fluid_ports`, `belt_joins` and `port_fluids` as data.
 - `map_summary`, full `observe_local`, and dry runs take a few ticks; prefer
   compact `observe_local`.
 - `inspect_entity`: belt lanes, inserter `holding`, `trace`; `area`: your
   buildings in a charted area.
-- `platform_status` is your platform screen: state, location, hub slots and
-  requests. `detail: "full"` for one platform adds its foundation, hub
-  contents, entities, and `ghosts.missing`: what must still go up.
+- `platform_status` is your platform screen; `detail: "full"` adds
+  `ghosts.missing`: what must still go up.
 
 **Goal-level actions (pilot only).** `get_items`, `build_layout`, and
 `blueprint_place` do the legwork (fetch, craft, smelt, clear, walk, build);
@@ -152,30 +148,23 @@ re-read `factory_status` body position and choose a reachable target.
   `blueprint_place`, never piece by piece. Blueprints belong to this run;
   `blueprint_export` is a string for notes, never imported.
 - `move_entity` picks up one of your buildings with its contents and places
-  it elsewhere with its recipe, direction, settings, fuel, and modules.
-- `configure_entity` sets what a building's window sets: inserter filters and
-  stack size, splitter priority and filter, a chest's slot limit, an asteroid
-  collector's filters, a silo's `auto_requests`. It walks there, changes
-  only what you name, and returns the settings as they now are. Give
+  it elsewhere, settings kept.
+- `configure_entity` sets what a building's window sets and changes
+  only what you name. Give
   `build_layout` entities `settings` (and `mirror`, and
   `belt_to_ground_type: input|output` for an underground belt) instead to
   build a sorter or a mall already configured.
-- `place_tiles` lays landfill, stone path, concrete, foundation, or ice
-  platform from your inventory, nearest tiles first, walking along. It skips
-  tiles that have it and names the item for tiles it cannot cover;
-  `check_only` counts the items an area needs.
+- `place_tiles` lays landfill and other tiles from your inventory, nearest
+  tiles first, walking along; `check_only` counts the items an area needs.
 - `set_requests` sets what a requester or buffer chest asks robots for. Only
-  robots deliver; `network: null` means no roboport covers the chest.
-  `target: "character"` sets your own requests and `trash` at once.
-- `extract_items` and `insert_items` take an `inventory` (`output`, `input`,
-  `fuel`, `modules`, `trash`, ...); a wrong one lists the building's. Plan
+  robots deliver.
+- `extract_items` and `insert_items` take an `inventory`. Plan
   steps only: `equip` wears armor and fits equipment you carry;
   `flush_fluid` empties a pipe or tank system (the fluid is lost).
 - To find a resource or land, use `explore`: it walks, charts, and stops when
   a patch is in view. Never scout with chains of walks.
-- `connect_entities` lays one belt, pipe, or pole route of up to 200 pieces
-  between machines or free tiles, underground past obstacles: a long route is
-  one call.
+- `connect_entities` lays one belt, pipe, or pole route of up to 200 pieces:
+  a long route is one call.
 - `deconstruct_area`, `upgrade_area`, `copy_settings`, `build_ghosts`, and
   `insert_items` with `targets` each handle many buildings in one step.
 
@@ -183,21 +172,19 @@ re-read `factory_status` body position and choose a reachable target.
 
 - A rocket silo needs power and stacks 50 rocket parts (each a processing
   unit, low density structure, and rocket fuel) into a rocket; `next_event`
-  says `rocket_ready`. A rocket lifts 1,000 kg in 20 slots.
+  says `rocket_ready`.
 - `create_platform` registers a platform over the body's planet at once.
   It waits until a rocket brings its starter pack: launching the pack
   creates the platform.
-- `launch_rocket` loads a ready rocket with the cargo you name (a
-  `space-platform-starter-pack` for a waiting platform, or `"requests"`: what
-  its hub still lacks) and launches it there. The body fetches the cargo,
-  walks to the silo; with no rocket ready it fails at once with the part count.
+- `launch_rocket` loads a ready rocket with the cargo you name and launches
+  it; with no rocket ready it fails at once with the part count.
 - Platforms are built only from ghosts the hub fulfils from its own items:
-  `build_layout` (recipes and filters inside, anchored on the hub) or
+  `build_layout` or
   `blueprint_place` with `platform` marks entities and foundation tiles
   touching existing foundation, after `cargo_delivered`. Rockets carry
   `ghosts.missing` up.
-- With `target: {platform}`, `set_requests` sets what the hub keeps stocked
-  (`import_from`: the supplying planet); on a cargo landing pad it sets
+- With `target: {platform}`, `set_requests` sets what the hub keeps stocked;
+  on a cargo landing pad it sets
   what platforms in orbit drop. `get_items` takes from a landing pad.
 - Remote: `create_platform` and every step with `platform` act without the
   body; as direct tools `set_recipe`, `configure_entity` and `set_requests`
@@ -217,8 +204,7 @@ re-read `factory_status` body position and choose a reachable target.
   Gleba spawner's loot. Aquilo freezes unheated machines (`frozen`); heating
   towers warm them through heat pipes.
 - `set_platform_route` sets a platform's stops (unlocked locations, each with
-  the game's wait conditions) at once, without the body. `go_to` sends it to
-  one stop, `paused` holds it, and `platform_status` shows the trip.
+  the game's wait conditions) at once, without the body.
 - `travel {to: "platform:<n>"}` rides the next ready rocket up to that
   platform; `travel {to: "<planet>"}` waits aboard until the platform
   reaches the planet, then lands you by pod. A platform moves only with
@@ -236,16 +222,15 @@ re-read `factory_status` body position and choose a reachable target.
   items from platforms in orbit, and leaving a planet takes a rocket from a
   silo there. After a death, `mine` your corpse (`target_kind: "owned"`).
 - `production_requirements` gives each raw material its `roots` (planet and
-  how it is gathered) and the `unobtainable`; with `planet` it names recipes
-  that planet forbids (`surface_limited`).
+  how it is gathered); with `planet` it names recipes that planet forbids
+  (`surface_limited`).
 - Offshore pumps pump their tile's liquid (water, lava, heavy oil, ammoniacal
-  solution); `find_placement` takes `fluid`, a layout site `near_liquid`.
-  A boiler needs water. `find_placement` lists free spots nearest first; a
-  drill's carries its `resource_coverage`.
+  solution). A boiler needs water. `find_placement` lists free spots nearest
+  first; a drill's carries its `resource_coverage`.
   `SURFACE_CONDITION`: that building or recipe needs another planet's
   pressure, gravity, or magnetic field.
 
-**Plans.** `queue_plan` takes 1-200 steps and returns at once; `run_plan`
+**Plans.** `queue_plan` returns at once; `run_plan`
 blocks until the plan ends. Plans are not transactional: finished steps stay.
 Keep the current plan plus one grounded queued successor and avoid micro-packet
 idle gaps.
@@ -254,8 +239,7 @@ idle gaps.
 once, the body keeps working, and a later step that needs the item waits for
 it. Any item may be used anywhere,
 crafted or machine-made. `mine` count means physical mining cycles; judge item ceilings
-from the in-game learned per-cycle yield and actual inventory deltas. A result with
-`drill_produced: true` means own drills mine that resource. An invalid schema,
+from the in-game learned per-cycle yield and actual inventory deltas. An invalid schema,
 wrong machine, or unknown recipe is terminal: change the request. An `MCP_GAP`
 blocks only its branch: name the missing field and continue.
 

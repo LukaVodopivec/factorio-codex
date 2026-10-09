@@ -89,6 +89,13 @@ overridable, never a build or technology order: measured state wins.
   bottleneck. In 2.0 some technologies unlock by a trigger, not science:
   crafting iron plates, copper plates, a lab, or steel, and mining crude oil
   or uranium ore.
+- **Lab time.** Research is a critical path measured in lab time: an unlock
+  arrives only once labs finish its units, so idle or starved labs delay all
+  behind it (`production_requirements` gives `lab_seconds`). A speed-up pays
+  when the time it saves (time left for that work, times its gain) exceeds
+  its own cost.
+- **Walking** is body time: every trip costs seconds, and movement bonuses
+  (exoskeleton equipment, paved tiles) raise the body's speed.
 - **Space Age.** The win is a platform reaching the solar system edge. Choose
   each planet for what it unlocks toward that and the constraint it adds.
   Quality brings the edge no closer.

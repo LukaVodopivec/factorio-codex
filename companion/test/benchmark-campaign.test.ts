@@ -123,6 +123,8 @@ describe("finite benchmark campaign", () => {
     expect(c.trials).toHaveLength(1);
     expect(c.trials[0]).toMatchObject({ run_id: "search-trial-0001", configuration: "brains-2", eligible: false, milestones });
     expect(c.trials[0]!.reasons).toContain("not a benchmark");
+    // No score fields, rather than zeros that read as a measured score.
+    for (const field of ["research", "made", "input", "final_input_per_minute", "resources", "made_items"]) expect(c.trials[0]).not.toHaveProperty(field);
     expect(c).toMatchObject({ screening_queue: ["brains-1"], screens_since_control: 0, unsuccessful_screens: 0,
       incumbent: "brains-2", confirmation: null, pending: null });
     // The next run id counts the kept row.

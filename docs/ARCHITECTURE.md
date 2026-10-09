@@ -162,12 +162,18 @@ Run telemetry, all beside the samples and never shown to the bots:
 - `tool_outcomes.jsonl`: one row per MCP tool call (`at`, `role`, `tool`,
   `status`, `code` (a failure's leading mod `CODE:`, else `TOOL_ERROR`),
   `ok` (the call itself succeeded: not `isError`), `event` (`next_event`'s
-  kind), `summary` (the result's text, at most 200 characters, only when the
-  call failed or its status is not `ok`, `completed` or `running`),
-  `duration_ms`). `status` is the result's own status (a plan's or an
-  event's for `plan_status` and `next_event`), else `failed` for an error,
-  `not_ok` for a result with `ok: false` such as a failed dry run (its
-  `code` then its own or its first `failed` row's), else `ok`. Rows are
+  kind), `summary` (the result's text, then the code and reason or error of
+  the row that set `code`, at most 200 characters, only when the call
+  failed, its status is not `ok`, `completed` or `running`, or the event is
+  `package_failed` or `package_unmet`), `duration_ms`). `status` is the
+  result's own status (a plan's or an event's for `plan_status` and
+  `next_event`), else `failed` for an error, `not_ok` for a result with
+  `ok: false` such as a failed dry run, else `ok`. `code` is the result's
+  own, else a failed dry run's first `failed` row's, else the first plan
+  outcome that did not complete (`plan_ended`, `plan_status`, `run_plan`).
+  `ok` is `isError` only: a read of a failed or cancelled plan is not an
+  error. Rows exist for calls the handler ran; a call the MCP SDK rejected
+  at input validation shows only in the rollout and in `mcp_calls`. Rows are
   appended asynchronously by the MCP layer
   for the run its current run directory's ledger names, only while the
   recorder's run directory exists, capped at 16 MiB; a dropped row never
@@ -177,7 +183,8 @@ Run telemetry, all beside the samples and never shown to the bots:
   (`compaction_ms`) time, from the rollout event times the feed reads (tool
   items' own spans, model calls to their outputs, and compaction items; model
   items such as reasoning and plans are model time). `wait_ms` is the
-  `next_event` MCP calls' own spans, taken out of tool time even inside the
+  `next_event` and `plan_status` MCP calls' own spans (the tools that block
+  until something happens), taken out of tool time even inside the
   exec cell that ran them. `model_calls` counts the model's call items
   (code-mode `exec` and `wait` cells), `mcp_calls` the MCP tool calls they
   made, `reasoning_items` the reasoning items and `reasoning_summarized` those
@@ -185,12 +192,15 @@ Run telemetry, all beside the samples and never shown to the bots:
   before 0.36 have `tool_calls` (now `model_calls`) and no wait split.
 - `manifest.json` `telemetry.body`: the body's time by state between the
   baseline and final samples (`pilot`, `package`, `upkeep`, `crafting`,
-  `hold`, `dead`, `idle`), the busy share (directed work: `pilot`,
+  `hold`, `dead`, `waiting` (a non-upkeep plan is queued but the body is
+  idle), `idle`), the busy share (directed work: `pilot`,
   `package` and `crafting`; `upkeep` is the mod's chore and shows only in
-  `states`), and idle gaps by the state that ended them, from the mod's
+  `states`), idle gaps by the state that ended them, and (mod 0.37 on)
+  `phases`: pilot and package plan time by body phase (`walk`, `mine`,
+  `smelt_wait`, `craft_wait`, `other`) with `tiles` walked, from the mod's
   `tasks.body_time` counters in `run_snapshot`. The baseline
   (`run_snapshot {window = true}`) marks the window, so idle before `GO` is
-  no gap of the run; idle still open at the final sample is the gap `open`.
+  no gap of the run; idle or waiting still open at the final sample is the gap `open`.
 - `manifest.json` `telemetry.milestones`: each rocket milestone the final
   sample's `run_snapshot.milestones` holds (`rocket_ready`,
   `rocket_launch_ordered`, `rocket_launched`: the mod's first tick of each),

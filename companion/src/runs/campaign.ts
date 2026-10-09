@@ -13,10 +13,11 @@ const runIdentifier = z.string().regex(/^[a-z0-9][a-z0-9-]{0,159}$/);
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
 export const configurationSchema = z.object({ id: identifier, profiles: profileListSchema,
   release_sha: sha, change: z.string().min(1), family: z.enum(["topology", "model", "instructions", "mod", "interaction"]) }).strict();
+/** A recorded trial; the score fields only for a benchmark run (a debug row has none). */
 const trialSchema = z.object({ run_id: runIdentifier, configuration: identifier, eligible: z.boolean(),
-  reasons: z.array(z.string()), research: z.number().nonnegative(), made: z.number().nonnegative(),
-  input: z.number().nonnegative(), final_input_per_minute: z.number().nonnegative(),
-  resources: z.record(z.string(), z.number()), made_items: z.record(z.string(), z.number()),
+  reasons: z.array(z.string()), research: z.number().nonnegative().optional(), made: z.number().nonnegative().optional(),
+  input: z.number().nonnegative().optional(), final_input_per_minute: z.number().nonnegative().optional(),
+  resources: z.record(z.string(), z.number()).optional(), made_items: z.record(z.string(), z.number()).optional(),
   /** The final sample's milestones (mod 0.36 on): rocket and first-research ticks. */
   milestones: milestonesSchema.optional(),
   recorded_at: z.string() }).strict();
@@ -92,14 +93,15 @@ function compare(a: number, b: number, floor: number): number {
 }
 const FLOOR = { research: 5, made: 20, rate: 5 };
 type Scored = Pick<Trial, "research" | "made" | "final_input_per_minute">;
+// Only eligible (benchmark) rows are compared, and those always carry a score.
 export function trialWins(candidate: Scored, incumbent: Scored): boolean {
-  return (compare(candidate.research, incumbent.research, FLOOR.research) || compare(candidate.made, incumbent.made, FLOOR.made)
-    || compare(candidate.final_input_per_minute, incumbent.final_input_per_minute, FLOOR.rate)) > 0;
+  return (compare(candidate.research ?? 0, incumbent.research ?? 0, FLOOR.research) || compare(candidate.made ?? 0, incumbent.made ?? 0, FLOOR.made)
+    || compare(candidate.final_input_per_minute ?? 0, incumbent.final_input_per_minute ?? 0, FLOOR.rate)) > 0;
 }
 function median(values: number[]): number { const sorted = [...values].sort((a, b) => a - b); return sorted[Math.floor(sorted.length / 2)]!; }
 export function confirmationWins(pairs: Array<[Trial, Trial]>): boolean {
   if (pairs.length !== 3 || pairs.some(pair => pair.some(t => !t.eligible))) return false;
-  const medians = (side: 0 | 1) => ({ research: median(pairs.map(p => p[side].research)), made: median(pairs.map(p => p[side].made)) });
+  const medians = (side: 0 | 1) => ({ research: median(pairs.map(p => p[side].research ?? 0)), made: median(pairs.map(p => p[side].made ?? 0)) });
   const a = medians(0), b = medians(1);
   return pairs.filter(([candidate, incumbent]) => trialWins(candidate, incumbent)).length >= 2
     && (compare(a.research, b.research, FLOOR.research) || compare(a.made, b.made, FLOOR.made)) > 0;
@@ -131,8 +133,10 @@ export function recordTrial(file: string, runId: string, evidenceRoot = runRoot(
   } else reasons.push("15-minute throughput checkpoint is missing or outside its one-second boundary");
   const final = samples.findLast(s => s.status === "ok" && s.kind === "final");
   const milestones = final?.status === "ok" ? final.snapshot.milestones : undefined;
-  const trial: Trial = { run_id: runId, configuration: config.id, eligible: reasons.length === 0, reasons, ...score,
-    final_input_per_minute: finalInput, ...(milestones ? { milestones } : {}), recorded_at: new Date().toISOString() };
+  // A debug run is not scored: its row carries no score fields rather than zeros.
+  const scored = manifest.kind === "benchmark" ? { ...score, final_input_per_minute: finalInput } : {};
+  const trial: Trial = { run_id: runId, configuration: config.id, eligible: reasons.length === 0, reasons, ...scored,
+    ...(milestones ? { milestones } : {}), recorded_at: new Date().toISOString() };
   // An ineligible row is kept: the next run id counts the rows.
   c.trials.push(trial);
   const purpose = c.pending.purpose;

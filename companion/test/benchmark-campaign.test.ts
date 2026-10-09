@@ -29,7 +29,7 @@ function record(file: string, dir: string, research: number, assisted = false, a
   const meta: RunManifest = { schema_version: 1, run: { id, release_sha: config!.release_sha,
     baseline_save_sha256: c.baseline_save_sha256, save_identity: "fresh", created_at: "2026-10-06T00:00:00Z", roles: config!.profiles },
     variant: config!.id, change: config!.change, kind: "benchmark", status: "finished", assisted,
-    app_version: "0.33.0", mod_version: "0.33.0", factorio_version: "2.0.77", started_at: "2026-10-06T00:00:00Z",
+    app_version: "0.34.0", mod_version: "0.34.0", factorio_version: "2.0.77", started_at: "2026-10-06T00:00:00Z",
     start_tick: 100, ended_at: "2026-10-06T00:20:00Z", end_tick: 72100,
     benchmark: { ...evidence, metrics: { ...metrics, "consumed:automation-science-pack": research + 1 } } };
   const files = createRunStore(dir, meta);

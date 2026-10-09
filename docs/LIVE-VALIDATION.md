@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.33.0** against a real Factorio game: start a
+This guide validates release **0.34.0** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.33.0 run is recorded.
+until a 0.34.0 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node
@@ -181,6 +181,29 @@ alone is not evidence of usable framing.
    re-observe authoritative MCP state.
 
 ## Release checklists
+
+For the 0.34.0 release (gameplay unblockers), record these observable checks:
+
+- Placing a building over item stacks lying on its footprint takes them into
+  the body's inventory first and reports them as `picked_up` with exact
+  positions; a stack that does not fit fails with `GROUND_ITEMS_NO_ROOM` and
+  stays on the ground. A dry run over a footprint holding only such stacks is
+  ok with a `ground_items` note; a drill with no ore under a lying stack is
+  still refused for the ore.
+- A fetch whose walk is enclosed by the factory steps out through the named
+  own blocker (up to three nested blockers, each put back) and retries once;
+  otherwise the step fails `BODY_ENCLOSED` with `step_out`, never
+  `SUPPLY_SHORTFALL`.
+- `move_entity`, `insert_items`/`extract_items` and `pickup_items` refusals
+  carry their own codes (`MOVE_*`, `TRANSFER_TARGET_MISSING`,
+  `GROUND_STACK_CHANGED`, `PICKUP_COUNT_MISMATCH`), and tool errors keep a
+  leading code instead of `TOOL_ERROR`.
+- A captured blueprint describes an `origin` with small `dx`/`dy`; placing it
+  at `position = origin` in hand or ghosts mode rebuilds it in place.
+- One machine flapping in the same problem class wakes `next_event` at most
+  once in five minutes; its `factory_status` rows are unchanged.
+- `ledger-apply --schema` prints the package contract; duplicate or stale
+  ledger updates are discarded as `*_UPDATE` with the tick they must exceed.
 
 For the 0.33.0 release (the harness), record these observable checks:
 

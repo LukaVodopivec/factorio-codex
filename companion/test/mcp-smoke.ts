@@ -121,10 +121,10 @@ try {
   const queueSchema = tools.find((tool: any) => tool.name === "queue_plan")?.inputSchema?.properties ?? {};
   if (queueSchema.after_plan_id?.exclusiveMinimum !== 0 || queueSchema.observation_detail?.default !== "none") throw new Error("queue_plan dependency/detail schema mismatch");
   const statusSchema = tools.find((tool: any) => tool.name === "plan_status")?.inputSchema?.properties ?? {};
-  if (statusSchema.wait_until?.default !== "current" || statusSchema.timeout_seconds?.default !== 30
-    || statusSchema.timeout_seconds?.maximum !== 60) throw new Error("plan_status bounded wait schema mismatch");
+  if (statusSchema.wait_until?.default !== "current" || statusSchema.timeout_seconds?.default !== 25
+    || statusSchema.timeout_seconds?.maximum !== 25) throw new Error("plan_status bounded wait schema mismatch");
   const eventSchema = tools.find((tool: any) => tool.name === "next_event")?.inputSchema?.properties ?? {};
-  if (eventSchema.timeout_seconds?.minimum !== 1 || eventSchema.timeout_seconds?.maximum !== 120 || !eventSchema.since_tick) throw new Error("next_event must take timeout_seconds 1-120 and since_tick");
+  if (eventSchema.timeout_seconds?.minimum !== 1 || eventSchema.timeout_seconds?.maximum !== 25 || !eventSchema.since_tick) throw new Error("next_event must take timeout_seconds 1-25 and since_tick");
   const inspectSchema = tools.find((tool: any) => tool.name === "inspect_entity")?.inputSchema?.properties ?? {};
   if (inspectSchema.positions?.maxItems !== 64 || !serializedSteps.includes('"maxItems":64')) throw new Error("inspect_entity and inspect_entities must read up to 64 positions");
   const roles = JSON.stringify(tools.find((tool: any) => tool.name === "extract_items")?.inputSchema?.properties?.inventory?.enum);

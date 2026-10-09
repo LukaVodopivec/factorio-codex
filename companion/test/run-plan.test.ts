@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Bridge, DEFAULT_TASK_TIMEOUT_MS, type TaskClock } from "../src/bridge.js";
 import type { RconClient } from "../src/rcon.js";
-import { executeRunPlan, packageStepSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
+import { executeRunPlan, packageStepSchema, planStatusSchema, queuePlanSchema, runPlanSchema, waitForPlanStatus } from "../src/mcp/runPlan.js";
 import { registerMcpTools } from "../src/mcp/server.js";
 
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
@@ -80,6 +80,12 @@ describe("current queued-plan protocol", () => {
     expect(parsed.steps[0]).toMatchObject({ input_target: { x: 1, y: 1 }, output_target: { x: 1, y: 3 } });
     expect(queuePlanSchema.safeParse({ steps: [{ action: "place_entity", name: "inserter", x: 1, y: 2,
       input_target: { x: "stale", y: 1 } }] }).success).toBe(false);
+  });
+
+  it("caps and defaults plan_status waits at next_event's 25 s, under the 31 s code-mode exec yield", () => {
+    expect(planStatusSchema.parse({ plan_id: 1 })).toEqual({ plan_id: 1, wait_until: "current", timeout_seconds: 25 });
+    expect(planStatusSchema.safeParse({ plan_id: 1, timeout_seconds: 25 }).success).toBe(true);
+    expect(planStatusSchema.safeParse({ plan_id: 1, timeout_seconds: 26 }).success).toBe(false);
   });
 
   it("run_plan queues once, polls plan_status, and returns Lua's terminal observation", async () => {

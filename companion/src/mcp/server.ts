@@ -507,7 +507,7 @@ export function registerMcpTools(
     try { return result(normalizeProductionRequirements(await (await bridge()).call("production_requirements", toolPayloads.productionRequirements(p)))); }
     catch (error) { return failure(error); }
   });
-  tools.registerTool("plan_status", { description: "Read one plan by plan_id, or wait up to 60 s for its progress or end. Waiting never cancels work. While a step runs, diagnostics has supply (stage: get_items, auto_supply, target or before_supply; what it is fetching, its phase and shortfall) and crafting {recipe, count, queue_s: hand-crafting seconds still queued}; a PLAN_BUDGET_EXCEEDED outcome carries the same supply and crafting, and queued hand-crafts keep running. human_control: true means a human held the body: delayed, not failed.", inputSchema: planStatusSchema }, async (input, extra) => {
+  tools.registerTool("plan_status", { description: "Read one plan by plan_id, or wait up to timeout_seconds (at most 25 s, the default, so it returns within one code-mode call) for its progress or end. Waiting never cancels work. While a step runs, diagnostics has supply (stage: get_items, auto_supply, target or before_supply; what it is fetching, its phase and shortfall) and crafting {recipe, count, queue_s: hand-crafting seconds still queued}; a PLAN_BUDGET_EXCEEDED outcome carries the same supply and crafting, and queued hand-crafts keep running. human_control: true means a human held the body: delayed, not failed.", inputSchema: planStatusSchema }, async (input, extra) => {
     try {
       const p = planStatusSchema.parse(input);
       const value: any = await waitForPlanStatus(await bridge(), p.plan_id, p.wait_until, p.timeout_seconds * 1_000, extra?.signal);

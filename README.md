@@ -444,7 +444,7 @@ description) run in the game as jobs spread over ticks; the bridge polls
 | `observe_local`, `inspect_entity` | both | nearby entities and exact entity state with settings, temperature and `frozen`, up to 64 positions (own entities anywhere charted; `surface` on `inspect_entity`), or an `area` of at most 64 x 64 charted tiles listing own entities as compact rows; belts give `lanes` and `lane_mix`, inserters `holding`, and `trace: up\|down` walks belt lanes to their sources over own belts in charted chunks |
 | `can_place`, `find_placement` | both | placement checks anywhere charted, on any surface (`surface`), with surface conditions; `find_placement` lists candidates nearest first (a drill's with its `resource_coverage`), and its `fluid` picks the liquid an offshore pump pumps |
 | `production_requirements`, `progression_status`, `describe_prototype` | both | recipe arithmetic with each raw material's `roots` (planet and how it is gathered), `unobtainable` and, with `planet`, `surface_limited` recipes; research; prototypes |
-| `plan_status` | both | one exact plan, optionally waiting up to 60 s |
+| `plan_status` | both | one exact plan, optionally waiting up to 25 s |
 | `get_items` | full | fetch, craft or gather `count` of an item |
 | `queue_plan`, `run_plan` | full | 1-200 plan steps; `queue_plan` returns at once |
 | `walk_to`, `mine`, `pickup_items`, `place_entity`, `craft_items`, `insert_items`, `extract_items`, `set_recipe`, `rotate_entity`, `build_plan`, `start_research` | full | single physical actions |

@@ -3,6 +3,7 @@ import { DEFAULT_TASK_TIMEOUT_MS, holdAwareDeadline, outcomeUnknown, TaskCancell
 import { RconError } from "../rcon.js";
 import type { Bridge } from "../bridge.js";
 import { normalizeObservation } from "./observation.js";
+import { NEXT_EVENT_MAX_SECONDS } from "./events.js";
 
 const position = { x: z.number(), y: z.number() };
 const point = z.object(position).strict();
@@ -355,7 +356,8 @@ export const runPlanSchema = queuePlanSchema;
 export const planStatusSchema = z.object({
   plan_id: z.number().int().positive(),
   wait_until: z.enum(["current", "progress", "terminal"]).default("current"),
-  timeout_seconds: z.number().int().min(1).max(60).default(30),
+  // At next_event's cap, so a wait returns within one code-mode call.
+  timeout_seconds: z.number().int().min(1).max(NEXT_EVENT_MAX_SECONDS).default(NEXT_EVENT_MAX_SECONDS),
 }).strict();
 export type RunPlanInput = z.infer<typeof runPlanSchema>;
 export interface PlanOutcome { step: number; action: RunPlanInput["steps"][number]["action"]; status: "completed" | "partial" | "failed" | "cancelled"; result?: unknown; error?: string }

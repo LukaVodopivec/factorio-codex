@@ -545,6 +545,12 @@ describe("build packages the bridge queues", () => {
     expect(result).toMatchObject({ status: "applied" });
     expect(dropped).toMatchObject({ omitted_unqueued: ["d"] });
     expect(OMITTED_UNQUEUED_RULE).not.toMatch(/\b(should|must|restate it|re-?list it|consider)\b/i);
+    // A package whose queue_plan answer was lost (queuing) may already be in
+    // the mod's FIFO: never named as unqueued, but as possibly queued.
+    expect(applyLedgerFile(file, withPackages([drillPair("e"), drillPair("f")], 107))).toMatchObject({ status: "applied" });
+    fs.writeFileSync(queue, JSON.stringify({ packages: { e: { status: "queuing", revision: 9, at: "2026-10-04T00:00:00Z" } } }));
+    expect(applyLedgerFile(file, withPackages([], 108))).toMatchObject({ status: "applied", omitted_unqueued: ["f"], omitted_possibly_queued: ["e"] });
+    expect(OMITTED_UNQUEUED_RULE).toMatch(/omitted_possibly_queued: dropped packages whose queue_plan was sent but its answer lost; the mod may already hold their plan/);
   });
 
   it("stores negative zero as JSON does without failing the readback", () => {

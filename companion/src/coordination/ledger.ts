@@ -170,8 +170,10 @@ const applyEnvelopeSchema = z.union([ledgerEnvelopeSchema, ledgerInitSchema]);
 export type OperationsLedger = z.infer<typeof operationsLedgerSchema>;
 /** What an applied update's omitted_unqueued means, for the ledger-apply help. */
 export const OMITTED_UNQUEUED_RULE = "omitted_unqueued (applied result, when any): packages the previous revision listed"
-  + " that the pilot's bridge had not queued and this update no longer lists; they will not be queued";
-export type LedgerApplyResult = { status: "applied"; revision: number; source_tick: number | null; omitted_unqueued?: string[] }
+  + " that the pilot's bridge had not queued and this update no longer lists; they will not be queued."
+  + " omitted_possibly_queued: dropped packages whose queue_plan was sent but its answer lost; the mod may already hold their plan";
+export type LedgerApplyResult = { status: "applied"; revision: number; source_tick: number | null; omitted_unqueued?: string[];
+  omitted_possibly_queued?: string[] }
   | { status: "discarded"; reason: string; issues?: string[] };
 
 const discard = (reason: string, issues?: string[]): LedgerApplyResult =>
@@ -229,19 +231,25 @@ function reusedPackageIds(records: QueueRecords | null, existing: unknown, packa
   });
 }
 
-/** Package ids the existing ledger lists that the bridge never settled
- *  (no record, or still queuing or waiting_surface) and the update no longer
- *  lists: the bridge queues only listed packages, so they will not be queued.
- *  A fact for the strategist, never a refusal. Unreadable queue: none. */
-function omittedUnqueued(records: QueueRecords | null, existing: unknown, packages: Array<{ package_id: string }>): string[] {
-  if (!records) return [];
+/** Package ids the existing ledger lists that the bridge never settled and
+ *  the update no longer lists: the bridge queues only listed packages.
+ *  unqueued (no record, or waiting_surface) will not be queued; possibly
+ *  (queuing: the queue_plan call was sent and its answer lost) may already
+ *  be in the mod's FIFO. Facts for the strategist, never a refusal.
+ *  Unreadable queue: none. */
+function omittedUnqueued(records: QueueRecords | null, existing: unknown, packages: Array<{ package_id: string }>):
+  { unqueued: string[]; possibly: string[] } {
+  const omitted = { unqueued: [] as string[], possibly: [] as string[] };
+  if (!records) return omitted;
   const kept = new Set(packages.map((entry) => entry.package_id));
-  return listedPackages(existing).flatMap((entry) => {
+  for (const entry of listedPackages(existing)) {
     const id = entry?.package_id;
-    if (typeof id !== "string" || kept.has(id)) return [];
+    if (typeof id !== "string" || kept.has(id)) continue;
     const status = records[id]?.status;
-    return status === "queued" || status === "failed" ? [] : [id];
-  });
+    if (status === "queuing") omitted.possibly.push(id);
+    else if (status !== "queued" && status !== "failed") omitted.unqueued.push(id);
+  }
+  return omitted;
 }
 
 export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApplyResult {
@@ -297,7 +305,10 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
     if (reused.length > 0) return discard("MALFORMED_UPDATE", reused);
     reduced = reduceLedger(existing, envelope.data);
     const omitted = omittedUnqueued(records, existing, envelope.data.update.build_packages);
-    if (reduced.ledger && reduced.result.status === "applied" && omitted.length > 0) reduced.result.omitted_unqueued = omitted;
+    if (reduced.ledger && reduced.result.status === "applied") {
+      if (omitted.unqueued.length > 0) reduced.result.omitted_unqueued = omitted.unqueued;
+      if (omitted.possibly.length > 0) reduced.result.omitted_possibly_queued = omitted.possibly;
+    }
   }
   if (!reduced.ledger) return reduced.result;
   // JSON has no -0; compare the readback with what JSON actually stores.

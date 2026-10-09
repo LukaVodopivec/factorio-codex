@@ -287,7 +287,8 @@ local function assemble(S)
     factory = S.factory,
     -- Production lines (autonomy.lua): how many run, self-sustain or are hand-fed.
     lines = S.lines,
-    -- What the body did by state since body_time.since_tick (tasks.body_time).
+    -- What the body did by state since body_time.since_tick, and its pilot
+    -- and package ticks by body phase with the tiles walked (tasks.body_time).
     body_time = S.body_time,
     -- Human hold episodes: {count, total_ticks, recent} (tasks.holds).
     holds = S.holds,

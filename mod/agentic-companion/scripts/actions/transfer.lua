@@ -483,7 +483,7 @@ end
 -- holds items in, as before roles. A named item is its normal quality.
 local function extract_items(task, c, e, inventories)
   inventories = inventories or all_inventories(e)
-  local taken, problems, total, transfers = {}, {}, 0, {}
+  local taken, problems, total, transfers, room = {}, {}, 0, {}, true
   for _, it in ipairs(task._items) do
     local kept, full = 0, false
     for _, source in ipairs(inventories) do
@@ -503,12 +503,17 @@ local function extract_items(task, c, e, inventories)
       problems[#problems + 1] = "my inventory is full"
     else
       problems[#problems + 1] = "it has no " .. it.name
+      room = false
     end
   end
   if total == 0 then
+    -- INVENTORY_FULL when the body had no room for every item named, else
+    -- NOTHING_TO_TAKE (the source held none of some).
+    local code = room and #problems > 0 and "INVENTORY_FULL" or "NOTHING_TO_TAKE"
     return {
       status = "failed",
-      detail = string.format("couldn't take anything from the %s — %s", e.name, table.concat(problems, "; ")),
+      detail = string.format("%s: couldn't take anything from the %s — %s", code, e.name, table.concat(problems, "; ")),
+      outcome = { code = code, transfers = transfers, target = target_identity(e), inventory = task.inventory },
     }
   end
   local extra = #problems > 0 and ("; " .. table.concat(problems, "; ")) or ""

@@ -148,5 +148,11 @@ check(inserters[51] and not inserters[52] and storage.registry.entries[51].burne
   and storage.autonomy.dirty_tick == game.tick,
   "a 0.26.2 registry's burner inserters join the machine sets and the lines regroup")
 
+-- A 0.36 body-time counter gains empty phases and tiles; its ticks stay.
+storage.tasks.body_time = { since_tick = 0, state = "idle", state_since = 10, ticks = { pilot = 5 }, gaps = {} }
+state.init()
+check(next(storage.tasks.body_time.phases) == nil and storage.tasks.body_time.tiles == 0
+  and storage.tasks.body_time.ticks.pilot == 5, "an older body-time counter gains phases and tiles and keeps its ticks")
+
 print(failures == 0 and "\nALL STATE UPGRADE TESTS PASSED" or ("\n" .. failures .. " FAILURES"))
 os.exit(failures == 0 and 0 or 1)

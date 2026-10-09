@@ -82,12 +82,16 @@ end
 
 -- Queue-time shape checks for area | center+radius (the chart check runs at
 -- start, with the body's force).
+-- A refusal leads with AREA_INVALID.
 local function validate_area(step, label)
   if step.area == nil and not (point(step.center) and type(step.radius) == "number" and step.radius > 0) then
-    error(label .. " takes area {left_top, right_bottom} or center {x, y} with radius", 0)
+    error("AREA_INVALID: " .. label .. " takes area {left_top, right_bottom} or center {x, y} with radius", 0)
   end
-  if step.area ~= nil and not (type(step.area) == "table" and point(step.area.left_top) and point(step.area.right_bottom)) then
-    error(label .. " area must be {left_top:{x,y}, right_bottom:{x,y}}", 0)
+  local area = step.area
+  if area ~= nil and not (type(area) == "table" and point(area.left_top) and point(area.right_bottom)
+    and area.right_bottom.x > area.left_top.x and area.right_bottom.y > area.left_top.y) then
+    error("AREA_INVALID: " .. label .. " area must be {left_top:{x,y}, right_bottom:{x,y}}"
+      .. " with right_bottom below and right of left_top", 0)
   end
 end
 

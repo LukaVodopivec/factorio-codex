@@ -66,10 +66,15 @@ function M.init()
     -- queued; absent before the first.
     client_keys = tasks.client_keys,
     -- Run telemetry (tasks.body_time): ticks per body state and idle gaps
-    -- since since_tick, and the state in force since state_since.
+    -- since since_tick, and the state in force since state_since; phases
+    -- (ticks of pilot and package work by body phase) and tiles walked in
+    -- them, counted from the save that gained them; last_position, where
+    -- the body stood at the last such tick.
     body_time = tasks.body_time or { since_tick = game and game.tick or 0, state = "idle",
-      state_since = game and game.tick or 0, ticks = {}, gaps = {} },
+      state_since = game and game.tick or 0, ticks = {}, gaps = {}, phases = {}, tiles = 0 },
   }
+  local body_time = storage.tasks.body_time
+  if not body_time.phases then body_time.phases, body_time.tiles = {}, 0 end
   -- Recent plan outcomes, oldest first (tasks.activity_log).
   storage.activity_log = storage.activity_log or {}
   -- The repeat counter (tasks.lua): "<action>|<target>" -> {code, count,

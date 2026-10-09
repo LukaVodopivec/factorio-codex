@@ -71,4 +71,59 @@ local accepted = craft.tick(variable)
 check(accepted and accepted.detail:match("variable transport%-belt")
   and not accepted.detail:match("expected outputs: 3 transport%-belt"),
   "craft never reports amount_min or amount_max as an exact output")
+
+-- A craft no hand-craft could start is a coded refusal: MISSING_INGREDIENTS
+-- names what is short, NOT_HAND_CRAFTABLE the recipe's category. Refusals at
+-- start are raised without a source location (deliberate, not faults).
+do
+  local errors = require("scripts.errors")
+  body.crafting_queue = {}
+  body.begin_crafting = function() return 0 end
+  inventory["iron-plate"] = 1
+  local short = { recipe = "iron-gear-wheel", count = 2 }
+  craft.start(short)
+  local missing = craft.tick(short)
+  check(missing.status == "failed" and missing.outcome.code == "MISSING_INGREDIENTS"
+    and missing.outcome.recipe == "iron-gear-wheel" and missing.outcome.missing[1].item == "iron-plate"
+    and missing.outcome.missing[1].missing == 3 and missing.detail:match("^MISSING_INGREDIENTS: ") ~= nil,
+    "a craft short of ingredients is MISSING_INGREDIENTS with each missing item and count")
+  inventory["iron-plate"] = 10
+  gear.category = "smelting"
+  local by_machine = { recipe = "iron-gear-wheel", count = 1 }
+  craft.start(by_machine)
+  local refused = craft.tick(by_machine)
+  check(refused.status == "failed" and refused.outcome.code == "NOT_HAND_CRAFTABLE"
+    and refused.outcome.category == "smelting" and refused.detail:match("^NOT_HAND_CRAFTABLE: ") ~= nil,
+    "a recipe the body cannot hand-craft is NOT_HAND_CRAFTABLE with its category")
+  local remedy = false
+  for _, text in ipairs({ missing.detail, refused.detail }) do
+    for _, word in ipairs({ "should", "consider", "try ", "instead", "build ", "research " }) do
+      if text:lower():find(word, 1, true) then remedy = true end
+    end
+  end
+  check(not remedy, "the coded craft refusals state facts only")
+  for _, bad in ipairs({ { recipe = "no-such-recipe", count = 1 }, { recipe = "iron-gear-wheel", count = 0 } }) do
+    local ok, why = pcall(craft.start, bad)
+    check(not ok and errors.deliberate(why) and not tostring(why):find(".lua:", 1, true),
+      "a craft refused at start is deliberate: " .. tostring(why))
+  end
+end
+
+-- queue_summary: the head entry and the seconds the queue still needs at
+-- the body's crafting speed; queue_touches: whether a queued recipe makes or
+-- uses one of the named items.
+do
+  gear.energy, inserter.energy = 0.5, 0.5
+  body.force.manual_crafting_speed_modifier, body.character_crafting_speed_modifier = 0.5, 0.5
+  body.crafting_queue_size, body.crafting_queue_progress = 3, 0.2
+  body.crafting_queue = { { recipe = "iron-gear-wheel", count = 2 }, { recipe = "burner-inserter", count = 1 } }
+  local summary = craft.queue_summary(body)
+  check(summary.recipe == "iron-gear-wheel" and summary.count == 2 and summary.queue_s == 0.7,
+    "queue_summary: (2 x 0.5 s - 0.2 x 0.5 s + 0.5 s) at speed 2 is 0.7 s")
+  check(craft.queue_touches(body, { ["burner-inserter"] = true }) and craft.queue_touches(body, { ["iron-plate"] = true })
+    and not craft.queue_touches(body, { ["stone-furnace"] = true }),
+    "queue_touches sees a queued recipe's products and ingredients only")
+  body.crafting_queue_size, body.crafting_queue = 0, {}
+  check(craft.queue_summary(body) == nil, "an empty queue has no summary")
+end
 os.exit(failures == 0 and 0 or 1)

@@ -373,6 +373,21 @@ check(ghosts_result and ghosts_result.status == "partial" and ghosts_result.outc
   "each revived ghost takes one item from the body; a blocked one is reported and a vanished one skipped")
 check(ghosts_result.outcome.item_requests_pending == 1, "a revived ghost's module requests are reported as pending")
 check(not pcall(area_ops.ghosts_action.validate, { radius = 3 }, 1), "build_ghosts needs an area or a centre")
+-- A zero-size or inverted area is refused at queue time with AREA_INVALID,
+-- deliberately (no source location), never later as a step fault.
+do
+  local errors = require("scripts.errors")
+  local point = { left_top = { x = 3, y = 4 }, right_bottom = { x = 3, y = 4 } }
+  local inverted = { left_top = { x = 5, y = 5 }, right_bottom = { x = 1, y = 9 } }
+  for _, case in ipairs({ { area_ops.ghosts_action, { area = point } }, { area_ops.deconstruct_action, { area = inverted } },
+    { area_ops.upgrade_action, { area = point, from = "a", to = "b" } }, { area_ops.ghosts_action, { radius = 3 } } }) do
+    local ok, why = pcall(case[1].validate, case[2], 2)
+    check(not ok and errors.deliberate(why) and tostring(why):match("^AREA_INVALID: queue_plan ") ~= nil,
+      "an area refusal leads with AREA_INVALID: " .. tostring(why))
+  end
+  check(pcall(area_ops.ghosts_action.validate, { area = { left_top = { x = 0, y = 0 }, right_bottom = { x = 1, y = 1 } } }, 1),
+    "a one-tile area is accepted")
+end
 
 -- Ground stacks clear_footprint took up from each ghost's footprint are in
 -- the result; a ghost whose stack does not fit fails GROUND_ITEMS_NO_ROOM.

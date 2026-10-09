@@ -154,6 +154,68 @@ check(time.gaps.pilot.count == 2 and time.gaps.pilot.ticks == 12 + 7 and time.ga
   "a gap open at the mark counts only its ticks after the mark (" .. time.gaps.pilot.ticks .. ")")
 check(time.ticks.idle == idle_before + 7, "idle ticks before the mark still count as idle")
 
+-- waiting: pilot or package plans are queued but none can take the body
+-- (a parked wait, a plan behind it). Work the dispatcher starts in the same
+-- tick never counts as waiting (the pilot and package ticks above).
+do
+  storage.tasks.body_time = { since_tick = game.tick, state = "idle", state_since = game.tick, ticks = {}, gaps = {},
+    phases = {}, tiles = 0 }
+  local first_plan = tasks.queue_plan({ steps = { { action = "walk_to", x = 50, y = 0 } } })
+  ticks(2)
+  local parked = storage.tasks.active
+  storage.tasks.active, parked.status, parked.next_check_tick = nil, "waiting", game.tick + 100
+  table.insert(storage.tasks.queue, 1, parked)
+  tasks.queue_plan({ steps = { { action = "walk_to", x = 60, y = 0 } }, after_plan_id = first_plan.plan_id })
+  ticks(10)
+  local waited = tasks.body_time()
+  check(waited.state == "waiting" and waited.ticks.waiting == 9 and waited.gaps.waiting == nil,
+    "a parked plan and one behind it leave the body waiting, not idle")
+  tasks.cancel({ all = true, origin = "test/body-time" })
+  ticks(1)
+  check(tasks.body_time().state == "idle", "with nothing queued the body is idle again")
+end
+
+-- Body phases: each pilot or package tick is one phase, walk first (tiles
+-- add up the distance moved), then mine, smelt_wait, craft_wait, other; no
+-- upkeep, hold or idle tick counts. They add up to the pilot and package ticks.
+do
+  storage.tasks.body_time = { since_tick = game.tick, state = "idle", state_since = game.tick, ticks = {}, gaps = {},
+    phases = {}, tiles = 0 }
+  tasks.queue_plan({ steps = { { action = "walk_to", x = 50, y = 0 } } })
+  ticks(4) -- dispatched in the first tick: 3 ticks standing still
+  for _ = 1, 5 do body.position = { x = body.position.x + 0.2, y = body.position.y }; ticks(1) end
+  body.position = { x = body.position.x + 40, y = body.position.y } -- a landing, not a walk
+  ticks(1)
+  body.mining_state = { mining = true }
+  ticks(2)
+  body.mining_state = { mining = false }
+  storage.tasks.active.current_task._stack = { { name = "iron-plate", phase = "smelt_wait" } }
+  ticks(2)
+  storage.tasks.active.current_task._stack = nil
+  body.crafting_queue_size = 3
+  for _ = 1, 3 do storage.craft_wait_tick = game.tick + 1; ticks(1) end
+  -- Walking while it waits on crafting is walking.
+  storage.craft_wait_tick = game.tick + 1
+  body.position = { x = body.position.x + 0.2, y = body.position.y }
+  ticks(1)
+  body.crafting_queue_size, storage.craft_wait_tick = 0, nil
+  tasks.cancel({ all = true, origin = "test/body-time" })
+  busy("upkeep", 6)
+  busy("package:p2", 3)
+  ticks(1) -- closes the package interval (an open one counts up to the tick before)
+  local time = tasks.body_time()
+  local phases, sum = time.phases, 0
+  for _, n in pairs(phases) do sum = sum + n end
+  check(phases.walk == 6 and phases.mine == 2 and phases.smelt_wait == 2 and phases.craft_wait == 3
+    and phases.other == 3 + 1 + 2, "each pilot or package tick is one phase, walk first")
+  check(time.tiles == 1.2, "tiles add up the distance walked; a jump of 40 tiles is no walk (" .. tostring(time.tiles) .. ")")
+  check(sum == time.ticks.pilot + time.ticks.package and time.ticks.upkeep == 5,
+    "the phases add up to the pilot and package ticks; upkeep is left out (" .. sum .. ")")
+  local snapshot = tasks.body_time()
+  snapshot.phases.walk = 0
+  check(storage.tasks.body_time.phases.walk == 6, "the read copies the phases")
+end
+
 -- A save without the counter (before state.init made it) reads nil and is not accounted.
 storage.tasks.body_time = nil
 ticks(1)

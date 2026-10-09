@@ -411,10 +411,24 @@ function M.tick(task)
   local c, e = companion.get(), task._entity
   if task._initial_failure then return task._initial_failure end
   if not c then return partial_failure(task, "the Codex character is gone") end
-  local crafting = (tonumber(c.crafting_queue_size) or 0) > 0
+  -- Hand-crafting changes the inventory an owned entity's gain is measured
+  -- on only when a queued recipe makes or uses what mining it hands over:
+  -- its expected items or its contents (task._craft_names, from the first
+  -- check). Other crafts never hold the mine.
+  local crafting = task._target_kind == "owned" and (tonumber(c.crafting_queue_size) or 0) > 0
+  if crafting then
+    if not task._craft_names and e and e.valid then
+      local names = {}
+      for _, name in ipairs(task._expected_items or {}) do names[name] = true end
+      for name in pairs(entity_contents(e)) do names[name] = true end
+      task._craft_names = names
+    end
+    local ok, touches = pcall(craft.queue_touches, c, task._craft_names or {})
+    crafting = not ok or touches
+  end
   if task._target_kind == "owned" and crafting and task._mining_started then
     c.mining_state = { mining = false }
-    return partial_failure(task, "refusing owned recovery while Codex has active hand-crafting")
+    return partial_failure(task, "refusing owned recovery while a queued hand-craft makes or uses its items")
   end
   if not task._mining_started then
     if not (e and e.valid) then
@@ -445,8 +459,7 @@ function M.tick(task)
       c.mining_state = { mining = false }
       return partial_failure(task, "refusing to recover a player-owned entity that gained fluid contents")
     end
-    -- Hand-crafting changes the inventory the gain is measured on: an owned
-    -- entity is mined once the crafting queue is done.
+    -- An owned entity is mined once no queued craft touches its items.
     if task._target_kind == "owned" and crafting then craft.mark_wait(); return nil end
     local inv = c.get_main_inventory()
     if not inv then return { status = "failed", detail = "the Codex character has no inventory" } end

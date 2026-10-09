@@ -45,6 +45,52 @@ function M.queued(c, item)
   return total
 end
 
+-- The body's hand-crafting speed: 1 plus the force's and the character's
+-- crafting speed bonuses.
+function M.speed(c)
+  local speed = 1
+  pcall(function() speed = speed + (tonumber(c.force.manual_crafting_speed_modifier) or 0) end)
+  pcall(function() speed = speed + (tonumber(c.character_crafting_speed_modifier) or 0) end)
+  return math.max(speed, 0.01)
+end
+
+-- The crafting queue as arithmetic, or nil when it is empty: the head entry
+-- ({recipe, count}) and queue_s, the seconds left at the body's speed (each
+-- entry's count times its recipe's energy, less the head craft's progress),
+-- rounded up to a tenth. One pass over the queue's entries.
+function M.queue_summary(c)
+  if (tonumber(c.crafting_queue_size) or 0) <= 0 then return nil end
+  local ok, queue = pcall(function() return c.crafting_queue end)
+  if not ok or type(queue) ~= "table" or #queue == 0 then return nil end
+  local speed, seconds = M.speed(c), 0
+  for index, entry in ipairs(queue) do
+    local recipe = type(entry.recipe) == "string" and c.force.recipes[entry.recipe]
+    local energy = recipe and tonumber(recipe.energy) or 0.5
+    seconds = seconds + (tonumber(entry.count) or 0) * energy
+    if index == 1 then seconds = seconds - (tonumber(c.crafting_queue_progress) or 0) * energy end
+  end
+  local head = queue[1]
+  return { recipe = type(head.recipe) == "string" and head.recipe or nil, count = head.count,
+    queue_s = math.ceil(math.max(0, seconds) / speed * 10) / 10 }
+end
+
+-- Whether a queued recipe makes or uses an item named in the set `names`
+-- (a queue or an entry that cannot be read counts as one that does).
+function M.queue_touches(c, names)
+  local ok, queue = pcall(function() return c.crafting_queue end)
+  if not ok or type(queue) ~= "table" then return true end
+  for _, entry in ipairs(queue) do
+    local recipe = type(entry.recipe) == "string" and c.force.recipes[entry.recipe]
+    if not recipe then return true end
+    for _, key in ipairs({ "products", "ingredients" }) do
+      for _, row in ipairs(recipe[key] or {}) do
+        if names[row.name] then return true end
+      end
+    end
+  end
+  return false
+end
+
 -- A step that waits on the crafting queue marks the tick it did
 -- (storage.craft_wait_tick, made when first needed): the step watchdog counts
 -- hand-crafting as progress only for such a step, so background crafts never
@@ -60,20 +106,22 @@ function M.awaits(c, name, count)
   return false
 end
 
--- What's short for `count` crafts, e.g. "2x iron-plate, 1x iron-gear-wheel".
--- Must run BEFORE begin_crafting consumes the ingredients.
+-- What's short for `count` crafts, e.g. "2x iron-plate, 1x iron-gear-wheel",
+-- and the same as rows {item, missing}. Must run BEFORE begin_crafting
+-- consumes the ingredients.
 local function missing_ingredients(c, recipe, count)
-  local parts = {}
+  local parts, rows = {}, {}
   for _, ing in ipairs(recipe.ingredients or {}) do
     if ing.type == "item" then
       local have = c.get_item_count(ing.name)
       local need = ing.amount * count
       if have < need then
         parts[#parts + 1] = string.format("%dx %s", need - have, ing.name)
+        rows[#rows + 1] = { item = ing.name, missing = need - have }
       end
     end
   end
-  return table.concat(parts, ", ")
+  return table.concat(parts, ", "), rows
 end
 
 local function awaits_ingredients(c, recipe, count)
@@ -86,20 +134,20 @@ end
 function M.start(task)
   local c = companion.require_companion()
   if type(task.recipe) ~= "string" then
-    error("craft requires recipe = <recipe name>")
+    error("craft requires recipe = <recipe name>", 0)
   end
   local count = tonumber(task.count)
   if not count or count % 1 ~= 0 or count < 1 or count > MAX_COUNT then
-    error("craft crafts must be an integer from 1 to 100")
+    error("craft crafts must be an integer from 1 to 100", 0)
   end
   task.count = count
 
   local r = c.force.recipes[task.recipe]
   if not r then
-    error("unknown recipe: '" .. task.recipe .. "'")
+    error("unknown recipe: '" .. task.recipe .. "'", 0)
   end
   if not r.enabled then
-    error("recipe " .. task.recipe .. " isn't unlocked yet — research it first")
+    error("recipe " .. task.recipe .. " isn't unlocked yet — research it first", 0)
   end
   -- Hand-crafting keeps the recipe's surface conditions too.
   local refused = placement_geometry.condition_refusal(c.surface, "recipe", task.recipe)
@@ -124,13 +172,15 @@ local function begin(task, c)
     end
   end
 
-  local missing = missing_ingredients(c, r, count)
+  local missing, missing_rows = missing_ingredients(c, r, count)
   local started = c.begin_crafting({ count = count, recipe = task.recipe })
   if started == 0 then
     if missing ~= "" then
-      return { status = "failed", detail = "can't craft " .. task.recipe .. " — missing ingredients: " .. missing }
+      return { status = "failed", detail = "MISSING_INGREDIENTS: can't craft " .. task.recipe .. " — missing ingredients: " .. missing,
+        outcome = { code = "MISSING_INGREDIENTS", recipe = task.recipe, missing = missing_rows } }
     end
-    return { status = "failed", detail = "can't craft " .. task.recipe .. " — this recipe can't be crafted by hand" }
+    return { status = "failed", detail = "NOT_HAND_CRAFTABLE: can't craft " .. task.recipe .. " — this recipe can't be crafted by hand",
+      outcome = { code = "NOT_HAND_CRAFTABLE", recipe = task.recipe, category = r.category } }
   end
 
   local note = ""

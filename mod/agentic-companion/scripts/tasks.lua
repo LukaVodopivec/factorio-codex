@@ -158,6 +158,26 @@ local function human_control()
   if not ok then return false end
   return held == true, idle, cause
 end
+-- A step or task error the dispatcher caught, as its failed detail: a
+-- deliberate refusal (errors.deliberate: coded, or raised without a source
+-- location) as it stands; anything else is a fault kept in the error ring.
+local function caught(where, err)
+  local deliberate, message = errors.deliberate(err)
+  return deliberate and message or errors.record(where, err)
+end
+-- The body's crafting queue for plan diagnostics ({recipe, count, queue_s}:
+-- its head entry and the seconds it still needs), or nil when it is empty.
+local function crafting_summary()
+  local c = companion.get()
+  if not (c and c.valid) then return nil end
+  local ok, summary = pcall(craft.queue_summary, c)
+  return ok and summary or nil
+end
+-- A running step's supply (a get_items step's own or an embedded
+-- auto-supply, running or ended), or nil for a step with none.
+local function supply_state(task)
+  if task and (task._stack or task._supply or task._supply_result) then return supply.diagnostics(task) end
+end
 local function cancel_crafting()
   local c = companion.get()
   if not c then return end
@@ -363,6 +383,7 @@ local function result_code(result)
   return detail:match("^([A-Z][A-Z0-9_]+[A-Z0-9])")
 end
 local function log_plan(plan, detail)
+  local log_line = log
   -- After a walk back the last outcome is the walk's: report what ended the
   -- plan early (a pre-emption has no outcome). A cancel during the walk is
   -- its own last outcome.
@@ -408,10 +429,18 @@ local function log_plan(plan, detail)
     -- The ending step's repeat count, when its code is the plan's.
     ["repeat"] = last and last.code == code and last["repeat"] or nil }
   while #log > ACTIVITY_LOG_SIZE do table.remove(log, 1) end
+  -- A failed or partial plan also leaves one line in the server log, its
+  -- reason cut as the row's detail, so it outlives the ring.
+  if log_line and (plan.status == "failed" or plan.status == "partial") then
+    pcall(log_line, string.format("[agentic-companion] plan %d source=%s status=%s code=%s steps=%d/%d tick=%d detail=%s",
+      plan.id, plan.source or "pilot", plan.status, tostring(code), plan.completed_steps, #plan.steps, game.tick,
+      full and (errors.cut(full, DETAIL_BYTES):gsub("%s*\n%s*", " ")) or ""))
+  end
   -- next_event wakes the pilot on this: the mod's own upkeep (often
   -- pre-empted) is in activity_log only.
   if plan.source ~= "upkeep" then
-    storage.tasks.last_plan_ended = { plan_id = plan.id, status = plan.status, tick = game.tick, surface = plan.surface }
+    storage.tasks.last_plan_ended = { plan_id = plan.id, status = plan.status, tick = game.tick, surface = plan.surface,
+      code = code }
   end
 end
 -- keep_crafting: a surface change cancels plans but never hand-crafting.
@@ -761,6 +790,17 @@ function M.queue_plan(params, upkeep_selection)
   -- starts still returns plan_ended, not an empty queue.
   -- needs: item totals its steps take (add_needs), nothing reserved.
   local needs = add_needs(plan, 1, {})
+  -- hand_craft: what of the needs hand-crafting would make beyond what is
+  -- carried and stocked, in seconds at the body's speed (supply.hand_craft,
+  -- arithmetic from current stock; absent when none).
+  local hand_craft
+  if source ~= "upkeep" and body and body.valid and next(needs) then
+    local wants = {}
+    for name, count in pairs(needs) do wants[#wants + 1] = { name = name, count = count } end
+    table.sort(wants, function(a, b) return a.name < b.name end)
+    local ok, bill = pcall(supply.hand_craft, body, wants)
+    hand_craft = ok and bill or nil
+  end
   local plan_id = assign(plan)
   if key then
     local keys = storage.tasks.client_keys or {}
@@ -769,7 +809,7 @@ function M.queue_plan(params, upkeep_selection)
     if #keys > M.MAX_CLIENT_KEYS then table.remove(keys, 1) end
   end
   return { plan_id = plan_id, after_plan_id = predecessor, body_idle_ticks = body_idle_ticks,
-    human_control = plan.human_control, tick = game.tick, needs = next(needs) and needs or nil }
+    human_control = plan.human_control, tick = game.tick, needs = next(needs) and needs or nil, hand_craft = hand_craft }
 end
 local function plan_payload(plan)
   local c = companion.get()
@@ -794,6 +834,10 @@ local function plan_payload(plan)
     end
     local target = plan.current_task.target or plan.current_task.position
     if target then diagnostics.machine = { position = { x = target.x, y = target.y } } end
+    -- The step's supply (get_items or an embedded auto-supply) and the body's
+    -- crafting queue: recipe and count at its head, seconds it still needs.
+    diagnostics.supply = supply_state(plan.current_task)
+    diagnostics.crafting = crafting_summary()
   elseif plan.status == "failed" and plan.outcomes[#plan.outcomes] then
     diagnostics = { failure = plan.outcomes[#plan.outcomes].error }
   end
@@ -840,7 +884,7 @@ function M.plan_status(params)
   if record and record.plan then observe_terminal(record.plan); return plan_payload(record.plan) end
   error("unknown plan_id: " .. id .. ": never queued, or it ended more than " .. math.floor(RECORD_TTL_TICKS / 3600)
     .. " minutes ago (" .. math.floor(FAILED_RECORD_TTL_TICKS / 3600) .. " if it failed or was partial);"
-    .. " activity_log keeps the last " .. ACTIVITY_LOG_SIZE .. " plan outcomes")
+    .. " activity_log keeps the last " .. ACTIVITY_LOG_SIZE .. " plan outcomes", 0)
 end
 function M.get(params)
   local id = tonumber(params.task_id)
@@ -1473,12 +1517,19 @@ local function tick_plan(plan)
   local budget = math.max(PLAN_BUDGET_TICKS, (plan.budget_steps or #plan.steps) * STEP_BUDGET_TICKS)
   if game.tick - plan.started_tick >= budget then
     local detail = string.format("PLAN_BUDGET_EXCEEDED: plan exceeded its %d-second active budget", budget / 60)
+    -- Queued hand-crafts are not cancelled (finish cancels them only for a
+    -- cancelled plan): they keep running.
+    local crafting = crafting_summary()
+    if crafting then
+      detail = detail .. string.format("; hand-crafting continues: %g s queued", crafting.queue_s)
+    end
     if plan.current_task then
+      local supplying = supply_state(plan.current_task)
       local note = step_cancelled(plan)
       if plan._recovery and plan._recovery.phase == "fixing" then plan._recovery.phase = "failed" end
       -- The budget ended the plan: its code, not the cancelled step's note's.
       finish_step(plan, { status = "failed", detail = detail,
-        outcome = { code = "PLAN_BUDGET_EXCEEDED", cancelled = note } })
+        outcome = { code = "PLAN_BUDGET_EXCEEDED", cancelled = note, supply = supplying, crafting = crafting } })
     else finish(plan, "failed", detail) end
     return
   end
@@ -1521,7 +1572,7 @@ local function tick_plan(plan)
       plan.current_task.started_tick = recovery and recovery.step == plan.current_step and recovery.started_tick
         or game.tick
       local ok, err = pcall(runners[plan.current_task.type].start, plan.current_task)
-      if not ok then finish_step(plan, { status = "failed", detail = errors.record("task:" .. tostring(plan.current_task.type) .. ":start", err) }); return end
+      if not ok then finish_step(plan, { status = "failed", detail = caught("task:" .. tostring(plan.current_task.type) .. ":start", err) }); return end
     end
   end
   local step, ok, result = plan.steps[plan.current_step]
@@ -1573,7 +1624,7 @@ local function tick_plan(plan)
     table.insert(storage.tasks.queue, 1, plan)
     return
   end
-  if not ok then result = { status = "failed", detail = errors.record("task:" .. tostring(step.action) .. ":tick", result) } end
+  if not ok then result = { status = "failed", detail = caught("task:" .. tostring(step.action) .. ":tick", result) } end
   if result and not try_recover(plan, step, result) then finish_step(plan, result) end
 end
 -- The work sites, newest first, at most WORK_SITES: a start within
@@ -1651,11 +1702,11 @@ local function dispatch(tasks)
     if task.type == "plan" then set_plan_status(task, "running") else task.status = "running" end
     task.started_tick, tasks.active = task.started_tick or game.tick, task
     if task.type == "plan" and task.start_inventory == nil then task.start_inventory = inventory_snapshot() end
-    if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", errors.record("task:" .. task.type .. ":start", err)); return end end
+    if task.type ~= "plan" then local ok, err = pcall(runners[task.type].start, task); if not ok then finish(task, "failed", caught("task:" .. task.type .. ":start", err)); return end end
   end
   if task.type == "plan" then tick_plan(task); return end
   local ok, result = pcall(runners[task.type].tick, task)
-  if not ok then finish(task, "failed", errors.record("task:" .. task.type .. ":tick", result)) elseif result then
+  if not ok then finish(task, "failed", caught("task:" .. task.type .. ":tick", result)) elseif result then
     factory_activity.record(task.type, result.outcome)
     if TOPOLOGY_TASKS[task.type] then autonomy.mark_dirty() end
     -- No game event names the mod's own rotation.
@@ -1863,7 +1914,7 @@ local function resume_active(tasks)
   if runner and runner.resume then
     local ok, err = pcall(runner.resume, current)
     if not ok then
-      local result = { status = "failed", detail = errors.record("task:" .. tostring(current.type) .. ":resume", err) }
+      local result = { status = "failed", detail = caught("task:" .. tostring(current.type) .. ":resume", err) }
       if task.type == "plan" then finish_step(task, result) else finish(task, "failed", result.detail) end
     end
   end
@@ -1979,7 +2030,16 @@ local function body_state(tasks)
   local rec = storage.companion
   local character = rec and rec.entity
   if character and character.valid and (character.crafting_queue_size or 0) > 0 then return "crafting" end
-  return "idle"
+  -- waiting: a pilot or package plan is queued but none can take the body
+  -- now (parked waits, plans behind a pending predecessor). Work the
+  -- dispatcher starts this tick leaves the state idle, so the idle gap is
+  -- still keyed by that work.
+  local waiting = false
+  for _, queued in ipairs(tasks.queue) do
+    if queued.type ~= "plan" or queued.source == "upkeep" or takes_body(queued) then return "idle" end
+    waiting = true
+  end
+  return waiting and "waiting" or "idle"
 end
 local function account_body_time(tasks)
   local time = tasks.body_time
@@ -1997,6 +2057,50 @@ local function account_body_time(tasks)
   end
   time.state, time.state_since = state, game.tick
 end
+-- Body phases: each tick a pilot or package task holds the body
+-- (body_state) is one phase, checked in this order: walk (the body moved
+-- since the last tick; the distance adds to tiles), mine (the character is
+-- mining), smelt_wait (the step's supply waits on a furnace), craft_wait
+-- (a step waited on the crafting queue within the last poll) or other.
+-- O(1) reads of the body and the running task; nothing on the surface.
+-- A move longer than MAX_STEP_TILES in one tick (a landing, a respawn) is no walk.
+local MAX_STEP_TILES, CRAFT_WAIT_TICKS = 2, 30
+local function supply_frame(task)
+  local stack = type(task._stack) == "table" and task._stack
+    or type(task._supply) == "table" and type(task._supply._stack) == "table" and task._supply._stack or nil
+  return stack and stack[#stack]
+end
+local function account_phase(tasks)
+  local time = tasks.body_time
+  if not (time and time.phases) then return end
+  local c = (time.state == "pilot" or time.state == "package") and companion.get() or nil
+  if not (c and c.valid) then time.last_position = nil; return end
+  local p, last = c.position, time.last_position
+  local surface = c.surface_index
+  local moved = 0
+  if last and last.surface == surface then
+    moved = math.sqrt((p.x - last.x) ^ 2 + (p.y - last.y) ^ 2)
+    if moved > MAX_STEP_TILES then moved = 0 end
+  end
+  if last then last.x, last.y, last.surface = p.x, p.y, surface
+  else time.last_position = { x = p.x, y = p.y, surface = surface } end
+  local active = tasks.active
+  local current = active and (active.type == "plan" and active.current_task or active.type ~= "plan" and active) or nil
+  local mining = c.mining_state
+  local frame = current and supply_frame(current)
+  local craft_wait = storage.craft_wait_tick
+  local phase = "other"
+  if moved > 0 then
+    phase, time.tiles = "walk", (time.tiles or 0) + moved
+  elseif type(mining) == "table" and mining.mining then
+    phase = "mine"
+  elseif frame and frame.phase == "smelt_wait" then
+    phase = "smelt_wait"
+  elseif (c.crafting_queue_size or 0) > 0 and craft_wait and game.tick - craft_wait <= CRAFT_WAIT_TICKS then
+    phase = "craft_wait"
+  end
+  time.phases[phase] = (time.phases[phase] or 0) + 1
+end
 -- The run recorder's baseline (run_snapshot {window = true}) marks its
 -- window start: the idle gap open now counts from here when it closes.
 function M.mark_body_window()
@@ -2004,9 +2108,11 @@ function M.mark_body_window()
   if time then time.window_tick = game.tick end
 end
 -- {since_tick, window_tick?, state, state_since, ticks = {[state] = n},
--- gaps = {[ended_by] = {count, ticks, longest, longest_end_tick}}},
--- cumulative since since_tick with the current state's open interval
--- included; nil before state.init made it.
+-- gaps = {[ended_by] = {count, ticks, longest, longest_end_tick}},
+-- phases = {[phase] = n}, tiles}, cumulative since since_tick with the
+-- current state's open interval included (phases and tiles: the pilot and
+-- package ticks by body phase and the tiles walked in them, rounded to a
+-- tenth); nil before state.init made it.
 function M.body_time()
   local time = storage.tasks and storage.tasks.body_time
   if not time then return nil end
@@ -2016,8 +2122,13 @@ function M.body_time()
   for state, gap in pairs(time.gaps) do
     gaps[state] = { count = gap.count, ticks = gap.ticks, longest = gap.longest, longest_end_tick = gap.longest_end_tick }
   end
+  local phases
+  if time.phases then
+    phases = {}
+    for phase, n in pairs(time.phases) do phases[phase] = n end
+  end
   return { since_tick = time.since_tick, window_tick = time.window_tick, state = time.state, state_since = time.state_since,
-    ticks = ticks, gaps = gaps }
+    ticks = ticks, gaps = gaps, phases = phases, tiles = time.phases and math.floor((time.tiles or 0) * 10 + 0.5) / 10 or nil }
 end
 -- The hold episodes for run_snapshot: {count, total_ticks (an open hold's
 -- ticks so far included), recent}, a copy; nil before state.init made them.
@@ -2041,6 +2152,7 @@ function M.on_tick()
   end
   local tasks = storage.tasks
   account_body_time(tasks)
+  account_phase(tasks)
   local current = tasks.active and tasks.active.current_task
   local runner = current and runners[current.type]
   -- Pure bounded cargo observation continues through holds; native robots

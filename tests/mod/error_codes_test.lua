@@ -181,6 +181,43 @@ check(storage.handler_errors.count == 3 and storage.handler_errors.recent[1].whe
   and storage.handler_errors.recent[3].where == "task:mine:start" and no_location(storage.handler_errors),
   "each runner error the dispatcher caught is in the ring; returned failures are not")
 
+-- A deliberate refusal a runner raises (coded, or with no source location)
+-- fails its step or task with the plain message, its code when it leads
+-- with one, and never fills the error ring.
+do
+  local count = storage.handler_errors.count
+  local mine_start, walk_tick = mine.start, walk.tick
+  mine.start = function() error("craft crafts must be an integer from 1 to 100", 0) end
+  walk.tick = function() error("AREA_INVALID: queue_plan build_ghosts step 1 area must be {left_top, right_bottom}", 0) end
+  local plain = run({ { action = "mine", x = 3, y = 4, count = 1 } })
+  local coded = run({ { action = "walk_to", x = 5, y = 5 } })
+  local direct_refusal = tasks.enqueue({ task = { type = "mine" } })
+  game.tick = game.tick + 1; tasks.on_tick()
+  mine.start, walk.tick = mine_start, walk_tick
+  check(plain.outcomes[1].error == "craft crafts must be an integer from 1 to 100"
+    and plain.outcomes[1].code == "STEP_FAILED_UNCLASSIFIED" and coded.outcomes[1].code == "AREA_INVALID"
+    and storage.tasks.records[direct_refusal.task_id].detail == "craft crafts must be an integer from 1 to 100"
+    and storage.handler_errors.count == count,
+    "deliberate refusals at step start, step tick and task start are no handler faults")
+end
+
+-- A failed or partial plan leaves one server-log line with its code and
+-- reason; a completed one none. next_event's last_plan_ended names the code.
+do
+  local lines = {}
+  _G.log = function(line) lines[#lines + 1] = line end
+  local failed = run({ { action = "pickup_items", x = 1, y = 1, item = "coal", count = 1 } })
+  local ended = storage.tasks.last_plan_ended
+  run({ { action = "craft_items", recipe = "gear", crafts = 1 } })
+  _G.log = nil
+  check(#lines == 1 and lines[1]:find("[agentic-companion] plan " .. failed.plan_id
+      .. " source=pilot status=failed code=STEP_FAILED_UNCLASSIFIED steps=0/1 tick=", 1, true)
+    and lines[1]:sub(-#"detail=couldn't pick up: no room") == "detail=couldn't pick up: no room",
+    "a failed plan leaves one server-log line with its code and detail; a completed plan none")
+  check(ended.plan_id == failed.plan_id and ended.code == "STEP_FAILED_UNCLASSIFIED"
+    and storage.tasks.last_plan_ended.code == nil, "last_plan_ended carries the ended plan's code")
+end
+
 local placed = run({ { action = "place_entity", name = "inserter", x = 1.5, y = 2.5 } })
 check(placed.outcomes[1].code == "STEP_FAILED_UNCLASSIFIED" and placed.outcomes[1].result.failures[1].why
   == "couldn't clear rock: no room" and no_location(placed) and no_location(storage.activity_log),
@@ -199,6 +236,67 @@ check(over.status == "failed" and over.outcomes[1].code == "PLAN_BUDGET_EXCEEDED
   and over.outcomes[1].result.cancelled.code == "MOVE_ROBOT_CANCELLED"
   and storage.activity_log[#storage.activity_log].code == "PLAN_BUDGET_EXCEEDED",
   "a plan out of budget reports PLAN_BUDGET_EXCEEDED, the cancelled step's note kept beside it")
+check(over.outcomes[1].result.crafting == nil and over.outcomes[1].result.supply == nil
+  and not over.outcomes[1].error:find("hand-crafting", 1, true),
+  "with no crafting queue and no supply, the budget cut adds neither")
+
+-- What a running step waits on is visible: plan_status diagnostics name the
+-- step's supply and the crafting queue (head recipe, count, seconds left),
+-- and a budget cut keeps the same facts; queued hand-crafts keep running.
+do
+  local REMEDY = { "should", "consider", "try ", "instead", "build ", "research ", "recommend" }
+  local function facts_only(value, depth)
+    depth = depth or 0
+    if type(value) == "string" then
+      for _, word in ipairs(REMEDY) do if value:lower():find(word, 1, true) then return false end end
+      return true
+    end
+    if type(value) ~= "table" or depth > 6 then return true end
+    for key, item in pairs(value) do
+      if not facts_only(key, depth + 1) or not facts_only(item, depth + 1) then return false end
+    end
+    return true
+  end
+  local real_craft = dofile(here .. "/../../mod/agentic-companion/scripts/actions/craft.lua")
+  done.queue_summary = real_craft.queue_summary
+  body.force = { recipes = { gear = { energy = 0.5 } } }
+  body.crafting_queue_size, body.crafting_queue, body.crafting_queue_progress = 4, { { recipe = "gear", count = 4 } }, 0
+  local rotate_start = rotate.start
+  -- The running step's own supply, as a get_items step holds it.
+  rotate.start = function(task) task._stack = { { name = "gear", count = 4, phase = "take", takes = 1 } } end
+  local held = tasks.queue_plan({ steps = { { action = "rotate_entity", x = 1, y = 1 } } })
+  for _ = 1, 2 do game.tick = game.tick + 1; tasks.on_tick() end
+  local running = tasks.plan_status({ plan_id = held.plan_id }).diagnostics
+  check(running.crafting.recipe == "gear" and running.crafting.count == 4 and running.crafting.queue_s == 2
+    and running.supply.stage == "get_items" and running.supply.supply.item == "gear"
+    and running.supply.supply.phase == "take", "plan_status diagnostics name the step's supply and the crafting queue")
+  game.tick = game.tick + 600 * 60; tasks.on_tick()
+  local cut = tasks.plan_status({ plan_id = held.plan_id }).outcomes[1]
+  rotate.start = rotate_start
+  check(cut.code == "PLAN_BUDGET_EXCEEDED" and cut.result.crafting.queue_s == 2 and cut.result.supply.supply.item == "gear"
+    and cut.error:find("; hand-crafting continues: 2 s queued", 1, true),
+    "a budget cut keeps the step's supply and the crafting queue, and says queued hand-crafts continue")
+  check(facts_only(running) and facts_only(cut), "the diagnostics and the budget cut carry facts only")
+  body.crafting_queue_size, body.crafting_queue, body.crafting_queue_progress, body.force = 0, {}, nil, nil
+  done.queue_summary = nil
+end
+
+-- queue_plan returns the hand-craft bill of the plan's needs (the supply's
+-- arithmetic over them), and leaves it out when nothing would be hand-crafted.
+do
+  local supply = require("scripts.actions.supply")
+  local hand_craft, asked = supply.hand_craft, nil
+  local bill = { total_s = 9.5, items = { { item = "gear", count = 19, short = 19, hand_craftable = 19, hand_craft_s = 9.5 } } }
+  supply.hand_craft = function(_, wants) asked = wants; return bill end
+  local billed = tasks.queue_plan({ steps = { { action = "get_items", item = "gear", count = 19 } } })
+  tasks.cancel({ plan_id = billed.plan_id, origin = "test/error-codes" })
+  supply.hand_craft = function() return nil end
+  local none = tasks.queue_plan({ steps = { { action = "get_items", item = "gear", count = 1 } } })
+  tasks.cancel({ plan_id = none.plan_id, origin = "test/error-codes" })
+  supply.hand_craft = hand_craft
+  check(billed.hand_craft == bill and #asked == 1 and asked[1].name == "gear" and asked[1].count == 19
+    and none.hand_craft == nil, "queue_plan returns the plan's hand-craft bill, and none when it is empty")
+end
 
 tasks.set_observer(function() error("the observer broke") end)
 local observed = run({ { action = "craft_items", recipe = "gear", crafts = 1 } }, "compact")

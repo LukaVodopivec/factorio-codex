@@ -237,6 +237,7 @@ craft_stub = stub("craft", function(task)
   for _, product in ipairs(recipe.products) do
     inventory[product.name] = (inventory[product.name] or 0) + product.amount * task.count
   end
+  task._craft = { started = task.count } -- the real runner's record of crafts begun
   return { status = "done", detail = "crafted" }
 end)
 craft_stub.queued = function(_, name) return crafting[name] or 0 end
@@ -1317,5 +1318,80 @@ do
     check(not ok and errors.deliberate(reason) and not tostring(reason):find(".lua:", 1, true),
       "get_items validation refuses deliberately: " .. tostring(reason))
   end
+end
+
+-- Hand-craft time is arithmetic the bots see, never advice: crafted_s (the
+-- crafts a supply queued, in seconds at the body's crafting speed), the
+-- get_items diagnostics, and craft = false, which skips hand-crafting and
+-- ends with the shortfall and what hand-crafting it would take.
+do
+  local errors = require("scripts.errors")
+  -- No remedy wording in any string a new fact carries.
+  local REMEDY = { "should", "consider", "try ", "instead", "build ", "research ", "get_items it", "recommend" }
+  local function facts_only(value, depth)
+    depth = depth or 0
+    if type(value) == "string" then
+      for _, word in ipairs(REMEDY) do if value:lower():find(word, 1, true) then return false end end
+      return true
+    end
+    if type(value) ~= "table" or depth > 6 then return true end
+    for key, item in pairs(value) do
+      if not facts_only(key, depth + 1) or not facts_only(item, depth + 1) then return false end
+    end
+    return true
+  end
+  reset()
+  crafting = {}
+  recipes["iron-gear-wheel"].energy = 0.5
+  own_force.manual_crafting_speed_modifier, body.character_crafting_speed_modifier = 0.25, 0.25
+  chest({ x = 5.5, y = 0.5 }, { ["iron-plate"] = 10 })
+  local task = { items = { { name = "iron-gear-wheel", count = 5 } } }
+  supply.start(task)
+  local early = supply.diagnostics(task)
+  check(early.stage == "get_items" and early.supply.item == "iron-gear-wheel" and early.supply.phase == "take"
+    and early.supply.crafted_s == nil, "a get_items step's diagnostics show its own supply: phase and item")
+  local result
+  for _ = 1, 200 do result = supply.tick(task); if result then break end end
+  check(result and result.status == "done" and result.outcome.crafted_s == 1.7
+    and supply.diagnostics(task).supply.crafted_s == 1.7,
+    "crafted_s: 5 gears at 0.5 s each and crafting speed 1.5 are 1.7 s, in the outcome and the diagnostics")
+  check(facts_only(result.outcome) and facts_only(supply.diagnostics(task)), "crafted_s and diagnostics carry facts only")
+  reset()
+  local carried_only = run({ items = { { name = "iron-plate", count = 1 } } })
+  check(carried_only.outcome.crafted_s == nil, "a supply that queued no crafts has no crafted_s")
+
+  -- craft = false: plates are taken, nothing is hand-crafted, and the
+  -- shortfall names the bill for the gears it did not craft.
+  reset()
+  crafting = {}
+  chest({ x = 5.5, y = 0.5 }, { ["iron-plate"] = 4 })
+  local off = run({ items = { { name = "iron-gear-wheel", count = 5 } }, craft = false })
+  local crafted_calls = 0
+  for _, call in ipairs(calls) do if call.kind == "craft" then crafted_calls = crafted_calls + 1 end end
+  local row = off.outcome.hand_craft and off.outcome.hand_craft.items[1]
+  check(off.status == "failed" and off.outcome.code == "SUPPLY_SHORTFALL" and crafted_calls == 0
+    and next(crafting) == nil and (inventory["iron-gear-wheel"] or 0) == 0 and off.outcome.crafted_s == nil,
+    "craft = false ends SUPPLY_SHORTFALL with nothing crafted and an empty crafting queue")
+  check(off.outcome.missing[1].item == "iron-gear-wheel" and off.outcome.missing[1].missing == 5
+    and off.outcome.shortfall[1].reason:find("not hand-crafted (craft is false)", 1, true),
+    "the shortfall names the missing gears and that hand-crafting was off")
+  check(row and row.item == "iron-gear-wheel" and row.hand_craftable == 5 and row.hand_craft_s == 1.7
+    and off.outcome.hand_craft.total_s == 1.7 and #off.outcome.hand_craft.items == 1
+    and row.needs_machine["iron-plate"] == 6,
+    "craft = false reports the hand-craft bill: 5 gears in 1.7 s, plates beyond stock need a machine")
+  check(facts_only(off.outcome) and facts_only(off.detail), "the craft = false shortfall carries facts only")
+  reset()
+  local still = run({ items = { { name = "iron-gear-wheel", count = 5 } } })
+  check(still.status == "failed" and still.outcome.hand_craft == nil,
+    "with crafting on (the default), a shortfall carries no hand-craft bill")
+  own_force.manual_crafting_speed_modifier, body.character_crafting_speed_modifier = 0, 0
+
+  local ok_off = pcall(supply.action.validate, { item = "iron-plate", count = 1, craft = false }, 1)
+  local ok_bad, why = pcall(supply.action.validate, { item = "iron-plate", count = 1, craft = "no" }, 1)
+  check(ok_off and not ok_bad and errors.deliberate(why) and tostring(why):find("craft must be true or false", 1, true)
+    and supply.action.make_task({ item = "iron-plate", count = 1, craft = false }).craft == false,
+    "get_items takes craft as a boolean and hands it to its task")
+  check(supply.hand_craft(body, { { name = "iron-plate", count = 1 } }) == nil,
+    "hand_craft is nil when nothing would be hand-crafted")
 end
 os.exit(failures == 0 and 0 or 1)

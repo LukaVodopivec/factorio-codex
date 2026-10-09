@@ -133,6 +133,17 @@ function M.cancelled(task, body_only) return M.cancel_nested(task, body_only) en
 local function carried(c, name) return c.get_item_count(name) end
 -- Carried plus what the crafting queue still hands over.
 local function have(c, name) return c.get_item_count(name) + craft.queued(c, name) end
+-- The body's hand-crafting speed (a viewpoint without a character: the
+-- force's bonus only).
+local function craft_speed(c)
+  local speed = 1
+  pcall(function() speed = speed + (tonumber(c.force.manual_crafting_speed_modifier) or 0) end)
+  if c.get_item_count ~= nil then
+    pcall(function() speed = speed + (tonumber(c.character_crafting_speed_modifier) or 0) end)
+  end
+  return math.max(speed, 0.01)
+end
+local function tenth(x) return math.floor(x * 10 + 0.5) / 10 end
 
 local function dist_sq(a, b)
   local dx, dy = a.x - b.x, a.y - b.y
@@ -666,10 +677,7 @@ function M.bill(c, wants)
     end
     return pool[name]
   end
-  local speed = 1
-  pcall(function() speed = speed + (tonumber(c.force.manual_crafting_speed_modifier) or 0) end)
-  if body then pcall(function() speed = speed + (tonumber(c.character_crafting_speed_modifier) or 0) end) end
-  speed = math.max(speed, 0.01)
+  local speed = craft_speed(c)
   local rows, fetch = {}, {}
   for _, want in ipairs(wants) do
     local name, count = want.name, want.count
@@ -730,6 +738,17 @@ function M.bill(c, wants)
     end
   end
   return rows
+end
+
+-- The hand-craft part of the bill for wants: {total_s, items = the bill
+-- rows with hand_craft_s above 0}, or nil when no hand-crafting is needed.
+function M.hand_craft(c, wants)
+  local items, total = {}, 0
+  for _, row in ipairs(M.bill(c, wants)) do
+    if (row.hand_craft_s or 0) > 0 then items[#items + 1], total = row, total + row.hand_craft_s end
+  end
+  if #items == 0 then return nil end
+  return { total_s = tenth(total), items = items }
 end
 
 local function inventory_of(entity, id)
@@ -966,6 +985,11 @@ local function advance(task, c, frame)
       frame.phase = recipe and "gather" or "smelt"
       return false
     end
+    -- get_items craft = false: what is not taken is never hand-crafted.
+    if task.craft == false then
+      frame.craft_off, frame.phase = true, "end"
+      return false
+    end
     local crafts = math.min(math.ceil(need / per_craft), MAX_CRAFTS)
     frame.phase, frame.recipe, frame.per_craft = "craft_start", recipe.name, per_craft
     -- Ingredients first (the first is fetched first); an ingredient already
@@ -1136,6 +1160,7 @@ local function advance(task, c, frame)
     parts[#parts + 1] = "no own chest, landing pad, machine output or belt holds it"
   end
   if frame.craft_error then parts[#parts + 1] = "not hand-craftable: " .. frame.craft_error end
+  if frame.craft_off then parts[#parts + 1] = "not hand-crafted (craft is false)" end
   if frame.craft_capped then
     parts[#parts + 1] = string.format("hand-crafting queued %d of %d crafts: get_items queues at most %d crafts"
       .. " per round and %d rounds per item", frame.crafts_queued, frame.crafts_queued + math.ceil(need / frame.per_craft),
@@ -1169,12 +1194,15 @@ local function finish(task, c)
   if #crafting > 0 then how = how .. "; still in the crafting queue: " .. table.concat(crafting, ", ") end
   local report = { taken = task._report.taken, crafted = task._report.crafted, smelted = task._report.smelted,
     gathered = task._report.gathered }
+  -- crafted_s: the seconds of hand-crafting this supply queued, at the
+  -- body's crafting speed (absent when it queued none).
+  local crafted_s = (task._crafted_s or 0) > 0 and tenth(task._crafted_s) or nil
   if #missing == 0 then
     local parts = {}
     for _, want in ipairs(task.items) do parts[#parts + 1] = string.format("%d %s", want.count, want.name) end
     local stepped = task._step_out and task._step_out.escaped and ("; " .. tostring(task._step_out.detail)) or ""
     return { status = "done", detail = "carrying " .. table.concat(parts, ", ") .. how .. stepped,
-      outcome = { code = "SUPPLIED", supplied = report, step_out = task._step_out } }
+      outcome = { code = "SUPPLIED", supplied = report, step_out = task._step_out, crafted_s = crafted_s } }
   end
   -- What exists is carried; own lines that make a missing item say when the
   -- rest can be fetched (rate over the last minute).
@@ -1191,6 +1219,19 @@ local function finish(task, c)
   end
   local reasons = {}
   for _, row in ipairs(task._shortfall) do reasons[#reasons + 1] = row.item .. ": " .. row.reason end
+  -- With craft = false, what hand-crafting the missing items would take
+  -- (the bill's arithmetic; nothing was queued).
+  local hand_craft
+  if task.craft == false then
+    local wants = {}
+    for _, row in ipairs(missing) do
+      for _, want in ipairs(task.items) do
+        if want.name == row.item then wants[#wants + 1] = { name = want.name, count = want.count } end
+      end
+    end
+    local ok, bill = pcall(M.hand_craft, c, wants)
+    hand_craft = ok and bill or nil
+  end
   -- Pinned in an enclosure: its code and the walk's diagnostics, and what
   -- the step-out did, so the plan's recovery and the bots see the cause.
   local enclosed = task._pinned and task._enclosure
@@ -1207,7 +1248,8 @@ local function finish(task, c)
       .. (#reasons > 0 and (" — " .. table.concat(reasons, "; ")) or "")
       .. (#expected > 0 and ("; own machines make " .. table.concat(expected, ", ")) or ""),
     outcome = { code = code, missing = missing, shortfall = task._shortfall, supplied = report,
-      diagnostics = enclosed and enclosed.diagnostics or nil, step_out = step_out } }
+      diagnostics = enclosed and enclosed.diagnostics or nil, step_out = step_out, crafted_s = crafted_s,
+      hand_craft = hand_craft } }
 end
 
 function M.tick(task)
@@ -1234,10 +1276,17 @@ function M.tick(task)
     end
   end
   if task._sub then
-    local kind = task._sub.type
-    local target = task._sub.target
+    local sub = task._sub
+    local kind = sub.type
+    local target = sub.target
     local result = M.step(task, "_sub")
     if not result then return nil end
+    -- The crafts it queued, in seconds at the body's crafting speed.
+    if kind == "craft" and type(sub._craft) == "table" and (tonumber(sub._craft.started) or 0) > 0 then
+      local recipe = c.force.recipes[sub.recipe]
+      task._crafted_s = (task._crafted_s or 0)
+        + sub._craft.started * (recipe and tonumber(recipe.energy) or 0.5) / craft_speed(c)
+    end
     task.last_action = { action = kind, target = target and { x = target.x, y = target.y } or nil,
       status = result.status, code = result.outcome and result.outcome.code,
       detail = type(result.detail) == "string" and result.detail:sub(1, 240) or nil }
@@ -1304,7 +1353,9 @@ end
 -- supply movement and final target approach are separate evidence.
 function M.diagnostics(owner)
   if not owner then return nil end
-  local s = owner._supply
+  -- An embedded auto-supply, or the get_items step's own.
+  local own = owner._supply == nil and type(owner._stack) == "table"
+  local s = owner._supply or own and owner or nil
   local frame = s and s._stack and s._stack[#s._stack]
   local sub = s and s._sub
   local walker = sub or owner
@@ -1316,12 +1367,13 @@ function M.diagnostics(owner)
     walker = next_walk
   end
   local target = owner.target
-  return { stage = s and "auto_supply" or (owner._supplied or owner.auto_supply == false) and "target" or "before_supply",
+  return { stage = own and "get_items" or s and "auto_supply"
+      or (owner._supplied or owner.auto_supply == false) and "target" or "before_supply",
     target = target and { x = target.x, y = target.y } or nil,
     supply = s and { phase = frame and frame.phase, item = frame and frame.name,
       wanted = frame and frame.count, takes = frame and frame.takes,
       action = sub and sub.type, target = sub and sub.target,
-      last_action = s.last_action } or nil,
+      last_action = s.last_action, crafted_s = (s._crafted_s or 0) > 0 and tenth(s._crafted_s) or nil } or nil,
     supply_result = owner._supply_result,
     shortfall = type(owner._shortfall) == "string" and owner._shortfall:sub(1, 240) or nil,
     route = walker and walker.phase and { phase = walker.phase, request_tick = walker.request_tick,
@@ -1330,10 +1382,11 @@ function M.diagnostics(owner)
     route_depth_capped = depth == 8 or nil }
 end
 
--- The get_items plan action {item, count}: carry at least count of item.
+-- The get_items plan action {item, count, craft?}: carry at least count of
+-- item; craft = false never hand-crafts (a shortfall names what is missing).
 M.action = {
   runner = M,
-  make_task = function(step) return { items = { { name = step.item, count = step.count } } } end,
+  make_task = function(step) return { items = { { name = step.item, count = step.count } }, craft = step.craft } end,
   validate = function(step, index)
     if type(step.item) ~= "string" or step.item == "" then
       error("queue_plan get_items step " .. index .. " requires an item name", 0)
@@ -1341,6 +1394,9 @@ M.action = {
     local count = tonumber(step.count)
     if not count or count % 1 ~= 0 or count < 1 or count > 5000 then
       error("queue_plan get_items step " .. index .. " requires count as an integer from 1 to 5000", 0)
+    end
+    if step.craft ~= nil and type(step.craft) ~= "boolean" then
+      error("queue_plan get_items step " .. index .. " craft must be true or false", 0)
     end
   end,
 }

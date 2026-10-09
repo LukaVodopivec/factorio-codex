@@ -64,6 +64,10 @@ extract.start(empty_task)
 local empty_result = extract.tick(empty_task)
 check(empty_result.status == "failed" and empty_result.detail:match("it has no coal") ~= nil,
   "named extraction reports an empty source honestly")
+check(empty_result.outcome and empty_result.outcome.code == "NOTHING_TO_TAKE"
+  and empty_result.detail:match("^NOTHING_TO_TAKE: ") ~= nil and empty_result.outcome.target.name == "wooden-chest"
+  and empty_result.outcome.transfers[1].item == "coal" and empty_result.outcome.transfers[1].extracted == 0,
+  "an extraction that took nothing from an empty source is NOTHING_TO_TAKE, with its transfers")
 
 contents.coal = 5
 body.capacity = 0
@@ -73,6 +77,12 @@ extract.start(full_task)
 local full_result = extract.tick(full_task)
 check(full_result.status == "failed" and full_result.detail:match("my inventory is full") ~= nil,
   "named extraction distinguishes a full Codex inventory from an empty source")
+check(full_result.outcome and full_result.outcome.code == "INVENTORY_FULL"
+  and full_result.detail:match("^INVENTORY_FULL: ") ~= nil,
+  "an extraction that took nothing for want of room is INVENTORY_FULL")
+check(not (empty_result.detail .. full_result.detail):lower():find("should", 1, true)
+  and not (empty_result.detail .. full_result.detail):lower():find("try ", 1, true),
+  "the coded extract refusals state facts only")
 check(contents.coal == 5 and (body.received.coal or 0) == 0,
   "failed full-inventory extraction restores every removed source item")
 

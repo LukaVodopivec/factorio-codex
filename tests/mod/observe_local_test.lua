@@ -241,6 +241,22 @@ check(on_belt and on_belt.name == "transport-belt" and on_belt.type == "transpor
 conveyor.position, conveyor.bounding_box = { x = 2.5, y = 2.5 }, { left_top = { x = 2, y = 2 }, right_bottom = { x = 3, y = 3 } }
 check(observe_local({ radius = 5 }).character.standing_on == nil,
   "standing_on is omitted when no conveyor lies under the body")
+-- The crafting queue names each entry's recipe (CraftingQueueItem.recipe is
+-- a name) and queue_s, the seconds it still needs at the body's speed:
+-- (4 x 0.5 s - half of the head's 0.5 s + 2 x 10 s) / 1.5.
+do
+  player_force.recipes = { ["iron-gear-wheel"] = { energy = 0.5 }, ["engine-unit"] = { energy = 10 } }
+  player_force.manual_crafting_speed_modifier = 0.5
+  character.crafting_queue_size, character.crafting_queue_progress = 6, 0.5
+  character.crafting_queue = { { recipe = "iron-gear-wheel", count = 4 }, { recipe = "engine-unit", count = 2 } }
+  local crafting = observe_local({ radius = 5 }).character.crafting
+  check(crafting.queue[1].recipe == "iron-gear-wheel" and crafting.queue[2].recipe == "engine-unit"
+    and crafting.queue[1].count == 4 and crafting.queue_s == 14.5,
+    "the crafting read keeps each entry's recipe name and gives queue_s, the seconds left at the body's speed")
+  character.crafting_queue_size, character.crafting_queue_progress, character.crafting_queue = 0, nil, nil
+  player_force.recipes, player_force.manual_crafting_speed_modifier = nil, nil
+  check(observe_local({ radius = 5 }).character.crafting.queue_s == 0, "an empty crafting queue needs 0 s")
+end
 character.bounding_box = nil
 _G.require = parse_require
 os.exit(failures == 0 and 0 or 1)

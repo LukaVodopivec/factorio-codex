@@ -155,6 +155,11 @@ check(plain.body_time.window_tick == nil and storage.tasks.body_time.window_tick
 local marked = jobs.run_now(run_snapshot.job, { window = true })
 check(marked.body_time.window_tick == marked.tick and storage.tasks.body_time.window_tick == marked.tick,
   "the baseline sample marks the window at its own tick")
+check(plain.body_time.phases == nil and plain.body_time.tiles == nil, "a counter without phases exports none")
+storage.tasks.body_time.phases, storage.tasks.body_time.tiles = { walk = 30, craft_wait = 12, other = 4 }, 7.26
+local phased = jobs.run_now(run_snapshot.job, {})
+check(phased.body_time.phases.walk == 30 and phased.body_time.phases.craft_wait == 12 and phased.body_time.phases.other == 4
+  and phased.body_time.tiles == 7.3, "the snapshot exports the body phases and the tiles walked, to a tenth")
 
 -- The phases: within a small budget each runs whole in its own tick, one
 -- whose cost does not fit what is left waits once for a fresh tick, and

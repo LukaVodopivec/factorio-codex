@@ -297,6 +297,28 @@ check(storage.craft_wait_tick == game.tick,
 body.crafting_queue_size = 0
 check(mine.tick(crafting_recovery) == nil and body.mining_state.mining, "and mines it once the crafting queue is done")
 body.mining_state, body.selected = { mining = false }, nil
+-- Only a queued recipe that makes or uses what the mine hands over (the
+-- entity's items or its contents) holds an owned recovery.
+do
+  player_force.recipes = {
+    ["low-density-structure"] = { products = { { type = "item", name = "low-density-structure" } },
+      ingredients = { { type = "item", name = "copper-plate" } } },
+    ["electric-mining-drill"] = { products = { { type = "item", name = "electric-mining-drill" } },
+      ingredients = { { type = "item", name = "burner-mining-drill" } } },
+  }
+  body.crafting_queue_size, body.crafting_queue = 1, { { recipe = "low-density-structure", count = 5 } }
+  storage.craft_wait_tick = nil
+  local unrelated = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(unrelated)
+  check(mine.tick(unrelated) == nil and body.mining_state.mining and storage.craft_wait_tick == nil,
+    "an owned recovery mines at once beside a queued craft that neither makes nor uses its items")
+  body.mining_state, body.selected = { mining = false }, nil
+  body.crafting_queue = { { recipe = "low-density-structure", count = 5 }, { recipe = "electric-mining-drill", count = 1 } }
+  local related = { target = { x = 5, y = 0 }, count = 1, target_kind = "owned" }; mine.start(related)
+  check(mine.tick(related) == nil and not body.mining_state.mining and storage.craft_wait_tick == game.tick,
+    "an owned recovery waits while a queued craft uses its item")
+  body.crafting_queue_size, body.crafting_queue, player_force.recipes = 0, nil, nil
+  body.mining_state, body.selected = { mining = false }, nil
+end
 body.crafting_queue_size = 1
 local crafting_natural = { target = { x = 5, y = 0 }, count = 1, target_kind = "natural" }; mine.start(crafting_natural)
 check(crafting_natural._entity == covered_resource,
@@ -310,7 +332,7 @@ machine.valid, body.selected = false, nil
 engine_insert("burner-mining-drill", 1)
 local crafting_mid_result = mine.tick(crafting_mid_recovery)
 check(crafting_mid_result and crafting_mid_result.status == "failed"
-  and crafting_mid_result.detail:match("active hand%-crafting") ~= nil
+  and crafting_mid_result.detail:match("a queued hand%-craft makes or uses its items") ~= nil
   and crafting_mid_recovery._completed == 0 and crafting_mid_recovery._actual_gain == 0
   and not body.mining_state.mining and not machine.valid
   and covered_resource.amount == 100 and adjacent.amount == 100,

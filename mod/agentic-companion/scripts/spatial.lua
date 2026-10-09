@@ -13,6 +13,7 @@ local placement_geometry = require("scripts.placement_geometry")
 local output_targets = require("scripts.output_target")
 local jobs = require("scripts.jobs")
 local inserter_rate = require("scripts.inserter_rate")
+local craft = require("scripts.actions.craft")
 
 local M = {}
 
@@ -558,10 +559,14 @@ function M.character_state(c)
   end
   local inventory = inventory_contents(c.get_main_inventory())
   local ammo_inventory = inventory_contents(c.get_inventory(defines.inventory.character_ammo))
-  local crafting = { queue_size = c.crafting_queue_size or 0, progress = c.crafting_queue_progress or 0, queue = {} }
+  -- queue_s: the seconds the queue still needs at the body's crafting speed.
+  local ok_summary, summary = pcall(craft.queue_summary, c)
+  local crafting = { queue_size = c.crafting_queue_size or 0, progress = c.crafting_queue_progress or 0, queue = {},
+    queue_s = ok_summary and summary and summary.queue_s or 0 }
   for _, entry in ipairs(c.crafting_queue or {}) do
+    -- CraftingQueueItem.recipe is the recipe's name.
     local recipe = entry.recipe
-    pcall(function() recipe = entry.recipe.name end)
+    if type(recipe) ~= "string" then pcall(function() recipe = entry.recipe.name end) end
     crafting.queue[#crafting.queue + 1] = { recipe = recipe, count = entry.count }
   end
   local path_start = placement_geometry.path_start(c)

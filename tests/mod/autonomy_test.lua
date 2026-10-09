@@ -310,9 +310,39 @@ run(630)
 local flap_rows = 0
 for _, row in ipairs(autonomy.problems()) do if row.status == "full_output" and row.position.x == 40 then flap_rows = flap_rows + 1 end end
 check(flap_rows == 0, "the problem clears after ten seconds without it")
+-- The same class returning after a full recovery within five minutes of
+-- its wake is a problem row again but does not wake next_event; another raw
+-- status of that class (waiting for space) neither.
+local function full_rows(since)
+  local rows = 0
+  for _, row in ipairs(autonomy.problems(since)) do
+    if (row.status == "full_output" or row.status == "waiting_for_space_in_destination") and row.position.x == 40 then
+      rows = rows + 1
+    end
+  end
+  return rows
+end
 mock.state(output_full).status = RAW.full_output
 run(630)
-check(storage.autonomy.last_problem_tick ~= first_flap, "a problem after a full recovery is announced again")
+check(storage.autonomy.last_problem_tick == first_flap and full_rows(first_flap + 1) == 1,
+  "the same class after a full recovery within five minutes is a problem row without a new wake")
+mock.state(output_full).status = RAW.waiting_for_space_in_destination
+run(630)
+check(storage.autonomy.last_problem_tick == first_flap and full_rows() == 1,
+  "waiting for space is the output_full class: no new wake")
+mock.state(output_full).status = RAW.working
+run(first_flap + 18000 - game.tick)
+check(full_rows() == 0, "the problem cleared")
+mock.state(output_full).status = RAW.full_output
+run(630)
+local late_wake = storage.autonomy.last_problem_tick
+check(late_wake > first_flap and full_rows(late_wake) == 1,
+  "the same class five minutes after its wake wakes next_event again")
+mock.state(output_full).status = RAW.no_power
+run(90)
+check(storage.autonomy.last_problem_tick > late_wake, "another problem class wakes next_event at once")
+mock.state(output_full).status = RAW.working
+run(630)
 
 -- A machine removed between refreshes forces a refresh instead of an error.
 f3.valid = false

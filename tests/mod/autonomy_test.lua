@@ -141,6 +141,30 @@ check(furnace_group and furnace_group.recipe == "iron-plate" and furnace_group.m
   and furnace_group.products_finished <= finished_total,
   "run_snapshot groups carry the recipe and products_finished (" .. tostring(furnace_group and furnace_group.products_finished)
     .. " of " .. finished_total .. ")")
+-- Lab, recipe-less and silo statuses have their buckets; a status with none
+-- is counted by its raw name beside "other".
+do
+  local kept = storage.autonomy
+  storage.autonomy = { machines = {
+    { name = "lab", type = "lab", raw = "missing_science_packs" },
+    { name = "lab", type = "lab", raw = "no_research_in_progress" },
+    { name = "assembling-machine-2", type = "assembling-machine", raw = "no_recipe" },
+    { name = "rocket-silo", type = "rocket-silo", raw = "waiting_to_launch_rocket" },
+    { name = "rocket-silo", type = "rocket-silo", raw = "preparing_rocket_for_launch" },
+    { name = "rocket-silo", type = "rocket-silo", raw = "launching_rocket" },
+    { name = "steam-engine", type = "generator", raw = "some_new_status" },
+  } }
+  local groups = {}
+  for _, group in ipairs(require("scripts.map_summary").registry_factory().groups) do groups[group.entity] = group end
+  storage.autonomy = kept
+  local lab, assembler, silo, engine = groups["lab"], groups["assembling-machine-2"], groups["rocket-silo"],
+    groups["steam-engine"]
+  check(lab.status_counts.insufficient_input == 1 and lab.status_counts.idle == 1 and lab.status_counts.other == nil
+    and assembler.status_counts.idle == 1 and silo.status_counts.working == 3 and silo.raw_other == nil,
+    "labs short of packs are insufficient_input, labs without research and recipe-less machines idle, silo states working")
+  check(engine.status_counts.other == 1 and engine.raw_other and engine.raw_other.some_new_status == 1,
+    "a status with no bucket is counted as other and by its raw name in raw_other")
+end
 
 -- A character transfer marks the line hand-fed for a minute.
 local since = game.tick
@@ -453,6 +477,20 @@ check(status.tick == game.tick and type(status.lines) == "table" and status.powe
   and status.body.inventory_summary["iron-plate"] == 9 and status.body.human_control == false
   and status.patches[1].name == "iron-ore" and status.patches[1].distance == 50,
   "factory_status composes lines, problems, power, stock, research, body and patches")
+do
+  -- Within a state, the line not running for more of the last 10 minutes
+  -- goes first, then the lower id.
+  local real_lines = autonomy.lines
+  autonomy.lines = function()
+    return { { id = 1, state = "starved", share_10m = { running = 0.9, starved = 0.1 } },
+      { id = 2, state = "starved", share_10m = { starved = 1 } }, { id = 3, state = "starved" },
+      { id = 4, state = "starved", share_10m = { starved = 1 } } }
+  end
+  local ordered = factory_status.factory_status({ sections = { "lines" } }).lines
+  autonomy.lines = real_lines
+  check(ordered[1].id == 2 and ordered[2].id == 4 and ordered[3].id == 1 and ordered[4].id == 3,
+    "lines of one state are ordered by their share not running, then id")
+end
 local outline = status.patches[1].bbox
 check(outline and outline.left_top.x == 26 and outline.left_top.y == 37 and outline.right_bottom.x == 34
   and outline.right_bottom.y == 43, "each factory_status patch row carries its outline (bbox) from the patch cache")
@@ -1208,6 +1246,52 @@ check(oil and oil.state == "starved" and oil.cause == "crude-oil" and oil.meets 
   "a fluid_ingredient_shortage refinery names the crude oil it lacks and the heavy oil its inlet meets")
 refinery.valid = false
 autonomy.refresh()
+
+-- A full drill that cannot drop names drop_blocked, its drop position and
+-- what stands there (or the ground); one short of power names its status.
+do
+  local chest = mock.entity({ valid = true, name = "wooden-chest", type = "container", position = { x = 6000.5, y = 1.5 } })
+  local stuck = machine("mining-drill", "burner-mining-drill", 6000, 0, { mining_progress = 0, mining_target = ore,
+    status = RAW.waiting_for_space_in_destination, drop_position = { x = 6000.3, y = 1.2 }, drop_target = chest })
+  autonomy.refresh()
+  sample_silo(25)
+  local function stuck_line()
+    for _, line in ipairs(autonomy.lines()) do if line.position.x == 6000 then return line end end
+  end
+  local full = stuck_line()
+  check(full and full.state == "output_full" and full.cause == "drop_blocked" and full.drop_into == "wooden-chest"
+    and full.cause_position.x == 6000.3 and full.cause_position.y == 1.2,
+    "a drill waiting for space names drop_blocked, its drop position and the entity there")
+  local from = game.tick
+  stuck.drop_target = nil
+  sample_silo(25)
+  full = stuck_line()
+  local changed = false
+  for _, line in ipairs(autonomy.lines(from)) do if line.position.x == 6000 then changed = true end end
+  check(full and full.cause == "drop_blocked" and full.drop_into == "ground" and changed,
+    "a drill dropping onto no entity says ground, and the line counts as changed")
+  mock.state(stuck).status = RAW.no_power
+  sample_silo(25)
+  full = stuck_line()
+  check(full and full.state == "no_power" and full.cause == "no_power" and full.drop_into == nil
+    and full.cause_position.x == 6000, "a line short of power names the game's power status as its cause")
+  -- factory_status totals every line of the surface, whatever since_tick
+  -- and the 10-row cap leave out.
+  local counts = autonomy.counts(1)
+  local status = factory_status.factory_status({ sections = { "lines" } })
+  local quiet = factory_status.factory_status({ sections = { "lines" }, since_tick = game.tick + 1 })
+  local summed = 0
+  for _, n in pairs(status.line_counts and status.line_counts.by_state or {}) do summed = summed + n end
+  check(counts.line_count > 10 and #status.lines == 10 and status.line_counts.total == counts.line_count
+    and status.line_counts.running == counts.running_line_count
+    and status.line_counts.self_sustaining == counts.self_sustaining_line_count
+    and status.line_counts.hand_fed == counts.hand_fed_line_count and summed == counts.line_count
+    and status.line_counts.by_state.no_power >= 1 and #quiet.lines == 0 and quiet.line_counts.total == counts.line_count,
+    "factory_status line_counts total every line of the surface by state, whatever since_tick and the cap leave out ("
+      .. counts.line_count .. " lines)")
+  stuck.valid = false
+  autonomy.refresh()
+end
 
 mock.assert_clean()
 os.exit(failures == 0 and 0 or 1)

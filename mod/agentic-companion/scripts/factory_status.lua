@@ -19,7 +19,11 @@
 -- at their widest; under 13.5 KB in all, the worst case autonomy_test
 -- measures). logistics
 -- (robot networks) is opt-in through sections. platforms lists the force's
--- space platforms, one attribute-read line each (platforms.lua).
+-- space platforms, one attribute-read line each (platforms.lua). lines are
+-- the MAX_LINES worst (state rank, then the larger share of the last 10
+-- minutes not running, then id); omitted_lines counts the rest and
+-- line_counts gives the surface's totals over every line (total, running,
+-- self_sustaining, hand_fed, by_state).
 --
 -- Surfaces (multi-surface rule 6): `surface` names the surface the detailed
 -- sections (lines, problems, power, stock, patches, logistics) describe, the
@@ -74,6 +78,10 @@ local MAX_ELSEWHERE, MAX_ELSEWHERE_PROBLEMS = 8, 3
 local LINE_RANK = { no_power = 1, frozen = 2, no_heat = 3, no_fuel = 4, starved = 5, depleted = 6, output_full = 7,
   disabled = 8, idle = 9, running = 10 }
 local function line_rank(row) return (LINE_RANK[row.state] or 9) - (row.degraded and 0.5 or 0) end
+-- Within a rank, the line that spent more of the last 10 minutes not
+-- running goes first (share_10m; none shown is nearly always running), then
+-- the lower id.
+local function stalled_share(row) return row.share_10m and 1 - (row.share_10m.running or 0) or 0 end
 -- Dead machines first, then blocked output.
 local PROBLEM_RANK = { no_power = 1, not_plugged_in_electric_network = 1, no_fuel = 1, frozen = 1,
   no_minable_resources = 2, low_temperature = 2, pipeline_overextended = 2, no_modules_to_transmit = 2,
@@ -604,9 +612,17 @@ function M.factory_status(params)
     table.sort(result.lines, function(x, y)
       local rx, ry = line_rank(x), line_rank(y)
       if rx ~= ry then return rx < ry end
+      local sx, sy = stalled_share(x), stalled_share(y)
+      if sx ~= sy then return sx > sy end
       return x.id < y.id
     end)
     result.omitted_lines = cap(result.lines, MAX_LINES)
+    -- Totals over every line of the surface, whatever since_tick and the
+    -- cap leave out.
+    local counts = autonomy.counts(index, true)
+    result.line_counts = { total = counts.line_count, running = counts.running_line_count,
+      self_sustaining = counts.self_sustaining_line_count, hand_fed = counts.hand_fed_line_count,
+      by_state = counts.by_state }
     result.lines_error = storage.autonomy and storage.autonomy.refresh_error
   end
   if want.problems then

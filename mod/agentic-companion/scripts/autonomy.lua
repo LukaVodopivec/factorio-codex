@@ -87,6 +87,11 @@ local REFRESH_PER_TICK = 32 -- machines a refresh identifies a tick
 local MINUTE_TICKS = 3600
 -- A machine that made progress this recently counts as running.
 local PRODUCTIVE_TICKS = 600
+-- A machine whose new episode has the class (STATUS_CLASS) it last woke
+-- next_event with, within this window of that wake, is a counted problem
+-- row again but does not move last_problem_tick: an assembler that fills
+-- and drains around a slower consumer wakes the pilot once in five minutes.
+local REANNOUNCE_TICKS = 5 * MINUTE_TICKS
 local RATE_BIN_TICKS, RATE_BINS = 600, 6
 -- State share counters: one bin a minute, ten kept.
 local SHARE_BIN_TICKS, SHARE_BINS = MINUTE_TICKS, 10
@@ -740,7 +745,11 @@ local function sample(a, rec, tick)
     end
     if not rec.problem_counted and tick - rec.problem_since >= threshold then
       rec.problem_counted, rec.problem_announced_tick = true, tick
-      a.last_problem_tick = tick
+      local class = STATUS_CLASS[raw] or raw
+      if rec.woke_class ~= class or tick - rec.woke_tick >= REANNOUNCE_TICKS then
+        rec.woke_class, rec.woke_tick = class, tick
+        a.last_problem_tick = tick
+      end
     end
   elseif rec.problem then
     -- Hysteresis: a problem clears only after PRODUCTIVE_TICKS without it,

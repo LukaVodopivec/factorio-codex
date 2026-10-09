@@ -4,7 +4,10 @@
 -- imported, and export is a string for the notebook only.
 --
 --   capture  {name, area | center+radius}: own entities in a charted area
---            (LuaItemStack.create_blueprint); the world is only read.
+--            (LuaItemStack.create_blueprint); the world is only read. The
+--            engine keeps their world positions; the capture shifts them by
+--            an even whole vector, its `origin`, so the block sits about
+--            (0, 0): world position = origin + dx/dy.
 --   create   {name, entities:[{name, dx, dy, direction?, recipe?, mirror?,
 --            settings?}]}: a layout spec set as the blueprint's entities
 --            (settings as BlueprintEntity fields), nothing in the world.
@@ -115,8 +118,9 @@ local function prototype_size(name, direction)
   return w, h
 end
 
--- Width and height in tiles of what a blueprint's entities cover.
-local function size_of(entities)
+-- The box a blueprint's entities cover: min_x, min_y, max_x, max_y (nil
+-- when there are none).
+local function bounds(entities)
   local min_x, min_y, max_x, max_y
   for _, e in ipairs(entities) do
     local w, h = prototype_size(e.name, e.direction)
@@ -124,6 +128,12 @@ local function size_of(entities)
     min_x, max_x = math.min(min_x or x - w / 2, x - w / 2), math.max(max_x or x + w / 2, x + w / 2)
     min_y, max_y = math.min(min_y or y - h / 2, y - h / 2), math.max(max_y or y + h / 2, y + h / 2)
   end
+  return min_x, min_y, max_x, max_y
+end
+
+-- Width and height in tiles of what a blueprint's entities cover.
+local function size_of(entities)
+  local min_x, min_y, max_x, max_y = bounds(entities)
   if not min_x then return { w = 0, h = 0 } end
   return { w = math.ceil(max_x - min_x - 0.01), h = math.ceil(max_y - min_y - 0.01) }
 end
@@ -296,27 +306,52 @@ local function meta(stack, source)
     source = source, created_tick = game.tick }
 end
 
+-- origin: a capture's (see normalise); nil for a created blueprint and for
+-- a capture stored before 0.34, whose dx/dy are world positions.
 local function summary(c, name, stack, entry)
   return { name = name, entities = entry.entities, tiles = entry.tiles, size = entry.size,
-    wires = entry.wires > 0 and entry.wires or nil, cost = cost_of(stack),
+    wires = entry.wires > 0 and entry.wires or nil, origin = entry.origin, cost = cost_of(stack),
     tool_unlock = M.tool_unlock(c, "blueprint") }
 end
 
 -- Moves the finished scratch blueprint to its named slot.
-local function store(c, name, label, source, built)
+local function store(c, name, label, source, built, origin)
   local slot = slot_for(name, label)
   local stack = inventory()[slot]
   stack.set_stack(built)
   built.clear()
   pcall(function() stack.label = name end)
   local entry = meta(stack, source)
-  entry.slot = slot
+  entry.slot, entry.origin = slot, origin
   data().by_name[name] = entry
   log(source, name, { entities = entry.entities })
   return summary(c, name, stack, entry)
 end
 
 -- ------------------------------------------------------------------ capture
+
+-- create_blueprint keeps world positions. Shifts the entities and tiles by
+-- the even whole vector that brings their box's centre within a tile of
+-- (0, 0), so dx/dy mean what blueprint_create's do, turns and flips pivot at
+-- the block, and the vector (the origin) places it back where it stood. An
+-- even shift keeps tile and rail parity; a blueprint already there stays.
+-- Returns the origin and the work items it took.
+local function normalise(stack)
+  local entities = stack.get_blueprint_entities() or {}
+  local min_x, min_y, max_x, max_y = bounds(entities)
+  if not min_x then return { x = 0, y = 0 }, #entities end
+  local ox = 2 * math.floor((min_x + max_x) / 4 + 0.5)
+  local oy = 2 * math.floor((min_y + max_y) / 4 + 0.5)
+  if ox == 0 and oy == 0 then return { x = 0, y = 0 }, #entities end
+  for _, e in ipairs(entities) do e.position = { x = e.position.x - ox, y = e.position.y - oy } end
+  stack.set_blueprint_entities(entities)
+  local tiles = stack.get_blueprint_tiles() or {}
+  if #tiles > 0 then
+    for _, t in ipairs(tiles) do t.position = { x = t.position.x - ox, y = t.position.y - oy } end
+    stack.set_blueprint_tiles(tiles)
+  end
+  return { x = ox, y = oy }, 2 * #entities + #tiles
+end
 
 M.capture_job = {
   start = function(params)
@@ -358,7 +393,9 @@ M.capture_job = {
       error(string.format("blueprint_capture: the area holds %d entities; a blueprint takes at most %d (capture a smaller area)",
         count, M.MAX_ENTITIES), 0)
     end
-    return store(c, job.name, "blueprint_capture", "capture", built)
+    local origin, work = normalise(built)
+    budget.left = budget.left - work
+    return store(c, job.name, "blueprint_capture", "capture", built, origin)
   end,
 }
 
@@ -495,7 +532,8 @@ local function check_flip(flip, label)
 end
 M.check_flip = check_flip
 
--- A blueprint entity flipped about the blueprint's centre (before any turn).
+-- A blueprint entity flipped about dx/dy (0, 0), the centre of a captured
+-- block (before any turn).
 local function flipped(e, flip)
   local out = {}
   for k, v in pairs(e) do out[k] = v end

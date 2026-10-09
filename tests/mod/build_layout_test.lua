@@ -1205,6 +1205,40 @@ check(result and result.status == "done" and created[1].entity.inserted.coal == 
   "a layout entity's insert map is put into the placed entity")
 check(layout._rotated({ entities = { { name = "stone-furnace", dx = 1, dy = 0, insert = { coal = 2 } } } }, 1).entities[1].insert.coal == 2,
   "a turned layout keeps each entity's insert map")
+-- A placed entity that takes only part of its starter items, first time and
+-- on the retry (a silo's rocket fuel), is listed with PARTIAL_INSERT and the
+-- totals over both attempts, never as NOT_ATTEMPTED.
+do
+  local caps = { 6, 1 }
+  local real_create = surface.create_entity
+  surface.create_entity = function(args)
+    local e = real_create(args)
+    if e.name == "stone-furnace" then
+      e.insert = function(stack)
+        local n = math.min(stack.count, table.remove(caps, 1) or 0)
+        e.inserted[stack.name] = (e.inserted[stack.name] or 0) + n
+        return n
+      end
+    end
+    return e
+  end
+  created = {}
+  inventory = { ["stone-furnace"] = 1, coal = 10 }
+  local silo_like = { id = 21, anchor = { x = 260, y = 200 }, entities = {
+    { name = "stone-furnace", dx = 1, dy = 1, insert = { coal = 10 } } } }
+  layout.layout_action.runner.start(silo_like)
+  for _ = 1, 40 do
+    result = layout.layout_action.runner.tick(silo_like)
+    if result then break end
+    game.tick = game.tick + 30
+  end
+  surface.create_entity = real_create
+  local row = result and result.outcome.failed[1]
+  check(result and result.status == "partial" and result.outcome.code == "LAYOUT_PARTIAL" and #result.outcome.placed == 1
+    and row and row.index == 0 and row.code == "PARTIAL_INSERT" and row.reason:match("took 7 of 10 coal %(3 not inserted%)")
+    and row.transfers[1].inserted == 7 and row.transfers[1].remainder == 3 and created[1].entity.inserted.coal == 7,
+    "a placed step ended by a partial starter insert is listed with PARTIAL_INSERT and its totals, never NOT_ATTEMPTED")
+end
 
 -- A save made by 0.21.0 mid-search loads into this version: its search kept
 -- a boolean deferral and connections without underground facts.

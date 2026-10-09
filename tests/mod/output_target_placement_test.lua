@@ -332,6 +332,29 @@ check(partial_insert_result and partial_insert_result.status == "partial"
   "build_plan stops after a retried bounded partial insertion and reports its exact remainder")
 check(activity.snapshot(insertion_tick).events[#activity.snapshot(insertion_tick).events].item_count == 7,
   "capacity-limited partial insertion records only accepted items")
+-- The retry takes one more (a silo's rocket fuel: 40 of 50, then 1 of 10):
+-- the detail and the step's result give the totals over both attempts.
+do
+  created, removed, inserted, insert_limit, target_matches = 0, 0, 0, 7, {}
+  local retried = { steps = {
+    { item = "burner-mining-drill", position = { x = 1.5, y = 0.5 }, insert = { wood = 10 } },
+    { item = "wooden-chest", position = { x = 3.5, y = 0.5 } },
+  } }
+  build_plan.start(retried)
+  build_plan.tick(retried)
+  game.tick, insert_limit = game.tick + 60, 1
+  local result = build_plan.tick(retried)
+  local step = retried._results[1]
+  check(result and result.status == "partial" and result.outcome.code == "PARTIAL_INSERT" and inserted == 8
+    and result.outcome.total_inserted == 8 and result.outcome.transfers[1].inserted == 8
+    and result.outcome.transfers[1].remainder == 2
+    and result.detail:match("the burner%-mining%-drill took 8 of 10 wood %(2 not inserted%)")
+    and not result.detail:match("1 of 3"),
+    "a retried partial starter insert reports the merged totals, not the retry's own counts")
+  check(step and step.ok == false and step.code == "PARTIAL_INSERT" and step.why == result.detail
+    and step.transfers[1].requested == 10 and retried._results[2] == nil,
+    "the partial insert is the placed step's own result (PARTIAL_INSERT with its transfers)")
+end
 
 -- Reuse real build-plan interactions with conserved simulated inventory.
 local function starter_case(items, stock, limit, rejected, later_steps, stop_on_error)

@@ -2830,9 +2830,15 @@ function Runner.tick(task)
   local placed, failed = {}, {}
   for i, step in ipairs(plan.steps) do
     local r = plan._results[i]
+    local standing = step._placed_entity and step._placed_entity.valid
+    -- A placed step the build ended on without a result carries the build's
+    -- end, never NOT_ATTEMPTED.
+    if not r and standing then
+      r = { ok = false, code = done.outcome and done.outcome.code, why = done.detail }
+    end
     -- Ground stacks taken up from its footprint go with its row.
     local picked = r and r.picked_up or nil
-    if (r and r.ok) or (step._placed_entity and step._placed_entity.valid) then
+    if (r and r.ok) or standing then
       placed[#placed + 1] = placed_row(step)
       placed[#placed].picked_up = picked
     end
@@ -2841,7 +2847,7 @@ function Runner.tick(task)
     if not (r and r.ok) then
       failed[#failed + 1] = { index = step._source.index, connection = step._source.connection,
         code = r and (r.code or "PLACE_FAILED") or "NOT_ATTEMPTED", reason = r and r.why or nil,
-        picked_up = not (step._placed_entity and step._placed_entity.valid) and picked or nil }
+        transfers = r and r.transfers or nil, picked_up = not standing and picked or nil }
     end
   end
   local shortfall

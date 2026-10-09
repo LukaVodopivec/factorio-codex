@@ -507,12 +507,14 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(skill)).toMatch(/until the factory completes Space Age and reaches the Solar System Edge/);
     const flatPilot = flat(pilot);
     expect(flatPilot).toMatch(/when no plan needs the body, upkeep already refuels burners and brings the current research's packs to labs from stock/);
-    expect(flatPilot).toMatch(/packs made by hand add nothing while every lab is already working/);
-    expect(flatPilot).toMatch(/hand-crafting inside `get_items` costs body time at crafting speed \(`queue_plan`'s `hand_craft` shows it; `craft: false` never hand-crafts\)/);
+    expect(flatPilot).toMatch(/while every lab is working, more packs do not speed research now; they only add stock for when labs would otherwise run short \(`factory_status` research shows `packs_per_minute_needed` against `packs_per_minute_made`\)/);
+    expect(flatPilot).toMatch(/hand-crafting runs while the body does other things, but a `get_items` that crafts waits for its crafts \(`queue_plan`'s `hand_craft` gives the seconds; `craft: false` skips them\)/);
+    expect(flatPilot).not.toMatch(/add nothing|costs body time at crafting speed/);
     expect(flatPilot).toMatch(/your own plans hold the FIFO, so a package queued after one waits until it ends/);
     expect(flatPilot).not.toMatch(/such as acting on a `factory_status` problem|up to 120 s/);
     const flatKnowledge = flat(knowledge);
-    expect(flatKnowledge).toMatch(/Research is a critical path measured in lab time[^.]*\. A speed-up pays when the time it saves \(time left for that work, times its gain\) exceeds its own cost/);
+    expect(flatKnowledge).toMatch(/Research is a critical path measured in lab time[^.]*\. A speed-up pays when the time it saves exceeds its own cost: work left at a gain g finishes in 1\/\(1\+g\) of the time, so it saves that time x g\/\(1\+g\)/);
+    expect(flatKnowledge).not.toMatch(/times its gain/);
     expect(flatKnowledge).toMatch(/`production_requirements` gives `lab_seconds`/);
     expect(flatKnowledge).toMatch(/\*\*Walking\*\* is body time[^.]*movement bonuses[^.]*raise the body's speed/);
     const flatReference = flat(reference);
@@ -522,6 +524,8 @@ describe("persistent two-brain coordination contract", () => {
     const server = flat(read("companion/src/mcp/server.ts"));
     expect(server).toMatch(/equip wears armor from the inventory[^.]*\. A personal roboport in the worn grid[^.]*construction robots the body carries to build ghosts/);
     expect(server).toMatch(/mode ghosts: ghosts for construction robots \(a ghost is only an order/);
+    expect(server).toMatch(/An assembler crafts from its input inventory \(insert_items puts items there\) and holds its products in its output \(extract_items takes them\)/);
+    expect(server).not.toMatch(/hand-fed assembler/);
   });
 
   it("says plainly that backpressure never wakes new_problem but stays visible", () => {

@@ -667,7 +667,7 @@ export function registerMcpTools(
     } catch (error) { return failure(error); }
   });
   const recipeInput = position.extend({ recipe: z.string(), platform: platformSelector.optional() }).strict();
-  tools.registerTool("set_recipe", { description: "Set the recipe of your assembler (or crusher) at a position; with platform, on that space platform without the body, its old contents going to the hub. Furnaces choose their own recipe from their input. With insert_items and extract_items it runs a hand-fed assembler.", inputSchema: recipeInput }, async (p, extra) => {
+  tools.registerTool("set_recipe", { description: "Set the recipe of your assembler (or crusher) at a position; with platform, on that space platform without the body, its old contents going to the hub. Furnaces choose their own recipe from their input. An assembler crafts from its input inventory (insert_items puts items there) and holds its products in its output (extract_items takes them).", inputSchema: recipeInput }, async (p, extra) => {
     try {
       const parsed = recipeInput.parse(p);
       if (parsed.platform !== undefined) return await remote("set_recipe", parsed, (value) =>

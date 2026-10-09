@@ -92,8 +92,8 @@ overridable, never a build or technology order: measured state wins.
 - **Lab time.** Research is a critical path measured in lab time: an unlock
   arrives only once labs finish its units, so idle or starved labs delay all
   behind it (`production_requirements` gives `lab_seconds`). A speed-up pays
-  when the time it saves (time left for that work, times its gain) exceeds
-  its own cost.
+  when the time it saves exceeds its own cost: work left at a gain g
+  finishes in 1/(1+g) of the time, so it saves that time x g/(1+g).
 - **Walking** is body time: every trip costs seconds, and movement bonuses
   (exoskeleton equipment, paved tiles) raise the body's speed.
 - **Space Age.** The win is a platform reaching the solar system edge. Choose

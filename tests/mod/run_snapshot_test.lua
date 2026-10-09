@@ -194,7 +194,6 @@ do
   for _, row in ipairs(ran) do
     if row.phase ~= "progression" and row.step == steps_of.progression then alone = false end
   end
-  if os.getenv("SNAP_DEBUG") then for _, row in ipairs(ran) do print(row.phase, row.step) end end
   check(alone and steps_of.factory > steps_of.progression and steps_of.progression > 1,
     "progression (120 technologies) waits for a fresh tick after the reads, runs whole alone there, and the next phase waits")
   check(most <= 30 + 1 + 120, "no tick spends more than its budget and one phase (" .. most .. ")")

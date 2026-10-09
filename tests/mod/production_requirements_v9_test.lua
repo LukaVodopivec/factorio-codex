@@ -51,7 +51,7 @@ check(result.nodes[1].recipe_executions == 3 and result.nodes[2].recipe_executio
   and result.units.targets == "item_or_fluid_units" and result.units.time == "seconds_at_crafting_speed_1",
   "multiple targets aggregate craft counts, raw inputs, products, categories and time")
 -- The force's recipes are read once a request, not once a product; the
--- job reads them a recipe per work item over ticks, then expands on a
+-- job reads them a few work items per recipe over ticks, then expands on a
 -- fresh tick, with the same answer.
 do
   local function same(a, b)
@@ -68,7 +68,7 @@ do
   check(walks == 1, "a request reads the force's recipes once, not once per product (" .. walks .. " reads)")
   local sliced, ticks = jobs.run_now(production.job, params, 1)
   check(ticks > 4 and same(sliced, direct),
-    "the job reads one recipe a work item over " .. ticks .. " ticks and answers like the direct read")
+    "the job reads its recipes over " .. ticks .. " ticks and answers like the direct read")
   local whole, whole_ticks = jobs.run_now(production.job, params)
   check(whole_ticks == 1 and same(whole, direct), "with a whole tick's budget the job answers in its first tick")
   setmetatable(force.recipes, nil)
@@ -81,9 +81,17 @@ end
 local progressed, progress_error = pcall(production.production_requirements, { targets = { future = 1 } })
 check(not progressed and tostring(progress_error):match("no progression route") ~= nil, "locked-only products refuse a nonexistent progression route")
 
+-- A refusal is deliberate (no source location): the RPC and job
+-- dispatchers answer it without counting a handler fault.
+local errors = require("scripts.errors")
 local function rejects(params, message, name)
   local ok, reason = pcall(production.production_requirements, params)
-  check(not ok and tostring(reason):find(message, 1, true) ~= nil, name)
+  check(not ok and tostring(reason):find(message, 1, true) ~= nil and errors.deliberate(reason), name)
+end
+check(errors.deliberate(ambiguity), "an ambiguous route is a deliberate refusal, not a handler fault")
+do
+  local refused, reason = pcall(production.production_requirements, { targets = { widget = 0 } })
+  check(not refused and errors.deliberate(reason), "request validation refuses deliberately")
 end
 for _, name in ipairs({ "iron-ore", "custom-mineral", "scrap", "cycle-a", "cycle-b" }) do prototypes.item[name] = {} end
 prototypes.fluid["native-fluid"] = {}
@@ -264,4 +272,54 @@ check(multiple.partial == true and multiple.ambiguities[1].kind == "location_unl
   and multiple.ambiguities[1].candidates[1] == "mineral-science" and multiple.ambiguities[1].candidates[2] == "second-unlock"
   and next(multiple.remaining_science_packs) == nil and #multiple.missing_technologies == 0,
   "multiple location unlocks require a choice without fabricated science or technologies")
+-- The resource catalogue is built a step per work item: the first request
+-- after a cold cache spreads it over ticks, and a peer whose cache is warm
+-- charges the same work tick by tick (a job's progress is game state on
+-- every peer) and answers the same.
+do
+  local function same(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+    for k, v in pairs(a) do if not same(v, b[k]) then return false end end
+    for k in pairs(b) do if a[k] == nil then return false end end
+    return true
+  end
+  local jobs = require("scripts.jobs")
+  local entity = native_autoplace.autoplace_settings.entity
+  local saved = entity.settings
+  local many = {}
+  for name in pairs(saved) do many[name] = {} end
+  for i = 1, 400 do many["autoplaced-" .. i] = {} end
+  entity.settings = many
+  production = reload()
+  local params = { targets = { ["iron-plate"] = 7 }, recipe_choices = { ["iron-plate"] = "smelting" } }
+  local spent = {}
+  local job = { start = production.job.start, step = function(S, budget)
+    local before = budget.left
+    local result = production.job.step(S, budget)
+    spent[#spent + 1] = before - budget.left
+    return result
+  end }
+  local cold, cold_ticks = jobs.run_now(job, params)
+  local cold_spent = spent
+  spent = {}
+  local warm, warm_ticks = jobs.run_now(job, params)
+  local most = 0
+  for _, n in ipairs(cold_spent) do most = math.max(most, n) end
+  check(cold ~= nil and cold.raw["iron-ore"] == 7 and cold_ticks > 1 and most <= jobs.WORK_PER_TICK + production.ROOT_ENTRY_WORK * 402,
+    "the first request after a cold cache builds the catalogue over " .. cold_ticks .. " ticks")
+  check(warm_ticks == cold_ticks and same(spent, cold_spent) and same(warm, cold),
+    "a warm catalogue is charged the same work each tick and answers the same")
+  -- A peer that loaded mid-build catches up on its next step, charged alike.
+  production = reload()
+  local S = production.job.start(params)
+  local first
+  repeat first = production.job.step(S, { left = 20 }) until first ~= nil or (S.roots_step or 1) > 1
+  local mid, at = first == nil and not S.roots_done, S.roots_step
+  production = reload()
+  local resumed = jobs.run_now({ start = function() return S end, step = production.job.step }, params)
+  check(mid and same(resumed, cold), "a catalogue build interrupted by a load (at step " .. tostring(at)
+    .. ") finishes with the same answer")
+  entity.settings = saved
+  production = reload()
+end
 os.exit(failures == 0 and 0 or 1)

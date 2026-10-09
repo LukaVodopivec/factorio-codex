@@ -1308,4 +1308,14 @@ supply.register_runner("extract", stub("extract", function(task)
   return { status = "done", detail = "took", outcome = { transfers = transfers } }
 end))
 end
+-- queue_plan's get_items checks are deliberate refusals (no source
+-- location), so the RPC dispatcher answers them without counting a fault.
+do
+  local errors = require("scripts.errors")
+  for _, step in ipairs({ { item = "iron-plate", count = 5001 }, { item = "iron-plate", count = 0 }, { count = 1 } }) do
+    local ok, reason = pcall(supply.action.validate, step, 1)
+    check(not ok and errors.deliberate(reason) and not tostring(reason):find(".lua:", 1, true),
+      "get_items validation refuses deliberately: " .. tostring(reason))
+  end
+end
 os.exit(failures == 0 and 0 or 1)

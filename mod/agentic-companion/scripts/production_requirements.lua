@@ -1,8 +1,9 @@
 -- Deterministic item/fluid expansion plus current-force technology/location closure.
 --
 -- Resource roots per planet (prototype data only, never charted or hidden
--- map state; built once per load into a module-local table, since
--- prototypes change only with a configuration change): for every space
+-- map state; built once per load into a module-local table, a step per work
+-- item over the job's ticks, since prototypes change only with a
+-- configuration change): for every space
 -- location with map generation, the resources, rocks, trees, plants and
 -- fish its autoplace settings (or an autoplace control it has) place, and
 -- the liquids of its tiles; for every location and space connection, the
@@ -81,110 +82,175 @@ end
 
 local HAND_TYPES = { tree = true, plant = true, ["simple-entity"] = true, fish = true }
 
--- {by_product = {[name] = {{planet, via}}}, at = {[location] = {[name] =
--- true}}, properties = {[location] = {[property] = value}}, planets = the
--- locations with map generation, sorted}.
-local roots_cache
-local function roots()
-  if roots_cache then return roots_cache end
-  local R = { by_product = {}, at = {}, properties = {}, planets = {} }
-  local seen = {}
-  local function add(location, product, via)
-    if type(product) ~= "string" then return end
-    local key = location .. "\0" .. product .. "\0" .. via
-    if seen[key] then return end
-    seen[key] = true
-    local list = R.by_product[product] or {}
-    R.by_product[product] = list
-    list[#list + 1] = { planet = location, via = via }
-    R.at[location] = R.at[location] or {}
-    R.at[location][product] = true
+-- The catalogue: {by_product = {[name] = {{planet, via}}}, at = {[location]
+-- = {[name] = true}}, properties = {[location] = {[property] = value}},
+-- planets = the locations with map generation, sorted}.
+--
+-- It is built in steps (the job spreads them over ticks): the drills'
+-- resource categories, the entities a control places, one step per space
+-- location, one per space connection, then the sort. A step's cost is the
+-- prototype entries it reads, prototype data alike on every peer, so the job
+-- charges the same work whether this peer's per-load cache is warm or not.
+local roots_cache -- {R, costs = {[step] = cost}} once built
+local building -- the build in progress
+
+local function new_build()
+  local steps = { { kind = "drills" }, { kind = "controlled" } }
+  for _, name in ipairs(each_key(prototypes.space_location)) do steps[#steps + 1] = { kind = "location", name = name } end
+  for _, name in ipairs(each_key(prototypes.space_connection)) do steps[#steps + 1] = { kind = "connection", name = name } end
+  steps[#steps + 1] = { kind = "sort" }
+  return { R = { by_product = {}, at = {}, properties = {}, planets = {} }, seen = {}, drills_of = {}, controlled = {},
+    steps = steps, done = 0, costs = {} }
+end
+
+local function add(B, location, product, via)
+  if type(product) ~= "string" then return end
+  local key = location .. "\0" .. product .. "\0" .. via
+  if B.seen[key] then return end
+  B.seen[key] = true
+  local R = B.R
+  local list = R.by_product[product] or {}
+  R.by_product[product] = list
+  list[#list + 1] = { planet = location, via = via }
+  R.at[location] = R.at[location] or {}
+  R.at[location][product] = true
+end
+
+-- Resource categories no drill but the big mining drill mines.
+local function big_only(B, category)
+  local drills = category and B.drills_of[category]
+  if not drills or not drills["big-mining-drill"] then return false end
+  for name in pairs(drills) do if name ~= "big-mining-drill" then return false end end
+  return true
+end
+
+local function entity_roots(B, location, entity)
+  local kind = read(function() return entity.type end)
+  local mining = read(function() return entity.mineable_properties end)
+  if not (mining and mining.minable) then return end
+  if kind == "resource" then
+    for _, product in pairs(mining.products or {}) do
+      local via = product.type == "fluid" and "pump"
+        or big_only(B, read(function() return entity.resource_category end)) and "big_drill" or "drill"
+      add(B, location, product.name, via)
+    end
+  elseif HAND_TYPES[kind] then
+    for _, product in pairs(mining.products or {}) do
+      add(B, location, product.name, "hand")
+      if kind == "plant" then add(B, location, product.name, "tower") end
+    end
   end
-  -- Resource categories no drill but the big mining drill mines.
-  local drills_of = {}
+end
+
+-- Returns the definitions read.
+local function asteroid_roots(B, location, definitions)
+  local read_count = 0
+  for _, definition in ipairs(definitions or {}) do
+    read_count = read_count + 1
+    if definition.type == "asteroid-chunk" and definition.asteroid then
+      local chunk = read(function() return prototypes.asteroid_chunk[definition.asteroid] end)
+      local mining = chunk and read(function() return chunk.mineable_properties end)
+      local products = mining and mining.products
+      if products and #products > 0 then
+        for _, product in pairs(products) do add(B, location, product.name, "asteroid") end
+      else
+        add(B, location, definition.asteroid, "asteroid")
+      end
+    end
+  end
+  return read_count
+end
+
+-- Each step does its part of the catalogue and returns its cost.
+local ROOT_STEPS = {}
+function ROOT_STEPS.drills(B)
+  local cost = 1
   for name, drill in pairs(prototypes.get_entity_filtered({ { filter = "type", type = "mining-drill" } })) do
+    cost = cost + 1
     for category in pairs(read(function() return drill.resource_categories end) or {}) do
-      drills_of[category] = drills_of[category] or {}
-      drills_of[category][name] = true
+      B.drills_of[category] = B.drills_of[category] or {}
+      B.drills_of[category][name] = true
     end
   end
-  local function big_only(category)
-    local drills = category and drills_of[category]
-    if not drills or not drills["big-mining-drill"] then return false end
-    for name in pairs(drills) do if name ~= "big-mining-drill" then return false end end
-    return true
-  end
-  local function entity_roots(location, entity)
-    local kind = read(function() return entity.type end)
-    local mining = read(function() return entity.mineable_properties end)
-    if not (mining and mining.minable) then return end
-    if kind == "resource" then
-      for _, product in pairs(mining.products or {}) do
-        local via = product.type == "fluid" and "pump"
-          or big_only(read(function() return entity.resource_category end)) and "big_drill" or "drill"
-        add(location, product.name, via)
-      end
-    elseif HAND_TYPES[kind] then
-      for _, product in pairs(mining.products or {}) do
-        add(location, product.name, "hand")
-        if kind == "plant" then add(location, product.name, "tower") end
-      end
-    end
-  end
-  -- Entities a control places (trees, plants), once.
-  local controlled = {}
+  return cost
+end
+-- Entities a control places (trees, plants), once.
+function ROOT_STEPS.controlled(B)
+  local cost = 1
   for name, entity in pairs(prototypes.get_entity_filtered({ { filter = "type", type = each_key(HAND_TYPES) } })) do
+    cost = cost + 1
     local control = read(function() return entity.autoplace_specification.control end)
     if control then
-      controlled[control] = controlled[control] or {}
-      controlled[control][#controlled[control] + 1] = name
+      B.controlled[control] = B.controlled[control] or {}
+      B.controlled[control][#B.controlled[control] + 1] = name
     end
   end
-  for _, names in pairs(controlled) do table.sort(names) end
-  local function asteroid_roots(location, definitions)
-    for _, definition in ipairs(definitions or {}) do
-      if definition.type == "asteroid-chunk" and definition.asteroid then
-        local chunk = read(function() return prototypes.asteroid_chunk[definition.asteroid] end)
-        local mining = chunk and read(function() return chunk.mineable_properties end)
-        local products = mining and mining.products
-        if products and #products > 0 then
-          for _, product in pairs(products) do add(location, product.name, "asteroid") end
-        else
-          add(location, definition.asteroid, "asteroid")
-        end
+  for _, names in pairs(B.controlled) do table.sort(names) end
+  return cost
+end
+function ROOT_STEPS.location(B, location_name)
+  local R, cost = B.R, 1
+  local location = prototypes.space_location[location_name]
+  local settings = read(function() return location.map_gen_settings end)
+  if settings then
+    R.planets[#R.planets + 1] = location_name
+    local autoplace = settings.autoplace_settings or {}
+    for _, name in ipairs(each_key(autoplace.entity and autoplace.entity.settings)) do
+      cost = cost + 1
+      local entity = prototypes.entity and prototypes.entity[name]
+      if entity then entity_roots(B, location_name, entity) end
+    end
+    for _, control in ipairs(each_key(settings.autoplace_controls)) do
+      cost = cost + 1
+      for _, name in ipairs(B.controlled[control] or {}) do
+        cost = cost + 1
+        entity_roots(B, location_name, prototypes.entity[name])
       end
     end
-  end
-  for _, location_name in ipairs(each_key(prototypes.space_location)) do
-    local location = prototypes.space_location[location_name]
-    local settings = read(function() return location.map_gen_settings end)
-    if settings then
-      R.planets[#R.planets + 1] = location_name
-      local autoplace = settings.autoplace_settings or {}
-      for _, name in ipairs(each_key(autoplace.entity and autoplace.entity.settings)) do
-        local entity = prototypes.entity and prototypes.entity[name]
-        if entity then entity_roots(location_name, entity) end
-      end
-      for _, control in ipairs(each_key(settings.autoplace_controls)) do
-        for _, name in ipairs(controlled[control] or {}) do entity_roots(location_name, prototypes.entity[name]) end
-      end
-      for _, name in ipairs(each_key(autoplace.tile and autoplace.tile.settings)) do
-        local tile = prototypes.tile and prototypes.tile[name]
-        add(location_name, tile and read(function() return tile.fluid.name end), "offshore")
-      end
+    for _, name in ipairs(each_key(autoplace.tile and autoplace.tile.settings)) do
+      cost = cost + 1
+      local tile = prototypes.tile and prototypes.tile[name]
+      add(B, location_name, tile and read(function() return tile.fluid.name end), "offshore")
     end
-    asteroid_roots(location_name, read(function() return location.asteroid_spawn_definitions end))
-    R.properties[location_name] = read(function() return location.surface_properties end) or {}
   end
-  for _, connection_name in ipairs(each_key(prototypes.space_connection)) do
-    local connection = prototypes.space_connection[connection_name]
-    asteroid_roots(connection_name, read(function() return connection.asteroid_spawn_definitions end))
-  end
-  for _, list in pairs(R.by_product) do
+  cost = cost + asteroid_roots(B, location_name, read(function() return location.asteroid_spawn_definitions end))
+  R.properties[location_name] = read(function() return location.surface_properties end) or {}
+  return cost
+end
+function ROOT_STEPS.connection(B, connection_name)
+  local connection = prototypes.space_connection[connection_name]
+  return 1 + asteroid_roots(B, connection_name, read(function() return connection.asteroid_spawn_definitions end))
+end
+function ROOT_STEPS.sort(B)
+  local cost = 1
+  for _, list in pairs(B.R.by_product) do
+    cost = cost + 1
     table.sort(list, function(a, b) return a.planet == b.planet and a.via < b.via or a.planet < b.planet end)
   end
-  roots_cache = R
-  return R
+  return cost
+end
+
+-- The cost of catalogue step `index`, doing it (and any earlier step not yet
+-- done here) unless the catalogue is already built; nil past the last step.
+local function roots_step(index)
+  if roots_cache then return roots_cache.costs[index] end
+  building = building or new_build()
+  local B = building
+  while B.done < math.min(index, #B.steps) do
+    local step = B.steps[B.done + 1]
+    B.costs[B.done + 1] = ROOT_STEPS[step.kind](B, step.name)
+    B.done = B.done + 1
+  end
+  local cost = B.costs[index] -- nil past the last step
+  if B.done == #B.steps then
+    roots_cache, building = { R = B.R, costs = B.costs }, nil
+  end
+  return cost
+end
+
+local function roots()
+  if not roots_cache then roots_step(math.huge) end
+  return roots_cache.R
 end
 
 -- The liquids of a location's own map-generated tiles (an offshore pump
@@ -289,7 +355,7 @@ end
 
 -- The force's recipes that make each product: {names, cursor, by_product =
 -- {[product] = {recipe names}}}, read once per request instead of once per
--- product, a recipe per work item (index_step), so the job spreads it over
+-- product, INDEX_RECIPE_WORK per recipe (index_step), so the job spreads it over
 -- ticks.
 local function new_index(force)
   local names = {}
@@ -297,13 +363,15 @@ local function new_index(force)
   return { names = names, cursor = 1, by_product = {} }
 end
 
+-- What reading one recipe (its hidden flag and products) is charged.
+M.INDEX_RECIPE_WORK = 3
 -- Reads recipes while budget is left; true once every one is read.
 local function index_step(force, index, budget)
   local recipes, names, by_product = force.recipes, index.names, index.by_product
   while index.cursor <= #names do
     if budget.left <= 0 then return false end
     local name = names[index.cursor]
-    index.cursor, budget.left = index.cursor + 1, budget.left - 1
+    index.cursor, budget.left = index.cursor + 1, budget.left - M.INDEX_RECIPE_WORK
     local recipe = recipes[name]
     -- Hidden recipes (quality recycling, debug items) are never production routes.
     local hidden_ok, hidden = pcall(function() return recipe.hidden end)
@@ -357,20 +425,20 @@ local function expand_targets(force, targets, choices, options)
     local candidates, locked = candidate_recipes(force, product, options.permitted_locked, options.filter_location,
       options.index)
     if choice ~= nil then
-      if type(choice) ~= "string" then error("recipe choice for " .. product .. " must be a recipe name") end
+      if type(choice) ~= "string" then error("recipe choice for " .. product .. " must be a recipe name", 0) end
       for _, recipe in ipairs(candidates) do if recipe.name == choice then return recipe end end
-      error("recipe choice " .. choice .. " is not a permitted deterministic route for " .. product)
+      error("recipe choice " .. choice .. " is not a permitted deterministic route for " .. product, 0)
     end
     if #candidates > 1 then
       local names = {}; for _, recipe in ipairs(candidates) do names[#names + 1] = recipe.name end
       if not options.partial then
-        error("ambiguous production route for " .. product .. ": " .. table.concat(names, ", ") .. "; supply recipe_choices." .. product)
+        error("ambiguous production route for " .. product .. ": " .. table.concat(names, ", ") .. "; supply recipe_choices." .. product, 0)
       end
       ambiguities[#ambiguities + 1] = { kind = "recipe_choice", product = product, candidates = names }
       return nil
     end
     if #candidates == 1 then return candidates[1] end
-    if #locked > 0 and not options.partial then error("no progression route for " .. product .. ": producing recipes are not unlocked") end
+    if #locked > 0 and not options.partial then error("no progression route for " .. product .. ": producing recipes are not unlocked", 0) end
     return nil
   end
 
@@ -382,7 +450,7 @@ local function expand_targets(force, targets, choices, options)
 
   local function require_item(product, count)
     if visiting[product] then
-      if not options.partial then error("no progression route for " .. product .. ": recipe cycle") end
+      if not options.partial then error("no progression route for " .. product .. ": recipe cycle", 0) end
       ambiguities[#ambiguities + 1] = { kind = "recipe_cycle", product = product }
       raw[product] = (raw[product] or 0) + count
       return
@@ -391,13 +459,13 @@ local function expand_targets(force, targets, choices, options)
     if not recipe then raw[product] = (raw[product] or 0) + count; return end
     local products, product_error = products_of(recipe)
     if not products then
-      if not options.partial then error(product_error) end
+      if not options.partial then error(product_error, 0) end
       variable[#variable + 1] = { kind = "non_deterministic_recipe", product = product, recipe = recipe.name, reason = product_error }
       raw[product] = (raw[product] or 0) + count
       return
     end
     local output = products[product]
-    if not output or output <= 0 then error("recipe " .. recipe.name .. " does not deterministically produce " .. product) end
+    if not output or output <= 0 then error("recipe " .. recipe.name .. " does not deterministically produce " .. product, 0) end
     local node = nodes_by_item[product]
     if node and node.recipe ~= recipe.name then error("inconsistent recipe choice for " .. product) end
     if not node then
@@ -440,7 +508,7 @@ end
 
 local function closure_for(force, target_name)
   local target = force.technologies and force.technologies[target_name]
-  if not target then error("unknown technology: " .. target_name) end
+  if not target then error("unknown technology: " .. target_name, 0) end
   local visited, ordered = {}, {}
   local function visit(technology)
     if visited[technology.name] or technology.researched then return end
@@ -456,7 +524,7 @@ local function closure_for(force, target_name)
 end
 
 local function find_location_unlock(force, location)
-  if not (prototypes.space_location and prototypes.space_location[location]) then error("unknown space location: " .. location) end
+  if not (prototypes.space_location and prototypes.space_location[location]) then error("unknown space location: " .. location, 0) end
   local candidates = {}
   for name, technology in pairs(force.technologies or {}) do
     for _, effect in pairs(technology_effects(technology)) do
@@ -464,7 +532,7 @@ local function find_location_unlock(force, location)
     end
   end
   table.sort(candidates)
-  if #candidates == 0 then error("no installed technology unlocks space location " .. location) end
+  if #candidates == 0 then error("no installed technology unlocks space location " .. location, 0) end
   return candidates
 end
 
@@ -717,30 +785,30 @@ end
 -- and the planning location.
 local function validate(params)
   local modes = (params.targets and 1 or 0) + (params.technology and 1 or 0) + (params.location and 1 or 0)
-  if modes ~= 1 then error("production_requirements requires exactly one of targets, technology, or location") end
+  if modes ~= 1 then error("production_requirements requires exactly one of targets, technology, or location", 0) end
   local body = companion.require_present()
   local location = planning_location(params, body)
   if params.technology or params.location then return body, location end
 
   local targets, target_names = params.targets, {}
-  if type(targets) ~= "table" then error("production_requirements targets must map item or fluid names to positive counts") end
+  if type(targets) ~= "table" then error("production_requirements targets must map item or fluid names to positive counts", 0) end
   for target, raw_count in pairs(targets) do
     local item = type(target) == "string" and prototypes.item and prototypes.item[target]
     local fluid = type(target) == "string" and prototypes.fluid and prototypes.fluid[target]
-    if not item and not fluid then error("no item or fluid called '" .. tostring(target) .. "'") end
+    if not item and not fluid then error("no item or fluid called '" .. tostring(target) .. "'", 0) end
     local count = tonumber(raw_count)
-    if not count or count <= 0 or count ~= count or count == math.huge then error("production_requirements target counts must be positive finite numbers") end
-    if item and count % 1 ~= 0 and params.per_minute ~= true then error("item target counts must be positive integers") end
+    if not count or count <= 0 or count ~= count or count == math.huge then error("production_requirements target counts must be positive finite numbers", 0) end
+    if item and count % 1 ~= 0 and params.per_minute ~= true then error("item target counts must be positive integers", 0) end
     target_names[#target_names + 1] = target
   end
-  if #target_names < 1 or #target_names > 16 then error("production_requirements targets must contain 1-16 entries") end
+  if #target_names < 1 or #target_names > 16 then error("production_requirements targets must contain 1-16 entries", 0) end
   local choices = params.recipe_choices or {}
-  if type(choices) ~= "table" then error("production_requirements recipe_choices must map product names to recipe names") end
+  if type(choices) ~= "table" then error("production_requirements recipe_choices must map product names to recipe names", 0) end
   local fuel = params.fuel or "coal"
   if params.per_minute == true then
     local fuel_proto = type(fuel) == "string" and prototypes.item[fuel]
     if not (fuel_proto and (tonumber(read(function() return fuel_proto.fuel_value end)) or 0) > 0) then
-      error("fuel must name a fuel item, such as coal")
+      error("fuel must name a fuel item, such as coal", 0)
     end
   end
   return body, location
@@ -775,11 +843,15 @@ end
 -- the recipe searches are index lookups, the rest grows with the tree.
 M.EXPAND_WORK = 200
 M.EXPAND_NODE_WORK = 4
+-- What one prototype entry a resource catalogue step reads is charged.
+M.ROOT_ENTRY_WORK = 2
 
 -- production_requirements as a job (control.lua registers it): the recipes
--- by product first, a recipe per work item over ticks, then the expansion
--- whole, once EXPAND_WORK fits what is left of the tick or after one
--- deferral to a fresh tick, charged by the nodes it made.
+-- by product first, INDEX_RECIPE_WORK per recipe over ticks, then the resource
+-- catalogue a step per work item (charged by the entries it reads, also
+-- when this peer has it already), then the expansion whole, once
+-- EXPAND_WORK fits what is left of the tick or after one deferral to a
+-- fresh tick, charged by the nodes it made.
 M.job = {
   start = function(params)
     validate(params)
@@ -792,6 +864,12 @@ M.job = {
       budget.left = budget.left - math.ceil(#S.index.names / 16)
     end
     if not index_step(force, S.index, budget) then return nil end
+    while not S.roots_done do
+      if budget.left <= 0 then return nil end
+      local cost = roots_step(S.roots_step or 1)
+      if not cost then S.roots_done = true; break end
+      S.roots_step, budget.left = (S.roots_step or 1) + 1, budget.left - M.ROOT_ENTRY_WORK * cost
+    end
     if budget.left < M.EXPAND_WORK and not S.waited then
       S.waited = true
       return nil

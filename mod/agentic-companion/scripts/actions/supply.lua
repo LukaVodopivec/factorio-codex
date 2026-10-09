@@ -831,16 +831,16 @@ end
 
 function M.start(task)
   local c = companion.require_companion()
-  if type(task.items) ~= "table" or #task.items == 0 then error("get_items requires an item and a count") end
+  if type(task.items) ~= "table" or #task.items == 0 then error("get_items requires an item and a count", 0) end
   task._before, task._stack, task._shortfall, task._claims = {}, {}, {}, {}
   task._report = { taken = {}, crafted = {}, smelted = {}, gathered = {} }
   for index = #task.items, 1, -1 do
     local want = task.items[index]
     if type(want.name) ~= "string" or not prototypes.item[want.name] then
-      error("no item called '" .. tostring(want.name) .. "'")
+      error("no item called '" .. tostring(want.name) .. "'", 0)
     end
     local count = tonumber(want.count)
-    if not count or count % 1 ~= 0 or count < 1 then error("get_items count must be a positive integer") end
+    if not count or count % 1 ~= 0 or count < 1 then error("get_items count must be a positive integer", 0) end
     want.count = count
     task._before[want.name] = have(c, want.name)
     -- Each wanted count is a total to carry, never added to another.
@@ -1336,11 +1336,11 @@ M.action = {
   make_task = function(step) return { items = { { name = step.item, count = step.count } } } end,
   validate = function(step, index)
     if type(step.item) ~= "string" or step.item == "" then
-      error("queue_plan get_items step " .. index .. " requires an item name")
+      error("queue_plan get_items step " .. index .. " requires an item name", 0)
     end
     local count = tonumber(step.count)
     if not count or count % 1 ~= 0 or count < 1 or count > 5000 then
-      error("queue_plan get_items step " .. index .. " requires count as an integer from 1 to 5000")
+      error("queue_plan get_items step " .. index .. " requires count as an integer from 1 to 5000", 0)
     end
   end,
 }

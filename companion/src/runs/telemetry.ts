@@ -38,15 +38,20 @@ export const attestationSchema = z.object({ game_speed: z.number().optional(), c
     from_research: z.number() }).strict()),
 }).strict();
 export type RunAttestation = z.infer<typeof attestationSchema>;
+const itemTotals = z.record(z.string(), z.number().int().nonnegative());
 export const runSnapshotSchema = z.object({
   // null while the body is aboard a platform or in a cargo pod without a readable character (mod 0.22.3 on).
   tick: z.number().int().nonnegative(), character: z.record(z.string(), z.unknown()).nullable(),
   /** Where the body is (mod 0.22.3 on). */
   body: snapshotBodySchema.optional(),
   progression: z.record(z.string(), z.unknown()), factory: z.record(z.string(), z.unknown()),
-  // Async get_job adds its FIFO readback; direct and historical samples may omit it.
+  // Async get_job adds its FIFO readback (control.lua fifo_state); direct and historical samples may omit it.
   fifo: z.object({ active_plan_id: z.number().int().positive().optional(),
     queue_depth: z.number().int().nonnegative(), idle_seconds: z.number().int().nonnegative().optional(),
+    /** Item totals the queued plans take and what of them stock does not cover (tasks.queued_demand). */
+    queued_demand: itemTotals.optional(), omitted_queued_demand: z.number().int().positive().optional(),
+    short_by: itemTotals.optional(), omitted_short_by: z.number().int().positive().optional(),
+    upkeep_off_since_tick: z.number().int().nonnegative().optional(),
     human_control: z.boolean(), human_idle_ticks: z.number().int().nonnegative().optional(),
     body: snapshotBodySchema.extend({ bound_for: z.string().optional() }).strict(),
   }).strict().optional(),

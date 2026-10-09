@@ -109,6 +109,23 @@ do
     collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } }
   check(build.blocked_reason(body, { x = 4, y = 0 }, drill, 0) == "no resource it can mine under it",
     "a drill refused over no ore says it has no resource it can mine under it, not a remnant")
+  -- Ore anywhere in its mining area is enough for the game: a drill whose
+  -- ore lies only past its footprint is refused for something else.
+  local ore = { valid = true, name = "iron-ore", type = "resource", position = { x = 6, y = 2 },
+    prototype = { resource_category = "basic-solid" } }
+  surface.find_entities_filtered = function(filter)
+    local area = filter.area
+    if filter.type == "resource" and area and area.left_top.x <= 6 and area.right_bottom.x >= 6
+      and area.left_top.y <= 2 and area.right_bottom.y >= 2 then return { ore } end
+    return {}
+  end
+  local wide = { name = "electric-mining-drill", type = "mining-drill", resource_categories = { ["basic-solid"] = true },
+    mining_drill_radius = 2.49, collision_box = { left_top = { x = -1.4, y = -1.4 }, right_bottom = { x = 1.4, y = 1.4 } } }
+  local outer = build.blocked_reason(body, { x = 4, y = 0 }, wide, 0)
+  check(outer ~= "no resource it can mine under it",
+    "a drill with ore only in its mining area's outer ring is not refused for missing ore: " .. tostring(outer))
+  check(build.blocked_reason(body, { x = 4, y = 8 }, wide, 0) == "no resource it can mine under it",
+    "a drill with no ore anywhere in its mining area still says so")
 end
 surface.find_entities_filtered = search
 

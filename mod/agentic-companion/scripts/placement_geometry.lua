@@ -354,14 +354,23 @@ end
 
 -- Why proto cannot stand at position for a reason of its own, whatever item
 -- stacks lie there (the build takes those up first): a surface condition it
--- breaks, a mining drill with no resource it mines among `found` (the
--- entities read over its footprint), an offshore pump with no liquid at its
--- source. nil when none applies.
+-- breaks, a mining drill with no resource it mines in its mining area (the
+-- game places a drill when ore lies anywhere there; `found`, the entities
+-- read over its footprint, when its radius is unknown), an offshore pump
+-- with no liquid at its source. nil when none applies.
 function M.proto_refusal(surface, proto, position, direction, found)
   local condition = M.condition_refusal(surface, "entity", proto.name)
   if condition then return condition.reason end
   if proto.type == "mining-drill" then
     local categories = read(function() return proto.resource_categories end)
+    -- One bounded read: a drill's area is a few tiles across.
+    local radius = tonumber(read(function() return proto.mining_drill_radius end))
+    if radius and radius > 0 and type(position) == "table" then
+      local ok, ores = pcall(surface.find_entities_filtered, { type = "resource",
+        area = { left_top = { x = position.x - radius, y = position.y - radius },
+          right_bottom = { x = position.x + radius, y = position.y + radius } } })
+      if ok then found = ores end
+    end
     for _, e in ipairs(found or {}) do
       if e.valid and e.type == "resource" then
         local category = read(function() return e.prototype.resource_category end)

@@ -93,6 +93,15 @@ check(iron and iron.tiles == 50 and iron.remaining_fraction == 0.49 and iron.bbo
   "a mined-out chunk keeps its initial amount: 48.5 % remain, and the bbox covers only standing ore")
 local empty = storage.patch_caches[1].chunks["1,0"].cells["iron-ore"]
 check(empty.tiles == 0 and empty.rate == nil, "the mined-out part stays as an empty cell, with no rate")
+do
+  -- A depletion in a chunk the force never charted adds nothing to the
+  -- charted land or the read queue.
+  local cache = storage.patch_caches[1]
+  local listed, pending = #cache.charted, #cache.pending
+  map_summary.on_resource_depleted({ entity = mock.entity({ valid = true, surface_index = 1, position = { x = 900, y = 900 } }) })
+  check(cache.charted_set["28,28"] == nil and #cache.charted == listed and #cache.pending == pending,
+    "a depletion outside the charted chunks charts nothing and queues no read")
+end
 local read_empty, read_mined = reads["1,0"], reads["0,0"]
 run(1200)
 check(reads["1,0"] == read_empty and reads["0,0"] > read_mined, "a chunk mined out everywhere leaves the refresh round robin")

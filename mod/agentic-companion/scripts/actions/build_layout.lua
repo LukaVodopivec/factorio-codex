@@ -285,13 +285,14 @@ local function each_tile(area, fn)
   end
 end
 
--- A layout turned clockwise by quarter turns about the anchor.
+-- A layout turned clockwise by quarter turns about the anchor (a hand
+-- blueprint's wires_ignored count goes with it).
 local function rotated(layout, quarters)
   local function turn(x, y)
     for _ = 1, quarters do x, y = -y, x end
     return x, y
   end
-  local out = { entities = {}, connections = {} }
+  local out = { entities = {}, connections = {}, wires_ignored = layout.wires_ignored }
   for i, e in ipairs(layout.entities) do
     local dx, dy = turn(e.dx, e.dy)
     out.entities[i] = { name = e.name, dx = dx, dy = dy, recipe = e.recipe, insert = e.insert, settings = e.settings,

@@ -570,6 +570,17 @@ local HAND_FIELDS = { entity_number = true, name = true, position = true, direct
   bar = true, filters = true, filter_mode = true, use_filters = true, override_stack_size = true,
   spoil_priority = true, input_priority = true, output_priority = true, filter = true,
   ["chunk-filter"] = true, use_transitional_requests = true }
+-- Copper wires between two electric poles of the blueprint are left to the
+-- poles' own connection when they are built (wires_ignored counts them);
+-- any other wire (circuit, or a power switch's copper, which never
+-- connects by itself) refuses hand placement.
+local function wire_refusal(wire, poles)
+  local copper = defines.wire_connector_id and defines.wire_connector_id.pole_copper
+  if type(wire) ~= "table" or copper == nil or wire[2] ~= copper or wire[4] ~= copper then return "circuit wires" end
+  if not (poles[wire[1]] and poles[wire[3]]) then return "power-switch wires" end
+  return nil
+end
+
 function M.hand_layout(name, flip, label)
   local stack = stack_of(name, label)
   if stack.blueprint_snap_to_grid or #(stack.get_blueprint_tiles() or {}) > 0 then
@@ -579,13 +590,27 @@ function M.hand_layout(name, flip, label)
     return type(filter) ~= "table" or ((not filter.quality or filter.quality == "normal")
       and (not filter.comparator or filter.comparator == "="))
   end
-  for _, e in ipairs(stack.get_blueprint_entities() or {}) do
+  local entities = stack.get_blueprint_entities() or {}
+  local poles, ignored, seen = {}, 0, {}
+  for _, e in ipairs(entities) do
+    local proto = prototypes.entity[e.name]
+    if proto and proto.type == "electric-pole" and e.entity_number then poles[e.entity_number] = true end
+  end
+  for _, e in ipairs(entities) do
     for key in pairs(e) do
       if not HAND_FIELDS[key] then error(label .. ": hand placement cannot preserve blueprint field " .. key .. "; use native ghosts", 0) end
     end
-    if (e.wires and #e.wires > 0) or (e.quality and e.quality ~= "normal")
+    for _, wire in ipairs(e.wires or {}) do
+      local why = wire_refusal(wire, poles)
+      if why then error(label .. ": hand placement cannot preserve blueprint " .. why .. "; use native ghosts", 0) end
+      -- A wire may be listed at both of its ends: counted once.
+      local a, b = wire[1] .. ":" .. wire[2], wire[3] .. ":" .. wire[4]
+      local key = a < b and a .. "|" .. b or b .. "|" .. a
+      if not seen[key] then seen[key], ignored = true, ignored + 1 end
+    end
+    if (e.quality and e.quality ~= "normal")
       or (e.recipe_quality and e.recipe_quality ~= "normal") or not normal(e.filter) then
-      error(label .. ": hand placement cannot preserve blueprint wires or quality; use native ghosts", 0)
+      error(label .. ": hand placement cannot preserve blueprint quality; use native ghosts", 0)
     end
     for i, filter in ipairs(e.filters or {}) do
       if not normal(filter) or filter.index ~= i then
@@ -598,7 +623,9 @@ function M.hand_layout(name, flip, label)
       end
     end
   end
-  return M.layout(name, flip, label)
+  local layout = M.layout(name, flip, label)
+  layout.wires_ignored = ignored > 0 and ignored or nil
+  return layout
 end
 
 -- Platform ghosts use the same checked foundation path as build_layout.

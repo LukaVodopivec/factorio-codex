@@ -113,8 +113,10 @@ Each tool's description holds its fields and codes; these are the rules.
 - `next_event` returns `plan_ended`, `research_finished`, `queue_empty`,
   `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`,
   `human_hold_ended`, or `timeout`. Pass the last `tick` you saw as
-  `since_tick`. Never poll in a loop. `plan_ended` carries each step's outcome
-  and the inventory change: no second read is needed. Whenever
+  `since_tick`; never poll in a loop. Plain backpressure (an output full,
+  waiting for a slower consumer) never wakes `new_problem`: it shows in
+  `factory_status` and rides along on other problem wakes. `plan_ended`
+  carries each step's outcome and the inventory change. Whenever
   a result's `body.fifo_empty` is true, the body is free for work (it may still
   craft): the pilot queues work (its own if no package is pending) before
   waiting again.

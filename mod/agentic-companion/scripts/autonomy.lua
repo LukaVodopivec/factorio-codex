@@ -96,10 +96,12 @@ local PRODUCTIVE_TICKS = 600
 -- row again but does not move last_problem_tick: a burner that runs dry
 -- again and again wakes the pilot once in five minutes.
 local REANNOUNCE_TICKS = 5 * MINUTE_TICKS
--- Classes that never move last_problem_tick: backpressure around a slower
--- consumer is ordinary. Their rows still count and are announced, so they
--- stay in problems(since), factory_status and a wake another class causes.
-local NO_WAKE_CLASSES = { output_full = true }
+-- Raw statuses that never move last_problem_tick: plain backpressure (an
+-- output full, waiting for a slower consumer) is ordinary. Their rows still
+-- count and are announced, so they stay in problems(since), factory_status
+-- and a wake another status causes. The rest of the output_full class (a
+-- full burnt-result slot, a full platform hub) still wakes.
+local NO_WAKE_RAW = { full_output = true, waiting_for_space_in_destination = true }
 local RATE_BIN_TICKS, RATE_BINS = 600, 6
 -- State share counters: one bin a minute, ten kept.
 local SHARE_BIN_TICKS, SHARE_BINS = MINUTE_TICKS, 10
@@ -156,6 +158,7 @@ local DEAD_CLASSES = { no_fuel = true, no_power = true }
 local PROBLEM_TICKS = {
   no_power = 60, not_plugged_in_electric_network = 60, no_fuel = 60,
   no_minable_resources = 60, full_output = 600, waiting_for_space_in_destination = 600,
+  full_burnt_result_output = 600, waiting_for_space_in_platform_hub = 600,
   low_temperature = 600, no_modules_to_transmit = 600, pipeline_overextended = 600,
   frozen = 60, no_research_in_progress = 600,
 }
@@ -754,7 +757,7 @@ local function sample(a, rec, tick)
     if not rec.problem_counted and tick - rec.problem_since >= threshold then
       rec.problem_counted, rec.problem_announced_tick = true, tick
       local class = STATUS_CLASS[raw] or raw
-      if not NO_WAKE_CLASSES[class] and (rec.woke_class ~= class or tick - rec.woke_tick >= REANNOUNCE_TICKS) then
+      if not NO_WAKE_RAW[raw] and (rec.woke_class ~= class or tick - rec.woke_tick >= REANNOUNCE_TICKS) then
         rec.woke_class, rec.woke_tick = class, tick
         a.last_problem_tick = tick
       end

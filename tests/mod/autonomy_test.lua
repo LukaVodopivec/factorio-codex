@@ -9,7 +9,8 @@ local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if no
 
 local RAW = { working = 1, no_fuel = 2, no_ingredients = 3, item_ingredient_shortage = 4,
   waiting_for_space_in_destination = 5, full_output = 6, normal = 7, no_power = 8, no_minable_resources = 9,
-  waiting_to_launch_rocket = 10, missing_required_fluid = 11, fluid_ingredient_shortage = 12, waiting_for_source_items = 13 }
+  waiting_to_launch_rocket = 10, missing_required_fluid = 11, fluid_ingredient_shortage = 12, waiting_for_source_items = 13,
+  full_burnt_result_output = 14, waiting_for_space_in_platform_hub = 15 }
 _G.defines = { entity_status = RAW, inventory = { crafter_input = 2, lab_input = 3 },
   rocket_silo_status = { building_rocket = 1, rocket_ready = 10 }, direction = { north = 0, east = 4, south = 8, west = 12 } }
 local PLATE = { name = "iron-plate", energy = 3.2, ingredients = { { name = "iron-ore", type = "item", amount = 1 } },
@@ -358,6 +359,19 @@ check(storage.autonomy.last_problem_tick == before_full and full_rows() == 1,
 mock.state(output_full).status = RAW.working
 run(630)
 check(full_rows() == 0, "the problem clears after ten seconds without it")
+-- The rest of the output_full class is no backpressure: a full burnt-result
+-- slot or platform hub stops the machine for good, and wakes next_event.
+for _, raw in ipairs({ "full_burnt_result_output", "waiting_for_space_in_platform_hub" }) do
+  local before = storage.autonomy.last_problem_tick
+  mock.state(output_full).status = RAW[raw]
+  run(630)
+  local woke = storage.autonomy.last_problem_tick
+  local row = false
+  for _, r in ipairs(autonomy.problems(before + 1)) do if r.status == raw and r.position.x == 40 then row = true end end
+  check(woke > before and row, raw .. " is a problem row that wakes next_event")
+  mock.state(output_full).status = RAW.working
+  run(18000) -- past the five-minute re-announce window of the class
+end
 -- A waking class (no fuel) wakes next_event; the same class returning after
 -- a full recovery within five minutes of its wake is a problem row again
 -- but does not wake it; five minutes later it does; another class wakes at once.

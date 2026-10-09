@@ -524,6 +524,11 @@ describe("persistent two-brain coordination contract", () => {
     expect(server).toMatch(/mode ghosts: ghosts for construction robots \(a ghost is only an order/);
   });
 
+  it("says plainly that backpressure never wakes new_problem but stays visible", () => {
+    expect(flat(skill)).toMatch(/Plain backpressure \(an output full, waiting for a slower consumer\) never wakes `new_problem`: it shows in `factory_status` and rides along on other problem wakes/);
+    expect(flat(read("companion/src/mcp/server.ts"))).toMatch(/Plain backpressure \(an output full, waiting for a slower consumer\) never wakes new_problem; it still shows in factory_status and rides along on other new_problem wakes/);
+  });
+
   it("heads the strategist's progress principle as automated progress, not an order", () => {
     expect(flat(strategist)).toMatch(/\*\*Automated progress\.\*\* Judge progress by what machines make/);
     expect(strategist).not.toMatch(/Automation first/);

@@ -735,9 +735,23 @@ for _ = 1, 20 do
   if answer then break end
 end
 check(first and type(answer) == "table" and answer.outcome.code == "BODY_ON_CONVEYOR"
-  and answer.detail:match("anywhere within reach %(10%.0 tiles%) of the target") and searched >= 3 and most <= 50,
+  and answer.detail:match("anywhere within reach %(9%.8 tiles%) of the target") and searched >= 3 and most <= 50,
   string.format("belts over the whole reach fail BODY_ON_CONVEYOR after %d search ticks of at most %d belt checks each",
     searched, most))
+-- The one clear tile lies exactly at reach (10 tiles) from the target: a
+-- routed walk there ends within 0.25 of its centre, possibly beyond reach,
+-- so the reach search leaves it out (trial 0012 stopped 10.03 tiles away).
+belts = { belt(-20, -20, 80, 20), belt(-20, 1, 80, 59), belt(-20, 0, 40, 1), belt(21, 0, 39, 1) }
+task = reset({ x = 10.5, y = 0.5 })
+body.position = { x = 10.5, y = 0.5 }
+answer = nil
+for _ = 1, 25 do
+  answer = approach.ensure(task, body, { x = 10.5, y = 0.5 }, 10)
+  if answer then break end
+end
+check(type(answer) == "table" and answer.outcome.code == "BODY_ON_CONVEYOR"
+  and answer.detail:match("anywhere within reach %(9%.8 tiles%)") ~= nil,
+  "a clear tile at the very edge of reach is not a routed settle's goal: " .. tostring(type(answer) == "table" and answer.detail or answer))
 body.surface.find_entities_filtered = function(filter)
   if filter.type then return belts end
   return {}

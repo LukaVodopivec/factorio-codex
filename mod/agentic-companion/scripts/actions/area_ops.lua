@@ -6,9 +6,12 @@
 --   blueprint_place {name, position, direction?, flip?, mode: hand | ghosts,
 --     platform?}
 --     hand:   the stored blueprint as a build_layout at position (auto-supply,
---             auto-clear, recipes, settings, starter items, poles wire up);
+--             auto-clear, recipes, settings, starter items, poles wire up;
+--             wires_ignored counts the pole copper wires left to that);
 --     ghosts: LuaItemStack.build_blueprint places ghosts for robots, each at
 --             position + its turned dx/dy as by hand (blueprints.ghost_stack);
+--             a partial placement lists the entities with no ghost
+--             (missing_ghosts, with what stands there);
 --     platform (ghosts only, remote: no body): position is relative to the
 --             platform's hub, and the hub builds the ghosts.
 --     As an RPC it is the check_only dry run (place_check_job).
@@ -206,6 +209,8 @@ function Place.start(task)
   task._anchor = anchor_of(task.position)
   if task.mode == "hand" then
     local layout = placed_layout(task, label)
+    -- Pole copper wires the poles' own connection remakes (blueprints.hand_layout).
+    task._wires_ignored = layout.wires_ignored
     local nested = { id = task.id, anchor = task._anchor, entities = layout.entities, connections = {} }
     build_layout.validate_layout(nested, label)
     build_layout.layout_action.runner.start(nested)
@@ -226,11 +231,51 @@ function Place.cancelled(task, body_only)
   if task._layout then return build_layout.layout_action.runner.cancelled(task._layout, body_only) end
 end
 
+local function ghost_key(name, x, y) return string.format("%s@%.2f,%.2f", tostring(name), x, y) end
+
+-- The blueprint entities that got no ghost, as {name, x, y, blocked_by?}
+-- (at most MAX_ROWS; blocked_by: what stands at that spot, as build_layout
+-- names a blocker), and how many there are. origin + each entity's
+-- position is where its ghost lands (blueprints.ghost_stack's cell).
+local function missing_ghosts(c, origin, planned, ghosts)
+  local got = {}
+  for _, ghost in ipairs(ghosts or {}) do
+    if ghost.valid then
+      local ok, name = pcall(function() return ghost.ghost_name end)
+      local key = ghost_key(ok and name or ghost.name, ghost.position.x, ghost.position.y)
+      got[key] = (got[key] or 0) + 1
+    end
+  end
+  local rows, count = {}, 0
+  for _, e in ipairs(planned) do
+    local x, y = origin.x + e.position.x, origin.y + e.position.y
+    local key = ghost_key(e.name, x, y)
+    if (got[key] or 0) > 0 then
+      got[key] = got[key] - 1
+    else
+      count = count + 1
+      if #rows < MAX_ROWS then
+        local row = { name = e.name, x = x, y = y }
+        local ok, found = pcall(c.surface.find_entities_filtered, { position = { x = x, y = y }, limit = 4 })
+        for _, other in ipairs(ok and found or {}) do
+          if other.valid and not placement_geometry.NON_BLOCKING_TYPES[other.type] then
+            row.blocked_by = { name = other.name, x = other.position.x, y = other.position.y }
+            break
+          end
+        end
+        rows[#rows + 1] = row
+      end
+    end
+  end
+  return rows, count
+end
+
 local function place_ghosts(task, c)
   local label = "blueprint_place " .. task.name
   -- Each ghost lands at the anchor + its turned dx/dy (blueprints.ghost_stack).
   local stack, cell = blueprints.ghost_stack(task.name, task.flip, math.floor((task.direction or 0) / 4), label)
-  local expected = #(stack.get_blueprint_entities() or {}) + #(stack.get_blueprint_tiles() or {})
+  local planned = stack.get_blueprint_entities() or {}
+  local expected = #planned + #(stack.get_blueprint_tiles() or {})
   if expected > 1100 then
     blueprints.clear_scratch()
     return { status = "failed", detail = "GHOSTS_NOT_PLACED: blueprint exceeds the bounded ghost count",
@@ -253,17 +298,28 @@ local function place_ghosts(task, c)
       rows[#rows + 1] = { name = name, x = ghost.position.x, y = ghost.position.y, direction = ghost.direction }
     end
   end
+  -- Where a ghost lands is known only for the pre-turned copy (cell); a
+  -- blueprint with its own grid snapping keeps the native placement.
+  local missing, missing_count
+  if cell and count < expected then missing, missing_count = missing_ghosts(c, position, planned, ghosts) end
   local readiness = blueprints.robot_readiness(c, task._anchor)
   local robots = readiness.construction_robots or 0
   local complete = count == expected and expected > 0
   local outcome = { code = complete and "GHOSTS_PLACED" or count > 0 and "GHOSTS_PARTIAL" or "GHOSTS_NOT_PLACED",
     blueprint = task.name, expected = expected, submission_complete = complete, construction_complete = false,
     anchor = task._anchor, ghosts = count, placed = rows, construction_robots = robots, readiness = readiness,
-    tool_unlock = blueprints.tool_unlock(c, "blueprint") }
+    tool_unlock = blueprints.tool_unlock(c, "blueprint"),
+    missing_ghosts = missing and #missing > 0 and missing or nil,
+    missing_ghost_count = missing_count and missing_count > 0 and missing_count or nil }
+  -- The first entity with no ghost, and what stands there.
+  local first = outcome.missing_ghosts and outcome.missing_ghosts[1]
+  local first_missing = first and string.format("; no ghost for %s at (%.1f, %.1f)%s", first.name, first.x, first.y,
+    first.blocked_by and string.format(", blocked by %s at (%.1f, %.1f)", first.blocked_by.name, first.blocked_by.x,
+      first.blocked_by.y) or "") or ""
   if count == 0 then
     return { status = "failed", outcome = outcome,
-      detail = string.format("GHOSTS_NOT_PLACED: %s placed no ghosts at (%d, %d) — something stands in its way",
-        task.name, task._anchor.x, task._anchor.y) }
+      detail = string.format("GHOSTS_NOT_PLACED: %s placed no ghosts at (%d, %d) — something stands in its way%s",
+        task.name, task._anchor.x, task._anchor.y, first_missing) }
   end
   local detail = string.format("blueprint_place %s: %d ghosts at (%d, %d); observed construction robots at anchor: %d",
     task.name, count, task._anchor.x, task._anchor.y, robots)
@@ -274,7 +330,9 @@ local function place_ghosts(task, c)
     outcome.note = "construction coverage/counts are incomplete: inspect the pending targets"
     detail = detail .. " — " .. outcome.note
   end
-  if not complete then detail = detail .. string.format(" — only %d/%d requested ghosts observed; inspect retained work", count, expected) end
+  if not complete then
+    detail = detail .. string.format(" — only %d/%d requested ghosts observed; inspect retained work", count, expected) .. first_missing
+  end
   return { status = complete and "done" or "partial", detail = detail, outcome = outcome }
 end
 
@@ -292,7 +350,9 @@ function Place.tick(task)
     result.detail = result.detail .. "; existing targets were left unchanged: inspect their settings and requests"
   end
   result.detail = "blueprint_place " .. task.name .. ": " .. tostring(result.detail)
-  if type(result.outcome) == "table" then result.outcome.blueprint = task.name end
+  if type(result.outcome) == "table" then
+    result.outcome.blueprint, result.outcome.wires_ignored = task.name, task._wires_ignored
+  end
   return result
 end
 
@@ -406,7 +466,7 @@ M.place_check_job = {
       missing = missing, unobtainable = unobtainable,
       free_position = report.ok and report.anchor or nil,
       free_reason = not report.ok and report.failed[1] and report.failed[1].reason or nil,
-      tool_unlock = blueprints.tool_unlock(c, "blueprint") }
+      tool_unlock = blueprints.tool_unlock(c, "blueprint"), wires_ignored = job.layout.wires_ignored }
     if job.mode == "ghosts" then out.construction_robots = blueprints.construction_robots(c, job.anchor) end
     if not report.ok then return out end
     -- What stands on ore, drills over mixed ore, fluid ports that meet

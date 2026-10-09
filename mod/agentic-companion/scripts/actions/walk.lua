@@ -749,13 +749,18 @@ function settle_cell(c, anchor, limit, radius, accept, inner)
   return nil, rejected
 end
 
--- The tile centres within `limit` (at most SETTLE_SEARCH_RADIUS) of the
--- anchor that the rings out to `inner` around the body did not check,
--- nearest the body first: every off-belt tile from which the target is
--- still in reach. Arithmetic only; the checks run SETTLE_CHECKS_PER_TICK a
--- tick (step_settle_search).
+-- How far from the anchor a routed settle's tile may lie: its native path
+-- ends within SETTLE_ROUTE_RADIUS of the tile centre, so the tile lies that
+-- much inside reach and the arrival is always within it.
+local function routed_radius(limit) return math.min(limit - SETTLE_ROUTE_RADIUS, SETTLE_SEARCH_RADIUS) end
+
+-- The tile centres within routed_radius(limit) of the anchor that the rings
+-- out to `inner` around the body did not check, nearest the body first:
+-- every off-belt tile from which the target is still in reach after a
+-- routed walk there. Arithmetic only; the checks run SETTLE_CHECKS_PER_TICK
+-- a tick (step_settle_search).
 local function anchor_cells(c, anchor, limit, inner)
-  local pos, radius = c.position, math.min(limit, SETTLE_SEARCH_RADIUS)
+  local pos, radius = c.position, routed_radius(limit)
   local tx, ty = math.floor(pos.x), math.floor(pos.y)
   local cells = {}
   for y = math.floor(anchor.y - radius), math.floor(anchor.y + radius) do
@@ -906,7 +911,7 @@ local function step_settle_search(state, c)
   if search.ring then return search_reach(state, c, search.conveyor, search.rejected, search.ring) end
   return settle_failure(c, search.conveyor, string.format(
     "no charted clear off-belt tile lies within %d tiles of it or anywhere within reach (%.1f tiles) of the target",
-    search.rings, math.min(state.settle_limit, SETTLE_SEARCH_RADIUS)),
+    search.rings, routed_radius(state.settle_limit)),
     { settle_rejected = search.rejected, settle_anchor = state.settle_anchor, settle_limit = state.settle_limit })
 end
 

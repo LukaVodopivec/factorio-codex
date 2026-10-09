@@ -312,11 +312,23 @@ native_stack.build_blueprint = function(args)
   result[2].valid = false
   return result
 end
+-- The inserter's spot (46.5, 30.5) holds a chest: the entity with no ghost is
+-- listed with what stands there.
+local in_the_way = spawn("wooden-chest", { x = 46.5, y = 30.5 })
 local partial = run(area_ops.place_action, { name = "gears", position = { x = 45, y = 30 }, mode = "ghosts" })
+in_the_way.valid = false
 check(partial.status == "partial" and partial.outcome.code == "GHOSTS_PARTIAL" and partial.outcome.ghosts == 1
   and partial.outcome.expected == 2 and partial.outcome.submission_complete == false
   and partial.outcome.construction_complete == false and #partial.outcome.placed == 1,
   "a partial native blueprint result counts only valid ghosts and never claims full placement or robot completion")
+local no_ghost = partial.outcome.missing_ghosts and partial.outcome.missing_ghosts[1]
+check(partial.outcome.missing_ghost_count == 1 and #partial.outcome.missing_ghosts == 1 and no_ghost.name == "inserter"
+  and no_ghost.x == 46.5 and no_ghost.y == 30.5 and no_ghost.blocked_by and no_ghost.blocked_by.name == "wooden-chest"
+  and partial.detail:match("no ghost for inserter at %(46%.5, 30%.5%), blocked by wooden%-chest at %(46%.5, 30%.5%)") ~= nil,
+  "a partial ghost placement lists the blueprint entity with no ghost, where it would stand and what stands there: "
+    .. tostring(partial.detail))
+check(ghosted.outcome.missing_ghosts == nil and ghosted.outcome.missing_ghost_count == nil,
+  "a complete ghost placement lists no missing ghosts")
 native_stack.build_blueprint = function() return {} end
 local absent = run(area_ops.place_action, { name = "gears", position = { x = 50, y = 30 }, mode = "ghosts" })
 check(absent.status == "failed" and absent.outcome.ghosts == 0 and absent.outcome.expected == 2,
@@ -341,6 +353,27 @@ stored.entities[1].items = { { id = { name = "speed-module", quality = "uncommon
 check(not pcall(run, area_ops.place_action, { name = "gears", position = { x = 55, y = 30 } }) and #created == before_hand,
   "hand blueprint placement refuses qualified item requests before spending normal body stock")
 stored.entities[1].items = nil
+
+-- A pole-to-pole copper wire is left to the poles' own connection: the dry
+-- run and the placement both carry wires_ignored.
+do
+  defines.wire_connector_id = { circuit_red = 1, circuit_green = 2, pole_copper = 5 }
+  entities["small-electric-pole"] = proto("small-electric-pole", "electric-pole", 1, 1)
+  items["small-electric-pole"] = { name = "small-electric-pole", place_result = entities["small-electric-pole"], stack_size = 50 }
+  inventory["small-electric-pole"] = 2
+  blueprints.create({ name = "poles", entities = { { name = "small-electric-pole", dx = 0.5, dy = 0.5 },
+    { name = "small-electric-pole", dx = 5.5, dy = 0.5 } } })
+  local st = bp.state(storage.blueprints.inventory[storage.blueprints.by_name.poles.slot])
+  st.entities[1].entity_number, st.entities[2].entity_number = 1, 2
+  st.entities[1].wires = { { 1, 5, 2, 5 } }
+  local dry = jobs.run_now(area_ops.place_check_job, { name = "poles", position = { x = 70, y = 10 }, check_only = true })
+  local wired = run(area_ops.place_action, { name = "poles", position = { x = 70, y = 10 } })
+  check(dry.ok and dry.wires_ignored == 1 and wired and wired.status == "done" and wired.outcome.wires_ignored == 1,
+    "a hand blueprint's pole copper wire is reported as wires_ignored by its dry run and its placement: "
+      .. tostring(wired and wired.detail))
+  local plain_place = run(area_ops.place_action, { name = "gears", position = { x = 80, y = 10 } })
+  check(plain_place and plain_place.outcome.wires_ignored == nil, "a blueprint without wires reports no wires_ignored")
+end
 
 -- ------------------------------------------------------------ build_ghosts
 

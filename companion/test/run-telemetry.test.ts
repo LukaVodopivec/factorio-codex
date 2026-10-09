@@ -282,6 +282,23 @@ describe("run attestation", () => {
       phases: { walk: -1 } } })).toThrow();
     expect(() => parseRunSnapshot({ ...snapshot(100, 1), attestation: { ...clean, extra: 1 } })).toThrow();
   });
+
+  it("parses the record the mod's run_snapshot sends, waiting state, phases and tiles included", () => {
+    // Written by tests/mod/run_snapshot_test.lua from the real record (empty Lua tables as []).
+    const fixture = JSON.parse(fs.readFileSync(new URL("../../tests/mod/fixtures/run-snapshot-0.37.json", import.meta.url), "utf8"));
+    const parsed = parseRunSnapshot(structuredClone(fixture));
+    expect(parsed.body_time).toMatchObject({ state: "waiting", ticks: { waiting: 20, pilot: 90 },
+      phases: { walk: 60, mine: 10, smelt_wait: 5, craft_wait: 15, other: 20 }, tiles: 21.3 });
+    // Ten more seconds waiting: the open stretch is the gap open, the phases and tiles their deltas.
+    const later = structuredClone(fixture);
+    later.tick += 600;
+    later.body_time.ticks.waiting += 600;
+    later.body_time.phases.walk += 30;
+    later.body_time.tiles += 4;
+    expect(bodySummary(parsed, parseRunSnapshot(later))).toMatchObject({ window_ticks: 600, busy_share: 0,
+      states: { waiting: { ticks: 600, share: 1 } }, phases: { walk: { ticks: 30, share: 0.05 } }, tiles: 4,
+      gaps: { open: { count: 1, total_seconds: 10 } } });
+  });
 });
 
 describe("body time summary", () => {

@@ -212,6 +212,7 @@ export function normalizeFactoryStatus(value: any): any {
     row && typeof row === "object" ? { ...row, top_problems: luaArray(row.top_problems ?? []) } : row);
   if (value.unlocked_locations !== undefined) out.unlocked_locations = luaArray(value.unlocked_locations);
   if (value.alerts !== undefined) out.alerts = luaArray(value.alerts);
+  if (value.unread_sections !== undefined) out.unread_sections = luaArray(value.unread_sections);
   // The game's alerts could not be read: null, never an empty list.
   if (typeof value.alerts_unavailable === "string") out.alerts = null;
   return out;

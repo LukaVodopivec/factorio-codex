@@ -194,6 +194,60 @@ alone is not evidence of usable framing.
 
 ## Release checklists
 
+For the 0.37.0 release (make the obvious moves visible), record these
+observable checks:
+
+- `queue_plan` returns `hand_craft` `{total_s, items}` when its needs would
+  be hand-crafted from current stock, and leaves it out when none would.
+  While a step runs, `plan_status` `diagnostics` carries `supply` (`stage`
+  `get_items`, `auto_supply`, `target` or `before_supply`) and `crafting`
+  `{recipe, count, queue_s}`; `observe_local` `character.crafting.queue_s`
+  matches the queue's remaining seconds.
+- A plan past its active budget fails `PLAN_BUDGET_EXCEEDED` with the same
+  `supply` and `crafting` in its outcome, its detail names the hand-crafting
+  seconds still queued, and those crafts keep running.
+- `get_items` reports `crafted_s` when it queued hand-crafts; with
+  `craft: false` it takes, smelts and gathers only and ends
+  `SUPPLY_SHORTFALL` with `hand_craft` and an unchanged crafting queue.
+- `mine` waits only on queued crafts that make or use the mined products.
+- Refusals carry their codes (`MISSING_INGREDIENTS`, `NOT_HAND_CRAFTABLE`,
+  `INVENTORY_FULL`, `NOTHING_TO_TAKE`, `AREA_INVALID`) and do not raise
+  `run_snapshot` `handler_errors`; each failed or partial plan writes one
+  server-log line with its detail.
+- `run_snapshot` `body_time` carries `phases` (`walk`, `mine`, `smelt_wait`,
+  `craft_wait`, `other`), `tiles` and the `waiting` state, the recorder's
+  strict schema accepts them, and the manifest's `telemetry.body` gives their
+  window deltas, an open `waiting` stretch as the gap `open`.
+- `explore` for a resource the force has charted within `max_distance` ends
+  `PATCH_FOUND` at once (`walked` 0, `charted_before: true`, `distance` to
+  the patch's bbox, 0 inside); `EXPLORE_NOT_FOUND` names `nearest_charted`
+  or `none charted`, and never `none charted` while `charted_unknown` is
+  true.
+- `production_requirements` for a technology gives each missing technology's
+  `unit_time_s`, and `time_estimate.lab_seconds_at_speed_1` and, while labs
+  progress, `lab_seconds`; `progression_status` technologies list `modifiers`
+  `{type, modifier}` (for example laboratory speed).
+- A placement refused by a remnant or ghost names the real blocker, an
+  offshore pump refusal names the water-edge reason, and a dry run lists
+  `drill_ore` for each drill over charted resource.
+- With about 180 machines, `factory_status` and a large `check_only` take
+  no tick over 8 ms; a read that spent its tick budget names the rest in
+  `unread_sections`.
+- An `output_full` machine whose output only backs up leaves the
+  `next_event` wake tick unchanged and stays in `factory_status`.
+- A hand `blueprint_place` of poles joined by copper wires reports
+  `wires_ignored` in its dry run and its outcome, and the built poles read
+  back connected; circuit wires still refuse hand mode.
+- A partial ghost `blueprint_place` lists `missing_ghosts` (`name`, `x`, `y`,
+  `blocked_by`) and `missing_ghost_count`.
+- An approach that settles off belts by a routed walk ends within reach of
+  its target, never just beyond it.
+- `next_event` waits at most 25 s; `ledger-apply --schema` prints the
+  envelope, update fields and numeric bounds, and an applied update names
+  the unqueued packages it dropped (`omitted_unqueued`); `tool_outcomes.jsonl`
+  takes a plan's code from its first non-completed outcome; a debug run's
+  campaign row has no score fields.
+
 For the 0.36.0 release (recording and telemetry), record these observable
 checks:
 
@@ -223,7 +277,8 @@ checks:
 - `ledger-apply` appends one row per call to `ledger-history.jsonl` beside the
   ledger, applied or discarded.
 - The manifest's `telemetry.roles` carry `model_calls`, `mcp_calls`,
-  `wait_ms` (`next_event` waiting, out of `tool_ms`), `reasoning_items` and
+  `wait_ms` (`next_event` and `plan_status` waiting, out of `tool_ms`),
+  `reasoning_items` and
   `reasoning_summarized`; `telemetry.body.busy_share` counts `pilot`,
   `package` and `crafting`, not `upkeep`.
 - `campaign record` of a debug run of a screened configuration keeps its

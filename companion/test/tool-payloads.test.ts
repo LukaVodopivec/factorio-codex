@@ -143,15 +143,23 @@ describe("public MCP to Lua DTO mappings", () => {
     registerMcpTools({ registerTool(name, config: any) { descriptions[name] = config.description; } },
       async () => ({ call: vi.fn() } as unknown as Bridge), validConfig);
     const added: Array<[string, RegExp]> = [
-      ["get_items", /crafted_s: the hand-crafting seconds it queued\. craft: false takes, smelts and gathers only, never hand-crafts: what that leaves short ends SUPPLY_SHORTFALL with the bill/],
+      ["get_items", /crafted_s: the hand-crafting seconds it queued\. craft: false takes, smelts and gathers only, never hand-crafts: what that leaves short ends SUPPLY_SHORTFALL with hand_craft \{total_s, items\}, the bill hand-crafting it would take/],
       ["queue_plan", /hand_craft \{total_s, items\}: the bill rows its needs would hand-craft from current stock, with hand_craft_s each; absent when none/],
-      ["plan_status", /diagnostics has supply .* and crafting \{recipe, count, queue_s: hand-crafting seconds still queued\}/],
+      ["plan_status", /diagnostics has supply \(stage: get_items, auto_supply, target or before_supply;.* and crafting \{recipe, count, queue_s: hand-crafting seconds still queued\}; a PLAN_BUDGET_EXCEEDED outcome carries the same supply and crafting/],
       ["observe_local", /character\.crafting\.queue_s is the hand-crafting seconds still queued/],
       ["explore", /PATCH_FOUND with name, bbox, centroid, distance and charted_before: true\. EXPLORE_NOT_FOUND names nearest_charted \{name, centroid, bbox, distance\}, or 'none charted'; charted_unknown: true while the patch list is capped or still filling/],
       ["production_requirements", /time_estimate has bottleneck_seconds .*lab_seconds_at_speed_1 .*unit_time_s, which each missing technology row carries\) and lab_seconds at the current labs' speed \(only while labs progress\)/],
       ["progression_status", /modifiers: its effects other than recipes, as \{type, modifier\}/],
       ["set_recipe", /With insert_items and extract_items it runs a hand-fed assembler\./],
       ["blueprint_place", /wires_ignored counts them/],
+      ["blueprint_place", /missing_ghosts lists those with none \{name, x, y, blocked_by\} and missing_ghost_count counts them/],
+      ["build_layout", /on_ore, mixed_ore, drill_ore, open_fluid_ports/],
+      ["blueprint_place", /drill_ore \(each drill's charted resource amount in its mining area by resource, or yield_percent for an infinite one\)/],
+      ["explore", /A charted patch's distance runs from the body to its bbox \(0 inside\)/],
+      ["craft_items", /fails MISSING_INGREDIENTS \(missing lists them\) or NOT_HAND_CRAFTABLE/],
+      ["extract_items", /fails INVENTORY_FULL \(no room for any of it\) or NOTHING_TO_TAKE \(it held none\)/],
+      ["build_ghosts", /fails AREA_INVALID/], ["deconstruct_area", /fails AREA_INVALID/], ["upgrade_area", /fails AREA_INVALID/],
+      ["factory_status", /unread_sections: wanted sections left out once the read spent its tick budget/],
     ];
     // Facts and arithmetic only: no remedy, recommendation or count to build.
     const remedy = /\b(should|must build|you need|consider|recommend\w*|build more|add more|instead build|it is best|try to)\b/i;

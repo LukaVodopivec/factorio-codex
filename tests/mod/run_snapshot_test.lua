@@ -161,6 +161,29 @@ local phased = jobs.run_now(run_snapshot.job, {})
 check(phased.body_time.phases.walk == 30 and phased.body_time.phases.craft_wait == 12 and phased.body_time.phases.other == 4
   and phased.body_time.tiles == 7.3, "the snapshot exports the body phases and the tiles walked, to a tenth")
 
+-- The recorder's strict schemas parse this record as the mod sends it
+-- (companion/test/run-telemetry.test.ts reads the fixture): body_time in the
+-- waiting state with its phases, tiles and a gap ended by waiting work. The
+-- encoding mirrors helpers.table_to_json, an empty table as []. Run with
+-- UPDATE_FIXTURES=1 to rewrite the fixture after a deliberate change.
+do
+  local time = storage.tasks.body_time
+  time.state, time.state_since = "waiting", game.tick - 10
+  time.ticks = { idle = 40, pilot = 90, package = 20, waiting = 10 }
+  time.gaps = { pilot = { count = 1, ticks = 40, longest = 40, longest_end_tick = game.tick - 30 } }
+  time.phases, time.tiles = { walk = 60, mine = 10, smelt_wait = 5, craft_wait = 15, other = 20 }, 21.26
+  local record = jobs.run_now(run_snapshot.job, {})
+  local json = (dofile(here .. "/table_to_json.lua")(record):gsub("{}", "[]")) .. "\n"
+  local path = here .. "/fixtures/run-snapshot-0.37.json"
+  if os.getenv("UPDATE_FIXTURES") == "1" then
+    local file = assert(io.open(path, "w")); file:write(json); file:close()
+  end
+  local file = assert(io.open(path, "r"))
+  local fixture = file:read("a")
+  file:close()
+  check(fixture == json, "the run snapshot fixture is the record the mod sends (UPDATE_FIXTURES=1 rewrites it)")
+end
+
 -- The phases: within a small budget each runs whole in its own tick, one
 -- whose cost does not fit what is left waits once for a fresh tick, and
 -- the record equals one taken in a single tick.

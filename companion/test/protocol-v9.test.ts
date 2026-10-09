@@ -413,6 +413,8 @@ describe("protocol v29 DTO and tool registry", () => {
 
   it("normalizes platform screens and factory_status platform rows", () => {
     expect(normalizeFactoryStatus({ platforms: {} })).toEqual({ platforms: [] });
+    // Sections a read left for the next tick are a list, as named.
+    expect(normalizeFactoryStatus({ unread_sections: ["research", "alerts"] })).toEqual({ unread_sections: ["research", "alerts"] });
     expect(normalizePlatformStatus({ tick: 5, platforms: {} })).toEqual({ tick: 5, platforms: [] });
     // Routes: compact rows count each stop's waits; one platform's screen lists them.
     const row = { index: 3, name: "Orbit", state: "on_the_path", travel: { from: "nauvis", to: "vulcanus", distance_fraction: 0.25, length_km: 15000 },
@@ -576,7 +578,7 @@ describe("protocol v29 DTO and tool registry", () => {
     expect(described.build_layout).toMatch(/near_liquid picks water, lava, heavy-oil or ammoniacal-solution; a dry run may name surface/);
     expect(described.build_block).toBeUndefined();
     expect(described.build_layout).toMatch(/inserters \(picks_from, drops_into[^)]*\), belt_ends .*facing a reversed belt.*unpowered .*isolated_poles/);
-    expect(described.build_layout).toMatch(/on_ore, mixed_ore, open_fluid_ports, belt_joins and port_fluids \(each as blueprint_place's dry run describes it\), materials and ground_items/);
+    expect(described.build_layout).toMatch(/on_ore, mixed_ore, drill_ore, open_fluid_ports, belt_joins and port_fluids \(each as blueprint_place's dry run describes it\), materials and ground_items/);
     for (const tool of ["blueprint_place"]) {
       expect(described[tool]).toMatch(/on_ore \(each placement but a drill whose footprint covers resource tiles, with the tiles by resource\)/);
       expect(described[tool]).toMatch(/mixed_ore \(each drill whose mining area holds more than one resource it can mine: mines.*also/);

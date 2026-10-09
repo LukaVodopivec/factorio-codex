@@ -316,27 +316,11 @@ local far_line
 for _, line in ipairs(autonomy.lines()) do if line.position.x == 40 then far_line = line end end
 check(far_line and far_line.machines == 2, "the new furnace joins the nearby line, which keeps its id")
 
--- Backpressure that flaps (700 ticks output full, then a 30-tick working
--- burst) is one problem: next_event is not woken once per episode.
-mock.state(output_full).status = RAW.working
-run(700)
-local before_flap, first_flap = storage.autonomy.last_problem_tick, nil
-for episode = 1, 4 do
-  mock.state(output_full).status = RAW.full_output
-  run(700)
-  if episode == 1 then first_flap = storage.autonomy.last_problem_tick end
-  mock.state(output_full).status = RAW.working
-  run(30)
-end
-check(first_flap ~= before_flap and storage.autonomy.last_problem_tick == first_flap,
-  "a machine flapping between output full and short working bursts sets last_problem_tick once")
-run(630)
-local flap_rows = 0
-for _, row in ipairs(autonomy.problems()) do if row.status == "full_output" and row.position.x == 40 then flap_rows = flap_rows + 1 end end
-check(flap_rows == 0, "the problem clears after ten seconds without it")
--- The same class returning after a full recovery within five minutes of
--- its wake is a problem row again but does not wake next_event; another raw
--- status of that class (waiting for space) neither.
+do
+-- Backpressure (output full, waiting for space) is ordinary: a counted
+-- problem row in problems(since) and factory_status, but it never moves
+-- last_problem_tick, so it never wakes next_event. Flapping (700 ticks
+-- output full, then a 30-tick working burst) stays one problem.
 local function full_rows(since)
   local rows = 0
   for _, row in ipairs(autonomy.problems(since)) do
@@ -346,27 +330,61 @@ local function full_rows(since)
   end
   return rows
 end
+local function fuel_rows(since)
+  local rows = 0
+  for _, row in ipairs(autonomy.problems(since)) do
+    if row.status == "no_fuel" and row.position.x == 40 then rows = rows + 1 end
+  end
+  return rows
+end
+mock.state(output_full).status = RAW.working
+run(700)
+local before_full = storage.autonomy.last_problem_tick
+local full_cursor = game.tick
+for _ = 1, 4 do
+  mock.state(output_full).status = RAW.full_output
+  run(700)
+  mock.state(output_full).status = RAW.working
+  run(30)
+end
 mock.state(output_full).status = RAW.full_output
-run(630)
-check(storage.autonomy.last_problem_tick == first_flap and full_rows(first_flap + 1) == 1,
-  "the same class after a full recovery within five minutes is a problem row without a new wake")
+run(30)
+check(storage.autonomy.last_problem_tick == before_full and full_rows(full_cursor) == 1,
+  "output full is a counted problem row (flapping stays one) that never moves last_problem_tick")
 mock.state(output_full).status = RAW.waiting_for_space_in_destination
 run(630)
-check(storage.autonomy.last_problem_tick == first_flap and full_rows() == 1,
-  "waiting for space is the output_full class: no new wake")
+check(storage.autonomy.last_problem_tick == before_full and full_rows() == 1,
+  "waiting for space is the output_full class: a row, no wake")
 mock.state(output_full).status = RAW.working
-run(first_flap + 18000 - game.tick)
-check(full_rows() == 0, "the problem cleared")
-mock.state(output_full).status = RAW.full_output
 run(630)
+check(full_rows() == 0, "the problem clears after ten seconds without it")
+-- A waking class (no fuel) wakes next_event; the same class returning after
+-- a full recovery within five minutes of its wake is a problem row again
+-- but does not wake it; five minutes later it does; another class wakes at once.
+mock.state(output_full).status = RAW.no_fuel
+run(90)
+local first_wake = storage.autonomy.last_problem_tick
+check(first_wake ~= before_full and fuel_rows(first_wake) == 1, "a dry machine wakes next_event")
+mock.state(output_full).status = RAW.working
+run(630)
+mock.state(output_full).status = RAW.no_fuel
+run(90)
+check(storage.autonomy.last_problem_tick == first_wake and fuel_rows(first_wake + 1) == 1,
+  "the same class after a full recovery within five minutes is a problem row without a new wake")
+mock.state(output_full).status = RAW.working
+run(first_wake + 18000 - game.tick)
+check(fuel_rows() == 0, "the problem cleared")
+mock.state(output_full).status = RAW.no_fuel
+run(90)
 local late_wake = storage.autonomy.last_problem_tick
-check(late_wake > first_flap and full_rows(late_wake) == 1,
+check(late_wake > first_wake and fuel_rows(late_wake) == 1,
   "the same class five minutes after its wake wakes next_event again")
 mock.state(output_full).status = RAW.no_power
 run(90)
 check(storage.autonomy.last_problem_tick > late_wake, "another problem class wakes next_event at once")
 mock.state(output_full).status = RAW.working
 run(630)
+end
 
 -- A machine removed between refreshes forces a refresh instead of an error.
 f3.valid = false

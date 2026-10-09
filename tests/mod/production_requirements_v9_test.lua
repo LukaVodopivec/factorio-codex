@@ -197,7 +197,8 @@ for pack, count in pairs(science_totals) do
   prototypes.item[pack .. "-raw"] = {}
   force.recipes[pack] = recipe(pack, { { name = pack .. "-raw", amount = 1 } }, { { name = pack, amount = 1 } }, false, 1, "crafting")
   local technology = { name = pack .. "-closure", researched = false, prerequisites = {},
-    prototype = { effects = { { type = "unlock-recipe", recipe = pack } }, research_unit_count = count, research_unit_ingredients = { { name = pack, amount = 1 } } } }
+    prototype = { effects = { { type = "unlock-recipe", recipe = pack } }, research_unit_count = count,
+      research_unit_energy = 1800, research_unit_ingredients = { { name = pack, amount = 1 } } } }
   force.technologies[technology.name] = technology
   prerequisites[technology.name] = technology
 end
@@ -232,6 +233,48 @@ check(progressed_closure.remaining_science_packs["automation-science-pack"] == n
   "current-force researched prerequisites are credited without inspecting remote stock")
 force.technologies["automation-science-pack-closure"].researched = false
 
+-- Lab time: remaining units x unit time per missing lab technology (the
+-- current one's progress credited), summed at speed 1 and over the labs'
+-- summed progress rate (speed and productivity); arithmetic only.
+do
+  local registry = require("scripts.registry")
+  local real_labs = registry.labs
+  local pre = { name = "lab-pre", researched = false, prerequisites = {},
+    prototype = { effects = {}, research_unit_count = 100, research_unit_energy = 1800,
+      research_unit_ingredients = { { name = "automation-science-pack", amount = 1 } } } }
+  local target = { name = "lab-target", researched = false, prerequisites = { ["lab-pre"] = pre },
+    prototype = { effects = {}, research_unit_count = 10, research_unit_energy = 600,
+      research_unit_ingredients = { { name = "automation-science-pack", amount = 1 } } } }
+  force.technologies["lab-pre"], force.technologies["lab-target"] = pre, target
+  force.current_research, force.research_progress = pre, 0.5
+  registry.labs = function() return { count = 2, speed = 2, pack_rate = 2, progress_rate = 2.5 } end
+  local timed = production.production_requirements({ technology = "lab-target" })
+  local estimate = timed.time_estimate
+  local rows = {}
+  for _, row in ipairs(timed.missing_technologies) do rows[row.name] = row end
+  local allowed = { complete = true, bottleneck_seconds = true, basis = true, lab_seconds_at_speed_1 = true,
+    lab_seconds = true }
+  local facts_only = true
+  for key, value in pairs(estimate) do
+    if not allowed[key] or (type(value) == "string" and key ~= "basis") then facts_only = false end
+  end
+  check(rows["lab-pre"].unit_time_s == 30 and rows["lab-target"].unit_time_s == 10
+    and estimate.lab_seconds_at_speed_1 == 1600 and estimate.lab_seconds == 640 and facts_only,
+    "a closure's time_estimate adds lab seconds at speed 1 (1600) and at the labs' progress rate (640), facts only")
+  registry.labs = function() return { count = 0, speed = 0, pack_rate = 0, progress_rate = 0 } end
+  local no_labs = production.production_requirements({ technology = "lab-target" }).time_estimate
+  check(no_labs.lab_seconds_at_speed_1 == 1600 and no_labs.lab_seconds == nil,
+    "without labs a closure gives lab seconds at speed 1 only")
+  pre.prototype.research_unit_energy = nil
+  local unknown = production.production_requirements({ technology = "lab-target" })
+  check(unknown.time_estimate.lab_seconds_at_speed_1 == nil and unknown.partial == true
+    and unknown.variable_operating_requirements[#unknown.variable_operating_requirements].kind == "technology_unit_time_unavailable",
+    "a technology with no unit time leaves the lab total out and names it")
+  registry.labs = real_labs
+  force.technologies["lab-pre"], force.technologies["lab-target"] = nil, nil
+  force.current_research, force.research_progress = nil, 0
+end
+
 force.technologies["trigger-path"] = { name = "trigger-path", researched = false, prerequisites = {},
   prototype = { effects = {}, research_trigger = { type = "craft-item", item = "gear", count = 3 } } }
 local triggered = production.production_requirements({ technology = "trigger-path" })
@@ -247,7 +290,7 @@ check(formula.partial == true and formula.variable_operating_requirements[1].kin
 -- LuaTechnology has no effects field: unlock modifiers live on its prototype.
 force.technologies["mineral-science"] = { name = "mineral-science", researched = false, prerequisites = {}, prototype = {
   effects = { { type = "unlock-recipe", recipe = "mineral-pack" }, { type = "unlock-space-location", space_location = "mineral-world" } },
-  research_unit_count = 5, research_unit_ingredients = { { name = "mineral-pack", amount = 2 } },
+  research_unit_count = 5, research_unit_energy = 600, research_unit_ingredients = { { name = "mineral-pack", amount = 2 } },
 } }
 prototypes.space_location["mineral-world"] = { name = "mineral-world" }
 force.recipes["mineral-pack"] = recipe("mineral-pack", { { name = "iron-ore", amount = 2 } }, { { name = "mineral-pack", amount = 1 } }, false, 1)

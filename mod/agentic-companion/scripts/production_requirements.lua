@@ -21,6 +21,7 @@
 local companion = require("scripts.companion")
 local research = require("scripts.research")
 local autonomy = require("scripts.autonomy")
+local registry = require("scripts.registry")
 
 local M = {}
 local FLOW_PRECISIONS = {
@@ -584,6 +585,9 @@ local function closure_requirements(params, body, location, force, target_kind, 
   local technology_name = location_candidates and location_candidates[1] or target_name
   local technologies = closure_for(force, technology_name)
   local missing, triggers, science, permitted_locked, ambiguities, variable = {}, {}, {}, {}, {}, {}
+  -- Lab work: remaining units x unit time over the missing lab technologies
+  -- (nil once one has no unit time).
+  local lab_seconds = 0
   for _, technology in ipairs(technologies) do
     local trigger = research.research_trigger(technology)
     local count_ok, count = pcall(function() return technology.prototype.research_unit_count end)
@@ -593,6 +597,16 @@ local function closure_requirements(params, body, location, force, target_kind, 
     local row = { name = technology.name, prerequisites = sorted_keys(technology.prerequisites),
       kind = trigger and "trigger" or "research", remaining_research_units = count and count * fraction or nil }
     missing[#missing + 1] = row
+    if not trigger and row.remaining_research_units then
+      row.unit_time_s = research.unit_time_s(technology.prototype)
+      if row.unit_time_s then
+        if lab_seconds then lab_seconds = lab_seconds + row.remaining_research_units * row.unit_time_s end
+      elseif row.remaining_research_units > 0 then
+        lab_seconds = nil
+        variable[#variable + 1] = { kind = "technology_unit_time_unavailable", technology = technology.name,
+          reason = "installed prototype did not expose research_unit_energy" }
+      end
+    end
     if trigger then triggers[#triggers + 1] = { technology = technology.name, trigger = trigger,
       action = research.trigger_action(trigger) }
     elseif count and ingredients_ok then
@@ -618,7 +632,20 @@ local function closure_requirements(params, body, location, force, target_kind, 
   annotate(deterministic, deterministic, force)
   local precision = params.flow_precision or "one_minute"
   local flows, time_estimate = flow_rows(force, body.surface, remaining, precision)
-  if time_estimate.kind then variable[#variable + 1] = time_estimate end
+  if time_estimate.kind then
+    variable[#variable + 1] = time_estimate
+    time_estimate = { kind = time_estimate.kind, precision = time_estimate.precision }
+  end
+  -- The lab-bound time next to the pack-bound one: the lab work at speed 1
+  -- and, while labs progress, over their summed progress rate (research
+  -- speed and productivity, as factory_status eta_seconds).
+  if lab_seconds then
+    time_estimate.lab_seconds_at_speed_1 = math.ceil(lab_seconds - 1e-6)
+    local labs = registry.labs()
+    if labs.count > 0 and labs.progress_rate > 0 then
+      time_estimate.lab_seconds = math.ceil(lab_seconds / labs.progress_rate - 1e-6)
+    end
+  end
   return {
     target_kind = target_kind, target = target_name, target_technology = technology_name,
     source_tick = game.tick, missing_technologies = missing, trigger_conditions = triggers,

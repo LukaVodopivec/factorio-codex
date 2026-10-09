@@ -28,12 +28,13 @@ const capacity = z.object({
   observed_tick: z.number().int().nonnegative(),
 }).strict();
 const assumption = z.object({ assumption: text(400), invalidation_condition: text(400) }).strict();
-// A strategist note in the run's notebook, relative to the ledger's directory.
+/** A strategist note in the run's notebook, relative to the ledger's directory. */
+export const NOTES_RULE = "notes are relative notebook/<name>.md paths without '..' or absolute parts";
 const notePath = z.string().max(160).refine((note) => {
   const segments = note.split("/");
   return segments.length >= 2 && segments[0] === "notebook" && note.endsWith(".md")
     && segments.slice(1).every((segment) => /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(segment));
-}, "notes are relative notebook/<name>.md paths without '..' or absolute parts");
+}, NOTES_RULE);
 const packageId = z.string().regex(/^[a-z0-9-]{1,32}$/, "package ids are 1-32 lowercase letters, digits or dashes");
 // The surface a package's positions are on, as ping names the body's: a
 // planet name or "platform:<index>".
@@ -167,7 +168,10 @@ export const ledgerInitSchema = z.object({
 const applyEnvelopeSchema = z.union([ledgerEnvelopeSchema, ledgerInitSchema]);
 
 export type OperationsLedger = z.infer<typeof operationsLedgerSchema>;
-export type LedgerApplyResult = { status: "applied"; revision: number; source_tick: number | null }
+/** What an applied update's omitted_unqueued means, for the ledger-apply help. */
+export const OMITTED_UNQUEUED_RULE = "omitted_unqueued (applied result, when any): packages the previous revision listed"
+  + " that the pilot's bridge had not queued and this update no longer lists; they will not be queued";
+export type LedgerApplyResult = { status: "applied"; revision: number; source_tick: number | null; omitted_unqueued?: string[] }
   | { status: "discarded"; reason: string; issues?: string[] };
 
 const discard = (reason: string, issues?: string[]): LedgerApplyResult =>
@@ -199,23 +203,44 @@ export function reduceLedger(existingValue: unknown, envelopeValue: unknown):
  *  queue keys on the id, so such a package would never be queued. An
  *  unchanged repeat of a listed package is fine. Unreadable queue: no check
  *  (the queue itself then queues nothing). */
-function reusedPackageIds(file: string, existing: unknown, packages: Array<{ package_id: string }>): string[] {
-  let records: Record<string, { status?: string }>;
+type QueueRecords = Record<string, { status?: string }>;
+/** package-queue.json's records beside the ledger: {} when absent, null when unreadable. */
+function queueRecords(file: string): QueueRecords | null {
   try {
     const value = JSON.parse(fs.readFileSync(path.join(path.dirname(file), "package-queue.json"), "utf8"));
-    if (!value || typeof value.packages !== "object" || Array.isArray(value.packages)) return [];
-    records = value.packages;
-  } catch { return []; }
-  // Compared as the schema reads them (a 0.21.1 layout entity is upgraded).
+    return value && typeof value.packages === "object" && !Array.isArray(value.packages) ? value.packages : null;
+  } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? {} : null; }
+}
+/** The packages the existing ledger lists, as the schema reads them (a 0.21.1 layout entity is upgraded). */
+function listedPackages(existing: unknown): Array<{ package_id?: unknown }> {
   const parsed = operationsLedgerSchema.safeParse(existing);
   const listed = parsed.success ? parsed.data.build_packages : (existing as { build_packages?: unknown })?.build_packages;
-  const previous = Array.isArray(listed) ? listed as Array<{ package_id?: unknown }> : [];
+  return Array.isArray(listed) ? listed as Array<{ package_id?: unknown }> : [];
+}
+function reusedPackageIds(records: QueueRecords | null, existing: unknown, packages: Array<{ package_id: string }>): string[] {
+  if (!records) return [];
+  const previous = listedPackages(existing);
   return packages.flatMap((entry, index) => {
     const record = records[entry.package_id];
     if (!record) return [];
     const same = previous.find((old) => old?.package_id === entry.package_id);
     if (same && isDeepStrictEqual(same, JSON.parse(JSON.stringify(entry)))) return [];
     return [`build_packages.${index}.package_id: ${entry.package_id} was already used (status ${record.status ?? "unknown"}); give a changed or re-listed package a new package_id`];
+  });
+}
+
+/** Package ids the existing ledger lists that the bridge never settled
+ *  (no record, or still queuing or waiting_surface) and the update no longer
+ *  lists: the bridge queues only listed packages, so they will not be queued.
+ *  A fact for the strategist, never a refusal. Unreadable queue: none. */
+function omittedUnqueued(records: QueueRecords | null, existing: unknown, packages: Array<{ package_id: string }>): string[] {
+  if (!records) return [];
+  const kept = new Set(packages.map((entry) => entry.package_id));
+  return listedPackages(existing).flatMap((entry) => {
+    const id = entry?.package_id;
+    if (typeof id !== "string" || kept.has(id)) return [];
+    const status = records[id]?.status;
+    return status === "queued" || status === "failed" ? [] : [id];
   });
 }
 
@@ -267,9 +292,12 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
     catch { return discard("LEDGER_READ_FAILED"); }
     try { existing = JSON.parse(contents); }
     catch { return discard("MALFORMED_OR_UNSUPPORTED_LEDGER"); }
-    const reused = reusedPackageIds(file, existing, envelope.data.update.build_packages);
+    const records = queueRecords(file);
+    const reused = reusedPackageIds(records, existing, envelope.data.update.build_packages);
     if (reused.length > 0) return discard("MALFORMED_UPDATE", reused);
     reduced = reduceLedger(existing, envelope.data);
+    const omitted = omittedUnqueued(records, existing, envelope.data.update.build_packages);
+    if (reduced.ledger && reduced.result.status === "applied" && omitted.length > 0) reduced.result.omitted_unqueued = omitted;
   }
   if (!reduced.ledger) return reduced.result;
   // JSON has no -0; compare the readback with what JSON actually stores.
@@ -306,7 +334,11 @@ function fieldType(schema: JsonSchema | undefined, depth = 0): string {
       + (depth >= 1 ? "" : `: ${fieldType(value as JsonSchema, depth + 1)}`)).join(", ")}}`;
   }
   const type = Array.isArray(schema.type) ? schema.type.join("|") : schema.type ?? "any";
-  return schema.pattern ? `${type} matching ${schema.pattern}` : type;
+  if (schema.pattern) return `${type} matching ${schema.pattern}`;
+  // A numeric cap prints with its floor (an integer's safe-integer limit is no cap).
+  const max = typeof schema.maximum === "number" && schema.maximum < Number.MAX_SAFE_INTEGER ? schema.maximum : undefined;
+  if (max === undefined) return type;
+  return typeof schema.minimum === "number" && schema.minimum > Number.MIN_SAFE_INTEGER ? `${type} ${schema.minimum}-${max}` : `${type} <=${max}`;
 }
 // "required fields | optional fields" of an object schema, leaving out the named keys.
 function fieldLine(schema: z.ZodType, skip: string[]): string {
@@ -317,16 +349,21 @@ function fieldLine(schema: z.ZodType, skip: string[]): string {
     .map(([key, value]) => `${key}: ${fieldType(value as JsonSchema)}`).join("; ");
   return `${list(true) || "-"} | optional: ${list(false) || "-"}`;
 }
-/** The package contract ledger-apply --schema prints, generated from the
- *  schemas it checks: a package's fields and each step action's fields. */
+/** The contract ledger-apply --schema prints, generated from the schemas it
+ *  checks: the update envelope, the update's fields, a package's fields and
+ *  each step action's fields. */
 export function packageContract(): string {
   const steps = packageStepSchema.options.filter((option) => option.shape.action.value !== "travel")
     .map((option) => `  ${option.shape.action.value}: ${fieldLine(option, ["action"])}`);
   return [
+    `envelope (required | optional): ${fieldLine(ledgerEnvelopeSchema, ["update"])}; update: the object below;`
+      + " source_tick must exceed the ledger's; an absent ledger takes {init: true, run, source_tick, update} instead",
+    `update (required | optional): ${fieldLine(mutableSchema, ["build_packages", "research"])}; build_packages and research below;`
+      + " every update restates the packages still wanted",
     `build_packages: at most 2 per update, together at most ${MAX_PACKAGE_BYTES} bytes of JSON; each package (required | optional):`,
     `  ${fieldLine(writtenPackage, ["steps"])}`,
     `  steps: 1-${MAX_PLAN_STEPS} of the steps below; blueprint_capture steps come first; travel is never a package step`,
-    `  ${AFTER_PACKAGE_ID_RULE}`, `  ${VERIFY_RULE}`,
+    `  ${AFTER_PACKAGE_ID_RULE}`, `  ${VERIFY_RULE}`, `  ${NOTES_RULE}, each an existing file beside the ledger`,
     `research: at most ${MAX_RESEARCH} technologies in queue order, each once`,
     "steps (action: required | optional):", ...steps,
   ].join("\n");

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { AFTER_PACKAGE_ID_RULE, VERIFY_RULE, applyLedgerFile, operationsLedgerSchema, packageContract, reduceLedger } from "../src/coordination/ledger.js";
+import { AFTER_PACKAGE_ID_RULE, NOTES_RULE, OMITTED_UNQUEUED_RULE, VERIFY_RULE, applyLedgerFile, operationsLedgerSchema, packageContract, reduceLedger } from "../src/coordination/ledger.js";
 import { packageStepSchema } from "../src/mcp/runPlan.js";
 
 const temporary: string[] = [];
@@ -86,7 +86,15 @@ describe("compact strategist operations ledger", () => {
       if (action === "travel") { expect(line).toBeUndefined(); continue; }
       expect(line, action).toBeDefined();
     }
-    expect(contract).toContain("  pickup_items: x: number; y: number; item: string; count: integer | optional: -");
+    expect(contract).toContain("  pickup_items: x: number; y: number; item: string; count: integer 1-10000 | optional: -");
+    // The envelope and update fields, numeric caps and the notes path rule.
+    expect(contract).toContain("envelope (required | optional): run_id: string; save_identity: string; source_tick: integer | optional: -;");
+    expect(contract).toContain("source_tick must exceed the ledger's");
+    expect(contract).toContain("latest_measured_capacity: [{stage: string, measure: string, value: number, unit: string, observed_tick: integer}] (0-12)");
+    expect(contract).toMatch(/update \(required \| optional\): phase: string; bottleneck: string;.*task_list: \{NOW: \{objective,.*assumptions: /);
+    expect(contract).toContain("  wait_for_item: x: number; y: number; inventory: input|output|fuel|main; item: string; count: integer | optional: timeout_seconds: number 1-300");
+    expect(contract).toContain("radius: number <=32");
+    expect(contract).toContain(`  ${NOTES_RULE}`);
     expect(contract).toContain("  blueprint_place: name: string matching");
     expect(contract).toMatch(/flip: horizontal\|vertical; mode: hand\|ghosts/);
     expect(contract).toContain("package_id: string matching ^[a-z0-9-]{1,32}$; serves: NOW|NEXT;");
@@ -514,6 +522,29 @@ describe("build packages the bridge queues", () => {
     expect(applyLedgerFile(file, withPackages([], 104))).toMatchObject({ status: "applied", revision: 4 });
     expect(applyLedgerFile(file, withPackages([drillPair()], 105))).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
     expect(applyLedgerFile(file, withPackages([drillPair("coal-drill-furnace-2")], 106))).toMatchObject({ status: "applied", revision: 5 });
+  });
+
+  it("reports pending packages an update drops, without refusing it", () => {
+    const file = ledgerFile();
+    expect(applyLedgerFile(file, initialization())).toMatchObject({ status: "applied", revision: 1 });
+    const queue = path.join(path.dirname(file), "package-queue.json");
+    // No queue file yet: neither package was ever queued.
+    expect(applyLedgerFile(file, withPackages([drillPair("a"), drillPair("b")], 101))).toEqual({ status: "applied", revision: 2, source_tick: 101 });
+    fs.writeFileSync(queue, JSON.stringify({ packages: { a: { status: "queued", revision: 2, at: "2026-10-04T00:00:00Z", plan_id: 4 },
+      b: { status: "waiting_surface", revision: 2, at: "2026-10-04T00:00:00Z" } } }));
+    // Both dropped: only b, never queued, is named.
+    expect(applyLedgerFile(file, withPackages([], 102))).toEqual({ status: "applied", revision: 3, source_tick: 102, omitted_unqueued: ["b"] });
+    // Restated packages and settled ones are never named; an unreadable queue names none.
+    expect(applyLedgerFile(file, withPackages([drillPair("c")], 103))).toEqual({ status: "applied", revision: 4, source_tick: 103 });
+    fs.writeFileSync(queue, "{broken");
+    expect(applyLedgerFile(file, withPackages([], 104))).toEqual({ status: "applied", revision: 5, source_tick: 104 });
+    // History keeps it; the rule states a fact, never what to restate.
+    const result = applyLedgerFile(file, withPackages([drillPair("d")], 105));
+    fs.rmSync(queue);
+    const dropped = applyLedgerFile(file, withPackages([], 106));
+    expect(result).toMatchObject({ status: "applied" });
+    expect(dropped).toMatchObject({ omitted_unqueued: ["d"] });
+    expect(OMITTED_UNQUEUED_RULE).not.toMatch(/\b(should|must|restate it|re-?list it|consider)\b/i);
   });
 
   it("stores negative zero as JSON does without failing the readback", () => {

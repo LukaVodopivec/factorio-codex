@@ -101,7 +101,11 @@ which validates the update (`coordination/ledger.ts`), rejects stale or
 duplicate reports (by `source_tick`) and reused package ids, and writes it atomically with mode
 0600. Each call appends its outcome to `ledger-history.jsonl` beside the ledger
 (`at`, `status`, `revision` or `reason` and `issues`, the update's
-`package_ids`), as evidence only. A ledger holds the run identity, the priorities, at most two build
+`package_ids`), as evidence only. An applied update that drops packages the
+bridge never queued names them in `omitted_unqueued` (a fact, not a refusal).
+`ledger-apply --schema` prints the update envelope, the update's fields, the
+package and step fields with their numeric caps, and the notes path rule. A
+ledger holds the run identity, the priorities, at most two build
 packages and up to seven research technologies.
 
 The pilot's MCP process runs the package bridge (`coordination/orders.ts`)

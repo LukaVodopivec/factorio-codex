@@ -83,7 +83,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flat(pilot)).toMatch(/Never poll `plan_status`, `factory_status`, or any read in a loop/);
     expect(flat(strategist)).toMatch(/Never poll in a loop/);
     // lines is the 10 worst; the counts cover all. A line's cause is reported only when one is found.
-    expect(flat(skill)).toMatch(/`lines` lists the 10 worst, `line_counts` and `by_state` count all/);
+    expect(flat(skill)).toMatch(/`lines` lists the 10 worst, `line_counts` with `by_state` counts all/);
     expect(flat(strategist)).toMatch(/`output_full` line names its position and any cause/);
     expect(flat(strategist)).not.toMatch(/names its cause and position/);
     expect(flat(skill)).toMatch(/`inspect_entity`: [^.]*`area`: your buildings in a charted area/);

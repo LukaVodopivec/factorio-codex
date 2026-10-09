@@ -98,7 +98,7 @@ retried after the hold.
 - `factory_status` is the single routine read. Line `state` is `running`,
   `starved`, `output_full`, `depleted`, `no_fuel`, `no_power`, `no_heat`, `frozen`,
   `disabled`, or `idle`, with its cause (a fluid, no recipe, spent fuel full);
-  `lines` lists the 10 worst, `line_counts` and `by_state` count all; rows
+  `lines` lists the 10 worst, `line_counts` with `by_state` counts all; rows
   past a cap are counted in `omitted_*`. A `research_idle` problem means
   no research runs and labs are idle. It details the body's surface; `elsewhere`
   has one line per other planet or platform with buildings, and `surface:

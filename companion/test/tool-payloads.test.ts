@@ -224,7 +224,7 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(descriptions.mine).toMatch(/hand-mining adds to what they mine/);
     expect(descriptions.mine).not.toMatch(/still helps|meet demand/);
     expect(descriptions.factory_status).toMatch(/hand_transfers: served by hand twice or more in ten minutes, so not yet automated/);
-    expect(descriptions.factory_status).toMatch(/lines lists at most 10, worst first, and line_counts \{total, running, self_sustaining, hand_fed\} and by_state \{state: n\} count every line/);
+    expect(descriptions.factory_status).toMatch(/lines lists at most 10, worst first, and line_counts \{total, running, self_sustaining, hand_fed, by_state \{state: n\}\} counts every line/);
     expect(descriptions.factory_status).toMatch(/drop_blocked: an output_full machine's own drop target, drop_into \(an entity name, or ground\), takes no more/);
     expect(descriptions.mine).not.toMatch(/instead/);
     expect(descriptions.get_items).toMatch(/also one own drills mine when none of their output can be taken now/);

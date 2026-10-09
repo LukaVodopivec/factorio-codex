@@ -117,7 +117,8 @@ retried after the hold.
   `since_tick`. Never poll in a loop. `plan_ended` carries each step's outcome
   and the inventory change: no second read is needed to check a plan. Whenever
   a result's `body.fifo_empty` is true, the body is free for work (it may still
-  craft): the pilot queues work before waiting again.
+  craft): the pilot queues work (its own if no package is pending) before
+  waiting again.
 - `activity_log` shows each plan's `source` (`pilot`, `upkeep`,
   `package:<id>`) and who cancelled what; `plan_status` reads one exact
   `plan_id`; `build_layout`, `connect_entities`, and `blueprint_place` with

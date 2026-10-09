@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge, TaskClock } from "../src/bridge.js";
-import { eventSummary, feedText, IDLE_NOW, RESEARCH_IDLE, waitForEvent, watchText, type EventState, type PackageFailure, type PackageVerificationEvent, type WatchFiring } from "../src/mcp/events.js";
+import { ModError } from "../src/bridge.js";
+import { eventSummary, feedText, IDLE_FACT, IDLE_NOW, RESEARCH_IDLE, waitForEvent, watchText, type EventState, type PackageFailure, type PackageVerificationEvent, type WatchFiring } from "../src/mcp/events.js";
 import { registerMcpTools, type McpSurface } from "../src/mcp/server.js";
 
 const idle: EventState = { tick: 100, queue_depth: 0, fifo_empty: true, human_hold: false };
@@ -68,6 +69,11 @@ describe.each(["full", "read-only"] as McpSurface[])("next_event MCP readback (%
     expect(failed.structuredContent).toMatchObject({ status: "failed", read_status: "failed", code: "TOOL_ERROR" });
     expect(failed.structuredContent).not.toHaveProperty("event");
     expect(failed.structuredContent).not.toHaveProperty("outcomes");
+    // A message that leads with the mod's code keeps it.
+    const coded = await handler({ call: async () => { throw new ModError("JOB_LIMIT: too many jobs"); } } as unknown as Bridge)({ timeout_seconds: 1 });
+    expect(coded.structuredContent).toMatchObject({ status: "failed", code: "JOB_LIMIT", summary: "Error: JOB_LIMIT: too many jobs" });
+    const plain = await handler({ call: async () => { throw new Error("Lua: bad thing: X_Y: not a leading code"); } } as unknown as Bridge)({ timeout_seconds: 1 });
+    expect(plain.structuredContent).toMatchObject({ code: "TOOL_ERROR" });
   });
 
   it("reports wait cancellation without cancelling physical plans", async () => {
@@ -327,6 +333,13 @@ describe("next_event", () => {
     expect(eventSummary(timeout)).toBe(`nothing happened in 5 s; ${IDLE_NOW}`);
     expect(eventSummary({ event: "queue_empty", body: { fifo_empty: true, human_hold: false } })).toBe(IDLE_NOW);
     expect(eventSummary({ event: "timeout", waited_seconds: 5, body: { fifo_empty: true, human_hold: true } })).toBe("nothing happened in 5 s");
+    // A role that only reads gets the fact without the cue; the supervisor keeps the pilot's words.
+    expect(eventSummary(last, "strategist")).toBe(`plan 5 ended completed; ${IDLE_FACT}`);
+    expect(eventSummary(timeout, "advisor")).toBe(`nothing happened in 5 s; ${IDLE_FACT}`);
+    expect(eventSummary({ event: "queue_empty", upkeep_off_since_tick: 90, body: { fifo_empty: true } }, "strategist"))
+      .toBe(`${IDLE_FACT}; upkeep off since stop at tick 90 until a plan finishes`);
+    expect(eventSummary(last, "supervisor")).toBe(`plan 5 ended completed; ${IDLE_NOW}`);
+    expect(IDLE_FACT).not.toMatch(/queue/);
   });
 
   it("reports the plan that ended while it waited, polling about every 500 ms", async () => {

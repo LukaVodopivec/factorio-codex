@@ -177,13 +177,14 @@ export function reduceLedger(existingValue: unknown, envelopeValue: unknown):
   const existing = operationsLedgerSchema.safeParse(existingValue);
   if (!existing.success) return { result: discard("MALFORMED_OR_UNSUPPORTED_LEDGER") };
   const envelope = ledgerEnvelopeSchema.safeParse(envelopeValue);
-  if (!envelope.success) return { result: discard("MALFORMED_REPORT", schemaIssues(envelope.error)) };
+  if (!envelope.success) return { result: discard("MALFORMED_UPDATE", schemaIssues(envelope.error)) };
   const issues = packageIssues(envelope.data.update.build_packages, envelope.data.source_tick);
-  if (issues.length > 0) return { result: discard("MALFORMED_REPORT", issues) };
+  if (issues.length > 0) return { result: discard("MALFORMED_UPDATE", issues) };
   if (envelope.data.run_id !== existing.data.run.id) return { result: discard("WRONG_RUN") };
   if (envelope.data.save_identity !== existing.data.run.save_identity) return { result: discard("WRONG_SAVE") };
   if (existing.data.source_tick !== null && envelope.data.source_tick <= existing.data.source_tick) {
-    return { result: discard(envelope.data.source_tick === existing.data.source_tick ? "DUPLICATE_REPORT" : "STALE_REPORT") };
+    return { result: discard(envelope.data.source_tick === existing.data.source_tick ? "DUPLICATE_UPDATE" : "STALE_UPDATE",
+      [`source_tick must exceed ${existing.data.source_tick}`]) };
   }
   const ledger: OperationsLedger = {
     schema_version: 2, run: existing.data.run, revision: existing.data.revision + 1,
@@ -222,7 +223,7 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
   if (!envelope.success) {
     const isInitShape = typeof envelopeValue === "object" && envelopeValue !== null && "init" in envelopeValue;
     const specific = (isInitShape ? ledgerInitSchema : ledgerEnvelopeSchema).safeParse(envelopeValue);
-    return discard("MALFORMED_REPORT", specific.success ? [] : schemaIssues(specific.error));
+    return discard("MALFORMED_UPDATE", specific.success ? [] : schemaIssues(specific.error));
   }
   const runId = "init" in envelope.data ? envelope.data.run.id : envelope.data.run_id;
   try {
@@ -238,7 +239,7 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") return discard("RUN_EVIDENCE_UNREADABLE");
   }
   const noteIssues = missingNotes(envelope.data.update.build_packages, file);
-  if (noteIssues.length > 0) return discard("MALFORMED_REPORT", noteIssues);
+  if (noteIssues.length > 0) return discard("MALFORMED_UPDATE", noteIssues);
   let destination: fs.Stats | undefined;
   try { destination = fs.lstatSync(file); }
   catch (error) {
@@ -248,7 +249,7 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
   const isInit = "init" in envelope.data;
   if ("init" in envelope.data) {
     const issues = packageIssues(envelope.data.update.build_packages, envelope.data.source_tick);
-    if (issues.length > 0) return discard("MALFORMED_REPORT", issues);
+    if (issues.length > 0) return discard("MALFORMED_UPDATE", issues);
     if (destination) return discard("LEDGER_ALREADY_EXISTS");
     const ledger: OperationsLedger = {
       schema_version: 2, run: envelope.data.run, revision: 1,
@@ -266,7 +267,7 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
     try { existing = JSON.parse(contents); }
     catch { return discard("MALFORMED_OR_UNSUPPORTED_LEDGER"); }
     const reused = reusedPackageIds(file, existing, envelope.data.update.build_packages);
-    if (reused.length > 0) return discard("MALFORMED_REPORT", reused);
+    if (reused.length > 0) return discard("MALFORMED_UPDATE", reused);
     reduced = reduceLedger(existing, envelope.data);
   }
   if (!reduced.ledger) return reduced.result;
@@ -284,11 +285,57 @@ export function applyLedgerFile(file: string, envelopeValue: unknown): LedgerApp
   return reduced.result;
 }
 
+// One field's type in a line, from its JSON Schema: nested objects name
+// their fields one level deep (? marks optional ones).
+type JsonSchema = { [key: string]: any };
+function fieldType(schema: JsonSchema | undefined, depth = 0): string {
+  if (!schema || typeof schema !== "object") return "any";
+  if (schema.const !== undefined) return JSON.stringify(schema.const);
+  if (Array.isArray(schema.enum)) return schema.enum.map((value: unknown) => typeof value === "string" ? value : JSON.stringify(value)).join("|");
+  const options = schema.anyOf ?? schema.oneOf;
+  if (Array.isArray(options)) return options.map((option: JsonSchema) => fieldType(option, depth)).join(" or ");
+  if (schema.type === "array") {
+    const bounds = schema.maxItems !== undefined ? ` (${schema.minItems ?? 0}-${schema.maxItems})` : "";
+    return `[${fieldType(schema.items, depth)}]${bounds}`;
+  }
+  if (schema.type === "object") {
+    if (!schema.properties) return "{name: count}";
+    const required: string[] = schema.required ?? [];
+    return `{${Object.entries(schema.properties).map(([key, value]) => `${key}${required.includes(key) ? "" : "?"}`
+      + (depth >= 1 ? "" : `: ${fieldType(value as JsonSchema, depth + 1)}`)).join(", ")}}`;
+  }
+  const type = Array.isArray(schema.type) ? schema.type.join("|") : schema.type ?? "any";
+  return schema.pattern ? `${type} matching ${schema.pattern}` : type;
+}
+// "required fields | optional fields" of an object schema, leaving out the named keys.
+function fieldLine(schema: z.ZodType, skip: string[]): string {
+  const json = z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }) as JsonSchema;
+  const required: string[] = json.required ?? [];
+  const fields = Object.entries(json.properties ?? {}).filter(([key]) => !skip.includes(key));
+  const list = (want: boolean) => fields.filter(([key]) => required.includes(key) === want)
+    .map(([key, value]) => `${key}: ${fieldType(value as JsonSchema)}`).join("; ");
+  return `${list(true) || "-"} | optional: ${list(false) || "-"}`;
+}
+/** The package contract ledger-apply --schema prints, generated from the
+ *  schemas it checks: a package's fields and each step action's fields. */
+export function packageContract(): string {
+  const steps = packageStepSchema.options.filter((option) => option.shape.action.value !== "travel")
+    .map((option) => `  ${option.shape.action.value}: ${fieldLine(option, ["action"])}`);
+  return [
+    `build_packages: at most 2 per update, together at most ${MAX_PACKAGE_BYTES} bytes of JSON; each package (required | optional):`,
+    `  ${fieldLine(writtenPackage, ["steps"])}`,
+    `  steps: 1-${MAX_PLAN_STEPS} of the steps below; blueprint_capture steps come first; travel is never a package step`,
+    `  ${AFTER_PACKAGE_ID_RULE}`, `  ${VERIFY_RULE}`,
+    `research: at most ${MAX_RESEARCH} technologies in queue order, each once`,
+    "steps (action: required | optional):", ...steps,
+  ].join("\n");
+}
+
 export async function runLedgerApply(file: string): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
   let envelope: unknown;
   try { envelope = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
-  catch { console.log(JSON.stringify(discard("MALFORMED_REPORT"))); return; }
+  catch { console.log(JSON.stringify(discard("MALFORMED_UPDATE"))); return; }
   console.log(JSON.stringify(applyLedgerFile(file, envelope)));
 }

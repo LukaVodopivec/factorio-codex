@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_TASK_TIMEOUT_MS, type Bridge } from "../src/bridge.js";
-import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads } from "../src/mcp/server.js";
+import { connectStatus, MAP_SUMMARY_SECTIONS, normalizeObservation, READ_ONLY_TOOLS, registerMcpTools, result, toolPayloads, type SessionRole } from "../src/mcp/server.js";
 import { queuePlanSchema } from "../src/mcp/runPlan.js";
 import { FIFO_HUMAN_HINT, FIFO_IDLE_HINT, normalizeBeltJoins, normalizeFifo, normalizePhysicalRoute, normalizeProductionRequirements, normalizePlacementSearch, planStatusSummary, queuedPlanSummary } from "../src/mcp/toolPayloads.js";
 const validConfig = () => ({ ok: true, config: { factorioUserDir: "/factorio", rcon: { host: "127.0.0.1", port: 19015, password: "secret" } } } as const);
@@ -127,6 +127,15 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(plain).not.toHaveProperty("trial");
     expect(plain.summary).not.toContain("trial");
     expect(descriptions.factory_status).toMatch(/trial gives the clock .*final_window_in_seconds.*raw_since_go is total raw input, not that final rate/);
+  });
+  it("states the blueprint contract: capture's edge rule and wires, the origin, hand-mode refusals and case-sensitive names", () => {
+    const descriptions: Record<string, string> = {};
+    registerMcpTools({ registerTool(name, config: any) { descriptions[name] = config.description; } },
+      async () => ({ call: vi.fn() } as unknown as Bridge), validConfig);
+    expect(descriptions.blueprint_capture).toMatch(/footprint touches the area, edge included; poles carry their wires/);
+    expect(descriptions.blueprint_place).toMatch(/dx\/dy are relative to the blueprint origin returned by capture\/describe/);
+    expect(descriptions.blueprint_place).toMatch(/refuses a blueprint with wires, quality, tiles or grid snapping/);
+    for (const name of ["blueprint_capture", "blueprint_place", "blueprint_describe"]) expect(descriptions[name], name).toMatch(/case-sensitive/i);
   });
   it("factory_status says plainly in its summary when no research runs and labs are idle", async () => {
     const handlers: Record<string, any> = {};
@@ -549,10 +558,10 @@ describe("read-only FIFO state", () => {
   };
   // next_event reports the body in its own block from the cheap event probe.
   const fifoTools = READ_ONLY_TOOLS.filter((name) => name !== "next_event");
-  const register = (value: unknown) => {
+  const register = (value: unknown, role?: SessionRole) => {
     const handlers: Record<string, (args: any) => Promise<any>> = {};
     registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } },
-      async () => ({ call: vi.fn(async () => value) } as unknown as Bridge), validConfig, "read-only");
+      async () => ({ call: vi.fn(async () => value) } as unknown as Bridge), validConfig, "read-only", undefined, role);
     return handlers;
   };
 
@@ -571,6 +580,20 @@ describe("read-only FIFO state", () => {
       expect(output.structuredContent.fifo, name).toEqual({ active_plan_id: 7, queue_depth: 1, idle_seconds: 0 });
       expect(output.content[0].text, name).not.toContain(FIFO_IDLE_HINT);
     }
+  });
+
+  it("words the idle hint as a plain fact for a role that only reads", async () => {
+    for (const role of ["strategist", "advisor"] as const) {
+      const idle = register(fifoValue({ queue_depth: 0, idle_seconds: 45 }), role);
+      for (const name of fifoTools) {
+        const output = await idle[name]!(args[name]);
+        expect(output.structuredContent.fifo.hint, `${role} ${name}`).toBe("FIFO empty and body idle for 45 s");
+        expect(output.content[0].text, `${role} ${name}`).not.toContain(FIFO_IDLE_HINT);
+      }
+    }
+    expect(normalizeFifo({ queue_depth: 0, idle_seconds: 31 }, "supervisor")?.hint).toBe(FIFO_IDLE_HINT);
+    expect(normalizeFifo({ queue_depth: 0, idle_seconds: 30 }, "strategist")).not.toHaveProperty("hint");
+    expect(normalizeFifo({ queue_depth: 0, idle_seconds: 45, human_control: true }, "strategist")?.hint).toBe(FIFO_HUMAN_HINT);
   });
 
   it("states unknown idle time as null without a hint", () => {

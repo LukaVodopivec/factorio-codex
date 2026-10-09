@@ -107,8 +107,9 @@ about once a second:
    the body is on another surface; `travel` is never in a package.
 3. Queue the ledger's research list once per revision, skipping what is already
    researched or queued.
-4. Record outcomes in `<run-dir>/package-queue.json`; a failure reaches both
-   roles as `package_failed`.
+4. Record outcomes in `<run-dir>/package-queue.json`, with what each capture
+   returned (`captured`: name, entities, wires), also on a failed check; a
+   failure reaches both roles as `package_failed`.
 5. Measure a package's optional `verify` metrics (up to three: an item's
    production per minute, or the state of the line at a position) once, two
    minutes of game time after its plan ends, through `factory_status`'s
@@ -144,7 +145,8 @@ objective, never in game chat. The feed is output only.
 Run telemetry, all beside the samples and never shown to the bots:
 
 - `tool_outcomes.jsonl`: one row per MCP tool call (`at`, `role`, `tool`,
-  `status`, `code`, `duration_ms`), appended asynchronously by the MCP layer
+  `status`, `code` (a failure's leading mod `CODE:`, else `TOOL_ERROR`),
+  `duration_ms`), appended asynchronously by the MCP layer
   for the run its current run directory's ledger names, only while the
   recorder's run directory exists, capped at 16 MiB; a dropped row never
   delays or fails the call.

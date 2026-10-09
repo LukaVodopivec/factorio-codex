@@ -239,6 +239,8 @@ describe("package auto-queue", () => {
       { action: "mine", x: 60.5, y: -42.5, expected_name: "transport-belt" },
       { action: "deconstruct_area", area },
       { action: "move_entity", from: { x: 60.5, y: -42.5 }, to: { x: 64.5, y: -42.5 } },
+      // Picking up ground items clears the tile they lie on.
+      { action: "pickup_items", x: 60.5, y: -42.5, item: "iron-plate", count: 5 },
     ]) {
       const steps = [{ action: "get_items", item: "underground-belt", count: 2 }, removal, layout,
         { action: "place_entity", x: 60.5, y: -42.5, name: "underground-belt" }];
@@ -556,12 +558,14 @@ describe("package auto-queue", () => {
     writeLedger(dir, 1, [place("open"), place("blocked")]);
     let checks = 0;
     const { call, bridge } = fakeBridge({ blueprint_place: () => checks++ === 0 ? { ok: true }
-      : { ok: false, collisions: [{ code: "PLACE_BLOCKED" }], free_position: { x: 9, y: 4 } } });
+      : { ok: false, collisions: [{ code: "PLACE_BLOCKED", reason: "can't place boiler at (4.5, 4) — item-on-ground at (4.5, 4) is in the way" },
+        { code: "PLACE_BLOCKED", reason: "a later collision" }], free_position: { x: 9, y: 4 } } });
     await createPackageQueue(() => dir, bridge).tick();
     expect(call).toHaveBeenCalledWith("blueprint_place", { name: "smelter", position: { x: 4, y: 4 }, check_only: true });
     expect(queuedPlans(call).map((plan: any) => plan.source)).toEqual(["package:open"]);
     expect(packageFailures(dir)[0]).toMatchObject({ package_id: "blocked",
-      reason: "check failed: blueprint_place smelter at (4, 4): the position is blocked; the nearest free position is (9, 4)" });
+      reason: "check failed: blueprint_place smelter at (4, 4): the position is blocked: can't place boiler at (4.5, 4) — item-on-ground"
+        + " at (4.5, 4) is in the way; the nearest free position is (9, 4)" });
   });
 
   it("fails a package whose layout or blueprint needs an item the body cannot obtain now, naming it", async () => {
@@ -622,11 +626,11 @@ describe("package auto-queue", () => {
     expect(methods.indexOf("blueprint_capture")).toBeLessThan(methods.lastIndexOf("blueprint_place"));
     expect(call).toHaveBeenCalledWith("blueprint_capture", { name: "smelter", center: { x: 0, y: 0 }, radius: 6 });
     expect(queuedPlans(call).at(-1)).toEqual({ steps: [reuse], final_observation_radius: 15, observation_detail: "none", surface: "nauvis", source: "package:copy" });
-    expect(readPackageQueue(dir)?.packages.copy).toMatchObject({ status: "queued", plan_id: 42, captured: ["smelter"] });
+    expect(readPackageQueue(dir)?.packages.copy).toMatchObject({ status: "queued", plan_id: 42, captured: [{ name: "smelter", entities: 4, wires: 0 }] });
     // A package of captures only has no plan; one that follows it is not held.
     writeLedger(dir, 2, [{ ...furnaces("snap"), steps: [capture] }, furnaces("after", "snap")]);
     await queue.tick();
-    expect(readPackageQueue(dir)?.packages.snap).toEqual(expect.objectContaining({ status: "queued", captured: ["smelter"] }));
+    expect(readPackageQueue(dir)?.packages.snap).toEqual(expect.objectContaining({ status: "queued", captured: [{ name: "smelter", entities: 4, wires: 0 }] }));
     expect(readPackageQueue(dir)?.packages.snap).not.toHaveProperty("plan_id");
     expect(queuedPlans(call).at(-1)).toMatchObject({ source: "package:after" });
     expect(queuedPlans(call).at(-1)).not.toHaveProperty("after_plan_id");
@@ -637,6 +641,14 @@ describe("package auto-queue", () => {
     expect(readPackageQueue(dir)?.packages.bad).toMatchObject({ status: "failed",
       reason: "capture failed: blueprint_capture: no own entities stand in that area" });
     expect(queuedPlans(refused.call)).toEqual([]);
+    // A package whose check fails keeps what its captures returned.
+    writeLedger(dir, 4, [{ ...furnaces("wired"), steps: [capture, reuse] }]);
+    const blocked = fakeBridge({ blueprint_capture: (params) => ({ name: params.name, entities: 7, wires: 2 }),
+      blueprint_place: () => ({ ok: false, collisions: [{ reason: "small-electric-pole at (20, 0) is in the way" }] }) });
+    await createPackageQueue(() => dir, blocked.bridge).tick();
+    expect(readPackageQueue(dir)?.packages.wired).toMatchObject({ status: "failed",
+      reason: "check failed: blueprint_place smelter at (20, 0): the position is blocked: small-electric-pole at (20, 0) is in the way",
+      captured: [{ name: "smelter", entities: 7, wires: 2 }] });
   });
 
   it("queues the ledger's research once per revision that lists any, during a human hold and with the body elsewhere", async () => {

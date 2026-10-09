@@ -105,6 +105,15 @@ describe("persistent two-brain coordination contract", () => {
     expect(live).toMatch(/`build_packages: \[\]` \(required for every write before `GO`/);
     expect(flat(pilot)).toMatch(/On `package_failed`, leave the redesign to the strategist and never rebuild a package's purpose or geometry yourself/);
     expect(flat(pilot)).toMatch(/Any result with `body\.fifo_empty` true \(and no human hold\) means the body is idle: queue work before waiting again/);
+    // The pilot's own goal-level work goes on once packages exist; only a package's purpose or geometry is the strategist's.
+    expect(flat(pilot)).toMatch(/Your own goal-level work does not end once packages exist: whenever the FIFO is empty and `orders` shows no package pending or queued, queue your own goal-level plan before waiting again/);
+    expect(pilot).not.toMatch(/Before the first package arrives/);
+    expect(flat(skill)).toMatch(/the pilot queues work \(its own if no package is pending\) before waiting again/);
+  });
+  it("points the ledger writer to the generated package contract and reads fast_mode_enabled as availability", () => {
+    const benchmarkGoal = read(".agents/skills/factorio-player/GOAL-BENCHMARK-v1.md");
+    for (const text of [strategist, benchmarkGoal]) expect(flat(text)).toMatch(/`ledger-apply --schema` once for every package and step field/);
+    for (const text of [pilot, strategist, benchmarkGoal]) expect(flat(text)).toMatch(/fast_mode_enabled`? \(copy it verbatim: availability, not your tier\)/);
   });
 
   it("re-observes after an explicit stop until the body is idle", () => {
@@ -323,7 +332,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/Plan steps only: `equip` wears armor[\s\S]*`flush_fluid` empties a pipe or tank system/);
     for (const tool of ["configure_entity", "place_tiles", "set_requests"]) expect(registered).toContain(tool);
     for (const step of ["equip", "flush_fluid"]) expect(registered).not.toContain(step);
-    expect(flat(strategist)).toMatch(/a site cut off by water starts with a `place_tiles` landfill step; steps after it or after a removal \(mine, deconstruct, move\), and a successor package, are checked only when they run\. Give layout entities their `settings`/);
+    expect(flat(strategist)).toMatch(/a site cut off by water starts with a `place_tiles` landfill step; steps after it or after a removal \(mine, deconstruct, move, pickup\), and a successor package, are checked only when they run\. Give layout entities their `settings`/);
     expect(flat(knowledge)).toMatch(/solar panels with accumulators are an option that needs no fuel/);
     expect(flat(knowledge)).toMatch(/Filter inserters and filtered splitters sort mixed belts, such as Fulgora's scrap/);
     expect(flat(knowledge)).toMatch(/Landfill joins a site across water; Aquilo's ocean takes ice platform/);
@@ -367,7 +376,7 @@ describe("persistent two-brain coordination contract", () => {
       expect(READ_ONLY_TOOLS).not.toContain(tool as never);
     }
     expect(flat(pilot)).toMatch(/\*\*Other planets\.\*\* Travel is yours alone/);
-    expect(flat(strategist)).toMatch(/plus `surface` \(its planet; a platform package's launch planet\)/);
+    expect(flat(strategist)).toMatch(/a `surface`: its planet \(a platform package's launch planet\)/);
     expect(flat(strategist)).toMatch(/Only the pilot travels: a package never holds `travel`/);
     expect(agents).toMatch(/The body reaches another planet only through `travel` \(rocket, platform, landing pod\), never by teleport/);
     expect(agents).toMatch(/a package never holds `travel`, which is the pilot's alone/);

@@ -22,8 +22,9 @@ export interface PackageRecord {
    *  a failure: it is queued once the body is back). */
   status: "queuing" | "waiting_surface" | "queued" | "failed"; revision: number; at: string;
   tick?: number; plan_id?: number; reason?: string;
-  /** Blueprints captured for the package; a package of captures only has no plan. */
-  captured?: string[];
+  /** Blueprints captured for the package, as each capture returned them
+   *  (also when its check failed); a package of captures only has no plan. */
+  captured?: CapturedBlueprint[];
   /** Its steps lay tiles or remove entities: a successor waits for its end even after the ledger drops it. */
   changes_ground?: boolean;
   /** Changes to own buildings in its footprint after its source_tick, read
@@ -47,6 +48,8 @@ export interface Verification {
   metrics: Array<VerifyMetric & { measured: Record<string, unknown>; met: boolean }>; reason?: string;
 }
 export interface FootprintChanged { count: number; changes: unknown[] }
+/** One blueprint_capture's result: its name and how many entities and wires it holds. */
+export interface CapturedBlueprint { name: string; entities: number; wires: number }
 /** The outcome of the ledger's research for one revision: queued (the
  *  technologies the game added; skipped: already researched or queued) or
  *  failed (the mod's refusal, which names those queued before it). */
@@ -224,17 +227,17 @@ function hardRejection(entry: any): string | null {
 }
 
 /** Whether a step changes the ground the steps after it stand on: landfill
- *  makes it, and mining, deconstruction or a move clears it, so the map does
- *  not have it yet. */
+ *  makes it, and mining, deconstruction, a move or picking up ground items
+ *  clears it, so the map does not have it yet. */
 const changesGround = (step: { action: string }) =>
-  ["place_tiles", "mine", "deconstruct_area", "move_entity"].includes(step.action);
+  ["place_tiles", "mine", "deconstruct_area", "move_entity", "pickup_items"].includes(step.action);
 const changesGroundIn = (entry: BuildPackage | undefined) => entry?.steps.some(changesGround) === true;
 
 /** The mod's own placement check for one package; a reason when it fails,
  *  also when its first step is a layout or blueprint that needs an
  *  item the body can neither carry nor obtain now (ITEM_UNOBTAINABLE).
  *  Only steps before the first one that changes the ground (place_tiles,
- *  mine, deconstruct_area, move_entity) are checked against the map: a
+ *  mine, deconstruct_area, move_entity, pickup_items) are checked against the map: a
  *  landfill makes the ground the later ones need and a removal clears it, and
  *  the mod checks them when they run. Items are like ground: a later step, or
  *  any step while a predecessor's plan is still pending (afterPending), may
@@ -262,14 +265,16 @@ export async function checkPackage(bridge: Bridge, entry: BuildPackage, afterPen
         const { action, ...params } = step;
         const checked = await bridge.call<{ ok?: boolean; free_position?: { x: number; y: number };
           collisions?: unknown; unobtainable?: unknown }>(action, { ...params, check_only: true });
+        const collisions = luaArray(checked?.collisions ?? []) as Array<{ reason?: string }>;
         const short = luaArray(checked?.unobtainable ?? []) as Array<{ code?: string; reason?: string }>;
         if (short.length > 0 && step === first) {
           return `blueprint_place ${step.name}: ${[short[0]?.code, short[0]?.reason].filter(Boolean).join(" ")}`;
         }
         // Short items alone make hand mode not ok too; the position is blocked when it collides.
-        if (checked?.ok === false && (short.length === 0 || luaArray(checked.collisions ?? []).length > 0)) {
+        if (checked?.ok === false && (short.length === 0 || collisions.length > 0)) {
+          const blocker = typeof collisions[0]?.reason === "string" ? `: ${collisions[0].reason}` : "";
           const free = checked.free_position ? `; the nearest free position is (${checked.free_position.x}, ${checked.free_position.y})` : "";
-          return `blueprint_place ${step.name} at (${step.position.x}, ${step.position.y}): the position is blocked${free}`;
+          return `blueprint_place ${step.name} at (${step.position.x}, ${step.position.y}): the position is blocked${blocker}${free}`;
         }
         continue;
       }
@@ -596,23 +601,28 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
           }
         }
       }
+      // What each capture returned (a retry keeps the first ones).
+      const made: CapturedBlueprint[] = retry ? state.packages[id]?.captured ?? [] : [];
+      const kept = () => made.length > 0 ? { captured: [...made] } : {};
       if (!retry) {
         // Captures come first: the package's own steps may place what they capture.
         try {
-          for (const { action, ...params } of captures) await b.call(action, params);
+          for (const { action, ...params } of captures) {
+            const summary = await b.call<{ entities?: number; wires?: number }>(action, params);
+            made.push({ name: params.name, entities: summary?.entities ?? 0, wires: summary?.wires ?? 0 });
+          }
         } catch (error) {
           if (!(error instanceof ModError)) throw error;
-          record(id, { status: "failed", reason: `capture failed: ${message(error)}` });
+          record(id, { status: "failed", reason: `capture failed: ${message(error)}`, ...kept() });
           continue;
         }
         const problem = await checkPackage(b, entry, afterPlanId !== undefined);
-        if (problem) { record(id, { status: "failed", reason: `check failed: ${problem}` }); continue; }
+        if (problem) { record(id, { status: "failed", reason: `check failed: ${problem}`, ...kept() }); continue; }
       }
       // What changed in its footprint since the strategist read it: a fact
       // kept with the record (a retry keeps the first reading).
       const changed = retry ? state.packages[id]?.footprint_changed : await footprintChanges(b, entry);
-      const captured = { ...(captures.length > 0 ? { captured: captures.map((step) => step.name) } : {}),
-        ...(changed ? { footprint_changed: changed } : {}) };
+      const captured = { ...kept(), ...(changed ? { footprint_changed: changed } : {}) };
       // A package's verify metrics go with its record.
       const verify = entry.verify ? { verify: entry.verify, surface: entry.surface } : {};
       if (steps.length === 0) { record(id, { status: "queued", ...captured, ...verify }); continue; }

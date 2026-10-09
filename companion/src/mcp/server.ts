@@ -39,11 +39,12 @@ function nextEventAfter(tick: unknown) {
   const since = typeof tick === "number" && Number.isInteger(tick) ? { since_tick: Math.max(0, tick - 1) } : {};
   return { tool: "next_event", arguments: { timeout_seconds: 60, ...since } };
 }
-export function result(value: unknown, isError = false) {
+/** A tool result; role words the idle FIFO hint for the session's role. */
+export function result(value: unknown, isError = false, role?: SessionRole) {
   const raw = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : { status: isError ? "failed" : "completed", terminal: true, summary: String(value), next_action: null };
-  const fifo = normalizeFifo(raw.fifo);
+  const fifo = normalizeFifo(raw.fifo, role);
   const structured = fifo ? { ...raw, fifo } : raw;
   const observationSummary = typeof structured.tick === "number" && Array.isArray(structured.entities)
     ? `observation tick ${structured.tick}; entities ${structured.entities.length}` +
@@ -65,15 +66,18 @@ export function result(value: unknown, isError = false) {
 
 // A write whose answer a transport fault lost has no known outcome
 // (OUTCOME_UNKNOWN); a write from a replaced pilot's process is refused
-// (WRITER_RETIRED).
+// (WRITER_RETIRED). A message that starts with the mod's "CODE:" keeps that
+// code (errors.lua's code()); anything else is TOOL_ERROR.
 function failure(error: unknown, prefix = "Error") {
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof OutcomeUnknownError) {
     return result({ status: "outcome_unknown", terminal: true, code: "OUTCOME_UNKNOWN", summary: message, next_action: null }, true);
   }
-  const code = error instanceof WriterRetiredError ? "WRITER_RETIRED" : "TOOL_ERROR";
+  const code = error instanceof WriterRetiredError ? "WRITER_RETIRED" : /^([A-Z][A-Z0-9_]*[A-Z0-9]):/.exec(message)?.[1] ?? "TOOL_ERROR";
   return result({ status: "failed", terminal: true, code, summary: `${prefix}: ${message}`, next_action: null }, true);
 }
+
+const toolResult = result;
 
 /** Optional map_summary sections; each adds a top-level key of the same name
  *  (flows_all adds force_flows_all), scoped to charted chunks. */
@@ -100,7 +104,9 @@ export async function connectStatus(
   bridge: () => Promise<Bridge>,
   configDiagnostic: () => ConfigDiagnostic,
   bindCompanion = true,
+  role?: SessionRole,
 ) {
+  const result = (value: unknown, isError = false) => toolResult(value, isError, role);
   const diagnostic = configDiagnostic();
   if (!diagnostic.ok) return result({ status: "offline", terminal: true, summary: `Offline: ${diagnostic.error}`, next_action: null }, false);
   const b = await bridge();
@@ -213,6 +219,8 @@ export function registerMcpTools(
 ): void {
   if ((role === "strategist" || role === "advisor") && surface !== "read-only")
     throw new Error(`${role} requires the read-only MCP surface`);
+  // Every result here words the idle hint for this session's role.
+  const result = (value: unknown, isError = false) => toolResult(value, isError, role);
   const orders = createOrdersTracker(runDir);
   const failureDelivery: FailureDelivery = { keys: null };
   const outcomes = createToolOutcomeLog(runDir, role, runsRoot);
@@ -419,7 +427,7 @@ export function registerMcpTools(
   };
   tools.registerTool("connect_status", { description: "Check config, RCON, mod and protocol versions, then bind the connected native player named Codex.", inputSchema: z.object({}).strict() }, async () => {
     try {
-      return await connectStatus(bridge, configDiagnostic, surface === "full");
+      return await connectStatus(bridge, configDiagnostic, surface === "full", role);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return result({ status: "offline", terminal: true, summary: `Offline: ${message}`, next_action: null }, false);
@@ -532,7 +540,7 @@ export function registerMcpTools(
       }, extra?.signal);
       const readStatus = value.event === "cancelled" ? "cancelled" : "completed";
       return result({ ...value, status: value.event === "plan_ended" ? value.status : readStatus,
-        read_status: readStatus, terminal: true, summary: eventSummary(value), next_action: null });
+        read_status: readStatus, terminal: true, summary: eventSummary(value, role), next_action: null });
     } catch (error) {
       const failed = failure(error);
       return { ...failed, structuredContent: { ...failed.structuredContent, read_status: "failed" } };
@@ -560,9 +568,9 @@ export function registerMcpTools(
     catch (error) { return failure(error); }
   });
   tools.registerTool("blueprint_list", { description: "The blueprints stored for this run, with size and entity count.", inputSchema: z.object({}).strict() }, async () => rpc("blueprint_list"));
-  tools.registerTool("blueprint_describe", { description: "One stored blueprint: its entities with offsets, size and item cost.", inputSchema: named }, async (p, extra) => rpc("blueprint_describe", named.parse(p), extra?.signal));
+  tools.registerTool("blueprint_describe", { description: "One stored blueprint (names are case-sensitive): its entities with offsets dx/dy relative to the blueprint origin, the origin, size and item cost.", inputSchema: named }, async (p, extra) => rpc("blueprint_describe", named.parse(p), extra?.signal));
   tools.registerTool("blueprint_export", { description: "A stored blueprint as a string for the notebook. It is never imported back.", inputSchema: named }, async (p) => rpc("blueprint_export", named.parse(p)));
-  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. mode hand: the body builds it like build_layout; mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position (none where its pipes would join two fluids: free_reason names the pipe); where the blueprint fits (there or at the free position) also ${oreReport}, ${fluidReport} and ${joinReport}.${portFluidReport}`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
+  tools.registerTool("blueprint_place", { description: `Build a stored blueprint at a position, turned (direction 0, 4, 8, 12) or flipped. Names are case-sensitive. position places the blueprint origin: dx/dy are relative to the blueprint origin returned by capture/describe. mode hand: the body builds it like build_layout, and refuses a blueprint with wires, quality, tiles or grid snapping (use ghosts, or a capture without poles); mode ghosts: ghosts for construction robots; platform: ghosts on that space platform, position relative to its hub.${dryRun} A dry run lists collisions, missing items, items the body cannot obtain now (unobtainable; not ok in hand mode) and the nearest free position (none where its pipes would join two fluids: free_reason names the pipe); where the blueprint fits (there or at the free position) also ${oreReport}, ${fluidReport} and ${joinReport}.${portFluidReport}`, inputSchema: placeBlueprintSchema }, async (p, extra) => {
     try { return await step("blueprint_place")(placeBlueprintSchema.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });
@@ -685,7 +693,7 @@ export function registerMcpTools(
   tools.registerTool("explore", { description: "Scout on foot toward uncharted land (or a direction 0-15, 0 = north, 4 = east), charting as it goes, until a patch of resource is in view or max_distance tiles are walked.", inputSchema: exploreInput }, async (p, extra) =>
     step("explore")(exploreInput.parse(p), extra?.signal));
   const captureInput = areaSchema(captureFields);
-  tools.registerTool("blueprint_capture", { description: "Store your buildings in a charted area (at most 64 x 64 tiles, 100 entities) as a named blueprint of this run. Nothing in the world changes; the same name replaces the old one.", inputSchema: captureInput }, async (p, extra) => {
+  tools.registerTool("blueprint_capture", { description: "Store your buildings in a charted area (at most 64 x 64 tiles, 100 entities) as a named blueprint of this run. Nothing in the world changes; the same name replaces the old one (names are case-sensitive). An own entity is captured when its footprint touches the area, edge included; poles carry their wires into the blueprint. Returns the blueprint origin: dx/dy are relative to it, so blueprint_place at position = origin rebuilds it where it was captured.", inputSchema: captureInput }, async (p, extra) => {
     try { return await rpc("blueprint_capture", captureInput.parse(p), extra?.signal); }
     catch (error) { return failure(error); }
   });

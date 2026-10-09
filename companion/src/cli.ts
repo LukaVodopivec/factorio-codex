@@ -5,13 +5,13 @@ import { runDoctor } from "./doctor.js";
 import { runMcpServer, SESSION_ROLES, type SessionRole } from "./mcp/server.js";
 import { runWizard } from "./setup/wizard.js";
 import { assertNodeRuntime } from "./runtime.js";
-import { AFTER_PACKAGE_ID_RULE, VERIFY_RULE, runLedgerApply } from "./coordination/ledger.js";
+import { AFTER_PACKAGE_ID_RULE, VERIFY_RULE, packageContract, runLedgerApply } from "./coordination/ledger.js";
 import { compareRuns, interruptRun, markRunAssisted, recordRun, renderComparison, runRoot } from "./runs/telemetry.js";
 import { createServerSave, serverTimelapse, startServer, stopServer } from "./server/server.js";
 import fs from "node:fs";
 import { addConfiguration, initializeCampaign, nextTrial, readCampaign, recordTrial, setCampaignStatus } from "./runs/campaign.js";
 
-const HELP = `factorio-codex — text-only Factorio control for Codex\n\nUsage:\n  factorio-codex setup\n  factorio-codex doctor [--json]\n  factorio-codex mcp [--surface full|read-only] [--role pilot|strategist|advisor|supervisor]\n  factorio-codex ledger-apply --ledger <operations.json>   (stdin: update envelope, or {"init":true,...} for an absent ledger)\n      ${AFTER_PACKAGE_ID_RULE}\n      ${VERIFY_RULE}\n  factorio-codex runs record --ledger <operations.json> --variant <name> --change <description> [--kind debug|benchmark] [--pilot-rollout <rollout.jsonl>] [--strategist-rollout <rollout.jsonl>]\n  factorio-codex runs interrupt <run-id> --reason <reconciliation>\n  factorio-codex runs mark-assisted <run-id> --reason <text>\n  factorio-codex runs compare <baseline-run-id> <candidate-run-id> [--json]\n  factorio-codex campaign init --campaign <campaign.json> --baseline <save.zip> --id <name> --release-sha <sha>\n  factorio-codex campaign next|status|pause|resume --campaign <campaign.json>\n  factorio-codex campaign add --campaign <campaign.json> --profile <configuration.json>\n  factorio-codex campaign record <run-id> --campaign <campaign.json>\n  factorio-codex server create <run-dir> [--seed <n>] [--factorio <path>]\n  factorio-codex server start <run-dir> [--bind <address>] [--factorio <path>]\n  factorio-codex server stop <run-dir>\n  factorio-codex server timelapse start <folder> | status | stop`;
+const HELP = `factorio-codex — text-only Factorio control for Codex\n\nUsage:\n  factorio-codex setup\n  factorio-codex doctor [--json]\n  factorio-codex mcp [--surface full|read-only] [--role pilot|strategist|advisor|supervisor]\n  factorio-codex ledger-apply --ledger <operations.json>   (stdin: update envelope, or {"init":true,...} for an absent ledger)\n      ${AFTER_PACKAGE_ID_RULE}\n      ${VERIFY_RULE}\n  factorio-codex ledger-apply --schema   (prints every package and step field, from the schemas ledger-apply checks)\n  factorio-codex runs record --ledger <operations.json> --variant <name> --change <description> [--kind debug|benchmark] [--pilot-rollout <rollout.jsonl>] [--strategist-rollout <rollout.jsonl>]\n  factorio-codex runs interrupt <run-id> --reason <reconciliation>\n  factorio-codex runs mark-assisted <run-id> --reason <text>\n  factorio-codex runs compare <baseline-run-id> <candidate-run-id> [--json]\n  factorio-codex campaign init --campaign <campaign.json> --baseline <save.zip> --id <name> --release-sha <sha>\n  factorio-codex campaign next|status|pause|resume --campaign <campaign.json>\n  factorio-codex campaign add --campaign <campaign.json> --profile <configuration.json>\n  factorio-codex campaign record <run-id> --campaign <campaign.json>\n  factorio-codex server create <run-dir> [--seed <n>] [--factorio <path>]\n  factorio-codex server start <run-dir> [--bind <address>] [--factorio <path>]\n  factorio-codex server stop <run-dir>\n  factorio-codex server timelapse start <folder> | status | stop`;
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({ options: {
@@ -22,6 +22,7 @@ async function main(): Promise<void> {
     campaign: { type: "string" }, baseline: { type: "string" }, id: { type: "string" },
     "release-sha": { type: "string" }, profile: { type: "string" }, "duration-seconds": { type: "string" },
     "incumbent-summary": { type: "string" },
+    schema: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   }, allowPositionals: true });
   const command = positionals[0];
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
     return runMcpServer(surface, undefined, role as SessionRole);
   }
   if (command === "ledger-apply") {
+    if (values.schema) { console.log(packageContract()); return; }
     if (!values.ledger) throw new Error("ledger-apply requires --ledger <operations.json>");
     return runLedgerApply(values.ledger);
   }

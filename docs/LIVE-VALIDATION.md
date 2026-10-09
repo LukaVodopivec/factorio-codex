@@ -217,7 +217,7 @@ observable checks:
 - `run_snapshot` `body_time` carries `phases` (`walk`, `mine`, `smelt_wait`,
   `craft_wait`, `other`), `tiles` and the `waiting` state, the recorder's
   strict schema accepts them, and the manifest's `telemetry.body` gives their
-  window deltas, an open `waiting` stretch as the gap `open`.
+  window deltas; `waiting` time is a state share, never a gap.
 - `explore` for a resource the force has charted within `max_distance` ends
   `PATCH_FOUND` at once (`walked` 0, `charted_before: true`, `distance` to
   the patch's bbox, 0 inside); `EXPLORE_NOT_FOUND` names `nearest_charted`

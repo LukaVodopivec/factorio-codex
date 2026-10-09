@@ -202,7 +202,8 @@ Run telemetry, all beside the samples and never shown to the bots:
   `smelt_wait`, `craft_wait`, `other`) with `tiles` walked, from the mod's
   `tasks.body_time` counters in `run_snapshot`. The baseline
   (`run_snapshot {window = true}`) marks the window, so idle before `GO` is
-  no gap of the run; idle or waiting still open at the final sample is the gap `open`.
+  no gap of the run; idle still open at the final sample is the gap `open`;
+  waiting is never a gap, only its `states` share.
 - `manifest.json` `telemetry.milestones`: each rocket milestone the final
   sample's `run_snapshot.milestones` holds (`rocket_ready`,
   `rocket_launch_ordered`, `rocket_launched`: the mod's first tick of each),

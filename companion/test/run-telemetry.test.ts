@@ -289,15 +289,15 @@ describe("run attestation", () => {
     const parsed = parseRunSnapshot(structuredClone(fixture));
     expect(parsed.body_time).toMatchObject({ state: "waiting", ticks: { waiting: 20, pilot: 90 },
       phases: { walk: 60, mine: 10, smelt_wait: 5, craft_wait: 15, other: 20 }, tiles: 21.3 });
-    // Ten more seconds waiting: the open stretch is the gap open, the phases and tiles their deltas.
+    // Ten more seconds waiting: a waiting state share, never a gap; the phases and tiles their deltas.
     const later = structuredClone(fixture);
     later.tick += 600;
     later.body_time.ticks.waiting += 600;
     later.body_time.phases.walk += 30;
     later.body_time.tiles += 4;
     expect(bodySummary(parsed, parseRunSnapshot(later))).toMatchObject({ window_ticks: 600, busy_share: 0,
-      states: { waiting: { ticks: 600, share: 1 } }, phases: { walk: { ticks: 30, share: 0.05 } }, tiles: 4,
-      gaps: { open: { count: 1, total_seconds: 10 } } });
+      states: { waiting: { ticks: 600, share: 1 } }, phases: { walk: { ticks: 30, share: 0.05 } }, tiles: 4 });
+    expect(bodySummary(parsed, parseRunSnapshot(later))?.gaps).toEqual({});
   });
 });
 
@@ -338,7 +338,7 @@ describe("body time summary", () => {
     expect(bodySummary(baseline, timed(1_200, { idle: 1_200 }, {}, { state_since: 100 }))?.gaps)
       .toEqual({ open: { count: 1, total_seconds: 10, mean_seconds: 10, longest_seconds: 10 } });
   });
-  it("reports plan phases and tiles walked in the window, and an open waiting stretch as the gap open", () => {
+  it("reports plan phases and tiles walked in the window, and an open waiting stretch only as waiting time", () => {
     const baseline = timed(600, { pilot: 600 }, {}, { state: "pilot", phases: { walk: 400, other: 200 }, tiles: 50 });
     const final = timed(7_800, { pilot: 4_200, waiting: 600, idle: 3_000 }, {}, { state: "waiting", state_since: 7_200,
       phases: { walk: 2_200, mine: 600, smelt_wait: 300, craft_wait: 500, other: 600 }, tiles: 290.25 });
@@ -346,7 +346,8 @@ describe("body time summary", () => {
       states: { waiting: { ticks: 600, share: 0.083 } },
       phases: { walk: { ticks: 1_800, share: 0.25 }, mine: { ticks: 600, share: 0.083 }, smelt_wait: { ticks: 300, share: 0.042 },
         craft_wait: { ticks: 500, share: 0.069 }, other: { ticks: 400, share: 0.056 } },
-      tiles: 240.3, gaps: { open: { count: 1, total_seconds: 10, mean_seconds: 10, longest_seconds: 10 } } });
+      tiles: 240.3 });
+    expect(bodySummary(baseline, final)?.gaps).toEqual({});
     // Waiting is not busy; a mod without phases reports none.
     expect(bodySummary(baseline, final)?.busy_share).toBe(0.5);
     expect(bodySummary(timed(600, {}, {}), timed(1_200, { idle: 600 }, {}))).not.toHaveProperty("phases");

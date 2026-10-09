@@ -174,8 +174,9 @@ const gapRow = (count: number, ticks: number, longest: number | null) => ({ coun
 /** Body-busy share, idle gaps and plan phases between two snapshots: the
  *  counters' deltas. The baseline marked the window, so the gap open then
  *  counts only from the baseline; a gap's longest counts only when it lies
- *  inside the window, and idle (or waiting: queued work the body is not
- *  doing) still open at the final sample is the gap "open". */
+ *  inside the window, and idle still open at the final sample is the gap
+ *  "open". Waiting (queued work the body is not doing) is never a gap, as
+ *  the mod records gaps only on leaving idle: it shows in states.waiting. */
 export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<typeof bodySummarySchema> | null {
   const a = baseline.body_time, b = final.body_time;
   if (!a || !b || a.since_tick !== b.since_tick || b.window_tick !== baseline.tick || final.tick <= baseline.tick) return null;
@@ -192,7 +193,7 @@ export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<
     const inside = now.longest_end_tick !== undefined && now.longest_end_tick - now.longest >= baseline.tick;
     return [[by, gapRow(count, ticks, inside ? now.longest : null)]];
   }));
-  const open = b.state === "idle" || b.state === "waiting" ? final.tick - Math.max(b.state_since, baseline.tick) : 0;
+  const open = b.state === "idle" ? final.tick - Math.max(b.state_since, baseline.tick) : 0;
   if (open > 0) gaps.open = gapRow(1, open, open);
   const phases = b.phases ? Object.fromEntries(Object.keys(b.phases).sort().flatMap((phase) => {
     const ticks = b.phases![phase]! - (a.phases?.[phase] ?? 0);

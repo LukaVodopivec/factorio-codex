@@ -261,14 +261,17 @@ const characterStandIn = () => (standIn ??= lua(`
   blueprints.area = function(c, ...) return area(view(c, { is_chunk_charted = function() return true end }), ...) end
 `).then(() => undefined));
 
-// Queues a plan through the mod's queue_plan and waits for its end.
-async function runPlan(bridge: Bridge, steps: unknown[], timeoutMs = 30_000): Promise<any> {
-  const queued = await bridge.call<any>("queue_plan", { steps });
-  return until(`plan ${queued.plan_id} to end`, async () => {
-    const status = await bridge.call<any>("plan_status", { plan_id: queued.plan_id });
+// Waits for a queued plan's end; runPlan queues it through queue_plan first.
+const planEnd = (bridge: Bridge, planId: number, timeoutMs = 30_000): Promise<any> =>
+  until(`plan ${planId} to end`, async () => {
+    const status = await bridge.call<any>("plan_status", { plan_id: planId });
     return ["completed", "partial", "failed", "cancelled"].includes(status.status) ? status : undefined;
   }, timeoutMs);
+async function runPlan(bridge: Bridge, steps: unknown[], timeoutMs = 30_000): Promise<any> {
+  const queued = await bridge.call<any>("queue_plan", { steps });
+  return planEnd(bridge, queued.plan_id, timeoutMs);
 }
+const tenth = (n: number) => Math.round(n * 10) / 10;
 
 type Scenario = { name: string; run: (bridge: Bridge) => Promise<string> };
 const scenarios: Scenario[] = [
@@ -831,6 +834,243 @@ const scenarios: Scenario[] = [
       return `${failed.status} plan ${failed.plan_id}: ${row.detail.slice(0, 80)}; hold ${episode.end_tick! - episode.start_tick} ticks;`
         + ` ${technology} at ${m.research![technology]}; rocket ready ${m.rocket_ready_tick}, ordered ${m.rocket_launch_ordered_tick},`
         + ` launched ${m.rocket_launched_tick} (${events.milestones!.rocket_launched!.elapsed_s} s after the baseline)`;
+    },
+  },
+  {
+    // An item the body must hand-craft (no own chest or machine holds iron
+    // chests, so none can be taken): queue_plan prices the crafting
+    // (hand_craft, at the body's crafting speed), observe_local shows the
+    // queue's seconds while it runs, and the step says what it queued
+    // (crafted_s). With craft: false nothing is queued: the step ends
+    // SUPPLY_SHORTFALL with the same bill and an empty crafting queue.
+    name: "get_items prices, shows and reports hand-crafting; craft: false ends SUPPLY_SHORTFALL with nothing queued",
+    async run(bridge) {
+      await characterStandIn();
+      const reset = `local c = mod("companion").get()
+        c.get_main_inventory().clear()
+        c.insert({ name = "iron-plate", count = 200 })`;
+      const { speed, energy } = await lua<any>(`${reset}
+        return { speed = mod("actions/craft").speed(c), energy = game.forces.player.recipes["iron-chest"].energy }`);
+      const crafts = 20, wanted = tenth(crafts * energy / speed);
+      const queued = await bridge.call<any>("queue_plan", { steps: [{ action: "get_items", item: "iron-chest", count: crafts }] });
+      const bill = list(queued.hand_craft?.items).find((row) => row.item === "iron-chest");
+      expect(queued.hand_craft?.total_s === wanted && bill?.hand_craft_s === wanted && bill.hand_craftable === crafts,
+        `queue_plan prices ${crafts} crafts at ${wanted} s`, queued.hand_craft);
+      const crafting = await until("observe_local to show the crafting queue", async () => {
+        const seen = (await bridge.call<any>("observe_local", { radius: 8 })).character?.crafting;
+        return seen?.queue_size > 0 ? seen : undefined;
+      }, 15_000);
+      expect(crafting.queue_s > 0 && crafting.queue_s <= wanted && list(crafting.queue)[0]?.recipe === "iron-chest",
+        "observe_local's crafting names the recipe and the seconds left", crafting);
+      const status = await planEnd(bridge, queued.plan_id, 60_000);
+      const step = list(status.outcomes)[0];
+      expect(status.status === "completed" && step?.result?.code === "SUPPLIED" && step.result.crafted_s === wanted,
+        `the step reports ${wanted} s of hand-crafting queued`, status.outcomes);
+      const made = await until("the crafts to finish", () => lua<any>(`local c = mod("companion").get()
+        return c.crafting_queue_size == 0 and { chests = c.get_item_count("iron-chest"), plates = c.get_item_count("iron-plate") }`), 60_000);
+      expect(made.chests === crafts && made.plates === 200 - 8 * crafts, "the body crafted the chests from its plates", made);
+
+      await lua(reset);
+      const refused = await runPlan(bridge, [{ action: "get_items", item: "iron-chest", count: 5, craft: false }]);
+      const short = list(refused.outcomes)[0]?.result;
+      const missing = list(short?.missing)[0];
+      expect(refused.status === "failed" && short?.code === "SUPPLY_SHORTFALL" && missing?.item === "iron-chest" && missing.missing === 5,
+        "craft: false ends SUPPLY_SHORTFALL naming the missing chests", refused.outcomes);
+      expect(short.hand_craft?.total_s === tenth(5 * energy / speed) && short.crafted_s === undefined,
+        "the shortfall carries the hand-craft bill and queued nothing", short);
+      const after = await lua<any>(`local c = mod("companion").get()
+        return { queue = c.crafting_queue_size, chests = c.get_item_count("iron-chest"), plates = c.get_item_count("iron-plate") }`);
+      expect(after.queue === 0 && after.chests === 0 && after.plates === 200, "the crafting queue stays empty and the plates stay", after);
+      return `hand_craft ${queued.hand_craft.total_s} s; observed queue_s ${crafting.queue_s} (${list(crafting.queue)[0].recipe});`
+        + ` crafted_s ${step.result.crafted_s}; craft: false ${short.code}, bill ${short.hand_craft.total_s} s, crafting queue ${after.queue}`;
+    },
+  },
+  {
+    // A powered assembler whose output is full: its row is counted and shown
+    // (problems since its build) but, backpressure being ordinary, it does
+    // not move event_state's last_problem_tick (the pilot's wake).
+    name: "an output_full assembler is a problem row that leaves event_state's last_problem_tick unchanged",
+    async run(bridge) {
+      const built = await lua<any>(`${BUILD}
+        local s = game.surfaces.nauvis
+        local eei = make(s, "electric-energy-interface", 186, 14)
+        eei.power_production, eei.electric_buffer_size = 1000000, 10000000
+        make(s, "substation", 189, 14)
+        local a = make(s, "assembling-machine-2", 193.5, 17.5)
+        a.set_recipe("iron-gear-wheel")
+        a.insert({ name = "iron-plate", count = 100 })
+        a.get_inventory(defines.inventory.crafter_output).insert({ name = "iron-gear-wheel", count = 100 })
+        return { unit = a.unit_number, tick = game.tick }`);
+      const before = await bridge.call<any>("event_state", {});
+      const rec = await until("the assembler's counted problem", () => lua<any>(`local rec = storage.autonomy.machines[${built.unit}]
+        return rec and rec.problem_counted and { problem = rec.problem, announced = rec.problem_announced_tick }`), 60_000);
+      expect(rec.problem === "full_output", "the assembler's problem is its full output", rec);
+      const rows = list(await lua(`return mod("autonomy").problems(${built.tick})`));
+      const row = rows.find((r) => r.name === "assembling-machine-2" && r.position?.x === 193.5 && r.position?.y === 17.5);
+      expect(row?.status === "full_output", "problems(since) lists the row", rows);
+      const after = await bridge.call<any>("event_state", {});
+      expect(after.last_problem_tick === before.last_problem_tick && after.problem_count >= 1,
+        "last_problem_tick is unchanged", { before: before.last_problem_tick, after: after.last_problem_tick, announced: rec.announced });
+      return `announced at tick ${rec.announced}; last_problem_tick ${before.last_problem_tick ?? "none"} before and`
+        + ` ${after.last_problem_tick ?? "none"} after; problem_count ${after.problem_count}`;
+    },
+  },
+  {
+    // A captured block of two copper-wired small poles and an assembler,
+    // stamped back by hand beside a powered pole that is not in it. The hand
+    // layout and the dry run leave the poles' copper wire to their own
+    // connection (wires_ignored). The blueprint_place plan stops at
+    // build_layout's chart check, which this server never passes (see
+    // characterStandIn), with nothing placed; the hand layout's entities then
+    // go through the build_plan task that build check hands them to, in its
+    // order (poles last). The stamped poles must wire themselves to each
+    // other and to the powered pole, and the assembler draw power.
+    name: "a hand-stamped block's poles wire up to each other and power its assembler",
+    async run(bridge) {
+      await characterStandIn();
+      const area = { left_top: { x: 154, y: 20 }, right_bottom: { x: 163, y: 28 } };
+      await lua(`${BUILD}
+        local s = game.surfaces.nauvis
+        local eei = make(s, "electric-energy-interface", 149, 22)
+        eei.power_production, eei.electric_buffer_size = 1000000, 10000000
+        make(s, "small-electric-pole", 151.5, 22.5)
+        local a, b = make(s, "small-electric-pole", 155.5, 22.5), make(s, "small-electric-pole", 160.5, 22.5)
+        local copper = defines.wire_connector_id.pole_copper
+        a.get_wire_connector(copper, true).connect_to(b.get_wire_connector(copper, true))
+        make(s, "assembling-machine-1", 160.5, 25.5)`);
+      await bridge.call("blueprint_capture", { name: "live-poles", area });
+      const origin = (await bridge.call<any>("blueprint_describe", { name: "live-poles" })).origin;
+      const hand = await lua<any>(`return mod("blueprints").hand_layout("live-poles", nil, "live")`);
+      expect(hand.wires_ignored === 1 && list(hand.entities).length === 3, "the hand layout leaves the one pole-to-pole wire to the poles", hand);
+      await lua(`local s = game.surfaces.nauvis
+        for _, e in pairs(s.find_entities_filtered({ area = { { 154, 20 }, { 163, 28 } }, force = "player" })) do
+          if e.type ~= "character" then e.destroy() end
+        end
+        local c = mod("companion").get()
+        c.get_main_inventory().clear()
+        c.insert({ name = "small-electric-pole", count = 2 })
+        c.insert({ name = "assembling-machine-1", count = 1 })`);
+      const check = await bridge.call<any>("blueprint_place", { name: "live-poles", position: origin, mode: "hand", check_only: true });
+      expect(check.wires_ignored === 1, "the dry run reports wires_ignored", check);
+      const plan = await runPlan(bridge, [{ action: "blueprint_place", name: "live-poles", position: origin, mode: "hand" }], 60_000);
+      const refused = list(plan.outcomes)[0]?.result;
+      expect(plan.status === "failed" && refused?.code === "LAYOUT_CHECK_FAILED" && refused.wires_ignored === 1
+        && list(refused.placed).length === 0 && list(refused.failed).length === 3
+        && list(refused.failed).every((row) => /the footprint is not charted$/.test(row.reason)),
+        "on this uncharted server the plan stops at the chart check alone, with nothing placed", plan.outcomes);
+      const steps = list(hand.entities).map((e) => ({ item: e.name, direction: e.direction,
+        position: { x: origin.x + e.dx, y: origin.y + e.dy } })).sort((a, b) => Number(a.item.endsWith("pole")) - Number(b.item.endsWith("pole")));
+      const stamped = await bridge.enqueueAndWaitResult({ type: "build_plan", steps, stop_on_error: false, supply_all: true,
+        steps_when_full: true } as any, { timeoutMs: 60_000 });
+      expect(stamped.status === "done", "the hand build places the three entities", stamped);
+      const read = await until("the stamped assembler to draw power", async () => {
+        const state = await lua<any>(`local s, copper = game.surfaces.nauvis, defines.wire_connector_id.pole_copper
+          local out = { poles = {} }
+          for _, p in ipairs(s.find_entities_filtered({ area = { { 154, 20 }, { 163, 28 } }, name = "small-electric-pole" })) do
+            local to = {}
+            for _, link in ipairs(p.get_wire_connector(copper, true).connections) do
+              local o = link.target.owner
+              to[#to + 1] = string.format("%s@%g,%g", o.name, o.position.x, o.position.y)
+            end
+            table.sort(to)
+            out.poles[#out.poles + 1] = { at = string.format("%g,%g", p.position.x, p.position.y), to = to, network = p.electric_network_id }
+          end
+          local a = s.find_entity("assembling-machine-1", { 160.5, 25.5 })
+          local feeder = s.find_entity("small-electric-pole", { 151.5, 22.5 })
+          out.feeder = feeder.electric_network_id
+          out.assembler = a and { connected = a.is_connected_to_electric_network(), network = a.electric_network_id, energy = a.energy }
+          return out`);
+        return state.assembler?.energy > 0 ? state : undefined;
+      }, 10_000);
+      const links = Object.fromEntries(list(read.poles).map((pole) => [pole.at, list(pole.to).join(" ")]));
+      expect(links["155.5,22.5"] === "small-electric-pole@151.5,22.5 small-electric-pole@160.5,22.5"
+        && links["160.5,22.5"] === "small-electric-pole@155.5,22.5" && Object.keys(links).length === 2,
+        "each stamped pole wired itself to the other, and the first to the powered pole beside the block", read.poles);
+      expect(list(read.poles).every((pole) => pole.network === read.feeder) && read.assembler.connected === true
+        && read.assembler.network === read.feeder, "the stamped poles and assembler are on the powered network", read);
+      return `wires_ignored ${check.wires_ignored}; plan ${refused.code} (not charted, nothing placed); hand build ${stamped.detail};`
+        + ` 155.5,22.5 -> ${links["155.5,22.5"]}; 160.5,22.5 -> ${links["160.5,22.5"]}; assembler on network ${read.feeder},`
+        + ` ${Math.round(read.assembler.energy)} J buffered`;
+    },
+  },
+  {
+    // Explore reads the force's charted patch list (map_summary's cache).
+    // This server charts nothing (characterStandIn): force.chart requests
+    // stay pending with no player, so the chunks around the site are handed
+    // to the mod's own on_chunk_charted handler (script.get_event_handler)
+    // as the engine raises them once a chunk is charted, and the cache reads
+    // them on its ticks. An explore plan for a patch in that list within
+    // max_distance ends PATCH_FOUND at once, without walking (the entity
+    // view still asks the real chart and sees none). NOT_FOUND ends a spent
+    // walk budget, and walking legs needs the real chart: here the module's
+    // look tick runs on a task whose budget is spent, for a resource charted
+    // only beyond it and for one charted nowhere.
+    name: "explore finds a patch in the charted patch list without walking; NOT_FOUND names the nearest one or none",
+    async run(bridge) {
+      await characterStandIn();
+      const R = 6;
+      const fed = await lua<number>(`
+        local s, force = game.surfaces.nauvis, game.forces.player
+        s.request_to_generate_chunks({ ${SITE.x}, ${SITE.y} }, ${R})
+        s.force_generate_chunk_requests()
+        local handler, n = script.get_event_handler(defines.events.on_chunk_charted), 0
+        local cx, cy = math.floor(${SITE.x} / 32), math.floor(${SITE.y} / 32)
+        for x = cx - ${R}, cx + ${R} do for y = cy - ${R}, cy + ${R} do
+          handler({ name = defines.events.on_chunk_charted, tick = game.tick, surface_index = s.index, force = force,
+            position = { x = x, y = y }, area = { left_top = { x = x * 32, y = y * 32 }, right_bottom = { x = x * 32 + 32, y = y * 32 + 32 } } })
+          n = n + 1
+        end end
+        return n`);
+      const cache = await until("the patch cache to read every chunk handed to it", () => lua<any>(`
+        local s = game.surfaces.nauvis
+        local cache = storage.patch_caches[s.index]
+        if not (cache and cache.head > #cache.pending and not cache.dirty and not cache.build) then return false end
+        local cx, cy = math.floor(${SITE.x} / 32), math.floor(${SITE.y} / 32)
+        for x = cx - ${R}, cx + ${R} do for y = cy - ${R}, cy + ${R} do
+          if not cache.known[x .. "," .. y] then return false end
+        end end
+        local rows, filled, omitted = mod("map_summary").patches(s.index)
+        if not filled then return false end
+        local out = {}
+        for _, p in ipairs(rows) do out[#out + 1] = { name = p.name, centroid = p.centroid, bbox = p.bbox } end
+        return { rows = out, omitted = omitted, body = mod("companion").get().position }`), 60_000);
+      const rows = list(cache.rows);
+      expect(rows.length > 0, `the cache lists patches from the ${fed} chunks`, cache);
+      const body = cache.body;
+      const distance = (box: any) => Math.hypot(Math.max(box.left_top.x - body.x, 0, body.x - box.right_bottom.x),
+        Math.max(box.left_top.y - body.y, 0, body.y - box.right_bottom.y));
+      const nearest = new Map<string, { row: any; d: number }>();
+      for (const row of rows) {
+        const d = distance(row.bbox);
+        if (!nearest.has(row.name) || d < nearest.get(row.name)!.d) nearest.set(row.name, { row, d });
+      }
+      const pick = nearest.get("crude-oil") ?? [...nearest.values()].sort((a, b) => a.d - b.d)[0]!;
+      const maxDistance = Math.min(3000, Math.max(32, Math.ceil(pick.d) + 1));
+      const status = await runPlan(bridge, [{ action: "explore", resource: pick.row.name, max_distance: maxDistance }], 60_000);
+      const found = list(status.outcomes)[0]?.result;
+      expect(status.status === "completed" && found?.code === "PATCH_FOUND" && found.walked === 0 && found.legs === 0,
+        "the plan ends PATCH_FOUND without walking", status.outcomes);
+      expect(found.patch?.charted_before === true && found.patch.centroid?.x === pick.row.centroid.x
+        && found.patch.centroid?.y === pick.row.centroid.y, "the patch is the nearest charted one, charted before", { found, pick });
+
+      const lookSpent = (resource: string) => lua<any>(`local explore = mod("actions/explore")
+        local task = { resource = "${resource}", max_distance = 32 }
+        explore.start(task)
+        task._walked = task.max_distance
+        return explore.tick(task)`);
+      const far = [...nearest.values()].filter((entry) => entry.d > 32).sort((a, b) => b.d - a.d)[0];
+      expect(far, "some resource's nearest charted patch lies beyond 32 tiles", [...nearest.entries()]);
+      const missed = await lookSpent(far.row.name);
+      const named = `nearest charted ${far.row.name}: centred at (${far.row.centroid.x.toFixed(1)}, ${far.row.centroid.y.toFixed(1)})`;
+      expect(missed.status === "failed" && missed.outcome?.code === "EXPLORE_NOT_FOUND" && missed.detail.includes(named)
+        && missed.outcome.nearest_charted?.centroid?.x === far.row.centroid.x, `NOT_FOUND names the ${far.row.name} patch beyond the budget`, missed);
+      const none = await lookSpent("tungsten-ore");
+      const said = cache.omitted > 0 ? "the charted patch list is incomplete" : "no tungsten-ore patch is charted on this surface";
+      expect(none.outcome?.code === "EXPLORE_NOT_FOUND" && none.detail.includes(said)
+        && none.outcome.nearest_charted === (cache.omitted > 0 ? undefined : "none charted"), `NOT_FOUND says: ${said}`, none);
+      return `${fed} chunks handed over, ${rows.length} patches (${[...nearest.keys()].join(", ")}); explore ${pick.row.name}`
+        + ` max_distance ${maxDistance}: ${found.code}, walked ${found.walked}, centroid (${found.patch.centroid.x}, ${found.patch.centroid.y});`
+        + ` ${missed.detail}; ${none.detail}`;
     },
   },
 ];

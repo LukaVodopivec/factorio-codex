@@ -112,15 +112,20 @@ function M.resume(owner)
 end
 
 -- The owner ends from outside (a cancel, its plan's budget): the first
--- nested action whose runner has a cancelled hook lets go of what it holds
--- (an escape's taken-up entity). Returns that hook's note, or nil.
+-- nested action whose cancelled hook has a note lets go of what it holds
+-- (an escape's taken-up entity, also one an embedded supply's step-out
+-- holds). Returns that hook's note, or nil.
 function M.cancel_nested(owner, body_only)
   for _, field in ipairs(NESTED_FIELDS) do
     local sub = owner[field]
-    local runner = type(sub) == "table" and sub.type and runners[sub.type]
-    if runner and runner.cancelled then return runner.cancelled(sub, body_only) end
+    local runner = type(sub) == "table" and (sub.type and runners[sub.type] or field == "_supply" and M)
+    if runner and runner.cancelled then
+      local note = runner.cancelled(sub, body_only)
+      if note ~= nil then return note end
+    end
   end
 end
+function M.cancelled(task, body_only) return M.cancel_nested(task, body_only) end
 
 -- --------------------------------------------------------------- reading
 
@@ -853,6 +858,35 @@ local function scan(task)
   return true
 end
 
+-- Starts a frame's nested action. Its inputs are kept (fields the runner
+-- replaces, never edits) so the frame can start it again once after an
+-- enclosure step-out.
+local function begin_sub(task, sub)
+  local spec = {}
+  for key, value in pairs(sub) do spec[key] = value end
+  M.begin(task, "_sub", sub)
+  task._sub_spec = spec
+end
+
+-- A nested walk ended BODY_ENCLOSED: start move_entity's escape through the
+-- own blocker it names, toward the nested action's target (as build_plan's
+-- placement approach does). task._step_out records the attempt; true once
+-- the escape runs.
+local function start_escape(task, result, target)
+  local ok, blocker = pcall(function() return result.outcome.diagnostics.path.suggested_recovery end)
+  if not (ok and type(blocker) == "table" and type(blocker.x) == "number" and type(blocker.y) == "number"
+    and type(target) == "table") then
+    task._step_out = { attempted = false, error = "the walk named no own blocker to step out through" }
+    return false
+  end
+  local at = { x = blocker.x, y = blocker.y }
+  task._step_out = { attempted = true, entity = { name = blocker.expected_name, x = at.x, y = at.y } }
+  local started, err = pcall(M.begin, task, "_escape", { type = "move_entity", from = at, to = at,
+    through = { x = target.x, y = target.y }, expected_name = blocker.expected_name })
+  if not started then task._step_out.attempted, task._step_out.error = false, errors.plain(err) end
+  return started
+end
+
 -- One frame step. Returns true when a nested action started or this tick's
 -- scan is spent (either ends the tick).
 local function advance(task, c, frame)
@@ -862,7 +896,8 @@ local function advance(task, c, frame)
   if need <= 0 then pop(task); return false end
 
   -- The body cannot leave where it stands (a nested walk ended with
-  -- START_COLLISION): no other source is walked to in this supply.
+  -- START_COLLISION, or BODY_ENCLOSED with no step-out left): no other
+  -- source is walked to in this supply.
   if task._pinned and (frame.phase == "take" or frame.phase == "smelt" or frame.phase == "gather") then
     frame.error, frame.phase = task._pinned, "end"
     return false
@@ -911,7 +946,7 @@ local function advance(task, c, frame)
             inventory = source.kind == "landing_pad" and "main" or nil }
         end
         frame.source_kind, frame.before = source.kind, have(c, frame.name)
-        local ok, err = pcall(M.begin, task, "_sub", sub)
+        local ok, err = pcall(begin_sub, task, sub)
         if ok then return true end
         frame.error = tostring(err)
         return false
@@ -947,7 +982,7 @@ local function advance(task, c, frame)
     if task._claims then release(task, frame) end
     local crafts = math.min(math.ceil(need / frame.per_craft), MAX_CRAFTS)
     frame.before = have(c, frame.name)
-    local ok, err = pcall(M.begin, task, "_sub", { type = "craft", recipe = frame.recipe, count = crafts })
+    local ok, err = pcall(begin_sub, task, { type = "craft", recipe = frame.recipe, count = crafts })
     if ok then frame.source_kind = "craft"; return true end
     frame.error = errors.plain(err)
     return false
@@ -1000,7 +1035,7 @@ local function advance(task, c, frame)
     local items = { [s.ore] = ore }
     if s.fuel and carried(c, s.fuel) > 0 then items[s.fuel] = math.min(SMELT_FUEL, carried(c, s.fuel)) end
     frame.phase = "smelt_wait"
-    local ok, err = pcall(M.begin, task, "_sub", { type = "insert", target = s.position, items = items, auto_supply = false })
+    local ok, err = pcall(begin_sub, task, { type = "insert", target = s.position, items = items, auto_supply = false })
     if ok then return true end
     frame.error, frame.phase = tostring(err), "gather"
     return false
@@ -1040,7 +1075,7 @@ local function advance(task, c, frame)
       return false
     end
     frame.source_kind, frame.before = "smelt", have(c, frame.name)
-    local ok, err = pcall(M.begin, task, "_sub", { type = "extract", target = s.position, items = { [frame.name] = made } })
+    local ok, err = pcall(begin_sub, task, { type = "extract", target = s.position, items = { [frame.name] = made } })
     if ok then return true end
     frame.error, frame.phase = tostring(err), "gather"
     return false
@@ -1070,7 +1105,7 @@ local function advance(task, c, frame)
         frame.gathers = frame.gathers + 1
         local cycles = entity.type == "resource" and math.min(need, MAX_RESOURCE_CYCLES) or 1
         frame.source_kind, frame.before = "gather", have(c, frame.name)
-        local ok, err = pcall(M.begin, task, "_sub", { type = "mine", entity = entity, count = cycles,
+        local ok, err = pcall(begin_sub, task, { type = "mine", entity = entity, count = cycles,
           target = { x = entity.position.x, y = entity.position.y }, target_kind = "natural" })
         if ok then return true end
         frame.error = tostring(err)
@@ -1121,8 +1156,9 @@ local function finish(task, c)
   if #missing == 0 then
     local parts = {}
     for _, want in ipairs(task.items) do parts[#parts + 1] = string.format("%d %s", want.count, want.name) end
-    return { status = "done", detail = "carrying " .. table.concat(parts, ", ") .. how,
-      outcome = { code = "SUPPLIED", supplied = report } }
+    local stepped = task._step_out and task._step_out.escaped and ("; " .. tostring(task._step_out.detail)) or ""
+    return { status = "done", detail = "carrying " .. table.concat(parts, ", ") .. how .. stepped,
+      outcome = { code = "SUPPLIED", supplied = report, step_out = task._step_out } }
   end
   -- What exists is carried; own lines that make a missing item say when the
   -- rest can be fetched (rate over the last minute).
@@ -1139,16 +1175,48 @@ local function finish(task, c)
   end
   local reasons = {}
   for _, row in ipairs(task._shortfall) do reasons[#reasons + 1] = row.item .. ": " .. row.reason end
+  -- Pinned in an enclosure: its code and the walk's diagnostics, and what
+  -- the step-out did, so the plan's recovery and the bots see the cause.
+  local enclosed = task._pinned and task._enclosure
+  local step_out = task._step_out
+  local code = enclosed and "BODY_ENCLOSED" or "SUPPLY_SHORTFALL"
+  local stepped = ""
+  if enclosed and step_out then
+    stepped = step_out.escaped and ("; " .. tostring(step_out.detail) .. ", and the walk after it was still enclosed")
+      or step_out.attempted and ("; stepping out failed: " .. tostring(step_out.error))
+      or ("; no step-out started: " .. tostring(step_out.error))
+  end
   return { status = gained > 0 and "partial" or "failed",
-    detail = "SUPPLY_SHORTFALL: missing " .. table.concat(parts, ", ") .. (moved and how or "")
+    detail = code .. ": missing " .. table.concat(parts, ", ") .. (moved and how or "") .. stepped
       .. (#reasons > 0 and (" — " .. table.concat(reasons, "; ")) or "")
       .. (#expected > 0 and ("; own machines make " .. table.concat(expected, ", ")) or ""),
-    outcome = { code = "SUPPLY_SHORTFALL", missing = missing, shortfall = task._shortfall, supplied = report } }
+    outcome = { code = code, missing = missing, shortfall = task._shortfall, supplied = report,
+      diagnostics = enclosed and enclosed.diagnostics or nil, step_out = step_out } }
 end
 
 function M.tick(task)
   local c = companion.get()
   if not c then return { status = "failed", detail = "the companion character is gone" } end
+  -- An enclosure step-out runs to its end; out, the frame's nested action
+  -- starts again, once. A failed one pins the supply.
+  if task._escape then
+    local escaped = M.step(task, "_escape")
+    if not escaped then return nil end
+    local frame = task._stack[#task._stack]
+    if escaped.status == "done" then
+      task._step_out.escaped, task._step_out.detail, task._enclosure = true, escaped.detail, nil
+      if frame and task._sub_spec then
+        frame.error = nil
+        if frame.smelt then frame.smelt.failed = nil end
+        local ok, err = pcall(begin_sub, task, task._sub_spec)
+        if ok then return nil end
+        frame.error = errors.plain(err)
+      end
+    else
+      task._step_out.error = escaped.detail
+      task._pinned = task._enclosure.detail
+    end
+  end
   if task._sub then
     local kind = task._sub.type
     local target = task._sub.target
@@ -1172,6 +1240,16 @@ function M.tick(task)
       local kinds = { craft = "crafted", gather = "gathered", smelt = "smelted" }
       note(task, kinds[frame.source_kind] or "taken", frame.name, got)
       if result.status ~= "done" and got <= 0 then frame.error = result.detail end
+    end
+    -- Enclosed by own entities: once per frame, step out and start the
+    -- action again; else the supply is pinned and ends BODY_ENCLOSED.
+    if result.status ~= "done" and type(result.outcome) == "table" and result.outcome.code == "BODY_ENCLOSED" then
+      task._enclosure = { detail = result.detail, diagnostics = result.outcome.diagnostics }
+      if frame and not frame.stepped_out then
+        frame.stepped_out = true
+        if start_escape(task, result, target) then return nil end
+      end
+      task._pinned = result.detail
     end
   end
   -- Bounded bookkeeping per tick; physical work happens in nested actions.

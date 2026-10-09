@@ -193,6 +193,23 @@ check(observed.status == "failed" and observed.outcomes[1].status == "completed"
   and storage.handler_errors.recent[#storage.handler_errors.recent].where == "task:plan:observe",
   "a plan whose steps completed but whose final observation raised names that, not its last step")
 
+-- move_entity's refusals lead with their own code (the real runner: no own
+-- entity stands at the source), never STEP_FAILED_UNCLASSIFIED.
+body.surface = { find_entities_filtered = function() return {} end }
+local unmoved = run({ { action = "move_entity", from = { x = 500, y = 500 }, to = { x = 0, y = 0 } } })
+body.surface = nil
+entry = storage.activity_log[#storage.activity_log]
+check(unmoved.status == "failed" and unmoved.outcomes[1].code == "MOVE_SOURCE_MISSING"
+  and unmoved.outcomes[1].error == "MOVE_SOURCE_MISSING: no own entity stands at (500.0, 500.0)"
+  and entry.code == "MOVE_SOURCE_MISSING",
+  "a move_entity refusal fails its step with its leading MOVE_ code")
+for _, detail in ipairs({ "MOVE_TARGET_BLOCKED: the inserter can't go to (82.5, -26.5): transport-belt stands at (82.5, -26.5)",
+  "MOVE_SOURCE_MISMATCH: a inserter, not the fast-inserter, stands at (1.0, 1.0)",
+  "MOVE_NOT_PLACEABLE: no item places a crash-site-chest",
+  "MOVE_ALREADY_THERE: the inserter already stands at (1.0, 1.0) facing that way" }) do
+  check(errors.code("failed", nil, detail) == detail:match("^([A-Z_]+):"), "errors.code reads " .. detail:match("^([A-Z_]+):"))
+end
+
 -- The dispatchers never hand a caught error on raw: every one goes through
 -- errors.plain or errors.record.
 for _, name in ipairs({ "rpc", "tasks" }) do

@@ -869,10 +869,14 @@ end
 -- A running step or direct task ends from outside (a cancel, the plan's
 -- budget, or with body_only the stall watchdog): its runner's cancelled
 -- hook, if any, lets go of what it holds (a travel step's launch marker, an
--- escape's taken-up entity). Returns the hook's note, or nil.
+-- escape's taken-up entity). Returns the hook's note, or nil. A runner with
+-- no hook may still embed an auto-supply whose step-out holds an entity.
 local function task_cancelled(task, body_only)
   local runner = task and runners[task.type]
-  local noted, note = pcall(function() return runner and runner.cancelled and runner.cancelled(task, body_only) or nil end)
+  local noted, note = pcall(function()
+    if runner and runner.cancelled then return runner.cancelled(task, body_only) end
+    return task and supply.cancel_nested(task, body_only) or nil
+  end)
   return noted and note or nil
 end
 local function step_cancelled(plan) return task_cancelled(plan.current_task) end
@@ -1258,6 +1262,9 @@ local function try_recover(plan, step, result)
   if code == "BODY_ENCLOSED" then
     -- Take up the named own blocker, walk out toward where the step was
     -- going, put it back (move_entity's escape), then run the step again.
+    -- A supply that already ran (or could not start) its own step-out has
+    -- used this step's fix.
+    if type(result.outcome) == "table" and type(result.outcome.step_out) == "table" then return false end
     local ok, path = pcall(function() return result.outcome.diagnostics.path end)
     local suggested = ok and type(path) == "table" and path.suggested_recovery or nil
     if type(suggested) ~= "table" or type(suggested.x) ~= "number" or type(suggested.y) ~= "number" then return false end

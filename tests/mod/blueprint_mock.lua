@@ -4,7 +4,8 @@
 -- (entities with name, type, position, direction, force, recipe?) inside the
 -- area for the given force at their world positions, as the engine keeps
 -- them (and tiles from `world_tiles` inside the area, at theirs);
--- build_blueprint makes ghost tables and records its arguments.
+-- build_blueprint makes ghost tables and records its arguments; under
+-- absolute 1 x 1 grid snapping each ghost stands at position + its position.
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)/[^/]+$")
 local mock = dofile(here .. "/factorio_api_mock.lua")
 
@@ -33,6 +34,7 @@ function M.stack()
   local s
   s = mock.item_stack({
     set_stack = function(v)
+      s.blueprint_snap_to_grid, s.blueprint_absolute_snapping = nil, nil
       if v == nil then st.item, st.entities, st.tiles = nil, nil, nil; return true end
       local other = states[v]
       if other then
@@ -42,7 +44,10 @@ function M.stack()
       end
       return true
     end,
-    clear = function() st.item, st.entities, st.tiles = nil, nil, nil end,
+    clear = function()
+      st.item, st.entities, st.tiles = nil, nil, nil
+      s.blueprint_snap_to_grid, s.blueprint_absolute_snapping = nil, nil
+    end,
     is_blueprint_setup = function() return st.item == "blueprint" and st.entities ~= nil and #st.entities > 0 end,
     get_blueprint_entity_count = function() return st.entities and #st.entities or 0 end,
     get_blueprint_entities = function() return copy_list(st.entities) end,
@@ -75,9 +80,14 @@ function M.stack()
     end,
     build_blueprint = function(args)
       M.built[#M.built + 1] = args
+      -- Absolute 1 x 1 snapping puts each entity at position + its own
+      -- position (unturned); otherwise each is turned about (0, 0), which
+      -- the engine does not (it centres the blueprint's box on position).
+      local grid = s.blueprint_snap_to_grid
+      local snapped = grid and grid.x == 1 and grid.y == 1 and s.blueprint_absolute_snapping == true
       local ghosts = {}
       for _, e in ipairs(st.entities or {}) do
-        local p = turn(e.position, args.direction)
+        local p = snapped and e.position or turn(e.position, args.direction)
         ghosts[#ghosts + 1] = { valid = true, type = "entity-ghost", ghost_name = e.name, name = "entity-ghost",
           position = { x = args.position.x + p.x, y = args.position.y + p.y },
           direction = ((e.direction or 0) + (args.direction or 0)) % 16 }

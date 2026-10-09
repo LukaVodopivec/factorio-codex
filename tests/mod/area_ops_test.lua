@@ -273,17 +273,31 @@ check(arm and arm.position.x == 9.5 and arm.position.y == 11.5 and arm.direction
 check(inventory["assembling-machine-1"] == 1 and inventory.inserter == 1, "hand placement uses the body's own items")
 
 -- Ghosts: build_blueprint at the rounded position; robots are counted, items are not given.
+-- Each ghost stands at the anchor + its dx/dy turned about (0, 0), as by
+-- hand: a pre-turned scratch copy snapped absolutely to a 1 x 1 grid, built
+-- at its box's top-left tile (unsnapped, the engine centres the box instead).
+local function ghost_at(outcome, name, x, y, direction)
+  for _, row in ipairs(outcome.placed or {}) do
+    if row.name == name and row.x == x and row.y == y and (direction == nil or row.direction == direction) then return true end
+  end
+  return false
+end
+local scratch_slot = storage.blueprints.inventory[require("scripts.state").BLUEPRINT_SLOTS]
 robots = 0
 local ghosted = run(area_ops.place_action, { name = "gears", position = { x = 30, y = 30 }, mode = "ghosts", direction = 8 })
 local args = bp.built[#bp.built]
-check(ghosted.status == "done" and ghosted.outcome.ghosts == 2 and args.position.x == 30 and args.direction == 8
+check(ghosted.status == "done" and ghosted.outcome.ghosts == 2 and args.direction == 0
   and args.build_mode == defines.build_mode.forced and args.force == own and args.skip_fog_of_war,
   "ghosts mode places the blueprint's ghosts with build_blueprint")
+check(ghost_at(ghosted.outcome, "assembling-machine-1", 30.5, 29.5) and ghost_at(ghosted.outcome, "inserter", 28.5, 29.5, 12)
+  and not scratch_slot.valid_for_read,
+  "a turned ghost placement puts each ghost at position + its turned dx/dy, from a scratch copy emptied afterwards")
 check(ghosted.outcome.construction_robots == 0 and ghosted.outcome.note:match("build_ghosts")
   and inventory["assembling-machine-1"] == 1, "no robot covers the spot: the result says so and no item was used")
-run(area_ops.place_action, { name = "gears", position = { x = 40, y = 30 }, mode = "ghosts", flip = "horizontal" })
-check(bp.built[#bp.built] and not storage.blueprints.inventory[require("scripts.state").BLUEPRINT_SLOTS].valid_for_read,
-  "a flipped placement builds from a scratch copy, emptied afterwards")
+local flipped_ghosts = run(area_ops.place_action, { name = "gears", position = { x = 40, y = 30 }, mode = "ghosts", flip = "horizontal" })
+check(ghost_at(flipped_ghosts.outcome, "assembling-machine-1", 40.5, 30.5) and ghost_at(flipped_ghosts.outcome, "inserter", 38.5, 30.5, 12)
+  and not scratch_slot.valid_for_read,
+  "a flipped placement mirrors dx about (0, 0), from a scratch copy emptied afterwards")
 check(not pcall(area_ops.place_action.validate, { name = "gears", position = { x = 0, y = 0 }, direction = 2 }, 1)
   and not pcall(area_ops.place_action.validate, { name = "gears", position = { x = 0, y = 0 }, check_only = true }, 1)
   and not pcall(area_ops.place_action.validate, { name = "gears", position = { x = 0, y = 0 }, mode = "air" }, 1),
@@ -291,7 +305,7 @@ check(not pcall(area_ops.place_action.validate, { name = "gears", position = { x
 check(area_ops.place_action.budget_steps({ name = "gears" }) == 2, "a hand placement's budget follows the blueprint's size")
 
 -- Native callbacks can return invalid or missing ghosts after a partial placement.
-local native_stack = storage.blueprints.inventory[storage.blueprints.by_name.gears.slot]
+local native_stack = scratch_slot
 local native_build = native_stack.build_blueprint
 native_stack.build_blueprint = function(args)
   local result = native_build(args)

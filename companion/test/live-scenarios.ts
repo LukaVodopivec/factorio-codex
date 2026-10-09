@@ -10,7 +10,8 @@
 // server has no Codex player and charts nothing, so the setup command patches
 // the live Lua state of this throwaway server only: companion.body returns a
 // stand-in on nauvis, surfaces.charted answers true, and the registry is
-// marked ready. Nothing in the mod has a test flag or path.
+// marked ready. The physical scenarios swap in a real character as the body
+// (characterStandIn). Nothing in the mod has a test flag or path.
 //
 // After the scenarios: ping shows no handler_errors, the server log has no
 // script errors, every profiler rpc line stays within the 8 ms budget, and
@@ -178,6 +179,66 @@ const BUILD = `local function make(s, name, x, y, extra)
   return assert(s.create_entity(spec), "could not create " .. name)
 end`;
 
+// The physical scenarios need a character: a real one, created on a second
+// cleared, paved site beyond upkeep reach of the first site's burners, and
+// returned by companion.get, require_companion and body for the rest of the
+// run. The server never charts (force.chart and radar requests stay pending
+// with no player connected), so two module-level chart gates are answered as
+// the setup answers surfaces.charted, through a view of the character whose
+// force changes only the chart answer (and whose surface leaves the character
+// itself out of entity reads, as path_start's `entity ~= c` would for the
+// character): placement_geometry.path_start skips its chart check (its entity
+// and tile collision checks stay real) and
+// blueprints.area finds the area charted (its shape and size checks stay
+// real). The chart gates that are locals of walk.lua, supply.lua and
+// build_layout.lua still see the real chart, so here the character cannot
+// walk, fetch from a source, or run build_layout's checks: scenarios act
+// within its reach.
+const SITE = { x: 160, y: 30 };
+let standIn: Promise<void> | undefined;
+const characterStandIn = () => (standIn ??= lua(`
+  local s = game.surfaces.nauvis
+  s.request_to_generate_chunks({ ${SITE.x}, ${SITE.y} }, 2)
+  s.force_generate_chunk_requests()
+  for _, e in pairs(s.find_entities_filtered({ area = { { 140, 10 }, { 200, 60 } } })) do e.destroy() end
+  local tiles = {}
+  for x = 140, 199 do for y = 10, 59 do tiles[#tiles + 1] = { name = "refined-concrete", position = { x, y } } end end
+  s.set_tiles(tiles)
+  storage.live_character = assert(s.create_entity({ name = "character", position = { ${SITE.x}, ${SITE.y} }, force = "player" }))
+  local companion = mod("companion")
+  local function get() local c = storage.live_character return c and c.valid and c or nil end
+  companion.get = get
+  companion.require_companion = function() return get() or error("BODY_UNAVAILABLE: the stand-in character is gone", 0) end
+  companion.body = function()
+    local c = get()
+    if not c then return { state = "absent" } end
+    return { state = "on_surface", surface = c.surface, surface_ref = "nauvis", character = c, entity = c,
+      position = { x = c.position.x, y = c.position.y }, force = c.force }
+  end
+  local function view(c, force)
+    local surface = c.surface
+    local own = setmetatable({ find_entities_filtered = function(filter)
+      local out = {}
+      for _, e in ipairs(surface.find_entities_filtered(filter)) do if e ~= c then out[#out + 1] = e end end
+      return out
+    end }, { __index = function(_, key) return surface[key] end })
+    return setmetatable({ force = force, surface = own }, { __index = function(_, key) return c[key] end })
+  end
+  local geometry, blueprints = mod("placement_geometry"), mod("blueprints")
+  local path_start, area = geometry.path_start, blueprints.area
+  geometry.path_start = function(c) return path_start(view(c, {})) end
+  blueprints.area = function(c, ...) return area(view(c, { is_chunk_charted = function() return true end }), ...) end
+`).then(() => undefined));
+
+// Queues a plan through the mod's queue_plan and waits for its end.
+async function runPlan(bridge: Bridge, steps: unknown[], timeoutMs = 30_000): Promise<any> {
+  const queued = await bridge.call<any>("queue_plan", { steps });
+  return until(`plan ${queued.plan_id} to end`, async () => {
+    const status = await bridge.call<any>("plan_status", { plan_id: queued.plan_id });
+    return ["completed", "partial", "failed", "cancelled"].includes(status.status) ? status : undefined;
+  }, timeoutMs);
+}
+
 type Scenario = { name: string; run: (bridge: Bridge) => Promise<string> };
 const scenarios: Scenario[] = [
   {
@@ -294,6 +355,96 @@ const scenarios: Scenario[] = [
       expect(moved.packs === 1 && moved.durability === 150, "the used repair pack keeps its durability", moved);
       expect(moved.gears === 5 && moved.uncommon === 5 && moved.normal_moved === 0 && moved.left === 3, "only the uncommon gears move", moved);
       return JSON.stringify(moved);
+    },
+  },
+  {
+    name: "place_entity takes the item stacks lying on its footprint into the body's inventory",
+    async run(bridge) {
+      await characterStandIn();
+      const lying = await lua<any[]>(`
+        local s, c = game.surfaces.nauvis, mod("companion").get()
+        c.get_main_inventory().clear()
+        c.insert({ name = "assembling-machine-1", count = 1 })
+        local out = {}
+        for _, spec in ipairs({ { "iron-plate", 7, 163.3, 30.7 }, { "copper-cable", 5, 162.4, 29.6 } }) do
+          local e = assert(s.create_entity({ name = "item-on-ground", position = { spec[3], spec[4] },
+            stack = { name = spec[1], count = spec[2] } }))
+          out[#out + 1] = { item = spec[1], count = spec[2], x = e.position.x, y = e.position.y }
+        end
+        return out`);
+      const status = await runPlan(bridge, [{ action: "place_entity", name: "assembling-machine-1", x: 163.5, y: 30.5 }]);
+      const step = list(status.outcomes)[0];
+      expect(status.status === "completed" && step?.status === "completed", "the placement completes", status.outcomes);
+      const picked = list(step.result?.picked_up);
+      expect(picked.length === lying.length && lying.every((row) => picked.some((p) => p.item === row.item
+        && p.count === row.count && p.x === row.x && p.y === row.y)), "picked_up names each stack with its exact position", { picked, lying });
+      const after = await lua<any>(`
+        local s, inventory = game.surfaces.nauvis, mod("companion").get().get_main_inventory()
+        return { standing = s.find_entity("assembling-machine-1", { 163.5, 30.5 }) ~= nil,
+          lying = s.count_entities_filtered({ area = { { 160.5, 27.5 }, { 166.5, 33.5 } }, type = "item-entity" }),
+          carried = inventory.get_contents() }`);
+      expect(after.standing === true, "the machine stands", after);
+      expect(after.lying === 0, "no item stack is left on the footprint", after);
+      const carried = Object.fromEntries(list(after.carried).map((row) => [row.name, row.count]));
+      expect(carried["iron-plate"] === 7 && carried["copper-cable"] === 5 && Object.keys(carried).length === 2,
+        "the inventory holds exactly the picked-up stacks (the placed machine left it)", after.carried);
+      return `picked_up ${picked.map((p) => `${p.item} x${p.count} at (${p.x}, ${p.y})`).join(", ")}`;
+    },
+  },
+  {
+    name: "blueprint_capture centres a block and its origin puts it back where it stood",
+    async run(bridge) {
+      await characterStandIn();
+      const area = { left_top: { x: 176, y: 40 }, right_bottom: { x: 185, y: 46 } };
+      const built = await lua<any[]>(`${BUILD}
+        local s, out = game.surfaces.nauvis, {}
+        for _, e in ipairs({ make(s, "assembling-machine-1", 178.5, 42.5), make(s, "assembling-machine-1", 182.5, 42.5),
+          (make(s, "small-electric-pole", 180.5, 44.5)) }) do
+          out[#out + 1] = { name = e.name, x = e.position.x, y = e.position.y }
+        end
+        return out`);
+      const captured = await bridge.call<any>("blueprint_capture", { name: "live-block", area });
+      const described = await bridge.call<any>("blueprint_describe", { name: "live-block" });
+      const origin = described.origin;
+      expect(origin && captured.origin?.x === origin.x && captured.origin?.y === origin.y, "capture and describe give one origin",
+        { captured: captured.origin, described: origin });
+      expect(origin.x % 2 === 0 && origin.y % 2 === 0 && Math.abs(origin.x) > 100, "the origin is an even whole vector to the block", origin);
+      const restores = (rows: any[]) => rows.length === built.length && built.every((e) =>
+        rows.some((row) => row.name === e.name && origin.x + row.dx === e.x && origin.y + row.dy === e.y));
+      const rows = list(described.entities);
+      expect(rows.every((row) => Math.abs(row.dx) <= 4 && Math.abs(row.dy) <= 4), "the block sits about (0, 0)", rows);
+      expect(restores(rows), "origin + dx/dy is each entity's world position", { origin, rows, built });
+      // Hand mode builds blueprints.hand_layout at anchor = position; its
+      // build_layout checks need the chart (see characterStandIn), so here
+      // only the layout it would build is compared.
+      const hand = list(await lua(`return mod("blueprints").hand_layout("live-block", nil, "live").entities`));
+      expect(restores(hand), "the hand layout at anchor = origin puts each entity where it stood", hand);
+      // Ghosts mode (native build_blueprint) puts each ghost at position + its
+      // dx/dy, flipped then turned about (0, 0) as hand mode turns them:
+      // unsnapped, the engine centred the block's box on position instead,
+      // a tile off here (0, 1).
+      await lua(`for _, e in pairs(game.surfaces.nauvis.find_entities_filtered({ area = { { 176, 40 }, { 185, 46 } }, force = "player" })) do
+        e.destroy() end`);
+      const key = (row: { name: string; x: number; y: number }) => `${row.name}@${row.x},${row.y}`;
+      for (const placement of [{ direction: 0 }, { direction: 4, flip: "horizontal" }]) {
+        const status = await runPlan(bridge, [{ action: "blueprint_place", name: "live-block", position: origin, mode: "ghosts", ...placement }]);
+        expect(status.status === "completed", `the ghosts are placed (${JSON.stringify(placement)})`, status.outcomes);
+        const ghosts = list(await lua(`local out = {}
+          for _, g in pairs(game.surfaces.nauvis.find_entities_filtered({ area = { { 166, 30 }, { 196, 56 } }, type = "entity-ghost" })) do
+            out[#out + 1] = { name = g.ghost_name, x = g.position.x, y = g.position.y }
+            g.destroy()
+          end
+          return out`)).map(key).sort();
+        const wanted = rows.map((row) => {
+          let [x, y] = [placement.flip === "horizontal" ? -row.dx : row.dx, row.dy];
+          for (let turn = 0; turn < placement.direction / 4; turn++) [x, y] = [-y, x];
+          return key({ name: row.name, x: origin.x + x, y: origin.y + y });
+        }).sort();
+        expect(JSON.stringify(ghosts) === JSON.stringify(wanted), `each ghost stands at position + its dx/dy (${JSON.stringify(placement)})`,
+          { ghosts, wanted });
+      }
+      return `origin (${origin.x}, ${origin.y}); dx/dy ${rows.map((row) => `${row.name} (${row.dx}, ${row.dy})`).join(", ")}; `
+        + "ghosts at position = origin, plain and turned + flipped, stand at origin + dx/dy";
     },
   },
 ];

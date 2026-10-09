@@ -7,7 +7,8 @@
 --     platform?}
 --     hand:   the stored blueprint as a build_layout at position (auto-supply,
 --             auto-clear, recipes, settings, starter items, poles wire up);
---     ghosts: LuaItemStack.build_blueprint places ghosts for robots;
+--     ghosts: LuaItemStack.build_blueprint places ghosts for robots, each at
+--             position + its turned dx/dy as by hand (blueprints.ghost_stack);
 --     platform (ghosts only, remote: no body): position is relative to the
 --             platform's hub, and the hub builds the ghosts.
 --     As an RPC it is the check_only dry run (place_check_job).
@@ -221,17 +222,19 @@ end
 
 local function place_ghosts(task, c)
   local label = "blueprint_place " .. task.name
-  local stack = blueprints.build_stack(task.name, task.flip, label)
+  -- Each ghost lands at the anchor + its turned dx/dy (blueprints.ghost_stack).
+  local stack, cell = blueprints.ghost_stack(task.name, task.flip, math.floor((task.direction or 0) / 4), label)
   local expected = #(stack.get_blueprint_entities() or {}) + #(stack.get_blueprint_tiles() or {})
   if expected > 1100 then
-    if task.flip then blueprints.clear_scratch() end
+    blueprints.clear_scratch()
     return { status = "failed", detail = "GHOSTS_NOT_PLACED: blueprint exceeds the bounded ghost count",
       outcome = { code = "GHOSTS_NOT_PLACED" } }
   end
-  local ok, ghosts = pcall(stack.build_blueprint, { surface = c.surface, force = c.force, position = task._anchor,
-    direction = task.direction or 0, build_mode = defines.build_mode.forced,
+  local position = cell and { x = task._anchor.x + cell.x, y = task._anchor.y + cell.y } or task._anchor
+  local ok, ghosts = pcall(stack.build_blueprint, { surface = c.surface, force = c.force, position = position,
+    direction = not cell and task.direction or 0, build_mode = defines.build_mode.forced,
     skip_fog_of_war = true, raise_built = true })
-  if task.flip then blueprints.clear_scratch() end
+  blueprints.clear_scratch()
   if not ok then return { status = "failed", detail = "GHOSTS_NOT_PLACED: " .. plain(ghosts),
     outcome = { code = "GHOSTS_NOT_PLACED" } } end
   local rows, count = {}, 0

@@ -681,6 +681,54 @@ function M.build_stack(name, flip, label)
   return copy
 end
 
+-- The blueprint for native ghosts that land where hand and platform
+-- placement put them: each entity at anchor + its dx/dy, flipped about
+-- (0, 0) if asked, then turned `quarters` clockwise about (0, 0). Unsnapped,
+-- build_blueprint centres the blueprint's box on its position and turns it
+-- about that centre, up to a tile away from dx/dy (live suite). So the copy in
+-- the scratch slot is pre-turned, starts at its box's top-left tile and snaps
+-- absolutely to a 1 x 1 grid, as build_layout's ghost batches build: built at
+-- anchor + `cell` with direction 0. A blueprint with its own grid snapping
+-- keeps the native placement (cell nil). Callers clear the scratch slot.
+function M.ghost_stack(name, flip, quarters, label)
+  local stored = stack_of(name, label)
+  if stored.blueprint_snap_to_grid then return M.build_stack(name, flip, label), nil end
+  check_flip(flip, label)
+  local function turn(x, y)
+    for _ = 1, quarters do x, y = -y, x end
+    return x, y
+  end
+  local entities, tiles = {}, {}
+  for i, e in ipairs(stored.get_blueprint_entities() or {}) do
+    local out = {}
+    if flip then out = flipped(e, flip) else for k, v in pairs(e) do out[k] = v end end
+    local x, y = turn(out.position.x, out.position.y)
+    out.position = { x = x, y = y }
+    if out.direction or quarters > 0 then out.direction = ((out.direction or 0) + 4 * quarters) % 16 end
+    entities[i] = out
+  end
+  for i, t in ipairs(stored.get_blueprint_tiles() or {}) do
+    local x, y = t.position.x, t.position.y
+    if flip == "horizontal" then x = -x - 1 elseif flip == "vertical" then y = -y - 1 end
+    x, y = turn(x + 0.5, y + 0.5)
+    tiles[i] = { name = t.name, position = { x = x - 0.5, y = y - 0.5 } }
+  end
+  local left, top = bounds(entities)
+  for _, t in ipairs(tiles) do
+    left, top = math.min(left or t.position.x, t.position.x), math.min(top or t.position.y, t.position.y)
+  end
+  local cell = { x = math.floor((left or 0) + 0.01), y = math.floor((top or 0) + 0.01) }
+  for _, row in ipairs(entities) do row.position = { x = row.position.x - cell.x, y = row.position.y - cell.y } end
+  for _, row in ipairs(tiles) do row.position = { x = row.position.x - cell.x, y = row.position.y - cell.y } end
+  local copy = scratch()
+  if #entities > 0 then copy.set_blueprint_entities(entities) end
+  if #tiles > 0 then copy.set_blueprint_tiles(tiles) end
+  copy.blueprint_snap_to_grid = { x = 1, y = 1 }
+  copy.blueprint_absolute_snapping = true
+  copy.blueprint_position_relative_to_grid = { x = 0, y = 0 }
+  return copy, cell
+end
+
 -- A clean blueprint in the scratch slot, for a blueprint built and placed in
 -- the same tick (build_layout ghosts); clear_scratch empties it again.
 M.scratch = scratch

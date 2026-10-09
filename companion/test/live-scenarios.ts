@@ -32,6 +32,7 @@ import { Bridge } from "../src/bridge.js";
 import { assertRuntimeCompatibility } from "../src/compatibility.js";
 import { companionVersion } from "../src/config.js";
 import { RconClient } from "../src/rcon.js";
+import { bodySummary, parseRunSnapshot, runEvents } from "../src/runs/telemetry.js";
 import { MAP_GEN_SETTINGS, SERVER_SETTINGS, createArgs, prepareMods, runPaths } from "../src/server/server.js";
 import { factorioBinary } from "../src/setup/locate.js";
 
@@ -680,6 +681,97 @@ const scenarios: Scenario[] = [
       expect(wrong.length === 0, "every live pipe connection is a port the mod works out, and no other", wrong);
       const sample = rows.find((row) => row.name === "chemical-plant" && row.mirror && row.direction === 4);
       return `${rows.length} placements match; e.g. mirrored chemical plant facing east: ${sample?.live}`;
+    },
+  },
+  {
+    // The recorder's own strict parser (parseRunSnapshot) and run summary
+    // (runEvents, bodySummary) on the live mod's run_snapshot: a baseline,
+    // then a plan that fails (its activity_log row keeps the reason as
+    // detail), a human hold (companion.human_control answers held for one
+    // second, as the Codex client's input would; the dispatcher's own
+    // enter_hold and leave_hold record the episode), a technology finished by
+    // script, and a rocket: its parts written into a powered silo within the
+    // body's reach, so the silo builds it, then launch_rocket sends it empty
+    // to the platform scenario's "live" platform over nauvis. The game raises
+    // on_rocket_launch_ordered and, after the ascent, on_rocket_launched.
+    name: "the recorder's strict schema parses run_snapshot through a failed plan, a hold, research and a rocket launch",
+    async run(bridge) {
+      await characterStandIn();
+      const snapshot = async (params: Record<string, unknown> = {}) => parseRunSnapshot(await bridge.call("run_snapshot", params));
+      const baseline = await snapshot({ window: true });
+      expect(baseline.handler_errors === 0 && baseline.holds?.count === 0 && baseline.milestones?.rocket_launched_tick === undefined,
+        "the baseline has no faults, holds or launch", { handler_errors: baseline.handler_errors, holds: baseline.holds, milestones: baseline.milestones });
+
+      // A step the body cannot do: an item it does not carry, with no chest
+      // or recipe input within reach, on a free tile.
+      const failed = await runPlan(bridge, [{ action: "place_entity", name: "rocket-silo", x: 150.5, y: 20.5 }], 60_000);
+      expect(failed.status === "failed" || failed.status === "partial", "the plan fails", failed.outcomes);
+      const log = await bridge.call<any>("activity_log", { since_plan_id: failed.plan_id - 1 });
+      const row = list(log.entries).find((entry) => entry.plan_id === failed.plan_id);
+      expect(typeof row?.detail === "string" && row.detail.length > 0 && row.summary.includes(row.detail.slice(0, 40)),
+        "the failed plan's row keeps its reason as detail", row);
+      await snapshot();
+
+      const held = await lua<number>(`
+        local companion, until_tick = mod("companion"), game.tick + 60
+        local original = companion.human_control
+        companion.human_control = function()
+          if game.tick < until_tick then return true, 0, "live-test" end
+          companion.human_control = original
+          return original()
+        end
+        return until_tick`);
+      await until("the hold to end", () => lua<boolean>(`return game.tick > ${held} + 2 and storage.tasks.human_hold == nil`));
+
+      const technology = await lua<string>(`
+        local force, names = game.forces.player, {}
+        for name, t in pairs(force.technologies) do
+          local ready = not t.researched and t.enabled
+          for _, p in pairs(t.prerequisites) do ready = ready and p.researched end
+          if ready then names[#names + 1] = name end
+        end
+        table.sort(names)
+        force.technologies[names[1]].researched = true
+        return names[1]`);
+
+      const silo = { x: 160.5, y: 39.5 };
+      await lua(`${BUILD}
+        local s = game.surfaces.nauvis
+        local eei = make(s, "electric-energy-interface", 151, 40)
+        eei.power_production, eei.electric_buffer_size = 100000000, 1000000000
+        make(s, "substation", 151, 37)
+        make(s, "rocket-silo", ${silo.x}, ${silo.y})`);
+      // The sampler reads the silo before its rocket is ready, so the ready
+      // rocket is a transition (autonomy.lua).
+      const placed = await lua<number>("return game.tick");
+      await until("the sampler to read the silo", () => lua<boolean>(`return game.tick > ${placed} + 120`));
+      await lua(`local silo = game.surfaces.nauvis.find_entity("rocket-silo", { ${silo.x}, ${silo.y} })
+        silo.rocket_parts = silo.prototype.rocket_parts_required`);
+      await until("the rocket to be ready", () => lua<boolean>(`return storage.milestones.rocket_ready_tick ~= nil`), 90_000);
+      const launch = await runPlan(bridge, [{ action: "launch_rocket", silo, platform: "live" }], 60_000);
+      const outcome = list(launch.outcomes)[0];
+      expect(launch.status === "completed" && outcome?.result?.launched === true, "launch_rocket launches the rocket", launch.outcomes);
+      await until("the rocket to leave", () => lua<boolean>(`return storage.milestones.rocket_launched_tick ~= nil`), 120_000);
+
+      const final = await snapshot();
+      const m = final.milestones!;
+      expect(m.rocket_ready_tick! > baseline.tick && m.rocket_ready_tick! <= m.rocket_launch_ordered_tick!
+        && m.rocket_launch_ordered_tick! <= m.rocket_launched_tick! && m.rocket_launched_tick! <= final.tick,
+        "the rocket milestones follow each other", m);
+      expect(m.rocket_launch_ordered_tick === outcome.result.launch_tick, "the launch order is the step's launch tick",
+        { milestones: m, launch_tick: outcome.result.launch_tick });
+      expect(m.research?.[technology]! > baseline.tick, "the technology's first finish is a milestone", { technology, research: m.research });
+      const episode = final.holds?.recent.at(-1);
+      expect(final.holds?.count === 1 && episode?.cause === "live-test" && episode.end_tick! > episode.start_tick
+        && final.holds.total_ticks === episode.end_tick! - episode.start_tick, "the hold is one closed episode with its cause", final.holds);
+      const events = runEvents(baseline, final);
+      expect(events.milestones?.rocket_launched?.tick === m.rocket_launched_tick && events.milestones.rocket_launched.elapsed_s > 0
+        && events.holds?.count === 1 && events.handler_errors === 0, "runEvents summarises the window", events);
+      const body = bodySummary(baseline, final);
+      expect(body !== null && body.window_ticks === final.tick - baseline.tick, "bodySummary reads the window", body);
+      return `${failed.status} plan ${failed.plan_id}: ${row.detail.slice(0, 80)}; hold ${episode.end_tick! - episode.start_tick} ticks;`
+        + ` ${technology} at ${m.research![technology]}; rocket ready ${m.rocket_ready_tick}, ordered ${m.rocket_launch_ordered_tick},`
+        + ` launched ${m.rocket_launched_tick} (${events.milestones!.rocket_launched!.elapsed_s} s after the baseline)`;
     },
   },
 ];

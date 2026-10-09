@@ -355,7 +355,7 @@ describe("persistent two-brain coordination contract", () => {
     expect(flatSkill).toMatch(/With `target: \{platform\}`, `set_requests` sets what the hub keeps stocked[\s\S]*`get_items` takes from a landing pad/);
     expect(flatSkill).toMatch(/Space platforms are the one exception[\s\S]*everything on a planet keeps reach/);
     expect(flatSkill).toMatch(/Remote: `create_platform` and every step with `platform`/);
-    for (const event of ["rocket_ready", "rocket_launched", "cargo_delivered", "platform_state_changed"]) expect(skill).toContain(`\`${event}\``);
+    for (const event of ["rocket_ready", "rocket_launch_ordered", "rocket_launched", "cargo_delivered", "platform_state_changed"]) expect(skill).toContain(`\`${event}\``);
     for (const tool of ["platform_status", "create_platform", "launch_rocket", "set_requests"]) expect(registered).toContain(tool);
     expect(READ_ONLY_TOOLS).toContain("platform_status");
     expect(flat(strategist)).toMatch(/A platform package holds `create_platform` and the starter-pack `launch_rocket`; its `build_layout` or `blueprint_place` package with `platform` comes once `platform_status` shows a hub/);

@@ -115,7 +115,7 @@ retried after the hold.
   `new_problem`, `package_failed`, `orders_changed`, `human_hold_started`,
   `human_hold_ended`, or `timeout`. Pass the last `tick` you saw as
   `since_tick`. Never poll in a loop. `plan_ended` carries each step's outcome
-  and the inventory change: no second read is needed to check a plan. Whenever
+  and the inventory change: no second read is needed. Whenever
   a result's `body.fifo_empty` is true, the body is free for work (it may still
   craft): the pilot queues work (its own if no package is pending) before
   waiting again.
@@ -189,7 +189,7 @@ re-read `factory_status` body position and choose a reachable target.
   creates the platform.
 - `launch_rocket` loads a ready rocket with the cargo you name (a
   `space-platform-starter-pack` for a waiting platform, or `"requests"`: what
-  its hub still lacks) and launches it there. The body fetches the cargo and
+  its hub still lacks) and launches it there. The body fetches the cargo,
   walks to the silo; with no rocket ready it fails at once with the part count.
 - Platforms are built only from ghosts the hub fulfils from its own items:
   `build_layout` (recipes and filters inside, anchored on the hub) or
@@ -201,8 +201,9 @@ re-read `factory_status` body position and choose a reachable target.
   what platforms in orbit drop. `get_items` takes from a landing pad.
 - Remote: `create_platform` and every step with `platform` act without the
   body; as direct tools `set_recipe`, `configure_entity` and `set_requests`
-  answer at once, the rest queue in the FIFO. `next_event` also reports
-  `rocket_launched`, `cargo_delivered`, and `platform_state_changed`.
+  answer at once, the rest queue in the FIFO. `next_event` reports
+  `rocket_launch_ordered`, `rocket_launched`, `cargo_delivered`,
+  `platform_state_changed`.
 
 **Other planets.**
 

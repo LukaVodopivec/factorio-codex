@@ -451,7 +451,8 @@ checks (offline fixtures cover them; none is live evidence yet):
 - `launch_rocket` with no ready rocket fails at once with `ROCKET_NOT_READY`
   and the part count, before the body moves; with a ready rocket it fetches the
   cargo, walks to the silo and launches, and `next_event` then reports
-  `rocket_launched`, `platform_state_changed` and `cargo_delivered`.
+  `rocket_launch_ordered`, `rocket_launched` (once the rocket has left),
+  `platform_state_changed` and `cargo_delivered`.
 - `set_requests {target: {platform}}`, `set_recipe`, `configure_entity` and
   `build_layout` with `platform` leave the body where it stands; the direct
   `set_requests`, `set_recipe` and `configure_entity` tools with a platform

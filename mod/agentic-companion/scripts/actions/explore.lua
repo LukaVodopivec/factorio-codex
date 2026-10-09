@@ -180,9 +180,9 @@ end
 
 local function leg(task, c)
   if task.resource then
-    -- A patch the force has charted already counts, unless the view holds
-    -- a nearer one.
-    local known = nearest_charted(c, task.resource)
+    -- Without a direction, a patch the force has charted already counts,
+    -- unless the view holds a nearer one; with one, the body scouts that way.
+    local known = task.direction == nil and nearest_charted(c, task.resource) or nil
     local patch = patch_in_view(c, task.resource)
     if known and known.distance <= task.max_distance and not (patch and patch.distance < known.distance) then
       known.charted_before = true

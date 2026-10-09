@@ -146,10 +146,11 @@ check(none.outcome.nearest_charted == "none charted" and none.outcome.charted_un
   and none.detail:match("no iron%-ore patch is charted on this surface"),
   "with a complete charted list and no such patch, the shortfall says none is charted")
 
--- The force's charted patches count: a patch charted already (by the
--- chore, a radar or an earlier search) within max_distance ends the search
--- at once; one farther away is named by the shortfall; an incomplete list
--- never claims that none is charted.
+-- The force's charted patches count: without a direction, a patch charted
+-- already (by the chore, a radar or an earlier search) within max_distance
+-- ends the search at once; with one, the body scouts that way; one farther
+-- away is named by the shortfall; an incomplete list never claims that
+-- none is charted.
 do
   local function oil_row(x, y)
     return { name = "crude-oil", amount = 900000, tiles = 9, centroid = { x = x, y = y },
@@ -158,7 +159,7 @@ do
   reset()
   cached.rows = { { name = "iron-ore", amount = 1, tiles = 1, centroid = { x = 20, y = 0 },
     bbox = { left_top = { x = 19, y = -1 }, right_bottom = { x = 21, y = 1 } } }, oil_row(420, -150), oil_row(900, 0) }
-  local known = run({ resource = "crude-oil", direction = 4, max_distance = 1000 })
+  local known = run({ resource = "crude-oil", max_distance = 1000 })
   local patch = known and known.outcome.patch
   local keys = {}
   for key in pairs(patch or {}) do keys[#keys + 1] = key end
@@ -172,11 +173,19 @@ do
     and not known.detail:lower():match("should") and not known.detail:lower():match("try"),
     "the PATCH_FOUND detail states the charted patch and its distance, nothing else")
 
+  -- With a direction the body scouts that way, past a charted patch in range.
+  reset()
+  cached.rows = { oil_row(60, 0) }
+  local heading = run({ resource = "crude-oil", direction = 8, max_distance = 150 })
+  check(heading and heading.outcome.code == "EXPLORE_NOT_FOUND" and #legs > 0 and heading.outcome.walked > 0
+    and heading.outcome.nearest_charted.centroid.x == 60,
+    "with a direction a charted patch in range never ends the search: the body scouts that way")
+
   -- A nearer patch in view wins over a farther charted one.
   reset()
   cached.rows = { oil_row(420, -150) }
   resources = { { valid = true, name = "crude-oil", position = { x = 50.5, y = 0.5 } } }
-  local nearer = run({ resource = "crude-oil", direction = 4, max_distance = 1000 })
+  local nearer = run({ resource = "crude-oil", max_distance = 1000 })
   check(nearer and nearer.outcome.code == "PATCH_FOUND" and nearer.outcome.patch.position.x == 50.5
     and nearer.outcome.patch.charted_before == nil, "a nearer patch in view is found before a farther charted one")
 

@@ -218,9 +218,10 @@ observable checks:
   `craft_wait`, `other`), `tiles` and the `waiting` state, the recorder's
   strict schema accepts them, and the manifest's `telemetry.body` gives their
   window deltas; `waiting` time is a state share, never a gap.
-- `explore` for a resource the force has charted within `max_distance` ends
-  `PATCH_FOUND` at once (`walked` 0, `charted_before: true`, `distance` to
-  the patch's bbox, 0 inside); `EXPLORE_NOT_FOUND` names `nearest_charted`
+- `explore` without `direction` for a resource the force has charted within
+  `max_distance` ends `PATCH_FOUND` at once (`walked` 0, `charted_before:
+  true`, `distance` to the patch's bbox, 0 inside); with `direction` it
+  scouts that way; `EXPLORE_NOT_FOUND` names `nearest_charted`
   or `none charted`, and never `none charted` while `charted_unknown` is
   true.
 - `production_requirements` for a technology gives each missing technology's

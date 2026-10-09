@@ -147,7 +147,7 @@ describe("public MCP to Lua DTO mappings", () => {
       ["queue_plan", /hand_craft \{total_s, items\}: the bill rows its needs would hand-craft from current stock, with hand_craft_s each; absent when none/],
       ["plan_status", /diagnostics has supply \(stage: get_items, auto_supply, target or before_supply;.* and crafting \{recipe, count, queue_s: hand-crafting seconds still queued\}; a PLAN_BUDGET_EXCEEDED outcome carries the same supply and crafting/],
       ["observe_local", /character\.crafting\.queue_s is the hand-crafting seconds still queued/],
-      ["explore", /PATCH_FOUND with name, bbox, centroid, distance and charted_before: true\. EXPLORE_NOT_FOUND names nearest_charted \{name, centroid, bbox, distance\}, or 'none charted'; charted_unknown: true while the patch list is capped or still filling/],
+      ["explore", /Without direction, a patch of resource the force has already charted within max_distance ends it at once without walking \(PATCH_FOUND with name, bbox, centroid, distance and charted_before: true\); with direction it always scouts that way\. EXPLORE_NOT_FOUND names nearest_charted \{name, centroid, bbox, distance\}, or 'none charted'; charted_unknown: true while the patch list is capped or still filling/],
       ["production_requirements", /time_estimate has bottleneck_seconds .*lab_seconds_at_speed_1 .*unit_time_s, which each missing technology row carries\) and lab_seconds at the current labs' speed \(only while labs progress\)/],
       ["progression_status", /modifiers: its effects other than recipes, as \{type, modifier\}/],
       ["set_recipe", /With insert_items and extract_items it runs a hand-fed assembler\./],

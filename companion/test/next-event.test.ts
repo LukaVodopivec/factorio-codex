@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Bridge, TaskClock } from "../src/bridge.js";
 import { ModError } from "../src/bridge.js";
-import { eventSummary, feedText, IDLE_FACT, IDLE_NOW, RESEARCH_IDLE, waitForEvent, watchText, type EventState, type PackageFailure, type PackageVerificationEvent, type WatchFiring } from "../src/mcp/events.js";
+import { eventSummary, feedText, IDLE_FACT, IDLE_NOW, nextEventSchema, RESEARCH_IDLE, waitForEvent, watchText, type EventState, type PackageFailure, type PackageVerificationEvent, type WatchFiring } from "../src/mcp/events.js";
 import { registerMcpTools, type McpSurface } from "../src/mcp/server.js";
 
 const idle: EventState = { tick: 100, queue_depth: 0, fifo_empty: true, human_hold: false };
@@ -25,7 +25,16 @@ function fakeClock(): TaskClock & { slept: number } {
   return { slept: 0, now: () => now, async sleep(ms) { now += ms; this.slept += ms; } };
 }
 const quiet = (failures: PackageFailure[] = [], orders = false) => ({ ordersChanged: () => orders, packageFailures: () => failures });
-const input = (extra: { since_tick?: number } = {}) => ({ timeout_seconds: 60, ...extra });
+const input = (extra: { since_tick?: number } = {}) => ({ timeout_seconds: 25, ...extra });
+
+describe("next_event timeout bound", () => {
+  it("defaults to and caps at 25 s, under the 31 s code-mode exec yield", () => {
+    expect(nextEventSchema.parse({})).toEqual({ timeout_seconds: 25 });
+    expect(nextEventSchema.safeParse({ timeout_seconds: 25 }).success).toBe(true);
+    expect(nextEventSchema.safeParse({ timeout_seconds: 26 }).success).toBe(false);
+    expect(nextEventSchema.safeParse({ timeout_seconds: 60 }).success).toBe(false);
+  });
+});
 
 describe.each(["full", "read-only"] as McpSurface[])("next_event MCP readback (%s)", (surface) => {
   function handler(bridge: Bridge) {
@@ -309,7 +318,7 @@ describe("next_event after a queued plan", () => {
     for (const [tool, args] of [["queue_plan", { steps: [{ action: "walk_to", x: 1, y: 2 }] }], ["travel", { to: "vulcanus" }],
       ["plan_status", { plan_id: 1 }]] as const) {
       const next = (await handlers[tool]!(args)).structuredContent.next_action;
-      expect(next).toEqual({ tool: "next_event", arguments: { timeout_seconds: 60, since_tick: 2732 } });
+      expect(next).toEqual({ tool: "next_event", arguments: { timeout_seconds: 25, since_tick: 2732 } });
       expect((await handlers.next_event!(next.arguments)).structuredContent).toMatchObject({ event: "plan_ended", plan_id: 1, status: "failed" });
     }
   });

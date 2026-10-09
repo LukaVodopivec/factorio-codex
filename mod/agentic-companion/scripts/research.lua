@@ -251,16 +251,26 @@ function M.progression_status()
       end
       table.sort(science, function(a, b) return a.name < b.name end)
     end
-    local unlocks = {}
+    -- Every other effect is a modifier {type, modifier} in the prototype's
+    -- order (laboratory-speed 0.2, worker-robot-speed ...), as the tech tree
+    -- shows it; absent when there is none.
+    local unlocks, modifiers = {}, {}
     local effects
     ok, effects = pcall(function() return technology.prototype.effects end)
     if ok then
       for _, effect in ipairs(effects or {}) do
-        if effect.type == "unlock-recipe" and effect.recipe then unlocks[#unlocks + 1] = effect.recipe end
+        if effect.type == "unlock-recipe" then
+          if effect.recipe then unlocks[#unlocks + 1] = effect.recipe end
+        elseif type(effect.type) == "string" then
+          local modifier = effect.modifier
+          if type(modifier) ~= "number" and type(modifier) ~= "boolean" then modifier = nil end
+          modifiers[#modifiers + 1] = { type = effect.type, modifier = modifier }
+        end
       end
     end
     table.sort(unlocks)
-    local record = { name = name, prerequisites = prerequisites, science_requirements = science, unlocks = unlocks }
+    local record = { name = name, prerequisites = prerequisites, science_requirements = science, unlocks = unlocks,
+      modifiers = #modifiers > 0 and modifiers or nil }
     ok, record.science_count = pcall(function() return technology.prototype.research_unit_count end)
     if not ok or type(record.science_count) ~= "number" then record.science_count = nil end
     record.unit_time_s = M.unit_time_s(technology.prototype)

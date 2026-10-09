@@ -1,10 +1,10 @@
 # Live validation
 
-This guide validates release **0.34.0** against a real Factorio game: start a
+This guide validates release **0.35.0** against a real Factorio game: start a
 test server, connect a client, and check the tools and plans live. Offline
 tests (`npm test`) cover the same contracts with fixtures; only a live run
 shows the engine's own behaviour. Earlier live evidence below stays historical
-until a 0.34.0 run is recorded.
+until a 0.35.0 run is recorded.
 
 The reference setup uses two machines. The server machine has no dedicated
 GPU and is permanently headless: it runs only the dedicated server, the Node
@@ -193,6 +193,26 @@ alone is not evidence of usable framing.
    re-observe authoritative MCP state.
 
 ## Release checklists
+
+For the 0.35.0 release (facts and the tick budget), record these observable
+checks:
+
+- No tick's RPC and job work together goes over 8 ms: `run_snapshot` runs in
+  phases and its result arrives through `get_job`, `production_requirements`
+  is a job whose recipe index and resource catalogue spread across ticks, and
+  large dry runs yield. Profiler RPC lines carry the tick.
+- `factory_status` lines carry `line_counts` (with `by_state`) for every line
+  of the surface beside the ten worst rows; an output-full drill or inserter
+  whose drop target takes no more shows cause `drop_blocked` with `drop_into`;
+  lab, recipe-less and silo states fall into named status buckets.
+- `inspect_entity` with `area` lists the own entities of a charted area of at
+  most 64 by 64 tiles, and a silo's centre reads the silo, not its rocket.
+- `get_items` crafts in rounds up to its stated cap and says when the cap
+  stopped it; `explore` searches the 128 tiles it charts; mirrored refineries
+  and chemical plants get `port_fluids` rows; a partial silo starter insert is
+  reported with its totals as `PARTIAL_INSERT`.
+- Request refusals of `get_items` and `production_requirements` are refusals,
+  not handler faults.
 
 For the 0.34.0 release (gameplay unblockers), record these observable checks:
 

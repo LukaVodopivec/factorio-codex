@@ -64,6 +64,9 @@ local function allowance(jobs)
   return math.max(M.MIN_WORK, M.WORK_PER_TICK - used(jobs))
 end
 
+-- Work items spent in this tick so far (by builds, jobs and reads).
+function M.spent() return used(data()) end
+
 -- A result finished on a tick is encoded to JSON on the ticks after it, so
 -- get_job only copies a string: one table_to_json of a large result is a
 -- long frame. The encoder walks the result from an explicit stack kept in

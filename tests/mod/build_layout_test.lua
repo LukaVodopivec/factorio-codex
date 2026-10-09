@@ -972,6 +972,27 @@ check(dry_big and not dry_big.ok and dry_big.failed[1].code == "SITE_NOT_FOUND"
   string.format("a dry run searches over ticks within 1/%d of the budget, charged %d a work item, and answers like the build"
     .. " (%d ticks, worst %d checks)", layout.CHECK_COST, layout.CHECK_COST, dry_ticks, dry_worst))
 do
+  -- blueprint_place's dry run steps through the exported search_step: it
+  -- spends the same share of the budget it is given and charges the rest of
+  -- it to the tick, so it answers alike within the same checks a tick.
+  local s = layout.search_start(character, { site = big.site, layouts = { { entities = big.entities, connections = {} } } })
+  local found, steps, worst, undercharged = nil, 0, 0, 0
+  while not found and steps < 600 do
+    engine.can_place = 0
+    storage.jobs = nil
+    local calls = s.ctx.calls
+    found = layout.search_step(character, s, layout.WORK_PER_TICK)
+    local own = s.ctx.calls - calls
+    if own + jobs.spent() < layout.CHECK_COST * own then undercharged = undercharged + 1 end
+    steps, worst = steps + 1, math.max(worst, engine.can_place)
+  end
+  storage.jobs = nil
+  check(found and found.failed[1].code == "SITE_NOT_FOUND" and worst <= per_tick_engine / layout.CHECK_COST
+    and undercharged == 0,
+    string.format("blueprint_place's dry-run search spends 1/%d of its budget a tick and charges the rest (%d ticks, worst %d checks)",
+      layout.CHECK_COST, steps, worst))
+end
+do
   -- A tick that left the dry run only MIN_WORK (a build used the rest)
   -- still gives it MIN_WORK of its own, as before, so a large site's checks
   -- still finish from the warm cache.

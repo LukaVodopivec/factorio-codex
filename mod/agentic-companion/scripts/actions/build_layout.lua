@@ -2724,9 +2724,13 @@ end
 -- site of MAX_ENTITIES still finishes its checks from the warm cache), and
 -- that share uses up what is left. Its can_place checks run beside every
 -- other job of the tick and its report (materials, survey rows) at the
--- end: one item each let a dry run take 24 ms of one tick (trial 0011).
-local CHECK_COST = 3
+-- end: one item each let a dry run take 24 ms of one tick (trial 0011), a
+-- third 15 ms (trial 0012), so each costs six.
+local CHECK_COST = 6
 M.CHECK_COST = CHECK_COST
+local function check_share(left)
+  return math.max(math.floor(left / CHECK_COST), math.min(left, jobs.MIN_WORK))
+end
 
 local function check_job(label, make_request)
   return {
@@ -2744,7 +2748,7 @@ local function check_job(label, make_request)
       local ctx = s.ctx
       local before = ctx.calls
       local left = math.max(1, budget.left)
-      local share = math.max(math.floor(left / CHECK_COST), math.min(left, jobs.MIN_WORK))
+      local share = check_share(left)
       local result = advance(c, s, share)
       if result and not state.survey and #result.failed == 0 and result.placements then
         -- A buildable layout is surveyed next (data, never a failure).
@@ -2947,12 +2951,33 @@ M._resolve, M._rotated, M._plan_steps = resolve, rotated, plan_steps
 -- The resumable search for another dry run (blueprint_place check_only):
 -- search_start(c, {anchor? | site?, layouts}), search_step(c, s, budget) ->
 -- result | nil, check_report(c, result, extra) -> the check_only answer.
-M.search_start, M.search_step, M.check_report = new_search, advance, report
+-- Both steps spend the dry run's share (check_share) of the budget they are
+-- given and charge the rest of it to the tick (jobs.charge), as this file's
+-- own dry run does: the caller takes their own work from its budget.
+local function charge_share(spent, left, share)
+  jobs.charge(math.max(0, math.ceil(spent * left / share) - spent))
+end
+local function check_search_step(c, s, budget)
+  local before, left = s.ctx.calls, math.max(1, budget)
+  local share = check_share(left)
+  local result = advance(c, s, share)
+  charge_share(s.ctx.calls - before, left, share)
+  return result
+end
+M.search_start, M.search_step, M.check_report = new_search, check_search_step, report
 -- Its survey of a buildable result: survey_start(ctx, result, only?) ->
 -- state, survey_step(ctx, state, limit) -> true once done, survey_rows(state)
 -- -> the report rows (only names the rows wanted), survey_failed(state) ->
 -- the placements the build would be refused (fluid_mixes).
-M.survey_start, M.survey_step, M.survey_rows, M.survey_failed = survey_start, survey_step, survey_rows, survey_failed
+local function check_survey_step(ctx, state, limit)
+  local before = ctx.calls
+  local left = math.max(1, limit - before)
+  local share = check_share(left)
+  local done = survey_step(ctx, state, before + share)
+  charge_share(ctx.calls - before, left, share)
+  return done
+end
+M.survey_start, M.survey_step, M.survey_rows, M.survey_failed = survey_start, check_survey_step, survey_rows, survey_failed
 M.validate_layout, M.platform_space = validate_layout, platform_space
 M.WORK_PER_TICK, M.MAX_WORK = WORK_PER_TICK, MAX_WORK
 

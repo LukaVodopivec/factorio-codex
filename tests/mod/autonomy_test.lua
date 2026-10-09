@@ -496,13 +496,45 @@ check(status.tick == game.tick and type(status.lines) == "table" and status.powe
   and status.patches[1].name == "iron-ore" and status.patches[1].distance == 50,
   "factory_status composes lines, problems, power, stock, research, body and patches")
 do
+  -- A read charges each line row it builds (and the lines it passes) to
+  -- the tick's work (jobs.lua), so job work later in the tick gets what is
+  -- left; past a tick's work it leaves its remaining gated sections out.
+  local jobs = require("scripts.jobs")
+  local real_lines = autonomy.lines
+  local function lines_of(n)
+    autonomy.lines = function(_, _, keep)
+      local rows = {}
+      for i = 1, math.min(n, keep.limit) do rows[i] = { id = i, state = "running", position = { x = i, y = 0 } } end
+      return rows, n, n
+    end
+  end
+  lines_of(40)
+  local before = jobs.spent()
+  local small = factory_status.factory_status({})
+  local small_work = jobs.spent() - before
+  lines_of(700)
+  game.tick = game.tick + 1
+  local large = factory_status.factory_status({})
+  autonomy.lines = real_lines
+  check(small_work >= 40 + 2 * #small.lines and small.unread_sections == nil and small.research and small.power,
+    "factory_status charges each line it ranks and each row it builds to the tick's work (" .. small_work
+      .. " items for 40 lines)")
+  check(large.omitted_lines == 690 and large.unread_sections and large.unread_sections[1] == "power"
+    and large.power == nil and large.stock == nil and large.research == nil and large.body and large.patches,
+    "a read past a tick's work names its remaining sections (" .. table.concat(large.unread_sections or {}, ",")
+      .. ") and keeps lines, problems, body and patches")
+end
+do
   -- Within a state, the line not running for more of the last 10 minutes
   -- goes first, then the lower id.
   local real_lines = autonomy.lines
-  autonomy.lines = function()
-    return { { id = 1, state = "starved", share_10m = { running = 0.9, starved = 0.1 } },
+  -- factory_status passes the order (keep.before) autonomy.lines ranks by.
+  autonomy.lines = function(_, _, keep)
+    local rows = { { id = 1, state = "starved", share_10m = { running = 0.9, starved = 0.1 } },
       { id = 2, state = "starved", share_10m = { starved = 1 } }, { id = 3, state = "starved" },
       { id = 4, state = "starved", share_10m = { starved = 1 } } }
+    table.sort(rows, keep.before)
+    return rows, 4, 4
   end
   local ordered = factory_status.factory_status({ sections = { "lines" } }).lines
   autonomy.lines = real_lines
@@ -854,6 +886,17 @@ do
   end
 end
 local full = factory_status.factory_status({})
+do
+  -- The worst case charges more than a tick's work by the time its last
+  -- sections come: they are named (facts only: section names), and a read
+  -- of just those returns them; together the two are the whole read.
+  local unread = table.concat(full.unread_sections or {}, ",")
+  local rest = factory_status.factory_status({ sections = full.unread_sections })
+  check(unread == "platforms,elsewhere,alerts" and rest.unread_sections == nil and rest.alerts ~= nil,
+    "a read past a tick's work leaves its last sections out and names them; reading those returns them (" .. unread .. ")")
+  full.unread_sections = nil
+  for key, value in pairs(rest) do if full[key] == nil then full[key] = value end end
+end
 json_size = size(full)
 registry.labs = real_labs
 game.get_surface = nil

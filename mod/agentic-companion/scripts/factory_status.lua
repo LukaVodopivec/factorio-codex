@@ -12,7 +12,9 @@
 -- factory surface for packs made). The only scan is rebuilding
 -- that set once after a load, an upgrade or a reversed research.
 -- registry_ready, stock_power_ready and patches_ready are false while an
--- upgraded save's bootstrap or first pass still runs. The default read
+-- upgraded save's bootstrap or first pass still runs. A read that has done a
+-- tick's work leaves its remaining sections out and names them in
+-- unread_sections (see GATED). The default read
 -- stays under about 6 KB in ordinary play (feed facts on up to three stalled
 -- rows add up to about 1.6 KB; line capacity, state shares, fuel runway and
 -- supply states about 2.3 KB, research, alerts and losses about 2.9 KB more
@@ -86,6 +88,19 @@ local function stalled_share(row) return row.share_10m and 1 - (row.share_10m.ru
 local PROBLEM_RANK = { no_power = 1, not_plugged_in_electric_network = 1, no_fuel = 1, frozen = 1,
   no_minable_resources = 2, low_temperature = 2, pipeline_overextended = 2, no_modules_to_transmit = 2,
   no_research_in_progress = 2, full_output = 3, waiting_for_space_in_destination = 3 }
+
+-- Work a read charges to the tick (jobs.lua work items, about 13 us each:
+-- the live suite reads 74 lines of 185 machines in about 2 ms): each line
+-- row LINE_ROW_WORK, each line ranked and each problem row one, one per SCAN_PER_ITEM lines or
+-- machines passed, and the engine reads of its sections as they count them.
+-- Once a read has charged a tick's budget (jobs.WORK_PER_TICK), the sections
+-- still to come of GATED are left out and named in unread_sections (a read
+-- of just those returns them): no read takes more than a tick, and job work
+-- later in the tick gets what is left.
+local LINE_ROW_WORK, SCAN_PER_ITEM = 2, 16
+local GATED = { power = true, stock = true, research = true, logistics = true, platforms = true, elsewhere = true,
+  alerts = true }
+local function scan(n) return math.ceil((n or 0) / SCAN_PER_ITEM) end
 
 local function cap(rows, limit)
   local omitted = math.max(0, #rows - limit)
@@ -606,17 +621,31 @@ function M.factory_status(params)
   local index, body = target.surface.index, target.body
   local result = { tick = game.tick, since_tick = since, registry_ready = registry.ready(), surface = target.ref,
     unlocked_locations = unlocked_locations(target.force), trial = benchmark.trial() }
+  local start = jobs.spent()
+  -- Whether a section is wanted and, if gated, the read still has budget
+  -- for it; one it has not is named in unread_sections.
+  local function due(name)
+    if not want[name] then return false end
+    if GATED[name] and jobs.spent() - start >= jobs.WORK_PER_TICK then
+      result.unread_sections = result.unread_sections or {}
+      result.unread_sections[#result.unread_sections + 1] = name
+      return false
+    end
+    return true
+  end
   if params and params.measure ~= nil then result.measured = measure_section(target, params.measure) end
   if want.lines then
-    result.lines = autonomy.lines(since, index)
-    table.sort(result.lines, function(x, y)
+    -- Only the MAX_LINES shown get a row (autonomy.lines keep).
+    local scanned, matched
+    result.lines, scanned, matched = autonomy.lines(since, index, { limit = MAX_LINES, before = function(x, y)
       local rx, ry = line_rank(x), line_rank(y)
       if rx ~= ry then return rx < ry end
       local sx, sy = stalled_share(x), stalled_share(y)
       if sx ~= sy then return sx > sy end
       return x.id < y.id
-    end)
-    result.omitted_lines = cap(result.lines, MAX_LINES)
+    end })
+    jobs.charge(LINE_ROW_WORK * #result.lines + matched + 2 * scan(scanned))
+    result.omitted_lines = matched > #result.lines and matched - #result.lines or nil
     -- Totals over every line of the surface, whatever since_tick and the
     -- cap leave out.
     local counts = autonomy.counts(index, true)
@@ -626,7 +655,8 @@ function M.factory_status(params)
     result.lines_error = storage.autonomy and storage.autonomy.refresh_error
   end
   if want.problems then
-    local rows = autonomy.problems(since, index)
+    local rows, scanned = autonomy.problems(since, index)
+    jobs.charge(#rows + scan(scanned))
     table.sort(rows, problem_before)
     -- The newest own losses come first, at most MAX_LOSS_ROWS; the rest
     -- count as omitted.
@@ -639,38 +669,39 @@ function M.factory_status(params)
   if want.power or want.stock then
     local maintenance = registry.maintenance()
     result.stock_power_tick, result.stock_power_ready = maintenance.pass_tick, maintenance.ready
-    if want.power then
+    if due("power") then
       local rows, omitted = map_summary.build_power(target.surface, MAX_POWER)
       result.power, result.omitted_power = rows, omitted > 0 and omitted or nil
+      jobs.charge(2 * #rows + scan(#rows + omitted))
     end
-    if want.stock then
+    if due("stock") then
       local rows, omitted = stock_section(index)
       result.stock, result.omitted_stock = rows, omitted > 0 and omitted or nil
     end
   end
   cap_supply(result)
-  if want.research then result.research = research_section(target.force, index) end
+  if due("research") then result.research = research_section(target.force, index) end
   if want.body then result.body = body_section(body, target.ref) end
   if want.patches then
     result.patches, result.omitted_patches, result.patches_ready =
       patches_section(index, target.here and body.position or nil)
   end
-  if want.logistics then
+  if due("logistics") then
     result.logistics = logistics.section({ surface = target.surface, force = target.force,
       position = target.here and body.position or { x = 0, y = 0 } })
   end
-  if want.platforms then
+  if due("platforms") then
     local rows, omitted, work = platforms.compact(target.force)
     jobs.charge(work)
     -- Absent until the force has a platform.
     if #rows > 0 then result.platforms, result.omitted_platforms = rows, omitted > 0 and omitted or nil end
   end
-  if want.elsewhere then
+  if due("elsewhere") then
     local rows, omitted = elsewhere_section(index, since)
     -- Absent while the factory stands on one surface.
     if #rows > 0 then result.elsewhere, result.omitted_elsewhere = rows, omitted > 0 and omitted or nil end
   end
-  if want.alerts then
+  if due("alerts") then
     local rows, omitted, reason = alerts_section(body, target.surface)
     if rows and #rows > 0 then result.alerts, result.omitted_alerts = rows, omitted > 0 and omitted or nil end
     result.alerts_unavailable = reason

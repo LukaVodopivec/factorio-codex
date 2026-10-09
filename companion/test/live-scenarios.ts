@@ -626,6 +626,65 @@ const scenarios: Scenario[] = [
     },
   },
   {
+    // About 180 machines: the 60 of the scenario before and 120 powered
+    // assemblers on a fourth cleared site (a dozen recipes, each given one
+    // batch of ingredients, so lines run, starve and fill). Every
+    // factory_status read, whole and since a tick, stays within the budget.
+    name: "factory_status at about 180 machines stays within the tick budget",
+    async run(bridge) {
+      const from = fs.readFileSync(paths.log, "utf8").length;
+      const built = await lua<any>(`${BUILD}
+        local s = game.surfaces.nauvis
+        s.request_to_generate_chunks({ 90, 172 }, 3)
+        s.force_generate_chunk_requests()
+        for _, e in pairs(s.find_entities_filtered({ area = { { 56, 140 }, { 126, 196 } } })) do e.destroy() end
+        local tiles = {}
+        for x = 56, 125 do for y = 140, 195 do tiles[#tiles + 1] = { name = "refined-concrete", position = { x, y } } end end
+        s.set_tiles(tiles)
+        local eei = make(s, "electric-energy-interface", 58, 142)
+        eei.power_production, eei.electric_buffer_size = 10000000, 100000000
+        for _, x in ipairs({ 66, 84, 102, 120 }) do for _, y in ipairs({ 150, 168, 186 }) do make(s, "substation", x, y) end end
+        local recipes = { "iron-gear-wheel", "copper-cable", "electronic-circuit", "transport-belt", "inserter", "pipe",
+          "automation-science-pack", "logistic-science-pack", "firearm-magazine", "engine-unit", "steel-chest", "iron-stick" }
+        local machines = 0
+        for col = 0, 14 do
+          for row = 0, 7 do
+            local recipe = recipes[(col + row) % #recipes + 1]
+            local a = make(s, "assembling-machine-2", 62.5 + 4 * col, 146.5 + 6 * row)
+            a.set_recipe(recipe)
+            for _, ingredient in ipairs(prototypes.recipe[recipe].ingredients) do
+              if ingredient.type == "item" then a.insert({ name = ingredient.name, count = 10 }) end
+            end
+            machines = machines + 1
+          end
+        end
+        return { machines = machines }`);
+      const total = await until("the line sampler to group about 180 machines", async () => {
+        const machines = await lua<number>(`local n = 0 for _, line in pairs(storage.autonomy.lines) do n = n + #line.machines end return n`);
+        return machines >= 170 ? machines : undefined;
+      }, 90_000);
+      const tick = await lua<number>("return game.tick");
+      await until("20 s of machine states", () => lua<boolean>(`return game.tick >= ${tick + 1200}`), 60_000);
+      const reads: string[] = [];
+      for (let i = 0; i < 6; i++) {
+        const status = await bridge.call<any>("factory_status", i % 2 === 0 ? {} : { since_tick: tick });
+        expect(status.line_counts?.total > 10, "factory_status counts the lines", status.line_counts);
+        reads.push(`${status.line_counts.total} lines${status.unread_sections ? ` (unread ${status.unread_sections.join(",")})` : ""}`);
+      }
+      const slice = await until("the profiler lines of every read", async () => {
+        const text = fs.readFileSync(paths.log, "utf8").slice(from);
+        return profile(text).rpcs.filter((row) => row.method === "factory_status").length >= 6 ? text : undefined;
+      });
+      const { rpcs, ticks } = profile(slice);
+      const status = rpcs.filter((row) => row.method === "factory_status").map((row) => row.ms);
+      const over = ticks.filter((row) => row.ms > TICK_BUDGET_MS && row.methods.includes("factory_status"));
+      const summary = `${built.machines} new, ${total} machines in lines; reads ${reads.join("; ")}; factory_status ms`
+        + ` ${status.map((ms) => ms.toFixed(2)).join(", ")}`;
+      expect(over.length === 0, `every factory_status tick stays within ${TICK_BUDGET_MS} ms (${summary})`, over.map(describeTick));
+      return summary;
+    },
+  },
+  {
     // fluid_connections.ports with mirror against the game: each crafter
     // created mirrored (and plain) at every cardinal direction on a recipe
     // using each of its fluid boxes, its live pipe connections (the tile each

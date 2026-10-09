@@ -95,6 +95,21 @@ local kept_lying = build.place.tick(kept_place)
 check(kept_lying.status == "failed"
   and kept_lying.detail:find("item-on-ground iron-plate x3 at (4.25, -0.33984375) is in the way", 1, true) ~= nil,
   "a lying item stack in the way is named with its item, count and exact position")
+do
+  -- What never blocks a building (a tree stump is a corpse, a ghost, a
+  -- proxy) is never named as the blocker; a drill with no ore it can mine
+  -- under it says so instead.
+  local stump = { valid = true, name = "tree-04-stump", type = "corpse", position = { x = 4.1, y = 0.2 } }
+  local ghost = { valid = true, name = "entity-ghost", type = "entity-ghost", position = { x = 4, y = 0 } }
+  surface.find_entities_filtered = function() return { stump, ghost } end
+  local why = build.blocked_reason(body, { x = 4, y = 0 }, { name = "stone-furnace", type = "furnace",
+    collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } }, 0)
+  check(not why:match("stump") and not why:match("ghost"), "a remnant or ghost on the footprint is never named as the blocker")
+  local drill = { name = "burner-mining-drill", type = "mining-drill", resource_categories = { ["basic-solid"] = true },
+    collision_box = { left_top = { x = -0.9, y = -0.9 }, right_bottom = { x = 0.9, y = 0.9 } } }
+  check(build.blocked_reason(body, { x = 4, y = 0 }, drill, 0) == "no resource it can mine under it",
+    "a drill refused over no ore says it has no resource it can mine under it, not a remnant")
+end
 surface.find_entities_filtered = search
 
 local explicit = { target = { x = 1, y = 0 }, direction = 12 }

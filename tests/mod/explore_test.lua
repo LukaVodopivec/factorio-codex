@@ -37,6 +37,15 @@ body.surface.find_entities_filtered = function(filter)
   return out
 end
 package.loaded["scripts.companion"] = { get = function() return body end, require_companion = function() return body end }
+body.surface.index = 1
+-- The force's charted patch list (map_summary.patches): rows, whether it is
+-- filled, and how many rows its cap left out.
+local cached = { rows = {}, filled = true, omitted = 0 }
+local patch_reads = {}
+package.loaded["scripts.map_summary"] = { patches = function(index)
+  patch_reads[#patch_reads + 1] = index
+  return cached.rows, cached.filled, cached.omitted
+end }
 
 -- Walking: the body reaches the leg's end unless the heading is blocked.
 local legs, blocked = {}, function() return false end
@@ -81,6 +90,7 @@ local function reset()
   chart_around_body(2)
   blocked = function() return false end
   chart_delay = 0
+  cached, patch_reads = { rows = {}, filled = true, omitted = 0 }, {}
 end
 
 -- Oil 400 tiles east: legs east, a chart pass after each, and a stop once
@@ -132,6 +142,68 @@ local none = run({ resource = "iron-ore", direction = 8, max_distance = 150 })
 check(none and none.status == "failed" and none.outcome.code == "EXPLORE_NOT_FOUND" and none.outcome.walked >= 142
   and none.outcome.walked <= 150 and none.detail:match("after walking"),
   "explore stops at its distance budget and says the resource was not found")
+check(none.outcome.nearest_charted == "none charted" and none.outcome.charted_unknown == nil
+  and none.detail:match("no iron%-ore patch is charted on this surface"),
+  "with a complete charted list and no such patch, the shortfall says none is charted")
+
+-- The force's charted patches count: a patch charted already (by the
+-- chore, a radar or an earlier search) within max_distance ends the search
+-- at once; one farther away is named by the shortfall; an incomplete list
+-- never claims that none is charted.
+do
+  local function oil_row(x, y)
+    return { name = "crude-oil", amount = 900000, tiles = 9, centroid = { x = x, y = y },
+      bbox = { left_top = { x = x - 10, y = y - 10 }, right_bottom = { x = x + 10, y = y + 10 } } }
+  end
+  reset()
+  cached.rows = { { name = "iron-ore", amount = 1, tiles = 1, centroid = { x = 20, y = 0 },
+    bbox = { left_top = { x = 19, y = -1 }, right_bottom = { x = 21, y = 1 } } }, oil_row(420, -150), oil_row(900, 0) }
+  local known = run({ resource = "crude-oil", direction = 4, max_distance = 1000 })
+  local patch = known and known.outcome.patch
+  local keys = {}
+  for key in pairs(patch or {}) do keys[#keys + 1] = key end
+  table.sort(keys)
+  check(known and known.status == "done" and known.outcome.code == "PATCH_FOUND" and known.outcome.walked == 0
+    and #legs == 0 and patch.charted_before == true and patch.centroid.x == 420 and patch.bbox.left_top.y == -160
+    and math.abs(patch.distance - math.sqrt(409.5 ^ 2 + 140.5 ^ 2)) < 0.1 and patch_reads[1] == 1
+    and table.concat(keys, ",") == "bbox,centroid,charted_before,distance,name",
+    "a crude-oil patch charted 140 tiles off the heading ends the search at once: PATCH_FOUND, charted_before, facts only")
+  check(known.detail:match("^found charted crude%-oil centred at %(420%.0, %-150%.0%)") ~= nil
+    and not known.detail:lower():match("should") and not known.detail:lower():match("try"),
+    "the PATCH_FOUND detail states the charted patch and its distance, nothing else")
+
+  -- A nearer patch in view wins over a farther charted one.
+  reset()
+  cached.rows = { oil_row(420, -150) }
+  resources = { { valid = true, name = "crude-oil", position = { x = 50.5, y = 0.5 } } }
+  local nearer = run({ resource = "crude-oil", direction = 4, max_distance = 1000 })
+  check(nearer and nearer.outcome.code == "PATCH_FOUND" and nearer.outcome.patch.position.x == 50.5
+    and nearer.outcome.patch.charted_before == nil, "a nearer patch in view is found before a farther charted one")
+
+  -- Beyond max_distance: the search runs and its shortfall names it.
+  reset()
+  cached.rows = { oil_row(420, -150) }
+  local far = run({ resource = "crude-oil", direction = 8, max_distance = 150 })
+  local named = far and far.outcome.nearest_charted
+  check(far and far.outcome.code == "EXPLORE_NOT_FOUND" and type(named) == "table" and named.name == "crude-oil"
+    and named.centroid.x == 420 and named.bbox.right_bottom.x == 430 and named.distance > 150
+    and named.charted_before == nil and far.outcome.charted_unknown == nil
+    and far.detail:match("nearest charted crude%-oil: centred at %(420%.0, %-150%.0%)") ~= nil
+    and not far.detail:lower():match("should") and not far.detail:lower():match("try"),
+    "EXPLORE_NOT_FOUND names the nearest charted patch beyond max_distance, as a fact")
+
+  -- Still filling, or capped: no 'none charted'.
+  for _, state in ipairs({ { filled = false, omitted = 0, label = "still filling" },
+    { filled = true, omitted = 3, label = "capped" } }) do
+    reset()
+    cached.filled, cached.omitted = state.filled, state.omitted
+    local unsure = run({ resource = "crude-oil", direction = 8, max_distance = 64 })
+    check(unsure and unsure.outcome.code == "EXPLORE_NOT_FOUND" and unsure.outcome.nearest_charted == nil
+      and unsure.outcome.charted_unknown == true and not unsure.detail:match("is charted on this surface")
+      and unsure.detail:match("charted patch list is incomplete"),
+      "a charted list " .. state.label .. " never says none is charted (charted_unknown)")
+  end
+end
 
 -- No direction: the heading whose uncharted land is nearest.
 reset()

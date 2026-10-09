@@ -2,13 +2,16 @@
 -- It walks legs of up to LEG_TILES toward the frontier (the given heading,
 -- else the heading whose uncharted land is nearest), charts the land around
 -- itself after each leg, and stops once a charted patch of the resource lies
--- in view (the land it charts: VIEW_RADIUS tiles around the start and each
--- leg's end) or it has walked max_distance. Every leg is an ordinary walk; a
--- heading the body cannot walk is turned by 45 degrees, at most MAX_TURNS
--- times in a row. Work per tick is bounded: one chart pass around the body,
--- one bounded resource query per leg.
+-- in view (VIEW_RADIUS tiles around the start and each leg's end; it charts
+-- a wider square) or the force's charted patch list (map_summary.patches:
+-- own charted chunks only) holds one within max_distance of the body, or it
+-- has walked max_distance. Every leg is an ordinary walk; a heading the body
+-- cannot walk is turned by 45 degrees, at most MAX_TURNS times in a row.
+-- Work per tick is bounded: one chart pass around the body, one bounded
+-- resource query and one pass over the cached patch rows per leg.
 local companion = require("scripts.companion")
 local supply = require("scripts.actions.supply")
+local map_summary = require("scripts.map_summary")
 
 local M = {}
 
@@ -94,6 +97,44 @@ local function patch_in_view(c, resource)
     distance = math.floor(math.sqrt(best_d) * 10 + 0.5) / 10, entities_seen = seen }
 end
 
+local function tenth(n) return math.floor(n * 10 + 0.5) / 10 end
+
+-- Tiles from a point to a box (0 inside it).
+local function box_distance(p, box)
+  local dx = math.max(box.left_top.x - p.x, 0, p.x - box.right_bottom.x)
+  local dy = math.max(box.left_top.y - p.y, 0, p.y - box.right_bottom.y)
+  return math.sqrt(dx * dx + dy * dy)
+end
+
+-- The charted patch of the resource on the body's surface nearest the body
+-- (by its bbox), from the force's patch cache, as {name, centroid, bbox,
+-- distance}; and whether that list may leave patches out (capped, or not
+-- yet filled). One pass over the cached rows; no entity read.
+local function nearest_charted(c, resource)
+  local ok, rows, filled, omitted = pcall(map_summary.patches, c.surface.index)
+  if not ok then return nil, true end
+  local best, best_d
+  for _, patch in ipairs(rows or {}) do
+    if patch.name == resource and patch.bbox and patch.centroid then
+      local d = box_distance(c.position, patch.bbox)
+      if not best or d < best_d then best, best_d = patch, d end
+    end
+  end
+  local unknown = filled ~= true or (tonumber(omitted) or 0) > 0
+  if not best then return nil, unknown end
+  local box = best.bbox
+  return { name = best.name, centroid = { x = best.centroid.x, y = best.centroid.y },
+    bbox = { left_top = { x = box.left_top.x, y = box.left_top.y },
+      right_bottom = { x = box.right_bottom.x, y = box.right_bottom.y } },
+    distance = tenth(best_d) }, unknown
+end
+
+local function patch_text(patch)
+  return string.format("centred at (%.1f, %.1f), bbox (%d, %d)-(%d, %d), %.0f tiles from the body to its bbox",
+    patch.centroid.x, patch.centroid.y, math.floor(patch.bbox.left_top.x), math.floor(patch.bbox.left_top.y),
+    math.floor(patch.bbox.right_bottom.x), math.floor(patch.bbox.right_bottom.y), patch.distance)
+end
+
 local function validate(params, label)
   local distance = tonumber(params.max_distance)
   if not distance or distance < MIN_DISTANCE or distance > MAX_DISTANCE then
@@ -122,10 +163,11 @@ end
 
 M.resume = supply.resume
 
-local function finish(task, c, status, code, detail, patch)
+local function finish(task, c, status, code, detail, patch, extra)
   local outcome = { code = code, walked = math.floor(task._walked + 0.5), legs = task._legs,
     max_distance = task.max_distance, resource = task.resource, patch = patch,
     position = { x = c.position.x, y = c.position.y } }
+  for key, value in pairs(extra or {}) do outcome[key] = value end
   return { status = status, detail = detail, outcome = outcome }
 end
 
@@ -138,7 +180,15 @@ end
 
 local function leg(task, c)
   if task.resource then
+    -- A patch the force has charted already counts, unless the view holds
+    -- a nearer one.
+    local known = nearest_charted(c, task.resource)
     local patch = patch_in_view(c, task.resource)
+    if known and known.distance <= task.max_distance and not (patch and patch.distance < known.distance) then
+      known.charted_before = true
+      return finish(task, c, "done", "PATCH_FOUND", string.format("found charted %s %s, after walking %d tiles",
+        known.name, patch_text(known), math.floor(task._walked + 0.5)), known)
+    end
     if patch then
       return finish(task, c, "done", "PATCH_FOUND", string.format("found %s at (%.1f, %.1f), %.0f tiles away, after walking %d tiles",
         patch.name, patch.position.x, patch.position.y, patch.distance, math.floor(task._walked + 0.5)), patch)
@@ -149,9 +199,21 @@ local function leg(task, c)
   local left = task.max_distance - task._walked
   if left < 2 * ARRIVAL_RADIUS then
     if task.resource then
+      -- The nearest charted one anywhere on the surface, or that none is
+      -- charted (never said while the charted list may leave one out).
+      local known, unknown = nearest_charted(c, task.resource)
+      local note
+      if known then
+        note = string.format("; nearest charted %s: %s", task.resource, patch_text(known))
+      elseif unknown then
+        note = "; the charted patch list is incomplete (capped or still being read)"
+      else
+        note = string.format("; no %s patch is charted on this surface", task.resource)
+      end
       return finish(task, c, "failed", "EXPLORE_NOT_FOUND", string.format(
-        "EXPLORE_NOT_FOUND: no charted %s within %d tiles of the start or any leg's end after walking %d of %d tiles",
-        task.resource, VIEW_RADIUS, math.floor(task._walked + 0.5), task.max_distance))
+        "EXPLORE_NOT_FOUND: no charted %s within %d tiles of the start or any leg's end after walking %d of %d tiles%s",
+        task.resource, VIEW_RADIUS, math.floor(task._walked + 0.5), task.max_distance, note), nil,
+        { nearest_charted = known or (not unknown and "none charted" or nil), charted_unknown = unknown or nil })
     end
     return finish(task, c, "done", "EXPLORED", string.format("walked %d tiles in %d legs and charted around each",
       math.floor(task._walked + 0.5), task._legs))

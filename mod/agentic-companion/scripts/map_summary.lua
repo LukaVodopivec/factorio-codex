@@ -2852,14 +2852,17 @@ function M.on_chunk_charted(event)
 end
 
 -- on_resource_depleted: the resource is removed right after the event; the
--- chunk is read again on a later tick.
+-- chunk is read again on a later tick. Only a chunk the force has charted
+-- (a mined-out drill beyond the chart never adds land to it).
 function M.on_resource_depleted(event)
   local entity = event and event.entity
   if not (storage.patch_caches and entity and entity.valid) then return end
   local cache = storage.patch_caches[entity.surface_index]
   if not (cache and cache.seeded) then return end
   local position = entity.position
-  enqueue_chunk(cache, math.floor(position.x / 32), math.floor(position.y / 32))
+  local x, y = math.floor(position.x / 32), math.floor(position.y / 32)
+  if not cache.charted_set[chunk_key(x, y)] then return end
+  enqueue_chunk(cache, x, y)
 end
 
 -- on_surface_deleted: its cache goes.

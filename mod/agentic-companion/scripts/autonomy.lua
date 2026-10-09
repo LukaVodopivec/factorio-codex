@@ -93,9 +93,13 @@ local MINUTE_TICKS = 3600
 local PRODUCTIVE_TICKS = 600
 -- A machine whose new episode has the class (STATUS_CLASS) it last woke
 -- next_event with, within this window of that wake, is a counted problem
--- row again but does not move last_problem_tick: an assembler that fills
--- and drains around a slower consumer wakes the pilot once in five minutes.
+-- row again but does not move last_problem_tick: a burner that runs dry
+-- again and again wakes the pilot once in five minutes.
 local REANNOUNCE_TICKS = 5 * MINUTE_TICKS
+-- Classes that never move last_problem_tick: backpressure around a slower
+-- consumer is ordinary. Their rows still count and are announced, so they
+-- stay in problems(since), factory_status and a wake another class causes.
+local NO_WAKE_CLASSES = { output_full = true }
 local RATE_BIN_TICKS, RATE_BINS = 600, 6
 -- State share counters: one bin a minute, ten kept.
 local SHARE_BIN_TICKS, SHARE_BINS = MINUTE_TICKS, 10
@@ -750,7 +754,7 @@ local function sample(a, rec, tick)
     if not rec.problem_counted and tick - rec.problem_since >= threshold then
       rec.problem_counted, rec.problem_announced_tick = true, tick
       local class = STATUS_CLASS[raw] or raw
-      if rec.woke_class ~= class or tick - rec.woke_tick >= REANNOUNCE_TICKS then
+      if not NO_WAKE_CLASSES[class] and (rec.woke_class ~= class or tick - rec.woke_tick >= REANNOUNCE_TICKS) then
         rec.woke_class, rec.woke_tick = class, tick
         a.last_problem_tick = tick
       end
@@ -1506,16 +1510,38 @@ end
 -- Public line rows of one surface (an index; nil or "all": every surface),
 -- ordered by id.
 -- since_tick keeps only lines that changed state, flags, membership or cause
--- since then.
-function M.lines(since_tick, surface)
+-- since then. With keep = {limit, before}, only the first `limit` lines by
+-- before (compared on {id, state, degraded, share_10m}, as their rows say)
+-- get a row, in that order: a read showing a few lines builds no row for
+-- the rest. Also returns how many lines it passed (the read's work) and how
+-- many matched.
+function M.lines(since_tick, surface, keep)
   local a = data()
   local rows = {}
-  if not a then return rows end
-  -- supply_states once per surface and network, however many rows share it.
-  local supply = {}
+  if not a then return rows, 0, 0 end
+  local ids = {}
   for _, id in ipairs(a.line_order) do
     local line = a.lines[id]
-    if (not since_tick or line.changed_tick >= since_tick) and on(a, line, surface) then
+    if (not since_tick or line.changed_tick >= since_tick) and on(a, line, surface) then ids[#ids + 1] = id end
+  end
+  local matched = #ids
+  if keep then
+    local ranked = {}
+    for i, id in ipairs(ids) do
+      local line = a.lines[id]
+      ranked[i] = { id = id, state = line.state, share_10m = share_10m(line, game.tick),
+        degraded = line.state == "running" and line.degraded and line.degraded_unit
+          and a.machines[line.degraded_unit] and true or nil }
+    end
+    table.sort(ranked, keep.before)
+    ids = {}
+    for i = 1, math.min(keep.limit, #ranked) do ids[i] = ranked[i].id end
+  end
+  -- supply_states once per surface and network, however many rows share it.
+  local supply = {}
+  for _, id in ipairs(ids) do
+    local line = a.lines[id]
+    do
       local row = { id = id, product = line.product, machines = #line.machines, working = line.working, state = line.state,
         rate_per_min = rate_per_min(line, game.tick), hand_fed = line.hand_fed == true,
         self_sustaining = line.self_sustaining == true, position = line.position }
@@ -1561,7 +1587,7 @@ function M.lines(since_tick, surface)
       rows[#rows + 1] = row
     end
   end
-  return rows
+  return rows, #a.line_order, matched
 end
 
 -- Machines on one surface (an index; nil or "all": every surface) whose
@@ -1583,10 +1609,12 @@ local function add_problem(rows, by_key, id, rec)
   end
 end
 
+-- Also returns how many machines it passed (the read's work).
 function M.problems(since_tick, surface)
   local a = data()
   local rows, by_key = {}, {}
-  if not a then return rows end
+  if not a then return rows, 0 end
+  local passed = #a.problem_only
   local function add(id, unit)
     local rec = a.machines[unit]
     if rec and rec.problem_counted and (not since_tick or (rec.problem_announced_tick or rec.problem_since) >= since_tick)
@@ -1595,10 +1623,12 @@ function M.problems(since_tick, surface)
     end
   end
   for _, id in ipairs(a.line_order) do
-    for _, unit in ipairs(a.lines[id].machines) do add(id, unit) end
+    local machines = a.lines[id].machines
+    passed = passed + #machines
+    for _, unit in ipairs(machines) do add(id, unit) end
   end
   for _, unit in ipairs(a.problem_only) do add(nil, unit) end
-  return rows
+  return rows, passed
 end
 
 -- Every surface at once, in one pass over the lines and the problem-only

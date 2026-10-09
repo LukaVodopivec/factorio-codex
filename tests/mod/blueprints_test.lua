@@ -279,6 +279,44 @@ check(blueprints.tool_unlock(body, "deconstruction-planner").researched == true
   and blueprints.tool_unlock(body, "upgrade-planner").technology == nil,
   "a tool's unlock is reported per tool; one without a shortcut names none")
 
+-- Hand placement leaves pole-to-pole copper wires to the poles' own
+-- connection and counts them (wires_ignored, once per wire); circuit wires
+-- and a power switch's copper still refuse it, named exactly.
+do
+  _G.defines = _G.defines or {}
+  defines.wire_connector_id = { circuit_red = 1, circuit_green = 2, pole_copper = 5, power_switch_left_copper = 5,
+    power_switch_right_copper = 6 }
+  entities["small-electric-pole"] = proto("small-electric-pole", "electric-pole", 1, 1)
+  entities["power-switch"] = proto("power-switch", "power-switch", 2, 2)
+  items["small-electric-pole"] = { name = "small-electric-pole", place_result = entities["small-electric-pole"] }
+  items["power-switch"] = { name = "power-switch", place_result = entities["power-switch"] }
+  bp.world = {
+    { name = "small-electric-pole", type = "electric-pole", position = { x = 0.5, y = 0.5 }, direction = 0, force = own },
+    { name = "small-electric-pole", type = "electric-pole", position = { x = 5.5, y = 0.5 }, direction = 0, force = own },
+    { name = "power-switch", type = "power-switch", position = { x = 3, y = 3 }, direction = 0, force = own },
+  }
+  capture({ name = "poles", center = { x = 3, y = 2 }, radius = 4 })
+  local st = bp.state(storage.blueprints.inventory[storage.blueprints.by_name.poles.slot])
+  -- The same copper wire listed at both of its ends.
+  st.entities[1].wires = { { 1, 5, 2, 5 } }
+  st.entities[2].wires = { { 2, 5, 1, 5 } }
+  local ok, layout = pcall(blueprints.hand_layout, "poles", nil, "test")
+  check(ok and layout.wires_ignored == 1 and #layout.entities == 3,
+    "a pole-to-pole copper wire passes hand placement and is counted once as wires_ignored")
+  st.entities[2].wires = { { 2, 5, 1, 5 }, { 2, 1, 1, 1 } }
+  local circuit_ok, circuit_err = pcall(blueprints.hand_layout, "poles", nil, "test")
+  check(not circuit_ok and tostring(circuit_err):match("cannot preserve blueprint circuit wires") ~= nil,
+    "a circuit wire still refuses hand placement, named as circuit wires")
+  st.entities[2].wires = nil
+  st.entities[3].wires = { { 3, 5, 1, 5 } }
+  local switch_ok, switch_err = pcall(blueprints.hand_layout, "poles", nil, "test")
+  check(not switch_ok and tostring(switch_err):match("cannot preserve blueprint power%-switch wires") ~= nil,
+    "a power switch's copper wire still refuses hand placement, named as power-switch wires")
+  st.entities[1].wires, st.entities[3].wires = nil, nil
+  local plain_ok, plain = pcall(blueprints.hand_layout, "poles", nil, "test")
+  check(plain_ok and plain.wires_ignored == nil, "a blueprint without wires has no wires_ignored")
+end
+
 -- A lost inventory (e.g. a mod removed and re-added) starts empty again.
 storage.blueprints.inventory = nil
 state.init()

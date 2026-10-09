@@ -876,6 +876,27 @@ do
   resources[#resources] = nil
   check(unseen.ok and unseen.mixed_ore == nil and seen.mixed_ore and seen.mixed_ore[1].also["copper-ore"] == 1,
     "copper on an uncharted chunk under a drill's mining area is never reported; charted, it is")
+  -- Each drill reports the amount of each resource it can mine in its
+  -- mining area (charted tiles only), an oil well its yield: data only.
+  for _, e in ipairs(resources) do e.amount = 1500 end
+  local crude = prototypes.entity["crude-oil"]
+  crude.infinite_resource, crude.normal_resource_amount = true, 300000
+  resources[#resources + 1] = { valid = true, name = "crude-oil", type = "resource", position = { x = 70.5, y = 30.5 },
+    amount = 450000 }
+  local amounts = dry({ anchor = { x = 45, y = 45 }, entities = { { name = "burner-mining-drill", dx = 3, dy = 0 } } })
+  local well = dry({ anchor = { x = 70, y = 30 }, entities = { { name = "pumpjack", dx = 0.5, dy = 0.5 } } })
+  resources[#resources] = nil
+  crude.infinite_resource, crude.normal_resource_amount = nil, nil
+  for _, e in ipairs(resources) do e.amount = nil end
+  local drill_row = amounts.drill_ore and amounts.drill_ore[1]
+  local keys = {}
+  for key in pairs(drill_row or {}) do keys[#keys + 1] = key end
+  table.sort(keys)
+  check(amounts.ok and #amounts.drill_ore == 1 and drill_row.name == "burner-mining-drill" and drill_row.x == 48
+    and drill_row.ore["iron-ore"] == 6000 and table.concat(keys, ",") == "name,ore,x,y",
+    "a dry run reports the ore amount in each drill's mining area (4 tiles of 1500: 6000), facts only")
+  check(well.ok and well.drill_ore and well.drill_ore[1].yield_percent["crude-oil"] == 150 and well.drill_ore[1].ore == nil,
+    "a pumpjack's row gives the well's yield percent, not a raw amount")
 end
 
 local bad_layout = pcall(layout.layout_action.validate, { action = "build_layout", entities = {} }, 1)
@@ -950,6 +971,27 @@ check(dry_big and not dry_big.ok and dry_big.failed[1].code == "SITE_NOT_FOUND"
   and dry_undercharged == 0,
   string.format("a dry run searches over ticks within 1/%d of the budget, charged %d a work item, and answers like the build"
     .. " (%d ticks, worst %d checks)", layout.CHECK_COST, layout.CHECK_COST, dry_ticks, dry_worst))
+do
+  -- blueprint_place's dry run steps through the exported search_step: it
+  -- spends the same share of the budget it is given and charges the rest of
+  -- it to the tick, so it answers alike within the same checks a tick.
+  local s = layout.search_start(character, { site = big.site, layouts = { { entities = big.entities, connections = {} } } })
+  local found, steps, worst, undercharged = nil, 0, 0, 0
+  while not found and steps < 600 do
+    engine.can_place = 0
+    storage.jobs = nil
+    local calls = s.ctx.calls
+    found = layout.search_step(character, s, layout.WORK_PER_TICK)
+    local own = s.ctx.calls - calls
+    if own + jobs.spent() < layout.CHECK_COST * own then undercharged = undercharged + 1 end
+    steps, worst = steps + 1, math.max(worst, engine.can_place)
+  end
+  storage.jobs = nil
+  check(found and found.failed[1].code == "SITE_NOT_FOUND" and worst <= per_tick_engine / layout.CHECK_COST
+    and undercharged == 0,
+    string.format("blueprint_place's dry-run search spends 1/%d of its budget a tick and charges the rest (%d ticks, worst %d checks)",
+      layout.CHECK_COST, steps, worst))
+end
 do
   -- A tick that left the dry run only MIN_WORK (a build used the rest)
   -- still gives it MIN_WORK of its own, as before, so a large site's checks

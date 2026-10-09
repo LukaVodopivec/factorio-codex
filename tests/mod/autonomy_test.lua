@@ -316,27 +316,11 @@ local far_line
 for _, line in ipairs(autonomy.lines()) do if line.position.x == 40 then far_line = line end end
 check(far_line and far_line.machines == 2, "the new furnace joins the nearby line, which keeps its id")
 
--- Backpressure that flaps (700 ticks output full, then a 30-tick working
--- burst) is one problem: next_event is not woken once per episode.
-mock.state(output_full).status = RAW.working
-run(700)
-local before_flap, first_flap = storage.autonomy.last_problem_tick, nil
-for episode = 1, 4 do
-  mock.state(output_full).status = RAW.full_output
-  run(700)
-  if episode == 1 then first_flap = storage.autonomy.last_problem_tick end
-  mock.state(output_full).status = RAW.working
-  run(30)
-end
-check(first_flap ~= before_flap and storage.autonomy.last_problem_tick == first_flap,
-  "a machine flapping between output full and short working bursts sets last_problem_tick once")
-run(630)
-local flap_rows = 0
-for _, row in ipairs(autonomy.problems()) do if row.status == "full_output" and row.position.x == 40 then flap_rows = flap_rows + 1 end end
-check(flap_rows == 0, "the problem clears after ten seconds without it")
--- The same class returning after a full recovery within five minutes of
--- its wake is a problem row again but does not wake next_event; another raw
--- status of that class (waiting for space) neither.
+do
+-- Backpressure (output full, waiting for space) is ordinary: a counted
+-- problem row in problems(since) and factory_status, but it never moves
+-- last_problem_tick, so it never wakes next_event. Flapping (700 ticks
+-- output full, then a 30-tick working burst) stays one problem.
 local function full_rows(since)
   local rows = 0
   for _, row in ipairs(autonomy.problems(since)) do
@@ -346,27 +330,61 @@ local function full_rows(since)
   end
   return rows
 end
+local function fuel_rows(since)
+  local rows = 0
+  for _, row in ipairs(autonomy.problems(since)) do
+    if row.status == "no_fuel" and row.position.x == 40 then rows = rows + 1 end
+  end
+  return rows
+end
+mock.state(output_full).status = RAW.working
+run(700)
+local before_full = storage.autonomy.last_problem_tick
+local full_cursor = game.tick
+for _ = 1, 4 do
+  mock.state(output_full).status = RAW.full_output
+  run(700)
+  mock.state(output_full).status = RAW.working
+  run(30)
+end
 mock.state(output_full).status = RAW.full_output
-run(630)
-check(storage.autonomy.last_problem_tick == first_flap and full_rows(first_flap + 1) == 1,
-  "the same class after a full recovery within five minutes is a problem row without a new wake")
+run(30)
+check(storage.autonomy.last_problem_tick == before_full and full_rows(full_cursor) == 1,
+  "output full is a counted problem row (flapping stays one) that never moves last_problem_tick")
 mock.state(output_full).status = RAW.waiting_for_space_in_destination
 run(630)
-check(storage.autonomy.last_problem_tick == first_flap and full_rows() == 1,
-  "waiting for space is the output_full class: no new wake")
+check(storage.autonomy.last_problem_tick == before_full and full_rows() == 1,
+  "waiting for space is the output_full class: a row, no wake")
 mock.state(output_full).status = RAW.working
-run(first_flap + 18000 - game.tick)
-check(full_rows() == 0, "the problem cleared")
-mock.state(output_full).status = RAW.full_output
 run(630)
+check(full_rows() == 0, "the problem clears after ten seconds without it")
+-- A waking class (no fuel) wakes next_event; the same class returning after
+-- a full recovery within five minutes of its wake is a problem row again
+-- but does not wake it; five minutes later it does; another class wakes at once.
+mock.state(output_full).status = RAW.no_fuel
+run(90)
+local first_wake = storage.autonomy.last_problem_tick
+check(first_wake ~= before_full and fuel_rows(first_wake) == 1, "a dry machine wakes next_event")
+mock.state(output_full).status = RAW.working
+run(630)
+mock.state(output_full).status = RAW.no_fuel
+run(90)
+check(storage.autonomy.last_problem_tick == first_wake and fuel_rows(first_wake + 1) == 1,
+  "the same class after a full recovery within five minutes is a problem row without a new wake")
+mock.state(output_full).status = RAW.working
+run(first_wake + 18000 - game.tick)
+check(fuel_rows() == 0, "the problem cleared")
+mock.state(output_full).status = RAW.no_fuel
+run(90)
 local late_wake = storage.autonomy.last_problem_tick
-check(late_wake > first_flap and full_rows(late_wake) == 1,
+check(late_wake > first_wake and fuel_rows(late_wake) == 1,
   "the same class five minutes after its wake wakes next_event again")
 mock.state(output_full).status = RAW.no_power
 run(90)
 check(storage.autonomy.last_problem_tick > late_wake, "another problem class wakes next_event at once")
 mock.state(output_full).status = RAW.working
 run(630)
+end
 
 -- A machine removed between refreshes forces a refresh instead of an error.
 f3.valid = false
@@ -478,13 +496,45 @@ check(status.tick == game.tick and type(status.lines) == "table" and status.powe
   and status.patches[1].name == "iron-ore" and status.patches[1].distance == 50,
   "factory_status composes lines, problems, power, stock, research, body and patches")
 do
+  -- A read charges each line row it builds (and the lines it passes) to
+  -- the tick's work (jobs.lua), so job work later in the tick gets what is
+  -- left; past a tick's work it leaves its remaining gated sections out.
+  local jobs = require("scripts.jobs")
+  local real_lines = autonomy.lines
+  local function lines_of(n)
+    autonomy.lines = function(_, _, keep)
+      local rows = {}
+      for i = 1, math.min(n, keep.limit) do rows[i] = { id = i, state = "running", position = { x = i, y = 0 } } end
+      return rows, n, n
+    end
+  end
+  lines_of(40)
+  local before = jobs.spent()
+  local small = factory_status.factory_status({})
+  local small_work = jobs.spent() - before
+  lines_of(700)
+  game.tick = game.tick + 1
+  local large = factory_status.factory_status({})
+  autonomy.lines = real_lines
+  check(small_work >= 40 + 2 * #small.lines and small.unread_sections == nil and small.research and small.power,
+    "factory_status charges each line it ranks and each row it builds to the tick's work (" .. small_work
+      .. " items for 40 lines)")
+  check(large.omitted_lines == 690 and large.unread_sections and large.unread_sections[1] == "power"
+    and large.power == nil and large.stock == nil and large.research == nil and large.body and large.patches,
+    "a read past a tick's work names its remaining sections (" .. table.concat(large.unread_sections or {}, ",")
+      .. ") and keeps lines, problems, body and patches")
+end
+do
   -- Within a state, the line not running for more of the last 10 minutes
   -- goes first, then the lower id.
   local real_lines = autonomy.lines
-  autonomy.lines = function()
-    return { { id = 1, state = "starved", share_10m = { running = 0.9, starved = 0.1 } },
+  -- factory_status passes the order (keep.before) autonomy.lines ranks by.
+  autonomy.lines = function(_, _, keep)
+    local rows = { { id = 1, state = "starved", share_10m = { running = 0.9, starved = 0.1 } },
       { id = 2, state = "starved", share_10m = { starved = 1 } }, { id = 3, state = "starved" },
       { id = 4, state = "starved", share_10m = { starved = 1 } } }
+    table.sort(rows, keep.before)
+    return rows, 4, 4
   end
   local ordered = factory_status.factory_status({ sections = { "lines" } }).lines
   autonomy.lines = real_lines
@@ -836,6 +886,17 @@ do
   end
 end
 local full = factory_status.factory_status({})
+do
+  -- The worst case charges more than a tick's work by the time its last
+  -- sections come: they are named (facts only: section names), and a read
+  -- of just those returns them; together the two are the whole read.
+  local unread = table.concat(full.unread_sections or {}, ",")
+  local rest = factory_status.factory_status({ sections = full.unread_sections })
+  check(unread == "platforms,elsewhere,alerts" and rest.unread_sections == nil and rest.alerts ~= nil,
+    "a read past a tick's work leaves its last sections out and names them; reading those returns them (" .. unread .. ")")
+  full.unread_sections = nil
+  for key, value in pairs(rest) do if full[key] == nil then full[key] = value end end
+end
 json_size = size(full)
 registry.labs = real_labs
 game.get_surface = nil

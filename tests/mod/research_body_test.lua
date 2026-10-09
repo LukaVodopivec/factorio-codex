@@ -150,6 +150,17 @@ check(progression.trigger_unlocks[1].trigger.hint == "craft 12 of it"
   and progression.trigger_unlocks[3].trigger.hint == "create_platform, then launch_rocket the starter pack"
   and progression.trigger_unlocks[4].trigger.hint == nil and progression.trigger_unlocks[5].trigger.hint == nil,
   "trigger records carry the tool hint for their type, and none for types without one")
+do
+  -- Non-recipe effects are facts on the record: {type, modifier} in the
+  -- prototype's order, nothing else (no advice); absent without any.
+  local mods = progression.available[1].modifiers
+  local keys = 0
+  for _ in pairs(mods and mods[1] or {}) do keys = keys + 1 end
+  check(mods and #mods == 1 and mods[1].type == "laboratory-speed" and mods[1].modifier == 0.1 and keys == 2
+    and progression.trigger_unlocks[1].modifiers[1].type == "laboratory-productivity"
+    and progression.trigger_unlocks[2].modifiers == nil,
+    "a technology record lists its modifier effects (laboratory-speed 0.1) as plain {type, modifier} facts")
+end
 
 technology.prototype.effects = {}
 local empty_progression = research.progression_status()

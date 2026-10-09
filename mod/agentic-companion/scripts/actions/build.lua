@@ -36,7 +36,11 @@ end
 -- ------------------------------------------------------------------ place
 
 -- Why can_place_entity said no: name the blocker if we can find one, first
--- what touches the footprint itself, then anything within a tile.
+-- what touches the footprint itself, then anything within a tile. What never
+-- blocks a building (remnants, ghosts, proxies, fish, ore) is never named.
+-- Over the footprint, a blocker comes first, then a reason of the entity's
+-- own (a drill with no ore it mines under it, an offshore pump with no water
+-- behind it, a surface condition), then item stacks lying there.
 local function blocked_reason(c, pos, proto, direction)
   local mix = placement_geometry.fluid_mix(c.surface, proto, pos, direction)
   if mix then return placement_geometry.fluid_mix_reason(mix) end
@@ -44,15 +48,22 @@ local function blocked_reason(c, pos, proto, direction)
   if proto then
     table.insert(searches, 1, { area = placement_geometry.touching(placement_geometry.footprint(proto, pos, direction)) })
   end
-  for _, search in ipairs(searches) do
-    for _, e in ipairs(c.surface.find_entities_filtered(search)) do
-      if e.valid and e ~= c and e.type ~= "resource" then
-        local lying = placement_geometry.ground_item_row(e)
-        if lying then return placement_geometry.ground_item_text(lying) .. " is in the way" end
-        return string.format("%s at (%s, %s) is in the way — pick a clear spot or remove it first",
-          e.name, placement_geometry.exact(e.position.x), placement_geometry.exact(e.position.y))
+  for i, search in ipairs(searches) do
+    local found, lying = c.surface.find_entities_filtered(search), nil
+    for _, e in ipairs(found) do
+      if e.valid and e ~= c then
+        local row = placement_geometry.ground_item_row(e)
+        if row then
+          lying = lying or row
+        elseif not placement_geometry.NON_BLOCKING_TYPES[e.type] then
+          return string.format("%s at (%s, %s) is in the way — pick a clear spot or remove it first",
+            e.name, placement_geometry.exact(e.position.x), placement_geometry.exact(e.position.y))
+        end
       end
     end
+    local own = proto and i == 1 and placement_geometry.proto_refusal(c.surface, proto, pos, direction, found)
+    if own then return own end
+    if lying then return placement_geometry.ground_item_text(lying) .. " is in the way" end
   end
   -- A liquid other than water names itself (lava, an oil or ammoniacal ocean).
   local liquid = placement_geometry.liquid_at(c.surface, math.floor(pos.x), math.floor(pos.y))

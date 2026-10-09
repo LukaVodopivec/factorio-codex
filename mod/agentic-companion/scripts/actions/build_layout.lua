@@ -37,6 +37,7 @@
 -- direction,picks_from,drops_into,max_items_per_second}], belt_ends
 -- [{name,x,y,direction,faces}], unpowered [{name,x,y}], isolated_poles
 -- [{name,x,y}], on_ore [{name,x,y,ore}], mixed_ore [{name,x,y,mines,also}],
+-- drill_ore [{name,x,y,ore?,yield_percent?}],
 -- open_fluid_ports [{name,x,y,port}], belt_joins (belt_joins.lua) and port_fluids (see
 -- the dry-run survey). A planned
 -- fluid entity that would join two standing fluids through the layout's own
@@ -1591,7 +1592,8 @@ end
 -- (isolated_poles), the resource tiles under each placement but a drill's
 -- (on_ore, by resource), each drill whose mining area holds more than one
 -- resource it can mine (mixed_ore: mines is the one with the most tiles,
--- also the rest), and fluid connections that meet nothing (open_fluid_ports,
+-- also the rest), the amount of each resource every drill can mine in its
+-- mining area (drill_ore, see drill_ore_row), and fluid connections that meet nothing (open_fluid_ports,
 -- see fluid_open), and where planned belts, splitter and underground outputs
 -- and drops join belts, with each joined lane's items (belt_joins, see
 -- belt_joins.lua). One thing it finds is a failure, not data: a planned
@@ -1810,12 +1812,14 @@ local function survey_start(ctx, result, only)
   ctx.calls = ctx.calls + math.ceil(#planned / LOAD_PER_ITEM)
   local V = { planned = planned, tiles = tiles, items = {}, i = 1, widest = widest_supply(), group = {}, linked = {},
     ports = {}, port_at = {}, seeds = {}, mixes = {}, unders = {}, closed = {}, carry = {}, met = {}, sources = {},
-    rows = { inserters = {}, belt_ends = {}, unpowered = {}, on_ore = {}, mixed_ore = {}, open_fluid_ports = {},
+    rows = { inserters = {}, belt_ends = {}, unpowered = {}, on_ore = {}, mixed_ore = {}, drill_ore = {}, open_fluid_ports = {},
       belt_joins = {} } }
   if not only or only.port_fluids then V.rows.port_fluids = {} end
   local function add(item)
     local row = ROW_OF[item.kind]
-    if not only or only[row] or (row == "fluid_mixes" and only.port_fluids) then V.items[#V.items + 1] = item end
+    if not only or only[row] or (row == "fluid_mixes" and only.port_fluids) or (row == "mixed_ore" and only.drill_ore) then
+      V.items[#V.items + 1] = item
+    end
   end
   -- Planned poles within wire reach of each other share a group; a group
   -- whose supply area takes in a planned generator has a source.
@@ -1966,13 +1970,15 @@ end
 
 -- The resource tiles whose centre lies in an area, counted by name, of
 -- those minable accepts (all when nil), on charted chunks only; nil when
--- there are none. One small query, charged like survey_query.
-local function resources_in(ctx, area, minable)
+-- there are none. One small query, charged like survey_query. With
+-- `amounts`, their amounts are summed into it by name too (one more read
+-- each, charged the same).
+local function resources_in(ctx, area, minable, amounts)
   local surface = where(ctx)
   ctx.calls = ctx.calls + SURVEY_QUERY
   local ok, found = pcall(surface.find_entities_filtered, { area = area, type = "resource" })
   if not (ok and type(found) == "table") then return nil end
-  ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM)
+  ctx.calls = ctx.calls + math.ceil(#found / LOAD_PER_ITEM) * (amounts and 2 or 1)
   local counts, any = {}, false
   for _, e in ipairs(found) do
     local at = e.valid and e.position
@@ -1980,9 +1986,30 @@ local function resources_in(ctx, area, minable)
       and at.y < area.right_bottom.y and (not minable or minable(e.name)) and charted_at(ctx, at) then
       counts[e.name] = (counts[e.name] or 0) + 1
       any = true
+      if amounts then amounts[e.name] = (amounts[e.name] or 0) + (read_number(function() return e.amount end) or 0) end
     end
   end
   return any and counts or nil
+end
+
+-- A drill's drill_ore row: the amount of each resource it can mine in its
+-- mining area (charted tiles only), as the game shows it on those tiles; an
+-- infinite resource (crude oil) gives its summed yield_percent instead.
+local function drill_ore_row(p, amounts)
+  local ore, yield = {}, {}
+  for name, amount in pairs(amounts) do
+    local ok, infinite, normal = pcall(function()
+      local proto = prototypes.entity[name]
+      return proto.infinite_resource, proto.normal_resource_amount
+    end)
+    if ok and infinite and type(normal) == "number" and normal > 0 then
+      yield[name] = math.floor(amount / normal * 100 + 0.5)
+    else
+      ore[name] = amount
+    end
+  end
+  return { name = p.name, x = p.position.x, y = p.position.y, ore = next(ore) and ore or nil,
+    yield_percent = next(yield) and yield or nil }
 end
 
 -- Whether a drill can mine a resource (true when either side is unreadable).
@@ -2425,7 +2452,9 @@ local function survey_item(ctx, V, item)
     if ore then rows.on_ore[#rows.on_ore + 1] = { name = p.name, x = p.position.x, y = p.position.y, ore = ore } end
   elseif item.kind == "drill" then
     local r = read_number(function() return p.proto.mining_drill_radius end)
-    local found = r and resources_in(ctx, supply_box(p.position, r), function(name) return mines(p.proto, name) end)
+    local amounts = {}
+    local found = r and resources_in(ctx, supply_box(p.position, r), function(name) return mines(p.proto, name) end, amounts)
+    if found then rows.drill_ore[#rows.drill_ore + 1] = drill_ore_row(p, amounts) end
     local names = {}
     for name in pairs(found or {}) do names[#names + 1] = name end
     table.sort(names, function(a, b)

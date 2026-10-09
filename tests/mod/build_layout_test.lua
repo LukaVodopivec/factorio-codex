@@ -876,6 +876,27 @@ do
   resources[#resources] = nil
   check(unseen.ok and unseen.mixed_ore == nil and seen.mixed_ore and seen.mixed_ore[1].also["copper-ore"] == 1,
     "copper on an uncharted chunk under a drill's mining area is never reported; charted, it is")
+  -- Each drill reports the amount of each resource it can mine in its
+  -- mining area (charted tiles only), an oil well its yield: data only.
+  for _, e in ipairs(resources) do e.amount = 1500 end
+  local crude = prototypes.entity["crude-oil"]
+  crude.infinite_resource, crude.normal_resource_amount = true, 300000
+  resources[#resources + 1] = { valid = true, name = "crude-oil", type = "resource", position = { x = 70.5, y = 30.5 },
+    amount = 450000 }
+  local amounts = dry({ anchor = { x = 45, y = 45 }, entities = { { name = "burner-mining-drill", dx = 3, dy = 0 } } })
+  local well = dry({ anchor = { x = 70, y = 30 }, entities = { { name = "pumpjack", dx = 0.5, dy = 0.5 } } })
+  resources[#resources] = nil
+  crude.infinite_resource, crude.normal_resource_amount = nil, nil
+  for _, e in ipairs(resources) do e.amount = nil end
+  local drill_row = amounts.drill_ore and amounts.drill_ore[1]
+  local keys = {}
+  for key in pairs(drill_row or {}) do keys[#keys + 1] = key end
+  table.sort(keys)
+  check(amounts.ok and #amounts.drill_ore == 1 and drill_row.name == "burner-mining-drill" and drill_row.x == 48
+    and drill_row.ore["iron-ore"] == 6000 and table.concat(keys, ",") == "name,ore,x,y",
+    "a dry run reports the ore amount in each drill's mining area (4 tiles of 1500: 6000), facts only")
+  check(well.ok and well.drill_ore and well.drill_ore[1].yield_percent["crude-oil"] == 150 and well.drill_ore[1].ore == nil,
+    "a pumpjack's row gives the well's yield percent, not a raw amount")
 end
 
 local bad_layout = pcall(layout.layout_action.validate, { action = "build_layout", entities = {} }, 1)

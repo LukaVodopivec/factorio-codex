@@ -60,6 +60,7 @@ local players = { player, viewer }
 _G.game = { tick = 0, get_player = function(index) return players[index] end, connected_players = players }
 
 local inert = { start = function() end, tick = function() return { status = "done", detail = "done" } end }
+inert.queued = function() return 0 end -- pickup reads the crafting queue
 package.loaded["scripts.actions.craft"] = inert
 package.loaded["scripts.actions.build"] = { place = inert, rotate = inert,
   set_recipe_action = { runner = inert, make_task = function() return {} end } }

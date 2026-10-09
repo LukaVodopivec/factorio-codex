@@ -446,4 +446,29 @@ do
   supply.register_runner("move_entity", package.loaded["scripts.actions.move_entity"])
 end
 
+-- Ground stacks clear_footprint took up are reported per step, never
+-- overwritten by the next step's footprint.
+do
+  local build = require("scripts.actions.build")
+  local real_clear = build.clear_footprint
+  build.clear_footprint = function(t, _, _, position)
+    t._picked_up = { x = position.x, y = position.y,
+      rows = { { item = "iron-plate", count = position.x == 70 and 2 or 5, x = position.x + 0.25, y = position.y } } }
+    return "ok"
+  end
+  geometry.can_place = function() return true, "placeable" end
+  inventory["stone-furnace"] = 2
+  set_body(60, 10)
+  local two = { id = 67, auto_supply = false, steps = { { item = "stone-furnace", position = { x = 70, y = 10 } },
+    { item = "stone-furnace", position = { x = 74, y = 10 } } } }
+  build_plan.start(two)
+  local two_result
+  for _ = 1, 20 do two_result = build_plan.tick(two); if two_result then break end end
+  build.clear_footprint = real_clear
+  local rows = two_result and two_result.outcome and two_result.outcome.picked_up
+  check(two_result and two_result.status == "done" and rows and #rows == 2 and rows[1].step == 1 and rows[1].count == 2
+    and rows[1].x == 70.25 and rows[2].step == 2 and rows[2].count == 5 and rows[2].x == 74.25,
+    "a build names the ground stacks each step's placement took up")
+end
+
 os.exit(failures == 0 and 0 or 1)

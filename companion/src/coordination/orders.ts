@@ -48,8 +48,9 @@ export interface Verification {
   metrics: Array<VerifyMetric & { measured: Record<string, unknown>; met: boolean }>; reason?: string;
 }
 export interface FootprintChanged { count: number; changes: unknown[] }
-/** One blueprint_capture's result: its name and how many entities and wires it holds. */
-export interface CapturedBlueprint { name: string; entities: number; wires: number }
+/** One blueprint_capture's result: its name, how many entities and wires it holds, and its
+ *  origin (world position = origin + dx/dy), when the capture returned one. */
+export interface CapturedBlueprint { name: string; entities: number; wires: number; origin?: { x: number; y: number } }
 /** The outcome of the ledger's research for one revision: queued (the
  *  technologies the game added; skipped: already researched or queued) or
  *  failed (the mod's refusal, which names those queued before it). */
@@ -608,8 +609,9 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
         // Captures come first: the package's own steps may place what they capture.
         try {
           for (const { action, ...params } of captures) {
-            const summary = await b.call<{ entities?: number; wires?: number }>(action, params);
-            made.push({ name: params.name, entities: summary?.entities ?? 0, wires: summary?.wires ?? 0 });
+            const summary = await b.call<{ entities?: number; wires?: number; origin?: unknown }>(action, params);
+            const origin = isPoint(summary?.origin) ? { x: summary.origin.x, y: summary.origin.y } : undefined;
+            made.push({ name: params.name, entities: summary?.entities ?? 0, wires: summary?.wires ?? 0, ...(origin ? { origin } : {}) });
           }
         } catch (error) {
           if (!(error instanceof ModError)) throw error;

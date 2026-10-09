@@ -7,6 +7,7 @@ local companion = require("scripts.companion")
 local approach = require("scripts.actions.approach")
 local placement_geometry = require("scripts.placement_geometry")
 local items = require("scripts.items")
+local craft = require("scripts.actions.craft")
 
 local M = {}
 local TARGET_RADIUS = 0.01
@@ -138,6 +139,18 @@ function M.start(task)
   task._entity = entity
 end
 
+-- A ground pickup's inventory gain of its item since picking started, less
+-- what hand-crafting handed over meanwhile (the crafting queue's pending
+-- output of the item fell by that much), so a craft never passes for a pickup.
+local function pickup_gain(task, c, inventory)
+  local queued = craft.queued(c, task.item)
+  if task._craft_queued and queued < task._craft_queued then
+    task._crafted = (task._crafted or 0) + task._craft_queued - queued
+  end
+  task._craft_queued = queued
+  return inventory.get_item_count(task.item) - task._inventory_before - (task._crafted or 0)
+end
+
 -- After a human hold the body stands somewhere else and its inventory is
 -- whatever the player left: approach again and count nothing gained during the
 -- hold. A belt pickup keeps only what its own transfers moved. A ground
@@ -150,7 +163,7 @@ function M.resume(task)
   end
   if task._picking_started and not stack_snapshot(task._entity) then
     local c = companion.get()
-    if c and c.get_main_inventory().get_item_count(task.item) - task._inventory_before >= task.count then return end
+    if c and pickup_gain(task, c, c.get_main_inventory()) >= task.count then return end
   end
   task._picking_started = false
 end
@@ -341,11 +354,12 @@ function M.tick(task)
   local name, remaining = stack_snapshot(task._entity)
 
   if task._picking_started then
-    local gained = inventory.get_item_count(task.item) - task._inventory_before
+    local gained = pickup_gain(task, c, inventory)
     local depleted = task.count - (remaining or 0)
     if not name then
       -- Factorio's picking takes every stack within item_pickup_distance, so
-      -- the gain may be larger than the selected stack: a measured fact.
+      -- the gain may be larger than the selected stack: a measured fact
+      -- (hand-crafted output excluded, pickup_gain).
       if gained >= task.count then
         stop(c)
         local surplus = gained - task.count
@@ -409,6 +423,7 @@ function M.tick(task)
   task._picking_started = true
   task._picking_started_tick = game.tick
   task._inventory_before = inventory.get_item_count(task.item)
+  task._craft_queued, task._crafted = craft.queued(c, task.item), 0
   c.picking_state = true
   return nil
 end

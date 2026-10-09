@@ -548,8 +548,20 @@ local function ground(ctx, proto, pos, direction, adopt, end_type)
         ok, clears, reason = false, nil, string.format("blocked by %s at (%s, %s)", blocker.name,
           placement_geometry.exact(blocker.position.x), placement_geometry.exact(blocker.position.y))
       elseif clears or lying then
-        ok = true
-        note = lying and (placement_geometry.ground_item_text(lying) .. " will be picked up") or nil
+        -- Lying stacks explain the refusal only when nothing of the entity's own does.
+        local own
+        if lying then
+          ctx.calls = ctx.calls + 1 -- the footprint's tile read
+          own = placement_geometry.proto_refusal(c.surface, proto, pos, direction, found_ok and found or nil)
+            or placement_geometry.tiles_refuse(c.surface, proto, area) and "the ground there is water or otherwise unbuildable"
+            or nil
+        end
+        if own then
+          ok, clears, reason = false, nil, own
+        else
+          ok = true
+          note = lying and (placement_geometry.ground_item_text(lying) .. " will be picked up") or nil
+        end
       else
         ok = false
         reason = proto.type == "mining-drill" and "no resource it can mine under it"
@@ -2822,14 +2834,18 @@ function Runner.tick(task)
   local placed, failed = {}, {}
   for i, step in ipairs(plan.steps) do
     local r = plan._results[i]
+    -- Ground stacks taken up from its footprint go with its row.
+    local picked = r and r.picked_up or nil
     if (r and r.ok) or (step._placed_entity and step._placed_entity.valid) then
       placed[#placed + 1] = placed_row(step)
+      placed[#placed].picked_up = picked
     end
     -- A step the build stopped before (a shortfall) is listed without
     -- repeating why the build stopped.
     if not (r and r.ok) then
       failed[#failed + 1] = { index = step._source.index, connection = step._source.connection,
-        code = r and "PLACE_FAILED" or "NOT_ATTEMPTED", reason = r and r.why or nil }
+        code = r and (r.code or "PLACE_FAILED") or "NOT_ATTEMPTED", reason = r and r.why or nil,
+        picked_up = not (step._placed_entity and step._placed_entity.valid) and picked or nil }
     end
   end
   local shortfall

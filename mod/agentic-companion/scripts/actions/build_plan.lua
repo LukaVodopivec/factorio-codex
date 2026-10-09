@@ -391,7 +391,15 @@ local function finished(task)
   if task._placed == 0 or task._underground_mismatch then
     return failure(task, summary(task))
   end
-  return { status = "done", detail = summary(task) }
+  -- Ground stacks taken up from the footprints: {step, item, count, x, y}.
+  local picked
+  for i, result in ipairs(task._results) do
+    for _, row in ipairs(result.picked_up or {}) do
+      picked = picked or {}
+      picked[#picked + 1] = { step = i, item = row.item, quality = row.quality, count = row.count, x = row.x, y = row.y }
+    end
+  end
+  return { status = "done", detail = summary(task), outcome = picked and { picked_up = picked } or nil }
 end
 
 -- Record the current step's outcome and move to the next. Returns the task
@@ -399,11 +407,21 @@ end
 -- deferred step (task._deferred) is listed as failed and, once the last step
 -- is done, visited again (task._retry_pass walks task._deferred) if the body
 -- has moved since it failed; its new outcome replaces the first.
-local function advance(task, ok, why)
+local function advance(task, ok, why, code)
   local i = task._index
   if task._escape_note then
     why = why and (task._escape_note .. "; " .. why) or task._escape_note
     task._escape_note = nil
+  end
+  -- The ground stacks clear_footprint took up for this step (with a first
+  -- visit's, on the retry), kept with its outcome.
+  local step = task.steps[i]
+  local picked = build.picked_up(task, step and step.position)
+  task._picked_up = nil
+  local earlier = task._retry_pass and task._results[i] and task._results[i].picked_up
+  if earlier then
+    picked = picked or {}
+    for n = #earlier, 1, -1 do table.insert(picked, 1, earlier[n]) end
   end
   if task._retry_pass then
     for n = #task._failures, 1, -1 do
@@ -411,9 +429,10 @@ local function advance(task, ok, why)
     end
     if not ok then why = why .. " (retried once after the last step)" end
   end
-  task._results[i] = ok and { ok = true, detail = why } or { ok = false, why = why }
+  task._results[i] = ok and { ok = true, detail = why, picked_up = picked }
+    or { ok = false, why = why, code = code, picked_up = picked }
   if not ok then
-    task._failures[#task._failures + 1] = { index = i, why = why }
+    task._failures[#task._failures + 1] = { index = i, why = why, code = code, picked_up = picked }
   end
   task._built, task._interactions_applied, task._recipe_applied, task._note = nil, nil, nil, nil
   task._settings_applied = nil
@@ -712,7 +731,7 @@ function M.tick(task)
   if task._clear then
     local cleared = build.clear_footprint(task, c, place_result, step.position, step.direction)
     if cleared == nil then return nil end
-    if cleared ~= "ok" then return advance(task, false, cleared.detail) end
+    if cleared ~= "ok" then return advance(task, false, cleared.detail, cleared.outcome and cleared.outcome.code) end
   end
   local reached = approach.ensure(task, c, step.position, c.build_distance)
   if type(reached) == "table" and task._escape_index ~= task._index then
@@ -739,7 +758,7 @@ function M.tick(task)
   if reached ~= "ok" then return nil end
   local cleared = build.clear_footprint(task, c, place_result, step.position, step.direction)
   if cleared == nil then return nil end
-  if cleared ~= "ok" then return advance(task, false, cleared.detail) end
+  if cleared ~= "ok" then return advance(task, false, cleared.detail, cleared.outcome and cleared.outcome.code) end
   if craft.awaits(c, step.item, 1) then return nil end
   if c.get_item_count(step.item) == 0 then
     return advance(task, false, "I don't have any " .. step.item .. " left in my inventory")

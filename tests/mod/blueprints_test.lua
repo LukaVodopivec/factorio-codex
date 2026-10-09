@@ -213,8 +213,9 @@ blueprints.delete({ name = "sorter" })
 
 local listed = blueprints.list()
 check(#listed.blueprints == 2 and listed.blueprints[1].name == "gears" and listed.blueprints[2].name == "smelter"
-  and listed.blueprints[2].source == "capture" and listed.capacity == state.BLUEPRINT_SLOTS - 1,
-  "list names every stored blueprint in name order")
+  and listed.blueprints[2].source == "capture" and listed.capacity == state.BLUEPRINT_SLOTS - 1
+  and listed.blueprints[2].origin and listed.blueprints[2].origin.x == smelter.origin.x and listed.blueprints[1].origin == nil,
+  "list names every stored blueprint in name order, a capture with its origin")
 
 -- describe: entities with relative positions, settings and requested items.
 gears.entities[2].filters = { { index = 1, name = "iron-plate" } }

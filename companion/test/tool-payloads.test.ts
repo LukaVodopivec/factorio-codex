@@ -137,6 +137,21 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(descriptions.blueprint_place).toMatch(/refuses a blueprint with wires, quality, tiles or grid snapping/);
     for (const name of ["blueprint_capture", "blueprint_place", "blueprint_describe"]) expect(descriptions[name], name).toMatch(/case-sensitive/i);
   });
+  it("states the ground-stack, pickup, move and enclosure codes", () => {
+    const descriptions: Record<string, string> = {};
+    registerMcpTools({ registerTool(name, config: any) { descriptions[name] = config.description; } },
+      async () => ({ call: vi.fn() } as unknown as Bridge), validConfig);
+    for (const name of ["place_entity", "build_layout", "blueprint_place"]) {
+      expect(descriptions[name], name).toMatch(/lying on a footprint are taken into the inventory first \(picked_up: item, count, x, y\); GROUND_ITEMS_NO_ROOM/);
+    }
+    expect(descriptions.build_layout).toMatch(/ground_items lists the item stacks lying on footprints/);
+    expect(descriptions.pickup_items).toMatch(/surplus/);
+    expect(descriptions.pickup_items).toMatch(/GROUND_STACK_CHANGED.*PICKUP_COUNT_MISMATCH/);
+    for (const code of ["MOVE_SOURCE_MISSING", "MOVE_SOURCE_MISMATCH", "MOVE_NOT_PLACEABLE", "MOVE_ALREADY_THERE", "MOVE_TARGET_BLOCKED"]) {
+      expect(descriptions.move_entity).toContain(code);
+    }
+    for (const name of ["place_entity", "insert_items", "build_layout"]) expect(descriptions[name], name).toMatch(/BODY_ENCLOSED; step_out/);
+  });
   it("factory_status says plainly in its summary when no research runs and labs are idle", async () => {
     const handlers: Record<string, any> = {};
     const call = vi.fn(async () => ({ tick: 9, surface: "nauvis", research: { current: null, labs: { count: 4, working: 0, speed: 4 } } }));

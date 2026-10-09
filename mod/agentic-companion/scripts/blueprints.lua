@@ -463,7 +463,7 @@ function M.list()
   local rows = {}
   for name, entry in pairs(data().by_name) do
     rows[#rows + 1] = { name = name, entities = entry.entities, tiles = entry.tiles, size = entry.size,
-      source = entry.source, created_tick = entry.created_tick }
+      source = entry.source, created_tick = entry.created_tick, origin = entry.origin }
   end
   table.sort(rows, function(a, b) return a.name < b.name end)
   return { blueprints = rows, capacity = capacity(),

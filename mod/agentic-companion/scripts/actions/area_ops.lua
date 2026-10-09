@@ -40,6 +40,7 @@ local MAX_AREA_ENTITIES = 300 -- entities one area action reads
 local MAX_GHOSTS = 100
 local ORDERS_PER_TICK = 50
 local MAX_ROWS = 10           -- failure rows listed in a result
+local MAX_PICKED_ROWS = 32    -- ground stacks taken up, listed in a result
 -- The dry-run survey rows a hand or planet-ghost blueprint_place check reports.
 local SURVEYED = { on_ore = true, mixed_ore = true, open_fluid_ports = true, fluid_mixes = true, belt_joins = true, port_fluids = true }
 local MAX_TARGETS = 32
@@ -75,6 +76,7 @@ local function add_failure(task, e, reason)
     local r = live and e.name and e.position and row(e) or {}
     r.reason = reason
     task._failed[#task._failed + 1] = r
+    return r
   end
 end
 
@@ -447,6 +449,7 @@ local function ghost_result(task)
     task._truncated and " (the area holds more: build_ghosts again)" or ""),
     { built = task._built, total = task._total, truncated = task._truncated or nil,
       item_requests_pending = task._pending, shortfall = task._shortfall,
+      picked_up = task._picked_rows, picked_up_omitted = task._picked_omitted,
       spilled = task._spilled and task._spilled.count and task._spilled or nil })
 end
 
@@ -474,9 +477,25 @@ function Ghosts.tick(task)
     end
   end
   local ghost = entry.entity
-  local function skip(reason)
+  -- Ground stacks clear_footprint took up from this ghost's footprint:
+  -- {item, count, x, y} rows in the result's picked_up, built or not.
+  local function keep_picked()
+    local picked = entry.position and build.picked_up(task, entry.position)
+    task._picked_up = nil
+    for _, row in ipairs(picked or {}) do
+      task._picked_rows = task._picked_rows or {}
+      if #task._picked_rows < MAX_PICKED_ROWS then task._picked_rows[#task._picked_rows + 1] = row
+      else task._picked_omitted = (task._picked_omitted or 0) + 1 end
+    end
+    return picked
+  end
+  local function skip(reason, code)
     task._current = nil
-    if reason then add_failure(task, { name = entry.proto and entry.proto.name, position = entry.position }, reason) end
+    local picked = keep_picked()
+    if reason then
+      local r = add_failure(task, { name = entry.proto and entry.proto.name, position = entry.position }, reason)
+      if r then r.code, r.picked_up = code, picked end
+    end
     return nil
   end
   if not ghost.valid then return skip(nil) end
@@ -497,14 +516,14 @@ function Ghosts.tick(task)
   if task._clear then
     local cleared = build.clear_footprint(task, c, entry.proto, entry.position, entry.direction)
     if cleared == nil then return nil end
-    if cleared ~= "ok" then return skip(cleared.detail) end
+    if cleared ~= "ok" then return skip(cleared.detail, cleared.outcome and cleared.outcome.code) end
   end
   local reached = approach.ensure(task, c, entry.position, c.build_distance)
   if type(reached) == "table" then return skip(reached.detail) end
   if reached ~= "ok" then return nil end
   local cleared = build.clear_footprint(task, c, entry.proto, entry.position, entry.direction)
   if cleared == nil then return nil end
-  if cleared ~= "ok" then return skip(cleared.detail) end
+  if cleared ~= "ok" then return skip(cleared.detail, cleared.outcome and cleared.outcome.code) end
   if craft.awaits(c, entry.item, 1) then return nil end
   if placement_geometry.overlaps_character(c, entry.proto, entry.position, entry.direction) then
     if entry.exited then return skip("CODEX_BODY_OVERLAP: I stand in its footprint") end
@@ -537,6 +556,7 @@ function Ghosts.tick(task)
   if had_requests and proxy then task._pending = (task._pending or 0) + 1 end
   task._built = task._built + 1
   task._current = nil
+  keep_picked()
   return nil
 end
 

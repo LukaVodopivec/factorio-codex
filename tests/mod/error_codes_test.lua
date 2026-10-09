@@ -92,6 +92,7 @@ local rotate = runner(nil, function() return nil end)
 rotate.waiting = function() return true end
 rotate.cancelled = function() return { code = "MOVE_ROBOT_CANCELLED", detail = "the robot move was cancelled" } end
 package.loaded["scripts.actions.walk"], package.loaded["scripts.actions.mine"] = walk, mine
+done.queued = function() return 0 end -- pickup reads the crafting queue
 package.loaded["scripts.actions.pickup"], package.loaded["scripts.actions.craft"] = pickup, done
 package.loaded["scripts.actions.build"] = { place = place, rotate = rotate,
   set_recipe_action = { runner = done, make_task = function() return {} end } }

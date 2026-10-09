@@ -116,9 +116,7 @@ local function blocked(c, e, proto, to, direction)
   end
   local mask_ok, mask = pcall(function() return proto.collision_mask end)
   mask = mask_ok and type(mask) == "table" and mask or nil
-  local tiles = { left_top = { x = math.floor(area.left_top.x), y = math.floor(area.left_top.y) },
-    right_bottom = { x = math.ceil(area.right_bottom.x), y = math.ceil(area.right_bottom.y) } }
-  local tile_count = placement_geometry.tile_count(tiles)
+  local tile_count = placement_geometry.tile_count(area)
   -- Every entity on the footprint, then only those whose mask collides with
   -- the entity's: the engine's layer filter once dropped a belt standing there.
   -- An unknown mask counts as colliding. Ore adds at most one row a tile.
@@ -136,22 +134,14 @@ local function blocked(c, e, proto, to, direction)
       natural = true
     end
   end
-  -- Water or other tiles the entity collides with, over every tile it covers,
-  -- matched in Lua as for entities (an unknown entity mask meets water); one
-  -- mask read per tile name.
-  local tile_mask = mask or { layers = { water_tile = true } }
-  local tiles_ok, found_tiles = pcall(c.surface.find_tiles_filtered, { area = tiles, limit = tile_count })
-  local meets = {}
-  for _, tile in ipairs(tiles_ok and found_tiles or {}) do
-    local name_ok, name = pcall(function() return tile.name end)
-    local key = name_ok and name or tile
-    if meets[key] == nil then
-      local tile_ok, other = pcall(function() return tile.prototype.collision_mask end)
-      meets[key] = placement_geometry.mask_overlap(tile_mask, tile_ok and other or nil, true) == true
-    end
-    if meets[key] then return "the ground there is water or otherwise unbuildable" end
+  -- Water or other tiles the entity collides with, over every tile it covers
+  -- (placement_geometry.tiles_refuse).
+  if placement_geometry.tiles_refuse(c.surface, proto, area) then
+    return "the ground there is water or otherwise unbuildable"
   end
-  if own_spot or natural or lying then return nil end
+  if own_spot or natural then return nil end
+  -- Lying stacks explain the refusal only when nothing of the entity's own does.
+  if lying then return placement_geometry.proto_refusal(c.surface, proto, to, direction, found_ok and found or nil) end
   return "the ground there is water or otherwise unbuildable"
 end
 
@@ -205,10 +195,21 @@ end
 
 M.resume = supply.resume
 
--- in_inventory: the entity was mined and not placed again.
-local function failed(task, code, detail, in_inventory)
+-- in_inventory: the entity was mined and not placed again. picked_up: the
+-- ground stacks its placement took up from the target footprint
+-- ({item, count, x, y}, build.clear_footprint), on every result.
+local function failed(task, code, detail, in_inventory, cause)
   return { status = "failed", detail = code .. ": " .. detail, outcome = { code = code, moved = false,
-    from = task._snapshot.from, in_inventory = in_inventory } }
+    from = task._snapshot.from, in_inventory = in_inventory, cause = cause, picked_up = task._picked_rows } }
+end
+
+-- The placement's ground stacks (its outcome.picked_up), kept for the result.
+local function keep_picked(task, result)
+  local rows = type(result.outcome) == "table" and result.outcome.picked_up
+  for _, row in ipairs(type(rows) == "table" and rows or {}) do
+    task._picked_rows = task._picked_rows or {}
+    task._picked_rows[#task._picked_rows + 1] = row
+  end
 end
 
 -- Escape: true once the body has passed over the taken-up entity's spot and
@@ -289,7 +290,7 @@ local function escape_failure(task, c, e, restored, notes)
   return { status = "failed", detail = string.format("ESCAPE_FAILED: took up the %s at (%.1f, %.1f), %s",
     snap.name, e.position.x, e.position.y, why),
     outcome = { code = "ESCAPE_FAILED", restored_in_place = true, name = snap.name, from = snap.from,
-      restored = restored, notes = notes and #notes > 0 and notes or nil } }
+      restored = restored, notes = notes and #notes > 0 and notes or nil, picked_up = task._picked_rows } }
 end
 
 -- Recipe, settings and contents onto the placed entity: restored, notes,
@@ -348,7 +349,7 @@ local function restore(task, c, e)
   if failure then return failure end
   return { status = "done", detail = detail, outcome = { code = task.through and "ESCAPED" or "MOVED", moved = true, name = snap.name,
     from = snap.from, to = { x = e.position.x, y = e.position.y }, restored = restored,
-    shortfall = #shortfall > 0 and shortfall or nil, notes = #notes > 0 and notes or nil } }
+    shortfall = #shortfall > 0 and shortfall or nil, notes = #notes > 0 and notes or nil, picked_up = task._picked_rows } }
 end
 
 function M.tick(task)
@@ -387,6 +388,7 @@ function M.tick(task)
       end
       task._phase = task.through and "through" or "place"
     elseif kind == "place" then
+      keep_picked(task, result)
       if result.status ~= "done" and result.status ~= "partial" then
         local overlap = type(result.detail) == "string" and result.detail:find("CODEX_BODY_OVERLAP", 1, true)
         if overlap and not task._exited then
@@ -398,7 +400,7 @@ function M.tick(task)
           end
         end
         return failed(task, "MOVE_PLACE_FAILED", string.format("the %s is in my inventory — %s", task._item,
-          tostring(result.detail)), true)
+          tostring(result.detail)), true, type(result.outcome) == "table" and result.outcome.code or nil)
       end
       task._phase = "restore"
     end
@@ -456,13 +458,14 @@ function M.tick(task)
       return { status = "done", detail = string.format("stepped out through the %s at (%.1f, %.1f): took it up and put"
         .. " it back; %s", snap.name, e.position.x, e.position.y, unrestored),
         outcome = { code = "ESCAPED", moved = true, name = snap.name, from = snap.from,
-          to = { x = e.position.x, y = e.position.y }, not_restored = true, notes = { unrestored } } }
+          to = { x = e.position.x, y = e.position.y }, not_restored = true, notes = { unrestored },
+          picked_up = task._picked_rows } }
     end
     -- Moved, but out of reach for its settings: they and its items wait in the inventory.
     return { status = "partial", detail = string.format("moved the %s to (%.1f, %.1f); its recipe, settings and items"
       .. " were not restored: %s", snap.name, e.position.x, e.position.y, tostring(reached.detail)),
       outcome = { code = "MOVED_NOT_RESTORED", moved = true, name = snap.name, from = snap.from,
-        to = { x = e.position.x, y = e.position.y } } }
+        to = { x = e.position.x, y = e.position.y }, picked_up = task._picked_rows } }
   end
   if reached ~= "ok" then return nil end
   return restore(task, c, e)

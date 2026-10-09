@@ -643,12 +643,12 @@ describe("package auto-queue", () => {
     expect(queuedPlans(refused.call)).toEqual([]);
     // A package whose check fails keeps what its captures returned.
     writeLedger(dir, 4, [{ ...furnaces("wired"), steps: [capture, reuse] }]);
-    const blocked = fakeBridge({ blueprint_capture: (params) => ({ name: params.name, entities: 7, wires: 2 }),
+    const blocked = fakeBridge({ blueprint_capture: (params) => ({ name: params.name, entities: 7, wires: 2, origin: { x: -2, y: 4 } }),
       blueprint_place: () => ({ ok: false, collisions: [{ reason: "small-electric-pole at (20, 0) is in the way" }] }) });
     await createPackageQueue(() => dir, blocked.bridge).tick();
     expect(readPackageQueue(dir)?.packages.wired).toMatchObject({ status: "failed",
       reason: "check failed: blueprint_place smelter at (20, 0): the position is blocked: small-electric-pole at (20, 0) is in the way",
-      captured: [{ name: "smelter", entities: 7, wires: 2 }] });
+      captured: [{ name: "smelter", entities: 7, wires: 2, origin: { x: -2, y: 4 } }] });
   });
 
   it("queues the ledger's research once per revision that lists any, during a human hold and with the body elsewhere", async () => {

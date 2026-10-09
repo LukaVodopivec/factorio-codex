@@ -150,6 +150,37 @@ ground.stack.count = 2
 local shrunk_result = pickup.tick(shrunk)
 check(shrunk_result.status == "failed" and shrunk_result.outcome.code == "GROUND_STACK_CHANGED",
   "a selected stack that shrinks without the inventory gaining is coded GROUND_STACK_CHANGED")
+-- Hand-crafting hands over the same item meanwhile: its output is no pickup.
+-- The stack vanishes and only crafted ore arrives: a mismatch, not done.
+body.force = { recipes = { ["ore-craft"] = { products = { { type = "item", name = "iron-ore", amount = 1 } } } } }
+body.crafting_queue = { { recipe = "ore-craft", count = 3 } }
+fresh_ground()
+contents["iron-ore"] = 4
+local crafted_only = { target = { x = 4, y = 0 }, item = "iron-ore", count = 3 }
+pickup.start(crafted_only)
+pickup.tick(crafted_only)
+body.crafting_queue = {}
+contents["iron-ore"] = 7
+ground.valid = false
+local crafted_only_result = pickup.tick(crafted_only)
+check(crafted_only_result.status == "failed" and crafted_only_result.outcome.code == "PICKUP_COUNT_MISMATCH"
+  and crafted_only_result.outcome.gained == 0,
+  "crafted output of the item never passes for picking up a stack that vanished")
+-- Picked and crafted in the same tick: exactly the stack counts, no surplus.
+body.crafting_queue = { { recipe = "ore-craft", count = 2 } }
+fresh_ground()
+contents["iron-ore"] = 4
+local crafted_too = { target = { x = 4, y = 0 }, item = "iron-ore", count = 3 }
+pickup.start(crafted_too)
+pickup.tick(crafted_too)
+body.crafting_queue = {}
+contents["iron-ore"] = 9
+ground.valid = false
+local crafted_too_result = pickup.tick(crafted_too)
+check(crafted_too_result.status == "done" and crafted_too_result.outcome == nil
+  and crafted_too_result.detail:match("^physically picked up 3 iron%-ore"),
+  "a pickup alongside a finished craft counts only the picked stack")
+body.force, body.crafting_queue = nil, nil
 fresh_ground()
 contents["iron-ore"] = 4
 

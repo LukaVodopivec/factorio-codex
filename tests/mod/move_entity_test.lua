@@ -324,6 +324,24 @@ check(not surface.can_place_entity({ name = "stone-furnace", position = { x = 80
 local onto_drop = run({ from = { x = 71, y = 41 }, to = { x = 80, y = 41 } })
 check(onto_drop and onto_drop.status == "done" and find("stone-furnace").position.x == 80 and not drop.valid
   and inventory["iron-plate"] == 2, "a move onto a lying item stack lands and takes the stack into the inventory")
+local drop_rows = onto_drop and onto_drop.outcome.picked_up
+check(drop_rows and #drop_rows == 1 and drop_rows[1].item == "iron-plate" and drop_rows[1].count == 2
+  and drop_rows[1].x == 80.25 and drop_rows[1].y == 40.6640625,
+  "the move's result names the ground stack its put-down took up, exactly")
+-- A lying stack never hides the entity's own refusal: a drill over no ore.
+entities["burner-mining-drill"] = proto("burner-mining-drill", "mining-drill", 2, 2)
+items["burner-mining-drill"] = { name = "burner-mining-drill", place_result = entities["burner-mining-drill"], stack_size = 50 }
+entities["iron-ore"] = proto("iron-ore", "resource", 1, 1)
+local drill = spawn("burner-mining-drill", { x = 90, y = 41 })
+local ore_drop = spawn("item-on-ground", { x = 110.25, y = 40.6640625 },
+  nil, { stack = { valid_for_read = true, name = "coal", count = 1 } })
+local ok_dry, err_dry = pcall(move.start, move.action.make_task({ from = { x = 90, y = 41 }, to = { x = 110, y = 41 } }))
+check(not ok_dry and tostring(err_dry):match("^MOVE_TARGET_BLOCKED: .*no resource it can mine under it$"),
+  "a drill onto a lying stack over no ore is refused for the missing ore")
+local ore = spawn("iron-ore", { x = 109.5, y = 40.5 })
+check(pcall(move.start, move.action.make_task({ from = { x = 90, y = 41 }, to = { x = 110, y = 41 } })),
+  "a drill onto a lying stack over ore passes: the stack is taken up")
+drill.valid, ore_drop.valid, ore.valid = false, false, false
 entities["item-on-ground"] = nil
 local back_again = run({ from = { x = 80, y = 41 }, to = { x = 71, y = 41 } })
 check(back_again.status == "done", "the furnace moves back again")

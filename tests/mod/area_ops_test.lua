@@ -374,6 +374,34 @@ check(ghosts_result and ghosts_result.status == "partial" and ghosts_result.outc
 check(ghosts_result.outcome.item_requests_pending == 1, "a revived ghost's module requests are reported as pending")
 check(not pcall(area_ops.ghosts_action.validate, { radius = 3 }, 1), "build_ghosts needs an area or a centre")
 
+-- Ground stacks clear_footprint took up from each ghost's footprint are in
+-- the result; a ghost whose stack does not fit fails GROUND_ITEMS_NO_ROOM.
+do
+  local build = require("scripts.actions.build")
+  local real_clear = build.clear_footprint
+  build.clear_footprint = function(t, _, _, position)
+    t._picked_up = { x = position.x, y = position.y, rows = { { item = "coal", count = 2, x = position.x + 0.25, y = position.y } } }
+    if position.x == 125.5 then
+      return { status = "failed", detail = "GROUND_ITEMS_NO_ROOM: Codex inventory cannot take the item-on-ground stone x60",
+        outcome = { code = "GROUND_ITEMS_NO_ROOM" } }
+    end
+    return "ok"
+  end
+  inventory["wooden-chest"] = 2
+  body.position = { x = 120.5, y = 100.5 }
+  ghost("wooden-chest", { x = 121.5, y = 100.5 })
+  ghost("wooden-chest", { x = 125.5, y = 100.5 })
+  local lying_result = run(area_ops.ghosts_action, { center = { x = 123, y = 100 }, radius = 3 }, 40)
+  build.clear_footprint = real_clear
+  local rows = lying_result and lying_result.outcome.picked_up
+  local failed = lying_result and lying_result.outcome.failed and lying_result.outcome.failed[1]
+  check(lying_result and lying_result.outcome.built == 1 and rows and #rows == 2 and rows[1].item == "coal"
+    and rows[1].x == 121.75 and rows[2].x == 125.75,
+    "build_ghosts names the ground stacks each footprint gave up, built or not")
+  check(failed and failed.code == "GROUND_ITEMS_NO_ROOM" and failed.picked_up and failed.picked_up[1].x == 125.75,
+    "a ghost failed for a ground stack keeps GROUND_ITEMS_NO_ROOM and what it took up")
+end
+
 -- ------------------------------------------------------- deconstruct_area
 
 body.position = { x = 200.5, y = 200.5 }

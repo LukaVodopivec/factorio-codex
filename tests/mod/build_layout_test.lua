@@ -434,6 +434,11 @@ blockers[2] = { valid = true, name = "stone-wall", type = "wall", position = { x
 local lying_walled = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } })
 check(not lying_walled.ok and lying_walled.failed[1].reason:match("blocked by stone%-wall at %(20%.5, 20%.5%)") ~= nil,
   "a real blocker beside a lying stack is still named")
+-- A lying stack never hides the entity's own refusal: a drill over no ore.
+blockers = { blockers[1] }
+local lying_drill = dry({ anchor = { x = 20, y = 20 }, entities = { { name = "burner-mining-drill", dx = 0, dy = 0 } } })
+check(not lying_drill.ok and lying_drill.failed[1].reason:match(": no resource it can mine under it$")
+  and not lying_drill.ground_items, "a drill over a lying stack and no ore is refused for the missing ore")
 -- Ore under every tile of a 9x9 footprint, read before a belt on it: the
 -- capped blocker search still reaches the belt.
 entities["test-silo"] = entity("test-silo", "container", 9, 9)
@@ -1115,6 +1120,42 @@ blockers = {}
 check(result and result.status == "partial" and result.outcome.code == "LAYOUT_PARTIAL" and #created == 1
   and #result.outcome.placed == 1 and result.outcome.failed[1].index == 0 and result.outcome.failed[1].code == "PLACE_FAILED",
   "a layout whose first placement is blocked still places the rest")
+
+-- Ground stacks a placement took up from its footprint go with its placed
+-- row; a stack that does not fit fails the step with GROUND_ITEMS_NO_ROOM and
+-- the stacks it did take up.
+do
+  local build_module = require("scripts.actions.build")
+  local real_clear = build_module.clear_footprint
+  build_module.clear_footprint = function(t, c, proto, position, direction)
+    local lying_here = position.x == 250.5 and { item = "iron-plate", count = 3, x = 250.25, y = 200.6640625 }
+      or position.x == 253.5 and { item = "coal", count = 1, x = 253.25, y = 200.5 } or nil
+    if not lying_here then return real_clear(t, c, proto, position, direction) end
+    t._picked_up = { x = position.x, y = position.y, rows = { lying_here } }
+    if position.x == 250.5 then return "ok" end
+    return { status = "failed", detail = "GROUND_ITEMS_NO_ROOM: Codex inventory cannot take the item-on-ground stone x60",
+      outcome = { code = "GROUND_ITEMS_NO_ROOM", picked_up = { lying_here } } }
+  end
+  inventory = { ["wooden-chest"] = 2 }
+  created = {}
+  local grounded = { id = 19, anchor = { x = 250, y = 200 }, entities = {
+    { name = "wooden-chest", dx = 0.5, dy = 0.5 }, { name = "wooden-chest", dx = 3.5, dy = 0.5 } } }
+  layout.layout_action.runner.start(grounded)
+  for _ = 1, 40 do
+    result = layout.layout_action.runner.tick(grounded)
+    if result then break end
+  end
+  build_module.clear_footprint = real_clear
+  local placed_row = result and result.outcome.placed[1]
+  local failed_row = result and result.outcome.failed[1]
+  check(result and result.status == "partial" and #created == 1 and placed_row.picked_up
+    and placed_row.picked_up[1].item == "iron-plate" and placed_row.picked_up[1].count == 3
+    and placed_row.picked_up[1].x == 250.25 and placed_row.picked_up[1].y == 200.6640625,
+    "a placed row names the ground stacks its placement took up, exactly")
+  check(failed_row and failed_row.index == 1 and failed_row.code == "GROUND_ITEMS_NO_ROOM"
+    and failed_row.picked_up and failed_row.picked_up[1].item == "coal",
+    "a step failed for a ground stack keeps GROUND_ITEMS_NO_ROOM and what it took up")
+end
 
 created = {}
 local blocked_task = { id = 9, anchor = { x = -5, y = 0 }, entities = { { name = "wooden-chest", dx = 0.5, dy = 0.5 } } }

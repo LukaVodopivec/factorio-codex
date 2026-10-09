@@ -330,6 +330,52 @@ end
 -- `tile`); nil when either mask is unknown.
 M.mask_overlap = mask_overlap
 
+-- Whether a tile the footprint covers collides with proto's mask (water and
+-- the like; an unknown mask meets water): one tile query over the covered
+-- tiles, one mask read per tile name.
+function M.tiles_refuse(surface, proto, area)
+  local mask_ok, mask = pcall(function() return proto.collision_mask end)
+  local tile_mask = mask_ok and type(mask) == "table" and mask or { layers = { water_tile = true } }
+  local tiles = { left_top = { x = math.floor(area.left_top.x), y = math.floor(area.left_top.y) },
+    right_bottom = { x = math.ceil(area.right_bottom.x), y = math.ceil(area.right_bottom.y) } }
+  local ok, found = pcall(surface.find_tiles_filtered, { area = tiles, limit = M.tile_count(tiles) })
+  local meets = {}
+  for _, tile in ipairs(ok and found or {}) do
+    local name_ok, name = pcall(function() return tile.name end)
+    local key = name_ok and name or tile
+    if meets[key] == nil then
+      local tile_ok, other = pcall(function() return tile.prototype.collision_mask end)
+      meets[key] = mask_overlap(tile_mask, tile_ok and other or nil, true) == true
+    end
+    if meets[key] then return true end
+  end
+  return false
+end
+
+-- Why proto cannot stand at position for a reason of its own, whatever item
+-- stacks lie there (the build takes those up first): a surface condition it
+-- breaks, a mining drill with no resource it mines among `found` (the
+-- entities read over its footprint), an offshore pump with no liquid at its
+-- source. nil when none applies.
+function M.proto_refusal(surface, proto, position, direction, found)
+  local condition = M.condition_refusal(surface, "entity", proto.name)
+  if condition then return condition.reason end
+  if proto.type == "mining-drill" then
+    local categories = read(function() return proto.resource_categories end)
+    for _, e in ipairs(found or {}) do
+      if e.valid and e.type == "resource" then
+        local category = read(function() return e.prototype.resource_category end)
+        if type(categories) ~= "table" or category == nil or categories[category] then return nil end
+      end
+    end
+    return "no resource it can mine under it"
+  end
+  if proto.type == "offshore-pump" and not M.pumped_fluid(surface, proto, position, direction) then
+    return "it needs a land tile with water behind it"
+  end
+  return nil
+end
+
 function M.path_start(c)
   local result = { clear = false, state = "unknown", collisions = {} }
   local reasons = {}

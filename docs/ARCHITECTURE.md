@@ -99,7 +99,9 @@ file per role).
 planner writes it only through `factorio-codex ledger-apply --ledger <file>`,
 which validates the update (`coordination/ledger.ts`), rejects stale or
 duplicate reports (by `source_tick`) and reused package ids, and writes it atomically with mode
-0600. A ledger holds the run identity, the priorities, at most two build
+0600. Each call appends its outcome to `ledger-history.jsonl` beside the ledger
+(`at`, `status`, `revision` or `reason` and `issues`, the update's
+`package_ids`), as evidence only. A ledger holds the run identity, the priorities, at most two build
 packages and up to seven research technologies.
 
 The pilot's MCP process runs the package bridge (`coordination/orders.ts`)
@@ -114,13 +116,17 @@ about once a second:
    researched or queued.
 4. Record outcomes in `<run-dir>/package-queue.json`, with what each capture
    returned (`captured`: name, entities, wires), also on a failed check; a
-   failure reaches both roles as `package_failed`.
+   failure reaches both roles as `package_failed`. Every queued package's
+   record gets `plan_ended_tick` and `plan_status` once its plan ends.
 5. Measure a package's optional `verify` metrics (up to three: an item's
    production per minute, or the state of the line at a position) once, two
    minutes of game time after its plan ends, through `factory_status`'s
    bridge-only `measure`. The outcome stays on the package's record and
    reaches both roles as `package_verified` or `package_unmet`, with the
-   measured values. It is measurement only: nothing is fixed or queued again.
+   measured values; a partial plan's `NO_LINE` row carries `plan_status`. A
+   failed or cancelled plan is not measured: its verification is
+   `not_measured` with reason `plan <status>`, and no event. It is measurement
+   only: nothing is fixed or queued again.
 
 Packages written before an emergency `stop` stay held until the planner
 rewrites the ledger, and a human hold parks everything. Every tool result
@@ -151,21 +157,47 @@ Run telemetry, all beside the samples and never shown to the bots:
 
 - `tool_outcomes.jsonl`: one row per MCP tool call (`at`, `role`, `tool`,
   `status`, `code` (a failure's leading mod `CODE:`, else `TOOL_ERROR`),
-  `duration_ms`), appended asynchronously by the MCP layer
+  `ok` (the call itself succeeded: not `isError`), `event` (`next_event`'s
+  kind), `summary` (the result's text, at most 200 characters, only when the
+  call failed or its status is not `ok`, `completed` or `running`),
+  `duration_ms`). `status` is the result's own status (a plan's or an
+  event's for `plan_status` and `next_event`), else `failed` for an error,
+  `not_ok` for a result with `ok: false` such as a failed dry run (its
+  `code` then its own or its first `failed` row's), else `ok`. Rows are
+  appended asynchronously by the MCP layer
   for the run its current run directory's ledger names, only while the
   recorder's run directory exists, capped at 16 MiB; a dropped row never
   delays or fails the call.
-- `manifest.json` `telemetry.roles`: each role's turn time split into model,
-  tool and compaction time, from the rollout event times the feed reads
-  (tool items' own spans, tool calls to their outputs, and compaction
-  items; model items such as reasoning and plans are model time).
+- `manifest.json` `telemetry.roles`: each role's turn time split into model
+  (`model_ms`), tool (`tool_ms`), wait (`wait_ms`) and compaction
+  (`compaction_ms`) time, from the rollout event times the feed reads (tool
+  items' own spans, model calls to their outputs, and compaction items; model
+  items such as reasoning and plans are model time). `wait_ms` is the
+  `next_event` MCP calls' own spans, taken out of tool time even inside the
+  exec cell that ran them. `model_calls` counts the model's call items
+  (code-mode `exec` and `wait` cells), `mcp_calls` the MCP tool calls they
+  made, `reasoning_items` the reasoning items and `reasoning_summarized` those
+  with a non-empty summary (only those reach the thought feed). Manifests
+  before 0.36 have `tool_calls` (now `model_calls`) and no wait split.
 - `manifest.json` `telemetry.body`: the body's time by state between the
   baseline and final samples (`pilot`, `package`, `upkeep`, `crafting`,
-  `hold`, `dead`, `idle`), the busy share, and idle gaps by the state that
-  ended them, from the mod's `tasks.body_time` counters in `run_snapshot`.
-  The baseline (`run_snapshot {window = true}`) marks the window, so idle
-  before `GO` is no gap of the run; idle still open at the final sample is
-  the gap `open`.
+  `hold`, `dead`, `idle`), the busy share (directed work: `pilot`,
+  `package` and `crafting`; `upkeep` is the mod's chore and shows only in
+  `states`), and idle gaps by the state that ended them, from the mod's
+  `tasks.body_time` counters in `run_snapshot`. The baseline
+  (`run_snapshot {window = true}`) marks the window, so idle before `GO` is
+  no gap of the run; idle still open at the final sample is the gap `open`.
+- `manifest.json` `telemetry.milestones`: each rocket milestone the final
+  sample's `run_snapshot.milestones` holds (`rocket_ready`,
+  `rocket_launch_ordered`, `rocket_launched`: the mod's first tick of each),
+  with its `tick` and `elapsed_s` from `GO` (the baseline tick). Each
+  technology's first finish tick stays in the samples' `milestones.research`.
+- `manifest.json` `telemetry.holds`: human holds in the window (`count`,
+  `total_seconds` of closed holds, and the `recent` episodes, at most 16, with
+  `start_tick`, `end_tick` (absent while open) and `cause`), from the mod's
+  hold record in `run_snapshot.holds`; `telemetry.handler_errors`: caught mod
+  handler faults in the window, from `run_snapshot.handler_errors`. Each
+  field is absent when the mod did not report it.
 
 Run attestation: every `run_snapshot` (the baseline and each sample) carries
 `attestation`: `game.speed`, the Codex player's `cheat_mode` and controllers,

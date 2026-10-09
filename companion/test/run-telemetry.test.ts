@@ -6,7 +6,7 @@ import { Bridge, ModError } from "../src/bridge.js";
 import { registerMcpTools } from "../src/mcp/server.js";
 import type { RconClient } from "../src/rcon.js";
 import { attestationIssues, bodySummary, checkpointDelay, compareRuns, createAttestor, createRunStore, createToolOutcomeLog, markRunAssisted, readManifest, resourceVerdict,
-  parseRunSnapshot, rolloutResolver, sampleSchema, snapshotDelta, TOOL_OUTCOMES_MAX_BYTES, toolOutcome,
+  parseRunSnapshot, rolloutResolver, runEvents, sampleSchema, snapshotDelta, TOOL_OUTCOMES_MAX_BYTES, toolOutcome,
   type RunAttestation, type RunManifest, type RunSample, type RunSnapshot } from "../src/runs/telemetry.js";
 
 const roots: string[] = [];
@@ -289,7 +289,8 @@ describe("body time summary", () => {
       pilot: { count: 7, ticks: 9_500, longest: 6_000, longest_end_tick: 40_000 },
       package: { count: 4, ticks: 8_400, longest: 3_000, longest_end_tick: 30_000 },
       hold: { count: 1, ticks: 100, longest: 100, longest_end_tick: 500 } });
-    expect(bodySummary(baseline, final)).toEqual({ window_ticks: 72_000, busy_share: 0.742,
+    // Upkeep keeps its row but is not busy: pilot, package and crafting are.
+    expect(bodySummary(baseline, final)).toEqual({ window_ticks: 72_000, busy_share: 0.7,
       states: { crafting: { ticks: 2_400, share: 0.033 }, hold: { ticks: 600, share: 0.008 }, idle: { ticks: 18_000, share: 0.25 },
         package: { ticks: 18_000, share: 0.25 }, pilot: { ticks: 30_000, share: 0.417 }, upkeep: { ticks: 3_000, share: 0.042 } },
       gaps: { package: { count: 4, total_seconds: 140, mean_seconds: 35, longest_seconds: 50 },
@@ -316,11 +317,17 @@ describe("body time summary", () => {
   });
   it("is kept in the run summary beside each role's time split", () => {
     const store = root(), body = bodySummary(timed(0, {}, {}, { window_tick: 0 }), timed(600, { idle: 300, pilot: 300 }, {}, { window_tick: 0 }));
-    const telemetry = { roles: { pilot: { turns: 3, turn_ms: 9_000, model_ms: 6_000, tool_ms: 2_000, compaction_ms: 1_000,
-      tool_calls: 4, compactions: 1 } }, body };
+    const telemetry = { roles: { pilot: { turns: 3, turn_ms: 9_000, model_ms: 5_000, tool_ms: 1_000, wait_ms: 2_000, compaction_ms: 1_000,
+      model_calls: 4, mcp_calls: 6, compactions: 1, reasoning_items: 10, reasoning_summarized: 3 } }, body,
+      milestones: { rocket_launched: { tick: 1_632_057, elapsed_s: 27_179.3 } }, holds: { count: 1, total_seconds: 5, recent: [] }, handler_errors: 0 };
     createRunStore(store, { ...manifest("run-t", "v"), telemetry });
     expect(readManifest(store, "run-t").telemetry).toEqual(telemetry);
     expect(body).toMatchObject({ busy_share: 0.5, gaps: {} });
+    // A manifest from before 0.36 (tool_calls, no wait split) stays readable.
+    const legacy = { roles: { pilot: { turns: 3, turn_ms: 9_000, model_ms: 6_000, tool_ms: 2_000, compaction_ms: 1_000,
+      tool_calls: 4, compactions: 1 } }, body };
+    createRunStore(store, { ...manifest("run-old", "v"), telemetry: legacy });
+    expect(readManifest(store, "run-old").telemetry).toEqual(legacy);
   });
 
   it("has no summary without both counters from one save and the baseline's window", () => {
@@ -328,6 +335,40 @@ describe("body time summary", () => {
     expect(bodySummary(timed(100, {}, {}), { ...timed(200, {}, {}), body_time: { ...timed(200, {}, {}).body_time, since_tick: 150 } })).toBeNull();
     // Without the baseline's window mark the gap open at GO would count its time before GO.
     expect(bodySummary(timed(600, {}, {}), timed(900, {}, {}, { window_tick: 300 }))).toBeNull();
+  });
+});
+
+describe("run milestones, holds and handler faults", () => {
+  it("parses the mod's fields, empty Lua tables included, and rejects unknown ones", () => {
+    const parsed = parseRunSnapshot({ ...snapshot(100, 1), milestones: [], holds: { count: 0, total_ticks: 0, recent: {} }, handler_errors: 0 });
+    expect(parsed).toMatchObject({ milestones: {}, holds: { count: 0, total_ticks: 0, recent: [] }, handler_errors: 0 });
+    expect(parseRunSnapshot({ ...snapshot(100, 1), milestones: { rocket_ready_tick: 90, research: [] } }).milestones)
+      .toEqual({ rocket_ready_tick: 90, research: {} });
+    expect(() => parseRunSnapshot({ ...snapshot(100, 1), milestones: { rocket_landed_tick: 5 } })).toThrow();
+    expect(() => parseRunSnapshot({ ...snapshot(100, 1), holds: { count: 1, total_ticks: 0, recent: [{ start_tick: 5, why: "x" }] } })).toThrow();
+  });
+
+  it("summarizes the final sample against the baseline: rocket ticks from GO, holds and faults in the window", () => {
+    const baseline: RunSnapshot = { ...snapshot(1_299, 0), holds: { count: 2, total_ticks: 600, recent: [
+      { start_tick: 100, end_tick: 400, cause: "movement" }, { start_tick: 500, end_tick: 800, cause: "mining" }] }, handler_errors: 3 };
+    const final: RunSnapshot = { ...snapshot(1_635_153, 0),
+      milestones: { rocket_ready_tick: 1_612_260, rocket_launch_ordered_tick: 1_631_000, rocket_launched_tick: 1_632_057,
+        research: { automation: 5_000 } },
+      holds: { count: 5, total_ticks: 600 + 1_536, recent: [{ start_tick: 500, end_tick: 800, cause: "mining" },
+        { start_tick: 9_000, end_tick: 10_000, cause: "build" }, { start_tick: 20_000, end_tick: 20_536, cause: "movement" },
+        { start_tick: 1_635_000, cause: "gui" }] },
+      handler_errors: 4 };
+    expect(runEvents(baseline, final)).toEqual({
+      milestones: { rocket_ready: { tick: 1_612_260, elapsed_s: 26_849.35 }, rocket_launch_ordered: { tick: 1_631_000, elapsed_s: 27_161.68 },
+        rocket_launched: { tick: 1_632_057, elapsed_s: 27_179.3 } },
+      holds: { count: 3, total_seconds: 25.6, recent: [{ start_tick: 9_000, end_tick: 10_000, cause: "build" },
+        { start_tick: 20_000, end_tick: 20_536, cause: "movement" }, { start_tick: 1_635_000, cause: "gui" }] },
+      handler_errors: 1 });
+    // Nothing yet: an empty milestones record; an older mod: no fields at all.
+    expect(runEvents(baseline, { ...snapshot(2_000, 0), milestones: {} })).toEqual({ milestones: {} });
+    expect(runEvents(snapshot(1, 0), snapshot(2, 0))).toEqual({});
+    // Counters that fell come from another save: left out.
+    expect(runEvents(baseline, { ...snapshot(2_000, 0), holds: { count: 1, total_ticks: 0, recent: [] }, handler_errors: 0 })).toEqual({});
   });
 });
 
@@ -343,10 +384,37 @@ describe("tool outcomes", () => {
   const rows = (store: string, id: string) => fs.readFileSync(path.join(store, `run-${id}`, "tool_outcomes.jsonl"), "utf8")
     .trim().split("\n").map((line) => JSON.parse(line));
 
-  it("states each result's status and code", () => {
-    expect(toolOutcome({ structuredContent: { status: "failed", code: "OUT_OF_REACH" }, isError: true })).toEqual({ status: "failed", code: "OUT_OF_REACH" });
-    expect(toolOutcome({ structuredContent: { tick: 3 } })).toEqual({ status: "ok", code: null });
-    expect(toolOutcome({ isError: true })).toEqual({ status: "failed", code: null });
+  it("states each result's status and code, whether the call succeeded, and its event", () => {
+    expect(toolOutcome({ structuredContent: { status: "failed", code: "OUT_OF_REACH" }, isError: true }))
+      .toEqual({ status: "failed", code: "OUT_OF_REACH", ok: false });
+    expect(toolOutcome({ structuredContent: { tick: 3 } })).toEqual({ status: "ok", code: null, ok: true });
+    expect(toolOutcome({ isError: true })).toEqual({ status: "failed", code: null, ok: false });
+    // next_event's kind; a timeout or plan end is a successful call.
+    expect(toolOutcome({ structuredContent: { event: "timeout", status: "completed", summary: "nothing happened in 60 s" } }))
+      .toEqual({ status: "completed", code: null, ok: true, event: "timeout" });
+    expect(toolOutcome({ structuredContent: { event: "plan_ended", status: "failed", summary: "plan 5 ended failed" } }))
+      .toEqual({ status: "failed", code: null, ok: true, event: "plan_ended", summary: "plan 5 ended failed" });
+  });
+
+  it("keeps a failed call's text, cut to 200 characters, and never an ok row's", () => {
+    const long = `Error: ambiguous production route for petroleum-gas: ${"x".repeat(300)}`;
+    expect(toolOutcome({ content: [{ type: "text", text: "ignored" }], structuredContent: { status: "failed", code: "TOOL_ERROR", summary: long },
+      isError: true })).toEqual({ status: "failed", code: "TOOL_ERROR", ok: false, summary: long.slice(0, 200) });
+    expect(toolOutcome({ content: [{ type: "text", text: "boom" }], isError: true })).toEqual({ status: "failed", code: null, ok: false, summary: "boom" });
+    expect(toolOutcome({ structuredContent: { status: "completed", summary: "done" } })).toEqual({ status: "completed", code: null, ok: true });
+    expect(toolOutcome({ structuredContent: { status: "running", summary: "walking" } })).toEqual({ status: "running", code: null, ok: true });
+  });
+
+  it("records a failed dry run as not_ok with its code or its first failed row's", () => {
+    const dry = { check_only: true, ok: false, failed: [{ code: "LAYOUT_OVERLAP", reason: "burner-inserter overlaps entities[0]" },
+      { code: "BLOCKED" }] };
+    expect(toolOutcome({ content: [{ type: "text", text: "structured result" }], structuredContent: dry }))
+      .toEqual({ status: "not_ok", code: "LAYOUT_OVERLAP", ok: true, summary: "structured result" });
+    expect(toolOutcome({ structuredContent: { ...dry, code: "SEARCH_BUDGET", summary: "no placement" } }))
+      .toEqual({ status: "not_ok", code: "SEARCH_BUDGET", ok: true, summary: "no placement" });
+    // A passed dry run, and a status that says more than ok, stay as they were.
+    expect(toolOutcome({ structuredContent: { check_only: true, ok: true, failed: [] } })).toEqual({ status: "ok", code: null, ok: true });
+    expect(toolOutcome({ structuredContent: { status: "queued", ok: false } })).toMatchObject({ status: "queued", code: null });
   });
 
   it("appends one row per call beside the samples of the ledger's run, and only while that run directory exists", async () => {
@@ -360,8 +428,8 @@ describe("tool outcomes", () => {
     await log.record("run_plan", 1500.6, { structuredContent: { status: "failed", code: "STEP_STALLED" }, isError: true },
       new Date("2026-10-04T10:00:01Z"));
     expect(rows(store, "run-7")).toEqual([
-      { at: "2026-10-04T10:00:00.000Z", role: "pilot", tool: "queue_plan", status: "queued", code: null, duration_ms: 3 },
-      { at: "2026-10-04T10:00:01.000Z", role: "pilot", tool: "run_plan", status: "failed", code: "STEP_STALLED", duration_ms: 1501 }]);
+      { at: "2026-10-04T10:00:00.000Z", role: "pilot", tool: "queue_plan", status: "queued", code: null, ok: true, duration_ms: 3 },
+      { at: "2026-10-04T10:00:01.000Z", role: "pilot", tool: "run_plan", status: "failed", code: "STEP_STALLED", ok: false, duration_ms: 1501 }]);
     // No run directory pointer, or a ledger without a run: nothing written, nothing thrown.
     await createToolOutcomeLog(() => null, "pilot", () => store).record("x", 1, {});
     await createToolOutcomeLog(() => { throw new Error("pointer unreadable"); }, "pilot", () => store).record("x", 1, {});
@@ -389,6 +457,11 @@ describe("tool outcomes", () => {
       "read-only", () => dir, "strategist", () => store);
     const value = await handlers.factory_status!({});
     expect(value.structuredContent).toMatchObject({ tick: 9 });
-    await vi.waitFor(() => expect(rows(store, "run-9")[0]).toMatchObject({ role: "strategist", tool: "factory_status", status: "ok", code: null }));
+    await vi.waitFor(() => expect(rows(store, "run-9")[0]).toMatchObject({ role: "strategist", tool: "factory_status", status: "ok", code: null, ok: true }));
+    // A tool error keeps its message, which carries the cause.
+    const failed = await handlers.production_requirements!({ item: "rocket-silo", per_min: 1 });
+    expect(failed.isError).toBe(true);
+    await vi.waitFor(() => expect(rows(store, "run-9")[1]).toMatchObject({ tool: "production_requirements", status: "failed",
+      code: "TOOL_ERROR", ok: false, summary: expect.stringContaining("unexpected production_requirements") }));
   });
 });

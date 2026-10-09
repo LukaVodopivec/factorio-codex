@@ -98,6 +98,24 @@ describe("compact strategist operations ledger", () => {
     expect(printed.trim()).toBe(contract);
   });
 
+  it("ledger-apply appends each call's outcome to ledger-history.jsonl beside the ledger", () => {
+    const file = ledgerFile(), dir = path.dirname(file), root = path.resolve(import.meta.dirname, "../..");
+    const apply = (input: string) => JSON.parse(execFileSync(path.join(root, "node_modules/.bin/tsx"),
+      [path.join(root, "companion/src/cli.ts"), "ledger-apply", "--ledger", file],
+      { input, encoding: "utf8", env: { ...process.env, XDG_DATA_HOME: dir } }));
+    expect(apply(JSON.stringify(initialization()))).toEqual({ status: "applied", revision: 1, source_tick: 100 });
+    const bad = envelope(101);
+    bad.update.build_packages = [{ package_id: "iron-a" }];
+    expect(apply(JSON.stringify(bad))).toMatchObject({ status: "discarded", reason: "MALFORMED_UPDATE" });
+    expect(apply("{broken")).toEqual({ status: "discarded", reason: "MALFORMED_UPDATE" });
+    const history = fs.readFileSync(path.join(dir, "ledger-history.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(history).toEqual([
+      { at: expect.any(String), status: "applied", revision: 1, source_tick: 100, package_ids: [] },
+      { at: expect.any(String), status: "discarded", reason: "MALFORMED_UPDATE", issues: expect.any(Array), package_ids: ["iron-a"] },
+      { at: expect.any(String), status: "discarded", reason: "MALFORMED_UPDATE", package_ids: [] }]);
+    expect(fs.statSync(path.join(dir, "ledger-history.jsonl")).mode & 0o777).toBe(0o600);
+  });
+
   it("writes atomically with mode 0600 and preserves immutable run identity", () => {
     const file = ledgerFile();
     fs.writeFileSync(file, `${JSON.stringify(ledger())}\n`, { mode: 0o600 });

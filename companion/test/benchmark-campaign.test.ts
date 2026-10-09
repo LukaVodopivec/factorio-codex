@@ -108,6 +108,26 @@ describe("finite benchmark campaign", () => {
       expect(nextTrial(file).campaign.pending!.run_id).toBe("search-trial-0002");
     }
   });
+  it("takes a recorded debug run's configuration out of the screening queue, unscored, keeping its row and milestones", () => {
+    const { file, dir } = setup();
+    addConfiguration(file, { id: "brains-1", profiles: initialProfiles(1), release_sha: "a".repeat(40), change: "solo pilot", family: "topology" });
+    const milestones = { rocket_ready_tick: 1_612_260, rocket_launched_tick: 1_632_057, research: { automation: 5_000 } };
+    const c = record(file, dir, 100, false, files => {
+      const meta = JSON.parse(fs.readFileSync(files.manifest, "utf8"));
+      delete meta.benchmark; meta.kind = "debug";
+      fs.writeFileSync(files.manifest, JSON.stringify(meta));
+      const checkpoint = JSON.parse(fs.readFileSync(files.samples, "utf8"));
+      fs.appendFileSync(files.samples, JSON.stringify({ ...checkpoint, kind: "final", tick: 1_635_153,
+        snapshot: { ...checkpoint.snapshot, tick: 1_635_153, milestones } }) + "\n");
+    });
+    expect(c.trials).toHaveLength(1);
+    expect(c.trials[0]).toMatchObject({ run_id: "search-trial-0001", configuration: "brains-2", eligible: false, milestones });
+    expect(c.trials[0]!.reasons).toContain("not a benchmark");
+    expect(c).toMatchObject({ screening_queue: ["brains-1"], screens_since_control: 0, unsuccessful_screens: 0,
+      incumbent: "brains-2", confirmation: null, pending: null });
+    // The next run id counts the kept row.
+    expect(nextTrial(file)).toMatchObject({ configuration: { id: "brains-1" }, campaign: { pending: { run_id: "search-trial-0002" } } });
+  });
   it("closes a reconciled dead recorder as interrupted and preserves evidence", () => {
     const { file, dir } = setup();
     const c = record(file, dir, 100, false, files => {

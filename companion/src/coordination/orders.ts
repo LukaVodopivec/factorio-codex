@@ -3,8 +3,9 @@
 // and one full-surface bridge queues each new package into the FIFO by itself,
 // first making the blueprint captures a package starts with, while the body
 // is on the package's surface. The same bridge queues the ledger's research
-// once per revision that lists any, and measures a package's verify metrics
-// once its plan has ended and settled.
+// once per revision that lists any, records when each package's plan ended
+// and how, and measures a package's verify metrics once its plan has ended
+// and settled.
 import fs from "node:fs";
 import path from "node:path";
 import { ModError, WriterRetiredError, type Bridge } from "../bridge.js";
@@ -40,12 +41,15 @@ export interface PackageRecord {
   verification?: Verification;
 }
 /** The measured verify metrics: verified when every one is met, else unmet
- *  (reason: why nothing could be measured). Each metric is the declared one
- *  plus measured (the mod's values: per_min, or the line's line_id, product,
- *  state, cause, rate_per_min, machines and working, or error) and met. */
+ *  (reason: why nothing could be measured), or not_measured (reason: plan
+ *  failed or plan cancelled) for a plan that failed or was cancelled. Each
+ *  metric is the declared one plus measured (the mod's values: per_min, or
+ *  the line's line_id, product, state, cause, rate_per_min, machines and
+ *  working, or error) and met; a NO_LINE row of a partial plan also carries
+ *  plan_status. */
 export interface Verification {
-  status: "verified" | "unmet"; tick: number; at: string;
-  metrics: Array<VerifyMetric & { measured: Record<string, unknown>; met: boolean }>; reason?: string;
+  status: "verified" | "unmet" | "not_measured"; tick: number; at: string;
+  metrics: Array<VerifyMetric & { measured: Record<string, unknown>; met: boolean; plan_status?: string }>; reason?: string;
 }
 export interface FootprintChanged { count: number; changes: unknown[] }
 /** One blueprint_capture's result: its name, how many entities and wires it holds, and its
@@ -110,7 +114,8 @@ export function readPackageQueue(dir: string): PackageQueueState | null {
 export function packageVerifications(dir: string): PackageVerificationEvent[] {
   return Object.entries(readPackageQueue(dir)?.packages ?? {}).flatMap(([id, record]) => {
     const result = record.verification;
-    if (!result || typeof result !== "object") return [];
+    // A failed or cancelled plan was already reported; its verify was not measured.
+    if (!result || typeof result !== "object" || result.status === "not_measured") return [];
     return [{ event: result.status === "verified" ? "package_verified" as const : "package_unmet" as const,
       package_id: id, ...(record.plan_status === undefined ? {} : { plan_status: record.plan_status }),
       metrics: result.metrics ?? [], ...(result.reason === undefined ? {} : { reason: result.reason }),
@@ -371,21 +376,17 @@ const VERIFY_GIVE_UP_TICKS = 18000;
 const VERIFY_POLL_MS = 10_000;
 const ENDED = new Set(["completed", "partial", "failed", "cancelled"]);
 
-/** Measures each queued package's verify metrics once, VERIFY_SETTLE_TICKS
- *  after its plan ended, through factory_status measure on its surface, and
- *  records the outcome on its record. Measurement only: nothing is fixed or
- *  queued again. A mod refusal is retried until VERIFY_GIVE_UP_TICKS past
- *  due, then recorded as unmet with its reason. */
+/** Records when every queued package's plan ended and how (plan_ended_tick,
+ *  plan_status), and measures a package's verify metrics once,
+ *  VERIFY_SETTLE_TICKS after its plan ended, through factory_status measure
+ *  on its surface, recording the outcome on its record; a failed or
+ *  cancelled plan's verify is not_measured. Measurement only: nothing is
+ *  fixed or queued again. A mod refusal is retried until
+ *  VERIFY_GIVE_UP_TICKS past due, then recorded as unmet with its reason. */
 async function verifyPackages(b: Bridge, state: PackageQueueState, tick: number, write: () => void,
   now: () => Date, polled: Map<string, number>): Promise<void> {
   for (const [id, record] of Object.entries(state.packages)) {
-    if (record.status !== "queued" || record.verify === undefined || record.verification !== undefined) continue;
-    const done = (result: Omit<Verification, "at" | "tick">) => {
-      record.verification = { ...result, tick, at: now().toISOString() };
-      write();
-    };
-    const metrics = verifySchema.safeParse(record.verify);
-    if (!metrics.success) { done({ status: "unmet", metrics: [], reason: "its verify metrics in package-queue.json are malformed" }); continue; }
+    if (record.status !== "queued") continue;
     if (record.plan_ended_tick === undefined) {
       if (record.plan_id === undefined) {
         record.plan_ended_tick = record.tick ?? tick;
@@ -407,6 +408,17 @@ async function verifyPackages(b: Bridge, state: PackageQueueState, tick: number,
       }
       write();
     }
+    if (record.verify === undefined || record.verification !== undefined) continue;
+    const done = (result: Omit<Verification, "at" | "tick">) => {
+      record.verification = { ...result, tick, at: now().toISOString() };
+      write();
+    };
+    const metrics = verifySchema.safeParse(record.verify);
+    if (!metrics.success) { done({ status: "unmet", metrics: [], reason: "its verify metrics in package-queue.json are malformed" }); continue; }
+    if (record.plan_status === "failed" || record.plan_status === "cancelled") {
+      done({ status: "not_measured", metrics: [], reason: `plan ${record.plan_status}` });
+      continue;
+    }
     const due = record.plan_ended_tick + VERIFY_SETTLE_TICKS;
     if (tick < due) continue;
     try {
@@ -415,7 +427,9 @@ async function verifyPackages(b: Bridge, state: PackageQueueState, tick: number,
       const measured = luaArray(answer?.measured ?? []) as Array<Record<string, unknown>>;
       const rows = metrics.data.map((metric, index) => {
         const { met, ...values } = measured[index] ?? { error: "NOT_MEASURED" };
-        return { ...metric, measured: values, met: met === true };
+        // A partial plan may not have built the line: its NO_LINE row says how the plan ended.
+        const partial = values.error === "NO_LINE" && record.plan_status === "partial" ? { plan_status: "partial" } : {};
+        return { ...metric, measured: values, met: met === true, ...partial };
       });
       done({ status: rows.every((row) => row.met) ? "verified" : "unmet", metrics: rows });
     } catch (error) {
@@ -512,7 +526,7 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
       }
       write();
     }
-    // A package's verify is measured whatever holds the queue: it moves nothing.
+    // A package's plan end is recorded and its verify measured whatever holds the queue: it moves nothing.
     if (typeof ping.tick === "number") await verifyPackages(b, state, ping.tick, write, now, polled);
     // Records exist: each pass checks them against the loaded save.
     if (Object.keys(state.packages).length === 0 && ledger.build_packages.length === 0) return;

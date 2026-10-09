@@ -248,6 +248,18 @@ describe("next_event rocket and platform events", () => {
     expect(eventSummary({ event: "rocket_ready", silo: { x: 1.5, y: 2.5 } })).toBe("a rocket is ready in the silo at (1.5, 2.5)");
   });
 
+  it("tells a launch order from the launch itself", async () => {
+    const ordered = { tick: 200, kind: "rocket_launch_ordered" as const, silo: { x: 10.5, y: 10.5 }, platform: { index: 3, name: "Orbit" } };
+    const left = { tick: 1_400, kind: "rocket_launched" as const };
+    const state = { ...busy, tick: 1_500, last_space_event_tick: 1_400, space_events: [ordered, left] };
+    const first = await waitForEvent(game([state]).bridge, input({ since_tick: 150 }), quiet(), undefined, fakeClock());
+    expect(first).toMatchObject({ event: "rocket_launch_ordered", event_tick: 200, space_events: [ordered, left] });
+    expect(eventSummary(first)).toBe("a rocket launch was ordered at the silo at (10.5, 10.5) to platform Orbit");
+    const second = await waitForEvent(game([state]).bridge, input({ since_tick: 300 }), quiet(), undefined, fakeClock());
+    expect(second).toMatchObject({ event: "rocket_launched", event_tick: 1_400 });
+    expect(eventSummary(second)).toBe("a rocket was launched");
+  });
+
   it("carries space events that arrive with a plan end, which the next since_tick call would miss", async () => {
     const ended = { ...idle, tick: 240, last_plan_ended: { plan_id: 5, status: "completed", tick: 235 },
       last_space_event_tick: 230, space_events: [launched, landed] };

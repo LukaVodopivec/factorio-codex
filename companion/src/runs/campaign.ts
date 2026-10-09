@@ -6,7 +6,7 @@ import { z } from "zod";
 import { atomicWriteFile } from "../setup/atomic.js";
 import { profileListSchema, initialProfiles } from "./profiles.js";
 import { benchmarkScore, cutoffIssues, INPUT_ITEMS } from "./benchmark.js";
-import { readManifest, readSamples, runRoot } from "./telemetry.js";
+import { milestonesSchema, readManifest, readSamples, runRoot } from "./telemetry.js";
 
 const identifier = z.string().regex(/^[a-z0-9][a-z0-9-]{0,119}$/);
 const runIdentifier = z.string().regex(/^[a-z0-9][a-z0-9-]{0,159}$/);
@@ -17,6 +17,8 @@ const trialSchema = z.object({ run_id: runIdentifier, configuration: identifier,
   reasons: z.array(z.string()), research: z.number().nonnegative(), made: z.number().nonnegative(),
   input: z.number().nonnegative(), final_input_per_minute: z.number().nonnegative(),
   resources: z.record(z.string(), z.number()), made_items: z.record(z.string(), z.number()),
+  /** The final sample's milestones (mod 0.36 on): rocket and first-research ticks. */
+  milestones: milestonesSchema.optional(),
   recorded_at: z.string() }).strict();
 export const campaignSchema = z.object({ schema_version: z.literal(2), id: identifier,
   status: z.enum(["active", "paused"]), baseline_save_sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -127,11 +129,19 @@ export function recordTrial(file: string, runId: string, evidenceRoot = runRoot(
     const counts = new Map(previous.delta.items.map(row => [row.name, row.produced]));
     finalInput = Math.max(0, score.input - INPUT_ITEMS.reduce((sum, name) => sum + (counts.get(name) ?? 0), 0)) / 5;
   } else reasons.push("15-minute throughput checkpoint is missing or outside its one-second boundary");
+  const final = samples.findLast(s => s.status === "ok" && s.kind === "final");
+  const milestones = final?.status === "ok" ? final.snapshot.milestones : undefined;
   const trial: Trial = { run_id: runId, configuration: config.id, eligible: reasons.length === 0, reasons, ...score,
-    final_input_per_minute: finalInput, recorded_at: new Date().toISOString() };
+    final_input_per_minute: finalInput, ...(milestones ? { milestones } : {}), recorded_at: new Date().toISOString() };
+  // An ineligible row is kept: the next run id counts the rows.
   c.trials.push(trial);
   const purpose = c.pending.purpose;
   c.pending = null;
+  // A debug run of a screened configuration takes it out of the queue, unscored.
+  if (manifest.kind !== "benchmark" && purpose === "screen") {
+    const queued = c.screening_queue.indexOf(config.id);
+    if (queued >= 0) c.screening_queue.splice(queued, 1);
+  }
   if (trial.eligible) {
     if (purpose === "confirmation") {
       c.confirmation!.results.push(runId);

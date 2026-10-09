@@ -3,7 +3,8 @@ import fs from "node:fs";
 // Thought feed: tails the role Codex rollout files, saves every role's
 // reasoning summaries and assistant messages, and shows the shown roles' in
 // the game. Output only; tool calls, tool outputs and encrypted reasoning are
-// never read out. The time split reads only event types and times.
+// never read out. The time split reads only event types and times, MCP tool
+// names, and whether a reasoning summary has text.
 export type ThoughtRole = "pilot" | "strategist" | "mining" | "logistics";
 export type ThoughtKind = "reasoning" | "message";
 export interface Thought { ts: string; role: ThoughtRole; kind: ThoughtKind; text: string }
@@ -30,21 +31,28 @@ export function extractThoughts(line: string): Array<{ ts: string; kind: Thought
     && part.text.trim() ? [{ ts, kind, text: part.text }] : []);
 }
 
-/** A role's wall time inside its turns, from rollout event times: tool time
- *  (tool items' own start and end, and each model tool call to its output),
- *  compaction time (context compaction items), and model time (the rest of
- *  the turn). Turns run from task_started to task_complete or turn_aborted;
- *  a turn already running when the tail began counts from its first
- *  response item seen, and one still open counts to its last line. Events
- *  after a turn closed (a late item_completed) open no turn. */
-export interface TimeSplit { turns: number; turn_ms: number; model_ms: number; tool_ms: number; compaction_ms: number;
-  tool_calls: number; compactions: number }
+/** A role's wall time inside its turns, from rollout event times: wait time
+ *  (next_event MCP calls' own start and end), tool time (other tool items'
+ *  spans and each model call to its output, less wait time), compaction time
+ *  (context compaction items), and model time (the rest of the turn). Turns
+ *  run from task_started to task_complete or turn_aborted; a turn already
+ *  running when the tail began counts from its first response item seen,
+ *  and one still open counts to its last line. Events after a turn closed (a
+ *  late item_completed) open no turn. model_calls counts the model's call
+ *  items (code-mode exec and wait cells), mcp_calls the MCP tool calls they
+ *  made, reasoning_items the reasoning items and reasoning_summarized those
+ *  with a non-empty summary text. */
+export interface TimeSplit { turns: number; turn_ms: number; model_ms: number; tool_ms: number; wait_ms: number;
+  compaction_ms: number; model_calls: number; mcp_calls: number; compactions: number;
+  reasoning_items: number; reasoning_summarized: number }
 type Span = [number, number];
 // Model-generated items: their time is model time, not tool time.
 const MODEL_ITEMS = new Set(["Reasoning", "AgentMessage", "UserMessage", "Plan"]);
 const CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call"]);
 const OUTPUTS = new Set(["function_call_output", "custom_tool_call_output", "local_shell_call_output"]);
 const IN_TURN_EVENTS = new Set(["item_completed", "token_count", "agent_message", "agent_reasoning"]);
+// The MCP tool that blocks until something happens: its time is waiting, not tool work.
+const WAIT_TOOLS = new Set(["next_event"]);
 
 /** Adds [a, b] to a start-sorted list of disjoint spans, merging what it
  *  overlaps. Spans arrive nearly in order, so this works at the tail. */
@@ -73,15 +81,19 @@ function union(x: readonly Span[], y: readonly Span[]): Span[] {
 }
 
 export function createTimeSplit() {
-  const totals: TimeSplit = { turns: 0, turn_ms: 0, model_ms: 0, tool_ms: 0, compaction_ms: 0, tool_calls: 0, compactions: 0 };
-  let turn: { start: number; last: number; tools: Span[]; compactions: Span[] } | null = null;
+  const totals: TimeSplit = { turns: 0, turn_ms: 0, model_ms: 0, tool_ms: 0, wait_ms: 0, compaction_ms: 0, model_calls: 0,
+    mcp_calls: 0, compactions: 0, reasoning_items: 0, reasoning_summarized: 0 };
+  let turn: { start: number; last: number; tools: Span[]; waits: Span[]; compactions: Span[] } | null = null;
   const calls = new Map<string, number>();
   const fold = (into: TimeSplit, open: NonNullable<typeof turn>, end: number) => {
     const length = Math.max(0, end - open.start);
-    const tool = covered(open.tools, open.start, end), compaction = covered(open.compactions, open.start, end);
-    const both = covered(union(open.tools, open.compactions), open.start, end);
-    into.turns++; into.turn_ms += length; into.tool_ms += tool; into.compaction_ms += compaction;
-    into.model_ms += Math.max(0, length - both);
+    // An exec cell that runs next_event spans the wait too: the wait is taken out of its tool time.
+    const busy = union(open.tools, open.waits);
+    const wait = covered(open.waits, open.start, end), compaction = covered(open.compactions, open.start, end);
+    const all = covered(union(busy, open.compactions), open.start, end);
+    into.turns++; into.turn_ms += length; into.wait_ms += wait; into.compaction_ms += compaction;
+    into.tool_ms += Math.max(0, covered(busy, open.start, end) - wait);
+    into.model_ms += Math.max(0, length - all);
   };
   return {
     /** One rollout JSONL line; anything unreadable is skipped. */
@@ -94,7 +106,7 @@ export function createTimeSplit() {
       const event = entry.type === "event_msg" ? payload.type : undefined;
       if (event === "task_started") {
         if (turn) fold(totals, turn, turn.last);
-        turn = { start: ts, last: ts, tools: [], compactions: [] }; calls.clear();
+        turn = { start: ts, last: ts, tools: [], waits: [], compactions: [] }; calls.clear();
         return;
       }
       if (event === "task_complete" || event === "turn_aborted") {
@@ -105,12 +117,18 @@ export function createTimeSplit() {
       const opens = entry.type === "response_item" || entry.type === "compacted";
       if (!turn && !opens) return;
       if (!opens && !IN_TURN_EVENTS.has(event)) return;
-      turn ??= { start: ts, last: ts, tools: [], compactions: [] };
+      turn ??= { start: ts, last: ts, tools: [], waits: [], compactions: [] };
       turn.last = Math.max(turn.last, ts);
+      if (event === "item_completed" && payload.item?.type === "McpToolCall") totals.mcp_calls++;
       if (entry.type === "compacted") {
         totals.compactions++;
+      } else if (entry.type === "response_item" && payload.type === "reasoning") {
+        // Whether a summary has text, never the text itself.
+        totals.reasoning_items++;
+        if (Array.isArray(payload.summary) && payload.summary.some((part: any) => part?.type === "summary_text"
+          && typeof part.text === "string" && part.text.trim())) totals.reasoning_summarized++;
       } else if (entry.type === "response_item" && CALLS.has(payload.type) && typeof payload.call_id === "string") {
-        totals.tool_calls++;
+        totals.model_calls++;
         calls.set(payload.call_id, ts);
       } else if (entry.type === "response_item" && OUTPUTS.has(payload.type) && calls.has(payload.call_id)) {
         insert(turn.tools, [calls.get(payload.call_id)!, ts]);
@@ -118,6 +136,7 @@ export function createTimeSplit() {
       } else if (event === "item_completed" && typeof payload.started_at_ms === "number" && typeof payload.completed_at_ms === "number") {
         const kind = payload.item?.type;
         if (kind === "ContextCompaction") insert(turn.compactions, [payload.started_at_ms, payload.completed_at_ms]);
+        else if (kind === "McpToolCall" && WAIT_TOOLS.has(payload.item?.tool)) insert(turn.waits, [payload.started_at_ms, payload.completed_at_ms]);
         else if (typeof kind === "string" && !MODEL_ITEMS.has(kind)) insert(turn.tools, [payload.started_at_ms, payload.completed_at_ms]);
       }
     },

@@ -49,6 +49,10 @@ factorio-codex campaign resume --campaign <campaign.json>
 
 Initialization copies the baseline beside campaign.json with mode 0400 and
 records its SHA256. `next` is stable until the pending trial is recorded.
+Recording a debug run uses its run id and keeps its unscored row (the next run
+id counts the rows), with the final sample's milestones when the mod reported
+them; a screened configuration's debug run also takes it out of the screening
+queue. It never scores the run; milestone times stay in the run evidence.
 Configuration JSON contains `id`, `release_sha`, `change`, `family` (topology,
 model, instructions, mod or interaction), and `profiles`. Each profile names
 `id` (pilot/strategist/mining/logistics), `role` (pilot/strategist/advisor), `model`,

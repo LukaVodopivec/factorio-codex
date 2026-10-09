@@ -39,6 +39,15 @@ export const attestationSchema = z.object({ game_speed: z.number().optional(), c
 }).strict();
 export type RunAttestation = z.infer<typeof attestationSchema>;
 const itemTotals = z.record(z.string(), z.number().int().nonnegative());
+/** First ticks the mod saw (mod 0.36 on): a rocket ready in a silo, a launch
+ *  ordered, a rocket launched (on_rocket_launched), and each technology's
+ *  first finish; each absent until it happens. */
+export const milestonesSchema = z.object({ rocket_ready_tick: whole.optional(), rocket_launch_ordered_tick: whole.optional(),
+  rocket_launched_tick: whole.optional(), research: z.record(z.string(), whole).optional() }).strict();
+const holdEpisode = z.object({ start_tick: whole, end_tick: whole.optional(), cause: z.string().optional() }).strict();
+/** Human holds since the save began (mod 0.36 on): how many, their closed
+ *  ticks, and the last 16 episodes (end_tick absent while one is open). */
+export const holdsSchema = z.object({ count: whole, total_ticks: whole, recent: z.array(holdEpisode).max(16) }).strict();
 export const runSnapshotSchema = z.object({
   // null while the body is aboard a platform or in a cargo pod without a readable character (mod 0.22.3 on).
   tick: z.number().int().nonnegative(), character: z.record(z.string(), z.unknown()).nullable(),
@@ -60,6 +69,10 @@ export const runSnapshotSchema = z.object({
   /** Absent from samples recorded before the mod reported them. */
   body_time: bodyTimeSchema.optional(),
   attestation: attestationSchema.optional(),
+  milestones: milestonesSchema.optional(),
+  holds: holdsSchema.optional(),
+  /** Caught handler faults since the save began (errors.lua's ring count). */
+  handler_errors: whole.optional(),
   statistics: z.object({
     /** Summed over every surface with own buildings (from mod 0.22.3; the body's surface before). */
     items: counters,
@@ -96,6 +109,9 @@ export function parseRunSnapshot(value: any): RunSnapshot {
   const record = (holder: any, key: string) => { if (Array.isArray(holder?.[key]) && holder[key].length === 0) holder[key] = {}; };
   record(value?.body_time, "ticks"); record(value?.body_time, "gaps"); record(value?.attestation, "mods");
   if (value?.attestation) value.attestation.bonuses = luaArray(value.attestation.bonuses);
+  if (Array.isArray(value?.milestones) && value.milestones.length === 0) value.milestones = {};
+  record(value?.milestones, "research");
+  if (value?.holds) value.holds.recent = luaArray(value.holds.recent);
   // Lua omits a nil character (the body away) and standing_on; a sample always states them.
   if (value && typeof value === "object" && value.character === undefined) value.character = null;
   if (value?.character && typeof value.character === "object" && value.character.standing_on === undefined) value.character.standing_on = null;
@@ -122,18 +138,31 @@ export function attestationIssues(attestation: RunAttestation | undefined): stri
   return issues;
 }
 
-const timeSplitSchema = z.object({ turns: whole, turn_ms: z.number().nonnegative(), model_ms: z.number().nonnegative(),
-  tool_ms: z.number().nonnegative(), compaction_ms: z.number().nonnegative(), tool_calls: whole, compactions: whole }).strict();
+const nonneg = z.number().nonnegative();
+const timeSplitSchema = z.union([
+  z.object({ turns: whole, turn_ms: nonneg, model_ms: nonneg, tool_ms: nonneg, wait_ms: nonneg, compaction_ms: nonneg, model_calls: whole,
+    mcp_calls: whole, compactions: whole, reasoning_items: whole, reasoning_summarized: whole }).strict(),
+  // Manifests before 0.36: tool_calls counted the model's call items, and tool_ms held next_event waits.
+  z.object({ turns: whole, turn_ms: nonneg, model_ms: nonneg, tool_ms: nonneg, compaction_ms: nonneg, tool_calls: whole, compactions: whole }).strict(),
+]);
 const shareRow = z.object({ ticks: whole, share: z.number().nonnegative() }).strict();
 const bodySummarySchema = z.object({ window_ticks: whole, busy_share: z.number().nonnegative(),
   states: z.record(z.string(), shareRow),
   gaps: z.record(z.string(), z.object({ count: whole, total_seconds: z.number().nonnegative(),
     mean_seconds: z.number().nonnegative(), longest_seconds: z.number().nonnegative().nullable() }).strict()),
 }).strict();
-/** The run summary's telemetry: each role's time split from its rollout and
- *  the body's time by state between the baseline and final samples. */
-const runTelemetrySchema = z.object({ roles: z.record(z.string(), timeSplitSchema), body: bodySummarySchema.nullable() }).strict();
-const BUSY_STATES = ["pilot", "package", "upkeep", "crafting"];
+const runEventsSchema = z.object({
+  milestones: z.record(z.string(), z.object({ tick: whole, elapsed_s: z.number() }).strict()).optional(),
+  holds: z.object({ count: whole, total_seconds: nonneg, recent: z.array(holdEpisode) }).strict().optional(),
+  handler_errors: whole.optional(),
+}).strict();
+/** The run summary's telemetry: each role's time split from its rollout, the
+ *  body's time by state between the baseline and final samples, and the
+ *  final sample's milestones, holds and handler faults (runEvents). */
+const runTelemetrySchema = z.object({ roles: z.record(z.string(), timeSplitSchema), body: bodySummarySchema.nullable() })
+  .extend(runEventsSchema.shape).strict();
+/** Directed work: upkeep is the mod's chore (its own row in states), never busy. */
+const BUSY_STATES = ["pilot", "package", "crafting"];
 const round = (value: number, digits = 3) => Math.round(value * 10 ** digits) / 10 ** digits;
 const gapRow = (count: number, ticks: number, longest: number | null) => ({ count, total_seconds: round(ticks / 60, 2),
   mean_seconds: round(ticks / count / 60, 2), longest_seconds: longest === null ? null : round(longest / 60, 2) });
@@ -160,6 +189,32 @@ export function bodySummary(baseline: RunSnapshot, final: RunSnapshot): z.infer<
   const open = b.state === "idle" ? final.tick - Math.max(b.state_since, baseline.tick) : 0;
   if (open > 0) gaps.open = gapRow(1, open, open);
   return { window_ticks: window, busy_share: round(busy / window), states, gaps };
+}
+
+const ROCKET_MILESTONES = ["rocket_ready", "rocket_launch_ordered", "rocket_launched"] as const;
+/** Between the baseline and final samples: each rocket milestone the final
+ *  snapshot holds, with its tick and seconds from GO (the baseline tick;
+ *  negative when it happened before this recording), human holds in the
+ *  window (count, closed seconds, episodes that ended in it or are open), and
+ *  handler faults in the window. A field is absent when the mod did not
+ *  report it, or when its counter fell (another save). */
+export function runEvents(baseline: RunSnapshot, final: RunSnapshot): z.infer<typeof runEventsSchema> {
+  const out: z.infer<typeof runEventsSchema> = {};
+  const milestones = final.milestones;
+  if (milestones) out.milestones = Object.fromEntries(ROCKET_MILESTONES.flatMap((name) => {
+    const tick = milestones[`${name}_tick`];
+    return tick === undefined ? [] : [[name, { tick, elapsed_s: round((tick - baseline.tick) / 60, 2) }]];
+  }));
+  if (final.holds) {
+    const count = final.holds.count - (baseline.holds?.count ?? 0), ticks = final.holds.total_ticks - (baseline.holds?.total_ticks ?? 0);
+    if (count >= 0 && ticks >= 0) out.holds = { count, total_seconds: round(ticks / 60, 2),
+      recent: final.holds.recent.filter((episode) => episode.end_tick === undefined || episode.end_tick >= baseline.tick) };
+  }
+  if (final.handler_errors !== undefined) {
+    const count = final.handler_errors - (baseline.handler_errors ?? 0);
+    if (count >= 0) out.handler_errors = count;
+  }
+  return out;
 }
 
 // A manifest keeps the role profiles its run recorded, so runs from earlier
@@ -283,13 +338,28 @@ export function createAttestor(root: string, id: string) {
 /** tool_outcomes.jsonl stops growing at this size. */
 export const TOOL_OUTCOMES_MAX_BYTES = 16 * 1024 * 1024;
 const TOOL_OUTCOMES_PENDING_MAX = 256;
-export interface ToolOutcome { at: string; role: string; tool: string; status: string; code: string | null; duration_ms: number }
-/** A tool result's status and code: the structured status, else ok or failed by isError. */
-export function toolOutcome(value: unknown): { status: string; code: string | null } {
-  const result = value as { isError?: unknown; structuredContent?: Record<string, unknown> } | null | undefined;
+export interface ToolOutcome { at: string; role: string; tool: string; status: string; code: string | null; ok: boolean;
+  event?: string; summary?: string; duration_ms: number }
+const OUTCOME_SUMMARY_MAX = 200;
+const QUIET_STATUSES = new Set(["ok", "completed", "running"]);
+/** A tool result's outcome: status is the structured status, else failed
+ *  (isError), not_ok (a result with ok false, such as a failed dry run, whose
+ *  code is its own or its first failed row's), else ok; ok is whether the
+ *  call itself succeeded (not isError); event is next_event's kind; summary
+ *  (at most 200 characters) only for a failed call or a status other than
+ *  ok, completed or running. */
+export function toolOutcome(value: unknown): Omit<ToolOutcome, "at" | "role" | "tool" | "duration_ms"> {
+  const result = value as { isError?: unknown; content?: unknown; structuredContent?: Record<string, unknown> } | null | undefined;
   const structured = result?.structuredContent;
-  return { status: typeof structured?.status === "string" ? structured.status : result?.isError === true ? "failed" : "ok",
-    code: typeof structured?.code === "string" ? structured.code : null };
+  const ok = result?.isError !== true;
+  const notOk = typeof structured?.status !== "string" && structured?.ok === false;
+  const status = typeof structured?.status === "string" ? structured.status : !ok ? "failed" : notOk ? "not_ok" : "ok";
+  const firstFailed = Array.isArray(structured?.failed) ? (structured.failed[0] as { code?: unknown } | undefined)?.code : undefined;
+  const code = typeof structured?.code === "string" ? structured.code : notOk && typeof firstFailed === "string" ? firstFailed : null;
+  const text = typeof structured?.summary === "string" ? structured.summary
+    : Array.isArray(result?.content) ? (result.content[0] as { text?: unknown } | undefined)?.text : undefined;
+  return { status, code, ok, ...(typeof structured?.event === "string" ? { event: structured.event } : {}),
+    ...(typeof text === "string" && (!ok || !QUIET_STATUSES.has(status)) ? { summary: text.slice(0, OUTCOME_SUMMARY_MAX) } : {}) };
 }
 /** Appends one row per MCP tool call to tool_outcomes.jsonl beside the
  *  samples of the run the current run directory's ledger names, while the
@@ -474,7 +544,8 @@ export async function recordRun(options: RecordRunOptions): Promise<void> {
     appendJson(files.samples, final);
     if (final.status === "ok") attest(final.snapshot);
     manifest.telemetry = { roles: Object.fromEntries([...splits].map(([role, split]) => [role, split.summary()])),
-      body: final.status === "ok" ? bodySummary(baseline, final.snapshot) : null };
+      body: final.status === "ok" ? bodySummary(baseline, final.snapshot) : null,
+      ...(final.status === "ok" ? runEvents(baseline, final.snapshot) : {}) };
     // Preserve the ordinary 20-minute comparison checkpoint using frozen state.
     if (control && final.status === "ok") appendJson(files.samples, { ...final, kind: "checkpoint" });
     const live = readManifest(root, ledger.run.id);

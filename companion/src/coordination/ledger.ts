@@ -58,7 +58,8 @@ export const VERIFY_RULE = "verify (optional): 1-3 metrics the pilot's bridge me
   + " the last minute, from the game's production statistics) or {line_at: {x, y}, state} (the factory line of the"
   + " machine whose box holds that position, with its state, cause and rate). All met: a package_verified event, else"
   + " package_unmet, each with the measured values (next_event; activity_log's packages keep them as verification)."
-  + " Measurement only: nothing is fixed or queued again";
+  + " Only a completed or partial plan is measured (a partial plan's NO_LINE row carries plan_status); a failed or"
+  + " cancelled plan's verify is not_measured, with no event. Measurement only: nothing is fixed or queued again";
 const itemName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/, "items are names such as \"iron-plate\"");
 export const verifyMetricSchema = z.union([
   z.object({ item: itemName, per_min_at_least: z.number().finite().positive() }).strict(),
@@ -331,11 +332,28 @@ export function packageContract(): string {
   ].join("\n");
 }
 
+/** Appends one ledger-apply outcome to ledger-history.jsonl beside the
+ *  ledger: at, status, revision (applied) or reason and issues (discarded),
+ *  and the update's package_ids. Evidence only: a failed append changes
+ *  nothing. */
+export function recordLedgerHistory(file: string, envelope: unknown, result: LedgerApplyResult, at = new Date()): void {
+  try {
+    const listed = (envelope as { update?: { build_packages?: unknown } } | null)?.update?.build_packages;
+    const packageIds = Array.isArray(listed) ? listed.flatMap((entry) =>
+      typeof entry?.package_id === "string" ? [entry.package_id] : []) : [];
+    const row = { at: at.toISOString(), ...result, package_ids: packageIds };
+    fs.appendFileSync(path.join(path.dirname(file), "ledger-history.jsonl"), `${JSON.stringify(row)}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch { /* evidence only */ }
+}
+
 export async function runLedgerApply(file: string): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
   let envelope: unknown;
+  let result: LedgerApplyResult | undefined;
   try { envelope = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
-  catch { console.log(JSON.stringify(discard("MALFORMED_UPDATE"))); return; }
-  console.log(JSON.stringify(applyLedgerFile(file, envelope)));
+  catch { result = discard("MALFORMED_UPDATE"); }
+  result ??= applyLedgerFile(file, envelope);
+  recordLedgerHistory(file, envelope, result);
+  console.log(JSON.stringify(result));
 }

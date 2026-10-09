@@ -194,6 +194,42 @@ alone is not evidence of usable framing.
 
 ## Release checklists
 
+For the 0.36.0 release (recording and telemetry), record these observable
+checks:
+
+- `run_snapshot` carries `milestones` (`rocket_ready_tick`,
+  `rocket_launch_ordered_tick`, `rocket_launched_tick`, and `research`: each
+  technology's first finish tick), `holds` (`count`, `total_ticks`, `recent`:
+  the last 16 episodes with `start_tick`, `end_tick` and `cause`) and
+  `handler_errors`. "First rocket launched" is the mod's `on_rocket_launched`
+  tick: the final manifest's `telemetry.milestones.rocket_launched` gives it
+  with `elapsed_s` from `GO` (the baseline tick), so the supervisor reads it
+  from the recorder or `run_snapshot`, never by polling the raw console.
+  `telemetry.holds` and `telemetry.handler_errors` count the window's human
+  holds and caught handler faults.
+- `next_event` delivers `rocket_launch_ordered` when launch is pressed and
+  `rocket_launched` when the rocket leaves the silo.
+- A failed plan's `activity_log` row keeps `summary` short and carries
+  `detail`, the full reason up to about 800 bytes, cut at a character
+  boundary.
+- `tool_outcomes.jsonl` rows carry `ok`, `next_event`'s `event`, and a
+  `summary` of at most 200 characters on failed calls and statuses other than
+  `ok`, `completed` or `running`; a failed dry run is `not_ok` with its code or
+  its first `failed` row's.
+- Every queued package's record in `package-queue.json` gets `plan_ended_tick`
+  and `plan_status`, also without `verify`; a failed or cancelled plan's
+  verify is `not_measured` with reason `plan <status>` and no
+  `package_unmet`; a partial plan's `NO_LINE` row carries `plan_status`.
+- `ledger-apply` appends one row per call to `ledger-history.jsonl` beside the
+  ledger, applied or discarded.
+- The manifest's `telemetry.roles` carry `model_calls`, `mcp_calls`,
+  `wait_ms` (`next_event` waiting, out of `tool_ms`), `reasoning_items` and
+  `reasoning_summarized`; `telemetry.body.busy_share` counts `pilot`,
+  `package` and `crafting`, not `upkeep`.
+- `campaign record` of a debug run of a screened configuration keeps its
+  unscored row, with the final sample's milestones, and takes that
+  configuration out of `screening_queue`.
+
 For the 0.35.0 release (facts and the tick budget), record these observable
 checks:
 
@@ -613,7 +649,8 @@ turning them into a fixed opening or map-specific sequence:
   `GO+60m`, record machines by entity, lines (running, self-sustaining,
   hand-fed), and ore and plates produced per minute. Cycle-10 targets (cycle 9
   in brackets): 40 or more machines at `GO+60m` (about 14); body busy 60% or
-  more of the time (6% at `GO+20m`); pilot calls per machine built under 8
+  more of the time (6% at `GO+20m`; from 0.36 the recorder's busy share is
+  directed work only, without the mod's upkeep); pilot calls per machine built under 8
   (about 25); validation waits 0 (5); pilot reports 0 (31); ledger reads by
   shell 0 (30); no dry burner machine for more than 60 s while coal is in
   stock; server at 60 UPS with no client drops. Science is not hand-crafted
@@ -792,7 +829,11 @@ before it rehearses `stop`; a server started without one reports `unknown`.
 Before relying on the feed, confirm on a throwaway session that both models
 emit reasoning summaries with that setting, and record the setting in the
 role-profile evidence. If a model emits none, its assistant messages are the
-feed.
+feed. With `model_reasoning_summary=detailed` a model may still leave most
+reasoning items without a summary (trial 0011: the strategist summarized 108
+of 1424); the shown role's own messages are then most of the feed. The
+manifest's `telemetry.roles.<role>.reasoning_summarized` against
+`reasoning_items` shows the share.
 
 Start each session with its checked-in role goal; the pilot takes no physical
 action before `GO`. Confirm the strategist lists exactly the twenty-one
@@ -912,7 +953,10 @@ without stopping anything; assisted debug progress is still not benchmark
 evidence. Continue past 20 minutes toward the assigned milestone (currently
 sustained Nauvis production: lines that `factory_status` reports `running` and
 `self_sustaining` at the next two recorder checkpoints, plus research consuming
-produced science). Measure each run at `GO+20m` and `GO+60m` against the
+produced science). A rocket milestone's time is the recorder's
+`telemetry.milestones.rocket_launched.elapsed_s` (the mod's first
+`on_rocket_launched` tick less the baseline tick, also in each sample's
+`run_snapshot.milestones`). Measure each run at `GO+20m` and `GO+60m` against the
 cycle-10 targets in the release checklist above and the earlier cycles in
 `docs/AGENT-PLAY-PERFORMANCE.md`. Candidate B and R1-R7 freeze rules are
 historical unless the owner starts a benchmark.

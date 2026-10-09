@@ -188,8 +188,8 @@ describe("rollout time split", () => {
       event(130, "turn_aborted"),
       "not json", JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
     ]) split.line(text);
-    expect(split.summary()).toEqual({ turns: 2, turn_ms: 50_000, tool_ms: 4_000 + 3_000 + 4_000, compaction_ms: 20_000,
-      model_ms: 50_000 - 11_000 - 20_000, tool_calls: 3, compactions: 1 });
+    expect(split.summary()).toEqual({ turns: 2, turn_ms: 50_000, tool_ms: 4_000 + 3_000 + 4_000, wait_ms: 0, compaction_ms: 20_000,
+      model_ms: 50_000 - 11_000 - 20_000, model_calls: 3, mcp_calls: 1, compactions: 1, reasoning_items: 1, reasoning_summarized: 0 });
   });
 
   it("counts a turn already running when the tail began from its first line, and an open turn to its last", () => {
@@ -202,8 +202,8 @@ describe("rollout time split", () => {
     split.line(line(31, "response_item", { type: "function_call", call_id: "b", name: "next_event", arguments: "{}" }));
     split.line(event(34, "token_count"));
     // The open call counts as tool time up to the turn's last line.
-    expect(split.summary()).toEqual({ turns: 2, turn_ms: 14_000, tool_ms: 6_000, compaction_ms: 0, model_ms: 8_000,
-      tool_calls: 2, compactions: 0 });
+    expect(split.summary()).toEqual({ turns: 2, turn_ms: 14_000, tool_ms: 6_000, wait_ms: 0, compaction_ms: 0, model_ms: 8_000,
+      model_calls: 2, mcp_calls: 0, compactions: 0, reasoning_items: 1, reasoning_summarized: 0 });
     split.line(line(40, "response_item", { type: "function_call_output", call_id: "b", output: "{}" }));
     split.line(event(41, "task_complete"));
     expect(split.summary()).toMatchObject({ turns: 2, turn_ms: 21_000, tool_ms: 12_000, model_ms: 9_000 });
@@ -217,8 +217,28 @@ describe("rollout time split", () => {
     split.line(item(10_001, "McpToolCall", 9_000, 9_002));
     split.line(item(10_001, "McpToolCall", 0.5, 10_000.5));
     split.line(event(10_002, "task_complete"));
-    expect(split.summary()).toEqual({ turns: 1, turn_ms: 10_002_000, tool_ms: 10_000_000, compaction_ms: 0, model_ms: 2_000,
-      tool_calls: 0, compactions: 0 });
+    expect(split.summary()).toEqual({ turns: 1, turn_ms: 10_002_000, tool_ms: 10_000_000, wait_ms: 0, compaction_ms: 0, model_ms: 2_000,
+      model_calls: 0, mcp_calls: 2, compactions: 0, reasoning_items: 0, reasoning_summarized: 0 });
+  });
+
+  it("splits next_event waiting out of tool time, counts MCP calls apart from the model's cells, and summarized reasoning", () => {
+    const split = createTimeSplit();
+    const mcp = (s: number, tool: string, from: number, to: number) =>
+      event(s, "item_completed", { item: { type: "McpToolCall", server: "factorio", tool }, started_at_ms: ms(from), completed_at_ms: ms(to) });
+    for (const text of [
+      event(0, "task_started"),
+      line(1, "response_item", { type: "reasoning", summary: [{ type: "summary_text", text: "Wait for the smelter" }] }),
+      line(1, "response_item", { type: "reasoning", summary: [{ type: "summary_text", text: "  " }] }),
+      line(1, "response_item", { type: "reasoning", summary: [] }),
+      // One exec cell runs two MCP calls; the cell spans the next_event wait.
+      line(2, "response_item", { type: "custom_tool_call", call_id: "a", name: "exec", input: "x" }),
+      mcp(5, "factory_status", 2, 5),
+      mcp(90, "next_event", 10, 90),
+      line(100, "response_item", { type: "custom_tool_call_output", call_id: "a", output: "y" }),
+      event(110, "task_complete"),
+    ]) split.line(text);
+    expect(split.summary()).toEqual({ turns: 1, turn_ms: 110_000, tool_ms: 98_000 - 80_000, wait_ms: 80_000, compaction_ms: 0,
+      model_ms: 110_000 - 98_000, model_calls: 1, mcp_calls: 2, compactions: 0, reasoning_items: 3, reasoning_summarized: 1 });
   });
 
   it("hands every rollout line read to onLine by role, and a throwing hook never stops the feed", async () => {

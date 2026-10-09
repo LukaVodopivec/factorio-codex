@@ -12,7 +12,7 @@ export const nextEventSchema = z.object({
 export type NextEventInput = z.infer<typeof nextEventSchema>;
 
 /** Rocket, platform and travel events: the kinds of the mod's space event ring. */
-export const SPACE_EVENTS = ["rocket_ready", "rocket_launched", "cargo_delivered", "platform_state_changed",
+export const SPACE_EVENTS = ["rocket_ready", "rocket_launch_ordered", "rocket_launched", "cargo_delivered", "platform_state_changed",
   "platform_arrived", "travel_phase", "body_surface_changed"] as const;
 /** One entry of the ring: a silo's position, a platform {index, name}, a
  *  state change's old and new state, the planet a cargo pod landed on, the
@@ -342,7 +342,8 @@ function eventText(value: Record<string, unknown>, idleText: string): string {
     case "human_hold_started": return "a human took the body; plans stay queued";
     case "human_hold_ended": return "the human hold ended; queued plans resume";
     case "rocket_ready": return `a rocket is ready in the silo at ${at(value.silo)}`;
-    case "rocket_launched": return `a rocket was launched from ${at(value.silo)}${platformName(value) ? ` to platform ${platformName(value)}` : ""}`;
+    case "rocket_launch_ordered": return `a rocket launch was ordered at the silo at ${at(value.silo)}${platformName(value) ? ` to platform ${platformName(value)}` : ""}`;
+    case "rocket_launched": return `a rocket was launched${value.silo ? ` from ${at(value.silo)}` : ""}${platformName(value) ? ` to platform ${platformName(value)}` : ""}`;
     case "cargo_delivered": return `a cargo pod landed ${platformName(value) ? `on platform ${platformName(value)}` : `on ${value.surface}`}`;
     case "platform_state_changed": return `platform ${platformName(value)}: ${value.old} -> ${value.new}`;
     case "platform_arrived": return `platform ${platformName(value)} arrived at ${value.location}`;

@@ -818,19 +818,62 @@ describe("package verify", () => {
     expect(queuedPlans(call)).toHaveLength(1);
   });
 
-  it("reports package_unmet with the measured values when one metric falls short", async () => {
+  it("reports package_unmet with the measured values when one metric falls short, a partial plan's NO_LINE row saying so", async () => {
     const dir = runDir();
     writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify }]);
     const { bridge, clock } = game([{ per_min: 12, met: false }, { error: "NO_LINE", met: false }]);
     let ms = 0;
     const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
     await queue.tick();
-    clock.plan = "failed"; clock.finished = 1000; clock.tick = 1000 + 7200; ms += 20_000;
+    clock.plan = "partial"; clock.finished = 1000; clock.tick = 1000 + 7200; ms += 20_000;
     await queue.tick();
     await queue.tick();
-    expect(packageVerifications(dir)).toEqual([expect.objectContaining({ event: "package_unmet", plan_status: "failed",
-      metrics: [expect.objectContaining({ measured: { per_min: 12 }, met: false }),
-        expect.objectContaining({ measured: { error: "NO_LINE" }, met: false })] })]);
+    const [event] = packageVerifications(dir);
+    expect(event).toMatchObject({ event: "package_unmet", plan_status: "partial" });
+    expect(event?.metrics).toEqual([expect.objectContaining({ measured: { per_min: 12 }, met: false }),
+      expect.objectContaining({ measured: { error: "NO_LINE" }, met: false, plan_status: "partial" })]);
+    expect(event?.metrics[0]).not.toHaveProperty("plan_status");
+  });
+
+  it("measures nothing for a failed or cancelled plan: its verify is not_measured, with no package_unmet", async () => {
+    for (const status of ["failed", "cancelled"]) {
+      const dir = runDir();
+      writeLedger(dir, 1, [{ ...furnaces("iron-a"), verify }]);
+      const { call, bridge, clock } = game([{ per_min: 0, met: false }, { error: "NO_LINE", met: false }]);
+      let ms = 0;
+      const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+      await queue.tick();
+      clock.plan = status; clock.finished = 1000; clock.tick = 1100; ms += 20_000;
+      await queue.tick();
+      expect(readPackageQueue(dir)?.packages["iron-a"]).toMatchObject({ plan_ended_tick: 1000, plan_status: status,
+        verification: { status: "not_measured", metrics: [], reason: `plan ${status}`, tick: 1100 } });
+      clock.tick = 1000 + 7200; ms += 20_000;
+      await queue.tick();
+      expect(measures(call)).toEqual([]);
+      expect(packageVerifications(dir)).toEqual([]);
+    }
+  });
+
+  it("records every queued package's plan end, also without verify, and measures nothing for it", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [furnaces("iron-a")]);
+    const { call, bridge, clock } = game([]);
+    let ms = 0;
+    const queue = createPackageQueue(() => dir, bridge, () => new Date(Date.UTC(2026, 9, 8) + ms));
+    await queue.tick();
+    expect(readPackageQueue(dir)?.packages["iron-a"]).not.toHaveProperty("plan_ended_tick");
+    clock.plan = "failed"; clock.finished = 1500; clock.tick = 1600; ms += 20_000;
+    await queue.tick();
+    const record = readPackageQueue(dir)?.packages["iron-a"];
+    expect(record).toMatchObject({ status: "queued", plan_ended_tick: 1500, plan_status: "failed" });
+    expect(record).not.toHaveProperty("verification");
+    // Stamped once: no more polls, no measurement.
+    const polls = call.mock.calls.filter(([method]) => method === "plan_status").length;
+    clock.tick = 1500 + 7200; ms += 20_000;
+    await queue.tick();
+    expect(call.mock.calls.filter(([method]) => method === "plan_status").length).toBe(polls);
+    expect(measures(call)).toEqual([]);
+    expect(packageVerifications(dir)).toEqual([]);
   });
 
   it("records unmet with the reason once the mod refused the measurement five minutes past due", async () => {

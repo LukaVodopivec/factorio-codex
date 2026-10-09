@@ -573,12 +573,19 @@ local HAND_FIELDS = { entity_number = true, name = true, position = true, direct
 -- Copper wires between two electric poles of the blueprint are left to the
 -- poles' own connection when they are built (wires_ignored counts them);
 -- any other wire (circuit, or a power switch's copper, which never
--- connects by itself) refuses hand placement.
+-- connects by itself) refuses hand placement, named by its kind. A wire with
+-- a copper connector at either end is copper (a power switch's left copper
+-- shares pole_copper's id; its right copper has its own).
 local function wire_refusal(wire, poles)
-  local copper = defines.wire_connector_id and defines.wire_connector_id.pole_copper
-  if type(wire) ~= "table" or copper == nil or wire[2] ~= copper or wire[4] ~= copper then return "circuit wires" end
-  if not (poles[wire[1]] and poles[wire[3]]) then return "power-switch wires" end
-  return nil
+  local ids = defines.wire_connector_id
+  local copper = ids and ids.pole_copper
+  if type(wire) ~= "table" or copper == nil then return "circuit wires" end
+  local function is_copper(id)
+    return id == copper or id == ids.power_switch_left_copper or id == ids.power_switch_right_copper
+  end
+  if not (is_copper(wire[2]) or is_copper(wire[4])) then return "circuit wires" end
+  if wire[2] == copper and wire[4] == copper and poles[wire[1]] and poles[wire[3]] then return nil end
+  return "power-switch wires"
 end
 
 function M.hand_layout(name, flip, label)

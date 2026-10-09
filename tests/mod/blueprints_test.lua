@@ -312,6 +312,11 @@ do
   local switch_ok, switch_err = pcall(blueprints.hand_layout, "poles", nil, "test")
   check(not switch_ok and tostring(switch_err):match("cannot preserve blueprint power%-switch wires") ~= nil,
     "a power switch's copper wire still refuses hand placement, named as power-switch wires")
+  -- The switch's right copper connector has its own id: still a power-switch wire.
+  st.entities[3].wires = { { 3, 6, 1, 5 } }
+  local right_ok, right_err = pcall(blueprints.hand_layout, "poles", nil, "test")
+  check(not right_ok and tostring(right_err):match("cannot preserve blueprint power%-switch wires") ~= nil,
+    "a power switch's right copper wire is named as power-switch wires, not circuit wires")
   st.entities[1].wires, st.entities[3].wires = nil, nil
   local plain_ok, plain = pcall(blueprints.hand_layout, "poles", nil, "test")
   check(plain_ok and plain.wires_ignored == nil, "a blueprint without wires has no wires_ignored")

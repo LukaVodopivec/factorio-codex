@@ -284,7 +284,15 @@ check(unpowered and unpowered.share_10m and unpowered.share_10m.no_power == 1 an
   and unpowered.network_id == 5 and unpowered.supply_states == nil
   and supply and #supply == 1 and supply[1].state == "running" and supply[1].position.x == 100,
   "the unpowered line shares no_power and names network 5, whose power row lists the running steam line")
+-- Additive: the unpowered line names the game's power status, and
+-- line_counts totals the surface's lines.
+local totals = status.line_counts
+check(unpowered and unpowered.cause == "no_power" and totals and totals.total == 4 and totals.running == 3
+  and totals.by_state.running == 3 and totals.by_state.no_power == 1,
+  "the unpowered line's cause is no_power and line_counts totals the four lines by state")
+status.line_counts = nil
 for _, row in ipairs(status.lines or {}) do row.share_10m, row.network_id = nil, nil end
+if unpowered then unpowered.cause = nil end
 if status.power and status.power[1] then status.power[1].supply_states = nil end
 measured.status = text(status)
 -- 7. map_summary with every section, as one job.

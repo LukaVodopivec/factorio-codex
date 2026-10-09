@@ -59,6 +59,8 @@ local STATUS_BUCKETS = {
   disabled_by_control_behavior = "disabled",
   disabled_by_script = "disabled", marked_for_deconstruction = "disabled",
   turned_off_during_daytime = "disabled",
+  missing_science_packs = "insufficient_input", no_research_in_progress = "idle", no_recipe = "idle",
+  preparing_rocket_for_launch = "working", waiting_to_launch_rocket = "working", launching_rocket = "working",
 }
 
 -- A status is one sample. Only these raw statuses describe the build itself;
@@ -99,8 +101,19 @@ local function recipe_name(entity)
   return nil
 end
 
-local function normalize_status(raw)
-  return STATUS_BUCKETS[raw] or "other"
+-- A raw status's bucket. Given a machine group, also counts it there, and
+-- an "other" one by its raw name in raw_other, so no status is lost.
+local function normalize_status(raw, group)
+  local bucket = STATUS_BUCKETS[raw] or "other"
+  if group then
+    group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
+    if bucket == "other" then
+      local name = raw or "none"
+      group.raw_other = group.raw_other or {}
+      group.raw_other[name] = (group.raw_other[name] or 0) + 1
+    end
+  end
+  return bucket
 end
 
 local function number_property(object, name)
@@ -2197,8 +2210,7 @@ local function scan_entity(S, entity, c, budget)
       group._mining_capacity = (group._mining_capacity or 0) + (capacity or 0)
       group.evidenced_drill_count = (group.evidenced_drill_count or 0) + (capacity and 1 or 0)
     end
-    local bucket = normalize_status(raw_status)
-    group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
+    normalize_status(raw_status, group)
     local speed = number_property(entity, "crafting_speed") or 0
     group.summed_crafting_speed = group.summed_crafting_speed + speed
     if recipe and not S.explicit_flows then
@@ -2717,8 +2729,7 @@ function M.registry_factory()
       group.machine_count = group.machine_count + 1
       -- Crafting machines: lifetime products_finished as last sampled.
       if rec.finished then group.products_finished = (group.products_finished or 0) + rec.finished end
-      local bucket = normalize_status(rec.raw)
-      group.status_counts[bucket] = (group.status_counts[bucket] or 0) + 1
+      local bucket = normalize_status(rec.raw, group)
       if bucket == "no_power" or bucket == "low_power" then
         power_status_counts[bucket] = (power_status_counts[bucket] or 0) + 1
       end

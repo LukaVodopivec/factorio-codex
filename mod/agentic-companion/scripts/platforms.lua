@@ -15,11 +15,13 @@
 --                 wait conditions, which stop to head for, pause
 --   surfaces      one resolver for every surface reference (a planet name,
 --                 "platform:<index>" or {platform = selector})
---   events        a ring of the last space events (rockets launched, platform
---                 state changes and arrivals, cargo pods landed, rockets
---                 ready, the body's surface changes and travel phases) that
---                 event_state and next_event read; only event handlers and
---                 the travel step write it
+--   events        a ring of the last space events (rocket launches ordered,
+--                 rockets launched, platform state changes and arrivals,
+--                 cargo pods landed, rockets ready, the body's surface
+--                 changes and travel phases) that event_state and next_event
+--                 read; only event handlers and the travel step write it;
+--                 the rocket events also keep their first tick as a run
+--                 milestone (storage.milestones)
 -- storage.space = {created = {[index] = planet}, events = {...}, last_event_tick}.
 local companion = require("scripts.companion")
 local jobs = require("scripts.jobs")
@@ -916,6 +918,12 @@ function M.record(kind, fields)
   s.last_event_tick = game.tick
 end
 
+-- The first tick of a run milestone (storage.milestones, state.lua).
+local function first(key, tick)
+  storage.milestones = storage.milestones or {}
+  if storage.milestones[key] == nil then storage.milestones[key] = tick end
+end
+
 -- Where a rocket's cargo pod goes: the platform, if any. Read when the
 -- launch is ordered: the pod leaves the rocket before it finishes ascending.
 local function destination_platform(rocket)
@@ -930,7 +938,20 @@ function M.on_rocket_launch_ordered(event)
     local silo = event.rocket_silo
     if not own(silo.force) then return end
     local p = destination_platform(event.rocket)
-    M.record("rocket_launched", { silo = xy(silo.position), platform = p and platform_ref(p) or nil })
+    first("rocket_launch_ordered_tick", event.tick)
+    M.record("rocket_launch_ordered", { silo = xy(silo.position), platform = p and platform_ref(p) or nil })
+  end)
+end
+
+-- The rocket left (on_rocket_launched, after its ascent; the silo is gone
+-- when it was destroyed meanwhile).
+function M.on_rocket_launched(event)
+  pcall(function()
+    local silo = event.rocket_silo
+    local force = read(function() return silo.force end) or read(function() return event.rocket.force end)
+    if not (force and own(force)) then return end
+    first("rocket_launched_tick", event.tick)
+    M.record("rocket_launched", { silo = read(function() return xy(silo.position) end) })
   end)
 end
 
@@ -967,7 +988,10 @@ end
 
 -- A sampled silo's rocket became ready (autonomy's sampler).
 function M.on_rocket_ready(silo)
-  pcall(function() M.record("rocket_ready", { silo = xy(silo.position) }) end)
+  pcall(function()
+    first("rocket_ready_tick", game.tick)
+    M.record("rocket_ready", { silo = xy(silo.position) })
+  end)
 end
 
 -- For event_state: the tick of the newest entry and the last few.

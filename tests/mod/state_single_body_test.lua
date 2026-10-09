@@ -19,7 +19,7 @@ check(storage.companion == body_record, "initialization retains one persistent b
 check(storage.tasks.next_id == 3 and storage.tasks.active.id == 1 and storage.tasks.queue == queued,
   "initialization retains the flat active task and queue")
 local task_keys = {}; for key in pairs(storage.tasks) do task_keys[#task_keys + 1] = key end; table.sort(task_keys)
-check(table.concat(task_keys, ",") == "active,body_time,next_id,queue,records",
+check(table.concat(task_keys, ",") == "active,body_time,holds,next_id,queue,records",
   "task storage exposes only the flat single-body protocol shape")
 check(storage.path_request == nil and storage.path_requests == nil,
   "path routing has one optional request slot rather than per-body maps")

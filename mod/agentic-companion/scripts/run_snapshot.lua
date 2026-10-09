@@ -10,7 +10,9 @@
 -- statistics.by_surface[ref] = {items, fluids} keeps each one's own. Works
 -- in every body state but absent: the compact observation only while the
 -- body stands on a surface. Each snapshot also carries the run attestation
--- (facts the recorder checks) and the body's time by state (tasks.body_time).
+-- (facts the recorder checks), the body's time by state (tasks.body_time),
+-- the human hold episodes (tasks.holds), the count of caught handler faults
+-- (errors.lua) and the run milestones (storage.milestones, state.lua).
 local autonomy = require("scripts.autonomy")
 local companion = require("scripts.companion")
 local factory_activity = require("scripts.factory_activity")
@@ -80,6 +82,30 @@ end
 local function read(fn)
   local ok, value = pcall(fn)
   if ok then return value end
+end
+
+-- on_research_finished: the first tick the body's force finished each
+-- technology (one entry per technology; a levelled one keeps its first).
+function M.on_research_finished(event)
+  pcall(function()
+    local name, force = event.research.name, event.research.force.name
+    local anchor = companion.anchor()
+    if anchor and anchor.force and anchor.force.name ~= force then return end
+    storage.milestones = storage.milestones or {}
+    storage.milestones.research = storage.milestones.research or {}
+    local research_ticks = storage.milestones.research
+    if research_ticks[name] == nil then research_ticks[name] = event.tick end
+  end)
+end
+
+-- A copy of the milestones: {rocket_ready_tick?, rocket_launch_ordered_tick?,
+-- rocket_launched_tick?, research = {[technology] = tick}}.
+local function milestones()
+  local kept = storage.milestones or {}
+  local research_ticks = {}
+  for name, tick in pairs(kept.research or {}) do research_ticks[name] = tick end
+  return { rocket_ready_tick = kept.rocket_ready_tick, rocket_launch_ordered_tick = kept.rocket_launch_ordered_tick,
+    rocket_launched_tick = kept.rocket_launched_tick, research = research_ticks }
 end
 
 local function controller_name(value)
@@ -263,6 +289,13 @@ local function assemble(S)
     lines = S.lines,
     -- What the body did by state since body_time.since_tick (tasks.body_time).
     body_time = S.body_time,
+    -- Human hold episodes: {count, total_ticks, recent} (tasks.holds).
+    holds = S.holds,
+    -- Errors a handler raised and a dispatcher caught since the save gained
+    -- the count (errors.lua).
+    handler_errors = S.handler_errors,
+    -- First ticks: rocket ready, launch ordered, launched, and per technology.
+    milestones = S.milestones,
     attestation = S.attestation,
     statistics = {
       -- Summed over every factory surface (the recorder's keys).
@@ -299,13 +332,17 @@ end
 -- so its job would take other ticks than the server's. run(S, body) keeps
 -- what it read in S (assemble returns the record).
 local PHASES = {
-  -- Every technology (a record for each ready unresearched one) and every recipe.
+  -- Every technology (a record for each ready unresearched one) and every recipe,
+  -- and the milestones (at most a first tick per technology).
   progression = {
     cost = function(_, body)
       local force = body.force
       return length(force and force.technologies) + math.ceil(length(force and force.recipes) / 8)
     end,
-    run = function(S) S.progression = research.progression_status({}) end,
+    run = function(S)
+      S.progression = research.progression_status({})
+      S.milestones = milestones()
+    end,
   },
   -- Every machine the line sampler keeps, and the registry's entries counted.
   factory = {
@@ -339,6 +376,9 @@ local PHASES = {
       if S.window then tasks.mark_body_window() end
       S.tick, S.character, S.body = game.tick, character(body), companion.body_summary()
       S.body_time, S.hand_crafted = tasks.body_time(), factory_activity.hand_crafted()
+      -- The hold ring is at most 16 episodes.
+      S.holds = tasks.holds()
+      S.handler_errors = storage.handler_errors and storage.handler_errors.count or 0
     end,
   },
   -- Sorting every counter the reads kept.

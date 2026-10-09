@@ -46,6 +46,8 @@ check(storage.tasks.active == active and #storage.tasks.queue == 1 and storage.t
   "in-flight plans survive the upgrade")
 check(storage.tasks.human_hold and storage.tasks.human_hold.since == 499000,
   "a hold in progress survives the upgrade, so its ticks are credited when it ends")
+check(storage.tasks.holds.count == 0 and storage.tasks.holds.total_ticks == 0 and #storage.tasks.holds.recent == 0,
+  "an older save gains an empty hold episode ring; the hold in progress is not invented as an episode")
 check(type(storage.jobs) == "table" and storage.jobs.next_id == 1 and #storage.jobs.order == 0,
   "the jobs table is created")
 check(storage.chores.refueled[17] == 499000 and type(storage.chores.fed_labs) == "table"
@@ -75,6 +77,10 @@ check(#cache.charted == 5 and cache.charted[5].x == 7 and cache.charted_set["7,7
 
 check(type(storage.space) == "table" and next(storage.space.created) == nil and #storage.space.events == 0,
   "the space platform store and event ring are created")
+check(type(storage.milestones) == "table" and next(storage.milestones.research) == nil
+  and storage.milestones.rocket_launched_tick == nil, "an older save gains empty milestones; none is invented")
+storage.milestones.rocket_ready_tick, storage.milestones.research.automation = 5, 6
+storage.tasks.holds.recent[1] = { start_tick = 7, end_tick = 8, cause = "mine" }
 check(type(storage.world_policy) == "table" and #storage.world_policy.errors == 0,
   "the world policy's error list is created")
 check(type(storage.handler_errors) == "table" and storage.handler_errors.count == 0 and #storage.handler_errors.recent == 0,
@@ -98,6 +104,8 @@ check(#created_inventories == 1 and storage.blueprints.inventory == blueprint_in
 check(storage.space.created[3] == "nauvis" and #storage.space.events == 1,
   "a later configuration change keeps the platforms' planets and the event ring")
 check(#storage.world_policy.errors == 1, "a later configuration change keeps the world policy's errors")
+check(storage.milestones.rocket_ready_tick == 5 and storage.milestones.research.automation == 6
+  and storage.tasks.holds.recent[1].cause == "mine", "a later configuration change keeps the milestones and hold episodes")
 check(storage.handler_errors.count == 1 and #storage.handler_errors.recent == 1,
   "a later configuration change keeps the handler error ring")
 storage.travel.active = { task_id = 7, to = "vulcanus", since_tick = 1 }

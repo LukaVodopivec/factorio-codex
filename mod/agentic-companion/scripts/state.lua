@@ -36,9 +36,16 @@ function M.init()
     -- state the mod last commanded.
     human_activity_tick = tasks.human_activity_tick,
     commanded_walk = tasks.commanded_walk,
+    -- What that input was (companion.note_activity): the linked control's
+    -- name, gui, cursor, walking or mining.
+    human_activity_cause = tasks.human_activity_cause,
     -- A human hold in progress (tasks.enter_hold): {since}. Kept across a
     -- load so its ticks are still credited when it ends.
     human_hold = tasks.human_hold,
+    -- Hold episodes (tasks.enter_hold): count, every one begun; total_ticks,
+    -- those that ended; recent, the last 16 {start_tick, end_tick, cause}.
+    -- A save from before them starts with none.
+    holds = tasks.holds or { count = 0, total_ticks = 0, recent = {} },
     -- The tick the body died while work was queued (tasks.on_tick pauses
     -- the dispatcher until it respawns), absent otherwise.
     dead_since = tasks.dead_since,
@@ -276,11 +283,18 @@ function M.init()
   end
   -- Space platforms (platforms.lua): the planet of each platform
   -- create_platform made while it waits for its starter pack, and the ring
-  -- of the last space events (launches, platform states, landed cargo,
-  -- ready rockets) with the tick of the newest.
+  -- of the last space events (launches ordered and launched, platform
+  -- states, landed cargo, ready rockets) with the tick of the newest.
   storage.space = storage.space or {}
   storage.space.created = storage.space.created or {}
   storage.space.events = storage.space.events or {}
+  -- Run milestones, the first tick of each (the run recorder samples them):
+  -- rocket_ready_tick, rocket_launch_ordered_tick and rocket_launched_tick
+  -- (platforms.lua), and research: technology -> the tick the body's force
+  -- first finished it (run_snapshot.on_research_finished). A save from
+  -- before them records from the upgrade on.
+  storage.milestones = storage.milestones or {}
+  storage.milestones.research = storage.milestones.research or {}
   -- Travel (actions/travel.lua): the launch or landing a travel step started
   -- ({to, since_tick, cancelled?}; companion.lua counts the cutscene as
   -- transit meanwhile), and per platform index the last arrival at a station

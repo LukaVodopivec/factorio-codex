@@ -6,7 +6,7 @@ package.path = here .. "/../../mod/agentic-companion/?.lua;" .. package.path
 local failures = 0
 local function check(ok, name) print((ok and "ok   " or "FAIL ") .. name); if not ok then failures = failures + 1 end end
 
-local created, logged, printed = {}, {}, {}
+local created, logged, printed, faults = {}, {}, {}, {}
 local function profiler(stopped)
   local p = { running = not stopped, calls = {} }
   for _, method in ipairs({ "stop", "restart", "reset" }) do
@@ -20,7 +20,10 @@ local function profiler(stopped)
 end
 _G.helpers = { create_profiler = profiler, table_to_json = function(t) return t.ok and "ok" or "err" end,
   json_to_table = function() return {} end }
-_G.log = function(message) logged[#logged + 1] = message end
+-- A caught handler fault logs its own plain line (errors.record).
+_G.log = function(message)
+  if type(message) == "string" then faults[#faults + 1] = message else logged[#logged + 1] = message end
+end
 _G.rcon = { print = function(text) printed[#printed + 1] = text end }
 _G.game = { tick = 10 }
 _G.storage = { rpc_outbox = { next_id = 1, by_id = {} } }
@@ -37,6 +40,8 @@ check(#logged == 1 and entry[1] == "" and entry[2] == "rpc " and entry[3] == "pr
   "each RPC logs its method, its tick (the host sums a tick's RPCs) and a stopped profiler after replying")
 rpc.dispatch("broken", "")
 check(#logged == 2 and logged[2][3] == "broken" and printed[2] == "err", "a failing RPC is still logged")
+check(#faults == 1 and faults[1]:find("handler fault rpc:broken tick=10: handler failed", 1, true),
+  "its caught fault also leaves one plain line in the log")
 storage.rpc_outbox.by_id[1] = { parts = { "a" }, created_tick = 10 }
 rpc.dispatch("get_chunk", "")
 check(#logged == 2, "get_chunk replays are not logged")

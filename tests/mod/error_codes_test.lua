@@ -61,6 +61,21 @@ check(#storage.handler_errors.recent == errors.RING_SIZE and summary.count == er
 storage.handler_errors = { count = 0, recent = {} }
 check(errors.summary() == nil, "ping shows no handler errors before the first")
 
+-- Every caught fault also leaves one line in the server log, plain, with
+-- the ring's cut message (never inside a UTF-8 character).
+do
+  local lines = {}
+  _G.log = function(line) lines[#lines + 1] = line end
+  errors.record("event:logged", "x.lua:3: bad\nthing " .. string.rep("\u{2014}", 200))
+  _G.log = nil
+  local kept = storage.handler_errors.recent[1].error
+  check(#lines == 1 and lines[1]:find("handler fault event:logged tick=", 1, true) and not lines[1]:find("\n", 1, true)
+    and not lines[1]:find(LOCATION) and #kept == 298 and utf8.len(kept) ~= nil
+    and lines[1]:sub(-#kept) == kept:gsub("\n", " "),
+    "a caught fault is logged as one plain line with the ring's message, cut at a character boundary")
+  storage.handler_errors = { count = 0, recent = {} }
+end
+
 -- Plan steps and direct tasks through the real dispatcher.
 local body = { valid = true, position = { x = 0, y = 0 }, walking_state = {}, mining_state = {}, crafting_queue = {},
   crafting_queue_size = 0 }
@@ -193,6 +208,43 @@ check(observed.status == "failed" and observed.outcomes[1].status == "completed"
   and entry.summary == "failed after 1/1 steps: the final observation raised: the observer broke"
   and storage.handler_errors.recent[#storage.handler_errors.recent].where == "task:plan:observe",
   "a plan whose steps completed but whose final observation raised names that, not its last step")
+
+-- A long failure reason: the activity_log summary stays short, its detail
+-- keeps the reason whole up to 800 bytes, both cut at a character boundary.
+-- A failed plan's record is kept 30 minutes, a completed one's 5.
+do
+  local reason = "can't place boiler at (-32.5, 8.0) \u{2014} " .. string.rep("item-on-ground at (-31.5, 9.0); ", 8)
+    .. "last attempt: (-33.5, 8.0)"
+  local long = string.rep("x", 795) .. "\u{2014}\u{2014}"
+  local reasons = { reason, long }
+  local tick_before = insert.tick
+  for _, text in ipairs(reasons) do
+    insert.tick = function() return { status = "failed", detail = text } end
+    run({ { action = "insert_items", x = 1, y = 1, items = { coal = 1 } } })
+    entry = storage.activity_log[#storage.activity_log]
+    local whole = #text <= 800
+    check(entry.status == "failed" and #entry.summary < 200 and utf8.len(entry.summary) ~= nil
+      and (whole and entry.detail == text or not whole and #entry.detail == 798 and text:sub(1, 798) == entry.detail),
+      "activity_log keeps a short summary and the reason as detail (" .. #text .. " bytes), cut at a character boundary")
+  end
+  insert.tick = tick_before
+  local failed_id = entry.plan_id
+  local completed_id = run({ { action = "craft_items", recipe = "gear", crafts = 1 } }).plan_id
+  check(storage.activity_log[#storage.activity_log].detail == nil, "a completed plan's row has no detail")
+  local function prune_at(minutes)
+    game.tick = (math.floor(game.tick / 3600) + minutes + 1) * 3600
+    tasks.on_tick()
+  end
+  prune_at(5)
+  local ok_failed, kept = pcall(tasks.plan_status, { plan_id = failed_id })
+  local ok_completed, gone = pcall(tasks.plan_status, { plan_id = completed_id })
+  check(ok_failed and kept.status == "failed" and not ok_completed
+    and tostring(gone):find("unknown plan_id: " .. completed_id .. ": never queued, or it ended more than 5 minutes ago (30 if it failed", 1, true)
+    and tostring(gone):find("activity_log keeps the last 64 plan outcomes", 1, true),
+    "after 5 minutes a completed plan is pruned and says why; a failed one is still readable")
+  prune_at(25)
+  check(not pcall(tasks.plan_status, { plan_id = failed_id }), "a failed plan's record is pruned after 30 minutes")
+end
 
 -- move_entity's refusals lead with their own code (the real runner: no own
 -- entity stands at the source), never STEP_FAILED_UNCLASSIFIED.

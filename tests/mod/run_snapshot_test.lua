@@ -205,6 +205,37 @@ do
     "a snapshot saved by 0.34 without a phase finishes after the upgrade")
 end
 
+-- The run's milestones (first ticks: rockets, and each technology the
+-- body's force finished), the hold episodes and the handler fault count.
+do
+  body.force.name = "player"
+  local function finished(name, force, tick)
+    run_snapshot.on_research_finished({ research = { name = name, force = { name = force } }, tick = tick })
+  end
+  finished("automation", "player", 600)
+  finished("automation", "player", 900)
+  finished("logistics", "enemy", 700)
+  finished("logistics", "player", 800)
+  storage.milestones.rocket_launched_tick = 1200
+  storage.tasks.holds = { count = 2, total_ticks = 40, recent = { { start_tick = 10, end_tick = 50, cause = "mine" },
+    { start_tick = 17990, cause = "gui" } } }
+  storage.tasks.human_hold = { since = 17990 }
+  storage.handler_errors = { count = 3, recent = {} }
+  local sampled = jobs.run_now(run_snapshot.job, {})
+  local m = sampled.milestones
+  check(m.research.automation == 600 and m.research.logistics == 800 and m.rocket_launched_tick == 1200
+    and m.rocket_ready_tick == nil and m ~= storage.milestones and m.research ~= storage.milestones.research,
+    "the snapshot copies the milestones: each technology's first finish by the body's force, the rocket ticks")
+  local holds = sampled.holds
+  check(holds.count == 2 and holds.total_ticks == 40 + sampled.tick - 17990 and holds.recent[1].cause == "mine"
+    and holds.recent[2].end_tick == nil and holds.recent[2] ~= storage.tasks.holds.recent[2],
+    "the snapshot copies the hold episodes, an open one's ticks so far included in total_ticks")
+  check(sampled.handler_errors == 3, "the snapshot carries the count of caught handler faults")
+  storage.tasks.holds, storage.tasks.human_hold, storage.handler_errors = nil, nil, nil
+  local bare = jobs.run_now(run_snapshot.job, {})
+  check(bare.holds == nil and bare.handler_errors == 0, "a save without the stores samples no holds and zero faults")
+end
+
 print("ok   run snapshots retain cumulative resources and bounded diagnostic context")
 print("ok   run snapshots count the Codex player's hand-crafted items from the upgrade tick")
 print("ok   run snapshots attest game speed, cheat mode, controllers, active mods and modifiers research does not explain")

@@ -352,8 +352,16 @@ script.on_event(defines.events.on_object_destroyed, function(event)
   if type(removed) == "table" and registry.is_machine(removed.type, removed.burner) then autonomy.mark_dirty() end
 end)
 -- factory_status keeps the available technologies until research changes.
+-- A finished research is also a run milestone (run_snapshot).
+local function research_finished(event)
+  run_snapshot.on_research_finished(event)
+  factory_status.on_research_changed(event)
+end
 for _, name in ipairs(factory_status.RESEARCH_EVENTS) do
-  if defines.events[name] then script.on_event(defines.events[name], factory_status.on_research_changed) end
+  if defines.events[name] then
+    script.on_event(defines.events[name],
+      name == "on_research_finished" and research_finished or factory_status.on_research_changed)
+  end
 end
 -- Hand-crafted items of the Codex player, counted for run_snapshot.
 script.on_event(defines.events.on_player_crafted_item, factory_activity.on_player_crafted_item)
@@ -392,6 +400,7 @@ for name, handler in pairs({ on_rocket_launch_ordered = function(event)
     platforms.on_rocket_launch_ordered(event)
     timelapse.on_rocket_launch_ordered(event)
   end,
+  on_rocket_launched = platforms.on_rocket_launched,
   on_space_platform_changed_state = platforms.on_platform_state_changed,
   on_cargo_pod_finished_descending = function(event)
     platforms.on_cargo_pod_finished_descending(event)

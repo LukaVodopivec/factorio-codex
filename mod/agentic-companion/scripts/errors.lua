@@ -5,7 +5,8 @@
 -- not a deliberate refusal; a step runner, an event handler) are kept,
 -- plain, in a ring in storage.handler_errors (state.init): the last
 -- RING_SIZE and the count since the save gained the ring, which ping
--- (connect_status) shows.
+-- (connect_status) shows and run_snapshot samples; each also leaves one
+-- line in the server log.
 local M = {}
 
 M.RING_SIZE = 20
@@ -46,15 +47,30 @@ function M.deliberate(err)
   return message == text or message:match("^[A-Z][A-Z0-9_]+[A-Z0-9]:") ~= nil, message
 end
 
+-- text cut to at most limit bytes, never inside a UTF-8 character (the
+-- mod's reasons carry "—").
+function M.cut(text, limit)
+  if #text <= limit then return text end
+  local cut = limit
+  while cut > 0 and text:byte(cut + 1) >= 0x80 and text:byte(cut + 1) < 0xC0 do cut = cut - 1 end
+  return text:sub(1, cut)
+end
+
 -- Keeps a caught error, where naming its handler (rpc:<method>,
--- task:<type>:<phase>, event:<name>); returns the plain message.
+-- task:<type>:<phase>, event:<name>), and logs one line for it; returns
+-- the plain message.
 function M.record(where, err)
   local message = M.plain(err)
   storage.handler_errors = storage.handler_errors or { count = 0, recent = {} }
   local ring = storage.handler_errors
+  local kept = M.cut(message, MAX_MESSAGE)
   ring.count = ring.count + 1
-  ring.recent[#ring.recent + 1] = { tick = game and game.tick, where = where, error = message:sub(1, MAX_MESSAGE) }
+  ring.recent[#ring.recent + 1] = { tick = game and game.tick, where = where, error = kept }
   while #ring.recent > M.RING_SIZE do table.remove(ring.recent, 1) end
+  if log then
+    pcall(log, string.format("[agentic-companion] handler fault %s tick=%s: %s", tostring(where),
+      tostring(game and game.tick), (kept:gsub("%s*\n%s*", " "))))
+  end
   return message
 end
 

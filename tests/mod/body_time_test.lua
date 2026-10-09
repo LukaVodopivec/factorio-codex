@@ -51,7 +51,8 @@ local companion = require("scripts.companion")
 local tasks = require("scripts.tasks")
 
 _G.storage = { tasks = { next_id = 1, records = {}, queue = {}, active = nil,
-  body_time = { since_tick = 0, state = "idle", state_since = 0, ticks = {}, gaps = {} } },
+  body_time = { since_tick = 0, state = "idle", state_since = 0, ticks = {}, gaps = {} },
+  holds = { count = 0, total_ticks = 0, recent = {} } },
   companion = { player_index = 1, entity = body } }
 local function ticks(n)
   for _ = 1, n do game.tick = game.tick + 1; tasks.on_tick() end
@@ -75,7 +76,7 @@ body.crafting_queue_size = 2
 ticks(5)
 body.crafting_queue_size = 0
 ticks(6)
-companion.on_human_input({ player_index = 1 })
+companion.on_human_input({ player_index = 1, input_name = "agentic-companion-mine" })
 ticks(320)
 ticks(2)
 
@@ -99,6 +100,45 @@ check(time.state == "idle" and time.ticks.idle == 12 + 8 + 4 + 4 + 7 + (game.tic
 local before = storage.tasks.body_time.ticks.idle
 tasks.body_time()
 check(storage.tasks.body_time.ticks.idle == before, "the read never writes the counters")
+
+-- Each hold is an episode with its cause: the linked control's name.
+local holds = tasks.holds()
+local first = holds.recent[1]
+check(holds.count == 1 and #holds.recent == 1 and first.cause == "mine" and first.end_tick ~= nil
+  and first.end_tick - first.start_tick == time.ticks.hold and holds.total_ticks == time.ticks.hold,
+  "a hold is kept as an episode {start_tick, end_tick, cause} with its ticks in total_ticks")
+
+-- The poll's causes (an open GUI, a held item) and another controller's.
+player.opened_gui_type = defines.gui_type.entity
+ticks(2)
+local open = tasks.holds()
+check(open.count == 2 and open.recent[2].cause == "gui" and open.recent[2].end_tick == nil
+  and open.total_ticks == time.ticks.hold + game.tick - open.recent[2].start_tick
+  and storage.tasks.holds.total_ticks == time.ticks.hold,
+  "an open hold has no end_tick yet; the read counts its ticks so far without writing them")
+player.opened_gui_type = defines.gui_type.none
+ticks(310)
+check(tasks.holds().recent[2].end_tick ~= nil, "a closed GUI releases the hold")
+player.cursor_stack.valid_for_read = true
+ticks(1)
+player.cursor_stack.valid_for_read = false
+ticks(305)
+player.controller_type = defines.controllers.spectator
+ticks(3)
+player.controller_type = defines.controllers.character
+ticks(2)
+holds = tasks.holds()
+check(holds.count == 4 and holds.recent[3].cause == "cursor" and holds.recent[4].cause == "controller"
+  and holds.recent[4].end_tick - holds.recent[4].start_tick == 3, "a held item and another controller name their causes")
+-- The ring keeps the last 16 episodes; count and total_ticks keep every one.
+local total = holds.total_ticks
+for _ = 1, 20 do
+  companion.on_human_input({ player_index = 1 })
+  ticks(301)
+end
+holds = tasks.holds()
+check(holds.count == 24 and #holds.recent == 16 and holds.recent[16].cause == "gui"
+  and holds.total_ticks == total + 20 * 299, "the ring keeps the last 16 episodes; count and total_ticks keep all")
 
 -- The recorder's window mark: the gap open at the mark counts from it when
 -- it closes; the idle ticks themselves stay whole.

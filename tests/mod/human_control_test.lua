@@ -479,6 +479,7 @@ do
   end
   check(storage.tasks.human_hold ~= nil and body_writes() >= 3 and tasks.plan_status({ plan_id = plan.plan_id }).status == "running",
     "a key held down keeps the hold far beyond 300 ticks after its press")
+  check(storage.tasks.human_activity_cause == "walking", "a held movement key is noted as walking")
   release_key()
   check(ticks_held(1000) == 300, "the hold releases 300 ticks after the held key stops")
 
@@ -491,6 +492,7 @@ do
     tick()
   end
   check(storage.tasks.human_hold ~= nil, "mining during a hold keeps it beyond 300 ticks")
+  check(storage.tasks.human_activity_cause == "mining", "mining during a hold is noted as mining")
   state.mining_state = { mining = false }
   check(ticks_held(1000) == 300, "the hold releases 300 ticks after the mining stops")
 

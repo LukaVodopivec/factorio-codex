@@ -31,13 +31,19 @@ local errors = require("scripts.errors")
 local registry = require("scripts.registry")
 local journal = require("scripts.journal")
 local M = {}
+-- Finished task and plan records are kept 5 minutes, a failed or partial
+-- one 30 (plan_status reads its outcomes).
 local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
+local FAILED_RECORD_TTL_TICKS = 30 * 60 * 60
 -- A plan's active budget: 570 s, or 12 s per step for long build packages.
 local PLAN_BUDGET_TICKS, STEP_BUDGET_TICKS = 570 * 60, 12 * 60
 local MAX_PLAN_STEPS = 200
 -- Pilot queue_plan client keys kept (storage.tasks.client_keys).
 M.MAX_CLIENT_KEYS = 32
 local ACTIVITY_LOG_SIZE = 64
+-- An activity_log row's summary keeps SUMMARY_REASON bytes of the reason,
+-- its detail DETAIL_BYTES of the whole reason.
+local SUMMARY_REASON, DETAIL_BYTES = 160, 800
 local INSPECT_PER_TICK = 16 -- positions an inspect_entities step reads a tick
 -- Watchdog: a running step with no progress for 60 s fails with STEP_STALLED.
 -- Progress is read once a second; the body counts as moved once it is more
@@ -146,11 +152,11 @@ function M.bound_for()
   return into[#into]
 end
 -- The player's real control input on the Codex client holds the body (companion.human_control
--- owns the rule). A failed read never holds.
+-- owns the rule, and names the cause). A failed read never holds.
 local function human_control()
-  local ok, held, idle = pcall(companion.human_control)
+  local ok, held, idle, cause = pcall(companion.human_control)
   if not ok then return false end
-  return held == true, idle
+  return held == true, idle, cause
 end
 local function cancel_crafting()
   local c = companion.get()
@@ -319,7 +325,8 @@ local function journal_step(plan, step)
 end
 
 -- activity_log: the last ACTIVITY_LOG_SIZE plan outcomes, so a reader sees
--- what the body did without polling each plan.
+-- what the body did without polling each plan: a short summary and, for a
+-- plan that did not complete, the reason in full as detail.
 local function upkeep_readback(plan)
   if plan.source ~= "upkeep" then return nil end
   local targets, by_step = {}, {}
@@ -378,23 +385,25 @@ local function log_plan(plan, detail)
     or plan.preempted and (ending or not plan.ending) and "PREEMPTED"
     or type(reason) == "string" and reason:match("^([A-Z][A-Z0-9_]+[A-Z0-9])") or nil
   if not code and (plan.status == "failed" or plan.status == "partial") then code = errors.code(plan.status) end
-  local summary
+  local summary, full
   if plan.status == "completed" then
     summary = string.format("completed %d/%d steps", plan.completed_steps, #plan.steps)
   elseif observe_failed then
+    full = tostring(reason)
     summary = string.format("failed after %d/%d steps: the final observation raised: %s", plan.completed_steps,
-      #plan.steps, tostring(reason):sub(1, 160))
+      #plan.steps, errors.cut(full, SUMMARY_REASON))
   else
     local step = last and last.step or ending and ending.step or plan.current_step
     local action = last and last.action or plan.steps[step] and plan.steps[step].action
+    full = type(reason) == "string" and reason ~= "" and reason or nil
     summary = string.format("%s at step %d/%d%s%s", plan.status, step, #plan.steps,
-      action and (" " .. action) or "",
-      type(reason) == "string" and reason ~= "" and (": " .. reason:sub(1, 160)) or "")
+      action and (" " .. action) or "", full and (": " .. errors.cut(full, SUMMARY_REASON)) or "")
   end
   local log = storage.activity_log or {}
   storage.activity_log = log
   log[#log + 1] = { plan_id = plan.id, source = plan.source or "pilot", steps = #plan.steps,
-    status = plan.status, code = code, summary = summary, start_tick = plan.started_tick, end_tick = game.tick,
+    status = plan.status, code = code, summary = summary, detail = full and errors.cut(full, DETAIL_BYTES) or nil,
+    start_tick = plan.started_tick, end_tick = game.tick,
     surface = plan.surface, upkeep = upkeep_readback(plan),
     -- The ending step's repeat count, when its code is the plan's.
     ["repeat"] = last and last.code == code and last["repeat"] or nil }
@@ -829,7 +838,9 @@ function M.plan_status(params)
   for _, queued in ipairs(tasks.queue) do if queued.id == id and queued.type == "plan" then return plan_payload(queued) end end
   local record = tasks.records[id]
   if record and record.plan then observe_terminal(record.plan); return plan_payload(record.plan) end
-  error("unknown plan_id: " .. id)
+  error("unknown plan_id: " .. id .. ": never queued, or it ended more than " .. math.floor(RECORD_TTL_TICKS / 3600)
+    .. " minutes ago (" .. math.floor(FAILED_RECORD_TTL_TICKS / 3600) .. " if it failed or was partial);"
+    .. " activity_log keeps the last " .. ACTIVITY_LOG_SIZE .. " plan outcomes")
 end
 function M.get(params)
   local id = tonumber(params.task_id)
@@ -1803,8 +1814,18 @@ end
 local function mark_held(task)
   if task and task.type == "plan" then task.human_control = true end
 end
-local function enter_hold(tasks)
+-- Each hold is an episode in storage.tasks.holds (state.lua): count, every
+-- one begun; total_ticks, those that ended; recent, the last HOLD_EPISODES
+-- {start_tick, end_tick (nil while open), cause}, oldest first.
+local HOLD_EPISODES = 16
+local function enter_hold(tasks, cause)
   tasks.human_hold = { since = game.tick }
+  local holds = tasks.holds
+  if holds then
+    holds.count = holds.count + 1
+    holds.recent[#holds.recent + 1] = { start_tick = game.tick, cause = cause }
+    while #holds.recent > HOLD_EPISODES do table.remove(holds.recent, 1) end
+  end
   tasks.stall = nil
   if tasks.active then stop_body() end
   mark_held(tasks.active)
@@ -1850,6 +1871,10 @@ end
 local function leave_hold(tasks)
   local held_ticks = game.tick - tasks.human_hold.since
   tasks.human_hold = nil
+  local open = tasks.holds and tasks.holds.recent[#tasks.holds.recent]
+  if open and open.end_tick == nil then
+    open.end_tick, tasks.holds.total_ticks = game.tick, tasks.holds.total_ticks + held_ticks
+  end
   for _, queued in ipairs(tasks.queue) do release_plan(queued, held_ticks) end
   if tasks.active then release_plan(tasks.active, held_ticks) end
   resume_active(tasks)
@@ -1994,8 +2019,26 @@ function M.body_time()
   return { since_tick = time.since_tick, window_tick = time.window_tick, state = time.state, state_since = time.state_since,
     ticks = ticks, gaps = gaps }
 end
+-- The hold episodes for run_snapshot: {count, total_ticks (an open hold's
+-- ticks so far included), recent}, a copy; nil before state.init made them.
+function M.holds()
+  local holds = storage.tasks and storage.tasks.holds
+  if not holds then return nil end
+  local recent, total = {}, holds.total_ticks
+  for i, episode in ipairs(holds.recent) do
+    recent[i] = { start_tick = episode.start_tick, end_tick = episode.end_tick, cause = episode.cause }
+  end
+  local open = recent[#recent]
+  if storage.tasks.human_hold and open and open.end_tick == nil then total = total + game.tick - open.start_tick end
+  return { count = holds.count, total_ticks = total, recent = recent }
+end
 function M.on_tick()
-  if game.tick % PRUNE_INTERVAL_TICKS == 0 then for id, record in pairs(storage.tasks.records) do if game.tick - record.finished_tick > RECORD_TTL_TICKS then storage.tasks.records[id] = nil end end end
+  if game.tick % PRUNE_INTERVAL_TICKS == 0 then
+    for id, record in pairs(storage.tasks.records) do
+      local ttl = (record.status == "failed" or record.status == "partial") and FAILED_RECORD_TTL_TICKS or RECORD_TTL_TICKS
+      if game.tick - record.finished_tick > ttl then storage.tasks.records[id] = nil end
+    end
+  end
   local tasks = storage.tasks
   account_body_time(tasks)
   local current = tasks.active and tasks.active.current_task
@@ -2004,8 +2047,9 @@ function M.on_tick()
   -- keep working while the body is parked. This never orders any action.
   if runner and runner.observe then runner.observe(current) end
   pcall(companion.poll_human_activity, tasks.human_hold ~= nil)
-  if human_control() then
-    if not tasks.human_hold then enter_hold(tasks) end
+  local held, _, cause = human_control()
+  if held then
+    if not tasks.human_hold then enter_hold(tasks, cause) end
     -- A human playing the body is not idle time.
     if tasks.last_finished_tick then tasks.last_finished_tick = game.tick end
     return

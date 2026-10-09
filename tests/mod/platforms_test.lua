@@ -308,10 +308,12 @@ local station = { surface = mock.surface({ platform = alpha }) }
 local rocket = entity({ name = "rocket-silo-rocket", type = "rocket-silo-rocket", position = { x = 10.5, y = 20.5 },
   attached_cargo_pod = entity({ name = "cargo-pod", type = "cargo-pod", position = { x = 0, y = 0 },
     cargo_pod_destination = { type = 3, station = station } }) })
-platforms.on_rocket_launch_ordered({ rocket = rocket, rocket_silo = silo })
+platforms.on_rocket_launch_ordered({ rocket = rocket, rocket_silo = silo, tick = 100 })
 local event = storage.space.events[1]
-check(event.kind == "rocket_launched" and event.silo.x == 10.5 and event.platform.name == "alpha" and event.tick == 100,
-  "a launch names its silo and destination platform, read while the pod is still attached")
+check(event.kind == "rocket_launch_ordered" and event.silo.x == 10.5 and event.platform.name == "alpha" and event.tick == 100,
+  "an ordered launch names its silo and destination platform, read while the pod is still attached")
+check(storage.milestones.rocket_launch_ordered_tick == 100 and storage.milestones.rocket_launched_tick == nil,
+  "the first ordered launch is a milestone; the rocket has not left yet")
 game.tick = 200
 platforms.on_platform_state_changed({ platform = alpha, old_state = defines.space_platform_state.on_the_path })
 event = storage.space.events[2]
@@ -334,7 +336,23 @@ mock.read(foreign, "force", function() return enemy end)
 local before = #storage.space.events
 platforms.on_rocket_launch_ordered({ rocket = rocket, rocket_silo = foreign })
 check(#storage.space.events == before, "another force's launch is not recorded")
+-- The rocket leaves after its ascent: rocket_launched, the first a milestone.
+game.tick = 250
+platforms.on_rocket_launched({ rocket = rocket, rocket_silo = silo, tick = 250 })
+event = storage.space.events[#storage.space.events]
+check(event.kind == "rocket_launched" and event.tick == 250 and event.silo.x == 10.5
+  and storage.milestones.rocket_launched_tick == 250, "a launched rocket is recorded with its tick and is a milestone")
+game.tick = 260
+platforms.on_rocket_launched({ rocket = rocket, tick = 260 })
+event = storage.space.events[#storage.space.events]
+check(event.kind == "rocket_launched" and event.tick == 260 and event.silo == nil
+  and storage.milestones.rocket_launched_tick == 250,
+  "a rocket whose silo is gone is recorded by the rocket's force; the milestone keeps the first tick")
+before = #storage.space.events
+platforms.on_rocket_launched({ rocket = rocket, rocket_silo = foreign, tick = 270 })
+check(#storage.space.events == before, "another force's rocket is not recorded")
 for i = 1, 40 do game.tick = 300 + i; platforms.on_rocket_ready(silo) end
+check(storage.milestones.rocket_ready_tick == 301, "the first ready rocket is a milestone")
 local last_tick, recent = platforms.event_state()
 check(#storage.space.events == 32 and last_tick == 340 and #recent == 4 and recent[4].tick == 340
   and recent[1].kind == "rocket_ready", "the ring keeps 32 entries; event_state returns the newest tick and the last 4")

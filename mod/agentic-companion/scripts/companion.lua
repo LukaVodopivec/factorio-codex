@@ -201,9 +201,10 @@ end
 
 -- Human takeover. Real control input on the Codex client holds the body until
 -- 300 ticks after the last of it; storage.tasks.human_activity_tick is that
--- last input. Input is a linked custom input (scripts/human_inputs.lua), an
--- open GUI, an item in the cursor, or walking the mod did not command; during
--- a hold, any walking or mining. Mouse hover, camera movement and afk_time are
+-- last input and human_activity_cause what it was (the linked control's name,
+-- gui, cursor, walking or mining). Input is a linked custom input
+-- (scripts/human_inputs.lua), an open GUI, an item in the cursor, or walking
+-- the mod did not command; during a hold, any walking or mining. Mouse hover, camera movement and afk_time are
 -- not input: afk_time also resets when the bot's own walking scrolls the view
 -- under a resting cursor (native 2.0.77). Everything counts only for the
 -- connected Codex player in its character: map or remote view moves the view,
@@ -222,9 +223,10 @@ end
 local function takes_input(player)
   return in_character(player) or classify(player, storage.companion) == "aboard_platform"
 end
-local function note_activity()
-  if storage.tasks then storage.tasks.human_activity_tick = game.tick end
+local function note_activity(cause)
+  if storage.tasks then storage.tasks.human_activity_tick, storage.tasks.human_activity_cause = game.tick, cause end
 end
+local INPUT_PREFIX = human_inputs.input_name("")
 
 -- The linked movement inputs: aboard they pan the camera.
 local CAMERA_INPUTS = {}
@@ -239,7 +241,8 @@ function M.on_human_input(event)
   local player = codex_player()
   if not (player and takes_input(player)) then return end
   if not in_character(player) and CAMERA_INPUTS[event.input_name] then return end
-  note_activity()
+  local input = event.input_name
+  note_activity(input and (input:sub(1, #INPUT_PREFIX) == INPUT_PREFIX and input:sub(#INPUT_PREFIX + 1) or input) or "gui")
 end
 
 -- Called once per tick before the dispatcher decides the hold and before the
@@ -249,9 +252,10 @@ function M.poll_human_activity(holding)
   local player = codex_player()
   if not (player and takes_input(player)) then return end
   local cursor = player.cursor_stack
-  local active = player.opened_gui_type ~= defines.gui_type.none or (cursor and cursor.valid_for_read) or false
+  local active = player.opened_gui_type ~= defines.gui_type.none and "gui"
+    or (cursor and cursor.valid_for_read) and "cursor" or nil
   if not in_character(player) then
-    if active then note_activity() end
+    if active then note_activity(active) end
     return
   end
   local body = player.character
@@ -261,20 +265,24 @@ function M.poll_human_activity(holding)
     -- write (human_inputs.set_walking): walking it did not command, or in
     -- another direction, is the client's movement keys.
     local commanded = storage.tasks and storage.tasks.commanded_walk
-    if holding or not (commanded and commanded.walking) or commanded.direction ~= walking.direction then active = true end
+    if holding or not (commanded and commanded.walking) or commanded.direction ~= walking.direction then
+      active = active or "walking"
+    end
   end
-  if holding and body.mining_state and body.mining_state.mining then active = true end
-  if active then note_activity() end
+  if holding and body.mining_state and body.mining_state.mining then active = active or "mining" end
+  if active then note_activity(active) end
 end
 
--- Returns held, idle ticks. On a surface, map or remote view never holds;
--- any controller other than the character holds (a missing character too),
--- so queued work stays parked instead of failing for want of a body. In
+-- Returns held, idle ticks and, when held, the cause: the noted input's
+-- (human_activity_cause), or controller. On a surface, map or remote view
+-- never holds; any controller other than the character holds (a missing
+-- character too), so queued work stays parked instead of failing for want of
+-- a body. In
 -- transit or aboard the body is busy with a trip, which holds nothing by
 -- itself; only noted input does. A dead body, unreadable state and a
 -- disconnected player never hold.
 function M.human_control()
-  local ok, held, idle = pcall(function()
+  local ok, held, idle, cause = pcall(function()
     local player = codex_player()
     if not player then return false end
     local last = storage.tasks and storage.tasks.human_activity_tick
@@ -283,14 +291,15 @@ function M.human_control()
     if state == "dead" then return false, idle end
     if state == "on_surface" then
       if player.controller_type == defines.controllers.remote then return false, idle end
-      if player.controller_type ~= defines.controllers.character then return true, idle end
+      if player.controller_type ~= defines.controllers.character then return true, idle, "controller" end
     elseif state == "other" then
-      return true, idle
+      return true, idle, "controller"
     end
-    return idle < HUMAN_RELEASE_IDLE_TICKS, idle
+    if idle < HUMAN_RELEASE_IDLE_TICKS then return true, idle, storage.tasks.human_activity_cause or "input" end
+    return false, idle
   end)
   if not ok then return false end
-  return held, idle
+  return held, idle, cause
 end
 
 -- The connected Codex player's body in any state but absent: {state, force,

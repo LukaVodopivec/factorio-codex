@@ -1112,6 +1112,25 @@ end)()
     and out[jobs.RAW_JSON].result:find('"plan_id":' .. small.plan_id, 1, true) ~= nil
     and ticks > 1 and most <= jobs.WORK_PER_TICK + jobs.ENCODE_NODES,
     string.format("get_job returns it whole after %d ticks of at most %d work items each", ticks, most))
+  -- A running step's diagnostics hold the live task's own tables: the
+  -- payload keeps a copy, so the task clearing a key while the reply is
+  -- encoded leaves no hole in the JSON.
+  plan.outcomes[121] = nil
+  local supplied = { item = "iron-plate", taken = 5 }
+  plan.current_task = { type = "get_items", _supply_result = supplied }
+  local running = tasks.plan_status({ plan_id = small.plan_id })
+  supplied.taken, supplied.item = nil, nil
+  local encoded
+  for _ = 1, 50 do
+    game.tick = game.tick + 1
+    jobs.on_tick()
+    if storage.jobs.by_id[running.job_id].status ~= "pending" then encoded = jobs.get({ job_id = running.job_id }); break end
+  end
+  local json = encoded and encoded[jobs.RAW_JSON].result or ""
+  check(running.job_status == "pending" and encoded and encoded.result.diagnostics.supply.supply_result.taken == 5
+    and json:find('"supply_result":{"item":"iron-plate","taken":5}', 1, true) ~= nil and not json:find(":,", 1, true),
+    "a running plan's diagnostics are copied when the reply is encoded over ticks: " .. json:sub(-240))
+  plan.current_task = nil
   storage.tasks.queue, storage.jobs = {}, nil
 end)()
 os.exit(failures == 0 and 0 or 1)

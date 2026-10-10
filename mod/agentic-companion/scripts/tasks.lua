@@ -885,7 +885,11 @@ end
 -- bridge waits for it). One plan_status took 17.5 ms (trial 0013) while
 -- the median stayed 0.3 ms: the cost is the payload's size. The lists the
 -- payload shares with the live plan are copied, so a step that ends while
--- it is encoded changes nothing already counted.
+-- it is encoded changes nothing already counted, and so are the running
+-- step's diagnostics and upkeep context, which hold the live task's own
+-- tables (a supply result, a walk's goal and failure): the encoder resolves
+-- each key over later ticks, and a key the task cleared meanwhile would
+-- leave a hole in the JSON.
 local PLAN_STATUS_DIRECT_NODES = jobs.WORK_PER_TICK
 M.PLAN_STATUS_DIRECT_NODES = PLAN_STATUS_DIRECT_NODES
 jobs.register("plan_status", {
@@ -899,8 +903,18 @@ jobs.register("plan_status", {
 local function plan_answer(plan)
   local payload = plan_payload(plan)
   if jobs.count_nodes(payload, PLAN_STATUS_DIRECT_NODES) <= PLAN_STATUS_DIRECT_NODES then return payload end
+  local function copy(value, seen)
+    if type(value) ~= "table" then return value end
+    if seen[value] then return seen[value] end
+    local out = {}
+    seen[value] = out
+    for k, v in pairs(value) do out[k] = copy(v, seen) end
+    return out
+  end
   payload.outcomes = { table.unpack(payload.outcomes or {}) }
   if payload.transitions then payload.transitions = { table.unpack(payload.transitions) } end
+  payload.diagnostics = copy(payload.diagnostics, {})
+  if payload.upkeep and payload.upkeep.active then payload.upkeep.active = copy(payload.upkeep.active, {}) end
   -- With every job slot taken (JOBS_BUSY) it is answered at once, as before.
   local ok, pending = pcall(jobs.start, "plan_status", { payload = payload })
   return ok and pending or payload

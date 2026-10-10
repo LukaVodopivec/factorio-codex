@@ -841,6 +841,8 @@ local function plan_payload(plan)
     -- crafting queue: recipe and count at its head, seconds it still needs.
     diagnostics.supply = supply_state(plan.current_task)
     diagnostics.crafting = crafting_summary()
+    -- A travel step: its phase, deadline and the platform's facts.
+    diagnostics.travel = travel.facts(plan.current_task)
   elseif plan.status == "failed" and plan.outcomes[#plan.outcomes] then
     diagnostics = { failure = plan.outcomes[#plan.outcomes].error }
   end
@@ -983,6 +985,21 @@ function M.cancel(params)
   end
   local id = tonumber(params.task_id or params.plan_id)
   if not id then error("cancel requires task_id, plan_id, or all=true") end
+  -- only_source (cancel_plan): the plan must be that source's, and queued or
+  -- running (a lent or parked plan too); else a coded refusal, nothing
+  -- cancelled and nothing logged.
+  if params.only_source ~= nil then
+    local plan = tasks.active and tasks.active.id == id and tasks.active or nil
+    for _, queued in ipairs(tasks.queue) do if queued.id == id then plan = queued end end
+    if not plan or plan.type ~= "plan" then
+      local record = tasks.records[id]
+      error(string.format("PLAN_NOT_PENDING: plan %d is %s: only a queued or running plan can be cancelled", id,
+        plan and "a direct tool's task, not a plan" or record and ("already " .. tostring(record.status)) or "unknown"), 0)
+    end
+    if (plan.source or "pilot") ~= params.only_source then
+      error(string.format("NOT_YOUR_PLAN: plan %d is %s's, not %s's", id, tostring(plan.source), params.only_source), 0)
+    end
+  end
   if tasks.active and tasks.active.id == id then
     record_cancelled_step(tasks.active)
     finish(tasks.active, "cancelled", detail, nil, direct_cancelled(tasks.active))
@@ -999,13 +1016,20 @@ function M.cancel(params)
   log_cancel(origin, id, 0)
   return { cancelled = 0 }
 end
+-- The running plan or task; a travel plan that lends the FIFO (lent =
+-- "travel") still holds the body: it is the running plan between its
+-- guests, and beside a guest it is named as beside {plan_id, travel}.
 function M.active_summary()
-  local active = storage.tasks.active
+  local active, head = storage.tasks.active, storage.tasks.queue[1]
+  local lent = head and head.lent == "travel" and head or nil
+  if not active then active, lent = lent, nil end
   if not active then return nil end
   if active.type == "plan" then
     local step = active.steps[active.current_step]
     return { id = active.id, type = "plan", status = "running", current_step = active.current_step,
-      total_steps = #active.steps, action = step and step.action, source = active.source or "pilot" }
+      total_steps = #active.steps, action = step and step.action, source = active.source or "pilot",
+      travel = travel.facts(active.current_task),
+      beside = lent and { plan_id = lent.id, travel = travel.facts(lent.current_task) } or nil }
   end
   return { id = active.id, type = active.type, status = "running" }
 end
@@ -1422,11 +1446,41 @@ local function takes_body(queued)
   if queued.status == "waiting" then return queued.next_check_tick == nil end
   return not queued.after_plan_id or predecessor_status(queued.after_plan_id) == "completed"
 end
+-- Beside a travel wait. A travel step that waits for a rocket, an arrival or
+-- the end of a ride holds the body, but a build package whose every step
+-- acts on a space platform without the body (an extension's remote(step))
+-- needs none: the travel plan lends the FIFO (lent = "travel", back at the
+-- queue head, still running) and such packages run beside it, one at a
+-- time, in queue order; the travel step takes the FIFO back when none is
+-- left. Its arrival is an event it reads when it ticks again, and its
+-- deadline is its own. Nothing else runs beside it, upkeep included.
+local function remote_only(plan)
+  if plan.type ~= "plan" or plan.completed_steps >= #plan.steps then return false end
+  for index = plan.completed_steps + 1, #plan.steps do
+    local step = plan.steps[index]
+    local extension = extensions[step.action]
+    if not (extension and extension.remote and extension.remote(step)) then return false end
+  end
+  return true
+end
+-- The queue index of the first package that may run beside a travel wait:
+-- queued (not parked or lent), its predecessor done, every step remote.
+local function beside_guest(queue)
+  for index, queued in ipairs(queue) do
+    if queued.type == "plan" and queued.status == "queued" and not queued.lent
+      and type(queued.source) == "string" and queued.source:sub(1, 8) == "package:"
+      and (not queued.after_plan_id or predecessor_status(queued.after_plan_id) == "completed")
+      and remote_only(queued) then
+      return index
+    end
+  end
+end
 -- Queued work that would take the body from upkeep now. Behind a lending
--- plan nothing else does: that plan takes it back once its crafting ends.
+-- plan nothing else does: that plan takes it back once its crafting ends
+-- (a travel wait holds the body throughout).
 local function work_waiting()
   local queue = storage.tasks.queue
-  if queue[1] and queue[1].lent then return not crafting_busy() end
+  if queue[1] and queue[1].lent then return queue[1].lent == "travel" or not crafting_busy() end
   for _, queued in ipairs(queue) do
     if queued.type == "plan" and takes_body(queued) then return true end
   end
@@ -1627,6 +1681,15 @@ local function tick_plan(plan)
     table.insert(storage.tasks.queue, 1, plan)
     return
   end
+  -- A travel step that waits (for a rocket, an arrival or the end of a
+  -- ride) lends the FIFO to a queued platform-only package (beside_guest).
+  if ok and result == nil and step.action == "travel" and travel.action.runner.waiting(plan.current_task)
+    and beside_guest(storage.tasks.queue) then
+    plan.lent = "travel"
+    storage.tasks.active = nil
+    table.insert(storage.tasks.queue, 1, plan)
+    return
+  end
   if not ok then result = { status = "failed", detail = caught("task:" .. tostring(step.action) .. ":tick", result) } end
   if result and not try_recover(plan, step, result) then finish_step(plan, result) end
 end
@@ -1654,13 +1717,17 @@ local function dispatch(tasks)
   if not task then
     if #tasks.queue == 0 then return end
     local head = tasks.queue[1]
-    -- A plan lending the body keeps its place: only upkeep goes first.
+    -- A plan lending the body keeps its place: only upkeep goes first; a
+    -- travel wait lends the FIFO only to a platform-only package.
     local guest
-    if head.lent and crafting_busy() then
+    if head.lent == "travel" then
+      guest = beside_guest(tasks.queue)
+    elseif head.lent and crafting_busy() then
       for index, queued in ipairs(tasks.queue) do
         if queued.type == "plan" and queued.source == "upkeep" then guest = index; break end
       end
     end
+    local beside = head.lent == "travel" and guest ~= nil
     if head.lent then task = table.remove(tasks.queue, guest or 1) end
     local attempts = task and 0 or #tasks.queue
     for _ = 1, attempts do
@@ -1687,8 +1754,9 @@ local function dispatch(tasks)
     if not task then return end
     -- The plan-boundary upkeep pass: before a pilot or package plan starts,
     -- chores.lua may queue one upkeep plan (at the tail), which runs first;
-    -- back-to-back plans never starve a long-dry burner.
-    if boundary_upkeep and task.type == "plan" and task.source ~= "upkeep" and task.status == "queued" then
+    -- back-to-back plans never starve a long-dry burner. Not beside a
+    -- travel wait, which holds the body.
+    if boundary_upkeep and not beside and task.type == "plan" and task.source ~= "upkeep" and task.status == "queued" then
       table.insert(tasks.queue, 1, task)
       local ok, id = pcall(boundary_upkeep, game.tick)
       if not ok then errors.record("task:boundary_upkeep", id) end
@@ -1698,7 +1766,7 @@ local function dispatch(tasks)
     task.lent = nil
     -- Where the body stands as a pilot or package plan begins: idle upkeep
     -- also serves machines near these work sites (chores.lua).
-    if task.type == "plan" and task.source ~= "upkeep" and not task.started_tick then
+    if task.type == "plan" and task.source ~= "upkeep" and not task.started_tick and not beside then
       local c = companion.get()
       if c and c.valid then note_work_site(tasks, c) end
     end

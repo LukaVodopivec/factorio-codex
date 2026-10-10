@@ -253,10 +253,20 @@ function schedule(value: any): any {
   return { ...value, records: luaArray(value.records ?? []).map((row: any) => row?.wait_conditions !== undefined
     ? { ...row, wait_conditions: luaArray(row.wait_conditions) } : row) };
 }
+/** A platform's last trip: lost is a list. */
+function trip(value: any): any {
+  return value && typeof value === "object" ? { ...value, lost: luaArray(value.lost ?? []) } : value;
+}
+/** One compact platform row: its schedule's records and its trip's losses are lists. */
+function platformRow(row: any): any {
+  return row && typeof row === "object" ? { ...row,
+    ...(row.schedule !== undefined ? { schedule: schedule(row.schedule) } : {}),
+    ...(row.trip !== undefined ? { trip: trip(row.trip) } : {}) } : row;
+}
 /** Compact platform rows (platform_status, factory_status.platforms). */
 function platformRows(value: unknown): unknown {
   const rows = luaArray(value);
-  return Array.isArray(rows) ? rows.map((row: any) => row?.schedule !== undefined ? { ...row, schedule: schedule(row.schedule) } : row) : rows;
+  return Array.isArray(rows) ? rows.map(platformRow) : rows;
 }
 
 /** set_platform_route's outcome: the schedule as the game kept it. */
@@ -270,7 +280,7 @@ export function normalizePlatformStatus(value: any): any {
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = { ...value };
   if (value.platforms !== undefined) out.platforms = platformRows(value.platforms);
-  if (value.platform?.schedule !== undefined) out.platform = { ...value.platform, schedule: schedule(value.platform.schedule) };
+  if (value.platform !== undefined) out.platform = platformRow(value.platform);
   if (value.schedule !== undefined) out.schedule = schedule(value.schedule);
   if (value.foundation && typeof value.foundation === "object") out.foundation = { ...value.foundation, rows: luaArray(value.foundation.rows ?? []) };
   if (value.hub && typeof value.hub === "object") out.hub = { ...value.hub,
@@ -279,6 +289,10 @@ export function normalizePlatformStatus(value: any): any {
   if (value.entities !== undefined) out.entities = luaArray(value.entities).map((entity: any) =>
     entity?.filters !== undefined ? { ...entity, filters: luaArray(entity.filters) } : entity);
   if (value.ghosts && typeof value.ghosts === "object") out.ghosts = { ...value.ghosts, missing: luaArray(value.ghosts.missing ?? []) };
+  if (value.thrusters && typeof value.thrusters === "object") out.thrusters = { ...value.thrusters, by_name: luaArray(value.thrusters.by_name ?? []) };
+  if (value.turrets !== undefined) out.turrets = luaArray(value.turrets).map((row: any) =>
+    row?.ammo !== undefined ? { ...row, ammo: luaArray(row.ammo) } : row);
+  if (value.trip !== undefined) out.trip = trip(value.trip);
   return out;
 }
 
@@ -438,7 +452,9 @@ export function normalizePlanDiagnostics(value: any): any {
     ...(value.transitions === undefined ? {} : { transitions: luaArray(value.transitions) }),
     // The active step's supply and hand-crafting state (mod 0.37 on), as sent.
     diagnostics: { route, machines, ...(active?.supply !== undefined ? { supply: active.supply } : {}),
-      ...(active?.crafting !== undefined ? { crafting: active.crafting } : {}) },
+      ...(active?.crafting !== undefined ? { crafting: active.crafting } : {}),
+      // A travel step: its phase, deadline_tick and the platform's facts (mod 0.38 on).
+      ...(active?.travel !== undefined ? { travel: active.travel } : {}) },
     ...(physicalAudit ? { physical_audit: physicalAudit } : {}),
   };
 }

@@ -265,7 +265,7 @@ local function insert_one(task, c)
       detail = string.format("couldn't insert anything into the %s — %s%s",
         e.name, table.concat(problems, "; "), shortfall_note(task)),
       outcome = { code = "ZERO_PROGRESS", total_inserted = 0, transfers = transfers, target = target_identity(e),
-        inventory = task.inventory },
+        inventory = task.inventory, inventory_full = task._inventory_full },
     }
   end
   if #problems > 0 then
@@ -274,7 +274,7 @@ local function insert_one(task, c)
       detail = string.format("partial insert into the %s — %s%s", e.name, table.concat(problems, "; "),
         shortfall_note(task)),
       outcome = { code = "PARTIAL_INSERT", total_inserted = total, transfers = transfers, target = target_identity(e),
-        inventory = task.inventory },
+        inventory = task.inventory, inventory_full = task._inventory_full },
     }
   end
   -- Automation nudge: hand-feeding smelters is a treadmill.
@@ -302,7 +302,7 @@ local function multi_result(task)
   end
   local per = {}
   for _, it in ipairs(task._items) do per[#per + 1] = string.format("%d %s", it.count, it.name) end
-  local outcome = { total_inserted = total, targets = rows }
+  local outcome = { total_inserted = total, targets = rows, inventory_full = task._inventory_full }
   if failed == 0 then
     outcome.code = "INSERTED_ALL_TARGETS"
     return { status = "done", detail = string.format("inserted %s into each of %d targets%s", table.concat(per, ", "),
@@ -330,6 +330,8 @@ function M.insert.tick(task)
       local result = supply.ensure(task, needs, { exclude = not task._targets and task.target or nil })
       if not result then return nil end
       if result.status ~= "done" then task._shortfall = result.detail end
+      -- The fetch ended on a full body: the outcomes say so (inventory_full).
+      if supply.inventory_full(result) then task._inventory_full = true end
     end
     task._supplied = true
   end

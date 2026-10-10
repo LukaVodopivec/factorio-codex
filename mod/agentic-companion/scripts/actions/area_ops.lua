@@ -138,8 +138,11 @@ local function nearest(c, list)
   return best
 end
 
+-- inventory_full (with free_slots): an auto-supply ended on a full body,
+-- so what it was to fetch never came (supply.inventory_full).
 local function finish(task, status, code, detail, extra)
-  local outcome = { code = code, failed = task._failed, failed_count = task._failed_count }
+  local outcome = { code = code, failed = task._failed, failed_count = task._failed_count,
+    inventory_full = task._inventory_full and true or nil, free_slots = task._inventory_full and task._free_slots or nil }
   for k, v in pairs(extra or {}) do outcome[k] = v end
   if task._failed and task._failed[1] then detail = detail .. " — first failure: " .. tostring(task._failed[1].reason) end
   return { status = status, detail = detail, outcome = outcome }
@@ -576,11 +579,14 @@ function Ghosts.tick(task)
       local result = supply.ensure(task, { { name = entry.item, count = ghost_need(task, entry.item) } }, { bulk = true })
       if not result then return nil end
       if result.status ~= "done" then task._shortfall = task._shortfall or {}; task._shortfall[entry.item] = result.detail end
+      if supply.inventory_full(result) then
+        task._inventory_full, task._free_slots = true, items.free_slots(c.get_main_inventory())
+      end
     end
     entry.supplied = true
   end
   if c.get_item_count(entry.item) == 0 and craft.queued(c, entry.item) == 0 then
-    return skip("I have no " .. entry.item)
+    return skip("I have no " .. entry.item .. (task._inventory_full and " (my inventory was full, so none was fetched)" or ""))
   end
   if task._clear then
     local cleared = build.clear_footprint(task, c, entry.proto, entry.position, entry.direction)
@@ -749,7 +755,8 @@ function Deconstruct.tick(task)
     else
       add_failure(task, { name = entry.name, position = entry.position }, result.detail)
       -- A full inventory stops the clearing: nothing more fits.
-      if type(result.detail) == "string" and result.detail:find("inventory", 1, true) and result.detail:find("room", 1, true)
+      if type(result.outcome) == "table" and result.outcome.code == "INVENTORY_FULL"
+        or type(result.detail) == "string" and result.detail:find("inventory", 1, true) and result.detail:find("room", 1, true)
         or type(result.detail) == "string" and result.detail:find("inventory is full", 1, true) then
         task._stopped = "my inventory is full"
         return deconstruct_result(task, c)
@@ -913,12 +920,15 @@ function Upgrade.tick(task)
       local result = supply.ensure(task, { { name = item, count = #task._list + 1 } }, { bulk = true })
       if not result then return nil end
       if result.status ~= "done" then task._shortfall = result.detail end
+      if supply.inventory_full(result) then
+        task._inventory_full, task._free_slots = true, items.free_slots(c.get_main_inventory())
+      end
     end
     entry.supplied = true
   end
   if c.get_item_count(item) == 0 and craft.queued(c, item) == 0 then
     -- Nothing left to replace with: the rest are short too.
-    add_failure(task, e, "I have no " .. item)
+    add_failure(task, e, "I have no " .. item .. (task._inventory_full and " (my inventory was full, so none was fetched)" or ""))
     task._list, task._current = {}, nil
     return upgrade_result(task, c)
   end

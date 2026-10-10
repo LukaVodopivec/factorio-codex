@@ -1575,5 +1575,25 @@ end)()
   feeder.valid = false
   check(#supply.unobtainable(body, { { name = "iron-plate", count = 5 } }) == 0,
     "an idle furnace no inserter serves smelts the dry run's plates")
+
+  -- An insert whose fetch ended on a full body says so in its outcome.
+  reset()
+  local main = body.get_main_inventory
+  body.get_main_inventory = function()
+    return { get_insertable_count = function() return 0 end, count_empty_stacks = function() return 0 end,
+      get_item_count = function(name) return inventory[name] or 0 end, get_contents = function() return {} end }
+  end
+  local target = add({ type = "furnace", name = "stone-furnace", position = { x = 2.5, y = 0.5 }, items = {} })
+  target.get_output_inventory = function() return holder({}) end
+  target.insert = function(stack) return stack.count end
+  chest({ x = 6.5, y = 0.5 }, { coal = 20 })
+  local full_insert = { id = 21, target = { x = 2.5, y = 0.5 }, items = { coal = 5 } }
+  transfer.insert.start(full_insert)
+  local outcome
+  for _ = 1, 10 do outcome = transfer.insert.tick(full_insert); if outcome then break end end
+  body.get_main_inventory = main
+  check(outcome and outcome.status == "failed" and outcome.outcome.code == "ZERO_PROGRESS"
+    and outcome.outcome.inventory_full == true and outcome.detail:find("inventory full", 1, true) ~= nil,
+    "an insert a full body could not fetch for carries inventory_full")
 end)()
 os.exit(failures == 0 and 0 or 1)

@@ -622,6 +622,24 @@ check(by_robots.outcome.code == "UPGRADE_ORDERED" and #upgrade_orders == 2 and u
 inventory["fast-transport-belt"] = 0
 local short = run(area_ops.upgrade_action, { center = { x = 309, y = 309 }, radius = 2, from = "transport-belt", to = "fast-transport-belt" })
 check(short.status == "done" and short.outcome.total == 0, "an area without the entity has nothing to upgrade")
+do
+  -- A full body fetches no replacement: the failure says the inventory was full.
+  spawn("transport-belt", { x = 320.5, y = 300.5 }, 4)
+  local main = body.get_main_inventory
+  body.get_main_inventory = function()
+    return { get_insertable_count = function() return 0 end, count_empty_stacks = function() return 0 end }
+  end
+  -- No own line makes it (the shortfall's rate read).
+  local autonomy = require("scripts.autonomy")
+  local producing = autonomy.producing
+  autonomy.producing = function() return 0, 0 end
+  local full = run(area_ops.upgrade_action, { center = { x = 320, y = 300 }, radius = 2, from = "transport-belt",
+    to = "fast-transport-belt" })
+  body.get_main_inventory, autonomy.producing = main, producing
+  check(full.status == "failed" and full.outcome.code == "UPGRADE_FAILED" and full.outcome.inventory_full == true
+    and full.outcome.free_slots == 0 and full.outcome.failed[1].reason:find("my inventory was full", 1, true) ~= nil,
+    "an upgrade a full body could not fetch for says inventory_full, not only that it has none")
+end
 
 -- ----------------------------------------------------------- copy_settings
 

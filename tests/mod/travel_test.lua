@@ -357,6 +357,17 @@ result = tick(task, 62)
 check(result and result.outcome.code == "PLATFORM_NOT_IN_ORBIT" and result.outcome.platform.current_stop.station == "vulcanus",
   "a platform that no longer heads here fails PLATFORM_NOT_IN_ORBIT with its facts")
 check(refused({ platform = "alpha" }, "PLATFORM_NOT_IN_ORBIT"), "a platform elsewhere heading elsewhere is refused at once")
+-- Waiting at another stop whose next record is this planet: it returns, so
+-- it is waited for; paused there, it goes nowhere and is refused.
+alpha.space_location, alpha.space_connection, alpha.speed = { name = "vulcanus" }, nil, 0
+alpha.state = defines.space_platform_state.waiting_at_station
+launches = {}
+task = start({ to = { platform = "alpha" }, max_wait_minutes = 5 })
+check(tick(task, 130) == nil and task._phase == "board_wait" and #launches == 0,
+  "a platform waiting at a stop before this planet is waited for in board_wait")
+alpha.paused = true
+check(refused({ platform = "alpha" }, "PLATFORM_NOT_IN_ORBIT"), "a paused platform at another stop is refused at once")
+alpha.paused = false
 silo.rocket_silo_status = defines.rocket_silo_status.building_rocket
 
 state = "dead"

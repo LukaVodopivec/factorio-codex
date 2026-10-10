@@ -13,7 +13,8 @@
 --                must be an unlocked planet the platform is at or has a
 --                schedule record for (else NO_ROUTE at once).
 --   board_wait   no silo has a rocket ready, or the platform is not over
---                the planet yet but the stop it heads for is this planet:
+--                the planet yet but its next stop (platforms.heading_to)
+--                is this planet:
 --                wait for both (a silo serving hub requests launches on its
 --                own), within max_wait_minutes; a platform that no longer
 --                heads here fails PLATFORM_NOT_IN_ORBIT
@@ -95,10 +96,11 @@ local function phase_limit(task, phase)
   if phase == "ride" then return M.RIDE_TICKS end
 end
 
--- The platform the step boards or rides, while it exists.
+-- The platform the step boards or rides, while it exists (nil also while
+-- the body is absent: a read never fails the step).
 local function platform_of(task)
   if not task._platform then return nil end
-  local ok, p = pcall(platforms.resolve, companion.require_present().force, task._platform)
+  local ok, p = pcall(function() return platforms.resolve(companion.require_present().force, task._platform) end)
   return ok and p or nil
 end
 
@@ -200,10 +202,10 @@ local function resolve_board(task, body, p)
     return fail(task, "PLATFORM_NOT_IN_ORBIT", "platform " .. p.name .. " has no hub yet: launch its starter pack first")
   end
   local location = platforms.location(p)
-  -- A platform on its way here (the stop it heads for) is waited for in
-  -- board_wait.
+  -- A platform whose next stop is here (on its way, or waiting at a stop
+  -- before it) is waited for in board_wait.
   if not planet or location ~= planet and not platforms.heading_to(p, planet) then
-    return fail(task, "PLATFORM_NOT_IN_ORBIT", string.format("platform %s is %s, not over %s, and the stop it heads for"
+    return fail(task, "PLATFORM_NOT_IN_ORBIT", string.format("platform %s is %s, not over %s, and its next stop"
       .. " is not %s", p.name, location and ("at " .. location) or "travelling", tostring(planet), tostring(planet)))
   end
   local any, carrier = false, false
@@ -277,15 +279,15 @@ function Runner.tick(task)
     if task._next_check and game.tick < task._next_check and not expired(task) then return nil end
     task._next_check = game.tick + M.POLL_TICKS
     local c = companion.require_companion()
-    -- The rocket reaches the platform only over this planet; on its way
-    -- here (the stop it heads for) it is waited for.
+    -- The rocket reaches the platform only over this planet; while its next
+    -- stop is here it is waited for.
     local p = platform_of(task)
     if not p then return fail(task, "UNKNOWN_PLATFORM", "the platform to board is gone") end
     local planet = task._planet or read(function() return c.surface.planet.name end)
     if platforms.location(p) ~= planet then
       local facts = read_facts(task, p, false)
       if not platforms.heading_to(p, planet) then
-        return fail(task, "PLATFORM_NOT_IN_ORBIT", string.format("platform %s no longer heads for %s (%s)", p.name,
+        return fail(task, "PLATFORM_NOT_IN_ORBIT", string.format("platform %s's next stop is no longer %s (%s)", p.name,
           tostring(planet), facts.location and ("at " .. facts.location) or "travelling"), facts)
       end
       if expired(task) then

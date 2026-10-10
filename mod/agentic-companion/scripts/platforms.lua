@@ -284,17 +284,17 @@ local function schedule_of(p, full)
 end
 
 -- The schedule record a platform heads for (schedule.current), its index,
--- and whether any record stops at `name`.
+-- whether any record stops at `name`, and all its records.
 local function current_record(p, name)
   local schedule = read(function() return p.get_schedule() end)
-  if not schedule then return nil, nil, false end
+  if not schedule then return nil, nil, false, {} end
   local records = read(function() return schedule.get_records() end) or {}
   local scheduled = false
   for _, record in ipairs(records) do
     if record.station == name then scheduled = true end
   end
   local current = read(function() return schedule.current end)
-  return current and records[current] or nil, current, scheduled
+  return current and records[current] or nil, current, scheduled, records
 end
 
 -- Whether a platform's schedule has a stop at `name`.
@@ -303,9 +303,16 @@ function M.scheduled(p, name)
   return scheduled
 end
 
--- Whether the stop a platform heads for now is `name`.
+-- Whether a platform's next stop is `name`: the stop it heads for now, or,
+-- while it waits at a stop over that stop's location and is not paused, the
+-- record after it (where it goes once that stop's wait conditions hold).
 function M.heading_to(p, name)
-  local record = current_record(p, name)
+  local record, current, _, records = current_record(p, name)
+  if record == nil then return false end
+  local location = M.location(p)
+  if location ~= nil and record.station == location and #records > 1 and read(function() return p.paused end) ~= true then
+    record = records[current % #records + 1]
+  end
   return record ~= nil and record.station == name
 end
 

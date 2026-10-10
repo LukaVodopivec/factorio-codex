@@ -297,6 +297,20 @@ describe("package auto-queue", () => {
     expect(readPackageQueue(dir)?.packages.fourth).toMatchObject({ status: "failed", reason: "after_package_id third failed" });
   });
 
+  it("runs after a partial predecessor that satisfies its chain, and fails after any other partial", async () => {
+    const dir = runDir();
+    writeLedger(dir, 1, [furnaces("seed"), furnaces("short")]);
+    const { call, bridge, sources } = fakeBridge({ plan_status: (params) => ({ plan_id: params.plan_id, status: "partial",
+      source: sources.get(params.plan_id), ...(params.plan_id === 41 ? { satisfies_chain: true } : {}) }) });
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    writeLedger(dir, 2, [furnaces("feeds", "seed"), furnaces("after-short", "short")]);
+    await queue.tick();
+    expect(queuedPlans(call).at(-1)).toMatchObject({ source: "package:feeds" });
+    expect(readPackageQueue(dir)?.packages.feeds).toMatchObject({ status: "queued" });
+    expect(readPackageQueue(dir)?.packages["after-short"]).toMatchObject({ status: "failed", reason: "after_package_id short ended partial" });
+  });
+
   it("waits while the body is missing, offline, or another live process holds the run", async () => {
     const dir = runDir();
     writeLedger(dir, 1, [furnaces("iron-a")]);

@@ -37,6 +37,10 @@ local RECORD_TTL_TICKS, PRUNE_INTERVAL_TICKS = 5 * 60 * 60, 3600
 local FAILED_RECORD_TTL_TICKS = 30 * 60 * 60
 -- A plan's active budget: 570 s, or 12 s per step for long build packages.
 local PLAN_BUDGET_TICKS, STEP_BUDGET_TICKS = 570 * 60, 12 * 60
+local function tenth(x) return math.floor(x * 10 + 0.5) / 10 end
+-- A plan's ticks of one kind (walking, waiting on hand-crafts) as seconds to
+-- a tenth; nil before any.
+local function plan_time(ticks) return ticks and tenth(ticks / 60) or nil end
 local MAX_PLAN_STEPS = 200
 -- Pilot queue_plan client keys kept (storage.tasks.client_keys).
 M.MAX_CLIENT_KEYS = 32
@@ -385,6 +389,32 @@ local function result_code(result)
   if detail:find("couldn't get within physical reach", 1, true) then return "TARGET_OUT_OF_REACH" end
   return detail:match("^([A-Z][A-Z0-9_]+[A-Z0-9])")
 end
+-- A plan that ended partial only because its last step's insert met a full
+-- target: every item it did not insert was refused for TARGET_CAPACITY (the
+-- target holds all it can). It did all its steps, so a plan chained after
+-- it (after_plan_id) runs as after a completed one.
+local function satisfies_chain(plan)
+  if plan.status ~= "partial" then return false end
+  local last = plan.outcomes[#plan.outcomes]
+  if not (last and last.status == "partial" and last.step == #plan.steps and last.code == "PARTIAL_INSERT") then
+    return false
+  end
+  local short = false
+  for _, row in ipairs(type(last.result) == "table" and type(last.result.transfers) == "table"
+    and last.result.transfers or {}) do
+    if (tonumber(row.remainder) or 0) > 0 then
+      if row.reason ~= "TARGET_CAPACITY" then return false end
+      short = true
+    end
+  end
+  return short
+end
+-- The status a finished plan hands a plan chained after it: completed for a
+-- completed plan or one that satisfies_chain, else its own.
+function M.chain_status(plan)
+  if plan.status == "completed" or satisfies_chain(plan) then return "completed" end
+  return plan.status
+end
 local function log_plan(plan, detail)
   local log_line = log
   -- After a walk back the last outcome is the walk's: report what ended the
@@ -409,6 +439,24 @@ local function log_plan(plan, detail)
     or plan.preempted and (ending or not plan.ending) and "PREEMPTED"
     or type(reason) == "string" and reason:match("^([A-Z][A-Z0-9_]+[A-Z0-9])") or nil
   if not code and (plan.status == "failed" or plan.status == "partial") then code = errors.code(plan.status) end
+  -- The budget ended a step mid-supply: what that supply was doing stays in
+  -- the reason (and so in the row's detail and the server log line).
+  if code == "PLAN_BUDGET_EXCEEDED" and type(reason) == "string" and result and type(result.supply) == "table" then
+    local supplying = result.supply.supply
+    local parts = { "stage " .. tostring(result.supply.stage) }
+    if type(supplying) == "table" then
+      parts[#parts + 1] = string.format("fetching %s %s (phase %s, %s takes, running %s)", tostring(supplying.wanted),
+        tostring(supplying.item), tostring(supplying.phase), tostring(supplying.takes), tostring(supplying.action or "nothing"))
+      local last_action = type(supplying.last_action) == "table" and supplying.last_action or nil
+      if last_action then
+        parts[#parts + 1] = string.format("last %s %s%s", tostring(last_action.action), tostring(last_action.status),
+          last_action.code and (" " .. last_action.code) or "")
+      end
+    end
+    local ended = type(result.supply.supply_result) == "table" and result.supply.supply_result or nil
+    if ended then parts[#parts + 1] = string.format("supply ended %s %s", tostring(ended.status), tostring(ended.code)) end
+    reason = reason .. "; supply: " .. table.concat(parts, ", ")
+  end
   local summary, full
   if plan.status == "completed" then
     summary = string.format("completed %d/%d steps", plan.completed_steps, #plan.steps)
@@ -430,7 +478,9 @@ local function log_plan(plan, detail)
     start_tick = plan.started_tick, end_tick = game.tick,
     surface = plan.surface, upkeep = upkeep_readback(plan),
     -- The ending step's repeat count, when its code is the plan's.
-    ["repeat"] = last and last.code == code and last["repeat"] or nil }
+    ["repeat"] = last and last.code == code and last["repeat"] or nil,
+    walk_s = plan_time(plan.walk_ticks), tiles = plan.tiles and tenth(plan.tiles) or nil,
+    craft_wait_s = plan_time(plan.craft_wait_ticks) }
   while #log > ACTIVITY_LOG_SIZE do table.remove(log, 1) end
   -- A failed or partial plan also leaves one line in the server log, its
   -- reason cut as the row's detail, so it outlives the ring.
@@ -471,6 +521,12 @@ local function finish(task, status, detail, preserve_body, outcome, keep_craftin
     if final_status == "completed" and task.observation_error then final_status = "failed" end
     set_plan_status(task, final_status)
     log_plan(task, detail)
+    -- Plans chained after this one keep its final status: its record may be
+    -- pruned before they start.
+    local handed = M.chain_status(task)
+    for _, queued in ipairs(storage.tasks.queue) do
+      if queued.type == "plan" and queued.after_plan_id == task.id then queued.predecessor_final = handed end
+    end
   end
   storage.tasks.records[task.id] = {
     status = task.type == "plan" and task.status or status, detail = detail or "",
@@ -875,6 +931,12 @@ local function plan_payload(plan)
     execution = { mode = "sequential_nontransactional", rollback = "none",
       committed_steps = committed_steps, incomplete_step = incomplete_step },
     diagnostics = diagnostics,
+    -- A partial plan after which a chained plan still runs (satisfies_chain).
+    satisfies_chain = satisfies_chain(plan) or nil,
+    -- Where its time went so far: walking (seconds, tiles) and waiting on
+    -- hand-crafting (account_phase).
+    walk_s = plan_time(plan.walk_ticks), tiles = plan.tiles and tenth(plan.tiles) or nil,
+    craft_wait_s = plan_time(plan.craft_wait_ticks),
   }
 end
 function M.plan_status(params)
@@ -1095,7 +1157,10 @@ local function walk_back(plan, status, detail, outcome_index)
 end
 local function finish_step(plan, result)
   local kind = plan.current_task and plan.current_task.type
-  factory_activity.record(kind, result.outcome)
+  -- A merged insert retry (merge_retry): its first attempt was recorded when
+  -- it ended, so only the retry's own transfers are new.
+  local merged = type(result.outcome) == "table" and type(result.outcome.retry) == "table" and result.outcome or nil
+  factory_activity.record(kind, merged and { target = merged.target, transfers = merged.retry.transfers } or result.outcome)
   if kind and (TOPOLOGY_TASKS[kind] or extensions[kind]) then autonomy.mark_dirty() end
   local step = plan.steps[plan.current_step]
   -- Hand service a line cost the body (factory_status hand_seconds): the
@@ -1361,6 +1426,52 @@ local function try_recover(plan, step, result)
   plan.current_task = recovery.fix or { type = "recovery_pause" }
   return true
 end
+-- The retry of a partial insert's remainder ended: its result joins the
+-- first attempt's, so the step reports what both inserted, against the
+-- original request. An item still short keeps the retry's reason, except
+-- that one the first attempt inserted some of was capped, not refused or
+-- missing (TARGET_CAPACITY, INSUFFICIENT_CARRIED_ITEMS).
+local CAPPED_REASON = { TARGET_REJECTED_ITEM = "TARGET_CAPACITY", NO_CARRIED_ITEMS = "INSUFFICIENT_CARRIED_ITEMS" }
+local function merge_retry(first, retry)
+  local before = type(first.outcome) == "table" and first.outcome or {}
+  local after = type(retry.outcome) == "table" and retry.outcome or {}
+  local again = {}
+  for _, row in ipairs(type(after.transfers) == "table" and after.transfers or {}) do again[row.item] = row end
+  local transfers, total, problems = {}, 0, {}
+  for _, row in ipairs(type(before.transfers) == "table" and before.transfers or {}) do
+    local second = again[row.item]
+    local first_inserted = tonumber(row.inserted) or 0
+    -- A retry that ended done inserted the whole remainder.
+    local again_inserted = second and tonumber(second.inserted)
+      or retry.status == "done" and (tonumber(row.remainder) or 0) or 0
+    local inserted = first_inserted + again_inserted
+    local requested = tonumber(row.requested) or inserted
+    local remainder = math.max(0, requested - inserted)
+    local reason
+    if remainder > 0 then
+      reason = second and second.reason or row.reason
+      if first_inserted > 0 and CAPPED_REASON[reason] then reason = CAPPED_REASON[reason] end
+      problems[#problems + 1] = string.format("requested %d %s, inserted %d, remainder %d (%s)", requested,
+        tostring(row.item), inserted, remainder, tostring(reason))
+    end
+    total = total + inserted
+    transfers[#transfers + 1] = { item = row.item, requested = requested, available = row.available,
+      inserted = inserted, remainder = remainder, reason = reason }
+  end
+  local target = before.target or after.target
+  local name = type(target) == "table" and target.name or "target"
+  local outcome = { total_inserted = total, transfers = transfers, target = target, inventory = before.inventory,
+    first_inserted = tonumber(before.total_inserted),
+    retry = { status = retry.status, code = after.code, transfers = after.transfers } }
+  if #problems == 0 then
+    return { status = "done", outcome = outcome, detail = string.format(
+      "inserted everything requested into the %s: %d at first, the rest on a retry", name, outcome.first_inserted or 0) }
+  end
+  outcome.code = "PARTIAL_INSERT"
+  return { status = "partial", outcome = outcome, detail = string.format(
+    "partial insert into the %s over two attempts — %s; the retry: %s", name, table.concat(problems, "; "),
+    tostring(retry.detail)) }
+end
 local function step_recovery(plan)
   local recovery = plan._recovery
   local result
@@ -1387,9 +1498,16 @@ local function step_recovery(plan)
   recovery.phase, recovery.fix_detail, recovery.fix_error = "retrying", result.detail, nil
   return false
 end
-local function predecessor_status(id)
+-- The status a plan's after_plan_id predecessor counts as: its own, or the
+-- final status it handed this plan when it ended (finish keeps it on the
+-- dependent, so pruning its record after RECORD_TTL loses nothing). A plan
+-- that already started passed its predecessor check: it counts completed.
+local function predecessor_status(plan)
+  if plan.started_tick then return "completed" end
+  if plan.predecessor_final then return plan.predecessor_final end
+  local id = plan.after_plan_id
   local record = storage.tasks.records[id]
-  if record and record.plan then return record.plan.status end
+  if record and record.plan then return M.chain_status(record.plan) end
   if storage.tasks.active and storage.tasks.active.id == id then return storage.tasks.active.status end
   for _, queued in ipairs(storage.tasks.queue) do if queued.id == id then return queued.status end end
 end
@@ -1420,7 +1538,7 @@ end
 local function takes_body(queued)
   if queued.source == "upkeep" then return false end
   if queued.status == "waiting" then return queued.next_check_tick == nil end
-  return not queued.after_plan_id or predecessor_status(queued.after_plan_id) == "completed"
+  return not queued.after_plan_id or predecessor_status(queued) == "completed"
 end
 -- Queued work that would take the body from upkeep now. Behind a lending
 -- plan nothing else does: that plan takes it back once its crafting ends.
@@ -1628,6 +1746,13 @@ local function tick_plan(plan)
     return
   end
   if not ok then result = { status = "failed", detail = caught("task:" .. tostring(step.action) .. ":tick", result) } end
+  -- A partial insert's retry: the step reports both attempts' transfers.
+  local recovery = plan._recovery
+  if result and recovery and recovery.step == plan.current_step and recovery.items and recovery.phase == "retrying"
+    and not recovery.merged then
+    recovery.merged = true
+    result = merge_retry(recovery.first, result)
+  end
   if result and not try_recover(plan, step, result) then finish_step(plan, result) end
 end
 -- The work sites, newest first, at most WORK_SITES: a start within
@@ -1669,12 +1794,13 @@ local function dispatch(tasks)
         and candidate.next_check_tick and game.tick < candidate.next_check_tick
       local predecessor_blocked = false
       if candidate.type == "plan" and candidate.after_plan_id then
-        local status = predecessor_status(candidate.after_plan_id)
+        local status = predecessor_status(candidate)
         if status ~= "completed" then
           if status == "queued" or status == "running" or status == "waiting" then
             predecessor_blocked = true
           else
-            finish(candidate, "cancelled", "predecessor plan did not complete successfully", true)
+            finish(candidate, "cancelled", string.format("predecessor plan %d did not complete successfully (%s)",
+              candidate.after_plan_id, status and ("it ended " .. status) or "no record of it is left"), true)
           end
         end
       end
@@ -2060,14 +2186,19 @@ local function account_body_time(tasks)
   end
   time.state, time.state_since = state, game.tick
 end
--- Body phases: each tick a pilot or package task holds the body
--- (body_state) is one phase, checked in this order: walk (the body moved
--- since the last tick; the distance adds to tiles), mine (the character is
--- mining), smelt_wait (the step's supply waits on a furnace), craft_wait
--- (a step waited on the crafting queue within the last poll) or other.
+-- Body phases: each tick a task holds the body (body_state pilot, package
+-- or upkeep, or a travel wait) is one phase. An upkeep tick is upkeep and a
+-- tick with the body aboard a platform or in a cargo pod is aboard; any
+-- other is checked in this order: walk (the body moved since the last tick;
+-- the distance adds to tiles), mine (the character is mining), smelt_wait
+-- (the step's supply waits on a furnace), craft_wait (a step waited on the
+-- crafting queue within the last poll) or other. The running plan keeps its
+-- own walk ticks, tiles and craft_wait ticks (walk_s, tiles, craft_wait_s).
 -- O(1) reads of the body and the running task; nothing on the surface.
 -- A move longer than MAX_STEP_TILES in one tick (a landing, a respawn) is no walk.
 local MAX_STEP_TILES, CRAFT_WAIT_TICKS = 2, 30
+local PHASED_STATES = { pilot = true, package = true, upkeep = true, traveling = true }
+local AWAY_STATES = { aboard_platform = true, in_transit = true }
 local function supply_frame(task)
   local stack = type(task._stack) == "table" and task._stack
     or type(task._supply) == "table" and type(task._supply._stack) == "table" and task._supply._stack or nil
@@ -2076,8 +2207,16 @@ end
 local function account_phase(tasks)
   local time = tasks.body_time
   if not (time and time.phases) then return end
-  local c = (time.state == "pilot" or time.state == "package") and companion.get() or nil
-  if not (c and c.valid) then time.last_position = nil; return end
+  if not PHASED_STATES[time.state] then time.last_position = nil; return end
+  local c = companion.get()
+  if not (c and c.valid) then
+    time.last_position = nil
+    -- Aboard or in a pod there is no character on a surface: the tick is
+    -- the trip's.
+    local ok, body = pcall(companion.body)
+    if ok and AWAY_STATES[body.state] then time.phases.aboard = (time.phases.aboard or 0) + 1 end
+    return
+  end
   local p, last = c.position, time.last_position
   local surface = c.surface_index
   local moved = 0
@@ -2094,7 +2233,7 @@ local function account_phase(tasks)
   local craft_wait = storage.craft_wait_tick
   local phase = "other"
   if moved > 0 then
-    phase, time.tiles = "walk", (time.tiles or 0) + moved
+    phase = "walk"
   elseif type(mining) == "table" and mining.mining then
     phase = "mine"
   elseif frame and frame.phase == "smelt_wait" then
@@ -2102,6 +2241,14 @@ local function account_phase(tasks)
   elseif (c.crafting_queue_size or 0) > 0 and craft_wait and game.tick - craft_wait <= CRAFT_WAIT_TICKS then
     phase = "craft_wait"
   end
+  local plan = active and active.type == "plan" and active or nil
+  if plan and phase == "walk" then
+    plan.walk_ticks, plan.tiles = (plan.walk_ticks or 0) + 1, (plan.tiles or 0) + moved
+  elseif plan and phase == "craft_wait" then
+    plan.craft_wait_ticks = (plan.craft_wait_ticks or 0) + 1
+  end
+  if time.state == "upkeep" then phase = "upkeep"
+  elseif phase == "walk" then time.tiles = (time.tiles or 0) + moved end
   time.phases[phase] = (time.phases[phase] or 0) + 1
 end
 -- The run recorder's baseline (run_snapshot {window = true}) marks its
@@ -2113,9 +2260,10 @@ end
 -- {since_tick, window_tick?, state, state_since, ticks = {[state] = n},
 -- gaps = {[ended_by] = {count, ticks, longest, longest_end_tick}},
 -- phases = {[phase] = n}, tiles}, cumulative since since_tick with the
--- current state's open interval included (phases and tiles: the pilot and
--- package ticks by body phase and the tiles walked in them, rounded to a
--- tenth); nil before state.init made it.
+-- current state's open interval included (phases and tiles: the pilot,
+-- package and upkeep ticks by body phase (account_phase) and the tiles the
+-- pilot and package walked, rounded to a tenth); nil before state.init made
+-- it.
 function M.body_time()
   local time = storage.tasks and storage.tasks.body_time
   if not time then return nil end

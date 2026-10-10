@@ -1080,4 +1080,86 @@ check(not pcall(tasks.queue_plan, { steps = walk_step(), client_key = string.rep
   and not pcall(tasks.queue_plan, { steps = walk_step(), client_key = 7 }), "a client_key is a string of 1-64 characters")
 storage.tasks.queue, storage.tasks.active = {}, nil
 end)()
+
+-- A partial insert's retry reports both attempts against the request; a
+-- plan whose last step only met a full target satisfies its chain; a
+-- dependent keeps its predecessor's final status past the record's pruning.
+;(function()
+local insert_runner = package.loaded["scripts.actions.transfer"].insert
+local original = insert_runner.tick
+local function run(n) for _ = 1, n do game.tick = game.tick + 1; tasks.on_tick() end end
+local target = { name = "rocket-silo", type = "rocket-silo", position = { x = 1, y = 1 } }
+insert_runner.tick = scripted({
+  { status = "partial", detail = "partial insert", outcome = { code = "PARTIAL_INSERT", total_inserted = 1, target = target,
+    transfers = { { item = "rocket-fuel", requested = 10, available = 48, inserted = 1, remainder = 9, reason = "TARGET_CAPACITY" } } } },
+  { status = "failed", detail = "couldn't insert anything into the rocket-silo", outcome = { code = "ZERO_PROGRESS", total_inserted = 0,
+    target = target, transfers = { { item = "rocket-fuel", requested = 9, available = 47, inserted = 0, remainder = 9,
+      reason = "TARGET_REJECTED_ITEM" } } } },
+})
+local seeded = tasks.queue_plan({ steps = { { action = "walk_to", x = 1, y = 1 },
+  { action = "insert_items", x = 1, y = 1, items = { ["rocket-fuel"] = 10 } } } })
+local feeds = tasks.queue_plan({ steps = { { action = "walk_to", x = 2, y = 2 } }, after_plan_id = seeded.plan_id })
+run(90)
+local seeded_status = tasks.plan_status({ plan_id = seeded.plan_id })
+local ending = seeded_status.outcomes[#seeded_status.outcomes]
+local row = ending.result.transfers[1]
+check(seeded_status.status == "partial" and ending.code == "PARTIAL_INSERT" and row.inserted == 1 and row.requested == 10
+  and row.remainder == 9 and row.reason == "TARGET_CAPACITY" and ending.result.retry.code == "ZERO_PROGRESS"
+  and ending.result.first_inserted == 1 and ending.recovery.fix == "retry_remainder",
+  "the retry of a partial insert keeps the first attempt's transfer: 1 of 10 inserted, the rest refused at capacity")
+check(seeded_status.satisfies_chain == true and tasks.plan_status({ plan_id = feeds.plan_id }).status == "completed",
+  "a plan whose last step only met a full target satisfies its chain: the plan after it runs")
+
+insert_runner.tick = scripted({
+  { status = "partial", detail = "partial insert", outcome = { code = "PARTIAL_INSERT", total_inserted = 1, target = target,
+    transfers = { { item = "coal", requested = 5, available = 1, inserted = 1, remainder = 4, reason = "INSUFFICIENT_CARRIED_ITEMS" } } } },
+  { status = "failed", detail = "I have none", outcome = { code = "ZERO_PROGRESS", total_inserted = 0, target = target,
+    transfers = { { item = "coal", requested = 4, available = 0, inserted = 0, remainder = 4, reason = "NO_CARRIED_ITEMS" } } } },
+})
+local short = tasks.queue_plan({ steps = { { action = "insert_items", x = 1, y = 1, items = { coal = 5 } } } })
+local after_short = tasks.queue_plan({ steps = { { action = "walk_to", x = 2, y = 2 } }, after_plan_id = short.plan_id })
+run(90)
+local short_status = tasks.plan_status({ plan_id = short.plan_id })
+local short_row = short_status.outcomes[1].result.transfers[1]
+check(short_status.status == "partial" and short_row.inserted == 1 and short_row.reason == "INSUFFICIENT_CARRIED_ITEMS"
+  and short_status.outcomes[1].error == nil and short_status.satisfies_chain == nil
+  and tasks.plan_status({ plan_id = after_short.plan_id }).status == "cancelled",
+  "a retry that found none carried still reports the first insert; a short insert does not satisfy the chain")
+insert_runner.tick = original
+
+-- The predecessor's record is pruned while its dependent still waits: the
+-- dependent kept its final status and runs.
+local hold = { done = false }
+tasks.register_action("test_hold", { runner = { start = function() end,
+  tick = function() if hold.done then return { status = "done", detail = "held" } end end,
+  waiting = function() return true end }, make_task = function() return {} end })
+local first = tasks.queue_plan({ steps = { { action = "walk_to", x = 3, y = 3 } } })
+local holder = tasks.queue_plan({ steps = { { action = "test_hold" } } })
+local later = tasks.queue_plan({ steps = { { action = "walk_to", x = 4, y = 4 } }, after_plan_id = first.plan_id })
+run(3)
+check(tasks.plan_status({ plan_id = first.plan_id }).status == "completed" and storage.tasks.active
+  and storage.tasks.active.id == holder.plan_id, "the predecessor completed while another plan holds the body")
+storage.tasks.records[first.plan_id] = nil -- pruned after RECORD_TTL
+hold.done = true
+run(3)
+check(tasks.plan_status({ plan_id = later.plan_id }).status == "completed",
+  "a plan whose predecessor's record was pruned still runs: it kept the predecessor's final status")
+
+-- A started plan passed its predecessor check: a parked wait comes back to
+-- the queue and is never cancelled for a pruned predecessor.
+local base = tasks.queue_plan({ steps = { { action = "walk_to", x = 3, y = 3 } } })
+local parked = tasks.queue_plan({ steps = { { action = "wait_for_research", technology = "automation", timeout_seconds = 300 } },
+  after_plan_id = base.plan_id })
+body.force = body.force or {}
+body.force.technologies = { automation = { researched = false } }
+body.force.current_research = { name = "automation" }
+run(3)
+local waiting = storage.tasks.queue[1]
+check(waiting and waiting.id == parked.plan_id and waiting.status == "waiting", "the dependent started and parked")
+storage.tasks.records[base.plan_id], waiting.predecessor_final = nil, nil
+run(40)
+check(tasks.plan_status({ plan_id = parked.plan_id }).status == "waiting",
+  "a started plan is never cancelled for its predecessor's pruned record")
+storage.tasks.queue, storage.tasks.active = {}, nil
+end)()
 os.exit(failures == 0 and 0 or 1)

@@ -593,8 +593,11 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
         if (before.status === "queuing" || before.status === "waiting_surface") continue;
         // A predecessor of captures only has no plan and is done.
         if (before.plan_id !== undefined) {
-          let status: string | undefined, source: string | undefined;
-          try { ({ status, source } = await b.call<{ status: string; source?: string }>("plan_status", { plan_id: before.plan_id })); }
+          let status: string | undefined, source: string | undefined, satisfiesChain: boolean | undefined;
+          try {
+            ({ status, source, satisfies_chain: satisfiesChain } = await b.call<{ status: string; source?: string;
+              satisfies_chain?: boolean }>("plan_status", { plan_id: before.plan_id }));
+          }
           catch (error) { if (!(error instanceof ModError)) throw error; /* pruned: it ended long ago */ }
           if (status !== undefined && source !== `package:${entry.after_package_id}`) {
             // The plan_id now names another plan (a save rollback): the
@@ -610,7 +613,8 @@ export function createPackageQueue(runDir: RunDir, bridge: () => Promise<Bridge>
             const predecessor = ledger.build_packages.find((other) => other.package_id === entry.after_package_id);
             if (captures.length > 0 || changesGroundIn(predecessor) || before.changes_ground === true) continue;
             afterPlanId = before.plan_id;
-          } else if (status !== undefined && status !== "completed") {
+          } else if (status !== undefined && status !== "completed" && satisfiesChain !== true) {
+            // A partial plan whose last step only met a full target satisfies its chain (the mod's rule).
             record(id, { status: "failed", reason: `after_package_id ${entry.after_package_id} ended ${status}` });
             continue;
           }

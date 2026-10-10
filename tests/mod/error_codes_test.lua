@@ -284,6 +284,10 @@ do
   check(cut.code == "PLAN_BUDGET_EXCEEDED" and cut.result.crafting.queue_s == 2 and cut.result.supply.supply.item == "gear"
     and cut.error:find("; hand-crafting continues: 2 s queued", 1, true),
     "a budget cut keeps the step's supply and the crafting queue, and says queued hand-crafts continue")
+  local cut_row = storage.activity_log[#storage.activity_log]
+  check(cut_row.code == "PLAN_BUDGET_EXCEEDED"
+    and cut_row.detail:find("; supply: stage get_items, fetching 4 gear (phase take, 1 takes, running nothing)", 1, true) ~= nil,
+    "the budget cut's activity row (and server log line) keeps what the supply was doing")
   check(facts_only(running) and facts_only(cut), "the diagnostics and the budget cut carry facts only")
   body.crafting_queue_size, body.crafting_queue, body.crafting_queue_progress, body.force = 0, {}, nil, nil
   done.queue_summary = nil

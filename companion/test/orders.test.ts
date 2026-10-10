@@ -112,7 +112,8 @@ describe("package auto-queue", () => {
     await createPackageQueue(() => dir, bridge).tick();
     expect(queuedPlans(call)).toHaveLength(2);
     expect(createOrdersTracker(() => dir).attach(result({ summary: "ok" })).structuredContent.orders.packages)
-      .toEqual([{ id: "iron-a", status: "queued", plan_id: 41 }, { id: "iron-b", status: "queued", plan_id: 42 }]);
+      .toEqual([{ id: "iron-a", status: "queued", plan_id: 41, plan_status: "queued" },
+        { id: "iron-b", status: "queued", plan_id: 42, plan_status: "queued" }]);
   });
 
   it("spans a package's footprint over its anchor and every position its steps name, padded", () => {
@@ -1016,5 +1017,88 @@ describe("MCP package pump ownership", () => {
     await vi.advanceTimersByTimeAsync(3_000);
     expect(queue).not.toHaveBeenCalled();
     expect(tick).not.toHaveBeenCalled();
+  });
+});
+
+describe("live package outcomes", () => {
+  // Two queued packages (plans 41 and 42), then a revision keeping iron-b
+  // and adding iron-c, which the bridge has not reached yet.
+  async function queued() {
+    const dir = runDir();
+    writeLedger(dir, 2, [furnaces("iron-a"), furnaces("iron-b")]);
+    const { call, bridge } = fakeBridge();
+    const queue = createPackageQueue(() => dir, bridge);
+    await queue.tick();
+    return { dir, call, bridge, queue };
+  }
+
+  it("gives each queued package's plan as the game has it when the orders are attached", async () => {
+    const { dir } = await queued();
+    const packages = (live?: coordination.LivePlans) =>
+      createOrdersTracker(() => dir).attach(result({ summary: "ok" }), live).structuredContent.orders.packages;
+    expect(packages({ active_plan_id: 41, package_plans: [41, 42] })).toEqual([
+      { id: "iron-a", status: "queued", plan_id: 41, plan_status: "running" },
+      { id: "iron-b", status: "queued", plan_id: 42, plan_status: "queued" }]);
+    // Out of the FIFO: the last plan to end gives its status, an earlier one is ended.
+    expect(packages({ package_plans: {} as never, last_plan_ended: { plan_id: 42, status: "partial" } })
+      .map((row: any) => row.plan_status)).toEqual(["ended", "partial"]);
+    // A recorded end wins over the live read.
+    const state = readPackageQueue(dir)!;
+    state.packages["iron-a"]!.plan_status = "completed";
+    state.packages["iron-a"]!.plan_ended_tick = 950;
+    fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify(state));
+    expect(packages({ active_plan_id: 41, package_plans: [41] })[0]).toEqual({ id: "iron-a", status: "queued", plan_id: 41, plan_status: "completed" });
+    // A package the bridge has not reached is pending, with no plan_status.
+    writeLedger(dir, 3, [furnaces("iron-b"), furnaces("iron-c")]);
+    expect(packages({ package_plans: [42] })).toEqual([
+      { id: "iron-b", status: "queued", plan_id: 42, plan_status: "queued" }, { id: "iron-c", status: "pending" }]);
+  });
+
+  it("counts open packages live: not yet queued, or with the plan still in the FIFO", async () => {
+    const { dir } = await queued();
+    expect(coordination.packagesOpen(dir, { package_plans: [41, 42] })).toBe(2);
+    expect(coordination.packagesOpen(dir, { package_plans: [42] })).toBe(1);
+    writeLedger(dir, 3, [furnaces("iron-b"), furnaces("iron-c")]);
+    expect(coordination.packagesOpen(dir, { package_plans: [] })).toBe(1);
+    // A recorded end closes it even while a stale read still lists the plan; a failed one is closed.
+    const state = readPackageQueue(dir)!;
+    state.packages["iron-b"]!.plan_ended_tick = 950;
+    fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify(state));
+    expect(coordination.packagesOpen(dir, { package_plans: [42] })).toBe(1);
+    state.packages["iron-c"] = { status: "failed", revision: 3, at: "2026-10-05T10:00:00Z", reason: "check failed" };
+    fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify(state));
+    expect(coordination.packagesOpen(dir, { package_plans: [42] })).toBe(0);
+    // A package written before the last stop is held, not open; one being queued still is.
+    delete state.packages["iron-c"];
+    state.cancel_all = { tick: 990, observed_at: new Date(Date.now() + 60_000).toISOString() };
+    fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify(state));
+    expect(coordination.packagesOpen(dir, { package_plans: [] })).toBe(0);
+    state.packages["iron-c"] = { status: "queuing", revision: 3, at: "2026-10-05T10:00:00Z" };
+    fs.writeFileSync(path.join(dir, "package-queue.json"), JSON.stringify(state));
+    expect(coordination.packagesOpen(dir, { package_plans: [] })).toBe(1);
+    // No ledger: unknown.
+    expect(coordination.packagesOpen(runDir(), { package_plans: [] })).toBeNull();
+  });
+
+  it("polls plans compactly from the bridge", async () => {
+    const { call, queue } = await queued();
+    await queue.tick();
+    const polls = call.mock.calls.filter(([method]) => method === "plan_status");
+    expect(polls.length).toBeGreaterThan(0);
+    expect(polls.every(([, params]) => params.compact === true)).toBe(true);
+  });
+
+  it("reads the live FIFO for a new orders block through the MCP tools, once per revision", async () => {
+    const { dir, call, bridge } = await queued();
+    call.mockClear();
+    const handlers: Record<string, (args: any) => Promise<any>> = {};
+    registerMcpTools({ registerTool(name, _config, handler) { handlers[name] = handler; } }, bridge,
+      () => ({ ok: false, error: "offline fixture" }), "read-only", () => dir, "strategist");
+    const first = (await handlers.activity_log!({})).structuredContent;
+    // The fake game's event_state lists no package plan: both have ended.
+    expect(first.orders.packages[0]).toMatchObject({ id: "iron-a", plan_status: "ended" });
+    expect(call.mock.calls.filter(([method]) => method === "event_state")).toHaveLength(1);
+    await handlers.activity_log!({});
+    expect(call.mock.calls.filter(([method]) => method === "event_state")).toHaveLength(1);
   });
 });

@@ -284,6 +284,16 @@ describe("public MCP to Lua DTO mappings", () => {
     expect(descriptions.factory_status).toMatch(/eta_seconds/);
     expect(descriptions.factory_status).toMatch(/packs_per_minute_made/);
     expect(descriptions.factory_status).toMatch(/labs\.starved_by: \{pack: labs lacking it\}/);
+    // 0.38 facts: a filter that bars a starved lab's pack, the queue's eta and
+    // what queues behind queued prerequisites, packs made beside lab use, and
+    // next_event's live body fields.
+    expect(descriptions.factory_status).toMatch(/filtered_out_by: an inserter whose filter bars that pack/);
+    expect(descriptions.progression_status).toMatch(/queueable_after_queued: .*queued_prerequisites/);
+    expect(descriptions.progression_status).toMatch(/queue_eta_seconds: .*cumulative_seconds at the current labs' speed/);
+    expect(descriptions.production_requirements).toMatch(/packs: .*made_per_min beside lab_use_per_min/);
+    expect(descriptions.next_event).toMatch(/packages_open \(ledger packages not yet ended, live\)/);
+    expect(descriptions.next_event).toMatch(/idle_since_tick and idle_seconds/);
+    expect(descriptions.next_event).toMatch(/one landing on a planet only rides along in space_events/);
     expect(descriptions.production_requirements).toMatch(/short_per_min = max\(0, demand - standing_per_min\)/);
     expect(descriptions.production_requirements).toMatch(/standing_max_per_min/);
     for (const section of MAP_SUMMARY_SECTIONS) expect(descriptions.map_summary, section).toContain(section);

@@ -623,6 +623,27 @@ body.crafting_queue_size = 3
 check(factory_status.event_state().fifo_empty == true,
   "hand-crafting in the background leaves the FIFO empty: the body is free for queued work")
 body.crafting_queue_size = 0
+-- idle_since_tick: while the FIFO is empty (and no human holds the body),
+-- when pilot work last ended; package_plans: the package plans still in
+-- the FIFO, running first; body: where the body is.
+do
+  local saved_finished = storage.tasks.last_pilot_finished_tick
+  storage.tasks.active, storage.tasks.queue = nil, {}
+  storage.tasks.last_pilot_finished_tick = nil
+  check(factory_status.event_state().idle_since_tick == nil, "no pilot work ended yet: no idle_since_tick")
+  storage.tasks.last_pilot_finished_tick = 420
+  local idle = factory_status.event_state()
+  check(idle.idle_since_tick == 420 and #idle.package_plans == 0 and idle.body and idle.body.state == "on_surface",
+    "an empty FIFO reports idle_since_tick (the last pilot work's end), no package plans and the body's state")
+  storage.tasks.active = { id = 11, type = "plan", status = "running", source = "package:iron", steps = { {} } }
+  storage.tasks.queue = { { id = 12, type = "plan", source = "pilot", steps = { {} } },
+    { id = 13, type = "plan", source = "package:copper", steps = { {} } }, { id = 14, type = "plan", source = "upkeep", steps = { {} } } }
+  local busy = factory_status.event_state()
+  check(busy.idle_since_tick == nil and busy.package_plans[1] == 11 and busy.package_plans[2] == 13 and #busy.package_plans == 2,
+    "with work queued there is no idle_since_tick; package_plans lists the package plans, running first")
+  storage.tasks.active, storage.tasks.queue = nil, {}
+  storage.tasks.last_pilot_finished_tick = saved_finished
+end
 storage.tasks.active, storage.tasks.queue = active_plan, { {} }
 -- next_event's research_finished: the last research the body's force finished.
 factory_status.on_research_changed({ name = 78, tick = 500, research = { name = "logistics", force = { name = force.name } } })

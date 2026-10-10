@@ -763,7 +763,18 @@ function M.event_state(params)
   local a = storage.autonomy or {}
   local ok, held = pcall(companion.human_control)
   local queued = 0
-  for _, task in ipairs(t.queue) do if pilot_work(task) then queued = queued + 1 end end
+  -- The package plans still in the FIFO, running first: the bridge counts a
+  -- package open while its plan is here.
+  local package_plans = {}
+  if t.active and t.active.type == "plan" and type(t.active.source) == "string" and t.active.source:sub(1, 8) == "package:" then
+    package_plans[1] = t.active.id
+  end
+  for _, task in ipairs(t.queue) do
+    if pilot_work(task) then queued = queued + 1 end
+    if task.type == "plan" and type(task.source) == "string" and task.source:sub(1, 8) == "package:" then
+      package_plans[#package_plans + 1] = task.id
+    end
+  end
   local space_tick, space_events = platforms.event_state()
   -- Whether the force's labs stand idle: it has labs (the registry's cached
   -- count; trigger technologies finish before any lab exists) and no
@@ -775,15 +786,25 @@ function M.event_state(params)
   local research_idle = nil
   if research_ok and type(idle) == "boolean" then research_idle = idle end
   local loss_tick, losses = journal.loss_state()
+  local fifo_empty = not pilot_work(t.active) and queued == 0
+  local human_hold = ok and held == true
+  local body_ok, body = pcall(companion.body_summary)
   return {
     tick = game.tick, last_plan_ended = t.last_plan_ended,
     active_plan_id = pilot_work(t.active) and t.active.type == "plan" and t.active.id or nil,
     queue_depth = queued,
     -- The pilot's cue to queue work: no plan, whatever the body still
     -- hand-crafts in the background.
-    fifo_empty = not pilot_work(t.active) and queued == 0,
+    fifo_empty = fifo_empty,
+    -- While that holds (and no human holds the body): since when, the last
+    -- pilot work's end (upkeep excluded; a human hold restarts it); absent before any.
+    idle_since_tick = fifo_empty and not human_hold and t.last_pilot_finished_tick or nil,
+    package_plans = package_plans,
+    -- Where the body is: {state, platform_name?} (on_surface,
+    -- aboard_platform, in_transit).
+    body = body_ok and body and { state = body.state, platform_name = body.platform_name } or nil,
     problem_count = a.problem_count or 0, last_problem_tick = a.last_problem_tick,
-    human_hold = ok and held == true,
+    human_hold = human_hold,
     -- {technology, tick} of the last research the force finished.
     last_research_finished = storage.last_research_finished,
     research_idle = research_idle,

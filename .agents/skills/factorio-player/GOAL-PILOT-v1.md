@@ -16,7 +16,7 @@ Say in a sentence or two what you see and what you will do before you act.
 
 **Queue real work.**
 - Queue multi-step, goal-level work (`get_items`, `build_layout`, `blueprint_place`, placements that fetch their own items), a minute or more at a time. Never queue single-step or walk-only plans, and never a `walk_to` before an action: actions walk to their own targets.
-- Pass `after_plan_id` only when a plan needs the earlier plan's effects; a chained plan is cancelled when its predecessor fails.
+- Pass `after_plan_id` only when a plan needs the earlier plan's effects; a chained plan is cancelled when its predecessor fails or is cancelled.
 - Build the opening and your own later work yourself, following NOW and SKILL.md's Architecture.
 - Hand-mining and hand-crafting take the body's time; drills and assemblers work while the body does something else. The packs for the research that unlocks assemblers can only be hand-crafted.
 

@@ -780,7 +780,7 @@ export function registerMcpTools(
   // The pilot's own plans only: the mod refuses a package, upkeep or ended
   // plan (only_source), and logs the origin with the cancel.
   const cancelPlanInput = z.object({ plan_id: z.number().int().positive() }).strict();
-  tools.registerTool("cancel_plan", { description: "Cancel one of your own plans (from queue_plan, run_plan or travel), queued or running: its running step stops now and the plans behind it move up. A rocket launch or landing already under way still finishes. Packages, upkeep and research are not yours to cancel (NOT_YOUR_PLAN); an ended plan is PLAN_NOT_PENDING.", inputSchema: cancelPlanInput }, async (p) => {
+  tools.registerTool("cancel_plan", { description: "Cancel one of your own plans (from queue_plan, run_plan or travel), queued or running: its running step stops now, with the hand-crafts it queued; plans chained to it with after_plan_id are cancelled too, and the others behind it move up. A rocket launch or landing already under way still finishes. Packages, upkeep and research are not yours to cancel (NOT_YOUR_PLAN); an ended plan is PLAN_NOT_PENDING.", inputSchema: cancelPlanInput }, async (p) => {
     try {
       const { plan_id } = cancelPlanInput.parse(p);
       const value: any = await (await bridge()).call("cancel", { plan_id, only_source: "pilot", origin: `cancel_plan/${role}` });

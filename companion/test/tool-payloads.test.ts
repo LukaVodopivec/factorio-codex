@@ -689,6 +689,9 @@ describe("read-only FIFO state", () => {
     expect(normalizeFifo({ queue_depth: 0, idle_seconds: 31 })?.hint).toBe(FIFO_IDLE_HINT);
     expect(normalizeFifo(undefined)).toBeUndefined();
     expect(normalizeFifo({ queue_depth: 0, upkeep_off_since_tick: 900 })?.upkeep_off_since_tick).toBe(900);
+    expect(normalizeFifo({ queue_depth: 0, upkeep_skipped: { tick: 700, items: ["coal"], free_slots: 0 } })?.upkeep_skipped)
+      .toEqual({ tick: 700, items: ["coal"], free_slots: 0 });
+    expect(normalizeFifo({ queue_depth: 0, upkeep_skipped: { tick: 700, items: {} } })).not.toHaveProperty("upkeep_skipped");
   });
 
   it("passes the queued plans' demand totals through the FIFO block", () => {

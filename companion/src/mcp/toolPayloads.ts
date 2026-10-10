@@ -454,6 +454,8 @@ export interface FifoState { active_plan_id: number | null; queue_depth: number 
   human_control?: boolean; human_idle_ticks?: number; hint?: string;
   /** The emergency stop's tick while it keeps upkeep off (until a plan finishes). */
   upkeep_off_since_tick?: number;
+  /** The latest upkeep pass skipped steps for these items: the full body could not fetch them. */
+  upkeep_skipped?: { tick: number; items: string[]; free_slots?: number };
   /** Where the body is: {state, surface_ref, platform_name?}. */
   body?: { state: string; surface_ref?: string; platform_name?: string };
   /** Item totals the queued plans take, and what of them carried and stocked items do not cover (largest few). */
@@ -467,6 +469,16 @@ function itemTotals(fifo: Record<string, unknown>, key: "queued_demand" | "short
   const omitted = fifo[`omitted_${key}`];
   return { [key]: map as Record<string, number>,
     ...(typeof omitted === "number" ? { [`omitted_${key}`]: omitted } : {}) };
+}
+
+// The upkeep pass's skip for a full body, as sent when well formed (Lua sends
+// an empty items table as an object).
+function upkeepSkipped(value: unknown): Partial<FifoState> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const row = value as { tick?: unknown; items?: unknown; free_slots?: unknown };
+  if (typeof row.tick !== "number" || !Array.isArray(row.items) || row.items.length === 0) return {};
+  const items = row.items.filter((item): item is string => typeof item === "string");
+  return { upkeep_skipped: { tick: row.tick, items, ...(typeof row.free_slots === "number" ? { free_slots: row.free_slots } : {}) } };
 }
 
 // Lua omits nil fields; every read result states all three, plus the idle hint
@@ -484,6 +496,7 @@ export function normalizeFifo(value: unknown, role?: string): FifoState | undefi
     ...(typeof fifo.human_control === "boolean" ? { human_control: held } : {}),
     ...(humanIdle !== null ? { human_idle_ticks: humanIdle } : {}),
     ...(upkeepOff !== null ? { upkeep_off_since_tick: upkeepOff } : {}),
+    ...upkeepSkipped(fifo.upkeep_skipped),
     ...(fifo.body && typeof fifo.body === "object" && !Array.isArray(fifo.body) ? { body: fifo.body as FifoState["body"] } : {}),
     ...itemTotals(fifo, "queued_demand"), ...itemTotals(fifo, "short_by"),
     ...(held ? { hint: FIFO_HUMAN_HINT } : idle !== null && idle > FIFO_IDLE_HINT_SECONDS

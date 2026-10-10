@@ -2814,6 +2814,8 @@ local function enqueue_chunk(cache, x, y)
   if not cache.charted_set[key] then
     cache.charted_set[key] = true
     cache.charted[#cache.charted + 1] = { x = x, y = y }
+    -- Filling again until this chunk is read and the rows built from it.
+    cache.filled = false
   end
   if cache.queued[key] then return end
   cache.queued[key] = true
@@ -3021,10 +3023,14 @@ local function patch_step(cache, surface, tick)
     return
   end
   if cache.head > #cache.pending then
-    -- The idle refresh starts PATCH_REFRESH_TICKS after the cache first fills.
-    if not cache.filled then cache.refreshed_tick = tick end
-    cache.pending, cache.head, cache.filled = {}, 1, true
+    cache.pending, cache.head = {}, 1
     if cache.build or cache.dirty then patch_build_step(cache) end
+    -- Filled once every charted chunk is read and the rows are built from
+    -- them; the idle refresh starts PATCH_REFRESH_TICKS after it first is.
+    if not cache.filled then
+      if cache.build or cache.dirty then return end
+      cache.filled, cache.refreshed_tick = true, cache.refreshed_tick or tick
+    end
     if tick - (cache.refreshed_tick or 0) < PATCH_REFRESH_TICKS then return end
     cache.refreshed_tick = tick
     -- Round robin over the cached resource chunks; one mined out everywhere
